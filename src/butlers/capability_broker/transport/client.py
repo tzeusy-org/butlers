@@ -13,7 +13,15 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from .config import OPERATION_SECONDS, REPLY_LIMIT, REQUEST_LIMIT, TransportConfig
-from .protocol import TOOLS, ProtocolError, reply, request, rpc_request, rpc_result, strict_json
+from .protocol import (
+    ProtocolError,
+    reply,
+    request,
+    rpc_request,
+    rpc_result,
+    strict_json,
+    tool_name,
+)
 from .tls import PurposeBackend
 
 
@@ -130,7 +138,7 @@ class PrivateClient:
         if len(encoded) > REQUEST_LIMIT:
             raise ProtocolError("request_limit")
         value = request(strict_json(encoded), self.config.peer.domain)
-        if value["operation"] == "PARK":
+        if value["operation"] == "PARK" and value["protocol"] == "broker-approvals-v1":
             if (
                 type(assertion) is not str
                 or not 1 <= len(assertion) <= 8192
@@ -159,7 +167,7 @@ class PrivateClient:
                 ):
                     await session.initialize()
                     await session.list_tools()
-                    result = await session.call_tool(TOOLS[value["operation"]], value)
+                    result = await session.call_tool(tool_name(value), value)
                     return reply(result.structuredContent, value)
             except BaseException:
                 self.transport.abort()

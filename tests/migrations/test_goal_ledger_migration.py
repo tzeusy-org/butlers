@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
@@ -14,10 +15,11 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError
 
 from alembic import command
-from butlers.core.goal_admission import Evidence
+from butlers.core.goal_admission import Evidence, SourceRef
 from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import (
     _bootstrap_migration_prerequisites,
+    create_migrated_test_db,
     migration_bootstrap_db_url,
     migration_db_name,
 )
@@ -347,7 +349,7 @@ def test_goal_ledger_existing_full_backup_restores_losslessly(
         admin.dispose()
 
 
-def test_goal_ledger_downgrade_refuses_durable_history(ledger_url):
+def test_goal_ledger_downgrade_refuses_durable_history(ledger_url, postgres_container):
     asyncio.run(populate(ledger_url))
     before = snapshot(ledger_url)
     config = _build_alembic_config(ledger_url, ["switchboard"], target_schema="switchboard")
@@ -356,3 +358,114 @@ def test_goal_ledger_downgrade_refuses_durable_history(ledger_url):
             config, "switchboard@sw_046"
         )  # pinned-revision: owns sw_047 rollback boundary
     assert snapshot(ledger_url) == before
+
+    # Bound this lifecycle to the owning revision: future forward-only
+    # migrations must not silently become part of sw_051's rollback proof.
+    reason_url = create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        ["core", "switchboard"],
+        schemas={"core": "switchboard", "switchboard": "switchboard"},
+        revisions={"switchboard": "sw_051"},  # pinned-revision: owns reason lifecycle
+    )
+    asyncio.run(populate(reason_url))
+    before = snapshot(reason_url)
+    config = _build_alembic_config(reason_url, ["switchboard"], target_schema="switchboard")
+
+    # This forward revision owns only the reason vocabulary. Existing durable
+    # rows may downgrade to its predecessor and re-upgrade without other DDL.
+    command.downgrade(config, "switchboard@sw_050")  # pinned-revision: sw_051 predecessor
+    prior = snapshot(reason_url)
+    assert prior[:2] == before[:2]
+
+    def reasons(state):
+        return next(row[2] for row in state[2] if row[1] == "admission_decisions_reason_check")
+
+    def other_constraints(state):
+        return [row for row in state[2] if row[1] != "admission_decisions_reason_check"]
+
+    old_reasons = {
+        "source_evidence_unavailable",
+        "limits_unavailable",
+        "cause_invalid",
+        "creator_unavailable",
+        "causal_chain_limit",
+        "reply_joined",
+        "quota_exhausted",
+        "new_goal",
+    }
+    assert set(re.findall(r"'([^']*)'", reasons(prior))) == old_reasons
+    assert other_constraints(prior) == other_constraints(before)
+    engine = create_engine(reason_url)
+    insert = text(
+        "INSERT INTO switchboard.admission_decisions "
+        "(id,attempt_id,source_key,source_ref,source_kind,result,reason) "
+        "VALUES (:id,:attempt,:source,:source,'message','refused',:reason)"
+    )
+
+    def insert_reason(reason):
+        with engine.begin() as conn:
+            conn.execute(
+                insert,
+                {"id": uuid4(), "attempt": uuid4(), "source": str(uuid4()), "reason": reason},
+            )
+
+    try:
+        for reason in sorted(old_reasons):
+            insert_reason(reason)
+        for invalid in ("recorded_without_goal", "unknown_reason"):
+            with pytest.raises(DBAPIError) as refused:
+                insert_reason(invalid)
+            assert refused.value.orig.diag.constraint_name == "admission_decisions_reason_check"
+        prior = snapshot(reason_url)
+        command.upgrade(config, "switchboard@sw_051")
+        upgraded = snapshot(reason_url)
+        assert upgraded[:2] == prior[:2]
+        assert other_constraints(upgraded) == other_constraints(prior)
+        assert set(re.findall(r"'([^']*)'", reasons(upgraded))) == old_reasons | {
+            "recorded_without_goal"
+        }
+        # Repeat the actual installer under an owning transaction as well as
+        # Alembic's already-current path: constraint replacement is idempotent.
+        import importlib.util
+
+        from alembic.migration import MigrationContext
+        from alembic.operations import Operations
+
+        spec = importlib.util.spec_from_file_location(
+            "record_only_reason",
+            ROOT / "roster/switchboard/migrations/051_record_only_admission_reason.py",
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with engine.begin() as conn, Operations.context(MigrationContext.configure(conn)):
+            module.upgrade()
+            module.upgrade()
+        assert snapshot(reason_url) == upgraded
+        with pytest.raises(DBAPIError) as refused:
+            insert_reason("unknown_reason")
+        assert refused.value.orig.diag.constraint_name == "admission_decisions_reason_check"
+
+        async def record_without_goal():
+            async with pools(reason_url) as (owner, runtime):
+                goals = await owner.fetchval("SELECT count(*) FROM switchboard.goals")
+                budgets = await owner.fetchval("SELECT count(*) FROM switchboard.budgets")
+                source = SourceRef("feed", str(uuid4()))
+                facts = Evidence("feed", "migration-feed", record_only=True)
+                recorded = await admit(runtime, facts, source)
+                assert recorded.result == "refused" and recorded.reason == "recorded_without_goal"
+                assert await admit(runtime, facts, source) == recorded
+                assert await owner.fetchval("SELECT count(*) FROM switchboard.goals") == goals
+                assert await owner.fetchval("SELECT count(*) FROM switchboard.budgets") == budgets
+
+        asyncio.run(record_without_goal())
+        durable = snapshot(reason_url)
+        with pytest.raises(DBAPIError, match="Cannot discard durable record-only"):
+            command.downgrade(
+                config, "switchboard@sw_050"
+            )  # pinned-revision: sw_051 rollback fence
+        assert snapshot(reason_url) == durable
+        command.upgrade(config, "switchboard@sw_051")
+        assert snapshot(reason_url) == durable
+    finally:
+        engine.dispose()

@@ -194,6 +194,7 @@ async def prepare_approved(connection, call: StoredGoalCall, authorities: Author
             intent,
             lineage.goal_effect_id,
             approved_digest,
+            next(g for g in principal.grants if g.capability == capability.identity),
         ),
         lineage.goal_args_digest,
         reference,
@@ -260,3 +261,92 @@ async def settle_approved(connection, prepared: ApprovedDispatch, receipt: Domai
             reservation.principal.goal_id,
             reservation.principal.invocation_id,
         )
+
+
+async def parked_reservation(connection, goal_id, effect_id, authorities):
+    """Select immutable original association/grant for a signed snapshot request."""
+    from uuid import UUID
+
+    if not isinstance(goal_id, UUID) or not isinstance(effect_id, UUID):
+        raise BrokerRefused(Reason.AUTHENTICATION)
+    goal = await connection.fetchrow(
+        "SELECT id,status,origin,exposed,catalog_digest,ceiling FROM switchboard.goals "
+        "WHERE id=$1 FOR UPDATE OF goals",
+        goal_id,
+    )
+    if goal is None or goal["status"] not in {"running", "settling"}:
+        raise BrokerRefused(Reason.GOAL)
+    row = await connection.fetchrow(
+        "SELECT e.*,a.owning_domain,a.action_id,a.park_call_id,a.selected_grant,"
+        "a.catalog_digest AS parked_catalog_digest,a.allow_standing_rule,a.dispatch_intent_id "
+        "FROM switchboard.effects e JOIN switchboard.goal_park_associations a "
+        "ON (a.goal_id,a.effect_id)=(e.goal_id,e.id) "
+        "WHERE e.goal_id=$1 AND e.id=$2 FOR UPDATE OF e,a",
+        goal_id,
+        effect_id,
+    )
+    if row is None or row["dispatch_intent_id"] is not None or row["park_call_id"] is None:
+        raise BrokerRefused(Reason.DUPLICATE)
+    invocation = await connection.fetchrow(
+        "SELECT id,depth,exposed,grant_snapshot,grant_digest FROM switchboard.invocations "
+        "WHERE goal_id=$1 AND id=$2 FOR UPDATE",
+        goal_id,
+        row["invocation_id"],
+    )
+    try:
+        grants = decode_grants(invocation["grant_snapshot"])
+        selected = decode_grants([row["selected_grant"]])[0]
+        if (
+            selected not in grants
+            or intersect(grants, decode_grants(goal["ceiling"])) != grants
+            or digest(invocation["grant_snapshot"]) != invocation["grant_digest"]
+            or row["parked_catalog_digest"] != goal["catalog_digest"]
+        ):
+            raise ValueError("parked_principal_changed")
+        principal = Principal(
+            goal_id,
+            row["invocation_id"],
+            invocation["depth"],
+            goal["origin"],
+            goal["exposed"] or invocation["exposed"],
+            goal["catalog_digest"],
+            grants,
+        )
+        catalog = await authorities.catalog(connection, principal)
+        capability = next(c for c in catalog.capabilities if c.identity == selected.capability)
+        if catalog.digest != principal.catalog_digest or row["capability"] != selected.capability:
+            raise ValueError("parked_catalog_changed")
+        return Reservation(
+            principal,
+            capability,
+            Decision(Disposition.PARK, row["allow_standing_rule"]),
+            row["park_call_id"],
+            effect_id,
+            row["args_digest"],
+            selected,
+        )
+    except (ValueError, TypeError, KeyError, StopIteration):
+        raise BrokerRefused(Reason.AUTHENTICATION) from None
+
+
+async def attach_owning_witness(connection, prepared, witness):
+    reservation = prepared.reservation
+    if witness["intent_id"] != str(reservation.call_id):
+        raise BrokerRefused(Reason.AUTHENTICATION)
+    goal = await connection.fetchrow(
+        "SELECT id,status FROM switchboard.goals WHERE id=$1 FOR UPDATE OF goals",
+        reservation.principal.goal_id,
+    )
+    if goal is None or goal["status"] not in {"running", "settling"}:
+        raise BrokerRefused(Reason.GOAL)
+    row = await connection.fetchrow(
+        "UPDATE switchboard.goal_park_associations SET owning_witness_digest=$4 "
+        "WHERE goal_id=$1 AND effect_id=$2 AND dispatch_intent_id=$3 "
+        "AND (owning_witness_digest IS NULL OR owning_witness_digest=$4) RETURNING effect_id",
+        reservation.principal.goal_id,
+        reservation.effect_id,
+        reservation.call_id,
+        witness["snapshot_digest"],
+    )
+    if row is None:
+        raise BrokerRefused(Reason.AUTHENTICATION)

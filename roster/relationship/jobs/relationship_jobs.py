@@ -3488,8 +3488,8 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
     also drains the historical backlog on each run.
 
     Only a *clean orphan* is touched -- provenance-tagged, not already tombstoned, and with
-    no references acquired since creation (mirrors the safety gate in
-    ``scripts/cleanup_bulk_email_identity_proposals.py``): no ``entity_facts`` as subject or
+    no references acquired since creation (the safety gate of the retired one-shot
+    ``cleanup_bulk_email_identity_proposals`` script): no ``entity_facts`` as subject or
     object-entity (an approved has-email
     proposal writes such a fact, so approved/graduated entities are excluded and left
     intact) and no live (pending/approved/executed) ``pending_actions`` subject. (Contact

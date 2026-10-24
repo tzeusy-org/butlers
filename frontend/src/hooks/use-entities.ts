@@ -68,7 +68,8 @@ import type {
   RelationshipEntityListParams,
 } from "@/api/index.ts";
 import type {
-  EntityFactsResponse,
+  CursorPage,
+  EntityFact,
   LinkedContactSummary,
   RelationshipEntityListResponse,
   RelationshipEntitySummary,
@@ -933,7 +934,7 @@ export function useSetPreferredChannel() {
         (current) =>
           current?.map((contact) => ({ ...contact, preferred_channel: channel })) ?? current,
       );
-      const factsSnapshot = snapshotAndUpdateQueries<EntityFactsResponse>(
+      const factsSnapshot = snapshotAndUpdateQueries<CursorPage<EntityFact>>(
         queryClient,
         ["entity-facts", entityId],
         (current) =>
@@ -975,7 +976,7 @@ export function useClearPreferredChannel() {
         (current) =>
           current?.map((contact) => ({ ...contact, preferred_channel: null })) ?? current,
       );
-      const factsSnapshot = snapshotAndUpdateQueries<EntityFactsResponse>(
+      const factsSnapshot = snapshotAndUpdateQueries<CursorPage<EntityFact>>(
         queryClient,
         ["entity-facts", entityId],
         (current) =>

@@ -136,7 +136,7 @@ def run(config_path: Path) -> None:
 
 
 @cli.command()
-@click.option("--profile", type=click.Choice(["KEY_ABSENT_STAGE"]), required=True)
+@click.option("--profile", type=click.Choice(["KEY_ABSENT_STAGE", "TRUSTED_BROKER"]), required=True)
 @click.option(
     "--config", "config_path", type=click.Path(exists=True, path_type=Path), required=True
 )
@@ -144,13 +144,25 @@ def run(config_path: Path) -> None:
     "--session-host",
     default="127.0.0.1",
     show_default=True,
-    help="Bind session refusal port to this operator/deployment-selected interface",
+    help="Bind session port to this operator/deployment-selected interface",
 )
-def control(profile: str, config_path: Path, session_host: str) -> None:
-    """Run Switchboard separately, without any goal signing key or broker."""
+@click.option(
+    "--broker-config",
+    "runtime_config",
+    type=click.Path(exists=True, path_type=Path),
+    help="Literal trusted broker runtime configuration; omitted means OFF",
+)
+def control(
+    profile: str, config_path: Path, session_host: str, runtime_config: Path | None
+) -> None:
+    """Run an explicit isolated Switchboard profile; broker activation defaults OFF."""
     from butlers.control import run_control
 
-    asyncio.run(run_control(config_path, profile=profile, session_host=session_host))
+    asyncio.run(
+        run_control(
+            config_path, profile=profile, session_host=session_host, runtime_config=runtime_config
+        )
+    )
 
 
 @cli.command("list")
@@ -485,13 +497,13 @@ async def _migrate_all(configs: dict[str, Path], *, dry_run: bool = False) -> No
 
     from butlers.db import db_params_from_env, schema_search_path
     from butlers.migrations import (
-        _resolve_chain_dir,
-        get_all_chains,
+        get_module_migration_chains,
         has_butler_chain,
         run_migrations,
     )
+    from butlers.modules.registry import default_registry
 
-    all_chains = set(get_all_chains())
+    registry = default_registry()
     params = db_params_from_env()
     failed: list[str] = []
 
@@ -513,19 +525,14 @@ async def _migrate_all(configs: dict[str, Path], *, dry_run: bool = False) -> No
             else:
                 db_url = base_url
 
-            # Module chains to run: enabled modules that have migrations,
-            # excluding the butler's own name (already covered by butler chain).
-            module_chains = [
-                m
-                for m in config.modules
-                if m != name and m in all_chains and _resolve_chain_dir(m) is not None
-            ]
+            modules = registry.load_from_config(config.modules)
+            module_chains = get_module_migration_chains(modules, name)
 
             if dry_run:
                 chains = ["core"]
                 if has_butler_chain(name):
                     chains.append(name)
-                chains += module_chains
+                chains += module_chains.values()
                 click.echo(f"  {name} (schema={schema}): would run chains: {', '.join(chains)}")
                 continue
 
@@ -538,11 +545,11 @@ async def _migrate_all(configs: dict[str, Path], *, dry_run: bool = False) -> No
                 await run_migrations(db_url, chain=name, schema=schema)
                 click.echo(" done")
 
-            for module_name in module_chains:
+            for module_name, chain in module_chains.items():
                 module_cfg = config.modules.get(module_name) or {}
                 module_migration_schema = module_cfg.get("memory_schema") or schema
-                click.echo(f"  {name}/{module_name}: module chain...", nl=False)
-                await run_migrations(db_url, chain=module_name, schema=module_migration_schema)
+                click.echo(f"  {name}/{chain}: module chain...", nl=False)
+                await run_migrations(db_url, chain=chain, schema=module_migration_schema)
                 click.echo(" done")
 
         except Exception as exc:

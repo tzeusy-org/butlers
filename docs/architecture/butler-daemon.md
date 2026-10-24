@@ -38,7 +38,7 @@ The daemon reads `butler.toml` from the config directory, parses it into a `Butl
 
 ### Phase 3: Initialize Modules (Topological Order)
 
-The `ModuleRegistry` instantiates modules in dependency order. The daemon admits only names explicitly declared in `[modules.*]`, independent of configuration schema shape. Unknown declarations fail before database provisioning or migrations. Discovery, successful startup and user-enabled state are separate sets. Dependency cycles are startup-blocking errors.
+The `ModuleRegistry` registers classes without constructors and constructs only names explicitly declared in `[modules.*]`, independent of configuration schema shape. It returns them in dependency order. Unknown declarations and missing declared dependencies fail before database provisioning or migrations. Discovery, successful startup and user-enabled state are separate sets. Dependency cycles are startup-blocking errors.
 
 ### Phase 4: Validate Module Configs
 
@@ -121,13 +121,13 @@ The component that invokes ephemeral AI runtime instances. Controlled by an `asy
 Modules implement the `Module` abstract base class. The loading process:
 
 1. The `ModuleRegistry` maps module names to their implementation classes.
-2. The daemon instantiates registered modules; `[modules.*]` sections provide explicit configuration, while only modules with omitted required config are skipped.
+2. The daemon uses `load_from_config()` to construct only explicitly declared `[modules.*]` names; omitted modules are never constructed.
 3. Dependencies declared by each module (via the `dependencies` property) are resolved into a topological order using a deterministic sort.
 4. Circular dependencies are detected and reported as startup errors.
 5. Modules are initialized, started, and their tools registered in dependency order.
 6. On shutdown, modules are torn down in reverse topological order.
 
-Each module has a well-defined lifecycle: `config_schema` validation, `migration_revisions()` for DB setup, `on_startup()` for initialization, `register_tools()` for MCP tool registration, and `on_shutdown()` for cleanup.
+Each module has a well-defined lifecycle: `config_schema` validation, directory-selected migration chains for DB setup, `on_startup()` for initialization, `register_tools()` for MCP tool registration, and `on_shutdown()` for cleanup.
 
 ## Graceful Shutdown
 

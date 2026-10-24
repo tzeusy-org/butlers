@@ -1682,6 +1682,52 @@ async def test_forward_marker_starts_a_forwarded_span(
     assert text[span["start"] :].startswith("---------- Forwarded message")
     assert span["end"] == len(text)
 
+    from butlers.ingestion_policy import PolicyDecision
+
+    message = _make_message(subject="Fwd: urgent", body_text=body)
+    for stage in ("connector", "global", "submission", "label"):
+        gmail_runtime._filtered_event_buffer._rows.clear()
+        allow = PolicyDecision(action="pass_through")
+        with (
+            patch.object(gmail_runtime, "_fetch_message", AsyncMock(return_value=message)),
+            patch.object(
+                gmail_runtime._ingestion_policy,
+                "evaluate",
+                return_value=(
+                    PolicyDecision(action="block", matched_rule_type="sender_domain")
+                    if stage == "connector"
+                    else allow
+                ),
+            ),
+            patch.object(
+                gmail_runtime._global_ingestion_policy,
+                "evaluate",
+                return_value=(
+                    PolicyDecision(action="skip", matched_rule_type="sender_domain")
+                    if stage == "global"
+                    else allow
+                ),
+            ),
+            patch.object(
+                gmail_runtime, "_submit_to_ingest_api", AsyncMock(side_effect=ValueError("failed"))
+            ),
+        ):
+            message["labelIds"] = ["CATEGORY_PROMOTIONS"] if stage == "label" else []
+            if stage == "label":
+                from dataclasses import replace
+
+                gmail_runtime._label_filter = replace(
+                    gmail_runtime._label_filter, exclude_labels=frozenset({"CATEGORY_PROMOTIONS"})
+                )
+            await gmail_runtime._ingest_single_message("msg123")
+        stored = gmail_runtime._filtered_event_buffer._rows[-1][9]
+        assert stored["sender"]["identity"] == "sender@example.com"
+        assert stored["payload"]["untrusted_spans"] == [
+            {"kind": "forwarded", "start": 0, "end": len("[no text]")}
+        ]
+        assert "normalized_text" not in stored["payload"]
+        assert body not in str(stored)
+
 
 async def test_forward_subject_without_marker_marks_the_whole_text(
     gmail_runtime: GmailConnectorRuntime,

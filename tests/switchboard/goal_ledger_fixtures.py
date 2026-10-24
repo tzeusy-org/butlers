@@ -27,8 +27,12 @@ def ledger_url(postgres_container):
     return create_migrated_test_db(
         postgres_container,
         migration_db_name(),
-        ["core", "switchboard"],
-        schemas={"core": "switchboard", "switchboard": "switchboard"},
+        ["core", "switchboard", "relationship"],
+        schemas={
+            "core": "switchboard",
+            "switchboard": "switchboard",
+            "relationship": "relationship",
+        },
     )
 
 
@@ -43,7 +47,13 @@ async def pools(url):
     async def role(connection):
         await connection.execute("SET ROLE butler_switchboard_rw")
 
-    async with asyncpg.create_pool(url, init=codec, min_size=1, max_size=4) as owner:
+    async with asyncpg.create_pool(
+        url,
+        init=codec,
+        min_size=1,
+        max_size=4,
+        server_settings={"search_path": "switchboard,public"},
+    ) as owner:
         async with asyncpg.create_pool(
             url, init=codec, setup=role, min_size=1, max_size=4
         ) as runtime:

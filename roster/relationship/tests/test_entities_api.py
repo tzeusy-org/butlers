@@ -1935,18 +1935,17 @@ class TestEntityFacts:
         return _wire_app(mock_pool), mock_pool
 
     async def test_happy_path_returns_200_with_keyset_envelope(self):
-        """Default call returns the keyset envelope {items, next_cursor, has_more}."""
+        """Default call returns the Page envelope {items, next_cursor, limit}."""
         rows = [self._make_fact_row()]
         app, _ = self._make_app(fact_rows=rows)
         resp = await _get(app, _FACTS_PATH)
         assert resp.status_code == 200
         body = resp.json()
-        assert "items" in body
-        assert "next_cursor" in body
-        assert body["has_more"] is False
-        # No legacy offset/total fields.
-        assert "total" not in body
-        assert "offset" not in body
+        assert body["next_cursor"] is None
+        assert body["limit"] == 20
+        assert len(body["items"]) == 1
+        # No legacy offset/total/has_more fields.
+        assert not {"total", "offset", "has_more"} & body.keys()
 
     async def test_response_shape_includes_provenance_and_staleness(self):
         """Each row carries full provenance + staleness_band + store label."""
@@ -2035,12 +2034,10 @@ class TestEntityFacts:
         body = resp.json()
         assert body["items"] == []
         assert body["next_cursor"] is None
-        assert body["has_more"] is False
 
     async def test_keyset_has_more_and_cursor_round_trip(self):
-        """A full page yields has_more + a cursor that decodes to the last row's key."""
-        import base64
-        import json as _json
+        """A full page yields a cursor that decodes to the last row's key."""
+        from butlers.api.pagination import decode_cursor
 
         # limit defaults to 20; return 21 rows so the handler trims to a page + cursor.
         base = _NOW
@@ -2056,12 +2053,10 @@ class TestEntityFacts:
         assert resp.status_code == 200
         body = resp.json()
         assert len(body["items"]) == 20
-        assert body["has_more"] is True
         assert body["next_cursor"] is not None
         # Cursor must decode to the (created_at, id) of the last returned row.
-        payload = _json.loads(base64.urlsafe_b64decode(body["next_cursor"].encode()))
-        last = body["items"][-1]
-        assert payload["id"] == last["id"]
+        _created_at, last_id = decode_cursor(body["next_cursor"], scope="relationship-facts")
+        assert str(last_id) == body["items"][-1]["id"]
 
         # Feeding the cursor back must add a keyset predicate bound to the values.
         app2, pool2 = self._make_app(fact_rows=[])
@@ -2070,10 +2065,10 @@ class TestEntityFacts:
         assert "<" in sql2  # keyset comparison present
 
     async def test_malformed_cursor_rejected(self):
-        """A malformed cursor is a 422 (decode failure surfaces as bad request)."""
+        """A malformed cursor is a 400 (decode failure surfaces as bad request)."""
         app, _ = self._make_app(fact_rows=[])
         resp = await _get(app, _FACTS_PATH, cursor="!!!not-base64!!!")
-        assert resp.status_code == 422
+        assert resp.status_code == 400
 
     async def test_sql_uses_entity_facts_not_facts_table(self):
         """Default GET /entities/{id}/facts SQL must use relationship.entity_facts."""

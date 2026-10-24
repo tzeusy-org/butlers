@@ -711,3 +711,456 @@ async def test_real_standing_rule_contenders_observe_exhaustion_or_revoke(
                     task.cancel()
             if tasks:
                 await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
+
+
+@pytest.mark.parametrize("case", ["race", "claim_reply_loss", "consume_reply_loss", "stop"])
+async def test_real_signed_owner_witness_consume_commit_and_ambiguity(stores, case):
+    """Real roles/019/transactions; handler result never claims an external effect."""
+    from types import SimpleNamespace
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from butlers.capability_broker.assertions import AssertionSigner
+    from butlers.capability_broker.catalog import project_catalog
+    from butlers.capability_broker.contracts import Decision, Disposition, Principal, Reservation
+    from butlers.capability_broker.handoff import sign_handoff
+    from butlers.core.goal_admission import Grant
+    from butlers.modules.approvals.execution_context import get_approval_execution_context
+    from butlers.modules.approvals.goal_dispatch import GoalDispatch
+    from tests.modules.approvals.test_goal_control import registered_send_catalog
+
+    _, observer, runtime = stores
+    call = request()
+    arguments = {"message": "original", "recipient": "fixed-test-recipient"}
+    line = replace(call.goal_lineage, goal_args_digest=arguments_digest(arguments))
+    call = replace(call, tool_args=arguments, goal_lineage=line)
+    catalog = await registered_send_catalog(domain="home")
+    capability = project_catalog(catalog, domain="home").capabilities[0]
+    grant = Grant(capability.identity, park_only=True)
+    principal = Principal(
+        line.goal_id, line.invocation_id, 0, "owner", True, "test-fleet", (grant,)
+    )
+    original = Reservation(
+        principal,
+        capability,
+        Decision(Disposition.PARK),
+        uuid4(),
+        call.action_id,
+        line.goal_args_digest,
+        grant,
+    )
+    signer = AssertionSigner("fixture", Ed25519PrivateKey.generate())
+    invocations = []
+
+    async def handler(**kwargs):
+        # Independent connection observes COMMITTED consume before handler entry.
+        consumed = await observer.fetchval(
+            "SELECT dispatch_consumed_at IS NOT NULL FROM approval_goal_effects WHERE effect_id=$1",
+            call.action_id,
+        )
+        assert consumed is True
+        assert get_approval_execution_context(tool_name="send", tool_args=kwargs) is not None
+        invocations.append(dict(kwargs))
+        return {"status": "fixture-only-not-an-effect-receipt"}
+
+    dispatch = GoalDispatch(
+        runtime, "home", catalog, {"send": handler}, {"fixture": signer.private_key.public_key()}
+    )
+    peer = SimpleNamespace(role="broker-control", domain="home")
+    version = None
+    prepared = original
+
+    def envelope(purpose):
+        value = {
+            "protocol": "broker-approvals-v2",
+            "operation": purpose,
+            "request_id": str(uuid4()),
+            "identity": {
+                "goal_id": str(line.goal_id),
+                "effect_id": str(call.action_id),
+                "action_id": str(call.action_id),
+                "owning_domain": "home",
+                "capability": capability.identity,
+                "args_digest": line.goal_args_digest,
+            },
+            "handoff": sign_handoff(
+                signer,
+                prepared,
+                purpose=purpose,
+                issued_at=int(datetime.now(UTC).timestamp()),
+                approval_ref=str(call.action_id) if version is not None else None,
+                original_args_digest=line.goal_args_digest,
+                snapshot_version=version,
+            ),
+        }
+        if purpose == "PARK":
+            value["arguments"] = arguments
+        return value
+
+    await dispatch(envelope("PARK"), peer)
+    await dispatch.owner.transition(
+        identity(call),
+        target_status=ActionStatus.APPROVED,
+        decided_by="human:test-owner",
+        event_actor="test-owner",
+        event_reason="test",
+    )
+    observed = await dispatch(envelope("SNAPSHOT"), peer)
+    version = observed["receipt"]["version"]
+    prepared = replace(original, call_id=uuid4(), decision=Decision(Disposition.DISPATCH))
+    if case == "stop":
+        await dispatch.owner.cancel(identity(call))
+        with pytest.raises(GoalApprovalsUnavailable):
+            await dispatch(envelope("CLAIM"), peer)
+        row, gate, _ = await snapshot(observer, call.action_id)
+        assert row["status"] == "cancelled" and gate["dispatch_intent_id"] is None
+        assert not invocations
+        return
+    if case == "claim_reply_loss":
+        async with runtime.acquire() as conn:
+            dispatch.owner.pool = LostCommitReply(conn)
+            with pytest.raises(ConnectionError, match="controlled_postcommit_response_loss"):
+                await dispatch(envelope("CLAIM"), peer)
+        dispatch.owner.pool = runtime
+        witness = await dispatch(envelope("WITNESS"), peer)
+        assert witness["receipt"]["intent_id"] == str(prepared.call_id)
+        assert not invocations
+    else:
+        await dispatch(envelope("CLAIM"), peer)
+    if case == "consume_reply_loss":
+        async with runtime.acquire() as conn:
+            dispatch.owner.pool = LostCommitReply(conn)
+            with pytest.raises(ConnectionError, match="controlled_postcommit_response_loss"):
+                await dispatch(envelope("EXECUTE"), peer)
+        dispatch.owner.pool = runtime
+        with pytest.raises(GoalApprovalsUnavailable):
+            await dispatch(envelope("EXECUTE"), peer)
+        with pytest.raises(GoalApprovalsUnavailable):
+            await dispatch(envelope("WITNESS"), peer)
+        assert not invocations
+    else:
+        results = await asyncio.gather(
+            dispatch(envelope("EXECUTE"), peer),
+            dispatch(envelope("EXECUTE"), peer),
+            return_exceptions=True,
+        )
+        assert sum(isinstance(v, dict) and v["outcome"] == "unknown" for v in results) == 1
+        assert sum(isinstance(v, GoalApprovalsUnavailable) for v in results) == 1
+        assert invocations == [arguments]
+    row, gate, receipts = await snapshot(observer, call.action_id)
+    assert row["status"] == "approved" and gate["phase"] == "dispatch_intent"
+    assert (
+        gate["dispatch_intent_id"] == prepared.call_id and gate["dispatch_consumed_at"] is not None
+    )
+    assert {r["outcome"] for r in receipts} == {"pending", "parked", "approved"}
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "reject",
+        "module_reject",
+        "expire",
+        "module_expire",
+        "defer_expire",
+        "rollback",
+        "stale_gate",
+    ],
+)
+async def test_real_negative_goal_decision_commits_matching_gate_or_rolls_everything_back(
+    stores, entry
+):
+    """Real019 deferred final guard/runtime role and independent committed readback."""
+    from butlers.modules.approvals import operations
+    from butlers.modules.approvals.delivery_lifecycle import defer_pending_action
+    from butlers.modules.approvals.models import PendingAction
+    from butlers.modules.approvals.module import ApprovalsModule
+
+    owner, observer, runtime = stores
+    call = request()
+    expired = entry in {"expire", "module_expire", "defer_expire"}
+    if expired:
+        call = replace(call, expires_at=datetime.now(UTC) - timedelta(hours=1))
+    await OwningGoalApprovals(runtime, "home").park(call)
+    before = await snapshot(observer, call.action_id)
+    before_events = await observer.fetchval(
+        "SELECT count(*) FROM approval_events WHERE action_id=$1", call.action_id
+    )
+    if entry == "stale_gate":
+        with pytest.raises(asyncpg.CheckViolationError, match="invalid final goal state"):
+            async with runtime.acquire() as conn, conn.transaction():
+                await conn.execute(
+                    "UPDATE pending_actions SET status='rejected' WHERE id=$1", call.action_id
+                )
+        assert await snapshot(observer, call.action_id) == before
+        return
+    if entry == "rollback":
+        await owner.execute("""
+            CREATE FUNCTION home.controlled_negative_gate_refusal() RETURNS trigger
+            LANGUAGE plpgsql AS $$ BEGIN
+              IF NEW.phase='negative_terminal' THEN
+                RAISE EXCEPTION 'controlled negative gate refusal' USING ERRCODE='23514';
+              END IF;
+              RETURN NEW;
+            END $$;
+            CREATE TRIGGER controlled_negative_gate_refusal BEFORE UPDATE
+              ON home.approval_goal_effects FOR EACH ROW
+              EXECUTE FUNCTION home.controlled_negative_gate_refusal()
+        """)
+        try:
+            with pytest.raises(
+                asyncpg.CheckViolationError, match="controlled negative gate refusal"
+            ):
+                await operations.reject_action(runtime, str(call.action_id), actor_id="owner")
+            assert await snapshot(observer, call.action_id) == before
+            assert (
+                await observer.fetchval(
+                    "SELECT count(*) FROM approval_events WHERE action_id=$1", call.action_id
+                )
+                == before_events
+            )
+        finally:
+            await owner.execute(
+                "DROP TRIGGER controlled_negative_gate_refusal ON home.approval_goal_effects; "
+                "DROP FUNCTION home.controlled_negative_gate_refusal()"
+            )
+        return
+    if entry.startswith("module_"):
+        module = ApprovalsModule()
+        module._db = runtime
+        module._decision_memory_writer = None
+        if entry == "module_reject":
+            await module._reject_action(
+                str(call.action_id), actor={"type": "human", "id": "owner", "authenticated": True}
+            )
+        else:
+            result = await module._expire_stale_actions()
+            assert str(call.action_id) in result["expired_ids"]
+    elif entry == "reject":
+        assert "error" not in await operations.reject_action(
+            runtime, str(call.action_id), actor_id="owner"
+        )
+    elif entry == "expire":
+        result = await operations.expire_pending_action_if_stale(
+            runtime, PendingAction.from_row(before[0])
+        )
+        assert "expired" in result["error"]
+    else:
+        result = await defer_pending_action(
+            runtime, action_id=call.action_id, hours=2, actor="owner"
+        )
+        assert result.changed and result.expired_instead
+    row, gate, receipts = await snapshot(observer, call.action_id)
+    assert row["status"] == ("expired" if expired else "rejected")
+    assert gate["phase"] == "negative_terminal" and gate["state_version"] == 2
+    assert gate["dispatch_intent_id"] is None and gate["stop_fenced"] is False
+    assert receipts == before[2]  # Preserve immutable parked/pending history.
+    assert (
+        await observer.fetchval(
+            "SELECT count(*) FROM approval_events WHERE action_id=$1", call.action_id
+        )
+        > before_events
+    )
+
+
+@pytest.mark.parametrize("fault", [None, "event", "audit"])
+async def test_real_goal_abandon_HTTP_audit_and_event_share_gate_commit(stores, fault):
+    """Actual owner HTTP route/019/runtime SQL; failed event or audit cannot commit."""
+    import httpx
+    from fastapi import FastAPI
+
+    from butlers.api.owner_auth.config import OwnerAuthConfig
+    from butlers.api.owner_auth.http import OwnerAuthMiddleware
+    from butlers.api.routers import approvals as route
+    from tests.api.auth_helpers import _DomainOwnerState
+
+    owner, observer, runtime = stores
+    call = request()
+    service = OwningGoalApprovals(runtime, "home")
+    await service.park(call)
+    await service.transition(
+        identity(call),
+        target_status=ActionStatus.APPROVED,
+        decided_by="controlled-owner",
+        event_actor="controlled-owner",
+        event_reason="controlled",
+    )
+    before = await snapshot(observer, call.action_id)
+    before_events = await observer.fetchval(
+        "SELECT count(*) FROM approval_events WHERE action_id=$1", call.action_id
+    )
+    table = "home.approval_events" if fault == "event" else "public.audit_log"
+    condition = (
+        "NEW.event_type='action_abandoned'" if fault == "event" else "NEW.action='approval.abandon'"
+    )
+    if fault is not None:
+        await owner.execute(f"""
+          CREATE FUNCTION home.controlled_abandon_refusal() RETURNS trigger
+          LANGUAGE plpgsql AS $$ BEGIN
+            IF {condition} THEN
+              RAISE EXCEPTION 'controlled abandon refusal' USING ERRCODE='23514';
+            END IF;
+            RETURN NEW;
+          END $$;
+          CREATE TRIGGER controlled_abandon_refusal BEFORE INSERT ON {table}
+            FOR EACH ROW EXECUTE FUNCTION home.controlled_abandon_refusal()
+        """)
+
+    class Manager:
+        butler_names = ["home"]
+
+        def pool(self, name):
+            assert name == "home"
+            return runtime
+
+    key = "synthetic-goal-abandon-owner-key"
+    app = FastAPI()
+    app.state.owner_auth_service = _DomainOwnerState(key)
+    app.add_middleware(
+        OwnerAuthMiddleware, config=OwnerAuthConfig(origin=None, rp_id=None, api_key=key)
+    )
+    app.include_router(route.router)
+    app.dependency_overrides[route._get_db_manager] = lambda: Manager()
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://test",
+            headers={"X-API-Key": key},
+        ) as client:
+            response = await client.post(
+                f"/api/approvals/{call.action_id}/abandon",
+                json={"reason": "controlled owner decision"},
+            )
+        assert response.status_code == (200 if fault is None else 409 if fault == "event" else 500)
+        after = await snapshot(observer, call.action_id)
+        audits = await observer.fetch(
+            "SELECT actor,result FROM public.audit_log "
+            "WHERE action='approval.abandon' AND target=$1",
+            str(call.action_id),
+        )
+        event_count = await observer.fetchval(
+            "SELECT count(*) FROM approval_events WHERE action_id=$1", call.action_id
+        )
+        if fault is not None:
+            assert after == before and event_count == before_events and audits == []
+        else:
+            row, gate, receipts = after
+            assert row["status"] == "abandoned" and gate["phase"] == "negative_terminal"
+            assert gate["state_version"] == before[1]["state_version"] + 1
+            assert gate["approved_args_digest"] == before[1]["approved_args_digest"]
+            assert receipts == before[2] and event_count == before_events + 1
+            assert len(audits) == 1 and audits[0]["result"] == "success"
+            assert audits[0]["actor"] == "dashboard:rest-api"
+    finally:
+        if fault is not None:
+            await owner.execute(
+                f"DROP TRIGGER controlled_abandon_refusal ON {table}; "
+                "DROP FUNCTION home.controlled_abandon_refusal()"
+            )
+
+
+@pytest.mark.parametrize("refuse_finish", [False, True])
+async def test_real_module_goal_commit_precedes_independent_observations(
+    stores, monkeypatch, refuse_finish
+):
+    """Real019/runtime rollback/readback; memory store is an independent recorder.
+
+    Authored/collected ONLY locally. The actual DecisionMemoryWriter invokes the
+    recorder after commit; this does not claim real memory-store/model execution.
+    REQ-capability-authorization-009.
+    """
+    from butlers.modules.approvals import decision_memory, delivery_lifecycle
+    from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
+    from butlers.modules.approvals.module import ApprovalsModule
+
+    owner, observer, runtime = stores
+    call = request()
+    await OwningGoalApprovals(runtime, "home").park(call)
+    before = await snapshot(observer, call.action_id)
+    before_events = await observer.fetchval(
+        "SELECT count(*) FROM approval_events WHERE action_id=$1", call.action_id
+    )
+    facts, observations = [], []
+
+    async def independent_store(pool, **values):
+        assert pool is observer
+        # This observer is a physically separate pool from the owning runtime.
+        row, gate, receipts = await snapshot(observer, call.action_id)
+        count = await observer.fetchval(
+            "SELECT count(*) FROM approval_rules WHERE created_from=$1", call.action_id
+        )
+        facts.append((row["status"], gate["phase"], count, values["metadata"], receipts))
+
+    monkeypatch.setattr(decision_memory, "store_fact", independent_store)
+    monkeypatch.setattr(delivery_lifecycle, "emit_lifecycle_success", observations.append)
+    module = ApprovalsModule()
+    module._db, module._butler_name = runtime, "home"
+    module._decision_memory_writer = DecisionMemoryWriter(
+        butler_name="home",
+        memory_pool_provider=lambda: observer,
+        resolution_pool_provider=lambda: runtime,
+        embedding_engine_provider=object,
+        tool_meta_provider=lambda _: None,
+    )
+    if refuse_finish:
+        await owner.execute("""
+            CREATE FUNCTION home.controlled_module_finish_refusal() RETURNS trigger
+            LANGUAGE plpgsql AS $$ BEGIN
+              IF NEW.phase='approved' THEN
+                RAISE EXCEPTION 'controlled module finish refusal' USING ERRCODE='23514';
+              END IF;
+              RETURN NEW;
+            END $$;
+            CREATE TRIGGER controlled_module_finish_refusal BEFORE UPDATE
+              ON home.approval_goal_effects FOR EACH ROW
+              EXECUTE FUNCTION home.controlled_module_finish_refusal()
+        """)
+    try:
+        if refuse_finish:
+            with pytest.raises(
+                asyncpg.CheckViolationError, match="controlled module finish refusal"
+            ):
+                await module._approve_action(
+                    str(call.action_id),
+                    create_rule=True,
+                    actor={"type": "human", "id": "owner", "authenticated": True},
+                )
+            assert await snapshot(observer, call.action_id) == before
+            assert facts == observations == []
+            assert (
+                await observer.fetchval(
+                    "SELECT count(*) FROM approval_rules WHERE created_from=$1", call.action_id
+                )
+                == 0
+            )
+            assert (
+                await observer.fetchval(
+                    "SELECT count(*) FROM approval_events WHERE action_id=$1", call.action_id
+                )
+                == before_events
+            )
+        else:
+            result = await module._approve_action(
+                str(call.action_id),
+                create_rule=True,
+                actor={"type": "human", "id": "owner", "authenticated": True},
+            )
+            assert result["status"] == "approved" and "created_rule" in result
+            assert len(facts) == len(observations) == 1
+            assert facts[0][:3] == ("approved", "approved", 1)
+            assert facts[0][3]["rule_id"] == result["created_rule"]["id"]
+            assert facts[0][3]["state"] == "active"
+            assert len(facts[0][4]) == len(before[2]) + 1
+            assert observations[0].terminal_status == "approved"
+            assert (
+                await observer.fetchval(
+                    "SELECT count(*) FROM approval_events WHERE action_id=$1", call.action_id
+                )
+                == before_events + 2
+            )
+    finally:
+        if refuse_finish:
+            await owner.execute(
+                "DROP TRIGGER controlled_module_finish_refusal ON home.approval_goal_effects; "
+                "DROP FUNCTION home.controlled_module_finish_refusal()"
+            )

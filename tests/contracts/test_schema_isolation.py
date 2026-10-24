@@ -60,11 +60,11 @@ class TestSchemaTopology:
         assert "public" in parts, "public must be included in search_path (RFC 0006)"
 
     def test_migration_chains_and_module_revisions(self):
-        """Multi-chain Alembic labels; modules return branch labels."""
+        """Multi-chain Alembic labels; modules return branch labels, or None by default."""
         from butlers.modules.base import Module
 
-        # migration_revisions is abstract
-        assert "migration_revisions" in Module.__abstractmethods__
+        assert "migration_revisions" not in Module.__abstractmethods__
+        assert Module.migration_revisions(object()) is None  # type: ignore[arg-type]
 
     def test_schema_isolation_and_briefing_exception(self):
         """No cross-butler imports; finance uses own schema; briefing uses view.

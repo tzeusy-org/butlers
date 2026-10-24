@@ -123,6 +123,12 @@ class Broker:
             async with asyncio.timeout(self.forward_timeout):
                 if reserved.decision.disposition is Disposition.PARK:
                     approvals = self.approvals if self.approvals is not None else self.domains
+                    if self.approvals is not None:
+                        from .handoff import sign_handoff
+
+                        assertion = sign_handoff(
+                            self.signer, reserved, purpose="PARK", issued_at=int(self.clock())
+                        )
                     parked = await approvals.park(reserved, args, assertion)
                     if not isinstance(parked, ParkReceipt):
                         raise BrokerRefused(Reason.UNAVAILABLE)
@@ -168,17 +174,81 @@ class Broker:
             value=receipt.value,
         )
 
-    async def replay_approved(self, *args, **kwargs):
-        """Owning stored-call/edit verification is phase B; no caller replay fallback."""
-        raise BrokerRefused(Reason.UNAVAILABLE)
+    async def replay_approved(self, goal_id: UUID, effect_id: UUID | None = None):
+        """Private stored-call replay; locators never provide approval authority.
+
+        Every network phase releases the central pool. Only an authenticated
+        owning snapshot can reach prepare, and only a committed owning witness
+        plus central attachment can reach one EXECUTE. No execution retry.
+        """
+        from butlers.core.goal_stop import GoalStop
+        from butlers.modules.approvals.goal_dispatch import call_wire, decode_call
+
+        from .approved import attach_owning_witness, parked_reservation
+
+        self.require_available()
+        if self.approvals is None:
+            raise BrokerRefused(Reason.UNAVAILABLE)
+        async with GoalStop(self.pool, timeout=self.transaction_timeout)._transaction() as conn:
+            original = await parked_reservation(conn, goal_id, effect_id, self.authorities)
+
+        async def operation(reservation, purpose, **kwargs):
+            async with asyncio.timeout(self.forward_timeout):
+                return await self.approvals.operation(
+                    reservation,
+                    signer=self.signer,
+                    purpose=purpose,
+                    issued_at=int(self.clock()),
+                    **kwargs,
+                )
+
+        snapshot = await operation(original, "SNAPSHOT")
+        if snapshot["outcome"] != "approved":
+            raise BrokerRefused(Reason.UNAVAILABLE)
+        call = decode_call(snapshot["receipt"]["call"])
+        if (
+            call.lineage.goal_id != goal_id
+            or call.approval_ref != effect_id
+            or call.lineage.goal_args_digest != original.args_digest
+        ):
+            raise BrokerRefused(Reason.AUTHENTICATION)
+        prepared = await self.prepare_approved_dispatch(call)
+        kwargs = {
+            "approval_ref": prepared.approval_ref,
+            "original_args_digest": prepared.original_args_digest,
+            "snapshot_version": snapshot["receipt"]["version"],
+        }
+        try:
+            try:
+                claim = await operation(prepared.reservation, "CLAIM", **kwargs)
+            except Exception:
+                # A separate authenticated read may prove this exact committed
+                # witness; it never consumes or supplies a second execution.
+                claim = await operation(prepared.reservation, "WITNESS", **kwargs)
+            witness = claim["receipt"]
+            if (
+                claim["outcome"] != "claimed"
+                or witness["intent_id"] != str(prepared.reservation.call_id)
+                or witness["snapshot_digest"] != arguments_digest(call_wire(call))
+            ):
+                raise BrokerRefused(Reason.AUTHENTICATION)
+            async with GoalStop(self.pool, timeout=self.transaction_timeout)._transaction() as conn:
+                await attach_owning_witness(conn, prepared, witness)
+            # Exactly one attempt. An unknown response is never replayed.
+            await operation(prepared.reservation, "EXECUTE", **kwargs)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return BrokerResult("unknown", effect_id)
+        return await self.settle_approved_dispatch(prepared, DomainReceipt("unknown"))
 
     async def prepare_approved_dispatch(self, stored_call):
-        """Private central half, for the future authenticated owning producer.
+        """Private central half, consumed by fixed authenticated replay orchestration.
 
-        This is deliberately absent from both MCP listeners. A supplied DTO is
-        not approval authority. The actual owning snapshot/revalidation/local
-        witness/forward producer remains required; replay_approved stays closed.
-        Return only after confirmed central commit, never after commit loss.
+        This method remains absent from model-facing listeners. A supplied DTO
+        alone is not approval authority; the caller must first read the actual
+        owning snapshot. Return only after confirmed central commit, never after
+        commit loss. The owning witness and one-time consume are separate steps.
         """
         from butlers.core.goal_stop import GoalStop
 

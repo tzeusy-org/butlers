@@ -330,6 +330,111 @@ async def test_real_registry_repository_reader_and_admission_projection():
     assert len(store.history) == len(DOMAINS)
     assert await owners["health"].resolve(Connection(store, "health"))
 
+    # Actual daemon/native registration and the SAME repository/reader/admission
+    # consumer, not a hand-forged Capability(owner_default=True). Repository SQL
+    # here is the existing software protocol double, never real PostgreSQL proof.
+    from butlers.core.goal_admission import Obligation
+    from tests.contracts.test_tool_presentation_inventory import _core_catalog
+
+    native = await _core_catalog("general", ("state", "notifications"))
+    await owners["general"].publish(native)
+    async with connection.transaction():
+        current = await reader.snapshot(connection)
+        actual_view = await admission.catalog.load(connection)
+        assert actual_view.digest == current.digest
+        projected = {item.id: item for item in actual_view.capabilities}
+        assert projected["general__notify"].owner_default is True
+        assert all(
+            not item.owner_default for key, item in projected.items() if key != "general__notify"
+        )
+        obligation = derive_admission(
+            Evidence(
+                "occurrence",
+                "declared-general",
+                obligation=Obligation("general", "git-owned-declaration"),
+            ),
+            actual_view,
+        )
+        third_party = derive_admission(Evidence("message", "external-channel"), actual_view)
+        for plan in (obligation, third_party):
+            notify = next(g for g in plan.ceiling if g.capability == "general__notify")
+            assert notify.park_only is False and notify.resources == ()
+            assert all(g.capability in projected for g in plan.ceiling)
+            assert all(projected[g.capability].effect_class != "transact" for g in plan.ceiling)
+        assert third_party.exposed and third_party.origin == "third_party"
+        assert all(
+            projected[g.capability].effect_class in {"read", "record", "communicate"}
+            for g in third_party.ceiling
+        )
+        assert all(not projected[g.capability].owner_authority for g in third_party.ceiling)
+        assert all(
+            projected[g.capability].owner_domain == "general" or g.capability == "general__notify"
+            for g in obligation.ceiling
+        )
+        recipients = current.registration("general").catalog["notify"].recipient_params
+        # Eligibility does not resolve an explicit target or an inherited party.
+        assert recipients.undeterminable is True
+        assert recipients.argument_names == ("recipient", "entity_id", "request_context")
+        assert recipients.default_owner_condition and recipients.undeterminable_condition
+        assert all(
+            item.effect_class != "communicate"
+            or item.id == "general__notify"
+            or not item.owner_default
+            for item in actual_view.capabilities
+        )
+
+    from butlers.core.catalog_publication import decode_publication, generation
+
+    body = publication(native, "general")
+    declared = next(d for d in body["descriptors"] if d["canonical_name"] == "notify")
+    assert declared["recipient_params"]["owner_notify_branch"] == (
+        "telegram_send_insight_without_party"
+    )
+    for invalid in (True, "owner", "all_communications"):
+        malformed = copy.deepcopy(body)
+        next(d for d in malformed["descriptors"] if d["canonical_name"] == "notify")[
+            "recipient_params"
+        ]["owner_notify_branch"] = invalid
+        malformed["generation_digest"] = generation(malformed["descriptors"])
+        with pytest.raises(EvidenceRefused, match="catalog_unavailable"):
+            decode_publication(malformed, "general")
+    # Old publications remain readable and conservative: the SAME native notify
+    # name and descriptive prose without the typed branch confer no eligibility.
+    legacy = copy.deepcopy(body)
+    next(d for d in legacy["descriptors"] if d["canonical_name"] == "notify")[
+        "recipient_params"
+    ].pop("owner_notify_branch")
+    legacy["generation_digest"] = generation(legacy["descriptors"])
+    decoded = decode_publication(legacy, "general")
+    assert publication(decoded, "general") == legacy
+    assert decoded.generation_digest != native.generation_digest
+    assert authorization_digest(decoded) != authorization_digest(native)
+    await owners["general"].publish(decoded)
+    async with connection.transaction():
+        legacy_view = await reader.load(connection)
+        assert legacy_view.digest != actual_view.digest
+        assert not next(
+            c for c in legacy_view.capabilities if c.id == "general__notify"
+        ).owner_default
+        conservative = derive_admission(Evidence("message", "external-channel"), legacy_view)
+        assert next(g for g in conservative.ceiling if g.capability == "general__notify").park_only
+        defaults = derive_admission(
+            Evidence(
+                "occurrence",
+                "declared-general",
+                obligation=Obligation("general", "git-owned-declaration"),
+            ),
+            legacy_view,
+        )
+        assert "general__notify" not in {g.capability for g in defaults.ceiling}
+        with pytest.raises(EvidenceRefused):
+            await reader.require_registration(
+                connection,
+                domain="general",
+                revision_id=current.registration("general").revision_id,
+                generation_digest=native.generation_digest,
+            )
+
 
 async def test_current_generation_restart_drift_and_exact_registration_refusal(monkeypatch):
     store, owners = await complete_fleet()

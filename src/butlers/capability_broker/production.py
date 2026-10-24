@@ -1,8 +1,8 @@
 """Default-OFF daemon boundary and bounded private transport resource ownership.
 
-No admitted production profile or committed A2 producer exists in this slice.
-Typed configuration cannot grant that authority. The internal resource owner is
-software infrastructure, not a bypass for enabling production operations.
+Enabled owning startup binds only the schema-local019 repository, actual final
+registration/originals and operator verification keys. Configuration and mTLS
+alone never authenticate a Grant; every PARK/replay purpose is verified again.
 """
 
 from __future__ import annotations
@@ -25,9 +25,50 @@ async def start_private_transport(daemon) -> None:
         raise ProductionTransportUnavailable("invalid_private_transport_configuration")
     if not settings.enabled:
         return
-    # Neither config, a callback, KEY_ABSENT_STAGE nor a caller-supplied flag
-    # establishes the missing owning producer and isolated startup authority.
-    raise ProductionTransportUnavailable("private_transport_prerequisites_unavailable")
+    # This fixed owning assembly accepts no supplied operation or model policy.
+    # SQL role/schema and final registration are checked before material IO.
+    from butlers.modules.approvals.goal_dispatch import GoalDispatch
+
+    from .runtime import decode_verification_keys
+    from .transport.config import PeerPolicy
+    from .transport.server import PrivateApp, PrivateServer
+
+    if (
+        settings.role != "owning-service"
+        or settings.domain != daemon.config.name
+        or not settings.verification_keys
+        or "approvals" not in daemon._modules
+    ):
+        raise ProductionTransportUnavailable("private_transport_prerequisites_unavailable")
+    keys = decode_verification_keys(settings.verification_keys)
+    catalog = daemon.tool_catalog
+    handlers = await daemon._broker_owning_originals()
+    operation = GoalDispatch(daemon._db, settings.domain, catalog, handlers, keys)
+    # Verify the actual configured runtime role and installed019 before binding.
+    async with operation.owner._transaction():
+        pass
+    peer = PeerPolicy(
+        settings.peer.role,
+        settings.peer.domain,
+        frozenset(settings.peer.sans),
+        settings.peer.client_certificate,
+    )
+    if peer.domain != settings.domain:
+        raise ProductionTransportUnavailable("private_transport_peer_domain_mismatch")
+
+    def factory(_):
+        context = material_context(settings.material, server=True)
+        return PrivateServer(
+            PrivateApp(settings.domain, operation),
+            context,
+            peer,
+            host=settings.listen_host,
+            port=settings.listen_port,
+        )
+
+    daemon._capability_transport_owner = await _TransportOwner.open(
+        server_config=peer, server_factory=factory
+    )
 
 
 class _TransportOwner:
@@ -171,3 +212,21 @@ async def close_private_transport(daemon) -> None:
     daemon._capability_transport_owner = None
     if cancellation is not None:
         raise cancellation
+
+
+def material_context(material, *, server=False):
+    """Read only explicit dedicated TLS files after production prerequisites."""
+    import ssl
+    from pathlib import Path
+
+    for name in ("ca_path", "certificate_path", "private_key_path"):
+        if not Path(getattr(material, name)).is_absolute():
+            raise ProductionTransportUnavailable("absolute_private_material_required")
+    context = ssl.create_default_context(
+        ssl.Purpose.CLIENT_AUTH if server else ssl.Purpose.SERVER_AUTH, cafile=material.ca_path
+    )
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.set_alpn_protocols(["http/1.1"])
+    context.load_cert_chain(material.certificate_path, material.private_key_path)
+    return context

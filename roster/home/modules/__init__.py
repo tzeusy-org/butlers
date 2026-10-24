@@ -41,7 +41,7 @@ from butlers.core.tool_call_capture import (
 )
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.execution_context import get_approval_execution_context
-from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
+from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, tool_registrar
 
 from .actuation import (
     DATA_TARGET_SELECTORS,
@@ -263,9 +263,7 @@ class HomeAssistantModule(Module):
     # Module ABC
     # ------------------------------------------------------------------
 
-    @property
-    def name(self) -> str:
-        return "home_assistant"
+    name = "home_assistant"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -483,12 +481,7 @@ class HomeAssistantModule(Module):
         self._db = db
         module = self  # capture for closures
 
-        # Build a group-aware tool decorator: returns @mcp.tool() when the
-        # group is enabled, or a no-op passthrough when disabled.
-        def _tool(group: str):
-            if group_enabled(self._config, group):
-                return mcp.tool()
-            return lambda fn: fn  # no-op — function defined but not registered
+        _tool = tool_registrar(mcp, self._config)
 
         async def ha_get_entity_state(entity_id: str) -> dict[str, Any] | None:
             """Return the current state of a Home Assistant entity.

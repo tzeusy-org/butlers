@@ -1,9 +1,9 @@
 """Broker PARK consumer over the existing purpose-bound private MCP transport.
 
-Clients belong to the isolated control resource owner, not this adapter. Nothing
-constructs a listener, reads TLS material, enables a profile, or supplies the
-separately required owning SQL producer. A syntactically valid software receipt
-is not evidence that such a producer has been deployed or verified.
+Clients belong to the isolated control resource owner, not this adapter. Fixed
+purpose operations carry signed selected-Grant provenance to the owning019
+repository. A syntactically valid response alone never proves SQL durability,
+deployment, runner authority or a committed external effect.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from butlers.core.capability_json import arguments_digest, canonical_bytes, pars
 from .contracts import BrokerRefused, Disposition, Reason, Reservation
 from .domains import ParkReceipt
 from .transport.client import PrivateClient
-from .transport.protocol import PROTOCOL, reply
+from .transport.protocol import reply
 
 
 class PrivateApprovals:
@@ -54,7 +54,7 @@ class PrivateApprovals:
             raise BrokerRefused(Reason.UNAVAILABLE)
         effect = str(reservation.effect_id)
         outgoing = {
-            "protocol": PROTOCOL,
+            "protocol": "broker-approvals-v2",
             "operation": "PARK",
             "request_id": str(uuid4()),
             "identity": {
@@ -66,9 +66,50 @@ class PrivateApprovals:
                 "args_digest": reservation.args_digest,
             },
             "arguments": snapshot,
-            "allow_standing_rule": reservation.decision.allow_standing_rule,
+            "handoff": assertion,
         }
-        observed = reply(await client.call(outgoing, assertion=assertion), outgoing)
+        observed = reply(await client.call(outgoing), outgoing)
         if observed["outcome"] != "parked" or observed["receipt"]["approval_ref"] != effect:
             raise BrokerRefused(Reason.UNAVAILABLE)
         return ParkReceipt(effect)
+
+    async def operation(
+        self,
+        reservation,
+        *,
+        signer,
+        purpose,
+        issued_at,
+        approval_ref=None,
+        original_args_digest=None,
+        snapshot_version=None,
+    ):
+        """Fixed operation with no caller-selected endpoint or replacement args."""
+        from .handoff import sign_handoff
+
+        client = self.clients.get(reservation.capability.domain)
+        if client is None or reservation.effect_id is None:
+            raise BrokerRefused(Reason.UNAVAILABLE)
+        outgoing = {
+            "protocol": "broker-approvals-v2",
+            "operation": purpose,
+            "request_id": str(uuid4()),
+            "identity": {
+                "goal_id": str(reservation.principal.goal_id),
+                "effect_id": str(reservation.effect_id),
+                "owning_domain": reservation.capability.domain,
+                "action_id": str(reservation.effect_id),
+                "capability": reservation.capability.identity,
+                "args_digest": original_args_digest or reservation.args_digest,
+            },
+            "handoff": sign_handoff(
+                signer,
+                reservation,
+                purpose=purpose,
+                issued_at=issued_at,
+                approval_ref=approval_ref,
+                original_args_digest=original_args_digest,
+                snapshot_version=snapshot_version,
+            ),
+        }
+        return reply(await client.call(outgoing), outgoing)

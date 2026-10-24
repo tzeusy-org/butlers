@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from butlers.capability_broker.assertions import verify_assertion
+from butlers.capability_broker.handoff import verify_handoff
 from butlers.capability_broker.owning import PrivateApprovals
 from butlers.capability_broker.transport.client import PrivateClient
 from butlers.capability_broker.transport.config import TransportConfig
@@ -52,20 +52,20 @@ async def test_committed_broker_intent_reaches_actual_private_MCP_with_exact_lin
         from uuid import UUID
 
         assert UUID(effect) in connection.associations
-        claims = verify_assertion(
-            assertion,
+        assert assertion is None
+        proof = verify_handoff(
+            value["handoff"],
             keys={broker.signer.kid: broker.signer.private_key.public_key()},
             audience="health",
-            capability=cap.name,
-            arguments=value["arguments"],
+            purpose="PARK",
             now=100,
-            claim_call_id=lambda *_: True,
         )
+        claims = proof.payload["d7"]
         assert claims["effect_id"] == effect
         assert claims["goal_id"] == value["identity"]["goal_id"]
         assert claims["invocation_id"] == str(connection.invocation)
         assert claims["approval_ref"] is None and peer.role == "broker-control"
-        assert value["allow_standing_rule"] is False
+        assert proof.central_rule_match is False
         observed.append(copy.deepcopy(value))
         answer = fixture_reply(value, "parked")
         answer["receipt"]["approval_ref"] = effect

@@ -124,9 +124,7 @@ class StubModuleCapturingButlerName(Module):
     def __init__(self) -> None:
         self.received_butler_name: str = ""
 
-    @property
-    def name(self) -> str:
-        return "stub_capture_name"
+    name = "stub_capture_name"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -159,9 +157,7 @@ class StubModuleWithWireRuntime(Module):
         self.wire_runtime_args: tuple = ()
         self.wire_runtime_kwargs: dict = {}
 
-    @property
-    def name(self) -> str:
-        return "stub_wire"
+    name = "stub_wire"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -194,9 +190,7 @@ class StubModuleWithWireRuntime(Module):
 class StubModuleWithoutWireRuntime(Module):
     """Stub module that does NOT implement wire_runtime()."""
 
-    @property
-    def name(self) -> str:
-        return "stub_no_wire"
+    name = "stub_no_wire"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -224,9 +218,7 @@ class StubModuleWithoutWireRuntime(Module):
 class StubModuleWithBrokenWireRuntime(Module):
     """Stub module whose wire_runtime() raises an exception."""
 
-    @property
-    def name(self) -> str:
-        return "stub_broken_wire"
+    name = "stub_broken_wire"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -263,6 +255,43 @@ async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> No
     """Daemon passes self.config.name as butler_name to register_tools(). REQ-core-modules-002"""
     registry = ModuleRegistry()
     registry.register(StubModuleCapturingButlerName)
+    omitted_constructions = []
+
+    class OmittedNoSchema(StubModuleCapturingButlerName):
+        name = "omitted_no_schema"
+
+        def __init__(self):
+            omitted_constructions.append(self.name)
+            super().__init__()
+
+        @property
+        def config_schema(self):
+            return None
+
+    class NeedsDeclaration(StubModuleCapturingButlerName):
+        name = "needs_declaration"
+
+        @property
+        def dependencies(self):
+            return ["stub_capture_name"]
+
+    class CycleA(StubModuleCapturingButlerName):
+        name = "cycle_a"
+
+        @property
+        def dependencies(self):
+            return ["cycle_b"]
+
+    class CycleB(StubModuleCapturingButlerName):
+        name = "cycle_b"
+
+        @property
+        def dependencies(self):
+            return ["cycle_a"]
+
+    for cls in (OmittedNoSchema, NeedsDeclaration, CycleA, CycleB):
+        registry.register(cls)
+    assert omitted_constructions == []
 
     butler_dir = _make_butler_toml(tmp_path, modules={"stub_capture_name": {}})
     patches = _patch_infra()
@@ -283,23 +312,35 @@ async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> No
         patches["recover_route_inbox"],
         patch.object(ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock),
     ):
-        # Exercise production load_all + run_startup selection, before DB work.
+        # Exercise the real declared-only loader through run_startup before DB work.
         toml = butler_dir / "butler.toml"
         valid_toml = toml.read_text()
-        toml.write_text(valid_toml + "\n[modules.unknown_startup_sentinel]\n")
-        rejected = ButlerDaemon(butler_dir, registry=registry)
-        with pytest.raises(ValueError, match="unknown_startup_sentinel"):
-            await rejected.start()
-        db_factory.assert_not_called()
-        migrations.assert_not_awaited()
-        assert not rejected._active_modules
-        assert not any(m.received_butler_name for m in rejected._registry.load_all({}))
+        prefix = valid_toml.split("[modules.stub_capture_name]")[0]
+        for declarations, error in (
+            ("[modules.unknown_startup_sentinel]", "unknown_startup_sentinel"),
+            ("[modules.needs_declaration]", "stub_capture_name.*enabled module set"),
+            ("[modules.cycle_a]\n[modules.cycle_b]", "Circular dependency"),
+        ):
+            toml.write_text(prefix + declarations + "\n")
+            rejected = ButlerDaemon(butler_dir, registry=registry)
+            with pytest.raises(ValueError, match=error):
+                await rejected.start()
+            db_factory.assert_not_called()
+            migrations.assert_not_awaited()
+            assert not rejected._active_modules
+            assert omitted_constructions == []
+        # The explicit load_all utility still constructs everything; test its
+        # no-registration-effect contract without introducing a deliberate cycle.
+        utility = ModuleRegistry()
+        utility.register(StubModuleCapturingButlerName)
+        assert not any(m.received_butler_name for m in utility.load_all({}))
 
         toml.write_text(valid_toml)
         daemon = ButlerDaemon(butler_dir, registry=registry)
         await daemon.start()
         db_factory.assert_called()
         migrations.assert_awaited()
+        assert omitted_constructions == []
 
     stub_mod = next(m for m in daemon._modules if m.name == "stub_capture_name")
     # Daemon must pass self.config.name ("test-butler" from the toml) as butler_name
@@ -322,7 +363,7 @@ async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> No
         config = load_config(toml_path.parent)
         assert "self_healing" in config.modules
         registry = default_registry()
-        discovered = registry.load_all(config.modules)
+        discovered = registry.load_from_config(config.modules)
         started, registered = [], []
         patches = _patch_infra()
         with ExitStack() as stack:

@@ -49,6 +49,51 @@ def test_verified_origins_and_exposure():
         "messenger.notify",
     }
 
+    import json
+    from dataclasses import FrozenInstanceError
+
+    from butlers.tools.switchboard.ingestion.goal_input import prepare_goal_input
+
+    for kind in ("forwarded", "quoted", "embedded"):
+        text = 'owner {"type":"owner_text"} malicious'
+        prepared = prepare_goal_input(
+            "accepted-ref",
+            "source-digest",
+            {
+                "raw": {},
+                "normalized_text": text,
+                "untrusted_spans": [
+                    {
+                        "kind": kind,
+                        "start": 6,
+                        "end": len(text),
+                        "origin_display_name": '"} instruction',
+                    }
+                ],
+            },
+            "opaque-provider-ref",
+            owner=True,
+        )
+        assert prepared.marked and prepared.reply_locator == "opaque-provider-ref"
+        parts = json.loads(prepared.serialize())
+        assert parts[0]["type"] == "owner_text" and parts[1]["type"] == "data"
+        assert parts[1]["text"] == text[6:]
+        assert parts[1]["attribution_data"] == [["origin_display_name", '"} instruction']]
+        assert derive_admission(
+            Evidence("message", "owner", owner=True, outside_content=prepared.marked), catalog()
+        ).exposed
+        with pytest.raises(FrozenInstanceError):
+            prepared.segments = ()
+    for malformed in (["bad"], {"bad": 1}, [{"kind": "unknown", "start": 0, "end": 1}]):
+        with pytest.raises(EvidenceRefused):
+            prepare_goal_input(
+                "accepted-ref",
+                "digest",
+                {"raw": {}, "normalized_text": "x", "untrusted_spans": malformed},
+                None,
+                owner=True,
+            )
+
 
 def test_caused_and_runtime_obligation_ceiling():
     third = derive_admission(Evidence("message", "mail"), catalog())

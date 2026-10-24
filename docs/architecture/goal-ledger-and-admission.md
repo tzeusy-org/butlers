@@ -122,3 +122,32 @@ backup/restore scripts with exact row/owner/policy/constraint parity. Collection
 static checks or synthetic pinned catalog fixtures do not prove those database
 outcomes. Activation still requires real PostgreSQL execution and independent
 review, then the later catalog/producer/runtime milestones.
+
+
+## Conditional owner-notify catalog eligibility
+
+The native `core.notifications` declaration carries the closed typed recipient
+branch `OwnerNotifyBranch.TELEGRAM_SEND_INSIGHT_WITHOUT_PARTY`, serialized as
+`recipient_params.owner_notify_branch=telegram_send_insight_without_party`.
+It describes the existing Telegram send/insight fallback with no explicit
+recipient, entity or inherited request context. It does not resolve a target,
+make links inert, authorize an invocation or certify a call as owner-directed.
+
+The verified fleet reader preserves this branch only for the complete,
+grantable, matching-domain native notify declaration with its exact recipient
+selector schema. Its existing admission projection's `owner_default` flag
+means conditional eligibility: default obligations may include notify, and a
+third-party ceiling need not make every possible notify call park-only. Actual
+calls still pass the broker's recipient/exposure checks. Explicit non-owner,
+ambiguous and inherited parties do not acquire an owner exemption from this
+metadata; D4 owner resolution and approval requirements remain mandatory.
+
+The marker is absent from serialized metadata unless declared. Old definitions
+therefore retain their canonical bytes and remain readable with conservative
+eligibility. Condition prose or a notify-looking name alone is insufficient;
+unknown branch values refuse decoding. Publication generation and authorization
+digests bind the typed marker, so changing/removing it changes currentness.
+This is D4/D5 grant eligibility, not M2/D7, activation, selection/resource-value
+authority or an effect receipt. The existing registry/repository/reader/admission
+contract exercises real software components with a SQL protocol double; it is
+not PostgreSQL/RLS/durable-publication execution evidence.

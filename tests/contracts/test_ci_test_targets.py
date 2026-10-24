@@ -8,10 +8,12 @@ import json
 import math
 import os
 import re
+import runpy
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -84,6 +86,10 @@ def test_local_ci_targets_are_receipt_producing_and_keep_full_lane_scope(
         assert fragment in dry_run, f"`make {target}` lost CI fragment {fragment!r}:\n{dry_run}"
 
 
+PYTHON_ENVIRONMENT_STEP = "Set up the CI Python environment"
+PYTHON_ENVIRONMENT_ACTION = "./.github/actions/ci-python-environment"
+
+
 def _workflow_step(*, job: dict, name: str) -> dict:
     for step in job["steps"]:
         if step.get("name") == name:
@@ -144,7 +150,6 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
         "frontend": "false",
         "mode": "full",
         "test_paths": "[]",
-        "inventory": "true",
     }
     full["check-affected"]["result"] = "skipped"
     full["frontend-e2e"]["result"] = "skipped"
@@ -154,9 +159,8 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
     for name in heavy:
         scoped[name]["result"] = "skipped"
     scoped["route"]["outputs"].update(
-        mode="scoped", inventory="false", test_paths='["tests/contracts/test_ci_test_targets.py"]'
+        mode="scoped", test_paths='["tests/contracts/test_ci_test_targets.py"]'
     )
-    scoped["inventory"]["result"] = "skipped"
     scoped["check-affected"]["result"] = "success"
     scoped["check-affected"]["outputs"] = {"verified": "true"}
     contexts.append(("scoped", "pull_request", "refs/pull/1/merge", scoped, False))
@@ -166,8 +170,7 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
         docs[name] = {"result": "skipped", "outputs": {}}
     contexts.append(("docs", "pull_request", "refs/pull/1/merge", docs, False))
     push = copy.deepcopy(docs)
-    push["route"]["outputs"].update(backend="true", frontend="true", mode="push", inventory="true")
-    push["inventory"]["result"] = "success"
+    push["route"]["outputs"].update(backend="true", frontend="true", mode="push")
     push["frontend-e2e"]["result"] = "success"
     contexts.append(("push", "push", "refs/heads/main", push, False))
     merge_group = copy.deepcopy(full)
@@ -224,7 +227,6 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
         for name in (
             "route",
             "guards",
-            "inventory",
             "check-preflight",
             "check-affected",
             "frontend-e2e",
@@ -463,10 +465,182 @@ def test_ci_cleanup_refuses_malformed_free_space_before_reclamation(
     assert not sentinel.exists()
 
 
-def _exercise_browser_installer(root: Path) -> None:
+def _installer_apt_fixture(directory: Path) -> tuple[Path, Path, Path]:
+    """Private synthetic APT boundary; never read host sources/configuration."""
+    apt = directory / "apt"
+    parts = apt / "sources.list.d"
+    parts.mkdir(parents=True)
+    (apt / "apt-mirrors.txt").write_text(
+        "http://azure.archive.ubuntu.com/ubuntu/\tpriority:1\n"
+        "https://archive.ubuntu.com/ubuntu/\tpriority:2\n"
+        "https://security.ubuntu.com/ubuntu/\tpriority:3\n"
+    )
+    (parts / "ubuntu.sources").write_text(
+        "# Preserve runner comments\n\nTypes: deb\nURIs: mirror+file:/etc/apt/apt-mirrors.txt\n"
+        "Suites: noble noble-updates noble-backports noble-security\n"
+        "Components: main restricted universe multiverse\nArchitectures: amd64\n"
+        "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n"
+    )
+    # Nonsecret synthetic stand-in for a credential-bearing third-party source:
+    # preservation must not turn it into world-readable copied configuration.
+    (parts / "vendor.sources").write_text(
+        "Types: deb\nURIs: https://packages.example.invalid/repo\n"
+        "Suites: stable\nComponents: main\nSigned-By: /keys/vendor.gpg\n"
+    )
+    release = directory / "os-release"
+    release.write_text('ID=ubuntu\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\n')
+    reader = directory / "fixture-apt-config"
+    reader.write_text(
+        f"#!{sys.executable}\n"
+        "import os,re\nfrom pathlib import Path\n"
+        "config = Path(os.environ['APT_CONFIG']).read_text() if os.environ.get('APT_CONFIG') else ''\n"
+        "for key,default in [('sourcelist','sources.list'),('sourceparts','sources.list.d')]:\n"
+        "    match = re.search(r'Dir::Etc::'+key+r' \"([^\"]+)\";',config)\n"
+        "    value = match[1] if match else default\n"
+        "    if Path(__file__).with_name('late-fragment').exists(): value = default\n"
+        "    print('Dir::Etc::'+key+' \"'+value+'\";')\n"
+        "status = '/outside' if os.environ.get('APT_CONFIG') and Path(__file__).with_name('state-fragment').exists() else '/var/lib/dpkg/status'\n"
+        "print('Dir::State::status \"'+status+'\";')\n"
+        "print('Dir::State::lists \"lists/\";')\n"
+        "print('Dir::Cache::archives \"archives/\";')\n"
+        "print('Acquire::Check-Valid-Until \"true\";')\n"
+        "if Path(__file__).with_name('binary-fragment').exists():\n"
+        "    print('Binary::apt-get::Dir::Etc::sourceparts \"/outside\";')\n"
+    )
+    reader.chmod(0o755)
+    return apt, release, reader
+
+
+def _exercise_apt_recovery(root: Path) -> None:
+    """Execute trusted-input policy, private files and reader admission negatives.
+
+    The reader here is explicitly synthetic. Real Ubuntu24 effective APT
+    parsing/sandbox access and signed package transport require hosted proof.
+    """
+    source = (REPO_ROOT / "frontend/scripts/install-playwright-deps.py").read_text()
+    for case in [
+        "valid",
+        "late-override",
+        "binary-override",
+        "state-override",
+        "mirror-host",
+        "mirror-port",
+        "mirror-userinfo",
+        "mirror-query",
+        "mirror-fragment",
+        "mirror-path",
+        "mirror-encoded-path",
+        "mirror-wrapper",
+        "mirror-metadata",
+        "missing-official",
+        "duplicate-uris",
+        "multiline-uris",
+        "trust",
+        "suite",
+        "symlink",
+        "oversized",
+        "writable",
+        "wrong-extension",
+        "one-line",
+        "platform",
+    ]:
+        directory = root / case
+        apt, release, reader = _installer_apt_fixture(directory)
+        copied = directory / "supervisor.py"
+        copied.write_text(
+            source.replace('Path("/etc/apt")', f"Path({str(apt)!r})")
+            .replace('Path("/usr/lib/os-release")', f"Path({str(release)!r})")
+            .replace('"/usr/bin/apt-config"', repr(str(reader)))
+            .replace("TRUSTED_UID = 0", f"TRUSTED_UID = {os.getuid()}")
+        )
+        namespace = runpy.run_path(str(copied))
+        ubuntu = apt / "sources.list.d/ubuntu.sources"
+        mirrors = apt / "apt-mirrors.txt"
+        before = {p: p.read_bytes() for p in apt.rglob("*") if p.is_file()}
+        if case.startswith("mirror-"):
+            bad = {
+                "host": "https://archive.ubuntu.com.evil.invalid/ubuntu/",
+                "port": "https://archive.ubuntu.com:8443/ubuntu/",
+                "userinfo": "https://user@archive.ubuntu.com/ubuntu/",
+                "query": "https://archive.ubuntu.com/ubuntu/?x=1",
+                "fragment": "https://archive.ubuntu.com/ubuntu/#x",
+                "path": "https://archive.ubuntu.com/else/",
+                "encoded-path": "https://archive.ubuntu.com/%75buntu/",
+                "wrapper": "mirror+https://archive.ubuntu.com/ubuntu/",
+                "metadata": "https://archive.ubuntu.com/ubuntu/\tpriority:2 other:unknown",
+            }[case.removeprefix("mirror-")]
+            mirrors.write_text(
+                mirrors.read_text().replace("https://archive.ubuntu.com/ubuntu/", bad)
+            )
+        elif case == "missing-official":
+            mirrors.write_text(mirrors.read_text().splitlines()[0] + "\n")
+        elif case == "duplicate-uris":
+            ubuntu.write_text(ubuntu.read_text() + "URIs: mirror+file:/etc/apt/apt-mirrors.txt\n")
+        elif case == "multiline-uris":
+            ubuntu.write_text(ubuntu.read_text().replace("URIs: mirror", "URIs:\n mirror"))
+        elif case == "trust":
+            ubuntu.write_text(ubuntu.read_text().replace("ubuntu-archive-keyring.gpg", "other.gpg"))
+        elif case == "suite":
+            ubuntu.write_text(ubuntu.read_text().replace("noble-updates", "jammy-updates"))
+        elif case == "symlink":
+            ubuntu.rename(directory / "real.sources")
+            ubuntu.symlink_to(directory / "real.sources")
+        elif case == "oversized":
+            ubuntu.write_bytes(b"x" * 65537)
+        elif case == "writable":
+            ubuntu.chmod(0o666)
+        elif case == "wrong-extension":
+            ubuntu.rename(ubuntu.with_suffix(".txt"))
+        elif case == "one-line":
+            (apt / "sources.list").write_text(
+                "deb mirror+file:/etc/apt/apt-mirrors.txt noble main\n"
+            )
+        elif case == "platform":
+            release.write_text('ID=ubuntu\nVERSION_ID="22.04"\nVERSION_CODENAME=jammy\n')
+        overlay = directory / "owned"
+        overlay.mkdir(mode=0o700)
+        if case not in {"valid", "late-override", "binary-override", "state-override"}:
+            with pytest.raises((ValueError, OSError)):
+                namespace["prepare_recovery"](overlay)
+            continue
+        namespace["prepare_recovery"](overlay)
+        private = overlay / "private"
+        assert (private / "sources.list.d/vendor.sources").read_bytes() == before[
+            apt / "sources.list.d/vendor.sources"
+        ]
+        expected = before[ubuntu].replace(
+            b"mirror+file:/etc/apt/apt-mirrors.txt",
+            f"mirror+file:{overlay / 'mirrors.txt'}".encode(),
+        )
+        assert (private / "sources.list.d/ubuntu.sources").read_bytes() == expected
+        assert private.stat().st_mode & 0o777 == 0o700
+        assert all(p.stat().st_mode & 0o777 == 0o600 for p in private.rglob("*") if p.is_file())
+        assert (overlay / "mirrors.txt").stat().st_mode & 0o777 == 0o644
+        assert {p: p.read_bytes() for p in before} == before, "host-like inputs were rewritten"
+        # Exercise the same recovery child admission without execing apt/CLI.
+        if case == "late-override":
+            (directory / "late-fragment").touch()
+            with pytest.raises(ValueError, match="effective apt source override refused"):
+                namespace["recovery_child"](overlay, "/not/executed")
+        elif case == "state-override":
+            (directory / "state-fragment").touch()
+            with pytest.raises(ValueError, match="recovery changed ordinary apt configuration"):
+                namespace["recovery_child"](overlay, "/not/executed")
+        elif case == "binary-override":
+            (directory / "binary-fragment").touch()
+            with pytest.raises(ValueError, match="unsupported binary/root apt path override"):
+                namespace["recovery_child"](overlay, "/not/executed")
+        else:
+            with pytest.raises(FileNotFoundError):
+                namespace["recovery_child"](overlay, "/not/executed")
+
+
+def _exercise_browser_installer(root: Path, only_mode: str | None = None) -> None:
     """Actual shell/group lifecycle with synthetic install/OS/browser boundaries.
 
-    Only wall-clock literals are scaled in this routine control. Healthy
+    Wall-clock literals are scaled; sudo, apt configuration and install/browser
+    boundaries use fixtures. No host apt/sudo is invoked. This is not actual
+    Ubuntu APT-reader or network proof. Healthy
     boundaries include a deliberate 200 ms startup delay within a two-second
     allowance; stall pairs witness handler readiness before TERM/KILL checks.
     The ignored one-shot receipt exercises unchanged 110/120 browser and 150/160
@@ -499,6 +673,12 @@ def _exercise_browser_installer(root: Path) -> None:
         ("stall", 4, 0, 1),
         ("deps-exhaust", 2, 0, 1),
         ("deps-stall", 2, 0, 1),
+        ("deps-recover", 3, 1, 0),
+        ("deps-recovery-rejected", 1, 0, 1),
+        ("deps-prep-cancel", 1, 0, 1),
+        ("deps-supervisor-cancel", 1, 0, 1),
+        ("deps-supervisor-eof", 1, 0, 1),
+        ("deps-total-expiry", 1, 0, 1),
         ("deps-cleanup-denied", 1, 0, 1),
         ("deps-cancel", 1, 0, 1),
         ("deps-eof", 1, 0, -9),
@@ -506,6 +686,8 @@ def _exercise_browser_installer(root: Path) -> None:
         ("deps-crash", 1, 0, 1),
         ("deps-unproven-zero", 0, 0, 1),
     ]:
+        if only_mode is not None and mode != only_mode:
+            continue
         directory = root / mode
         scripts = directory / "scripts"
         cli = directory / "node_modules/.bin/playwright"
@@ -514,6 +696,37 @@ def _exercise_browser_installer(root: Path) -> None:
         (scripts / "install-playwright-browsers.mjs").write_text(scaled)
         shutil.copy(REPO_ROOT / "frontend/scripts/signal-group.mjs", scripts / "signal-group.mjs")
         supervisor = (REPO_ROOT / "frontend/scripts/install-playwright-deps.py").read_text()
+        apt_root, release, reader = _installer_apt_fixture(directory)
+        supervisor = (
+            supervisor.replace('Path("/etc/apt")', f"Path({str(apt_root)!r})")
+            .replace('Path("/usr/lib/os-release")', f"Path({str(release)!r})")
+            .replace('"/usr/bin/apt-config"', repr(str(reader)))
+            .replace("TRUSTED_UID = 0", f"TRUSTED_UID = {os.getuid()}")
+        )
+        if mode == "deps-recovery-rejected":
+            (apt_root / "sources.list.d/ubuntu.sources").write_text("URIs: unsupported\n")
+        if mode == "deps-prep-cancel":
+            supervisor = supervisor.replace(
+                "def main() -> int:",
+                "_prepare = prepare_recovery\ndef prepare_recovery(owned):\n"
+                "    _prepare(owned)\n    os.kill(os.getpid(), signal.SIGTERM)\n\ndef main() -> int:",
+            )
+        if mode == "deps-total-expiry":
+            (scripts / "install-playwright-browsers.mjs").write_text(
+                scaled.replace("const TOTAL_MS = 12_000", "const TOTAL_MS = 3_000")
+            )
+        if mode == "deps-supervisor-eof":
+            # Close the ACTUAL pipe while Node stays live. Parent death alone
+            # cannot pin cancellation versus deadline admission in that state.
+            eof_source = "import { existsSync } from 'node:fs'\n" + scaled.replace(
+                "let expired = false",
+                "let expired = false\n"
+                "const eofProbe = setInterval(() => {\n"
+                "  if (existsSync(path.join(path.dirname(process.env.M3_INSTALL_LEDGER), 'stall-ready')))\n"
+                "    activeDeps?.stdin.end()\n"
+                "}, 10)\neofProbe.unref()",
+            )
+            (scripts / "install-playwright-browsers.mjs").write_text(eof_source)
         if mode == "deps-cleanup-denied":
             # Real lifecycle, with only the OS signalling boundary denied. The
             # still-running dependency pair must never race another attempt.
@@ -524,7 +737,13 @@ def _exercise_browser_installer(root: Path) -> None:
         # Observe the real OS boundary, including zombie leaders. No group may
         # be signalled after its leader was reaped and its identity released.
         instrumentation = r"""
-from pathlib import Path
+_original_mkdtemp = tempfile.mkdtemp
+def _record_overlay(*args, **kwargs):
+    value = _original_mkdtemp(*args, **kwargs)
+    with Path(os.environ['M3_INSTALL_LEDGER']).with_name('overlay-paths').open('a') as receipt:
+        receipt.write(value+'\n')
+    return value
+tempfile.mkdtemp = _record_overlay
 _original_killpg = os.killpg
 def _reserved_killpg(group, sig):
     stat = Path(f'/proc/{group}/stat')
@@ -587,7 +806,21 @@ if deps:
         prior = Path(f"/proc/{prior_pid}/stat")
         if prior.exists() and prior.read_text().split()[2] != "Z":
             data.setdefault("overlap", []).append(prior_pid)
-if mode == ("deps-stall" if deps else "stall") or (deps and mode in {"deps-cleanup-denied", "deps-cancel", "deps-crash", "deps-setup-failure", "deps-eof"}):
+recovery = False
+if deps:
+    route = 'http://azure.archive.ubuntu.com/ubuntu/'
+    if os.environ.get('APT_CONFIG'):
+        import re
+        config = Path(os.environ['APT_CONFIG']).read_text()
+        parts = Path(re.search(r'Dir::Etc::sourceparts "([^"]+)"', config)[1])
+        sources = (parts / 'ubuntu.sources').read_text()
+        mirror = Path(re.search(r'URIs: mirror\+file:([^\n]+)', sources)[1])
+        candidates = [line.split() for line in mirror.read_text().splitlines()]
+        route = min(candidates, key=lambda pair: int(pair[1].split(':')[1]))[0]
+        data.setdefault('overlays', []).append(str(parts.parent.parent))
+    data.setdefault('routes', []).append(route)
+    recovery = route == 'https://archive.ubuntu.com/ubuntu/'
+if mode == ("deps-stall" if deps else "stall") or (deps and mode in {"deps-recover", "deps-recovery-rejected", "deps-prep-cancel"} and not recovery) or (deps and mode in {"deps-cleanup-denied", "deps-cancel", "deps-crash", "deps-setup-failure", "deps-eof", "deps-supervisor-cancel", "deps-supervisor-eof", "deps-total-expiry", "deps-prep-cancel"}):
     if mode in {"deps-cleanup-denied", "deps-crash"}:
         # Surviving processes must not keep the harness capture pipes open.
         sink = os.open(os.devnull, os.O_WRONLY)
@@ -604,6 +837,8 @@ if mode == ("deps-stall" if deps else "stall") or (deps and mode in {"deps-clean
     data["ready"].append({"boundary": "stall-pair", "pids": [os.getpid(), child.pid]})
     p.write_text(json.dumps(data))
     (p.parent / "stall-ready").touch()
+    if mode == 'deps-supervisor-cancel':
+        os.kill(os.getppid(), signal.SIGTERM)
     time.sleep(60)
 data["ready"].append({"boundary": "install", "pid": os.getpid()})
 p.write_text(json.dumps(data))
@@ -660,6 +895,29 @@ if mode == ("deps-exhaust" if deps else "exhaust") or (
                 assert args == ["install", "chromium"] + (["--force"] if index else [])
             if expected_exit == 0:
                 assert data["probes"] >= 1
+            if mode == "deps-recover":
+                assert data["routes"] == [
+                    "http://azure.archive.ubuntu.com/ubuntu/",
+                    "https://archive.ubuntu.com/ubuntu/",
+                ], data
+                assert len(data["pids"]) == 2 and not data.get("overlap"), data
+            elif mode == "deps-exhaust":
+                assert data["routes"] == ["http://azure.archive.ubuntu.com/ubuntu/"] * 2
+            elif mode in {"cold", "warm"}:
+                assert data["routes"] == ["http://azure.archive.ubuntu.com/ubuntu/"]
+            assert all(not Path(overlay).exists() for overlay in data.get("overlays", [])), data
+            if (directory / "overlay-paths").exists():
+                assert all(
+                    not Path(value).exists()
+                    for value in (directory / "overlay-paths").read_text().splitlines()
+                )
+            if mode in {
+                "deps-supervisor-cancel",
+                "deps-supervisor-eof",
+                "deps-total-expiry",
+                "deps-prep-cancel",
+            }:
+                assert "outcome=83" in result.stderr, result.stderr
             if mode in {
                 "deps-cleanup-denied",
                 "deps-crash",
@@ -692,6 +950,161 @@ if mode == ("deps-exhaust" if deps else "exhaust") or (
                 stat = Path(f"/proc/{pid}/stat")
                 if stat.exists() and stat.read_text().split()[2] != "Z":
                     os.kill(pid, 9)
+    if only_mode is None:
+        _exercise_apt_recovery(root / "source-policy")
+        _exercise_ubuntu_apt_reader(root / "actual-ubuntu-reader")
+
+
+def _exercise_ubuntu_apt_reader(root: Path) -> None:
+    """CI-only actual Ubuntu reader; no acquisition/install or host config writes.
+
+    Local dispatch forbids host apt. Do not silently replace this boundary with
+    the fixture reader above. The existing hosted owner node must execute it.
+    Hosted sudo probes read only this owned scratch as actual `_apt`; signed
+    package transport and real install remain separate.
+    """
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    release = Path("/usr/lib/os-release").read_text()
+    assert 'VERSION_ID="24.04"' in release and "ID=ubuntu" in release, (
+        "actual APT-reader control requires the named Ubuntu24 environment"
+    )
+    assert Path("/usr/bin/apt-config").is_file() and Path("/usr/bin/apt-get").is_file()
+    with tempfile.TemporaryDirectory(prefix="butlers-apt-reader-", dir="/tmp") as scratch:
+        _exercise_ubuntu_apt_fixture(Path(scratch))
+    root.mkdir()
+    (root / "executed").write_text("actual reader/source/fragment/_apt controls completed\n")
+
+
+def _exercise_ubuntu_apt_fixture(root: Path) -> None:
+    # The scratch is directly under /tmp so `_apt` can traverse to nonsecret
+    # mirror data without opening pytest's private parent directories.
+    root.chmod(0o711)
+    apt, platform, _ = _installer_apt_fixture(root)
+    source = (REPO_ROOT / "frontend/scripts/install-playwright-deps.py").read_text()
+    copied = root / "supervisor.py"
+    copied.write_text(
+        source.replace('Path("/etc/apt")', f"Path({str(apt)!r})")
+        .replace('Path("/usr/lib/os-release")', f"Path({str(platform)!r})")
+        .replace("TRUSTED_UID = 0", f"TRUSTED_UID = {os.getuid()}")
+    )
+    namespace = runpy.run_path(str(copied))
+    overlay = root / "owned"
+    overlay.mkdir(mode=0o700)
+    namespace["prepare_recovery"](overlay)
+    original_sources = {p: p.read_bytes() for p in apt.rglob("*") if p.is_file()}
+    fragments = root / "apt.conf.d"
+    fragments.mkdir()
+    main = root / "empty.conf"
+    main.write_text("")
+    for name in ("state", "state/lists", "state/lists/partial", "cache", "cache/archives", "log"):
+        (root / name).mkdir(exist_ok=True)
+    status = root / "state/status"
+    status.write_text("")
+    # Both reader environments use the same private ordinary configuration,
+    # state/cache and normal fragment/main loading. Recovery changes only the
+    # two source paths; no host preferences, state, hooks or cache are touched.
+    ordinary = (
+        f'Dir::Etc::parts "{fragments}";\nDir::Etc::main "{main}";\n'
+        f'Dir::State "{root / "state"}";\nDir::State::status "{status}";\n'
+        f'Dir::Cache "{root / "cache"}";\nDir::Log "{root / "log"}";\n'
+    )
+    baseline = root / "baseline.conf"
+    baseline.write_text(
+        ordinary + f'Dir::Etc::sourcelist "{apt / "sources.list"}";\n'
+        f'Dir::Etc::sourceparts "{apt / "sources.list.d"}";\n'
+    )
+    recovery = overlay / "private/apt.conf"
+    recovery.write_text(ordinary + recovery.read_text())
+    (fragments / "10ordinary").write_text('Acquire::Retries "0";\n')
+    environment = {**os.environ, "APT_CONFIG": str(baseline)}
+    # Run the actual recovery admission function in a disposable interpreter;
+    # its final exec is replaced only after both real readers have admitted.
+    probe = (
+        "import os,runpy,sys\n"
+        "def admitted(*args): raise SystemExit(0)\n"
+        "os.execvpe=admitted\n"
+        "m=runpy.run_path(sys.argv[1])\n"
+        "m['recovery_child'](__import__('pathlib').Path(sys.argv[2]),'/not/executed')\n"
+    )
+
+    def admit() -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-c", probe, str(copied), str(overlay)],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    assert admit().returncode == 0, "actual reader rejected positive private configuration"
+    recovered = {**environment, "APT_CONFIG": str(recovery)}
+    actual_configuration = namespace["apt_configuration"](recovered)
+    assert not any(
+        b"::pre-invoke" in line.lower() or b"::post-invoke" in line.lower()
+        for line in actual_configuration
+    ), "controlled parser must not inherit host hooks"
+    # --print-uris enumerates source targets INSTEAD of fetching/installing.
+    # All potentially written state/cache paths are disposable fixture paths.
+    parsed = subprocess.run(
+        ["/usr/bin/apt-get", "--print-uris", "update"],
+        env=recovered,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert parsed.returncode == 0, "actual APT source parser refused private deb822 fixture"
+    assert f"mirror+file:{overlay / 'mirrors.txt'}" in parsed.stdout
+    assert "packages.example.invalid" in parsed.stdout, "third-party source disappeared"
+    assert "mirror+file:/etc/apt/apt-mirrors.txt" not in parsed.stdout
+    later = fragments / "99source-override"
+    later.write_text('Dir::Etc::sourceparts "/unrecognized-later-sourceparts";\n')
+    assert admit().returncode != 0, "actual later-fragment override escaped recovery admission"
+    later.write_text('Binary::apt-get::Dir::Etc::sourceparts "/unrecognized-binary-path";\n')
+    assert admit().returncode != 0, "actual binary override escaped recovery admission"
+    later.unlink()
+    assert admit().returncode == 0, "negative control poisoned positive companion"
+    assert {p: p.read_bytes() for p in original_sources} == original_sources
+    assert status.read_bytes() == b"", "reader proof changed fixture dpkg state"
+    sudo = shutil.which("sudo")
+    assert sudo is not None, "actual _apt reader proof unavailable: sudo absent"
+    mirror = overlay / "mirrors.txt"
+    private_config = overlay / "private/apt.conf"
+    probe = (
+        "import os,pwd,sys\nfrom pathlib import Path\n"
+        "assert os.geteuid()==pwd.getpwnam('_apt').pw_uid\n"
+        "assert Path(sys.argv[1]).read_bytes().splitlines()[0].startswith(b'https://archive.ubuntu.com/ubuntu/')\n"
+        "try: Path(sys.argv[2]).read_bytes()\n"
+        "except PermissionError: pass\n"
+        "else: raise AssertionError('private copied config readable by _apt')\n"
+    )
+
+    def sandbox_read() -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [
+                sudo,
+                "-n",
+                "-u",
+                "_apt",
+                "--",
+                "/usr/bin/python3",
+                "-c",
+                probe,
+                str(mirror),
+                str(private_config),
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    assert sandbox_read().returncode == 0, "actual _apt scratch read/private refusal unavailable"
+    mirror.chmod(0o600)
+    assert sandbox_read().returncode != 0, "actual _apt read negative was not enforced"
+    mirror.chmod(0o644)
+    assert sandbox_read().returncode == 0, "actual _apt positive companion did not recover"
+    print("actual Ubuntu24 APT reader/source, later/binary negatives and _apt read executed")
 
 
 def test_vitest_concurrent_failure_terminates_both_owned_groups(tmp_path: Path) -> None:
@@ -816,37 +1229,52 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     jobs = workflow["jobs"]
     # A structurally passing topology is unusable if GitHub cannot admit a job.
     assert all(job.get("runs-on") for job in jobs.values() if "steps" in job)
-    # Inventory and children must install the same full interpreter identity.
+    # Inventory and children must install the same full interpreter identity, and
+    # every Python job gets it from the one composite action (bu-29wkwj.2).
     assert workflow.get("env", {}).get("UV_PYTHON") == "3.12.15"
-    python_steps = [
+    action = yaml.safe_load(
+        (REPO_ROOT / ".github/actions/ci-python-environment/action.yml").read_text()
+    )
+    action_python = [
         step
-        for job in jobs.values()
-        for step in job.get("steps", [])
+        for step in action["runs"]["steps"]
         if step.get("uses", "").startswith("actions/setup-python@")
     ]
-    assert python_steps and all(
-        step["with"]["python-version"] == workflow["env"]["UV_PYTHON"] for step in python_steps
+    assert [step["with"]["python-version"] for step in action_python] == [
+        workflow["env"]["UV_PYTHON"]
+    ]
+    assert not any(
+        step.get("uses", "").startswith("actions/setup-python@")
+        or "install_ci_uv.py" in step.get("run", "")
+        or "ci_environment.py" in step.get("run", "")
+        for job in jobs.values()
+        for step in job.get("steps", [])
     )
+    python_jobs = {
+        name
+        for name, job in jobs.items()
+        if any("uv run" in step.get("run", "") for step in job.get("steps", []))
+    }
+    assert python_jobs
+    for name in python_jobs:
+        assert _workflow_step(job=jobs[name], name=PYTHON_ENVIRONMENT_STEP)["uses"] == (
+            PYTHON_ENVIRONMENT_ACTION
+        )
     preflight = jobs["check-preflight"]
     unit_jobs = [
-        json.loads(json.dumps(jobs["check-unit"]).replace("${{ matrix.shard }}", str(index)))
-        for index in jobs["check-unit"]["strategy"]["matrix"]["shard"]
+        json.loads(json.dumps(jobs["check-unit"]).replace("${{ matrix.group }}", str(index)))
+        for index in jobs["check-unit"]["strategy"]["matrix"]["group"]
     ]
     integration_jobs = [
-        json.loads(json.dumps(jobs["check-integration"]).replace("${{ matrix.shard }}", str(index)))
-        for index in jobs["check-integration"]["strategy"]["matrix"]["shard"]
+        json.loads(json.dumps(jobs["check-integration"]).replace("${{ matrix.group }}", str(index)))
+        for index in jobs["check-integration"]["strategy"]["matrix"]["group"]
     ]
     # Required queue receipts must exist in their own jobs. Covered-workflow
     # artifacts cannot satisfy ordinary preflight or the timing observer.
     for lane, children in (("unit", unit_jobs), ("integration", integration_jobs)):
         for index, job in enumerate(children, 1):
             artifact = _artifact_step(job=job, artifact_name=f"ci-{lane}-{index}-test-evidence")
-            filenames = [
-                "junit.xml",
-                "top-durations.txt",
-                "shard-observation.json",
-                "runner-observation.json",
-            ]
+            filenames = ["junit.xml", "top-durations.txt", "collected.json"]
             if lane == "unit":
                 filenames.append("condensation-refusal-*.json")
             assert artifact["if"] == "always()"
@@ -881,7 +1309,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     # static guard script in one job with nothing upstream of it.
     changes = jobs["route"]
     assert "needs" not in changes and "if" not in changes
-    assert set(changes["outputs"]) == {"backend", "frontend", "mode", "test_paths", "inventory"}
+    assert set(changes["outputs"]) == {"backend", "frontend", "mode", "test_paths"}
     path_filter = _workflow_step(job=changes, name="Filter changed paths")
     assert path_filter["uses"].startswith("dorny/paths-filter@")
     assert path_filter["if"] == "github.event_name == 'pull_request'"
@@ -949,19 +1377,10 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     for name, command in static_commands.items():
         assert _workflow_step(job=guards, name=name)["run"] == command
         assert not any(step.get("name") == name for step in preflight["steps"])
-    assert (
-        _workflow_step(job=guards, name="Install uv")["run"]
-        == _workflow_step(job=preflight, name="Install uv")["run"]
-    )
-    assert (
-        _workflow_step(job=guards, name="Install dependencies")["run"]
-        == "python3 scripts/ci_environment.py prepare"
-    )
     ordered = [step.get("name") for step in guards["steps"]]
     assert (
-        ordered.index("Install uv")
+        ordered.index(PYTHON_ENVIRONMENT_STEP)
         < ordered.index("Check lock file is up to date")
-        < ordered.index("Install dependencies")
         < ordered.index("Lint")
     )
     dry_run = subprocess.run(
@@ -975,53 +1394,37 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     ):
         assert command in dry_run
 
-    # Reconciliation is after both matrix aggregates; all eleven exact child
-    # receipts are checked independently before a full result is admitted.
+    # The totals check runs after both matrix aggregates; every group's count is
+    # read before a full result is admitted.
     assert preflight["needs"] == ["route", "guards", "check-unit", "check-integration"]
     assert preflight["if"].startswith("always()")
     assert "mode == 'full'" in preflight["if"] and "mode == 'scoped'" in preflight["if"]
-    for job in [*unit_jobs, *integration_jobs]:
-        assert job["needs"] == ["route", "inventory"]
-        assert (
-            job["if"] == "needs.route.outputs.mode == 'full' && needs.inventory.result == 'success'"
-        )
-        assert job["strategy"]["fail-fast"] is False
+    # Each group runs its pytest-split slice through the one lane runner, starting
+    # straight after route (bu-29wkwj.2).
+    for lane, children in (("unit", unit_jobs), ("integration", integration_jobs)):
+        for index, job in enumerate(children, 1):
+            assert job["needs"] == ["route"]
+            assert job["if"] == "needs.route.outputs.mode == 'full'"
+            assert job["strategy"]["fail-fast"] is False
+            assert job["env"]["CI_COVERAGE"] == "0"
+            run = next(step for step in job["steps"] if "ci_lanes.py" in step.get("run", ""))
+            assert run["run"] == (
+                f"uv run python scripts/ci_lanes.py run --lane {lane} --group {index} "
+                f'--output "${{RUNNER_TEMP}}/ci-artifacts/{lane}-{index}"'
+            )
     assert len(unit_jobs) == 5 and len(integration_jobs) == 6
-    inventory = jobs["inventory"]
-    assert inventory["needs"] == ["route"]
-    assert inventory["env"]["CI_COVERAGE"] == "0"
-    assert inventory["env"]["CI_COVERAGE"] == jobs["check-unit"]["env"]["CI_COVERAGE"]
-    assert inventory["env"]["CI_COVERAGE"] == jobs["check-integration"]["env"]["CI_COVERAGE"]
-    assert inventory["if"] == "needs.route.outputs.inventory == 'true'"
-    collect = _workflow_step(
-        job=inventory, name="Collect one fresh installed pytest inventory and enforce both budgets"
+    assert "inventory" not in jobs
+    assert not any(
+        "ci_partition.py" in step.get("run", "")
+        for job in jobs.values()
+        for step in job.get("steps", [])
     )
-    assert collect["run"] == (
-        "uv run --no-sync python scripts/ci_partition.py "
-        '--weights "${RUNNER_TEMP}/ci-weights/weights.json" '
-        '--output "${RUNNER_TEMP}/ci-inventory"'
+    totals = _workflow_step(
+        job=preflight, name="Check the lane groups add up and stay within the test budget"
     )
-    assert "if" not in collect
-    upload = _artifact_step(job=inventory, artifact_name="ci-inventory")
-    assert upload["with"] == {
-        "name": "ci-inventory",
-        "path": "${{ runner.temp }}/ci-inventory/*.json",
-        "if-no-files-found": "error",
-        "retention-days": 14,
-        "overwrite": True,
-    }
-    assert inventory["steps"].index(collect) < inventory["steps"].index(upload)
-    assert not any("ci_partition.py" in step.get("run", "") for step in guards["steps"])
-    for step_name in (
-        "Set up Python 3.12",
-        "Install uv",
-        "Compute exact environment cache key",
-        "Restore advisory environment cache",
-        "Install dependencies",
-    ):
-        assert _workflow_step(job=inventory, name=step_name) == _workflow_step(
-            job=guards, name=step_name
-        )
+    assert totals["run"] == (
+        'uv run --no-sync python scripts/ci_lanes.py totals --counts "${RUNNER_TEMP}/ci-test-receipts"'
+    )
 
     # Enumerate weighted antichains of the actual job DAG. Matrix aggregates
     # carry their full concurrent row counts; affected cannot run in full mode.
@@ -1058,8 +1461,9 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
         selected = [i for i in range(len(names)) if mask & (1 << i)]
         if all(mask & ~(compatible[i] | (1 << i)) == 0 for i in selected):
             peak = max(peak, sum(weights[i] for i in selected))
-    assert sum(weights) + 1 == 21  # Includes the mutually exclusive affected row.
-    assert peak == 14
+    assert sum(weights) + 1 == 20  # Includes the mutually exclusive affected row.
+    # Guards, eleven groups, two Vitest children and the browser job (bu-29wkwj.2).
+    assert peak == 15
     assert "plan" not in jobs and "changes" not in jobs
     route_command = _workflow_step(
         job=changes, name="Classify and conservatively plan with stdlib only"
@@ -1069,7 +1473,11 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     check_affected = jobs["check-affected"]
     assert check_affected["needs"] == ["route"]
     assert "mode == 'scoped'" in check_affected["if"]
-    assert jobs["frontend-e2e"]["needs"] == ["route", "guards"]
+    # The browser job builds its own bundle instead of waiting for guards.
+    e2e = jobs["frontend-e2e"]
+    assert e2e["needs"] == ["route"]
+    assert _workflow_step(job=e2e, name="Build")["run"] == "npm run build"
+    assert not any("download-artifact" in step.get("uses", "") for step in e2e["steps"])
     assert jobs["frontend"]["needs"] == ["route", "guards", "frontend-vitest"]
     assert jobs["frontend"]["if"] == "always()"
     assert jobs["frontend-vitest"]["needs"] == ["route"]
@@ -1105,14 +1513,10 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
             timeout=10,
         )
         assert (result.returncode == 0) == accepted
-    # Synthetic dist bytes exercise actual seal/consume/tamper protocol only,
-    # never claim an actual compiler/browser or hosted upload.
     sys.path.insert(0, str(REPO_ROOT / "scripts"))
-    import ci_frontend_evidence as build
 
     buildroot = tmp_path / "build-control"
-    (buildroot / "frontend/dist").mkdir(parents=True)
-    (buildroot / "frontend/dist/index.html").write_text("planted compiler-output stand-in")
+    (buildroot / "frontend").mkdir(parents=True)
     (buildroot / "frontend/package-lock.json").write_bytes(
         (REPO_ROOT / "frontend/package-lock.json").read_bytes()
     )
@@ -1136,21 +1540,6 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     with monkeypatch.context() as local:
         for name in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
             local.delenv(name, raising=False)
-        artifact = tmp_path / "build-artifact"
-        build.seal(buildroot, artifact)
-        shutil.rmtree(buildroot / "frontend/dist")
-        payload = (artifact / "dist/index.html").read_text()
-        (artifact / "dist/index.html").write_text("wrong current bytes")
-        with pytest.raises(ValueError, match="content differs"):
-            build.consume(buildroot, artifact)
-        assert not (buildroot / "frontend/dist").exists()
-        (artifact / "dist/index.html").write_text(payload)
-        local.setenv("GITHUB_RUN_ATTEMPT", "wrong-attempt")
-        with pytest.raises(ValueError, match="source/attempt"):
-            build.consume(buildroot, artifact)
-        local.delenv("GITHUB_RUN_ATTEMPT")
-        build.consume(buildroot, artifact)
-        assert (buildroot / "frontend/dist/index.html").read_text() == payload
 
         # Real bounded subprocess transport controls of the receipt protocol.
         # This helper is not Vitest and provides no installed frontend proof.
@@ -1291,7 +1680,7 @@ else:
             receipt = json.loads(receipt_text)
             assert receipt["complete"] is False
             assert (receipt["stage"], receipt["failure_category"]) == (stage, category)
-            assert receipt["identity"] == build.identity(buildroot)
+            assert receipt["identity"] == vitest.identity(buildroot)
             assert receipt["runtime_observation"] == observed
             assert "private control text" not in receipt_text
             if category == "timeout":
@@ -1441,7 +1830,6 @@ else:
     assert check_job["needs"] == [
         "route",
         "guards",
-        "inventory",
         "check-preflight",
         "check-unit",
         "check-integration",
@@ -1455,9 +1843,9 @@ else:
         "uv" in step.get("run", "") or "checkout" in str(step) for step in check_job["steps"]
     )
     for step_name in (
-        "Install dependencies",
+        PYTHON_ENVIRONMENT_STEP,
         "Smoke tests (fast gate + release evidence)",
-        "Reconcile eleven logical execution populations and derive smoke evidence",
+        "Check the lane groups add up and stay within the test budget",
     ):
         _workflow_step(job=preflight, name=step_name)
     assert "check_integration_coverage.py" not in str(preflight)
@@ -1466,18 +1854,14 @@ else:
     for job in [preflight, *unit_jobs, *integration_jobs, jobs["check-affected"]]:
         assert "postgres" not in job.get("services", {})
         assert "DATABASE_URL" not in job.get("env", {})
-        install = _workflow_step(job=job, name="Install dependencies")
-        assert install["run"] == "python3 scripts/ci_environment.py prepare"
-        cache = _workflow_step(job=job, name="Restore advisory environment cache")
-        assert cache["with"]["path"] == ".venv"
-        assert "restore-keys" not in cache["with"]
-        assert cache["continue-on-error"] is True
+        environment = _workflow_step(job=job, name=PYTHON_ENVIRONMENT_STEP)
+        assert environment["uses"] == PYTHON_ENVIRONMENT_ACTION
 
     expected_coverage_artifacts: list[tuple[str, str, str, str]] = []
     for index, job in enumerate(unit_jobs, start=1):
-        run_step = _workflow_step(job=job, name=f"Unit tests (shard {index})")
+        run_step = _workflow_step(job=job, name=f"Unit tests (group {index})")
         assert run_step["run"].startswith(
-            f"uv run python scripts/check_ci_test_shards.py run --lane unit --shard {index}"
+            f"uv run python scripts/ci_lanes.py run --lane unit --group {index}"
         )
         assert "COVERAGE_FILE" not in run_step["env"]
         assert run_step["env"]["TEST_EVIDENCE_DIR"].endswith(f"ci-artifacts/unit-{index}")
@@ -1485,7 +1869,7 @@ else:
             (
                 f"ci-unit-{index}-coverage-data",
                 f"coverage-unit-{index}.data",
-                f"Download unit shard {index} coverage data",
+                f"Download unit group {index} coverage data",
                 f"ci-coverage/unit-{index}",
             )
         )
@@ -1503,9 +1887,9 @@ else:
             "could not determine free disk space",
         ):
             assert fragment in cleanup["run"]
-        run_step = _workflow_step(job=job, name=f"Integration tests (shard {index})")
+        run_step = _workflow_step(job=job, name=f"Integration tests (group {index})")
         assert run_step["run"].startswith(
-            f"uv run python scripts/check_ci_test_shards.py run --lane integration --shard {index}"
+            f"uv run python scripts/ci_lanes.py run --lane integration --group {index}"
         )
         assert "COVERAGE_FILE" not in run_step["env"]
         assert run_step["env"]["TEST_EVIDENCE_DIR"].endswith(f"ci-artifacts/integration-{index}")
@@ -1514,24 +1898,19 @@ else:
             (
                 f"ci-integration-{index}-coverage-data",
                 f"coverage-integration-{index}.data",
-                f"Download integration shard {index} coverage data",
+                f"Download integration group {index} coverage data",
                 f"ci-coverage/integration-{index}",
             )
         )
 
     for row, job in zip(covered_matrix["strategy"]["matrix"]["include"], covered_jobs, strict=True):
-        run_step = _workflow_step(job=job, name="Run the complete assigned covered shard")
+        run_step = _workflow_step(job=job, name="Run the covered lane group")
         assert run_step["env"]["COVERAGE_FILE"].endswith(
-            f"coverage-{row['lane']}-{row['shard']}.data"
+            f"coverage-{row['lane']}-{row['group']}.data"
         )
     assert all(
         covered_workflow["jobs"][name]["env"]["CI_COVERAGE"] == "1"
-        for name in (
-            "coverage-inventory",
-            "coverage-shards",
-            "coverage-preflight",
-            "coverage-report",
-        )
+        for name in ("coverage-shards", "coverage-preflight", "coverage-report")
     )
     assert len(covered_jobs) == 11
     assert not any(
@@ -1589,13 +1968,13 @@ else:
         "NEEDS_JSON": "${{ toJSON(needs) }}",
     }
     assert check_job["steps"] == [gate]
-    expected_shards = ["coverage-inventory", "coverage-shards", "coverage-preflight"]
+    expected_shards = ["coverage-shards", "coverage-preflight"]
     assert coverage_job["needs"] == expected_shards
     assert coverage_job["if"] == "always()"
     assert "coverage" not in check_job["needs"]
 
     combine = _workflow_step(
-        job=coverage_job, name="Combine coverage from all independent test shards"
+        job=coverage_job, name="Combine coverage from all independent lane groups"
     )
     assert "coverage combine --data-file=" in combine["run"]
     for prefix, count in (("UNIT", 5), ("INTEGRATION", 6)):
@@ -1840,47 +2219,37 @@ def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> N
     assert "pull_request_target" not in triggers
     assert workflow["permissions"] == {"contents": "read"}
     jobs = workflow["jobs"]
-    assert {
-        "coverage-inventory",
-        "coverage-shards",
-        "coverage-preflight",
-        "coverage-report",
-    } <= set(jobs)
+    assert {"coverage-shards", "coverage-preflight", "coverage-report"} <= set(jobs)
+    assert "coverage-inventory" not in jobs
     assert all(
         jobs[name]["env"]["CI_COVERAGE"] == "1"
-        for name in (
-            "coverage-inventory",
-            "coverage-shards",
-            "coverage-preflight",
-            "coverage-report",
-        )
+        for name in ("coverage-shards", "coverage-preflight", "coverage-report")
     )
-    assert "needs" not in jobs["coverage-inventory"]
     shards = jobs["coverage-shards"]
-    assert shards["needs"] == ["coverage-inventory"]
+    assert "needs" not in shards
     assert shards["strategy"]["fail-fast"] is False
     rows = shards["strategy"]["matrix"]["include"]
     assert rows == [
-        {"lane": lane, "shard": index, "timeout": cap}
+        {"lane": lane, "group": index, "timeout": cap}
         for lane, count, cap in (("unit", 5, 28), ("integration", 6, 36))
         for index in range(1, count + 1)
     ]
     assert shards["timeout-minutes"] == "${{ matrix.timeout }}"
-    execute = _workflow_step(job=shards, name="Run the complete assigned covered shard")
+    execute = _workflow_step(job=shards, name="Run the covered lane group")
     assert execute["run"] == (
-        "uv run python scripts/check_ci_test_shards.py run "
-        "--lane ${{ matrix.lane }} --shard ${{ matrix.shard }} "
-        '--inventory-dir "${RUNNER_TEMP}/ci-inventory"'
+        "uv run python scripts/ci_lanes.py run "
+        "--lane ${{ matrix.lane }} --group ${{ matrix.group }} "
+        '--output "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}"'
     )
     assert execute["env"]["COVERAGE_FILE"].endswith(
-        "coverage-${{ matrix.lane }}-${{ matrix.shard }}.data"
+        "coverage-${{ matrix.lane }}-${{ matrix.group }}.data"
     )
     duration = _workflow_step(
-        job=shards, name="Prepare ${{ matrix.lane }} shard ${{ matrix.shard }} duration evidence"
+        job=shards, name="Prepare ${{ matrix.lane }} group ${{ matrix.group }} duration evidence"
     )
     evidence = _workflow_step(job=shards, name="Upload complete covered execution evidence")
     for row in rows:
-        directory = tmp_path / "ci-artifacts" / f"{row['lane']}-{row['shard']}"
+        directory = tmp_path / "ci-artifacts" / f"{row['lane']}-{row['group']}"
         directory.mkdir(parents=True)
         (directory / "raw-junit.xml").write_text(
             '<testsuites><testsuite><testcase classname="tests.contract" '
@@ -1905,53 +2274,18 @@ def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> N
         assert 'name="test_receipt[...]"' in sanitized
         assert "private" not in sanitized
         assert "test_receipt[...]" in (directory / "top-durations.txt").read_text()
-        assert f"/ci-artifacts/{row['lane']}-{row['shard']}/junit.xml" in uploads
+        assert f"/ci-artifacts/{row['lane']}-{row['group']}/junit.xml" in uploads
+        assert f"/ci-artifacts/{row['lane']}-{row['group']}/collected.json" in uploads
+        assert f"/ci-artifacts/{row['lane']}-{row['group']}/durations.json" in uploads
     assert (
-        _workflow_step(job=shards, name="Upload raw covered shard inputs")["with"][
+        _workflow_step(job=shards, name="Upload raw covered group inputs")["with"][
             "if-no-files-found"
         ]
         == "error"
     )
-    inventory = _workflow_step(
-        job=jobs["coverage-inventory"], name="Collect full current inventory"
-    )
-    assert inventory["run"].endswith(
-        'scripts/ci_partition.py --weights "${RUNNER_TEMP}/ci-weights/weights.json" '
-        '--output "${RUNNER_TEMP}/ci-inventory"'
-    )
-    main_jobs = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
-    for producer, collection_name, repaired_name in (
-        (
-            main_jobs["inventory"],
-            "Collect one fresh installed pytest inventory and enforce both budgets",
-            "Install dependencies",
-        ),
-        (jobs["coverage-inventory"], "Collect full current inventory", None),
-    ):
-        assert producer["permissions"] == {"contents": "read", "actions": "read"}
-        restore = _workflow_step(job=producer, name="Restore compatible advisory file weights")
-        assert restore["env"] == {"GH_TOKEN": "${{ github.token }}"}
-        assert restore["run"] == (
-            "uv run --no-sync python scripts/ci_weight_candidates.py --restore "
-            '--output "${RUNNER_TEMP}/ci-weights"'
-        )
-        assert "if" not in restore and "continue-on-error" not in restore
-        repaired = (
-            _workflow_step(job=producer, name=repaired_name)
-            if repaired_name
-            else next(
-                step
-                for step in producer["steps"]
-                if step.get("uses") == "./.github/actions/ci-python-environment"
-            )
-        )
-        assert producer["steps"].index(repaired) < producer["steps"].index(restore)
-        assert producer["steps"].index(restore) < producer["steps"].index(
-            _workflow_step(job=producer, name=collection_name)
-        )
     for name, prerequisites in (
-        ("coverage-preflight", ["coverage-inventory", "coverage-shards"]),
-        ("coverage-report", ["coverage-inventory", "coverage-shards", "coverage-preflight"]),
+        ("coverage-preflight", ["coverage-shards"]),
+        ("coverage-report", ["coverage-shards", "coverage-preflight"]),
     ):
         job = jobs[name]
         assert job["needs"] == prerequisites
@@ -1971,7 +2305,7 @@ def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> N
                 )
                 expected = failed is None or (failed != "unknown-job" and outcome == "success")
                 assert (result.returncode == 0) is expected, (name, failed, outcome)
-        missing = {key: {"result": "success"} for key in prerequisites[1:]}
+        missing = {key: {"result": "success"} for key in prerequisites[:-1]}
         result = subprocess.run(
             ["bash", "-e", "-c", gate["run"]],
             env={**os.environ, "NEEDS_JSON": json.dumps(missing)},
@@ -1980,15 +2314,13 @@ def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> N
         )
         assert result.returncode != 0
     preflight = jobs["coverage-preflight"]
-    assert (
-        "ci_preflight_reconcile.py"
-        in _workflow_step(job=preflight, name="Reconcile all eleven covered execution populations")[
-            "run"
-        ]
+    assert _workflow_step(
+        job=preflight, name="Check the covered lane groups add up and stay within the test budget"
+    )["run"] == (
+        'uv run --no-sync python scripts/ci_lanes.py totals --counts "${RUNNER_TEMP}/ci-test-receipts"'
     )
-    assert (
-        _workflow_step(job=preflight, name="Smoke tests (fast gate + release evidence)")["if"]
-        == "steps.reconcile.outputs.smoke_covered != 'true'"
+    assert "if" not in _workflow_step(
+        job=preflight, name="Smoke tests (fast gate + release evidence)"
     )
     assert (
         _workflow_step(job=preflight, name="Prepare smoke test duration evidence")["run"]
@@ -2000,12 +2332,6 @@ def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> N
                 name="Prepare smoke test duration evidence",
             )["run"]
         )
-    )
-    assert (
-        _artifact_step(job=preflight, artifact_name="ci-coverage-execution-proof")["with"][
-            "if-no-files-found"
-        ]
-        == "error"
     )
     report = jobs["coverage-report"]
     badge = _workflow_step(job=report, name="Update coverage badge")
@@ -2025,20 +2351,18 @@ def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> N
     assert action["runs"]["using"] == "composite"
     assert "inputs" not in action
     action_steps = {"steps": action["runs"]["steps"]}
-    original = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())["jobs"][
-        "guards"
-    ]
-    for name in (
-        "Set up Python 3.12",
-        "Install uv",
-        "Compute exact environment cache key",
-        "Restore advisory environment cache",
-        "Install dependencies",
-    ):
-        actual = _workflow_step(job=action_steps, name=name)
-        old = _workflow_step(job=original, name=name)
-        assert actual.get("run") == old.get("run")
-        assert actual.get("with") == old.get("with")
+    assert _workflow_step(job=action_steps, name="Install uv")["run"] == (
+        "python3 scripts/install_ci_uv.py"
+    )
+    assert _workflow_step(job=action_steps, name="Install dependencies")["run"] == (
+        "python3 scripts/ci_environment.py prepare"
+    )
+    cache = _workflow_step(job=action_steps, name="Restore advisory environment cache")
+    assert cache["with"] == {
+        "path": ".venv",
+        "key": "${{ steps.environment-key.outputs.key }}",
+    }
+    assert cache["continue-on-error"] is True
     assert all(
         any(step.get("uses") == "./.github/actions/ci-python-environment" for step in job["steps"])
         for name, job in jobs.items()
@@ -2084,13 +2408,7 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
     ]
     scripts = checkout / "scripts"
     scripts.mkdir()
-    for filename in (
-        "check_ci_coverage.py",
-        "check_ci_test_shards.py",
-        "ci_partition.py",
-        "ci_inventory_collector.py",
-        "ci_shard_observer.py",
-    ):
+    for filename in ("check_ci_coverage.py", "ci_lanes.py"):
         shutil.copyfile(REPO_ROOT / "scripts" / filename, scripts / filename)
     subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
     subprocess.run(["git", "add", "."], cwd=checkout, check=True)
@@ -2116,14 +2434,6 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
         "GITHUB_EVENT_NAME": "merge_group",
     }.items():
         monkeypatch.setenv(name, value)
-    from ci_partition import assigned_files, collect_inventory, partition
-
-    inventory = collect_inventory(root=checkout)
-    assignment = partition(inventory, {}, root=checkout)
-    inventory_dir = tmp_path / "runner/ci-inventory"
-    inventory_dir.mkdir(parents=True)
-    (inventory_dir / "inventory.json").write_text(json.dumps(inventory))
-    (inventory_dir / "assignment.json").write_text(json.dumps(assignment))
     inputs = tmp_path / "runner/ci-coverage"
     population: dict[Path, bytes] = {}
     for lane, index in specs:
@@ -2136,13 +2446,8 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
             capture_output=True,
             text=True,
         )
-        reporter.write_shard_metadata(
-            coverage_file=data,
-            repo_root=checkout,
-            lane=lane,
-            shard=index,
-            test_files=assigned_files(inventory, assignment, lane=lane, index=index, root=checkout),
-            assignment_digest=assignment["digest"],
+        reporter.write_group_metadata(
+            coverage_file=data, repo_root=checkout, lane=lane, group=index
         )
         population[data] = data.read_bytes()
         metadata = data.with_suffix(".data.metadata.json")
@@ -2178,7 +2483,7 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
     workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())
     fixed = _workflow_step(
         job=workflow["jobs"]["coverage-report"],
-        name="Combine coverage from all independent test shards",
+        name="Combine coverage from all independent lane groups",
     )["run"]
     old_path = REPO_ROOT / "tests/fixtures/ci_coverage/m1-combine.sh"
     old = old_path.read_text()
@@ -2193,14 +2498,7 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
         output.write_text("")
 
     def stamp(data: Path) -> None:
-        reporter.write_shard_metadata(
-            coverage_file=data,
-            repo_root=checkout,
-            lane="unit",
-            shard=1,
-            test_files=assigned_files(inventory, assignment, lane="unit", index=1, root=checkout),
-            assignment_digest=assignment["digest"],
-        )
+        reporter.write_group_metadata(coverage_file=data, repo_root=checkout, lane="unit", group=1)
 
     def run(label: str, body: str, expected: int) -> None:
         result = subprocess.run(
@@ -2244,8 +2542,8 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
         "extra",
         "mixed-run",
         "stale-head",
-        "wrong-shard",
-        "wrong-manifest",
+        "wrong-group",
+        "wrong-config",
         "digest",
         "incompatible-tracing",
         "source-population",
@@ -2277,8 +2575,8 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
             field, value = {
                 "mixed-run": ("run_id", "124"),
                 "stale-head": ("head", "0" * 40),
-                "wrong-shard": ("shard", True),
-                "wrong-manifest": ("test_files", []),
+                "wrong-group": ("group", True),
+                "wrong-config": ("config", {}),
                 "digest": ("sha256", "0" * 64),
             }[case]
             payload[field] = value
@@ -2287,18 +2585,14 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
     covered_workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())
     covered = _workflow_step(
         job=covered_workflow["jobs"]["coverage-report"],
-        name="Combine coverage from all independent test shards",
+        name="Combine coverage from all independent lane groups",
     )["run"]
-    # Each event gets a new actual fixture collection/assignment and eleven
-    # genuine traced inputs stamped by the production writer. No merge-group
-    # event is borrowed to certify the scheduled or PR assurance path.
+    # Each event gets eleven genuine traced inputs stamped by the production
+    # writer. No merge-group event is borrowed to certify the scheduled or PR
+    # assurance path.
     for event in ("schedule", "workflow_dispatch", "pull_request", "push"):
         monkeypatch.setenv("GITHUB_EVENT_NAME", event)
         environment["GITHUB_EVENT_NAME"] = event
-        inventory = collect_inventory(root=checkout)
-        assignment = partition(inventory, {}, root=checkout)
-        (inventory_dir / "inventory.json").write_text(json.dumps(inventory))
-        (inventory_dir / "assignment.json").write_text(json.dumps(assignment))
         reset()
         for lane, index in specs:
             current_data = inputs / f"{lane}-{index}" / f"coverage-{lane}-{index}.data"
@@ -2316,15 +2610,8 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
                 capture_output=True,
                 text=True,
             )
-            reporter.write_shard_metadata(
-                coverage_file=current_data,
-                repo_root=checkout,
-                lane=lane,
-                shard=index,
-                test_files=assigned_files(
-                    inventory, assignment, lane=lane, index=index, root=checkout
-                ),
-                assignment_digest=assignment["digest"],
+            reporter.write_group_metadata(
+                coverage_file=current_data, repo_root=checkout, lane=lane, group=index
             )
         run("covered-actual-" + event, covered, 2 if event == "push" else 0)
         if event != "push":

@@ -52,9 +52,6 @@ spec:
             failureThreshold: 8
           resources:
             {{- toYaml .Values.butlersUp.resources | nindent 12 }}
-          securityContext:
-            # Codex's Bubblewrap sandbox; matches compose apparmor:unconfined.
-            appArmorProfile: {type: Unconfined}
           volumeMounts:
             - {name: logs, mountPath: /app/logs}
             - {name: wa-bridge, mountPath: /tmp/wa-bridge}

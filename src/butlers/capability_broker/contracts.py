@@ -258,6 +258,7 @@ class Reservation:
     call_id: UUID
     effect_id: UUID | None
     args_digest: str
+    selected_grant: Grant | None = None
 
 
 @dataclass(frozen=True, slots=True)

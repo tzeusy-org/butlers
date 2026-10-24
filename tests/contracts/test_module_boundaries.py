@@ -17,10 +17,10 @@ pytestmark = pytest.mark.contract
 def _make_minimal_module(name: str = "test_module"):
     from butlers.modules.base import Module
 
+    _module_name = name
+
     class _MinimalModule(Module):
-        @property
-        def name(self) -> str:
-            return name
+        name = _module_name
 
         @property
         def config_schema(self) -> type[BaseModel]:
@@ -52,16 +52,7 @@ class TestModuleAbcStructure:
     def test_abc_defines_required_abstract_methods(self):
         from butlers.modules.base import Module
 
-        required = {
-            "register_tools",
-            "migration_revisions",
-            "on_startup",
-            "on_shutdown",
-            "name",
-            "config_schema",
-            "dependencies",
-        }
-        assert required.issubset(Module.__abstractmethods__)
+        assert Module.__abstractmethods__ == {"name", "config_schema", "register_tools"}
 
     def test_module_abc_has_no_core_infrastructure_access(self):
         """RFC 0002: Module ABC does not expose core infrastructure to subclasses.

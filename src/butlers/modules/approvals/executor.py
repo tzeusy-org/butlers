@@ -281,24 +281,14 @@ async def execute_approved_action(
                     }
 
                 try:
-                    authorized_task = asyncio.current_task()
-                    if authorized_task is None:
-                        raise RuntimeError("Approved execution requires an active asyncio task")
-                    execution_context = ApprovalExecutionContext(
-                        action_id=action_id,
-                        session_id=existing_row.get("session_id"),
-                        actor=existing_row.get("decided_by") or "system:approval_executor",
-                        tool_name=tool_name,
-                        tool_args_digest=approval_tool_args_digest(tool_args),
-                        authorized_task=authorized_task,
+                    raw_result = await _invoke_approved_handler(
+                        existing_row,
+                        action_id,
+                        tool_name,
+                        tool_args,
+                        tool_fn,
+                        dispatch_args=dispatch_args,
                     )
-                    context_token = set_approval_execution_context(execution_context)
-                    try:
-                        raw_result = tool_fn(**dispatch_args)
-                        if inspect.isawaitable(raw_result):
-                            raw_result = await raw_result
-                    finally:
-                        reset_approval_execution_context(context_token)
                     # MCP tool contracts use an error dict for an unsuccessful
                     # operation. Treat it exactly like an exception so a handler that
                     # reports its own failure cannot be recorded as `executed`.
@@ -556,3 +546,30 @@ async def list_executed_actions(
     from butlers.modules.approvals.models import PendingAction
 
     return [PendingAction.from_row(row).to_dict() for row in rows]
+
+
+async def _invoke_approved_handler(
+    row, action_id, tool_name, tool_args, tool_fn, *, dispatch_args=None
+):
+    """Shared exact-task approved execution, entered after the owning protocol.
+
+    Internal plumbing, never request authentication. Ordinary callers retain
+    their original locked eligibility check; GoalDispatch owns durable consume.
+    """
+    authorized_task = asyncio.current_task()
+    if authorized_task is None:
+        raise RuntimeError("Approved execution requires an active asyncio task")
+    context = ApprovalExecutionContext(
+        action_id=action_id,
+        session_id=row.get("session_id"),
+        actor=row.get("decided_by") or "system:approval_executor",
+        tool_name=tool_name,
+        tool_args_digest=approval_tool_args_digest(tool_args),
+        authorized_task=authorized_task,
+    )
+    token = set_approval_execution_context(context)
+    try:
+        result = tool_fn(**(tool_args if dispatch_args is None else dispatch_args))
+        return await result if inspect.isawaitable(result) else result
+    finally:
+        reset_approval_execution_context(token)

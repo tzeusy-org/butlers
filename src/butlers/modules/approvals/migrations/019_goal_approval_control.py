@@ -69,6 +69,17 @@ def upgrade() -> None:
           stop_fenced boolean NOT NULL DEFAULT false,
           dispatch_intent_id uuid UNIQUE,
           approved_args_digest text CHECK(approved_args_digest ~ '^[0-9a-f]{64}$'),
+          park_authorization jsonb,
+          park_authorization_digest text CHECK(park_authorization_digest ~ '^[0-9a-f]{64}$'),
+          park_call_id uuid UNIQUE,
+          dispatch_snapshot_digest text CHECK(dispatch_snapshot_digest ~ '^[0-9a-f]{64}$'),
+          dispatch_consumed_at timestamptz,
+          CHECK ((park_authorization IS NULL AND park_authorization_digest IS NULL
+                  AND park_call_id IS NULL)
+            OR (jsonb_typeof(park_authorization)='object' AND park_authorization_digest IS NOT NULL
+                AND park_call_id IS NOT NULL)),
+          CHECK(dispatch_consumed_at IS NULL OR
+            (dispatch_intent_id IS NOT NULL AND dispatch_snapshot_digest IS NOT NULL)),
           phase text NOT NULL CHECK(phase IN ('absent','pending','approved',
             'dispatch_intent','cancelled','negative_terminal')),
           state_version bigint NOT NULL DEFAULT 1 CHECK(state_version>0),
@@ -122,6 +133,16 @@ def upgrade() -> None:
                 AND NEW.approved_args_digest IS DISTINCT FROM OLD.approved_args_digest)
             OR (OLD.dispatch_intent_id IS NOT NULL
                 AND NEW.dispatch_intent_id IS DISTINCT FROM OLD.dispatch_intent_id)
+            OR (OLD.park_authorization_digest IS NOT NULL AND
+                ROW(NEW.park_authorization,NEW.park_authorization_digest,NEW.park_call_id)
+                IS DISTINCT FROM ROW(OLD.park_authorization,OLD.park_authorization_digest,
+                                     OLD.park_call_id))
+            OR (OLD.dispatch_snapshot_digest IS NOT NULL AND
+                NEW.dispatch_snapshot_digest IS DISTINCT FROM OLD.dispatch_snapshot_digest)
+            OR (OLD.dispatch_consumed_at IS NOT NULL AND
+                NEW.dispatch_consumed_at IS DISTINCT FROM OLD.dispatch_consumed_at)
+            OR (NEW.dispatch_consumed_at IS NOT NULL AND
+                (NEW.phase<>'dispatch_intent' OR NEW.stop_fenced OR NEW.park_call_id IS NULL))
             OR (OLD.stop_fenced AND NOT NEW.stop_fenced)
             OR NEW.state_version<>OLD.state_version+1 THEN
             RAISE EXCEPTION 'goal identity or version immutable' USING ERRCODE='23514';

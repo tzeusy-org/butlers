@@ -92,8 +92,13 @@ Canonical dedupe key guidance per provider:
 ## Untrusted Spans and Channel Kind
 
 RFC 0038 D5 starts an owner goal exposed when the owner's message carries someone else's text.
-Connectors mark that text; goal admission (not built yet) reads the marks. Nothing on the current
-routing path reads them. Helpers live in `butlers.ingestion_spans`.
+Connectors mark that text. The dark accepted-source adapter reads canonical retained input under
+`ClosedGoalProfile.HARNESS`, verifies the sender independently, and returns frozen ordered segments.
+Marked ranges and attribution labels serialize as structural JSON data, including attachment-only
+markers; delimiter-looking text cannot escape them. Verified owner origin stays owner while starting
+exposed. Unknown or unreadable evidence refuses admission; known bad ranges cover the whole text.
+Current routing, schedules and dashboard do not call this adapter. Helpers live in
+`butlers.ingestion_spans`.
 
 - `payload.untrusted_spans`: `{kind, start, end, origin_identity?, origin_display_name?}` records,
   with `kind` one of `forwarded`, `quoted` or `embedded`. `[start, end)` are Python `str` indices
@@ -109,8 +114,28 @@ routing path reads them. Helpers live in `butlers.ingestion_spans`.
   sends it as `capabilities.channel_kind`. Switchboard keeps it on the `connector_registry` row and
   drops an unrecognised value, and admission resolves it with `registered_channel_kind(pool,
   connector_type, endpoint_identity)`. An unregistered or undeclared connector is a message
-  channel. `ingest.v1` has no channel-kind field, so an envelope cannot move itself onto the feed
-  path.
+  channel after a successful registry read; a failed read refuses rather than downgrading a feed.
+  `ingest.v1` has no channel-kind field, so an envelope cannot move itself onto the feed path.
+
+The closed harness sends registered feeds to a trusted deterministic receiver that owns its domain
+store. Unmatched feeds retain a terminal record-only disposition across attempts and kind drift, without a
+goal or runner. Only a matching Git-owned subscription
+(domain, event type, exact/default capabilities and declaration digest) yields an obligation.
+This seam introduces no live subscription engine. A canonical accepted request always uses the same
+`SourceRef("message", request_id)` for dedupe, including feed/message disposition changes.
+
+Opaque reply locators resolve against stored transport, endpoint, conversation and recipient
+provenance, independently of the current reply destination. Known inbound content without a trusted
+stamp is exposed. Stored bot effects use actual producing-goal exposure. Live owner prompts join
+through one immutable inbox row with goal-before-effect locks and expiry/state rechecks after waits;
+Stop, terminal or expired prompts become new owner intent without caused-goal linkage. Unknown or
+foreign locators do not infer continuity. A join only increases exposure and preserves origin,
+ceiling, admitted exposure, causes and budget.
+
+Deploy receiver/schema before marker/reference producers (`extra="forbid"`), and complete buffered
+and filtered replay propagation before enabling a consumer. The current trusted harness remains
+closed: no live activation, model launch or signing-key mount. Rollback disables consumption before
+removing readers or propagation.
 
 | Connector | What it marks |
 | --- | --- |
@@ -269,6 +294,27 @@ an authentication artifact.
 `record()` also scrubs the buffered `full_payload` envelope (the shared `scrub_envelope` that
 connectors apply before submit) and `error_detail`, so new filtered, errored and replayed rows
 carry typed placeholders; a detector failure withholds that text without changing the row's status.
+
+Filtered-event replay retains `payload.untrusted_spans` and `event.in_reply_to_ref` from
+message-capable policy, batch/discretion and error producers. Unchanged retained text keeps the
+exact span records. When privacy omits a body, bearer scrubbing changes it, NUL removal moves its
+offsets or the detector fails, known exposure kinds conservatively cover the whole retained text
+(or `[no text]` placeholder). Discarded bodies and bearer values are never restored to recover
+offsets. Malformed-present markers remain rejectable by canonical ingest validation; replay never
+silently deletes them. Repeated scrubbing and sanitization retain the exposure facts.
+
+The forwarding owner remains the sender. The opaque replied-message locator stays distinct from
+`reply_target_ref`: it confers no origin, feed selection, goal or effect authority, and only later
+admission resolves it. Replay removes stored `drop_context` metadata while preserving these two
+envelope fields. Object and legacy-string JSONB rows are both supported. Older rows that never
+stored a marker or reference cannot recover it; there is no historical backfill.
+
+The authorized replay API still queues only under the connector's replay-safety policy. Drains
+retain their `FOR UPDATE SKIP LOCKED`/status transaction: a competing drain skips actively locked
+rows, and a failed submit remains `replay_failed` until an explicit replay request. Submission
+followed by uncertain status persistence may be delivered again with the same event identity for
+existing ingest deduplication. This is not an exactly-once transport guarantee or a live routing
+switch.
 
 The [bearer material custody audit](bearer-material-custody-audit.md) records the exact
 source inventory, connector stores, inbox readers and synthetic seam evidence. Its

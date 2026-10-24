@@ -229,6 +229,8 @@ def test_watchdog_diagnostics_preserve_full_observed_identity_and_privacy(tmp_pa
     assert "PRIVATE_CANARY" not in (checkpoint / "snapshot.json").read_text()
 
 
+# Its observer's writer thread polls queue.get(timeout=0.05); libfaketime never expires it.
+@pytest.mark.faketime_fragile
 def test_watchdog_diagnostics_preserve_unknown_on_observer_failure_and_cancellation(
     tmp_path, monkeypatch
 ):

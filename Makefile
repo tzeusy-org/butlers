@@ -1,4 +1,4 @@
-.PHONY: check-lock check-format lint install-lint-tools secrets-scan lint-workflows lint-tools-self-test format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-ci-test-shards check-test-budget check-em-dashes check-spec-overwrites check-requirement-trace check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
+.PHONY: check-lock check-format lint install-lint-tools secrets-scan lint-workflows lint-tools-self-test format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-test-budget check-em-dashes check-spec-overwrites check-requirement-trace check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -180,12 +180,6 @@ test-qg-parallel:
 check-for-update-joins:
 	python3 scripts/check_for_update_joins.py src/ tests/ roster/
 
-# Fail-closed replacement for the former integration-only coverage guard.
-# Collects the real unit and integration marker populations and rejects stale,
-# missing, overlapping, or zero-selected checked-in file manifests.
-check-ci-test-shards:
-	uv run --no-sync python scripts/check_ci_test_shards.py
-
 # Per-lane collected-test budget ratchet (bu-r5mnn). Fails when a CI lane
 # collects more tests than scripts/test-budget-baseline.json allows: condense
 # tests in the same PR, or raise the budget with
@@ -266,7 +260,7 @@ check-guards: check-lock lint check-format check-for-update-joins check-em-dashe
 		echo "check-guards: openspec not on PATH, skipping check-openspec-strict (CI runs it)"; \
 	fi
 
-check: lint check-for-update-joins check-ci-test-shards check-test-budget check-guards test
+check: lint check-for-update-joins check-test-budget check-guards test
 
 # Local dry run of the session-link step of the CI `guards` job (bu-mr5t5): scans commit
 # messages not yet on origin/main for tool-session link/footer leakage

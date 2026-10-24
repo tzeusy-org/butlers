@@ -73,12 +73,12 @@ and explicit non-wildcard `sans` list. Material names are `ca_path`,
 material I/O. Neither these settings nor a callback, header, caller flag, or
 KEY_ABSENT_STAGE grants production authority.
 
-Production startup currently refuses enabled settings with the closed category
-`private_transport_prerequisites_unavailable`, before accessing material or
-constructing private factories/listeners. A genuine committed A2 producer and a
-separately admitted isolated trusted profile are still required. There is no
-fallback to public MCP or implicit downgrade to OFF. Successful configuration
-parsing is not successful enabled deployment.
+Enabled owning startup requires the matching daemon domain, active approvals
+module, current/next verification keys, final registered catalog/originals and
+actual019 role/schema/guard verification before material access. Missing inputs
+refuse as `private_transport_prerequisites_unavailable`; successful parsing is
+not deployment or SQL proof. Central clients are assembled only by the separate
+trusted broker profile. There is no public-MCP fallback or downgrade to OFF.
 
 The private boundary occurs after module runtime-state initialization and before
 approval-delivery/public MCP startup. `ButlerDaemon.start()` rolls back only its
@@ -111,8 +111,9 @@ control listener's finite startup/shutdown lifecycle and the real FastMCP ASGI
 lifespan. It mounts only `/goals/<goal-id>/mcp/`; every HTTP request authenticates
 before MCP processing. Discovery and calls re-read the invocation and current
 catalog in their own goal-locked transactions. The existing `KEY_ABSENT_STAGE`
-command still creates only `SessionRefusalListener`. No new deployment profile,
-key resolver, ambient broker, public token route, or activation is provided.
+command still creates only `SessionRefusalListener`. The separate explicit
+`TRUSTED_BROKER` profile assembles the central runtime described below; it creates
+no ambient broker, public token route, runner invocation or deployment activation.
 
 The broker's private `issue_invocation_token` hook issues 256 random bits for an
 already committed, runner-owned **launching** invocation. It checks the actual
@@ -178,8 +179,9 @@ production enablement or full broker acceptance.
 The private `prepare_approved_dispatch` consumer implements the central half of
 approved replay against existing sw047/sw048. It is absent from both MCP
 listeners. `StoredGoalCall` is data, not proof that an owner approved anything;
-the authenticated owning snapshot, local revalidation/dispatch witness and real
-executor handoff remain required. `replay_approved` therefore continues to refuse.
+the fixed replay orchestration obtains an authenticated owning snapshot,
+revalidates locally and requires a committed witness before one execution.
+Without the configured owning transport that orchestration remains unavailable.
 
 The consumer takes the same verified runtime/RLS transaction and goal-first lock
 as Stop. It checks the original invocation, immutable PARK tuple and original
@@ -196,10 +198,10 @@ PARK response may attach only the exact action/effect reference.
 fresh goal-first transaction. Earlier dispatched work may settle after Stop;
 Stop does not claim it undone. Untrusted output exposure commits with settlement
 before any value returns. A failed/unknown settlement never permits redispatch.
-These consumers perform no domain network request and create no owning receipt.
-Actual A2 approval/schema/receipt authority is still blocked on the separately
-delivered approvals migration chain; positive UnitB, authenticated owning replay,
-real PostgreSQL outcomes and full original broker acceptance remain unearned.
+The central prepare/settle primitives perform no domain network request.
+The fixed replay orchestration joins them to the owning019 producer described
+below. Genuine current PostgreSQL outcomes, positive UnitB and complete original
+broker delivery remain separate acceptance obligations.
 
 ## Private PARK and same-transaction recipient readers
 
@@ -334,3 +336,104 @@ Neither a rule approval nor its receipt is a dispatch/committed-effect witness.
 The actual verified ingress, current catalog/grant wiring, approved replay,
 owning dispatch witness, runner integration and remaining full-nine delivery
 requirements remain separate work.
+
+
+## Explicit trusted central runtime
+
+The `butlers control --profile TRUSTED_BROKER --config <switchboard-directory>
+--broker-config <operator-runtime.toml>` command selects a separate isolated
+process profile. It does not change ordinary daemon startup or the existing
+`KEY_ABSENT_STAGE` refusal listener. Omitting the broker config, or leaving its
+`enabled` value false, refuses this selected broker process before creating a
+daemon, opening private material, querying a broker pool, or binding a socket.
+No supplied configuration is enabled by default and no deployment is changed.
+
+The operator TOML is a flat strict shape: boolean `enabled`, absolute `key_file`,
+string `kid`, a `verification_keys` table mapping one or two current/next IDs to
+canonical base64 raw Ed25519 public keys, and a `domain_endpoints` table naming
+every current fleet domain. Each fixed endpoint obeys the signed transport's
+existing HTTPS-with-port or loopback-HTTP-with-port and exact `/mcp` contract.
+It is not selected from an MCP argument, callback, header or redirect. The config
+reader accepts only a bounded regular non-symlink file (64 KiB), uses literal TOML
+without ENV expansion, and refuses unknown keys or malformed shapes even OFF.
+Unused OFF key paths and string placeholders are never resolved or opened.
+
+After the actual Switchboard daemon starts, `build_runtime` takes its existing
+`daemon.db.pool`; it creates no second pool. One finite transaction verifies the
+real Switchboard runtime role and the complete current fleet through
+`PublishedAuthorities`. The factory then loads the explicit immutable file with
+`AssertionSigner.from_file` (current euid, mode 0400, regular non-symlink PKCS8,
+recognized matching public key). There is no private key environment lookup,
+CredentialStore fallback, provisioning or reload. Both control profiles still
+reject private-key environment names and forbidden DB-store key metadata. Only
+the key-absent profile additionally forbids matching mounted-file names entirely.
+
+The factory fixes `PublishedAuthorities`, `SignedMCPDomains`, the file signer,
+`PrivateApprovals` with the explicitly configured owning peers, and the actual
+`BrokerSessionListener`. Each listing/call
+continues to lock and authenticate its own goal/invocation, stored grant, lease,
+lead epoch and current published catalog. A factory preflight is not a cached
+authorization snapshot. The session mounts only the authenticated goal MCP
+endpoint; tokens are issued only by the existing private committed-invocation
+runner hook, never through a new HTTP route. Actual runner integration is still
+missing. Domain success text remains UNKNOWN for effects, never a committed
+receipt or permission to retry an ambiguous effect.
+
+An empty owning client map leaves PARK unavailable. Configured peers use the
+fixed signed-purpose/019 operation path, not DTO or mTLS-only authority. Positive
+PostgreSQL replay and receipt proof remain distinct from this source assembly.
+General receiver-side D7 verification and runner work remain separate owners.
+Selection, risk and undeclared recipient authority are refused.
+
+The central listener retains its existing same-task FastMCP lifespan and six-second
+close bound. The control process owns one retained teardown task and one absolute
+budget: that native six-second bound plus the daemon's configured shutdown/drain
+budget. Repeated cancellation cannot reset it or skip daemon release after a
+listener failure. A task still pending at the deadline is cancelled, retained on
+the daemon and reported as incomplete; abort/cancellation is not settlement proof.
+The daemon pool is released after the session listener. Shutdown errors and the
+original operation error/cancellation remain visible.
+
+Software consumers exercise real registered publication/reader adapters, ephemeral
+file signing, actual TCP/FastMCP forwarding and lifecycle cancellation against
+explicit stateful SQL protocol collaborators. They do not establish database
+roles, row locks, durable commits, actual creator authority or production domain
+replay protection. The migrated runtime-role HTTP/readback test is authored for
+hosted PostgreSQL and is not locally executed. Full RFC0038 nine-criterion delivery,
+actual runner admission, owning SQL proof, positive effects and live provisioning remain unearned.
+
+### Owning Grant and approved-call handoff
+
+The private approvals successor uses a separate signed purpose envelope, not an
+ordinary D7 assertion or the model request's lineage. Central reservation selects
+and commits the exact Grant, original argument digest and PARK call identity
+before sending it. The envelope binds the current catalog and owning registration,
+original tuple, declared approval mode and operation. The owning daemon verifies
+its fixed control peer, current/next signing key, signature, expiry, purpose and
+final registered descriptor before entering the 019 transaction. The existing
+central `allow_standing_rule` fact is carried descriptively as `central_rule_match`;
+it is never changed to manufacture matching evidence. Actual owning rule selection
+uses the authenticated selected Grant, final catalog and same-transaction rules,
+recipient binding and exact-value restrictions. Park-only and always-per-event
+calls cannot autoapprove. Explicit authenticated human rules for exposed calls
+remain allowed where their actual mode and constraints permit them.
+
+An owner decision locks goal serialization and the owning gate before the action.
+Displayed-call validation, edits, decision, rule and audit retain their existing
+owning transaction. Goal approval does not enter the ordinary executor. A bounded
+central discovery worker reads approved snapshots after releasing its pool,
+reauthorizes the stored original/edited call and commits a central dispatch intent.
+The owner then commits an exact snapshot witness. If that reply is lost, only a
+fresh authenticated witness read may recover it. Central attachment must commit
+before one EXECUTE request. EXECUTE atomically consumes the same immutable intent
+and snapshot under the owning lock, commits, and only then enters the captured
+registered original through the shared task-bound approval execution context.
+Concurrent or repeated requests cannot consume again. A lost consumption reply or
+crash after commit stays UNKNOWN and cannot authorize a second forward.
+
+No handler result, MCP text, approval receipt or local consumption timestamp proves
+an external effect committed. Owning SQL races, roles, trigger behavior, rollback
+and lost-reply durability require genuine PostgreSQL execution; software protocol
+controls do not provide that proof. Production remains default OFF. Genuine runner
+invocation admission, generic domain D7 replay verification and authoritative
+effect producers retain their separate contracts and remaining delivery work.

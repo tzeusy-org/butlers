@@ -36,7 +36,7 @@ from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_pricing
 from butlers.api.ingestion_read_budget import IngestionReadBudgetRoute
-from butlers.api.models import ApiResponse, CursorPaginatedResponse, CursorPaginationMeta
+from butlers.api.models import ApiResponse
 from butlers.api.models.ingestion_event import (
     IngestionDroppedKnownSummary,
     IngestionEventDetail,
@@ -50,6 +50,7 @@ from butlers.api.models.ingestion_event import (
     ReplayHistoryEntry,
     SenderContactResolution,
 )
+from butlers.api.pagination import InvalidCursorError, Page
 from butlers.api.routers.audit import append as _audit_append
 from butlers.core.ingestion_events import (
     ingestion_classification_uncertainty,
@@ -78,6 +79,7 @@ from butlers.identity import (
     resolve_contact_by_channel,
     resolve_contacts_by_channel_bulk,
 )
+from butlers.pagination import InvalidCursorError as CoreInvalidCursorError
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +137,7 @@ async def _audit_replay_safety_rejection(
 # ---------------------------------------------------------------------------
 
 
-@router.get("", response_model=CursorPaginatedResponse[IngestionEventSummary])
+@router.get("", response_model=Page[IngestionEventSummary])
 async def list_ingestion_events(
     limit: int = Query(20, ge=1, le=200, description="Max records to return"),
     cursor: str | None = Query(
@@ -222,7 +224,7 @@ async def list_ingestion_events(
         ),
     ),
     db: DatabaseManager = Depends(_get_db_manager),
-) -> CursorPaginatedResponse[IngestionEventSummary]:
+) -> Page[IngestionEventSummary]:
     """Return a cursor-paginated unified timeline of ingestion events, newest first.
 
     Uses keyset (cursor) pagination via ``(received_at DESC, id DESC)`` — no ``total``
@@ -252,19 +254,6 @@ async def list_ingestion_events(
         pool = db.credential_shared_pool()
     except KeyError as exc:
         raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
-
-    if cursor is not None:
-        try:
-            if sort == "cost":
-                from butlers.core.ingestion_events import decode_cost_cursor
-
-                decode_cost_cursor(cursor)
-            else:
-                from butlers.core.ingestion_events import decode_cursor
-
-                decode_cursor(cursor)  # Validate the cursor early; raises ValueError if malformed.
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=f"Invalid cursor: {exc}") from exc
 
     # Resolve channel filter; an empty channels= is treated as no filter.
     channel_list: list[str] | None = None
@@ -296,31 +285,30 @@ async def list_ingestion_events(
     if trace_id is not None and trace_id.strip():
         event_ids = await ingestion_events_request_ids_for_trace(db, trace_id.strip())
 
-    result = await ingestion_events_list(
-        pool,
-        limit=limit,
-        cursor=cursor,
-        channels=channel_list,
-        status=status,
-        statuses=status_list,
-        q=q,
-        from_dt=from_dt,
-        to_dt=to_dt,
-        sort=sort,
-        event_ids=event_ids,
-    )
+    try:
+        result = await ingestion_events_list(
+            pool,
+            limit=limit,
+            cursor=cursor,
+            channels=channel_list,
+            status=status,
+            statuses=status_list,
+            q=q,
+            from_dt=from_dt,
+            to_dt=to_dt,
+            sort=sort,
+            event_ids=event_ids,
+        )
+    except CoreInvalidCursorError as exc:
+        raise InvalidCursorError() from exc
 
     summaries = [IngestionEventSummary(**row) for row in result["items"]]
 
     if summaries:
         await _enrich_list_summaries(summaries, db)
 
-    return CursorPaginatedResponse[IngestionEventSummary](
-        data=summaries,
-        meta=CursorPaginationMeta(
-            next_cursor=result["next_cursor"],
-            has_more=result["has_more"],
-        ),
+    return Page[IngestionEventSummary](
+        items=summaries, next_cursor=result["next_cursor"], limit=limit
     )
 
 

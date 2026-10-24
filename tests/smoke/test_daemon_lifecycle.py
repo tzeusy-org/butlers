@@ -77,9 +77,7 @@ def _make_stub_module(
             self.started = False
             self.shutdown_called = False
 
-        @property
-        def name(self) -> str:
-            return _name
+        name = _name
 
         @property
         def config_schema(self) -> type[BaseModel]:

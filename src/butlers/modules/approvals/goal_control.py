@@ -1,8 +1,9 @@
 """Owning SQL transactions for durable goal approval state.
 
 These internal methods consume infrastructure-bound identities, not model/HTTP
-claims. No listener, key, domain verifier or profile is enabled here. PARK must
-be called only after the separately owned authentic ingress binds its lineage.
+claims. The fixed GoalDispatch ingress verifies signed purpose authority before
+calling these methods; direct internal lineage inputs still require trusted
+infrastructure and do not authenticate themselves.
 LOOKUP absence is UNKNOWN; only a committed CANCEL creates an absent fence.
 External effects are never inferred from generic approval/execution results.
 """
@@ -28,7 +29,7 @@ from butlers.modules.approvals.park import (
 
 # Exact installed prosrc; change only with the owning migration, never a permissive fallback.
 _FUNCTION_DIGESTS = {
-    "guard_approval_goal_effect": "6d5a1c3269b722f44b5093e8220aee89",
+    "guard_approval_goal_effect": "feef78a6bd4d68cb4e5fe932bf4a979b",
     "guard_approval_goal_receipt": "8e39bcaa85c2b376afa4768cc1b2c03f",
     "guard_pending_goal_action": "46bf1a1efdc84728b7e07f366ac74010",
     "validate_approval_goal_final": "a8c50106b56748beabb5b02b0b01b063",
@@ -143,26 +144,32 @@ class OwningGoalApprovals:
             raise GoalApprovalsUnavailable("owning_goal_guards_unavailable")
 
     @asynccontextmanager
-    async def _transaction(self):
+    async def _transaction(self, identity=None):
         deadline = time.monotonic() + self.timeout
         source = getattr(self.pool, "pool", None) or self.pool
         async with asyncio.timeout(self.timeout):
             if hasattr(source, "acquire"):
                 async with source.acquire() as conn, conn.transaction():
-                    await self._begin(conn, deadline)
+                    await self._begin(conn, deadline, identity)
                     yield conn
             else:
                 async with source.transaction():
-                    await self._begin(source, deadline)
+                    await self._begin(source, deadline, identity)
                     yield source
 
-    async def _begin(self, conn, deadline):
+    async def _begin(self, conn, deadline, identity=None):
         await conn.execute(
             "SELECT pg_catalog.set_config('lock_timeout',$1,true),"
             "pg_catalog.set_config('statement_timeout',$1,true)",
             f"{max(1, int((deadline - time.monotonic()) * 1000))}ms",
         )
         await self._verify(conn)
+        if identity is not None:
+            self._identity(identity)
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext('approval-goal:' || $1))",
+                str(identity.goal_id),
+            )
         # Unlike the ordinary rolling-schema helper, absence/refusal is not
         # converted into an OFF success. No second connection is acquired.
         rollout = await conn.fetchrow(
@@ -248,7 +255,9 @@ class OwningGoalApprovals:
         )
         return value
 
-    async def park(self, request: ParkRequest, *, grant=None) -> tuple[object, dict]:
+    async def park(
+        self, request: ParkRequest, *, grant=None, authorization=None
+    ) -> tuple[object, dict]:
         """Commit the actual action/delivery/gate and two stable receipt aliases.
 
         This is an internal producer, not a verifier of caller-asserted lineage.
@@ -275,7 +284,7 @@ class OwningGoalApprovals:
 
         observation = None
         request = replace(request, tool_args=snapshot)
-        async with self._transaction() as conn:
+        async with self._transaction(identity) as conn:
             try:
                 gate = await self._gate(conn, identity)
             except ValueError as exc:
@@ -285,6 +294,30 @@ class OwningGoalApprovals:
             fresh = gate is None
             if fresh:
                 gate = await self._gate(conn, identity, create=True, parked=True)
+            if authorization is not None:
+                from butlers.capability_broker.handoff import VerifiedHandoff
+
+                if type(authorization) is not VerifiedHandoff or (
+                    grant is not None and authorization.grant != grant
+                ):
+                    raise ValueError("authenticated_goal_park_required")
+                original = gate.get("park_authorization_digest")
+                proof = authorization.payload
+                if original is not None and original != authorization.digest:
+                    raise ValueError("goal_park_authorization_changed")
+                if original is None:
+                    gate = await conn.fetchrow(
+                        "UPDATE approval_goal_effects SET park_authorization=$2,"
+                        "park_authorization_digest=$3,park_call_id=$4,"
+                        "state_version=state_version+1,updated_at=clock_timestamp() "
+                        "WHERE effect_id=$1 AND park_authorization_digest IS NULL RETURNING *",
+                        identity.effect_id,
+                        proof,
+                        authorization.digest,
+                        UUID(proof["d7"]["call_id"]),
+                    )
+                    if gate is None:
+                        raise ValueError("goal_park_authorization_race")
             if gate["stop_fenced"]:
                 raise ValueError("goal_stop_fenced")
             if gate["dispatch_intent_id"] is not None:
@@ -324,7 +357,10 @@ class OwningGoalApprovals:
                 if admission is None:
                     raise GoalApprovalsUnavailable("goal_duplicate_missing")
                 value = await self._read_receipt(
-                    conn, dict(gate, state_version=1), identity, "parked"
+                    conn,
+                    dict(gate, state_version=2 if authorization is not None else 1),
+                    identity,
+                    "parked",
                 )
                 return admission, value
             if gate["phase"] not in {"absent", "pending"}:
@@ -405,7 +441,7 @@ class OwningGoalApprovals:
 
     async def lookup(self, identity: CancelIdentity) -> dict | None:
         """Return only current committed evidence. Absence never creates a gate."""
-        async with self._transaction() as conn:
+        async with self._transaction(identity) as conn:
             gate = await self._gate(conn, identity)
             if gate is None or gate["dispatch_intent_id"] is not None:
                 return None
@@ -445,7 +481,7 @@ class OwningGoalApprovals:
             ActionStatus.EXPIRED,
         }:
             raise ValueError("unsupported_goal_decision")
-        async with self._transaction() as conn:
+        async with self._transaction(identity) as conn:
             gate = await self._gate(conn, identity)
             if gate is None or gate["stop_fenced"] or gate["dispatch_intent_id"] is not None:
                 raise ValueError("goal_decision_fenced")
@@ -476,7 +512,7 @@ class OwningGoalApprovals:
 
     async def cancel(self, identity: CancelIdentity) -> dict | None:
         """Commit no-ever-dispatch fencing; never turn a witness into undo proof."""
-        async with self._transaction() as conn:
+        async with self._transaction(identity) as conn:
             gate = await self._gate(conn, identity)
             if gate is None:
                 existing = await conn.fetchrow(
@@ -573,3 +609,77 @@ class OwningGoalApprovals:
             reason="goal_stopped",
             metadata={"historical_status": action.status.value},
         )
+
+
+async def lock_goal_decision(conn, domain, action_id):
+    """Classify without a row lock, then acquire goal/delivery/gate before action.
+
+    The owning caller supplies its existing transaction. The later locked action
+    and deferred SQL checks still bind the classification; no second connection.
+    Legacy schemas use JSON projection, preserving their ordinary decision path.
+    """
+    deadline = asyncio.get_running_loop().time() + 5
+    async with asyncio.timeout_at(deadline):
+        row = await conn.fetchrow(
+            "SELECT to_jsonb(p)->>'goal_id' AS goal_id, "
+            "to_jsonb(p)->>'goal_effect_id' AS goal_effect_id, "
+            "to_jsonb(p)->>'goal_capability' AS goal_capability, "
+            "to_jsonb(p)->>'goal_args_digest' AS goal_args_digest "
+            "FROM pending_actions p WHERE id=$1",
+            action_id,
+        )
+        if row is None or row.get("goal_id") is None:
+            return None
+        identity = CancelIdentity(
+            UUID(str(row["goal_id"])),
+            UUID(str(row["goal_effect_id"])),
+            domain,
+            action_id,
+            row["goal_capability"],
+            row["goal_args_digest"],
+        )
+        owner = OwningGoalApprovals(conn, domain)
+        owner.decision_deadline = deadline
+        await owner._begin(conn, deadline, identity)
+        gate = await owner._gate(conn, identity)
+        if gate is None or gate["stop_fenced"] or gate["dispatch_intent_id"] is not None:
+            raise GoalApprovalsUnavailable("goal_decision_fenced")
+        return owner, identity
+
+
+async def finish_goal_decision(conn, binding):
+    if binding is None:
+        return
+    owner, identity = binding
+    row = await conn.fetchrow(
+        "SELECT * FROM pending_actions WHERE id=$1 FOR UPDATE", identity.action_id
+    )
+    action = PendingAction.from_row(row)
+    gate = await owner._gate(conn, identity)
+    lineage = action.goal_lineage()
+    if (
+        lineage is None
+        or lineage.goal_id != identity.goal_id
+        or lineage.goal_effect_id != identity.effect_id
+    ):
+        raise GoalApprovalsUnavailable("goal_decision_changed")
+    if action.status not in {
+        ActionStatus.APPROVED,
+        ActionStatus.REJECTED,
+        ActionStatus.EXPIRED,
+        ActionStatus.ABANDONED,
+    }:
+        return
+    phase = "approved" if action.status is ActionStatus.APPROVED else "negative_terminal"
+    if gate["phase"] == phase and gate["approved_args_digest"] == action.goal_approved_args_digest:
+        return
+    gate = await conn.fetchrow(
+        "UPDATE approval_goal_effects SET phase=$2,approved_args_digest=$3,"
+        "state_version=state_version+1,updated_at=clock_timestamp() "
+        "WHERE effect_id=$1 RETURNING *",
+        identity.effect_id,
+        phase,
+        action.goal_approved_args_digest,
+    )
+    if phase == "approved":
+        await owner._receipt(conn, gate, identity, "approved")

@@ -41,6 +41,7 @@ def action_row(**changes):
         "goal_args_digest": arguments_digest({"message": "controlled"}),
         "goal_approved_args_digest": None,
     }
+    row["goal_effect_id"] = row["id"]
     return row | changes
 
 
@@ -154,8 +155,62 @@ class ApprovalStore(DeliveryStore):
         self.history = []
         self.suggestions = []
         self.rules = []
+        self.gate = {
+            "goal_id": self.row["goal_id"],
+            "effect_id": self.row["goal_effect_id"],
+            "action_id": self.row["id"],
+            "owning_domain": "mail",
+            "capability": self.row["goal_capability"],
+            "args_digest": self.row["goal_args_digest"],
+            "stop_fenced": False,
+            "dispatch_intent_id": None,
+            "state_version": 1,
+            "phase": "pending",
+            "approved_args_digest": None,
+            "pending_action_id": self.row["id"],
+            "park_authorization": {"approval_mode": "default"},
+        }
+        self.goal_receipts = []
+
+    @asynccontextmanager
+    async def transaction(self):
+        before = copy.deepcopy((self.gate, self.goal_receipts))
+        try:
+            async with super().transaction():
+                yield self
+        except BaseException:
+            self.gate, self.goal_receipts = before
+            raise
+
+    async def fetchval(self, sql, *args):
+        if "pg_class" in sql or "pg_proc" in sql or "pg_trigger" in sql:
+            return True
+        return await super().fetchval(sql, *args)
 
     async def fetchrow(self, sql, *args):
+        if "SELECT to_jsonb(p)" in sql:
+            return {
+                k: self.row[k]
+                for k in ("goal_id", "goal_effect_id", "goal_capability", "goal_args_digest")
+            }
+        if "current_schema()" in sql and "current_user" in sql:
+            return {
+                "schema": "mail",
+                "role": "butler_mail_rw",
+                "schemas": ["pg_catalog", "mail", "public"],
+                "unsafe": False,
+            }
+        if "FROM approval_delivery_rollout" in sql:
+            return {"admission_enabled": False, "worker_enabled": False}
+        if "FROM approval_goal_effects" in sql:
+            return copy.deepcopy(self.gate)
+        if "UPDATE approval_goal_effects" in sql:
+            self.gate.update(
+                phase=args[1],
+                approved_args_digest=args[2],
+                state_version=self.gate["state_version"] + 1,
+            )
+            return copy.deepcopy(self.gate)
         if "UPDATE pending_actions SET status" in sql and "goal_approved_args_digest" in sql:
             if self.refuse_digest:
                 raise ValueError("controlled_unmigrated_digest_column")
@@ -176,6 +231,11 @@ class ApprovalStore(DeliveryStore):
         return await super().fetchrow(sql, *args)
 
     async def execute(self, sql, *args):
+        if "set_config" in sql or "pg_advisory_xact_lock" in sql:
+            return "SELECT 1"
+        if "INSERT INTO approval_goal_receipts" in sql:
+            self.goal_receipts.append(copy.deepcopy(args))
+            return "INSERT 0 1"
         if "INSERT INTO autonomy_approval_history" in sql:
             self.history.append(copy.deepcopy(args))
             return "INSERT 0 1"
@@ -290,6 +350,7 @@ async def test_explicit_owner_rule_preserves_exposed_promotion_exclusion(entry, 
     store = ApprovalStore(action_row(tool_name="send"))
     module = ApprovalsModule()
     module._db = store
+    module._butler_name = "mail"
 
     async def decide():
         if entry == "rest-operation":
@@ -345,6 +406,7 @@ async def test_explicit_rule_requires_actual_authenticated_human_before_writes(a
     store = ApprovalStore(action_row())
     module = ApprovalsModule()
     module._db = store
+    module._butler_name = "mail"
     before = copy.deepcopy(store.__dict__)
     result = await module._approve_action(str(store.row["id"]), create_rule=True, actor=actor)
     assert result["error_code"] == "human_actor_required"
@@ -359,6 +421,7 @@ async def test_explicit_exposed_rule_keeps_actual_high_risk_constraints(argument
     )
     module = ApprovalsModule()
     module._db = store
+    module._butler_name = "mail"
     module.set_approval_policy(
         ApprovalConfig(enabled=True, default_risk_tier=ApprovalRiskTier.HIGH)
     )
@@ -464,6 +527,7 @@ async def test_goal_approval_never_falls_through_ordinary_effect_executor(entry)
     if entry == "module":
         module = ApprovalsModule()
         module._db = store
+        module._butler_name = "mail"
 
         async def dispatch(name, arguments):
             assert name == row["tool_name"]
@@ -480,3 +544,144 @@ async def test_goal_approval_never_falls_through_ordinary_effect_executor(entry)
     assert calls == [], "Goal approval bypassed central Stop and dispatch authorization"
     assert "goal" in error.lower() and "replay" in error.lower()
     assert store.row == before and store.events == []
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "healthy",
+        "finish_refusal",
+        "commit_refusal",
+        "cancel_finish",
+        "unknown_ack",
+        "memory_failure",
+    ],
+)
+async def test_module_goal_approval_observes_only_confirmed_outer_commit(monkeypatch, fault):
+    """Actual module/writer/lifecycle; storage protocol is software, never PG proof.
+
+    REQ-capability-authorization-009: independent descriptive memory and committed
+    lifecycle success must not outlive a refused owning goal transaction.
+    """
+    import asyncio
+
+    from butlers.modules.approvals import decision_memory, delivery_lifecycle, goal_control
+    from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
+
+    class CommitStore(ApprovalStore):
+        def __init__(self):
+            super().__init__(action_row())
+            self.depth = 0
+            self.order = []
+
+        @asynccontextmanager
+        async def transaction(self):
+            outer = self.depth == 0
+            before = copy.deepcopy((self.rules, self.history, self.suggestions))
+            self.depth += 1
+            try:
+                async with super().transaction():
+                    yield self
+                    if outer:
+                        self.order.append("commit_attempt")
+                        if fault == "commit_refusal":
+                            raise ValueError("controlled_commit_refusal")
+            except BaseException:
+                self.rules, self.history, self.suggestions = before
+                if outer:
+                    self.order.append("rollback")
+                raise
+            else:
+                if outer:
+                    self.order.append("commit_confirmed")
+                    if fault == "unknown_ack":
+                        # Committed storage, but no confirmed reply to the owner.
+                        raise OSError("controlled_commit_acknowledgment_loss")
+            finally:
+                self.depth -= 1
+
+    store = CommitStore()
+    independent_pool = object()
+    facts, observations, attempts = [], [], []
+    entered, release = asyncio.Event(), asyncio.Event()
+    finish = goal_control.finish_goal_decision
+
+    async def finalization(connection, binding):
+        if fault == "finish_refusal":
+            raise ValueError("controlled_finish_refusal")
+        if fault == "cancel_finish":
+            entered.set()
+            await release.wait()
+        await finish(connection, binding)
+
+    async def store_fact(pool, **values):
+        assert pool is independent_pool and pool is not store
+        attempts.append(store.depth)
+        store.order.append("memory_attempt")
+        if fault == "memory_failure":
+            raise OSError("controlled_independent_memory_unavailable")
+        facts.append(values["metadata"])
+
+    def observe(value):
+        assert value.terminal_status == "approved"
+        observations.append(store.depth)
+        store.order.append("lifecycle_success")
+
+    monkeypatch.setattr(goal_control, "finish_goal_decision", finalization)
+    monkeypatch.setattr(decision_memory, "store_fact", store_fact)
+    monkeypatch.setattr(delivery_lifecycle, "emit_lifecycle_success", observe)
+    module = ApprovalsModule()
+    module._db, module._butler_name = store, "mail"
+    module._decision_memory_writer = DecisionMemoryWriter(
+        butler_name="mail",
+        memory_pool_provider=lambda: independent_pool,
+        resolution_pool_provider=lambda: store,
+        embedding_engine_provider=object,
+        tool_meta_provider=lambda _: None,
+    )
+    before = copy.deepcopy((store.row, store.gate, store.goal_receipts, store.events))
+    operation = asyncio.create_task(
+        module._approve_action(
+            str(store.row["id"]),
+            create_rule=True,
+            actor={"type": "human", "id": "controlled-owner", "authenticated": True},
+        )
+    )
+    try:
+        if fault == "cancel_finish":
+            await asyncio.wait_for(entered.wait(), 1)
+            operation.cancel()
+        if fault in {"finish_refusal", "commit_refusal", "cancel_finish", "unknown_ack"}:
+            expected = (
+                asyncio.CancelledError
+                if fault == "cancel_finish"
+                else OSError
+                if fault == "unknown_ack"
+                else ValueError
+            )
+            with pytest.raises(expected):
+                await asyncio.wait_for(operation, 2)
+            assert facts == [] and attempts == [] and observations == []
+            if fault != "unknown_ack":
+                assert (store.row, store.gate, store.goal_receipts, store.events) == before
+                assert store.rules == []
+            else:
+                assert store.row["status"] == "approved" and len(store.rules) == 1
+                assert store.gate["phase"] == "approved"
+        else:
+            result = await asyncio.wait_for(operation, 2)
+            assert result["status"] == "approved" and "created_rule" in result
+            assert len(store.rules) == 1 and store.gate["phase"] == "approved"
+            assert attempts == [0] and observations == [0]
+            assert store.order.index("commit_confirmed") < store.order.index("lifecycle_success")
+            assert store.order.index("commit_confirmed") < store.order.index("memory_attempt")
+            assert len(facts) == (0 if fault == "memory_failure" else 1)
+            if facts:
+                assert facts[0]["state"] == "active"
+                assert facts[0]["rule_id"] == result["created_rule"]["id"]
+        assert store.depth == 0
+    finally:
+        release.set()
+        if not operation.done():
+            operation.cancel()
+        await asyncio.wait_for(asyncio.gather(operation, return_exceptions=True), 2)

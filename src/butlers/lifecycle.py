@@ -47,7 +47,7 @@ from butlers.credentials import (
 from butlers.daemon_utils import _flatten_config_for_secret_scan
 from butlers.db import Database
 from butlers.exceptions import RuntimeBinaryNotFoundError
-from butlers.migrations import has_butler_chain, run_migrations
+from butlers.migrations import get_module_migration_chains, has_butler_chain, run_migrations
 from butlers.module_state import ModuleStartupStatus
 from butlers.owner_bootstrap import _ensure_owner_entity
 from butlers.storage import BlobStorageStartupError, S3BlobStore
@@ -112,9 +112,9 @@ async def _startup_config(daemon: Any, state: StartupState) -> None:
     # Only an explicitly installed startup selection activates this boundary.
     state.profile = vars(daemon).get("_control_profile")
     if state.profile is not None:
-        from butlers.control import check_private_key_absent
+        from butlers.control import check_control_profile
 
-        check_private_key_absent(state.profile)
+        check_control_profile(state.profile)
 
     # 1. Load config (skip if pre-set, e.g. by e2e fixtures)
     if daemon.config is None:
@@ -155,12 +155,9 @@ async def _startup_telemetry(daemon: Any, state: StartupState) -> None:
 
 async def _startup_modules(daemon: Any, state: StartupState) -> None:
     """Select declared modules in dependency order."""
-    # 3. Initialize modules (topological order). The registry instantiates
-    # every built-in module; startup rejects unknown declarations and admits
-    # only explicitly declared names, independent of config schema shape.
-    daemon._modules = daemon._select_startup_modules(
-        daemon._registry.load_all(daemon.config.modules)
-    )
+    # 3. Construct only declared modules and reject unknown names, missing
+    # declared dependencies and cycles before provisioning or module effects.
+    daemon._modules = daemon._registry.load_from_config(daemon.config.modules)
 
 
 async def _startup_module_config(daemon: Any, state: StartupState) -> None:
@@ -236,10 +233,11 @@ async def _startup_core_migrations(daemon: Any, state: StartupState) -> None:
 async def _startup_module_migrations(daemon: Any, state: StartupState) -> None:
     """Run module migrations and cascade isolated migration failures."""
     # 8. Run module Alembic migrations (non-fatal per-module)
+    chains = get_module_migration_chains(daemon._modules, daemon.config.name)
     for mod in daemon._modules:
         if mod.name in daemon._module_statuses:
             continue
-        rev = mod.migration_revisions()
+        rev = chains.get(mod.name)
         if rev:
             # A module MAY declare a private schema (validated config field
             # ``memory_schema`` on the memory module) so its chain migrates into
@@ -265,7 +263,7 @@ async def _startup_module_migrations(daemon: Any, state: StartupState) -> None:
 
 
 async def _startup_credential_store(daemon: Any, state: StartupState) -> None:
-    """Build credentials and retain the healthy modules' spawner requirements."""
+    """Build credentials and validate the healthy modules' daemon requirements."""
     # 8b. Create layered CredentialStore and validate module credentials
     # (non-fatal per-module).
     # DB pool is now available so DB-stored credentials are visible to resolve().

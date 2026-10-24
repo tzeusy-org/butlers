@@ -63,20 +63,11 @@ class RelationshipModule(Module):
         self._db: Any = None
         self._chronicler_pool: Any = None  # Lazy pool for chronicler schema (episode repoint)
 
-    @property
-    def name(self) -> str:
-        return "relationship"
+    name = "relationship"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return RelationshipModuleConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        return None  # relationship tables already exist via separate migrations
 
     async def on_startup(
         self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None

@@ -1,12 +1,14 @@
 """Atomic domain-action to approval-delivery lifecycle transitions.
 
 This is the sole bridge from canonical approval decisions/expiry/defer into
-the notification-only recovery state.  It locks the action first, then its
-intent and presentations/cohort membership, and never performs provider work.
+the notification-only recovery state. Goal-linked negative/defer decisions lock
+the goal/gate first; ordinary rows lock the action first. Both then lock delivery
+intent and presentations/cohort membership, and never perform provider work.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from contextlib import asynccontextmanager
@@ -129,12 +131,38 @@ async def _write_scope(
     *,
     already_in_transaction: bool,
     success_observations: list[LifecycleSuccessObservation],
+    goal_action_id: uuid.UUID | None = None,
 ):
     if already_in_transaction:
         yield source
         return
-    async with _approval_write_transaction(source) as connection:
-        yield connection
+    # Goal-linked negative/defer writers enter goal serialization before the
+    # existing action->delivery locks. Legacy rows keep their ordinary scope.
+    # Borrowed owning scopes above already hold the gate and finish it once.
+    async with asyncio.timeout(None) as bounded:
+        async with _approval_write_transaction(source) as connection:
+            binding = None
+            if goal_action_id is not None:
+                row = await connection.fetchrow(
+                    "SELECT * FROM pending_actions WHERE id = $1", goal_action_id
+                )
+                if (
+                    row is not None
+                    and row.get("goal_id") is not None
+                    and row["status"] == "pending"
+                ):
+                    from butlers.modules.approvals.goal_control import lock_goal_decision
+
+                    domain = row["goal_capability"].split("__")[0]
+                    binding = await lock_goal_decision(connection, domain, goal_action_id)
+                    if binding is None:
+                        raise ValueError("goal_decision_classification_changed")
+                    bounded.reschedule(binding[0].decision_deadline)
+            yield connection
+            if binding is not None:
+                from butlers.modules.approvals.goal_control import finish_goal_decision
+
+                await finish_goal_decision(connection, binding)
     for observation in success_observations:
         emit_lifecycle_success(observation)
 
@@ -299,6 +327,9 @@ async def transition_pending_action(
         source,
         already_in_transaction=_already_in_transaction,
         success_observations=success_observations,
+        goal_action_id=action_id
+        if target_status in {ActionStatus.REJECTED, ActionStatus.EXPIRED}
+        else None,
     ) as connection:
         row = await connection.fetchrow(
             "SELECT * FROM pending_actions WHERE id = $1 FOR UPDATE",
@@ -462,6 +493,7 @@ async def defer_pending_action(
         source,
         already_in_transaction=_already_in_transaction,
         success_observations=success_observations,
+        goal_action_id=action_id,
     ) as connection:
         row = await connection.fetchrow(
             "SELECT * FROM pending_actions WHERE id = $1 FOR UPDATE",

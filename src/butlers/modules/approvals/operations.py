@@ -11,6 +11,7 @@ are responsible for ensuring the request is authorized before calling these.
 
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import logging
@@ -512,7 +513,20 @@ async def abandon_approved_action(
     now = datetime.now(UTC)
     decided_by = f"human:{actor_id}"
     try:
-        async with _approval_write_transaction(pool) as write_target:
+        async with (
+            asyncio.timeout(None) as bounded,
+            _approval_write_transaction(pool) as write_target,
+        ):
+            binding = None
+            if row.get("goal_id") is not None:
+                from butlers.modules.approvals.goal_control import lock_goal_decision
+
+                binding = await lock_goal_decision(
+                    write_target, row["goal_capability"].split("__")[0], parsed_id
+                )
+                if binding is None:
+                    raise ValueError("goal_decision_classification_changed")
+                bounded.reschedule(binding[0].decision_deadline)
             abandoned_row = await write_target.fetchrow(
                 "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
                 "WHERE id = $4 AND status = $5 AND execution_result IS NULL "
@@ -550,6 +564,10 @@ async def abandon_approved_action(
                 metadata={"tool_name": abandoned_action.tool_name},
                 occurred_at=now,
             )
+            if binding is not None:
+                from butlers.modules.approvals.goal_control import finish_goal_decision
+
+                await finish_goal_decision(write_target, binding)
     except Exception as exc:  # noqa: BLE001 -- terminal transition must remain atomic
         logger.error("Could not abandon approval action %s: %s", action_id, exc)
         return {"error": f"Could not abandon approval action: {exc}"}
@@ -708,6 +726,18 @@ async def create_rule_from_action(
         return {"error": f"Action not found: {action_id}"}
 
     action = PendingAction.from_row(row)
+
+    # This is actual signed registration provenance retained by the owning
+    # producer, not a tool-name convention or a caller policy flag. Explicit
+    # exposed human rules remain valid for default mode.
+    if action.goal_lineage() is not None:
+        gate = await pool.fetchrow(
+            "SELECT park_authorization FROM approval_goal_effects WHERE effect_id=$1",
+            action.id,
+        )
+        authorization = gate["park_authorization"] if gate is not None else None
+        if type(authorization) is not dict or authorization.get("approval_mode") != "default":
+            return {"error": "Standing rule unavailable for this registered approval mode"}
 
     # Generate suggested constraints via sensitivity analysis
     suggested = suggest_constraints(action.tool_name, action.tool_args)

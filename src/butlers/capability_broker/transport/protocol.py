@@ -11,6 +11,11 @@ from butlers.core.capability_json import arguments_digest, canonical_bytes
 from butlers.core.goal_stop import CancelIdentity
 
 PROTOCOL = "broker-approvals-v1"
+PURPOSE_PROTOCOL = "broker-approvals-v2"
+PURPOSE_TOOLS = {
+    op: f"broker_approval_authorized_{op.lower()}"
+    for op in ("PARK", "SNAPSHOT", "CLAIM", "WITNESS", "EXECUTE")
+}
 RECEIPT_PROTOCOL = "broker-owning-receipt-v1"
 TOOLS = {op: f"broker_approval_{op.lower()}" for op in ("PARK", "LOOKUP", "CANCEL")}
 OUTCOMES = {
@@ -87,6 +92,26 @@ def strict_json(raw: bytes):
 
 
 def request(value, domain: str):
+    if type(value) is dict and value.get("protocol") == PURPOSE_PROTOCOL:
+        op = value.get("operation")
+        if type(op) is not str or op not in PURPOSE_TOOLS:
+            raise ProtocolError("invalid_operation")
+        exact(
+            value,
+            {"protocol", "operation", "request_id", "identity", "handoff"}
+            | ({"arguments"} if op == "PARK" else set()),
+        )
+        target = identity(value["identity"])
+        uuid_text(value["request_id"])
+        if (
+            target.owning_domain != domain
+            or type(value["handoff"]) is not str
+            or not 1 <= len(value["handoff"]) <= 131072
+        ):
+            raise ProtocolError("invalid_handoff")
+        if op == "PARK" and arguments_digest(value["arguments"]) != target.args_digest:
+            raise ProtocolError("argument_binding")
+        return value
     if (
         type(value) is not dict
         or type(value.get("operation")) is not str
@@ -120,6 +145,27 @@ def reply(value, outgoing):
     if any(value[k] != outgoing[k] for k in ("protocol", "operation", "request_id", "identity")):
         raise ProtocolError("response_binding")
     outcome = value["outcome"]
+    if outgoing["protocol"] == PURPOSE_PROTOCOL and outgoing["operation"] != "PARK":
+        op = outgoing["operation"]
+        if outcome in {"unknown", "refused"}:
+            if value["receipt"] is not None:
+                raise ProtocolError("unexpected_receipt")
+            return value
+        r = value["receipt"]
+        if op == "SNAPSHOT" and outcome == "approved":
+            exact(r, ("version", "call"))
+            if type(r["version"]) is not int or r["version"] < 1 or type(r["call"]) is not dict:
+                raise ProtocolError("invalid_snapshot")
+        elif op in {"CLAIM", "WITNESS"} and outcome == "claimed":
+            exact(r, ("intent_id", "snapshot_digest"))
+            uuid_text(r["intent_id"])
+            if type(r["snapshot_digest"]) is not str or not re.fullmatch(
+                r"[0-9a-f]{64}", r["snapshot_digest"]
+            ):
+                raise ProtocolError("invalid_witness")
+        else:
+            raise ProtocolError("invalid_outcome")
+        return value
     if type(outcome) is not str or outcome not in OUTCOMES[outgoing["operation"]]:
         raise ProtocolError("invalid_outcome")
     r = value["receipt"]
@@ -171,7 +217,7 @@ def rpc_request(value, domain):
     if method == "tools/call":
         exact(params, ("name", "arguments"))
         app = request(params["arguments"], domain)
-        if params["name"] != TOOLS[app["operation"]]:
+        if params["name"] != tool_name(app):
             raise ProtocolError("tool_binding")
     elif method == "initialize":
         exact(params, ("protocolVersion", "capabilities", "clientInfo"))
@@ -200,7 +246,7 @@ def rpc_result(raw, outgoing_rpc, domain):
     if method == "tools/call":
         params = exact(outgoing_rpc["params"], ("name", "arguments"))
         req = request(params["arguments"], domain)
-        if params["name"] != TOOLS[req["operation"]]:
+        if params["name"] != tool_name(req):
             raise ProtocolError("tool_binding")
         result = exact(v["result"], ("content", "structuredContent", "isError"))
         if result["isError"] is not False:
@@ -220,11 +266,17 @@ def rpc_result(raw, outgoing_rpc, domain):
         result = exact(v["result"], ("tools",))
         if (
             type(result["tools"]) is not list
-            or len(result["tools"]) != len(TOOLS)
+            or len(result["tools"]) not in {len(TOOLS), len(TOOLS) + len(PURPOSE_TOOLS)}
             or any(type(t) is not dict or type(t.get("name")) is not str for t in result["tools"])
-            or {t["name"] for t in result["tools"]} != set(TOOLS.values())
+            or {t["name"] for t in result["tools"]}
+            not in (set(TOOLS.values()), set(TOOLS.values()) | set(PURPOSE_TOOLS.values()))
         ):
             raise ProtocolError("tool_catalog")
     else:
         raise ProtocolError("unexpected_rpc")
     return v
+
+
+def tool_name(value):
+    tools = PURPOSE_TOOLS if value["protocol"] == PURPOSE_PROTOCOL else TOOLS
+    return tools[value["operation"]]

@@ -24,22 +24,6 @@
     },
     {
       "workflow": ".github/workflows/ci.yml",
-      "job": "inventory",
-      "existing_timeout_minutes": null,
-      "successful_sample_n": 0,
-      "p95_s": null,
-      "candidate_timeout_minutes": 35,
-      "retry_extra_s": 0,
-      "state": "provisional; extracted producer retains complete former guards35min envelope; named current calibration pending",
-      "sample_source": "bu-q1hzqn.1 extraction from guards; no independent inventory whole-job observations",
-      "review_uv_nominal_envelope_s": 640,
-      "review_browser_hard_retry_interval_s": 0,
-      "additional_provisional_cold_dependency_allowance_s": 180,
-      "review_policy": "Retain the complete35min former producer job cap rather than infer a shorter collection/setup floor. Frozen editable repair and full UV recovery remain. No stable p95 or timing gain is established by this source move.",
-      "installed_timeout_minutes": 35
-    },
-    {
-      "workflow": ".github/workflows/ci.yml",
       "job": "guards",
       "existing_timeout_minutes": null,
       "successful_sample_n": 10,
@@ -337,30 +321,6 @@
       "installed_timeout_minutes": 18
     },
     {
-      "workflow": ".github/workflows/ci-shard-weights.yml",
-      "job": "observe",
-      "installed_timeout_minutes": 12,
-      "state": "provisional finite 150-run/300-artifact horizon with each read bounded30s; complete current calibration unknown",
-      "sample_source": "source-enumerated finite API horizon; no healthy timing claim",
-      "p95_s": null
-    },
-    {
-      "workflow": ".github/workflows/nightly.yml",
-      "job": "coverage-inventory",
-      "existing_timeout_minutes": null,
-      "successful_sample_n": 0,
-      "p95_s": null,
-      "candidate_timeout_minutes": 35,
-      "retry_extra_s": 0,
-      "state": "provisional; copied complete existing source-job envelope, new workflow calibration pending",
-      "sample_source": ".github/workflows/ci.yml inventory complete watchdog; no independent owned coverage job observations; relocated from ci-coverage.yml to nightly.yml by bu-29wkwj.1 with unchanged caps",
-      "review_uv_nominal_envelope_s": 640,
-      "review_browser_hard_retry_interval_s": 0,
-      "additional_provisional_cold_dependency_allowance_s": 180,
-      "review_policy": "Preserve existing complete setup, recovery and execution envelopes. Matrix rows retain unit28/integration36. No current p95 or speedup is inferred from source relocation.",
-      "installed_timeout_minutes": 35
-    },
-    {
       "workflow": ".github/workflows/nightly.yml",
       "job": "coverage-shards",
       "existing_timeout_minutes": null,
@@ -411,6 +371,16 @@
       "additional_provisional_cold_dependency_allowance_s": 180,
       "review_policy": "Preserve existing complete setup, recovery and execution envelopes. Matrix rows retain unit28/integration36. No current p95 or speedup is inferred from source relocation.",
       "installed_timeout_minutes": 16
+    },
+    {
+      "workflow": ".github/workflows/nightly.yml",
+      "job": "durations-refresh",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "installed_timeout_minutes": 10,
+      "state": "provisional; new job (bu-29wkwj.2) merging eleven small JSON artifacts and opening at most one PR; no healthy p95 proof",
+      "sample_source": "none; stdlib-only merge with no dependency install"
     },
     {
       "workflow": ".github/workflows/ci-latency.yml",

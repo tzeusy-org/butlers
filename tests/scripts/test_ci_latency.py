@@ -194,7 +194,6 @@ def test_bounded_read_and_error_report_are_closed(tmp_path):
     assert "report.md" in job["steps"][1]["run"]
     assert job["steps"][2]["if"] == "always()"
     assert job["steps"][2]["with"]["name"] == "ci-latency"
-    assert "ci_latency" not in (root / ".github/workflows/ci-shard-weights.yml").read_text()
     assert (
         latency.observe(
             repository="owner/repo",

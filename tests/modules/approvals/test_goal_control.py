@@ -169,7 +169,9 @@ class DurableStore(FencedStore):
     async def execute(self, sql, *args):
         from butlers.modules.approvals.models import GOAL_LINEAGE_COLUMNS
 
-        if "pg_advisory_xact_lock" in sql:
+        if "approval-goal:" in sql:
+            self.order.append("goal_serializer")
+        elif "pg_advisory_xact_lock" in sql:
             self.order.append("serializer")
         elif "INSERT INTO approval_goal_effects" in sql:
             self.gate = dict(

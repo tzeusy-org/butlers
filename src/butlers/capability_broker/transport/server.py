@@ -22,7 +22,7 @@ from uvicorn.server import ServerState
 from butlers.core.capability_json import canonical_bytes
 
 from .config import OPERATION_SECONDS, REQUEST_LIMIT, PeerPolicy
-from .protocol import TOOLS, ProtocolError, reply, request, rpc_request, strict_json
+from .protocol import PURPOSE_TOOLS, TOOLS, ProtocolError, reply, request, rpc_request, strict_json
 from .tls import HeadGate, verify_peer
 
 
@@ -33,9 +33,11 @@ class PrivateApp:
         self.mcp = FastMCP("private-goal-approvals")
         for op, tool in TOOLS.items():
             self._register(op, tool)
+        for op, tool in PURPOSE_TOOLS.items():
+            self._register(op, tool, authorized=True)
         self.app = self.mcp.http_app(path="/mcp", stateless_http=True, json_response=True)
 
-    def _register(self, op, tool):
+    def _register(self, op, tool, *, authorized=False):
         async def process(envelope: dict) -> ToolResult:
             http_request = get_http_request()
             binding = http_request.scope.get("private.broker.peer")
@@ -51,7 +53,7 @@ class PrivateApp:
             if value["operation"] != op:
                 raise ProtocolError("tool_binding")
             assertion = http_request.headers.get("x-butlers-assertion")
-            if op == "PARK":
+            if op == "PARK" and not authorized:
                 if assertion is None or not 1 <= len(assertion) <= 8192:
                     raise ProtocolError("park_assertion_required")
             elif assertion is not None:
@@ -68,7 +70,29 @@ class PrivateApp:
                 is_error=False,
             )
 
-        if op == "PARK":
+        if authorized:
+
+            async def execute(
+                protocol: str,
+                operation: str,
+                request_id: str,
+                identity: dict,
+                handoff: str,
+                arguments: dict | None = None,
+            ) -> ToolResult:
+                value = dict(
+                    protocol=protocol,
+                    operation=operation,
+                    request_id=request_id,
+                    identity=identity,
+                    handoff=handoff,
+                )
+                if op == "PARK":
+                    value["arguments"] = arguments
+                elif arguments is not None:
+                    raise ProtocolError("unexpected_arguments")
+                return await process(value)
+        elif op == "PARK":
 
             async def execute(
                 protocol: str,

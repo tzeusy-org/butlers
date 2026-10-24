@@ -25,6 +25,10 @@ def upgrade() -> None:
             approval_ref TEXT CHECK (approval_ref IS NULL OR length(approval_ref) BETWEEN 1 AND 512),
             dispatch_intent_id UUID UNIQUE,
             dispatch_committed_at TIMESTAMPTZ,
+            park_call_id UUID UNIQUE,
+            selected_grant JSONB,
+            catalog_digest TEXT,
+            owning_witness_digest TEXT CHECK(owning_witness_digest ~ '^[0-9a-f]{64}$'),
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             UNIQUE(goal_id,effect_id),
             FOREIGN KEY(goal_id,effect_id) REFERENCES switchboard.effects(goal_id,id),
@@ -135,9 +139,12 @@ def upgrade() -> None:
                     RAISE EXCEPTION 'PARK identity must precede owning forward';
                 END IF;
                 IF TG_OP='UPDATE' THEN
-                    IF (to_jsonb(NEW)-ARRAY['approval_ref','dispatch_intent_id','dispatch_committed_at'])
+                    IF (OLD.owning_witness_digest IS NOT NULL AND NEW.owning_witness_digest IS DISTINCT FROM OLD.owning_witness_digest) THEN
+                        RAISE EXCEPTION 'owning witness immutable' USING ERRCODE='23514';
+                    END IF;
+                    IF (to_jsonb(NEW)-ARRAY['approval_ref','dispatch_intent_id','dispatch_committed_at','owning_witness_digest'])
                        IS DISTINCT FROM
-                       (to_jsonb(OLD)-ARRAY['approval_ref','dispatch_intent_id','dispatch_committed_at'])
+                       (to_jsonb(OLD)-ARRAY['approval_ref','dispatch_intent_id','dispatch_committed_at','owning_witness_digest'])
                        OR (OLD.approval_ref IS NOT NULL AND NEW.approval_ref IS DISTINCT FROM OLD.approval_ref)
                        OR (OLD.dispatch_intent_id IS NOT NULL AND
                            (NEW.dispatch_intent_id,NEW.dispatch_committed_at) IS DISTINCT FROM

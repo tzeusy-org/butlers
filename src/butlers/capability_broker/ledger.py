@@ -283,6 +283,8 @@ class BrokerLedger:
             # Return the refusal so the exhaustion transition commits before raising.
             return BrokerRefused(Reason.BUDGET)
         effect_id = None
+        call_id = uuid4()
+        selected = next(g for g in principal.grants if g.capability == capability.identity)
         if capability.effect_class != "read":
             previous = await self.connection.fetchrow(
                 "SELECT id FROM switchboard.effects WHERE goal_id=$1 AND capability=$2 "
@@ -313,19 +315,31 @@ class BrokerLedger:
                 raise BrokerRefused(Reason.UNAVAILABLE)
             await self.connection.execute(
                 "INSERT INTO switchboard.goal_park_associations "
-                "(effect_id,goal_id,owning_domain,action_id,allow_standing_rule) "
-                "VALUES ($1,$2,$3,$1,$4)",
+                "(effect_id,goal_id,owning_domain,action_id,allow_standing_rule,park_call_id,"
+                "selected_grant,catalog_digest) "
+                "VALUES ($1,$2,$3,$1,$4,$5,$6,$7)",
                 effect_id,
                 principal.goal_id,
                 capability.domain,
                 decision.allow_standing_rule,
+                call_id,
+                encode_grants((selected,))[0],
+                principal.catalog_digest,
             )
         await self.connection.execute(
             "UPDATE switchboard.budgets SET used_calls=used_calls+1,updated_at=now() "
             "WHERE goal_id=$1",
             principal.goal_id,
         )
-        return Reservation(principal, capability, decision, uuid4(), effect_id, args_digest)
+        return Reservation(
+            principal,
+            capability,
+            decision,
+            call_id,
+            effect_id,
+            args_digest,
+            next(g for g in principal.grants if g.capability == capability.identity),
+        )
 
     async def dispatching(self, reservation: Reservation) -> None:
         if reservation.effect_id is not None:

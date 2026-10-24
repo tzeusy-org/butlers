@@ -37,7 +37,7 @@ vi.mock("@/hooks/use-conversations.ts", () => ({
   useConversationMessages: vi.fn(),
   useConversationSearch: vi.fn(),
   useMessageSearch: vi.fn(() => ({
-    data: { data: [], meta: { next_cursor: null, has_more: false } },
+    data: { items: [], next_cursor: null, limit: 20 },
     isLoading: false,
     isError: false,
   })),
@@ -1263,7 +1263,7 @@ describe("ChatContent — message-search jump-to-message scroll parity (bu-qaisp
 
     vi.mocked(useMessageSearch).mockReturnValue({
       data: {
-        data: [
+        items: [
           {
             message_id: "msg-target",
             conversation_id: "conv-b",
@@ -1276,7 +1276,8 @@ describe("ChatContent — message-search jump-to-message scroll parity (bu-qaisp
             deep_link: "/butlers/switchboard",
           },
         ],
-        meta: { next_cursor: null, has_more: false },
+        next_cursor: null,
+        limit: 20,
       },
       isLoading: false,
       isError: false,

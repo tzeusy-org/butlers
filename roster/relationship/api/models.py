@@ -1585,23 +1585,6 @@ class EntityFactEntry(FactAttribution):
     staleness_band: str
 
 
-class EntityFactsResponse(BaseModel):
-    """Keyset-paginated response for ``GET /entities/{id}/facts``.
-
-    Keyset (cursor) pagination per the repo convention (CLAUDE.md §"Cursor
-    Pagination"): ordered ``created_at DESC, id DESC``, no ``total`` field.
-
-    - ``items`` — the page of fact rows (active identity rows by default;
-      labeled narrative rows additionally when ``store=all``).
-    - ``next_cursor`` — opaque cursor for the next page (``None`` on last page).
-    - ``has_more`` — True when more rows exist beyond this page.
-    """
-
-    items: list[EntityFactEntry]
-    next_cursor: str | None = None
-    has_more: bool
-
-
 # ---------------------------------------------------------------------------
 # Activity binning (entity v3 — "Activity binning parameter")
 # ---------------------------------------------------------------------------

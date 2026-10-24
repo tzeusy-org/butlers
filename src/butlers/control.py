@@ -1,12 +1,13 @@
-"""Trusted key-absent Switchboard process, separate from domain orchestration.
+"""Explicit isolated Switchboard profiles, separate from domain orchestration.
 
-This stage preserves the existing service daemon. The second listener has no
-MCP server, signer, broker, credential resolver, or goal admission path.
+KEY_ABSENT_STAGE remains refusal-only. TRUSTED_BROKER uses a separate default-OFF
+operator configuration and the central factory; requests never select a profile.
 """
 
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import signal
 import socket
@@ -19,6 +20,7 @@ import uvicorn
 from starlette.responses import JSONResponse
 
 KEY_ABSENT_STAGE = "KEY_ABSENT_STAGE"
+TRUSTED_BROKER = "TRUSTED_BROKER"
 CONTROL_SESSION_PORT = 41199
 _PRIVATE_KEY_NAME = "GOAL_BROKER_SIGNING_KEY"
 
@@ -51,6 +53,22 @@ def check_private_key_absent(profile: str, *, environment: Mapping[str, str] | N
         raise StageConfigurationError(
             "KEY_ABSENT_STAGE: cannot verify private-key absence"
         ) from None
+
+
+def check_control_profile(profile: str, *, environment: Mapping[str, str] | None = None) -> None:
+    """Separate explicit profiles; neither accepts environment-backed private keys.
+
+    The key-absent profile still forbids mount names. The trusted broker profile
+    can read only its separately selected immutable file through its own factory.
+    """
+    if profile == KEY_ABSENT_STAGE:
+        check_private_key_absent(profile, environment=environment)
+    elif profile == TRUSTED_BROKER:
+        environment = os.environ if environment is None else environment
+        if any(name.upper().startswith(_PRIVATE_KEY_NAME) for name in environment):
+            raise StageConfigurationError("private-key environment configuration is forbidden")
+    else:
+        raise StageConfigurationError("unsupported control profile")
 
 
 # Literal per-store queries keep both relations visible to the schema-reach contract.
@@ -271,24 +289,103 @@ class SessionRefusalListener:
             raise original_cancel
 
 
-async def run_control(config_dir: Path, *, profile: str, session_host: str) -> None:
-    """Run today's service and the refusal listener under one trusted profile.
+async def _release_control(daemon, listener, waiter) -> None:
+    """One retained cleanup owner/bound, unaffected by repeated caller cancels.
 
-    Profile selection is a CLI/deployment setting. No request can change it.
-    Either listener exiting unexpectedly stops this process; shutdown and any
-    partial startup release both sockets and the existing daemon's resources.
+    Listener closure precedes daemon release, even when the listener fails. The
+    daemon retains its configured drain budget; six seconds is the existing
+    session listener's COMPLETE bound, not a fresh grace on every cancellation.
+    An unfinished daemon task remains referenced and is reported as incomplete.
     """
-    check_private_key_absent(profile)
+    grace = daemon.config.shutdown_timeout_s if daemon.config is not None else 30.0
+    if not math.isfinite(grace) or grace <= 0:
+        grace = 30.0
+    deadline = asyncio.get_running_loop().time() + 6 + grace
+
+    async def release():
+        if waiter is not None:
+            waiter.cancel()
+        try:
+            if listener is not None:
+                await listener.close()
+        finally:
+            try:
+                await daemon.shutdown()
+            finally:
+                if waiter is not None:
+                    await asyncio.gather(waiter, return_exceptions=True)
+
+    task = asyncio.create_task(release())
+    daemon._control_cleanup_task = task
+    cancellation = None
+    while not task.done():
+        try:
+            # asyncio.wait never cancels the retained release task. Deadline is
+            # captured once, including the forced listener phase and DB release.
+            done, _ = await asyncio.wait(
+                {task}, timeout=max(0, deadline - asyncio.get_running_loop().time())
+            )
+        except asyncio.CancelledError as exc:
+            if cancellation is None:
+                cancellation = exc
+        else:
+            if not done:
+                task.cancel()
+                # Retrieve an eventual failure without pretending it settled.
+                task.add_done_callback(lambda t: None if t.cancelled() else t.exception())
+                error = TimeoutError("control resource cleanup incomplete")
+                # Keep the first caller cancellation, including when normal
+                # shutdown entered cleanup before any cancellation arrived.
+                if cancellation is not None:
+                    raise cancellation from error
+                raise error
+    try:
+        task.result()
+    except BaseException as error:
+        if cancellation is not None:
+            raise cancellation from error
+        raise
+    if cancellation is not None:
+        raise cancellation
+
+
+async def run_control(
+    config_dir: Path, *, profile: str, session_host: str, runtime_config: Path | None = None
+) -> None:
+    """Run the explicitly selected isolated control process; never activate by default.
+
+    The trusted broker has a separate literal operator configuration. OFF refuses
+    before daemon/material/listener I/O. KEY_ABSENT_STAGE remains refusal-only.
+    No HTTP/MCP method can select a profile, factory, key, grant or token issuer.
+    """
+    check_control_profile(profile)
+    config = None
+    if profile == TRUSTED_BROKER:
+        from butlers.capability_broker.runtime import load_runtime_config
+
+        config = load_runtime_config(runtime_config)
+        if not config.enabled:
+            raise StageConfigurationError("trusted broker runtime is disabled")
+    elif runtime_config is not None:
+        raise StageConfigurationError("broker config requires the trusted broker profile")
     from butlers.daemon import ButlerDaemon
 
     daemon = ButlerDaemon(config_dir, control_profile=profile)
-    listener = SessionRefusalListener(host=session_host)
+    listener = None
     shutdown = asyncio.Event()
     loop = asyncio.get_running_loop()
     signals_installed = False
     waiter = None
+    original = None
     try:
         await daemon.start()
+        if profile == TRUSTED_BROKER:
+            from butlers.capability_broker.runtime import build_runtime
+
+            runtime = await build_runtime(daemon.db.pool, config, host=session_host)
+            listener = runtime.listener
+        else:
+            listener = SessionRefusalListener(host=session_host)
         await listener.start()
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, shutdown.set)
@@ -299,14 +396,18 @@ async def run_control(config_dir: Path, *, profile: str, session_host: str) -> N
         )
         if waiter not in completed:
             raise RuntimeError("control listener stopped unexpectedly")
+    except BaseException as exc:
+        original = exc
     finally:
         if signals_installed:
             for sig in (signal.SIGTERM, signal.SIGINT):
                 loop.remove_signal_handler(sig)
-        if waiter is not None:
-            waiter.cancel()
-            await asyncio.gather(waiter, return_exceptions=True)
         try:
-            await listener.close()
-        finally:
-            await daemon.shutdown()
+            await _release_control(daemon, listener, waiter)
+        except BaseException as cleanup_error:
+            if original is not None:
+                original.add_note("control resource cleanup failed or was interrupted")
+                raise original from cleanup_error
+            raise
+    if original is not None:
+        raise original

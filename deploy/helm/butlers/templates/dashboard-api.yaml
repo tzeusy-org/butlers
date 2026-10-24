@@ -65,6 +65,15 @@ spec:
             - name: DASHBOARD_API_KEY
               valueFrom:
                 secretKeyRef: {name: {{ .Values.localSecrets.envSecretName }}, key: DASHBOARD_API_KEY, optional: true}
+            {{- if .Values.dashboardApi.externalDeadman.enabled }}
+            - name: EXTERNAL_DEADMAN_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "externalDeadman.urlSecretRef.name is required" .Values.dashboardApi.externalDeadman.urlSecretRef.name | quote }}
+                  key: {{ required "externalDeadman.urlSecretRef.key is required" .Values.dashboardApi.externalDeadman.urlSecretRef.key | quote }}
+            - name: EXTERNAL_DEADMAN_CHECK_INTERVAL_S
+              value: {{ .Values.dashboardApi.externalDeadman.intervalSeconds | quote }}
+            {{- end }}
             {{- range $k, $v := .Values.dashboardApi.extraEnv }}
             - {name: {{ $k }}, value: {{ $v | quote }}}
             {{- end }}

@@ -7,6 +7,7 @@ import inspect
 import json
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
+from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
@@ -32,6 +33,12 @@ AUTHORIZATION_FIELDS = (
 )
 
 
+class OwnerNotifyBranch(StrEnum):
+    """Closed native admission eligibility, never resolved recipient authority."""
+
+    TELEGRAM_SEND_INSIGHT_WITHOUT_PARTY = "telegram_send_insight_without_party"
+
+
 @dataclass(frozen=True, slots=True)
 class RecipientParameters:
     """Named selectors plus parties inherited from a resource or transport.
@@ -45,17 +52,28 @@ class RecipientParameters:
     undeterminable: bool = False
     default_owner_condition: str | None = None
     undeterminable_condition: str | None = None
+    owner_notify_branch: OwnerNotifyBranch | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "argument_names", tuple(self.argument_names))
+        if self.owner_notify_branch is not None:
+            # Decode the same closed value after JSON publication. Unknown
+            # strings/bools refuse; descriptive condition prose is not parsed.
+            object.__setattr__(
+                self, "owner_notify_branch", OwnerNotifyBranch(self.owner_notify_branch)
+            )
 
     def as_mapping(self) -> Mapping[str, Any]:
-        return {
+        result = {
             "argument_names": self.argument_names,
             "undeterminable": self.undeterminable,
             "default_owner_condition": self.default_owner_condition,
             "undeterminable_condition": self.undeterminable_condition,
         }
+        # Preserve historical publications/digests when no branch was declared.
+        if self.owner_notify_branch is not None:
+            result["owner_notify_branch"] = self.owner_notify_branch.value
+        return result
 
 
 @dataclass(frozen=True, slots=True)

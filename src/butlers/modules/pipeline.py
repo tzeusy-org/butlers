@@ -4473,21 +4473,11 @@ class PipelineModule(Module):
         self._pipeline: MessagePipeline | None = None
         self._pool: Any = None
 
-    @property
-    def name(self) -> str:
-        return "pipeline"
+    name = "pipeline"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return PipelineConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        # No module-specific tables; pipeline uses shared switchboard schema.
-        return None
 
     def set_pipeline(self, pipeline: MessagePipeline) -> None:
         """Attach a pre-constructed ``MessagePipeline`` instance.

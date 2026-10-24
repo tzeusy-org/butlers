@@ -313,10 +313,7 @@ def _decision_memory_settings_for(butler_name: str) -> _DecisionMemorySettings |
         validated_memory_config = MemoryModuleConfig.model_validate(memory_config)
 
         tool_metadata: dict[str, ToolMeta] = {}
-        configured_modules = set(config.modules)
-        for module in default_registry().load_all(config.modules):
-            if module.name not in configured_modules:
-                continue
+        for module in default_registry().load_from_config(config.modules):
             try:
                 tool_metadata.update(module.tool_metadata())
             except Exception:  # noqa: BLE001 -- daemon uses the same conservative fallback
@@ -3178,7 +3175,16 @@ async def approve_owning_action(
     # intentionally NOT caught here — it propagates to the app-level handler,
     # which returns 503 {"error": "audit_unavailable"} (dashboard-audit-log
     # spec), rolling this transaction back.
-    async with target_pool.acquire() as conn, conn.transaction():
+    from butlers.modules.approvals.goal_control import finish_goal_decision, lock_goal_decision
+
+    async with (
+        target_pool.acquire() as conn,
+        asyncio.timeout(None) as decision_timeout,
+        conn.transaction(),
+    ):
+        goal_binding = await lock_goal_decision(conn, action_butler, parsed_id)
+        if goal_binding is not None:
+            decision_timeout.reschedule(goal_binding[0].decision_deadline)
         # The row lock makes the presented-digest check below atomic with the
         # status transition: the stored call cannot change in between.
         action_row = await conn.fetchrow(
@@ -3214,11 +3220,14 @@ async def approve_owning_action(
         if edits and action_row is not None and action_row["tool_name"] == "calendar_respond":
             raise HTTPException(status_code=409, detail="response_command_is_immutable")
 
-        # Apply edits to tool args before approval (same connection, no partial update risk)
+        # Keep the locked original call until the owning decision accepts the edit.
+        original_tool_args: dict[str, Any] | None = None
         if edits and action_row is not None:
             raw_args = action_row["tool_args"]
-            tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
-            tool_args.update(edits)
+            original_tool_args = (
+                json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+            )
+            tool_args = {**original_tool_args, **edits}
             # Bind the sanitized dict directly (no json.dumps, no ::jsonb
             # cast) — asyncpg's registered jsonb codec already serializes
             # once; pre-serializing double-encodes (bu-cymc4/bu-bstqu).
@@ -3238,6 +3247,17 @@ async def approve_owning_action(
             # this approval, optional standing rule and audit have committed.
             decision_memory_writer=None,
         )
+        if "error" in result and original_tool_args is not None:
+            # A refused decision may still commit its legitimate expiry transition.
+            # Restore the exact prior call before releasing the same row lock;
+            # neither a refusal nor its retry may alter an already-approved call.
+            # Any restoration failure aborts this entire owning transaction.
+            await conn.execute(
+                "UPDATE pending_actions SET tool_args = $1 WHERE id = $2",
+                original_tool_args,
+                parsed_id,
+            )
+        await finish_goal_decision(conn, goal_binding)
         if "error" not in result:
             edits_note = json.dumps(edits) if edits else None
             await audit_router.append(
@@ -3268,7 +3288,7 @@ async def approve_owning_action(
             # must not become a failed decision because its memory sink failed.
             logger.exception("Post-commit standing-rule memory writeback failed")
 
-    if action_row is not None:
+    if action_row is not None and goal_binding is None:
         tool_name = action_row["tool_name"]
         raw_args = action_row["tool_args"]
         tool_args_for_dispatch = (
@@ -3346,13 +3366,23 @@ async def deny_approval(
     # propagates to the app-level handler, which returns 503
     # {"error": "audit_unavailable"} (dashboard-audit-log spec), rolling the
     # deny transition back with it.
-    async with target_pool.acquire() as conn, conn.transaction():
+    from butlers.modules.approvals.goal_control import finish_goal_decision, lock_goal_decision
+
+    async with (
+        target_pool.acquire() as conn,
+        asyncio.timeout(None) as decision_timeout,
+        conn.transaction(),
+    ):
+        goal_binding = await lock_goal_decision(conn, action_butler, parsed_id)
+        if goal_binding is not None:
+            decision_timeout.reschedule(goal_binding[0].decision_deadline)
         result = await approvals_ops.reject_action(
             conn,
             action_id=action_id,
             reason=request.reason,
             actor_id=actor_id,
         )
+        await finish_goal_decision(conn, goal_binding)
         if "error" not in result:
             await audit_router.append(
                 conn,
@@ -3419,7 +3449,16 @@ async def defer_approval(
     transition_error: str | None = None
     updated: PendingAction | None = None
     updated_delivery: ApprovalDeliveryTruth | None = None
-    async with target_pool.acquire() as conn, conn.transaction():
+    from butlers.modules.approvals.goal_control import finish_goal_decision, lock_goal_decision
+
+    async with (
+        target_pool.acquire() as conn,
+        asyncio.timeout(None) as decision_timeout,
+        conn.transaction(),
+    ):
+        goal_binding = await lock_goal_decision(conn, action_butler, parsed_id)
+        if goal_binding is not None:
+            decision_timeout.reschedule(goal_binding[0].decision_deadline)
         transition = await defer_pending_action(
             conn,
             action_id=parsed_id,
@@ -3427,6 +3466,7 @@ async def defer_approval(
             actor=_ACTOR_DASHBOARD,
             _already_in_transaction=True,
         )
+        await finish_goal_decision(conn, goal_binding)
         if transition.action is None:
             transition_error = f"Approval not found: {action_id}"
         elif transition.expired_instead:
@@ -3569,10 +3609,16 @@ async def abandon_approval(
         raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
     action_butler, target_pool = found
 
-    async with target_pool.acquire() as conn, conn.transaction():
+    async with target_pool.acquire() as conn, asyncio.timeout(None) as bounded, conn.transaction():
+        from butlers.modules.approvals.goal_control import finish_goal_decision, lock_goal_decision
+
+        goal_binding = await lock_goal_decision(conn, action_butler, parsed_id)
+        if goal_binding is not None:
+            bounded.reschedule(goal_binding[0].decision_deadline)
         result = await approvals_ops.abandon_approved_action(
             conn, action_id=action_id, reason=request.reason, actor_id="dashboard:rest-api"
         )
+        await finish_goal_decision(conn, goal_binding)
         if "error" not in result:
             await audit_router.append(
                 conn,

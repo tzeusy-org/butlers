@@ -30,8 +30,16 @@ also lists the accepted `connector_type` values (`VALID_CONNECTOR_TYPES`). Every
   against the previous snapshot, so a connector must never reset them mid-process.
 - `checkpoint` is an opaque provider cursor; `capabilities` (for example `backfill: true`) drives
   which dashboard controls render. `capabilities.channel_kind = "feed"` registers a device or
-  telemetry feed (`REQ-connector-base-spec-003`). Switchboard drops any other value, and an absent
-  kind is a message channel; see [Untrusted Spans and Channel Kind](overview.md#untrusted-spans-and-channel-kind).
+  telemetry feed (`REQ-connector-base-spec-003`). Only literal `feed` or `message` is retained;
+  absent, unknown or non-string values mean message after a successful registry lookup. Admission
+  lookup failure refuses rather than defaulting. The endpoint advisory lock precedes the registry
+  row lock for every heartbeat, preserving Gmail classification ordering. Previous/incoming
+  effective-kind comparison and upsert commit atomically; changes (including omitted/invalid
+  metadata erasing feed) emit only `Connector channel kind changed outcome=drift` after commit.
+  The diagnostic contains no endpoint, sender, content or database error. Ordinary capabilities,
+  counters, checkpoints and liveness continue to update. This alert-on-change policy does not pin
+  a channel permanently or activate admission. The consumer remains a trusted closed harness;
+  see [Untrusted Spans and Channel Kind](overview.md#untrusted-spans-and-channel-kind).
 - `sent_at` plus the `server_time` in the acknowledgment allow clock-drift detection.
 
 ## Frequency and Staleness

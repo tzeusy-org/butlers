@@ -22,6 +22,7 @@ Provides seventeen tools:
 
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import logging
@@ -59,7 +60,10 @@ from butlers.modules.approvals.autonomy_tracker import (
     update_velocity as _update_velocity,
 )
 from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
-from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
+from butlers.modules.approvals.delivery_lifecycle import (
+    LifecycleSuccessObservation,
+    transition_pending_action,
+)
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.executor import (
@@ -68,7 +72,7 @@ from butlers.modules.approvals.executor import (
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.approvals.rules import has_narrow_constraints, validate_rule_constraints
 from butlers.modules.approvals.sensitivity import suggest_constraints
-from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
+from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, tool_registrar
 
 logger = logging.getLogger(__name__)
 _HIGH_RISK_TIERS: frozenset[ApprovalRiskTier] = frozenset(
@@ -289,17 +293,11 @@ class ApprovalsModule(Module):
             rollout = await read_approval_delivery_rollout(connection)
         return rollout.worker_enabled
 
-    @property
-    def name(self) -> str:
-        return "approvals"
+    name = "approvals"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return ApprovalsConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
 
     def migration_revisions(self) -> str | None:
         return "approvals"
@@ -365,6 +363,13 @@ class ApprovalsModule(Module):
         max_uses: int | None,
     ) -> str | None:
         """Validate rule safety constraints against configured risk tier."""
+        metadata = self._tool_metadata.get(tool_name)
+        if (
+            metadata is not None
+            and metadata.approval_policy is not None
+            and metadata.approval_policy.get("mode") == "always_per_event"
+        ):
+            return "Standing rules are unavailable for always_per_event tools"
         return validate_rule_constraints(
             tool_name=tool_name,
             risk_tier=self._risk_tier_for_tool(tool_name),
@@ -382,12 +387,7 @@ class ApprovalsModule(Module):
         self._butler_name = butler_name
         module = self  # capture for closures
 
-        # Build a group-aware tool decorator: returns @mcp.tool() when the
-        # group is enabled, or a no-op passthrough when disabled.
-        def _tool(group: str):
-            if group_enabled(self._config, group):
-                return mcp.tool()
-            return lambda fn: fn  # no-op — function defined but not registered
+        _tool = tool_registrar(mcp, self._config)
 
         # --- Approval queue tools (8) ---
 
@@ -774,6 +774,55 @@ class ApprovalsModule(Module):
 
         action = PendingAction.from_row(row)
 
+        if action.goal_lineage() is not None:
+            from butlers.modules.approvals.executor import _approval_write_transaction
+            from butlers.modules.approvals.goal_control import (
+                finish_goal_decision,
+                lock_goal_decision,
+            )
+
+            # Only the outer owner can confirm COMMIT. Keep independent memory
+            # and committed lifecycle observations out of this owning scope.
+            rule_memories: list[ApprovalRule] = []
+            observations: list[LifecycleSuccessObservation] = []
+            async with asyncio.timeout(5):
+                async with _approval_write_transaction(self._db) as conn:
+                    binding = await lock_goal_decision(conn, self._butler_name, parsed_id)
+                    if binding is None:
+                        raise ValueError("goal_decision_classification_changed")
+                    result = await self._approve_action_body(
+                        conn,
+                        action,
+                        parsed_id,
+                        actor_id,
+                        create_rule,
+                        post_commit_rules=rule_memories,
+                        goal_success_observations=observations,
+                    )
+                    await finish_goal_decision(conn, binding)
+                from butlers.modules.approvals import delivery_lifecycle
+
+                for observation in observations:
+                    delivery_lifecycle.emit_lifecycle_success(observation)
+                if self._decision_memory_writer is not None:
+                    for rule in rule_memories:
+                        await self._decision_memory_writer.record_standing_rule(rule, active=True)
+            return result
+        return await self._approve_action_body(self._db, action, parsed_id, actor_id, create_rule)
+
+    async def _approve_action_body(
+        self,
+        connection,
+        action,
+        parsed_id,
+        actor_id,
+        create_rule,
+        *,
+        post_commit_rules: list[ApprovalRule] | None = None,
+        goal_success_observations: list[LifecycleSuccessObservation] | None = None,
+    ):
+        """Retain observations for an owning goal TX; legacy scope emits normally."""
+        action_id = str(parsed_id)
         # Validate transition: pending -> approved
         try:
             validate_transition(action.status, ActionStatus.APPROVED)
@@ -781,14 +830,17 @@ class ApprovalsModule(Module):
             return {"error": str(exc)}
 
         transition = await transition_pending_action(
-            self._db,
+            connection,
             action_id=parsed_id,
             target_status=ActionStatus.APPROVED,
             decided_by=_format_manual_decider(actor_id),
             event_actor="user:manual",
             event_reason="approved by operator",
             event_metadata={"tool_name": action.tool_name},
+            **({"_already_in_transaction": True} if goal_success_observations is not None else {}),
         )
+        if goal_success_observations is not None and transition.success_observation is not None:
+            goal_success_observations.append(transition.success_observation)
         if not transition.changed:
             if transition.action is None:
                 return {"error": f"Action not found: {action_id}"}
@@ -808,7 +860,7 @@ class ApprovalsModule(Module):
         # A queue can intentionally exist without automatic gates; in that
         # case approval remains an auditable, retryable `approved` transition
         # until the normal dispatch seam can reach an owning executor.
-        if self._tool_executor is not None:
+        if self._tool_executor is not None and action.goal_lineage() is None:
             # Wrap the ToolExecutor callback as a tool_fn for the executor
             _exec = self._tool_executor
             _tname = action.tool_name
@@ -817,7 +869,7 @@ class ApprovalsModule(Module):
                 return await _exec(_tname, kwargs)
 
             await execute_approved_action(
-                pool=self._db,
+                pool=connection,
                 action_id=parsed_id,
                 tool_name=action.tool_name,
                 tool_args=action.tool_args,
@@ -832,7 +884,7 @@ class ApprovalsModule(Module):
             # Wrap in try/except so tracker failure doesn't block approval
             try:
                 # Re-read the action to get decided_at for velocity computation
-                updated_action_row = await self._db.fetchrow(
+                updated_action_row = await connection.fetchrow(
                     "SELECT * FROM pending_actions WHERE id = $1", parsed_id
                 )
                 if updated_action_row is not None:
@@ -841,9 +893,9 @@ class ApprovalsModule(Module):
                     fingerprint = _compute_fingerprint(
                         action.tool_name, action.tool_args, tool_meta=tool_meta
                     )
-                    await _record_approval(self._db, updated_action, tool_meta=tool_meta)
+                    await _record_approval(connection, updated_action, tool_meta=tool_meta)
                     await _check_promotion_threshold(
-                        pool=self._db,
+                        pool=connection,
                         pattern_fingerprint=fingerprint,
                         tool_name=action.tool_name,
                         tool_args=action.tool_args,
@@ -854,10 +906,10 @@ class ApprovalsModule(Module):
                     # Compute and persist approval velocity so the dashboard
                     # fast_approval indicator surfaces (autonomy-tracker spec:
                     # "Approval Velocity Tracking"). The state store lives in the
-                    # same butler schema, so self._db serves as the state_pool.
+                    # same butler schema, so connection serves as the state_pool.
                     await _update_velocity(
-                        pool=self._db,
-                        state_pool=self._db,
+                        pool=connection,
+                        state_pool=connection,
                         pattern_fingerprint=fingerprint,
                         config=self._config,
                     )
@@ -878,7 +930,7 @@ class ApprovalsModule(Module):
                 max_uses=max_uses,
             )
             if constraint_error is not None:
-                final_row = await self._db.fetchrow(
+                final_row = await connection.fetchrow(
                     "SELECT * FROM pending_actions WHERE id = $1", parsed_id
                 )
                 result = PendingAction.from_row(final_row).to_dict()
@@ -900,7 +952,7 @@ class ApprovalsModule(Module):
             # pre-serializing double-encodes into a jsonb-typed STRING
             # (bu-cymc4/bu-c8b8e; mirrors gate.py's fix, PR #2924).
             safe_arg_constraints = json.loads(json.dumps(rule.arg_constraints, default=str))
-            await self._db.execute(
+            await connection.execute(
                 "INSERT INTO approval_rules "
                 "(id, tool_name, arg_constraints, description, created_from, created_at, "
                 "max_uses, active) "
@@ -915,7 +967,7 @@ class ApprovalsModule(Module):
                 rule.active,
             )
             await record_approval_event(
-                self._db,
+                connection,
                 ApprovalEventType.RULE_CREATED,
                 actor="user:manual",
                 action_id=parsed_id,
@@ -927,13 +979,15 @@ class ApprovalsModule(Module):
             if rule.tool_name == "relationship_assert_fact":
                 from butlers.tools.relationship.fact_authority import record_admitted_rule
 
-                await record_admitted_rule(self._db, rule.id)
-            if self._decision_memory_writer is not None:
+                await record_admitted_rule(connection, rule.id)
+            if post_commit_rules is not None:
+                post_commit_rules.append(rule)
+            elif self._decision_memory_writer is not None:
                 await self._decision_memory_writer.record_standing_rule(rule, active=True)
             rule_dict = rule.to_dict()
 
         # Re-read the final state
-        final_row = await self._db.fetchrow(
+        final_row = await connection.fetchrow(
             "SELECT * FROM pending_actions WHERE id = $1", parsed_id
         )
         result = PendingAction.from_row(final_row).to_dict()

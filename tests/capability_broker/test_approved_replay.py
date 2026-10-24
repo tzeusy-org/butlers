@@ -308,3 +308,98 @@ async def test_actual_call_PARK_modes_cannot_admit_third_party_actuation():
         await broker.call(connection.goal, token, cap.identity, {})
     assert refused.value.reason is Reason.POLICY
     assert connection.used == 0 and connection.effect is None and domains.calls == []
+
+
+@pytest.mark.parametrize("fault", [None, "claim_reply_loss", "execute_reply_loss", "stop"])
+async def test_production_replay_commits_intent_witness_and_attempts_execute_once(
+    monkeypatch, fault
+):
+    """Real orchestration/codec with SQL and peer protocol doubles, not PG."""
+    from butlers.capability_broker.handoff import verify_handoff
+    from butlers.capability_broker.owning import PrivateApprovals
+    from butlers.capability_broker.transport.client import PrivateClient
+    from butlers.capability_broker.transport.config import PeerPolicy, TransportConfig
+    from butlers.modules.approvals.goal_dispatch import call_wire
+
+    broker, conn, _, domains, call = approved(edited=True)
+    conn.row_changes.update(
+        park_call_id=uuid4(),
+        selected_grant=encode_grants(conn.grants)[0],
+        parked_catalog_digest="v1",
+        allow_standing_rule=False,
+    )
+    original_fetchrow = conn.fetchrow
+
+    async def fetchrow(sql, *args):
+        if "SELECT id,status FROM switchboard.goals" in sql:
+            return {"id": conn.goal, "status": conn.status}
+        if "SET owning_witness_digest=" in sql:
+            assert conn.in_transaction and args[2] == conn.witness
+            assert args[3] == arguments_digest(call_wire(call))
+            conn.events.append("owning_witness")
+            return {"effect_id": conn.action}
+        return await original_fetchrow(sql, *args)
+
+    monkeypatch.setattr(conn, "fetchrow", fetchrow)
+    seen = []
+
+    async def exchange(self, value, *, assertion=None):
+        assert assertion is None and not conn.in_transaction
+        op = value["operation"]
+        proof = verify_handoff(
+            value["handoff"],
+            keys={broker.signer.kid: broker.signer.private_key.public_key()},
+            audience="health",
+            purpose=op,
+            now=int(broker.clock()),
+        )
+        assert proof.grant == conn.grants[0]
+        seen.append(op)
+        if op == "SNAPSHOT":
+            result, receipt = "approved", {"version": 3, "call": call_wire(call)}
+        elif op in {"CLAIM", "WITNESS"}:
+            assert conn.witness is not None and conn.events[-1] == "commit"
+            if fault == "claim_reply_loss" and op == "CLAIM":
+                raise ConnectionError("controlled_committed_claim_reply_loss")
+            if fault == "stop":
+                conn.status = "stopped"
+            result, receipt = (
+                "claimed",
+                {
+                    "intent_id": str(conn.witness),
+                    "snapshot_digest": arguments_digest(call_wire(call)),
+                },
+            )
+        elif op == "EXECUTE":
+            assert "owning_witness" in conn.events and conn.events[-1] == "commit"
+            if fault == "execute_reply_loss":
+                raise ConnectionError("controlled_consumption_reply_loss")
+            result, receipt = "unknown", None
+        else:
+            raise AssertionError("unexpected_operation")
+        return {
+            **{k: value[k] for k in ("protocol", "operation", "request_id", "identity")},
+            "outcome": result,
+            "receipt": receipt,
+        }
+
+    monkeypatch.setattr(PrivateClient, "call", exchange)
+    client = PrivateClient(
+        TransportConfig(
+            "https://localhost:4200/mcp",
+            PeerPolicy("owning-service", "health", frozenset({"DNS:localhost"})),
+        ),
+        None,
+    )
+    broker.approvals = PrivateApprovals({"health": client})
+    try:
+        result = await broker.replay_approved(conn.goal, conn.action)
+        assert result.status == "unknown" and result.value is None
+        assert seen.count("EXECUTE") == (0 if fault == "stop" else 1)
+        assert seen.count("WITNESS") == (1 if fault == "claim_reply_loss" else 0)
+        assert conn.used == 1 and not domains.calls
+        with pytest.raises(BrokerRefused):
+            await broker.replay_approved(conn.goal, conn.action)
+        assert seen.count("EXECUTE") == (0 if fault == "stop" else 1)
+    finally:
+        await client.aclose()

@@ -471,6 +471,7 @@ class CapabilityBrokerTransportConfig(_StrictModel):
     listen_port: StrictInt | None = Field(default=None, ge=1, le=65535)
     peer: CapabilityTransportPeerConfig | None = None
     material: CapabilityTransportMaterialConfig | None = None
+    verification_keys: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _enabled_shape(self) -> Self:

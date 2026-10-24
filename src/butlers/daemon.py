@@ -303,15 +303,6 @@ class ButlerDaemon:
             or self._module_statuses[m.name].status == "active"
         ]
 
-    def _select_startup_modules(self, modules: list[Module]) -> list[Module]:
-        """Admit explicit declarations and reject unknown names before DB work."""
-        if self.config is None:
-            return modules
-        unknown = sorted(set(self.config.modules) - {mod.name for mod in modules})
-        if unknown:
-            raise ValueError(f"Unknown modules configured: {', '.join(unknown)}")
-        return [mod for mod in modules if mod.name in self.config.modules]
-
     def _cascade_module_failures(self) -> None:
         """Mark modules whose dependencies failed as ``cascade_failed``.
 
@@ -1319,7 +1310,7 @@ class ButlerDaemon:
             # 3. Fallback to module class property
             mod = loaded_modules.get(mod_name)
             if mod is not None:
-                env_list = getattr(mod, "credentials_env", [])
+                env_list = mod.credentials_env
                 if env_list:
                     creds[mod_name] = list(env_list)
         return creds
@@ -1590,6 +1581,20 @@ class ButlerDaemon:
                 raise
         return candidate
 
+    async def _broker_owning_originals(self):
+        """Capture only actual final registered originals, never request callables."""
+        originals = {}
+        for descriptor in self.tool_catalog.descriptors:
+            name = descriptor.canonical_name
+            fn = self._gated_tool_originals.get(name)
+            if fn is None:
+                tool = await _resolve_mcp_tool(self.mcp, name)
+                fn = getattr(tool, "fn", None)
+            if not callable(fn):
+                raise RuntimeError("owning registered original unavailable")
+            originals[name] = fn
+        return originals
+
     @property
     def tool_catalog(self) -> ToolCatalog:
         """Return the finalized generation without re-reading or mutating FastMCP."""
@@ -1709,12 +1714,10 @@ class ButlerDaemon:
         # Allow modules to cross-wire after all tools are registered.
         module_map = {mod.name: mod for mod in self._modules}
         for mod in self._modules:
-            on_ready = getattr(mod, "on_all_modules_ready", None)
-            if on_ready is not None:
-                try:
-                    on_ready(module_map)
-                except Exception as exc:
-                    logger.warning("Module '%s' on_all_modules_ready failed: %s", mod.name, exc)
+            try:
+                mod.on_all_modules_ready(module_map)
+            except Exception as exc:
+                logger.warning("Module '%s' on_all_modules_ready failed: %s", mod.name, exc)
 
     async def _apply_approval_gates(self) -> dict[str, Any]:
         """Parse approval config and wrap gated tools with approval interception.

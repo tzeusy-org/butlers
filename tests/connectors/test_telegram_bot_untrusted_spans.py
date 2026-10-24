@@ -62,6 +62,61 @@ async def test_forwarded_text_is_one_forwarded_span_and_owner_stays_sender(conne
         }
     ]
 
+    # The actual policy/error producers must retain the marking, without restoring
+    # a policy-discarded body; an errored submission retains its original text.
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    update = {
+        "update_id": 1,
+        "message": {
+            "message_id": 9,
+            "from": {"id": _OWNER},
+            "chat": {"id": 100},
+            "text": "Pay the invoice to account 12-34 today",
+            "forward_origin": {
+                "type": "user",
+                "sender_user": {"id": 555, "first_name": "Mallory", "last_name": "Smith"},
+            },
+            "reply_to_message": {"message_id": 5},
+        },
+    }
+    for stage in ("connector", "global", "submission"):
+        connector._filtered_event_buffer._rows.clear()
+        blocked = SimpleNamespace(
+            allowed=False, action="skip", matched_rule_type="chat_id", reason="synthetic rule"
+        )
+        allowed = SimpleNamespace(allowed=True, action="pass_through")
+        with (
+            patch.object(
+                connector._ingestion_policy,
+                "evaluate",
+                return_value=blocked if stage == "connector" else allowed,
+            ),
+            patch.object(
+                connector._global_ingestion_policy,
+                "evaluate",
+                return_value=blocked if stage == "global" else allowed,
+            ),
+            patch.object(
+                connector, "_submit_to_ingest", AsyncMock(side_effect=ValueError("failed"))
+            ),
+        ):
+            await connector._process_update(update)
+        row = connector._filtered_event_buffer._rows[-1]
+        stored = row[9]
+        assert stored["sender"]["identity"] == str(_OWNER)
+        assert stored["event"]["in_reply_to_ref"] == "100:5"
+        assert stored["event"]["reply_target_ref"] != "100:5"
+        if stage == "submission":
+            assert row[8] == "error"
+            assert stored["payload"]["untrusted_spans"] == env["payload"]["untrusted_spans"]
+            assert stored["payload"]["normalized_text"] == env["payload"]["normalized_text"]
+        else:
+            assert stored["payload"]["raw"] == {}
+            assert "normalized_text" not in stored["payload"]
+            assert stored["payload"]["untrusted_spans"][0]["end"] == len("[no text]")
+
 
 async def test_forwarded_voice_without_boundaries_marks_the_whole_text(connector):
     env = await _envelope(
@@ -71,6 +126,43 @@ async def test_forwarded_voice_without_boundaries_marks_the_whole_text(connector
     text = env["payload"]["normalized_text"]
     assert env["payload"]["untrusted_spans"] == [
         {"kind": "forwarded", "start": 0, "end": len(text), "origin_display_name": "Hidden Person"}
+    ]
+
+    from unittest.mock import AsyncMock, patch
+
+    # Failed media materialization records exposure before a full submission
+    # envelope exists, while retaining the established raw={} privacy tier.
+    update = {
+        "update_id": 2,
+        "message": {
+            "message_id": 10,
+            "chat": {"id": 100},
+            "from": {"id": _OWNER},
+            "photo": [{"file_id": "p1"}],
+            "caption": "private forwarded caption",
+            "forward_sender_name": "Hidden Person",
+            "reply_to_message": {"message_id": 5},
+        },
+    }
+    with patch.object(
+        connector, "_materialize_attachments", AsyncMock(return_value=([], "download_failed"))
+    ):
+        media_envelope = await connector._normalize_to_ingest_v1(update)
+        assert media_envelope is not None
+        parse_ingest_envelope(media_envelope)
+    row = connector._filtered_event_buffer._rows[-1]
+    assert row[8] == "error"
+    stored = row[9]
+    assert stored["payload"]["raw"] == {}
+    assert "normalized_text" not in stored["payload"]
+    assert stored["event"]["in_reply_to_ref"] == "100:5"
+    assert stored["payload"]["untrusted_spans"] == [
+        {
+            "kind": "forwarded",
+            "start": 0,
+            "end": len("[no text]"),
+            "origin_display_name": "Hidden Person",
+        }
     ]
 
 

@@ -120,20 +120,11 @@ class ChroniclerModule(Module):
     def __init__(self) -> None:
         self._db: Any = None
 
-    @property
-    def name(self) -> str:
-        return "chronicler"
+    name = "chronicler"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return ChroniclerModuleConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        return None
 
     async def on_startup(
         self,

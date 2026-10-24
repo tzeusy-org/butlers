@@ -167,10 +167,7 @@ async function mockIngestionApis(
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        data: events,
-        meta: { next_cursor: null, has_more: false },
-      }),
+      body: JSON.stringify({ items: events, next_cursor: null, limit: 50 }),
     });
   });
 }

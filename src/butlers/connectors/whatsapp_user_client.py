@@ -1534,6 +1534,7 @@ class WhatsAppUserClientConnector:
                         "block",
                         _ip_decision.matched_rule_type or "unknown",
                     ),
+                    events=buffered_events,
                 )
                 await self._flush_and_drain()
                 return
@@ -1554,6 +1555,7 @@ class WhatsAppUserClientConnector:
                         "skip",
                         _gp_decision.matched_rule_type or "unknown",
                     ),
+                    events=buffered_events,
                 )
                 await self._flush_and_drain()
                 return
@@ -1599,6 +1601,7 @@ class WhatsAppUserClientConnector:
                         batch_event_id=batch_event_id,
                         filter_reason=FilteredEventBuffer.reason_discretion_ignore(ignore_kind),
                         subject_or_preview=normalized_text[:200] if normalized_text else None,
+                        events=buffered_events,
                     )
                     await self._flush_and_drain()
                     return
@@ -1631,6 +1634,7 @@ class WhatsAppUserClientConnector:
                 filter_reason=FilteredEventBuffer.reason_submission_error(),
                 status="error",
                 error_detail=failure_class,
+                events=buffered_events,
             )
             await self._flush_and_drain()
 
@@ -1643,6 +1647,7 @@ class WhatsAppUserClientConnector:
         subject_or_preview: str | None = None,
         status: str = "filtered",
         error_detail: str | None = None,
+        events: list[dict[str, Any]] | None = None,
     ) -> None:
         """Record a filtered or errored batch event."""
         self._filtered_event_buffer.record(
@@ -1661,6 +1666,12 @@ class WhatsAppUserClientConnector:
                 reply_target_ref=chat_jid or None,
                 observed_at=datetime.now(UTC).isoformat(),
                 sender_identity=sender_identity,
+                untrusted_spans=[
+                    whole_text_span("forwarded", "")
+                    for event in events or []
+                    if _is_forwarded(event)
+                ]
+                or None,
                 raw={},
             ),
             status=status,
