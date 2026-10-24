@@ -207,6 +207,11 @@ class _McpRuntimeSessionGuard:
                 binding = None
             else:
                 self._admitted_sessions[mcp_session] = binding.runtime_session
+        from butlers.core.attention_urgency import _current_origin
+
+        attention_token = _current_origin.set(
+            binding.attention_origin if binding is not None else None
+        )
         report_token = fact_authority._current_report.set(
             binding.report
             if binding is not None
@@ -250,6 +255,7 @@ class _McpRuntimeSessionGuard:
         try:
             await self._app(scope, receive, _send_with_session_capture)
         finally:
+            _current_origin.reset(attention_token)
             fact_authority._incoming_receipt.reset(receipt_token)
             fact_authority._pipeline_source.reset(pipeline_token)
             fact_authority._incoming_source.reset(source_token)

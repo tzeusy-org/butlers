@@ -2428,7 +2428,7 @@ class TestProposeInsightCandidateUnit:
             "custom_budget": custom_budget,
             "updated_at": datetime.now(UTC),
         }
-        pool.execute.return_value = "INSERT 0 1"
+        pool.fetchval.return_value = uuid.uuid4()
         return pool
 
     @pytest.mark.parametrize(
@@ -2468,7 +2468,7 @@ class TestProposeInsightCandidateUnit:
         result = await propose_insight_candidate(pool, **base)
         assert result["status"] == "error"
         assert match in result["reason"]
-        pool.execute.assert_not_called()
+        pool.fetchval.assert_not_called()
 
     async def test_past_expires_at_returns_error(self):
         from butlers.tools.switchboard.insight.broker import propose_insight_candidate
@@ -2512,7 +2512,7 @@ class TestProposeInsightCandidateUnit:
         )
 
         assert result["status"] == "accepted"
-        pool.execute.assert_called_once()
+        pool.fetchval.assert_called_once()
 
     async def test_injected_now_still_rejects_stale_expires_at(self):
         """Injecting ``now`` narrows the reference frame; it does not disable the check."""
@@ -2534,7 +2534,7 @@ class TestProposeInsightCandidateUnit:
 
         assert result["status"] == "error"
         assert "expires_at must be in the future" in result["reason"]
-        pool.execute.assert_not_called()
+        pool.fetchval.assert_not_called()
 
     @pytest.mark.parametrize(
         "verbosity,custom_budget",
@@ -2556,7 +2556,7 @@ class TestProposeInsightCandidateUnit:
         )
         assert result["status"] == "filtered"
         assert result["reason"] == "verbosity is off"
-        pool.execute.assert_not_called()
+        pool.fetchval.assert_not_called()
 
     async def test_valid_submission_with_optional_fields(self):
         """Valid submission accepted; 3/4-segment dedup_keys pass; optional args forwarded."""
@@ -2577,8 +2577,8 @@ class TestProposeInsightCandidateUnit:
             now=_PINNED_NOW,
         )
         assert result["status"] == "accepted"
-        pool.execute.assert_called_once()
-        call_args = pool.execute.call_args.args
+        pool.fetchval.assert_called_once()
+        call_args = pool.fetchval.call_args.args
         assert call_args[5] == 3
         assert call_args[8] == "telegram"
 

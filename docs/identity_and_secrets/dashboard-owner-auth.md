@@ -385,6 +385,34 @@ and fail the launcher without an alternate trust value or a success report.
 This prevents a full `down`/`up` from retaining a stale Docker bridge gateway.
 The canonical origin, RP ID, and forwarded-header checks remain required.
 
+## Ordinary owner attention authoring
+
+The narrow pre-switch creation ticket and owner break-through clauses use the
+existing verified owner cookie, canonical origin and CSRF service boundary.
+They do not accept the internal audit actor fallback, a model boolean or a
+separate device-factor claim. Standing-permission step-up remains D13's distinct
+purpose and existing fixed kinds.
+
+`POST /api/butlers/attention/break-through-clauses` and the matching
+`DELETE .../{id}` are HTTP-only backend primitives. A clause has at least one
+fixed matcher (`entity_id`, canonical `sender_domain`, `channel`, or
+`security_kind`), a scope (`always` or `quiet_hours_only`) and optional expiry.
+Matchers compose conjunctively; current expiry and revocation are re-read by
+both delivery consumers. Domain matching uses authenticated accepted email
+provenance; a security label alone never authenticates a sender. These routes
+are the single shared `.8` backend store; they do not deliver its later editor,
+Telegram authoring, shadow-event activation or decay workflow.
+
+Privileged bootstrap stages the separate `dashboard_attention` fixed interface
+before the untouched D13 block. Ordinary `core_278` invokes its checked installer
+or finalizer. Runtime roles have no direct ticket/stamp/clause write access;
+only the owner-auth API role can author through the closed current-session
+function. The ordinary managed dump retains all five durable populations,
+including final-occurrence witnesses and revoked tombstones;
+privileged restore refuses missing modern schema/data or untrusted ownership
+and ACLs. Rollback revokes admission and clauses while preserving committed
+receipts and effects, rather than restoring model-selected urgency.
+
 ## Implementation Notes
 
 - Owner-auth pools admit only the dedicated login and `dashboard_auth_api` in the SET ROLE

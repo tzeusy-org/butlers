@@ -35,6 +35,7 @@ dependencies = [
     "aioboto3>=13.0.0",
     "cryptography>=42.0.0",
     "anthropic>=0.40.0",
+    "rfc8785==0.1.4",
 ]
 
 [tool.uv]

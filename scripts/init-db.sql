@@ -5834,6 +5834,454 @@ BEGIN
 END;
 $$;
 
+-- Ordinary owner-at-creation and clause authoring are a separate purpose from
+-- D13 standing-permission confirmation. Only privileged bootstrap stages DDL.
+DO $attention_bootstrap$
+BEGIN
+ IF NOT (SELECT rolsuper FROM pg_roles WHERE rolname=current_user) THEN
+  RAISE EXCEPTION 'attention bootstrap requires privileged bootstrap'; END IF;
+ IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='dashboard_attention_owner') THEN
+  CREATE ROLE dashboard_attention_owner NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB
+   NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+  COMMENT ON ROLE dashboard_attention_owner IS 'butlers:dashboard-attention:core_278';
+ END IF;
+ IF shobj_description('dashboard_attention_owner'::regrole,'pg_authid')
+  IS DISTINCT FROM 'butlers:dashboard-attention:core_278' THEN
+  RAISE EXCEPTION 'untrusted attention owner role'; END IF;
+ IF EXISTS(SELECT FROM pg_roles WHERE rolname='dashboard_attention_owner'
+  AND (rolcanlogin OR rolinherit OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls))
+  OR EXISTS(SELECT FROM pg_auth_members WHERE roleid='dashboard_attention_owner'::regrole
+   OR member='dashboard_attention_owner'::regrole) THEN
+  RAISE EXCEPTION 'attention owner role must be isolated'; END IF;
+ IF EXISTS(SELECT FROM pg_namespace WHERE nspname='dashboard_attention'
+  AND (nspowner<>current_user::regrole OR obj_description(oid,'pg_namespace')
+   IS DISTINCT FROM 'butlers:dashboard-attention:core_278')) THEN
+  RAISE EXCEPTION 'untrusted attention bootstrap namespace'; END IF;
+ IF EXISTS(SELECT FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+  WHERE n.nspname='dashboard_attention'
+  AND c.relname IN('bootstrap_configuration','tickets','stamps','candidate_causes','final_claims')
+  AND NOT(c.relkind='r' AND c.relowner=CASE WHEN c.oid=to_regclass('dashboard_attention.bootstrap_configuration')
+   THEN current_user::regrole ELSE 'dashboard_attention_owner'::regrole END)) THEN
+  RAISE EXCEPTION 'untrusted attention bootstrap table'; END IF;
+ IF EXISTS(SELECT FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+  WHERE n.nspname='dashboard_attention' AND p.proname = ANY(ARRAY[
+   'install_interface','finalize_interface','deactivate_interface']) AND
+   (p.pronargs<>0 OR p.prorettype<>'void'::regtype OR p.proowner<>current_user::regrole
+    OR NOT p.prosecdef OR p.proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, pg_temp']::text[])) THEN
+  RAISE EXCEPTION 'untrusted attention bootstrap function'; END IF;
+END $attention_bootstrap$;
+CREATE SCHEMA IF NOT EXISTS dashboard_attention;
+COMMENT ON SCHEMA dashboard_attention IS 'butlers:dashboard-attention:core_278';
+REVOKE ALL ON SCHEMA dashboard_attention FROM PUBLIC;
+CREATE TABLE IF NOT EXISTS dashboard_attention.bootstrap_configuration (
+ singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton),
+ migration_role name NOT NULL, bootstrap_role name NOT NULL
+);
+INSERT INTO dashboard_attention.bootstrap_configuration VALUES(true,COALESCE(NULLIF(current_setting('butlers.connecting_user',true),''),'butlers')::name,current_user)
+ ON CONFLICT(singleton) DO NOTHING;
+REVOKE ALL ON dashboard_attention.bootstrap_configuration FROM PUBLIC;
+DO $attention_configuration$
+BEGIN
+ IF NOT EXISTS(SELECT FROM dashboard_attention.bootstrap_configuration WHERE singleton
+  AND migration_role=COALESCE(NULLIF(current_setting('butlers.connecting_user',true),''),'butlers')::name
+  AND bootstrap_role=current_user) THEN
+  RAISE EXCEPTION 'attention bootstrap configuration differs'; END IF;
+END $attention_configuration$;
+
+CREATE OR REPLACE FUNCTION dashboard_attention.finalize_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $finalize$
+DECLARE n name; r name; item record; column_grant record; grantee_name text; owner_oid oid := 'dashboard_attention_owner'::regrole;
+BEGIN
+ IF EXISTS(SELECT FROM pg_roles WHERE oid=owner_oid AND
+  (rolcanlogin OR rolinherit OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls))
+  OR EXISTS(SELECT FROM pg_auth_members WHERE roleid=owner_oid OR member=owner_oid)
+  THEN RAISE EXCEPTION 'attention owner role must be isolated'; END IF;
+ FOR item IN SELECT * FROM (VALUES
+  ('dashboard_attention.tickets','operation,session_digest,nonce_digest,target,request_digest,credential_epoch,session_epoch,expires_at,consumed_tx,task_id,created_at'),
+  ('dashboard_attention.stamps','namespace,task_id,operation,definition_digest,created_at'),
+  ('dashboard_attention.candidate_causes','candidate_id,definition_digest,origin,created_at'),
+  ('dashboard_attention.final_claims','namespace,task_id,original_next_run_at,definition_digest,revoked'),
+  ('public.break_through_clauses','id,entity_id,sender_domain,channel,security_kind,scope,expires_at,revoked_at,created_at,created_by')
+ ) expected(relation,columns) LOOP
+  IF NOT EXISTS(SELECT FROM pg_class c WHERE c.oid=to_regclass(item.relation)
+   AND c.relkind='r' AND c.relowner=owner_oid
+   AND (SELECT string_agg(attname,',' ORDER BY attnum) FROM pg_attribute
+    WHERE attrelid=c.oid AND attnum>0 AND NOT attisdropped)=item.columns) THEN
+   RAISE EXCEPTION 'untrusted attention table catalog'; END IF;
+  -- Remove every pre-existing grantee, including arbitrary stale roles. Only
+  -- the explicit closed grants below are restored; cache/restore is not trust.
+  FOR grantee_name IN SELECT DISTINCT CASE WHEN x.grantee=0 THEN 'PUBLIC'
+    ELSE quote_ident(pg_get_userbyid(x.grantee)) END
+   FROM pg_class c CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) x
+   WHERE c.oid=to_regclass(item.relation) AND x.grantee<>owner_oid LOOP
+   EXECUTE format('REVOKE ALL ON TABLE %s FROM %s',item.relation,grantee_name);
+  END LOOP;
+  -- Table REVOKE does not revoke per-column grants. Scrub those separately,
+  -- including stale arbitrary roles, before restoring the fixed read surface.
+  FOR column_grant IN SELECT a.attname, CASE WHEN x.grantee=0 THEN 'PUBLIC'
+    ELSE quote_ident(pg_get_userbyid(x.grantee)) END AS grantee_name
+   FROM pg_attribute a CROSS JOIN LATERAL aclexplode(a.attacl) x
+   WHERE a.attrelid=to_regclass(item.relation) AND a.attnum>0
+    AND NOT a.attisdropped AND x.grantee<>owner_oid LOOP
+   EXECUTE format('REVOKE ALL (%I) ON TABLE %s FROM %s',
+    column_grant.attname,item.relation,column_grant.grantee_name);
+  END LOOP;
+ END LOOP;
+ FOR item IN SELECT * FROM (VALUES
+  ('dashboard_attention.api(text,jsonb)','jsonb'),
+  ('dashboard_attention.consume(text,text,text,text,text,text,uuid)','jsonb'),
+  ('dashboard_attention.definition_digest(text,uuid)','text'),
+  ('dashboard_attention.evaluate(jsonb)','jsonb'),
+  ('dashboard_attention.final_claim(text,uuid,timestamp with time zone)','boolean'),
+  ('dashboard_attention.remember(uuid,jsonb)','boolean'),
+  ('dashboard_attention.candidate_origin(uuid)','jsonb')
+ ) expected(signature,result) LOOP
+  IF NOT EXISTS(SELECT FROM pg_proc p WHERE p.oid=to_regprocedure(item.signature)
+   AND p.proowner=owner_oid AND p.prosecdef AND p.prorettype=item.result::regtype
+   AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[]
+   AND (p.oid<>to_regprocedure('dashboard_attention.final_claim(text,uuid,timestamp with time zone)') OR p.provolatile='v')) THEN
+   RAISE EXCEPTION 'untrusted attention function catalog'; END IF;
+  FOR grantee_name IN SELECT DISTINCT CASE WHEN x.grantee=0 THEN 'PUBLIC'
+    ELSE quote_ident(pg_get_userbyid(x.grantee)) END
+   FROM pg_proc p CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) x
+   WHERE p.oid=to_regprocedure(item.signature) AND x.grantee<>owner_oid LOOP
+   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %s',item.signature,grantee_name);
+  END LOOP;
+ END LOOP;
+ IF 10<>(SELECT count(*) FROM pg_proc WHERE pronamespace='dashboard_attention'::regnamespace) THEN
+  RAISE EXCEPTION 'unexpected attention function'; END IF;
+ REVOKE CREATE ON SCHEMA dashboard_attention FROM dashboard_attention_owner;
+ IF to_regclass('public.insight_candidates') IS NOT NULL THEN
+  GRANT USAGE ON SCHEMA public TO dashboard_attention_owner;
+  GRANT SELECT ON public.insight_candidates TO dashboard_attention_owner;
+ END IF;
+ REVOKE ALL ON dashboard_attention.candidate_causes FROM PUBLIC,dashboard_auth_api;
+ REVOKE ALL ON FUNCTION dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid) FROM PUBLIC,dashboard_auth_api;
+ IF EXISTS(SELECT FROM pg_roles WHERE rolname='butler_switchboard_rw') THEN
+  GRANT EXECUTE ON FUNCTION dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid) TO butler_switchboard_rw;
+ END IF;
+ GRANT USAGE ON SCHEMA dashboard_auth TO dashboard_attention_owner;
+ GRANT SELECT ON dashboard_auth.instance,dashboard_auth.sessions TO dashboard_attention_owner;
+ GRANT UPDATE(singleton) ON dashboard_auth.instance TO dashboard_attention_owner;
+ GRANT USAGE ON SCHEMA dashboard_attention TO dashboard_auth_api;
+ REVOKE ALL ON FUNCTION dashboard_attention.api(text,jsonb) FROM PUBLIC;
+ GRANT EXECUTE ON FUNCTION dashboard_attention.api(text,jsonb) TO dashboard_auth_api;
+ REVOKE ALL ON FUNCTION dashboard_attention.consume(text,text,text,text,text,text,uuid),
+  dashboard_attention.definition_digest(text,uuid),dashboard_attention.final_claim(text,uuid,timestamp with time zone),dashboard_attention.evaluate(jsonb)
+  FROM PUBLIC,dashboard_auth_api;
+ REVOKE ALL ON dashboard_attention.tickets,dashboard_attention.stamps,dashboard_attention.final_claims,
+  public.break_through_clauses FROM PUBLIC,dashboard_auth_api;
+ SELECT migration_role INTO STRICT r FROM dashboard_attention.bootstrap_configuration WHERE singleton;
+ FOR n IN SELECT rolname FROM pg_roles WHERE rolname=r OR rolname IN(
+  'butler_chronicler_rw','butler_concierge_rw','butler_education_rw','butler_finance_rw',
+  'butler_general_rw','butler_health_rw','butler_home_rw','butler_lifestyle_rw',
+  'butler_messenger_rw','butler_qa_rw','butler_relationship_rw','butler_switchboard_rw',
+  'butler_travel_rw','butler_calendar_rw') LOOP
+  EXECUTE format('GRANT USAGE ON SCHEMA dashboard_attention TO %I',n);
+  EXECUTE format('REVOKE ALL ON dashboard_attention.tickets,dashboard_attention.stamps,dashboard_attention.final_claims,public.break_through_clauses FROM %I',n);
+  EXECUTE format('GRANT EXECUTE ON FUNCTION dashboard_attention.consume(text,text,text,text,text,text,uuid),dashboard_attention.final_claim(text,uuid,timestamp with time zone),dashboard_attention.evaluate(jsonb) TO %I',n);
+ END LOOP;
+ -- Fixed owner can inspect definitions only in canonical domain schemas.
+ FOR n IN SELECT nspname FROM pg_namespace WHERE nspname IN(
+  'chronicler','concierge','education','finance','general','health','home','lifestyle',
+  'messenger','qa','relationship','switchboard','travel','calendar') LOOP
+  EXECUTE format('GRANT USAGE ON SCHEMA %I TO dashboard_attention_owner',n);
+  IF to_regclass(format('%I.scheduled_tasks',n)) IS NOT NULL THEN
+   EXECUTE format('GRANT SELECT ON %I.scheduled_tasks TO dashboard_attention_owner',n);
+  END IF;
+ END LOOP;
+ EXECUTE format('GRANT USAGE ON SCHEMA dashboard_attention TO %I',r);
+ EXECUTE format('GRANT SELECT ON dashboard_attention.bootstrap_configuration,dashboard_attention.tickets,dashboard_attention.stamps,dashboard_attention.final_claims,dashboard_attention.candidate_causes,public.break_through_clauses TO %I',r);
+ EXECUTE format('GRANT EXECUTE ON FUNCTION dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid) TO %I',r);
+END $finalize$;
+REVOKE ALL ON FUNCTION dashboard_attention.finalize_interface() FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION dashboard_attention.install_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $install$
+BEGIN
+ IF to_regclass('dashboard_auth.instance') IS NULL
+  OR to_regclass('dashboard_auth.sessions') IS NULL
+  OR NOT EXISTS(SELECT FROM pg_namespace n JOIN pg_roles r ON r.oid=n.nspowner
+   WHERE n.nspname='dashboard_auth' AND r.rolsuper
+   AND obj_description(n.oid,'pg_namespace')='butlers:dashboard-owner-auth:core_240') THEN
+  RAISE EXCEPTION 'attention requires trusted owner authentication'; END IF;
+ IF to_regclass('dashboard_attention.tickets') IS NOT NULL
+  OR to_regclass('dashboard_attention.candidate_causes') IS NOT NULL
+  OR to_regclass('dashboard_attention.stamps') IS NOT NULL
+  OR to_regclass('dashboard_attention.final_claims') IS NOT NULL
+  OR to_regclass('public.break_through_clauses') IS NOT NULL THEN
+  RAISE EXCEPTION 'attention installation must start absent'; END IF;
+ GRANT CREATE ON SCHEMA dashboard_attention TO dashboard_attention_owner;
+ CREATE TABLE dashboard_attention.tickets (
+  operation uuid PRIMARY KEY, session_digest text NOT NULL CHECK(session_digest ~ '^[0-9a-f]{64}$'),
+  nonce_digest text NOT NULL CHECK(nonce_digest ~ '^[0-9a-f]{64}$'),
+  target text NOT NULL, request_digest text NOT NULL CHECK(request_digest ~ '^[0-9a-f]{64}$'),
+  credential_epoch bigint NOT NULL, session_epoch bigint NOT NULL,
+  expires_at timestamptz NOT NULL, consumed_tx bigint, task_id uuid,
+  created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+ );
+ ALTER TABLE dashboard_attention.tickets OWNER TO dashboard_attention_owner;
+ CREATE TABLE dashboard_attention.stamps (
+  namespace text NOT NULL, task_id uuid NOT NULL,
+  operation uuid UNIQUE NOT NULL REFERENCES dashboard_attention.tickets(operation),
+  definition_digest text NOT NULL CHECK(definition_digest ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz NOT NULL DEFAULT clock_timestamp(), PRIMARY KEY(namespace,task_id)
+ );
+ ALTER TABLE dashboard_attention.stamps OWNER TO dashboard_attention_owner;
+ -- Claim bookkeeping is separate from the immutable creation definition.
+ CREATE TABLE dashboard_attention.final_claims (
+  namespace text NOT NULL, task_id uuid NOT NULL,
+  original_next_run_at timestamptz NOT NULL, definition_digest text NOT NULL,
+  revoked boolean NOT NULL DEFAULT false,
+  PRIMARY KEY(namespace,task_id,original_next_run_at),
+  FOREIGN KEY(namespace,task_id) REFERENCES dashboard_attention.stamps(namespace,task_id)
+ );
+ ALTER TABLE dashboard_attention.final_claims OWNER TO dashboard_attention_owner;
+ CREATE TABLE public.break_through_clauses (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  entity_id uuid, sender_domain text, channel text, security_kind text,
+  scope text NOT NULL CHECK(scope IN('always','quiet_hours_only')),
+  expires_at timestamptz, revoked_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  created_by text NOT NULL DEFAULT 'owner' CHECK(created_by='owner'),
+  CHECK(num_nonnulls(entity_id,sender_domain,channel,security_kind)>0),
+  CHECK(sender_domain IS NULL OR (sender_domain=lower(sender_domain)
+   AND length(sender_domain)<=253 AND sender_domain ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$')),
+  CHECK(channel IS NULL OR channel IN('telegram','email','whatsapp','dashboard')),
+  CHECK(security_kind IS NULL OR security_kind IN('new_sign_in','password_changed','mfa_changed','recovery_changed','deletion_scheduled'))
+ );
+ ALTER TABLE public.break_through_clauses OWNER TO dashboard_attention_owner;
+
+ CREATE TABLE dashboard_attention.candidate_causes (
+  candidate_id uuid PRIMARY KEY, definition_digest text NOT NULL,
+  origin jsonb NOT NULL CHECK(jsonb_typeof(origin)='object'),
+  created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+ );
+ ALTER TABLE dashboard_attention.candidate_causes OWNER TO dashboard_attention_owner;
+ CREATE FUNCTION dashboard_attention.remember(candidate uuid,p jsonb) RETURNS boolean
+ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $remember$
+ DECLARE d text; caller text;
+ BEGIN
+  caller:=COALESCE(NULLIF(current_setting('role',true),'none'),session_user);
+  IF caller<>'butler_switchboard_rw' AND caller<>(SELECT migration_role::text
+   FROM dashboard_attention.bootstrap_configuration WHERE singleton) THEN RETURN false; END IF;
+  IF jsonb_typeof(p)<>'object' OR octet_length(p::text)>2048
+   OR EXISTS(SELECT FROM jsonb_each(p) e WHERE e.key NOT IN('namespace','task_id',
+    'original_next_run_at','entity_id','sender_domain','channel','security_kind') OR jsonb_typeof(e.value)<>'string')
+   THEN RETURN false; END IF;
+  SELECT encode(sha256(convert_to((to_jsonb(c)-ARRAY['status','delivered_at','delivery_attempt_count','metadata','delivery_ref'])::text,'UTF8')),'hex')
+   INTO d FROM public.insight_candidates c WHERE id=candidate;
+  IF d IS NULL THEN RETURN false; END IF;
+  INSERT INTO dashboard_attention.candidate_causes VALUES(candidate,d,p,clock_timestamp())
+   ON CONFLICT(candidate_id) DO NOTHING;
+  RETURN true;
+ END $remember$;
+ ALTER FUNCTION dashboard_attention.remember(uuid,jsonb) OWNER TO dashboard_attention_owner;
+ CREATE FUNCTION dashboard_attention.candidate_origin(candidate uuid) RETURNS jsonb
+ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $candidate$
+ DECLARE d text; b dashboard_attention.candidate_causes%ROWTYPE;
+ BEGIN
+  SELECT * INTO b FROM dashboard_attention.candidate_causes WHERE candidate_id=candidate;
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  SELECT encode(sha256(convert_to((to_jsonb(c)-ARRAY['status','delivered_at','delivery_attempt_count','metadata','delivery_ref'])::text,'UTF8')),'hex')
+   INTO d FROM public.insight_candidates c WHERE id=candidate AND status='pending';
+  IF d IS DISTINCT FROM b.definition_digest THEN RETURN NULL; END IF;
+  RETURN b.origin;
+ END $candidate$;
+ ALTER FUNCTION dashboard_attention.candidate_origin(uuid) OWNER TO dashboard_attention_owner;
+
+ CREATE FUNCTION dashboard_attention.definition_digest(ns text,task uuid) RETURNS text
+ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $definition$
+ DECLARE d text;
+ BEGIN
+  IF ns NOT IN('chronicler','concierge','education','finance','general','health','home','lifestyle',
+   'messenger','qa','relationship','switchboard','travel','calendar') THEN RETURN NULL; END IF;
+  EXECUTE format('SELECT encode(sha256(convert_to((to_jsonb(t)-ARRAY[''next_run_at'',''last_run_at'',''last_result'',''updated_at''])::text,''UTF8'')),''hex'') FROM %I.scheduled_tasks t WHERE id=$1',ns) INTO d USING task;
+  RETURN d;
+ END $definition$;
+ ALTER FUNCTION dashboard_attention.definition_digest(text,uuid) OWNER TO dashboard_attention_owner;
+
+ CREATE FUNCTION dashboard_attention.final_claim(ns text,task uuid,occurrence timestamptz)
+ RETURNS boolean LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+ SET search_path=pg_catalog,pg_temp AS $final_claim$
+ DECLARE caller text; definition jsonb; original_digest text; current_digest text;
+ BEGIN
+  caller:=COALESCE(NULLIF(current_setting('role',true),'none'),session_user);
+  IF ns NOT IN('chronicler','concierge','education','finance','general','health','home','lifestyle',
+   'messenger','qa','relationship','switchboard','travel','calendar') OR ns IS NULL
+   OR (caller<>('butler_'||ns||'_rw') AND caller<>(SELECT migration_role::text
+    FROM dashboard_attention.bootstrap_configuration WHERE singleton)) THEN RETURN false; END IF;
+  IF occurrence IS NULL THEN
+   -- Explicit edits/disable revoke even a cached final occurrence. Repeating
+   -- disable after scheduler auto-disable is still an explicit revocation.
+   UPDATE dashboard_attention.final_claims SET revoked=true WHERE namespace=ns AND task_id=task;
+   RETURN true;
+  END IF;
+  -- VOLATILE queries see the actual same-statement RETURNING update. Require
+  -- this transaction's row, a real final until_at transition and current stamp;
+  -- never trust an origin flag or caller-supplied definition/digest.
+  EXECUTE format('SELECT to_jsonb(t) FROM %I.scheduled_tasks t WHERE id=$1 AND NOT enabled AND next_run_at IS NULL AND until_at >= $2 AND xmin::text::numeric=mod(pg_current_xact_id()::text::numeric,4294967296)',ns)
+   INTO definition USING task,occurrence;
+  IF definition IS NULL OR occurrence>clock_timestamp() THEN RETURN false; END IF;
+  definition:=definition-ARRAY['next_run_at','last_run_at','last_result','updated_at'];
+  original_digest:=encode(sha256(convert_to((definition||'{"enabled":true}'::jsonb)::text,'UTF8')),'hex');
+  IF NOT EXISTS(SELECT FROM dashboard_attention.stamps WHERE namespace=ns AND task_id=task
+   AND definition_digest=original_digest) THEN RETURN false; END IF;
+  current_digest:=encode(sha256(convert_to(definition::text,'UTF8')),'hex');
+  INSERT INTO dashboard_attention.final_claims VALUES(ns,task,occurrence,current_digest,false)
+   ON CONFLICT(namespace,task_id,original_next_run_at) DO NOTHING;
+  RETURN true;
+ END $final_claim$;
+ ALTER FUNCTION dashboard_attention.final_claim(text,uuid,timestamp with time zone)
+  OWNER TO dashboard_attention_owner;
+
+
+ CREATE FUNCTION dashboard_attention.api(action text,p jsonb) RETURNS jsonb
+ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $api$
+ DECLARE s dashboard_auth.instance%ROWTYPE; se dashboard_auth.sessions%ROWTYPE;
+  b dashboard_attention.tickets%ROWTYPE; t timestamptz; c uuid;
+ BEGIN
+  SELECT * INTO s FROM dashboard_auth.instance WHERE singleton FOR UPDATE;
+  t:=clock_timestamp();
+  IF NOT FOUND OR s.state NOT IN('configured_key','keyless_enrolled')
+   OR s.origin IS DISTINCT FROM p->>'origin' OR s.rp_id IS DISTINCT FROM p->>'rp_id'
+   OR s.key_generation IS DISTINCT FROM p->>'key_generation' THEN RETURN '{"error":"FORBIDDEN"}'; END IF;
+  SELECT * INTO se FROM dashboard_auth.sessions WHERE digest=p->>'session_digest';
+  IF NOT FOUND OR se.revoked OR se.expires_at<=t OR se.credential_epoch<>s.credential_epoch
+   OR se.session_epoch<>s.session_epoch OR se.csrf_digest IS DISTINCT FROM p->>'csrf_digest'
+   THEN RETURN '{"error":"UNAUTHORIZED"}'; END IF;
+  IF action='issue' THEN
+   IF p->>'target' IS NULL OR p->>'request_digest' IS NULL OR p->>'nonce_digest' IS NULL
+    OR p->>'target' NOT IN('chronicler','concierge','education','finance','general','health','home','lifestyle',
+    'messenger','qa','relationship','switchboard','travel','calendar')
+    OR p->>'request_digest' !~ '^[0-9a-f]{64}$' OR p->>'nonce_digest' !~ '^[0-9a-f]{64}$'
+    OR p->>'operation' IS NULL THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
+   SELECT * INTO b FROM dashboard_attention.tickets WHERE operation=(p->>'operation')::uuid FOR UPDATE;
+   IF FOUND THEN
+    IF b.session_digest<>se.digest OR b.target<>p->>'target'
+     OR b.request_digest<>p->>'request_digest' OR b.credential_epoch<>s.credential_epoch
+     OR b.session_epoch<>s.session_epoch THEN RETURN '{"error":"FORBIDDEN"}'; END IF;
+    IF b.task_id IS NOT NULL THEN RETURN jsonb_build_object('state','completed','id',b.task_id); END IF;
+    IF b.expires_at<=t OR b.consumed_tx IS NOT NULL THEN RETURN '{"error":"FORBIDDEN"}'; END IF;
+    UPDATE dashboard_attention.tickets SET nonce_digest=p->>'nonce_digest' WHERE operation=b.operation;
+   ELSE
+    INSERT INTO dashboard_attention.tickets(operation,session_digest,nonce_digest,target,request_digest,
+     credential_epoch,session_epoch,expires_at) VALUES((p->>'operation')::uuid,se.digest,p->>'nonce_digest',
+     p->>'target',p->>'request_digest',s.credential_epoch,s.session_epoch,least(se.expires_at,t+interval '2 minutes'));
+   END IF;
+   RETURN '{"state":"issued"}';
+  ELSIF action='clause_create' THEN
+   INSERT INTO public.break_through_clauses(entity_id,sender_domain,channel,security_kind,scope,expires_at)
+    VALUES((p->>'entity_id')::uuid,p->>'sender_domain',p->>'channel',p->>'security_kind',p->>'scope',
+     (p->>'expires_at')::timestamptz) RETURNING id INTO c;
+   RETURN jsonb_build_object('id',c);
+  ELSIF action='clause_revoke' THEN
+   UPDATE public.break_through_clauses SET revoked_at=COALESCE(revoked_at,t) WHERE id=(p->>'id')::uuid
+    RETURNING id INTO c;
+   IF c IS NULL THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
+   RETURN jsonb_build_object('id',c);
+  END IF;
+  RETURN '{"error":"INVALID_REQUEST"}';
+ END $api$;
+ ALTER FUNCTION dashboard_attention.api(text,jsonb) OWNER TO dashboard_attention_owner;
+
+ CREATE FUNCTION dashboard_attention.consume(phase text,raw_nonce text,session_digest text,
+  operation text,target text,request_digest text,task uuid) RETURNS jsonb
+ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $consume$
+ DECLARE s dashboard_auth.instance%ROWTYPE; se dashboard_auth.sessions%ROWTYPE;
+  b dashboard_attention.tickets%ROWTYPE; t timestamptz; d text; caller text;
+ BEGIN
+  caller:=COALESCE(NULLIF(current_setting('role',true),'none'),session_user);
+  IF target IS NULL THEN RETURN '{"state":"refused"}'; END IF;
+  IF caller<>('butler_'||target||'_rw') AND caller<>(SELECT migration_role::text
+   FROM dashboard_attention.bootstrap_configuration WHERE singleton) THEN RETURN '{"state":"refused"}'; END IF;
+  IF phase IS NULL OR raw_nonce IS NULL OR target IS NULL OR operation IS NULL
+   OR session_digest IS NULL OR request_digest IS NULL
+   OR phase NOT IN('begin','finish') OR raw_nonce !~ '^[A-Za-z0-9_-]{43}$' THEN RETURN '{"state":"refused"}'; END IF;
+  SELECT * INTO s FROM dashboard_auth.instance WHERE singleton FOR SHARE;
+  t:=clock_timestamp();
+  IF NOT FOUND OR s.state NOT IN('configured_key','keyless_enrolled') THEN RETURN '{"state":"refused"}'; END IF;
+  SELECT * INTO se FROM dashboard_auth.sessions x WHERE x.digest=consume.session_digest;
+  IF NOT FOUND OR se.revoked OR se.expires_at<=t OR se.credential_epoch<>s.credential_epoch
+   OR se.session_epoch<>s.session_epoch THEN RETURN '{"state":"refused"}'; END IF;
+  SELECT * INTO b FROM dashboard_attention.tickets x WHERE x.operation=consume.operation::uuid FOR UPDATE;
+  t:=clock_timestamp();
+  IF NOT FOUND OR b.nonce_digest<>encode(sha256(convert_to(raw_nonce,'UTF8')),'hex')
+   OR b.session_digest<>se.digest OR b.target<>target OR b.request_digest<>request_digest
+   OR b.credential_epoch<>s.credential_epoch OR b.session_epoch<>s.session_epoch OR se.expires_at<=t
+   THEN RETURN '{"state":"refused"}'; END IF;
+  IF phase='begin' AND b.task_id IS NOT NULL THEN RETURN jsonb_build_object('state','completed','id',b.task_id); END IF;
+  IF b.expires_at<=t THEN RETURN '{"state":"refused"}'; END IF;
+  IF phase='begin' AND b.consumed_tx IS NULL THEN
+   UPDATE dashboard_attention.tickets x SET consumed_tx=txid_current() WHERE x.operation=b.operation;
+   RETURN '{"state":"admitted"}';
+  ELSIF phase='finish' AND b.consumed_tx=txid_current() AND b.task_id IS NULL AND task IS NOT NULL THEN
+   d:=dashboard_attention.definition_digest(target,task);
+   IF d IS NULL THEN RETURN '{"state":"refused"}'; END IF;
+   INSERT INTO dashboard_attention.stamps VALUES(target,task,b.operation,d,t);
+   UPDATE dashboard_attention.tickets x SET task_id=task WHERE x.operation=b.operation;
+   RETURN jsonb_build_object('state','completed','id',task);
+  END IF;
+  RETURN '{"state":"refused"}';
+ END $consume$;
+ ALTER FUNCTION dashboard_attention.consume(text,text,text,text,text,text,uuid) OWNER TO dashboard_attention_owner;
+
+ CREATE FUNCTION dashboard_attention.evaluate(p jsonb) RETURNS jsonb
+ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $evaluate$
+ DECLARE b dashboard_attention.stamps%ROWTYPE; c uuid; t timestamptz:=clock_timestamp();
+ BEGIN
+  IF p->>'task_id' IS NOT NULL AND p->>'namespace' IS NOT NULL THEN
+   SELECT * INTO b FROM dashboard_attention.stamps WHERE namespace=p->>'namespace' AND task_id=(p->>'task_id')::uuid;
+   IF FOUND AND ((b.definition_digest=dashboard_attention.definition_digest(b.namespace,b.task_id)
+    AND NOT EXISTS(SELECT FROM dashboard_attention.final_claims f WHERE f.namespace=b.namespace
+     AND f.task_id=b.task_id AND f.original_next_run_at=(p->>'original_next_run_at')::timestamptz))
+    OR EXISTS(SELECT FROM dashboard_attention.final_claims f
+     WHERE f.namespace=b.namespace AND f.task_id=b.task_id AND NOT f.revoked
+     AND f.original_next_run_at=(p->>'original_next_run_at')::timestamptz
+     AND f.definition_digest=dashboard_attention.definition_digest(b.namespace,b.task_id))) THEN
+    RETURN jsonb_build_object('cause','owner_creation','ref',b.operation); END IF;
+  END IF;
+  SELECT id INTO c FROM public.break_through_clauses WHERE revoked_at IS NULL
+   AND (expires_at IS NULL OR expires_at>t)
+   AND (scope='always' OR p->>'gate'='quiet_hours')
+   AND (entity_id IS NULL OR entity_id=(p->>'entity_id')::uuid)
+   AND (sender_domain IS NULL OR sender_domain=p->>'sender_domain')
+   AND (channel IS NULL OR channel=p->>'channel')
+   AND (security_kind IS NULL OR security_kind=p->>'security_kind') ORDER BY created_at,id LIMIT 1;
+  IF c IS NOT NULL THEN RETURN jsonb_build_object('cause','owner_clause','ref',c); END IF;
+  RETURN '{"cause":"routine"}';
+ END $evaluate$;
+ ALTER FUNCTION dashboard_attention.evaluate(jsonb) OWNER TO dashboard_attention_owner;
+ PERFORM dashboard_attention.finalize_interface();
+END $install$;
+REVOKE ALL ON FUNCTION dashboard_attention.install_interface() FROM PUBLIC;
+CREATE OR REPLACE FUNCTION dashboard_attention.deactivate_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $deactivate$
+DECLARE n name;
+BEGIN
+ UPDATE dashboard_attention.final_claims SET revoked=true;
+ DELETE FROM dashboard_attention.tickets WHERE task_id IS NULL;
+ UPDATE public.break_through_clauses SET revoked_at=COALESCE(revoked_at,clock_timestamp());
+ FOR n IN SELECT rolname FROM pg_roles WHERE rolname<>'dashboard_attention_owner' LOOP
+  EXECUTE format('REVOKE EXECUTE ON FUNCTION dashboard_attention.api(text,jsonb),dashboard_attention.consume(text,text,text,text,text,text,uuid),dashboard_attention.final_claim(text,uuid,timestamp with time zone),dashboard_attention.evaluate(jsonb),dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid) FROM %I',n);
+ END LOOP;
+END $deactivate$;
+REVOKE ALL ON FUNCTION dashboard_attention.deactivate_interface() FROM PUBLIC;
+
+DO $attention_grant$
+DECLARE migration_name name;
+BEGIN
+ SELECT migration_role INTO STRICT migration_name FROM dashboard_attention.bootstrap_configuration WHERE singleton;
+ EXECUTE format('GRANT USAGE ON SCHEMA dashboard_attention TO %I',migration_name);
+ EXECUTE format('GRANT SELECT ON dashboard_attention.bootstrap_configuration TO %I',migration_name);
+ EXECUTE format('GRANT EXECUTE ON FUNCTION dashboard_attention.install_interface(),dashboard_attention.finalize_interface(),dashboard_attention.deactivate_interface() TO %I',migration_name);
+ GRANT USAGE ON SCHEMA dashboard_attention TO dashboard_attention_owner;
+ GRANT SELECT ON dashboard_attention.bootstrap_configuration TO dashboard_attention_owner;
+ IF to_regclass('dashboard_attention.tickets') IS NOT NULL THEN
+  PERFORM dashboard_attention.finalize_interface();
+ END IF;
+END $attention_grant$;
+
 -- D13 fixed step-up interface. Roles/objects are staged ONLY by this existing
 -- privileged bootstrap; ordinary core_277 can invoke no-input installers only.
 DO $stepup_bootstrap$

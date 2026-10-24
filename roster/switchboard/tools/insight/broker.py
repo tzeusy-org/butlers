@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import re
+import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -339,12 +340,13 @@ async def propose_insight_candidate(
         return {"status": "filtered", "reason": "verbosity is off"}
 
     # --- Insert candidate ---
-    await pool.execute(
+    candidate_id = await pool.fetchval(
         """
         INSERT INTO insight_candidates
             (origin_butler, priority, category, dedup_key, cooldown_days,
              expires_at, message, channel, metadata, status, prepared_action_id, premise)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, 'pending', $10, $11::jsonb)
+        RETURNING id
         """,
         origin_butler,
         priority,
@@ -358,6 +360,10 @@ async def propose_insight_candidate(
         prepared_action_id,
         premise,
     )
+    if isinstance(candidate_id, uuid.UUID):
+        from butlers.core.attention_urgency import remember_candidate_origin
+
+        await remember_candidate_origin(pool, candidate_id)
     return {"status": "accepted", "reason": "candidate queued for delivery cycle"}
 
 
@@ -1952,56 +1958,15 @@ async def delivery_cycle(
     now:
         Reference time (defaults to UTC now). Used in tests to control time.
     urgent_only:
-        bu-o8233 (JARVIS pursuit move 8 slice 4) — hourly urgent sub-cycle mode.
-        Today's single daily cron slot means a priority>=90 candidate proposed
-        minutes after the daily run can sit ``pending`` for nearly 24h before
-        the existing priority-urgent bypass (which only affects quiet-hours/
-        context-bus *suppression*, not cadence) ever gets a chance to consider
-        it. When True, this cycle:
-          - narrows candidate selection to ``priority >= URGENT_PRIORITY_THRESHOLD``
-            from the start (routine candidates are never touched by this mode —
-            they stay untouched ``pending`` for the next daily cycle);
-          - skips the quiet-hours/context-bus consult entirely (urgent
-            candidates always bypass both per RFC 0011 Amendment 1, so the
-            reads would be pure overhead);
-          - still honours an explicit ``verbosity=off`` opt-out (that is a
-            hard user preference, not a time-based deferral the urgent bypass
-            is meant to override);
-          - has no daily budget cap — every eligible urgent candidate is
-            delivered (or folded into one digest) this cycle, not just the
-            top-B;
-          - skips end-of-cycle maintenance (``cleanup_old_rows``,
-            disengagement auto-off) — the daily cycle already covers those
-            once a day; running them hourly too would be redundant.
-        Idempotency across the two cycles needs no extra bookkeeping: both
-        select ``WHERE status = 'pending'`` and this cycle's own delivery step
-        flips delivered candidates to ``status = 'delivered'`` before
-        returning, so a later daily cycle (or the next hourly tick) simply
-        never sees them again — the same row-status guard the daily cycle
-        already relies on.
+        The existing hourly sub-cycle admits only a current verified producer
+        or persisted owner cause. Numeric priority ranks candidates; it never
+        authorizes interruption. Quiet/context reads and explicit verbosity
+        opt-out apply in both modes. Routine candidates remain pending for a
+        later normal cycle. Existing per-cycle budgets and maintenance cadence
+        are unchanged.
     daily_hold_mode:
-        bu-ep4ks.9 slice 5 — hold-until-first-active daily cadence. The
-        production cron companion replaces the old single fixed 08:00 UTC
-        slot with a windowed cron (several ticks across the morning); each
-        tick calls this with ``daily_hold_mode=True``. No new persistent
-        "already ran today" flag is needed: once a tick delivers, the
-        delivered candidates flip to ``status = 'delivered'`` (the same
-        idempotency ``urgent_only`` already relies on), so a later tick that
-        same morning simply finds nothing pending and no-ops. Only changes
-        behaviour when this cycle would otherwise be fully suppressed with
-        no urgent candidate pending (see ``get_suppressing_context_signal``):
-          - if the active suppressing signal is ``traveling``, the routine
-            digest is deferred outright (never force-delivered by the hard
-            fallback deadline below) — a home-life digest is not useful
-            mid-trip, so a travel day skips/defers rather than eventually
-            firing anyway;
-          - otherwise (dnd/focused/meeting/sleeping/quiet_hours), suppression is
-            bypassed once :func:`_daily_hold_fallback_reached` returns True
-            for ``now`` — the hard fallback deadline — so a held digest is
-            never silently skipped for the entire day just because the
-            owner stayed unreachable past the deadline.
-        No effect when ``urgent_only=True`` (that mode skips the whole
-        suppression consult) or when this cycle isn't suppressed at all.
+        Retained caller compatibility. A daily fallback deadline does not grant
+        interruption authority; held work remains pending with catch-up custody.
     credential_store:
         Optional ``CredentialStore`` forwarded to slice 3's cluster
         synthesis (see ``_synthesize_cluster_sentence``) for resolving the
@@ -2027,6 +1992,7 @@ async def delivery_cycle(
         - ``delivery_message``: the formatted message sent (or None)
         - ``effective_budget``: the computed budget
     """
+    use_current_clock = now is None
     if now is None:
         now = datetime.now(UTC)
 
@@ -2051,14 +2017,9 @@ async def delivery_cycle(
 
     # Step 1: Check Owner Attention Policy + context bus (bu-qvnce.8 slices 1-2;
     # extended to meeting/traveling with per-signal max-hold TTL by
-    # bu-ep4ks.9 slice 2). Both are deterministic, non-LLM reads. Neither
-    # suppresses a candidate at or above URGENT_PRIORITY_THRESHOLD (RFC 0011
-    # Amendment 1: fail-open for urgent, budgeted for routine) — that check
-    # happens below, once pending candidates are known, so a single urgent
-    # candidate doesn't skip the whole cycle's suppression bookkeeping. In
-    # urgent_only mode every candidate this cycle considers is already >= the
-    # urgent threshold, so the suppression consult is skipped outright rather
-    # than computed and then ignored.
+    # bu-ep4ks.9 slice 2). Both are deterministic, non-LLM reads.
+    # Suppression is evaluated for every cycle. Only a current verified
+    # creation stamp or matching owner clause can override it; ranking cannot.
     _suppression_reason: str | None = None
     # The signal that is "holding" this cycle, in isolation from the
     # human-readable reason string above — recorded as structured
@@ -2066,31 +2027,23 @@ async def delivery_cycle(
     # is queryable without parsing `reason`.
     _suppression_signal: str | None = None
     policy: dict[str, Any] | None = None
-    if not urgent_only:
-        try:
-            policy = await get_approvals_policy_quiet_hours(pool)
-            _quiet_hours_active = is_policy_quiet_now(policy, now=now)
-            _context_signal = await get_suppressing_context_signal(pool, now=now)
-        except Exception:
-            # Restrict this attempt to the existing urgent-only working set.
-            # Routine rows retain their original expiry and remain pending;
-            # unavailable storage cannot create safety authority or a wake time.
-            urgent_only = True
-            _quiet_hours_active = False
-            _context_signal = None
-            result.update(skipped=True, reason="attention_store_unavailable")
-        if _quiet_hours_active:
-            _suppression_reason = "quiet_hours"
-            _suppression_signal = "quiet_hours"
-        elif _context_signal is not None:
-            _suppression_reason = f"context_bus:{_context_signal}"
-            _suppression_signal = _context_signal
+    try:
+        policy = await get_approvals_policy_quiet_hours(pool)
+        _quiet_hours_active = is_policy_quiet_now(policy, now=now)
+        _context_signal = await get_suppressing_context_signal(pool, now=now)
+    except Exception:
+        result.update(skipped=True, reason="attention_store_unavailable")
+        return result
+    if _context_signal is not None:
+        _suppression_reason = f"context_bus:{_context_signal}"
+        _suppression_signal = _context_signal
+    elif _quiet_hours_active:
+        _suppression_reason = "quiet_hours"
+        _suppression_signal = "quiet_hours"
 
     # Check verbosity=off early. This is a hard user opt-out (distinct from
     # the time-based quiet-hours/context-bus deferral above), so it applies
-    # even in urgent_only mode — the priority-urgent bypass fails open past
-    # quiet hours and dnd/sleeping signals, not past the owner's own "insights
-    # off" setting.
+    # even in urgent_only mode: a verified cause never overrides this opt-out.
     configured_budget = _get_configured_budget(settings)
     if configured_budget == 0:
         if urgent_only:
@@ -2130,143 +2083,58 @@ async def delivery_cycle(
     # before suppression, cooldown, dedup and budget ever see it, so it can
     # neither be sent nor consume a delivery slot.
     premise_verdicts, result["withdrawn"] = await _revalidate_premises(
-        pool, now=now, urgent_only=urgent_only
+        pool, now=now, urgent_only=False
     )
 
-    # Fetch pending candidates. urgent_only narrows this to priority>=90 from
-    # the start — routine candidates are never selected, filtered, or
-    # otherwise touched by this cycle.
-    if urgent_only:
-        rows = await pool.fetch(
-            """
-            SELECT id FROM insight_candidates
-            WHERE status = 'pending' AND priority >= $1
-            ORDER BY priority DESC, created_at ASC
-            """,
-            URGENT_PRIORITY_THRESHOLD,
-        )
-    else:
-        rows = await pool.fetch(
-            """
-            SELECT id FROM insight_candidates
-            WHERE status = 'pending'
-            ORDER BY priority DESC, created_at ASC
-            """
-        )
+    # Priority remains a ranking signal, never an authorization selector.
+    rows = await pool.fetch(
+        "SELECT id FROM insight_candidates WHERE status = 'pending' "
+        "ORDER BY priority DESC, created_at ASC"
+    )
     pending_ids = [str(row["id"]) for row in rows]
-
     if not pending_ids:
         return result
-    if urgent_only and result.get("reason") == "attention_store_unavailable":
-        # Only the already-urgent working set can proceed. The routine attempt
-        # remains unavailable, including when the eligible urgent set is empty.
-        result["skipped"] = False
+    from butlers.core.attention_urgency import candidate_interruption
 
-    if not urgent_only and _suppression_reason is not None:
-        urgent_rows = await pool.fetch(
-            """
-            SELECT id FROM insight_candidates
-            WHERE id = ANY($1::uuid[]) AND priority >= $2
-            """,
-            pending_ids,
-            URGENT_PRIORITY_THRESHOLD,
-        )
-        if urgent_rows:
-            # At least one urgent candidate is pending — narrow this cycle's
-            # working set to urgent candidates only. Routine (sub-threshold)
-            # candidates remain 'pending' untouched for a later, non-suppressed
-            # cycle rather than being silently dropped.
-            logger.info(
-                "insight-delivery-cycle: suppressed (%s) but %d urgent (priority>=%d) "
-                "candidate(s) pending — bypassing suppression for those only",
-                _suppression_reason,
-                len(urgent_rows),
-                URGENT_PRIORITY_THRESHOLD,
-            )
-            pending_ids = [str(row["id"]) for row in urgent_rows]
-        elif daily_hold_mode and _suppression_signal == "traveling":
-            # Slice 5 travel-day skip/defer: a routine home-life digest is
-            # not useful mid-trip, so a travel day fully defers the digest —
-            # unlike dnd/focused/meeting/sleeping/quiet_hours below, this is never
-            # force-delivered by the hard fallback deadline. Each windowed
-            # tick re-checks; once `traveling` clears (or its own slice-2
-            # max-hold TTL lapses), a later tick the same day can still
-            # succeed before the window closes.
-            logger.info(
-                "insight-delivery-cycle: travel day — deferring routine digest, "
-                "no urgent (priority>=%d) candidates pending",
-                URGENT_PRIORITY_THRESHOLD,
-            )
+    async def authorized(candidate_id: str) -> bool:
+        gates = []
+        if _quiet_hours_active:
+            gates.append("quiet_hours")
+        if _context_signal is not None:
+            gates.append("context")
+        if not gates:
+            gates.append("context")  # urgent-only requires a real cause even outside quiet hours
+        for gate in gates:
+            if not (
+                await candidate_interruption(pool, uuid.UUID(candidate_id), gate=gate)
+            ).interrupts:
+                return False
+        return True
+
+    if urgent_only or _suppression_reason is not None:
+        retained = []
+        for candidate_id in pending_ids:
+            if await authorized(candidate_id):
+                retained.append(candidate_id)
+        pending_ids = retained
+        if not pending_ids:
             await record_attention_event(
                 pool,
                 origin_butler="switchboard",
                 source="insight",
                 outcome="suppressed",
                 intent="insight",
-                reason="travel_day_defer",
-                metadata={"held_by": "traveling"},
+                reason=_suppression_reason or "unverified_urgency",
+                metadata={"attention_cause": "routine", "downgrade": "unverified_urgency"},
             )
-            await pool.execute(
-                """
-                UPDATE insight_candidates
-                SET metadata = COALESCE(metadata, '{}'::jsonb)
-                               || jsonb_build_object('blocked_by', 'held_by')
-                WHERE id = ANY($1::uuid[]) AND status = 'pending'
-                """,
-                pending_ids,
-            )
-            await _schedule_insight_catchup(
-                pool,
-                suppression_signal=_suppression_signal,
-                suppression_reason=_suppression_reason,
-                policy=policy,
-                now=now,
-            )
-            result["skipped"] = True
-            return result
-        elif daily_hold_mode and _daily_hold_fallback_reached(now):
-            # Hard fallback deadline reached: bypass suppression for the
-            # FULL routine pending set (not just urgent) rather than holding
-            # the digest hostage for the rest of the day. pending_ids stays
-            # as the full routine set already computed above.
-            logger.info(
-                "insight-delivery-cycle: hard fallback deadline reached (now=%s); "
-                "bypassing suppression (%s) for routine delivery",
-                now.isoformat(),
-                _suppression_reason,
-            )
-        else:
-            logger.info(
-                "insight-delivery-cycle: suppressed (%s), no urgent (priority>=%d) "
-                "candidates pending — skipping",
-                _suppression_reason,
-                URGENT_PRIORITY_THRESHOLD,
-            )
-            await record_attention_event(
-                pool,
-                origin_butler="switchboard",
-                source="insight",
-                outcome="suppressed",
-                intent="insight",
-                reason=_suppression_reason,
-                metadata={"held_by": _suppression_signal},
-            )
-            await pool.execute(
-                """
-                UPDATE insight_candidates
-                SET metadata = COALESCE(metadata, '{}'::jsonb)
-                               || jsonb_build_object('blocked_by', 'held_by')
-                WHERE id = ANY($1::uuid[]) AND status = 'pending'
-                """,
-                pending_ids,
-            )
-            await _schedule_insight_catchup(
-                pool,
-                suppression_signal=_suppression_signal,
-                suppression_reason=_suppression_reason,
-                policy=policy,
-                now=now,
-            )
+            if _suppression_reason is not None:
+                await _schedule_insight_catchup(
+                    pool,
+                    suppression_signal=_suppression_signal,
+                    suppression_reason=_suppression_reason,
+                    policy=policy,
+                    now=now,
+                )
             result["skipped"] = True
             return result
 
@@ -2434,6 +2302,31 @@ async def delivery_cycle(
         ],
     }
 
+    try:
+        final_policy = await get_approvals_policy_quiet_hours(pool)
+        dispatch_now = datetime.now(UTC) if use_current_clock else now
+        final_quiet = is_policy_quiet_now(final_policy, now=dispatch_now)
+        final_context = await get_suppressing_context_signal(pool, now=dispatch_now)
+    except Exception:
+        result.update(skipped=True, reason="attention_store_unavailable")
+        return result
+    delivery_causes: dict[str, dict[str, str]] = {}
+    for candidate_id in selected_ids:
+        gates = (["quiet_hours"] if final_quiet else []) + (["context"] if final_context else [])
+        if urgent_only and not gates:
+            gates = ["context"]
+        evidence = {"attention_cause": "routine"}
+        for gate in gates or ["context"]:
+            cause = await candidate_interruption(pool, uuid.UUID(candidate_id), gate=gate)
+            if gate in gates and not cause.interrupts:
+                result.update(skipped=True, reason="attention_cause_changed")
+                return result
+            if cause.interrupts:
+                evidence = {"attention_cause": cause.cause, "cause_ref": cause.ref}
+        if evidence["attention_cause"] == "routine":
+            evidence["downgrade"] = "unverified_urgency"
+        delivery_causes[candidate_id] = evidence
+
     # notify_fn is guaranteed non-None here (None case returns early above)
     deliver_success = True
     notify_result: Any = None
@@ -2540,6 +2433,7 @@ async def delivery_cycle(
                 priority=_c.get("priority"),
                 dedup_key=_c.get("dedup_key"),
                 notification_ref=str(_c["id"]),
+                metadata=delivery_causes[str(_c["id"])],
             )
     else:
         # Delivery failed — increment attempt counter; filter candidates that have
@@ -2628,6 +2522,7 @@ async def delivery_cycle(
                 notification_ref=str(_r["id"]),
                 reason=reason,
                 metadata={
+                    **delivery_causes[str(_r["id"])],
                     "failed_attempts": _r["delivery_attempt_count"],
                     "terminally_filtered": _terminally_filtered,
                     "retryable": not _terminally_filtered,
