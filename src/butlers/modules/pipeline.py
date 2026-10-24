@@ -3179,9 +3179,9 @@ class MessagePipeline:
                                         },
                                     )
                                 else:
-                                    logger.debug(
-                                        "Identity resolution failed; proceeding without preamble",
-                                        exc_info=True,
+                                    logger.warning(
+                                        "pipeline.identity_resolution_failed",
+                                        extra={"failure_class": type(exc).__name__},
                                     )
 
                     if _decomp_messages is not None:
