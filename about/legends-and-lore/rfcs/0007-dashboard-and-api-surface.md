@@ -36,7 +36,10 @@ Conventions:
 
 - Each `router.py` MUST export a module-level `router` variable (APIRouter instance).
 - No `__init__.py` needed in the `api/` directory.
-- DB dependencies are auto-wired via `wire_db_dependencies()`.
+- Core and discovered routers import the public `Db` dependency (or
+  `Depends(get_db)`) from `src/butlers/api/deps.py`. The `src/butlers/api/app.py`
+  lifespan initializes and shuts down its shared DatabaseManager singleton;
+  existing optional reads use `OptionalDb`/`get_db_optional()`.
 - Pydantic models SHOULD be co-located in `models.py` alongside `router.py`.
 - Butlers without `api/` directories are silently skipped.
 - Invalid router exports (missing `router` variable, wrong type) are logged as warnings and skipped.
