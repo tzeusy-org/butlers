@@ -1303,12 +1303,13 @@ async def test_real_registered_home_administer_park_and_stored_replay(
         grants = encode_grants((grant,))
         await admin.execute(
             "INSERT INTO switchboard.invocations "
-            "(id,goal_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,max_turns,max_tokens) "
-            "VALUES($1,$2,0,'lead',0,'launching',$3::jsonb,$4,5,500)",
+            "(id,goal_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,max_turns,max_tokens,exposed) "
+            "VALUES($1,$2,0,'lead',0,'launching',$3::jsonb,$4,5,500,$5)",
             invocation,
             goal,
             grants,
             digest(grants),
+            exposed,
         )
         args = {"name": f"administer-{case.hex}", "cron": "0 8 * * *", "prompt": "original"}
         rule = None
