@@ -20,6 +20,23 @@ from butlers.modules.approvals.previews import args_digest
 pytestmark = pytest.mark.unit
 
 
+async def _admitted_rule_transaction(connection, kind, parameters, writer):
+    """Explicit software admission collaborator for the original ordering cases.
+
+    These cases do not have a database or a real factor. The separate migrated
+    step-up owner proves admission; retain this owner's complete original
+    decision/audit/memory/dispatch and refusal assertions after that boundary.
+    """
+    from butlers.modules.approvals.stepup import _enlisted_write, _EnlistedWrite
+
+    async with connection.transaction():
+        token = _enlisted_write.set(_EnlistedWrite(connection, kind))
+        try:
+            return await writer(connection)
+        finally:
+            _enlisted_write.reset(token)
+
+
 @pytest.mark.parametrize("legacy", [False, True])
 async def test_changed_viewed_call_refuses_before_any_effect(app, monkeypatch, legacy):
     action_id = uuid4()
@@ -141,6 +158,7 @@ async def binding_http(app, monkeypatch):
             yield conn
 
     pool = Pool()
+    monkeypatch.setattr(routes, "run_rule_write", _admitted_rule_transaction)
 
     async def find(*args):
         return "general", pool
@@ -299,19 +317,25 @@ async def test_legacy_rule_memory_follows_owning_audit_commit(app, monkeypatch, 
     dispatches = []
 
     class Conn:
+        depth = 0
+
         @asynccontextmanager
         async def transaction(self):
             before = deepcopy(owner)
-            events.append("begin")
+            outer = self.depth == 0
+            self.depth += 1
+            events.append("begin" if outer else "savepoint")
             try:
                 yield
             except BaseException:
                 owner.clear()
                 owner.update(before)
-                events.append("rollback")
+                events.append("rollback" if outer else "rollback_to")
                 raise
             else:
-                events.append("commit")
+                events.append("commit" if outer else "release")
+            finally:
+                self.depth -= 1
 
         async def fetchrow(self, sql, *args):
             assert "FROM pending_actions" in sql
@@ -333,6 +357,7 @@ async def test_legacy_rule_memory_follows_owning_audit_commit(app, monkeypatch, 
             yield conn
 
     pool = Pool()
+    monkeypatch.setattr(routes, "run_rule_write", _admitted_rule_transaction)
 
     class Writer:
         async def record_standing_rule(self, rule, *, active):

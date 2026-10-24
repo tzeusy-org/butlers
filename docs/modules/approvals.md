@@ -63,6 +63,15 @@ read it for the current names and signatures. The families:
 
 ## Standing Rules
 
+Creating rules (directly, from an action, or with approval) and confirming an
+autonomy promotion require the dashboard's fresh action-bound passkey step-up.
+An authenticated MCP actor or Telegram callback cannot create standing
+permission. They receive `dashboard_step_up_required` with `/approvals` as the
+dashboard door. Ordinary approval, rejection, revocation and demotion remain
+available under their existing authority. See
+[standing-rule confirmation](../identity_and_secrets/dashboard-owner-auth.md#standing-rule-confirmation)
+for the exact session/nonce transaction, backup and deployment boundaries.
+
 Standing rules auto-approve matching invocations. A rule matches when all of these hold:
 
 - Tool name matches.

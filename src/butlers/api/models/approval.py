@@ -502,3 +502,10 @@ class AutonomySuggestionDismissRequest(BaseModel):
 
     reason: str | None = Field(default=None, description="Optional reason for dismissal")
     cooldown_days: int = Field(default=30, ge=0, description="Days before suggestion can reappear")
+
+
+class ApprovalStepUpOptionsRequest(BaseModel):
+    """Only existing standing-rule consumers; future D13 consumers stay dark."""
+
+    kind: Literal["create", "from_action", "approve_with_rule", "promotion"]
+    parameters: dict[str, Any]

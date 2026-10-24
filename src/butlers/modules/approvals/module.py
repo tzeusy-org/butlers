@@ -22,6 +22,7 @@ Provides seventeen tools:
 
 from __future__ import annotations
 
+import copy
 import html
 import json
 import logging
@@ -61,13 +62,20 @@ from butlers.modules.approvals.autonomy_tracker import (
 from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
 from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
-from butlers.modules.approvals.executor import execute_approved_action
+from butlers.modules.approvals.executor import _approval_write_transaction, execute_approved_action
 from butlers.modules.approvals.executor import (
     list_executed_actions as _list_executed_actions_query,
 )
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.approvals.rules import has_narrow_constraints, validate_rule_constraints
 from butlers.modules.approvals.sensitivity import suggest_constraints
+from butlers.modules.approvals.stepup import (
+    descriptive_savepoint,
+    is_deferred,
+    is_receipt,
+    remember_rule,
+    run_rule_write,
+)
 from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, tool_registrar
 
 logger = logging.getLogger(__name__)
@@ -736,7 +744,108 @@ class ApprovalsModule(Module):
             return {"error": f"Action not found: {action_id}"}
         return PendingAction.from_row(final_row).to_dict()
 
+    async def _rule_write(self, kind: str, parameters: dict, write_name: str, actor=None) -> dict:
+        """Borrow one connection without mutating the shared module instance."""
+        actor_result = _require_authenticated_human_actor(
+            write_name.removeprefix("_").removesuffix("_write"), actor
+        )
+        if isinstance(actor_result, dict):
+            return actor_result
+
+        async def write(connection):
+            borrowed = copy.copy(self)
+            borrowed._db = connection
+            borrowed._decision_memory_writer = None
+            borrowed._tool_executor = None
+            result = await getattr(borrowed, write_name)(**parameters, actor=actor)
+            # A combined action/rule refusal cannot leave a partial approval.
+            if result.get("created_rule_error"):
+                return {"error": result["created_rule_error"]}
+            return result
+
+        result = await run_rule_write(self._db, kind, parameters, write)
+        await remember_rule(self._decision_memory_writer, result)
+        return result
+
+    async def _create_approval_rule(
+        self,
+        tool_name: str,
+        arg_constraints: dict,
+        description: str,
+        expires_at: str | None = None,
+        max_uses: int | None = None,
+        actor: ActorContext | None = None,
+    ) -> dict:
+        return await self._rule_write(
+            "create",
+            dict(
+                tool_name=tool_name,
+                arg_constraints=arg_constraints,
+                description=description,
+                expires_at=expires_at,
+                max_uses=max_uses,
+            ),
+            "_create_approval_rule_write",
+            actor,
+        )
+
+    async def _create_rule_from_action(
+        self,
+        action_id: str,
+        constraint_overrides: dict | None = None,
+        actor: ActorContext | None = None,
+    ) -> dict:
+        return await self._rule_write(
+            "from_action",
+            dict(action_id=action_id, constraint_overrides=constraint_overrides),
+            "_create_rule_from_action_write",
+            actor,
+        )
+
     async def _approve_action(
+        self,
+        action_id: str,
+        create_rule: bool = False,
+        actor: ActorContext | None = None,
+    ) -> dict:
+        if not create_rule:
+            return await self._approve_action_write(action_id, False, actor)
+        result = await self._rule_write(
+            "approve_with_rule",
+            dict(action_id=action_id, create_rule=True),
+            "_approve_action_write",
+            actor,
+        )
+        if (
+            "error" not in result
+            and not is_receipt(result)
+            and not is_deferred(result)
+            and self._tool_executor is not None
+        ):
+            # The authoritative transaction has committed. Existing executor
+            # receipt/CAS semantics still own effect dispatch and retries.
+            async def tool_fn(**kwargs):
+                return await self._tool_executor(result["tool_name"], kwargs)
+
+            await execute_approved_action(
+                pool=self._db,
+                action_id=uuid.UUID(action_id),
+                tool_name=result["tool_name"],
+                tool_args=result["tool_args"],
+                tool_fn=tool_fn,
+                decision_memory_writer=self._decision_memory_writer,
+                origin_butler=self._butler_name,
+            )
+            row = await self._db.fetchrow(
+                "SELECT * FROM pending_actions WHERE id=$1", uuid.UUID(action_id)
+            )
+            if row is not None:
+                final = PendingAction.from_row(row).to_dict()
+                final["created_rule"] = result["created_rule"]
+                return final
+        return result
+
+    async def _approve_action_write(
         self,
         action_id: str,
         create_rule: bool = False,
@@ -813,36 +922,37 @@ class ApprovalsModule(Module):
         # Post-approval autonomy tracker hook (task 7.1)
         # Wrap in try/except so tracker failure doesn't block approval
         try:
-            # Re-read the action to get decided_at for velocity computation
-            updated_action_row = await self._db.fetchrow(
-                "SELECT * FROM pending_actions WHERE id = $1", parsed_id
-            )
-            if updated_action_row is not None:
-                updated_action = PendingAction.from_row(updated_action_row)
-                tool_meta = self._tool_metadata.get(action.tool_name)
-                fingerprint = _compute_fingerprint(
-                    action.tool_name, action.tool_args, tool_meta=tool_meta
+            async with descriptive_savepoint(self._db) as tracker_connection:
+                # Re-read the action to get decided_at for velocity computation
+                updated_action_row = await tracker_connection.fetchrow(
+                    "SELECT * FROM pending_actions WHERE id = $1", parsed_id
                 )
-                await _record_approval(self._db, updated_action, tool_meta=tool_meta)
-                await _check_promotion_threshold(
-                    pool=self._db,
-                    pattern_fingerprint=fingerprint,
-                    tool_name=action.tool_name,
-                    tool_args=action.tool_args,
-                    config=self._config,
-                    action_id=updated_action.id,
-                    tool_meta=tool_meta,
-                )
-                # Compute and persist approval velocity so the dashboard
-                # fast_approval indicator surfaces (autonomy-tracker spec:
-                # "Approval Velocity Tracking"). The state store lives in the
-                # same butler schema, so self._db serves as the state_pool.
-                await _update_velocity(
-                    pool=self._db,
-                    state_pool=self._db,
-                    pattern_fingerprint=fingerprint,
-                    config=self._config,
-                )
+                if updated_action_row is not None:
+                    updated_action = PendingAction.from_row(updated_action_row)
+                    tool_meta = self._tool_metadata.get(action.tool_name)
+                    fingerprint = _compute_fingerprint(
+                        action.tool_name, action.tool_args, tool_meta=tool_meta
+                    )
+                    await _record_approval(tracker_connection, updated_action, tool_meta=tool_meta)
+                    await _check_promotion_threshold(
+                        pool=tracker_connection,
+                        pattern_fingerprint=fingerprint,
+                        tool_name=action.tool_name,
+                        tool_args=action.tool_args,
+                        config=self._config,
+                        action_id=updated_action.id,
+                        tool_meta=tool_meta,
+                    )
+                    # Compute and persist approval velocity so the dashboard
+                    # fast_approval indicator surfaces (autonomy-tracker spec:
+                    # "Approval Velocity Tracking"). The state store lives in the
+                    # same butler schema, so self._db serves as the state_pool.
+                    await _update_velocity(
+                        pool=tracker_connection,
+                        state_pool=tracker_connection,
+                        pattern_fingerprint=fingerprint,
+                        config=self._config,
+                    )
         except Exception:
             logger.exception(
                 "Autonomy tracker hook failed for action %s — approval not blocked",
@@ -1031,7 +1141,7 @@ class ApprovalsModule(Module):
     # Standing approval rules CRUD implementations
     # ------------------------------------------------------------------
 
-    async def _create_approval_rule(
+    async def _create_approval_rule_write(
         self,
         tool_name: str,
         arg_constraints: dict,
@@ -1112,11 +1222,12 @@ class ApprovalsModule(Module):
 
         # Rule-creation supersede hook (task 7.3)
         try:
-            await _supersede_matching_suggestions(
-                pool=self._db,
-                tool_name=tool_name,
-                arg_constraints=arg_constraints,
-            )
+            async with _approval_write_transaction(self._db) as hook_connection:
+                await _supersede_matching_suggestions(
+                    pool=hook_connection,
+                    tool_name=tool_name,
+                    arg_constraints=arg_constraints,
+                )
         except Exception:
             logger.exception(
                 "Supersede hook failed for rule %s — rule creation not blocked",
@@ -1125,7 +1236,7 @@ class ApprovalsModule(Module):
 
         return rule.to_dict()
 
-    async def _create_rule_from_action(
+    async def _create_rule_from_action_write(
         self,
         action_id: str,
         constraint_overrides: dict | None = None,
@@ -1221,11 +1332,12 @@ class ApprovalsModule(Module):
 
         # Rule-creation supersede hook (task 7.3)
         try:
-            await _supersede_matching_suggestions(
-                pool=self._db,
-                tool_name=action.tool_name,
-                arg_constraints=suggested,
-            )
+            async with _approval_write_transaction(self._db) as hook_connection:
+                await _supersede_matching_suggestions(
+                    pool=hook_connection,
+                    tool_name=action.tool_name,
+                    arg_constraints=suggested,
+                )
         except Exception:
             logger.exception(
                 "Supersede hook failed for rule %s — rule creation not blocked",

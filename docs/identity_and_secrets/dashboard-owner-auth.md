@@ -17,6 +17,67 @@ A successful build or review is not evidence that a deployed instance has been
 enrolled. Run live procedures only for an explicitly authorized instance and
 operation, after implementation verification and deployment preflight.
 
+## Standing-rule confirmation
+
+Creating a standing approval rule, creating one from an action, approving with
+a rule, and confirming an autonomy promotion require a fresh action-bound
+passkey assertion from the authenticated dashboard session. An API key,
+Telegram callback, authenticated actor map, or an existing cookie alone cannot
+authorize that expansion. Ordinary one-tap approval, rejection, revocation and
+demotion retain their existing doors. Ingestion rule-promotion and Finance's
+separate rule stores are outside this approvals interface.
+
+The browser requests `/api/approvals/step-up/options` for the exact intent,
+performs native WebAuthn authentication, and finishes at
+`/api/auth/owner/step-up/finish`. The returned short-lived nonce stays in memory
+and accompanies only the explicit mutation as `X-Dashboard-Step-Up`. Cancelled,
+expired or failed ceremonies do not submit or automatically retry that mutation.
+The nonce is bound to the real cookie session, credential/session epochs,
+receiver database/schema, current source snapshot, policy inventory and final
+arguments. Changed authority or arguments require fresh confirmation.
+
+`dashboard_stepup.consume` runs on the owning rule/action transaction. It holds
+the existing auth-instance fence through rule, decision, audit and durable
+receipt commit; it never consumes through a separately committed auth pool.
+Different databases or missing trusted interfaces fail closed. Completed receipt
+lookups return existing identities without dispatch, memory writeback or rule
+reactivation. Logout, credential recovery and nonce revocation fence admission.
+The five-minute maximum confirmation lifetime is also bounded by session expiry.
+
+Privileged bootstrap installs the fixed `core_277` interface under an isolated
+NOLOGIN owner. Daemon runtime roles receive only schema usage and exact consume
+execution, never the issuer, host API or old private auth tables. The ordinary
+backup can read the new hashed bindings and closed UUID result references from
+their initial design; no raw nonce, challenge, credential, tool arguments or
+description is stored there. A stored hash is not accepted as a bearer nonce.
+No old private auth read grants or backup exclusions are changed. The existing
+shared migration login still owns the older auth schema; this interface does
+not claim to remove that pre-existing migration trust or grant it to daemon
+roles.
+
+Restore requires the existing privileged owner-preserving procedure. The restore
+auditor also checks this private schema and refuses missing expected modern
+objects, altered owners, unsafe ACLs or a receipt-row population differing
+from the managed dump's single native COPY block. Legacy dumps without step-up DDL and
+without a recorded `core_277` or later revision may still lack it. Downgrade
+disables consumption and revokes unused proofs while retaining committed
+receipts; it does not authorize an older image to bypass confirmation.
+
+WebAuthn user verification proves use of the registered credential. Synced
+passkeys and browser metadata do not establish physical device separation;
+the adopted separate-device custody remains an owner operational obligation.
+This source interface does not enroll a device, provision credentials, deploy
+or expose an instance, or activate future goal-runtime consumers.
+
+Future Vouch, Contain and mode-loosening owners can reuse the neutral
+`DashboardStepUpProof` projection, the restricted service's binding ceremony,
+and the real synthetic `authority`/`signed_binding_proof` fixtures in
+`tests/integration/test_dashboard_stepup.py`. Their own source must derive its
+exact binding and enlist consumption in its owning transaction. The currently
+closed SQL consumer catalog admits only the four approvals kinds above;
+fixture reuse does not register another consumer, grant permission, or replace
+those owners' contract, migration, race and rollback proofs.
+
 ## How trust is established
 
 ```mermaid

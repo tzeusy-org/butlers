@@ -26,7 +26,7 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from butlers.api.approval_review import resolve_messenger_reviews
 from butlers.api.audit_emit import authenticated_principal
@@ -57,6 +57,7 @@ from butlers.api.models.approval import (
     ApprovalRuleFromActionRequest,
     ApprovalsPolicy,
     ApprovalsPolicyUpdate,
+    ApprovalStepUpOptionsRequest,
     ApprovalSummary,
     AutonomySuggestion,
     AutonomySuggestionDismissRequest,
@@ -68,7 +69,9 @@ from butlers.api.models.approval import (
     UnroutableAttentionItem,
     UnroutableRetryResult,
 )
+from butlers.api.owner_auth.service import AuthError
 from butlers.api.routers import audit as audit_router
+from butlers.core.dashboard_stepup import verified_dashboard_session
 from butlers.modules.approvals import operations as approvals_ops
 from butlers.modules.approvals.decision_memory import (
     DecisionMemoryWriter,
@@ -92,6 +95,7 @@ from butlers.modules.approvals.previews import args_digest, dashboard_call_previ
 from butlers.modules.approvals.redaction import redact_execution_result
 from butlers.modules.approvals.rules import is_rule_effective, validate_rule_constraints
 from butlers.modules.approvals.sensitivity import redact_constraints, redact_tool_args
+from butlers.modules.approvals.stepup import bind_rule_action, is_receipt, run_rule_write
 from butlers.modules.base import ToolMeta
 
 logger = logging.getLogger(__name__)
@@ -1536,6 +1540,8 @@ async def reject_action(
         )
 
     if "error" in result:
+        if result["error"] == "dashboard_step_up_required":
+            raise HTTPException(status_code=403, detail=result)
         error_msg = result["error"]
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=404, detail=error_msg)
@@ -1610,6 +1616,76 @@ async def expire_stale_actions(
 # ---------------------------------------------------------------------------
 
 
+@router.post("/step-up/options")
+async def standing_rule_stepup_options(
+    body: ApprovalStepUpOptionsRequest,
+    request: Request,
+    *,
+    db_mgr: Db,
+) -> ApiResponse[dict]:
+    """Derive one exact intent; no rule, decision or factor is created here."""
+    session = verified_dashboard_session.get()
+    if session is None:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "dashboard_step_up_required", "open_dashboard": "/approvals"},
+        )
+    parameters = body.parameters
+    target_pool = None
+    try:
+        if body.kind == "create":
+            if set(parameters) - set(ApprovalRuleCreateRequest.model_fields):
+                raise ValueError
+            candidate = ApprovalRuleCreateRequest.model_validate(parameters)
+            if candidate.butler not in db_mgr.butler_names:
+                raise ValueError
+            named = await _find_named_approvals_pools(db_mgr, "approval_rules")
+            target_pool = next((pool for name, pool in named if name == candidate.butler), None)
+            parameters = candidate.model_dump(exclude={"butler"})
+        elif body.kind == "promotion":
+            if set(parameters) != {"suggestion_id"}:
+                raise ValueError
+            parsed_id = UUID(str(parameters["suggestion_id"]))
+            parameters = dict(suggestion_id=str(parsed_id))
+            for _, pool in await _find_named_approvals_pools(db_mgr, _SUGGESTIONS_TABLE):
+                async with pool.acquire() as connection:
+                    row = await connection.fetchrow(
+                        "SELECT suggestion_type FROM autonomy_suggestions WHERE id=$1", parsed_id
+                    )
+                if row is not None:
+                    if row["suggestion_type"] != "promotion":
+                        # Tightening/demotion has no new step-up requirement.
+                        return ApiResponse(data={"required": False})
+                    target_pool = pool
+                    break
+        else:
+            parsed_id = UUID(str(parameters["action_id"]))
+            found = await _find_action_pool(db_mgr, parsed_id)
+            if found is not None:
+                _, target_pool = found
+            if body.kind == "from_action":
+                if set(parameters) - set(ApprovalRuleFromActionRequest.model_fields):
+                    raise ValueError
+                candidate = ApprovalRuleFromActionRequest.model_validate(parameters)
+                parameters = candidate.model_dump()
+            else:
+                if set(parameters) - {"action_id", "edits", "displayed_call"}:
+                    raise ValueError
+                candidate = ApprovalApproveRequest.model_validate(parameters)
+                parameters = dict(action_id=str(parsed_id), **candidate.model_dump(mode="json"))
+        if target_pool is None:
+            raise HTTPException(status_code=503, detail="Step-up owning database unavailable")
+        async with target_pool.acquire() as connection:
+            # This read scope ends BEFORE the separate authentication call.
+            binding = await bind_rule_action(connection, body.kind, parameters)
+        service = request.app.state.owner_auth_service
+        return ApiResponse(data=await service.stepup_options(session, binding))
+    except AuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from None
+    except (ValueError, TypeError, KeyError, ValidationError):
+        raise HTTPException(status_code=400, detail="Step-up intent unavailable") from None
+
+
 @router.post("/rules")
 async def create_rule(
     request: ApprovalRuleCreateRequest = Body(...),
@@ -1659,6 +1735,8 @@ async def create_rule(
         )
 
     if "error" in result:
+        if result["error"] == "dashboard_step_up_required":
+            raise HTTPException(status_code=403, detail=result)
         raise HTTPException(status_code=400, detail=result["error"])
 
     rule = ApprovalRule(**{k: result[k] for k in ApprovalRule.model_fields if k in result})
@@ -1694,6 +1772,8 @@ async def create_rule_from_action(
         )
 
     if "error" in result:
+        if result["error"] == "dashboard_step_up_required":
+            raise HTTPException(status_code=403, detail=result)
         error_msg = result["error"]
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=404, detail=error_msg)
@@ -1944,6 +2024,8 @@ async def revoke_rule(
         )
 
     if "error" in result:
+        if result["error"] == "dashboard_step_up_required":
+            raise HTTPException(status_code=403, detail=result)
         error_msg = result["error"]
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=404, detail=error_msg)
@@ -2811,12 +2893,6 @@ async def confirm_suggestion(
     if row is None:
         raise HTTPException(status_code=404, detail=f"Suggestion not found: {suggestion_id}")
 
-    if row["status"] != "pending":
-        raise HTTPException(
-            status_code=409,
-            detail=f"Suggestion has already been decided (status: {row['status']})",
-        )
-
     assert target_pool is not None
     assert action_butler is not None
     decision_memory_writer = _decision_memory_writer_for(db_mgr, action_butler, target_pool)
@@ -2825,12 +2901,18 @@ async def confirm_suggestion(
     # writer now binds a native dict (bu-c8b8e/bu-cymc4), and a live-data
     # audit (2026-07-05) found zero autonomy_suggestions rows in any schema,
     # so no isinstance(str) double-encoding workaround is needed here.
-    representative_args = row.get("representative_args") or {}
-
     now = datetime.now(UTC)
     actor = "dashboard:rest-api"
 
-    async with target_pool.acquire() as conn:
+    async def write(conn):
+        row = await conn.fetchrow(
+            "SELECT * FROM autonomy_suggestions WHERE id=$1 FOR UPDATE", parsed_id
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Suggestion not found: {suggestion_id}")
+        if row["status"] != "pending":
+            raise HTTPException(status_code=409, detail="Suggestion has already been decided")
+        representative_args = row.get("representative_args") or {}
         if row.get("suggestion_type") == "demotion":
             # Revoke the referenced standing rule via the operations layer so that
             # the RULE_REVOKED audit event is recorded consistently.
@@ -2842,7 +2924,7 @@ async def confirm_suggestion(
                     conn,
                     rule_id=str(rule_id),
                     actor_id=actor,
-                    decision_memory_writer=decision_memory_writer,
+                    decision_memory_writer=None,
                 )
                 if "error" in revoke_result:
                     raise HTTPException(
@@ -2880,7 +2962,7 @@ async def confirm_suggestion(
                 arg_constraints=arg_constraints,
                 description=scope_desc,
                 actor_id=actor,
-                decision_memory_writer=decision_memory_writer,
+                decision_memory_writer=None,
             )
             if "error" in create_result:
                 raise HTTPException(
@@ -2900,6 +2982,52 @@ async def confirm_suggestion(
                 new_rule_id,
                 parsed_id,
             )
+
+        if updated is None:
+            raise HTTPException(status_code=500, detail="Failed to confirm suggestion")
+        if row["suggestion_type"] == "promotion":
+            from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
+
+            await record_approval_event(
+                conn,
+                ApprovalEventType.PROMOTION_CONFIRMED,
+                actor=f"user:{actor}",
+                rule_id=UUID(str(new_rule_id)),
+                reason=f"Suggestion {parsed_id} confirmed",
+                metadata={
+                    "suggestion_id": str(parsed_id),
+                    "suggestion_type": "promotion",
+                    "tool_name": row["tool_name"],
+                },
+                occurred_at=now,
+            )
+        return dict(updated)
+
+    async with target_pool.acquire() as conn:
+        if row.get("suggestion_type") == "promotion":
+            updated = await run_rule_write(
+                conn, "promotion", dict(suggestion_id=str(parsed_id)), write
+            )
+            if "error" in updated:
+                raise HTTPException(status_code=403, detail=updated)
+        else:
+            async with conn.transaction():
+                updated = await write(conn)
+    memory_rule_id = updated.get("resulting_rule_id") or (row.get("representative_args") or {}).get(
+        "rule_id"
+    )
+    if decision_memory_writer is not None and memory_rule_id and not is_receipt(updated):
+        try:
+            rule_row = await target_pool.fetchrow(
+                "SELECT * FROM approval_rules WHERE id=$1", UUID(str(memory_rule_id))
+            )
+            if rule_row is not None:
+                await decision_memory_writer.record_standing_rule(
+                    ApprovalRuleModel.from_row(rule_row),
+                    active=row.get("suggestion_type") == "promotion",
+                )
+        except Exception:
+            logger.warning("Suggestion decision memory writeback failed", exc_info=True)
 
     if updated is None:
         raise HTTPException(status_code=500, detail="Failed to confirm suggestion")
@@ -3196,7 +3324,10 @@ async def approve_owning_action(
     # intentionally NOT caught here — it propagates to the app-level handler,
     # which returns 503 {"error": "audit_unavailable"} (dashboard-audit-log
     # spec), rolling this transaction back.
-    async with target_pool.acquire() as conn, conn.transaction():
+    action_row = None
+
+    async def decide(conn):
+        nonlocal action_row
         # The row lock makes the presented-digest check below atomic with the
         # status transition: the stored call cannot change in between.
         action_row = await conn.fetchrow(
@@ -3280,7 +3411,23 @@ async def approve_owning_action(
                 result="success",
             )
 
+        return result
+
+    async with target_pool.acquire() as conn:
+        if create_rule:
+            parameters = dict(
+                action_id=action_id,
+                edits=edits,
+                displayed_call=displayed_call.model_dump(mode="json") if displayed_call else None,
+            )
+            result = await run_rule_write(conn, "approve_with_rule", parameters, decide)
+        else:
+            async with conn.transaction():
+                result = await decide(conn)
+
     if "error" in result:
+        if result["error"] == "dashboard_step_up_required":
+            raise HTTPException(status_code=403, detail=result)
         error_msg = result["error"]
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=404, detail=error_msg)
@@ -3289,7 +3436,7 @@ async def approve_owning_action(
         raise HTTPException(status_code=400, detail=error_msg)
 
     created_rule = result.get("created_rule")
-    if decision_memory_writer is not None and created_rule is not None:
+    if not is_receipt(result) and decision_memory_writer is not None and created_rule is not None:
         try:
             await decision_memory_writer.record_standing_rule(
                 ApprovalRuleModel.from_dict(created_rule), active=True
@@ -3299,7 +3446,7 @@ async def approve_owning_action(
             # must not become a failed decision because its memory sink failed.
             logger.exception("Post-commit standing-rule memory writeback failed")
 
-    if action_row is not None:
+    if action_row is not None and not is_receipt(result):
         tool_name = action_row["tool_name"]
         raw_args = action_row["tool_args"]
         tool_args_for_dispatch = (
@@ -3396,6 +3543,8 @@ async def deny_approval(
             )
 
     if "error" in result:
+        if result["error"] == "dashboard_step_up_required":
+            raise HTTPException(status_code=403, detail=result)
         error_msg = result["error"]
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=404, detail=error_msg)

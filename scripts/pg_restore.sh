@@ -303,6 +303,83 @@ if [[ -s "$AUDIT_DIR/inverted" ]]; then
 fi
 echo "[restore]   no SECURITY DEFINER function in 'public' fell to '${PG_USER}'"
 
+# D13 adds a non-public durable proof/receipt interface. The original public
+# audit above remains intact; its successful exit cannot certify this schema.
+# Only a fixed boolean crosses from the dump into the catalog predicate. Read
+# the whole stream so pipefail still detects decompression errors. A legacy
+# dump may lack this schema; a modern dump must never certify its complete loss.
+STEPUP_METADATA=$(gunzip -c "$BACKUP_FILE" | awk '
+  /^CREATE SCHEMA (dashboard_stepup|"dashboard_stepup");/ ||
+  /^CREATE (TABLE|FUNCTION) (dashboard_stepup|"dashboard_stepup")\./ { required=1 }
+  /^COPY dashboard_stepup\.bindings \(.*\) FROM stdin;$/ { copies++; copying=1; next }
+  copying && $0 == "\\." { copying=0; next }
+  copying { rows++ }
+  END { print (required ? "true" : "false"), copies+0, rows+0 }')
+read -r STEPUP_EXPECTED STEPUP_COPY_COUNT STEPUP_ROW_COUNT <<< "$STEPUP_METADATA"
+# Missing/partial or
+# laundered ownership refuses promotion, including when psql continued after a
+# failed ALTER OWNER during an otherwise populated restore.
+STEPUP_INTACT=$(PGPASSWORD="$PG_PASSWORD" psql \
+  --host="$PG_HOST" --port="$PG_PORT" --username="$PG_USER" \
+  --dbname="$TARGET_DB" --no-password --no-align --tuples-only \
+  --set=ON_ERROR_STOP=1 --quiet -c "
+DO \$stepup_stage\$
+DECLARE revision_schema text; modern boolean; restored_rows bigint;
+BEGIN
+ IF to_regnamespace('dashboard_stepup') IS NULL THEN
+  IF $STEPUP_EXPECTED THEN
+   RAISE EXCEPTION 'required dashboard step-up schema missing';
+  END IF;
+  FOR revision_schema IN
+   SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+    WHERE c.relname='alembic_version' AND c.relkind='r'
+  LOOP
+   EXECUTE format('SELECT EXISTS(SELECT FROM %I.alembic_version WHERE CASE
+     WHEN version_num ~ ''^core_[0-9]+$'' THEN
+      substring(version_num FROM 6)::numeric >= 277 ELSE false END)',revision_schema)
+    INTO modern;
+   IF modern THEN RAISE EXCEPTION 'recorded dashboard step-up schema missing'; END IF;
+  END LOOP;
+ END IF;
+ IF $STEPUP_EXPECTED THEN
+  IF $STEPUP_COPY_COUNT<>1 OR to_regclass('dashboard_stepup.bindings') IS NULL THEN
+   RAISE EXCEPTION 'required dashboard step-up receipt data missing';
+  END IF;
+  EXECUTE 'SELECT count(*) FROM dashboard_stepup.bindings' INTO restored_rows;
+  IF restored_rows<>$STEPUP_ROW_COUNT THEN
+   RAISE EXCEPTION 'dashboard step-up receipt population differs from dump';
+  END IF;
+ END IF;
+END \$stepup_stage\$;
+SELECT CASE WHEN to_regnamespace('dashboard_stepup') IS NULL THEN NOT $STEPUP_EXPECTED ELSE
+ EXISTS(SELECT FROM pg_namespace n JOIN pg_roles boot ON boot.oid=n.nspowner
+   WHERE n.nspname='dashboard_stepup' AND boot.rolsuper
+    AND obj_description(n.oid,'pg_namespace')='butlers:dashboard-stepup:core_277'
+    AND EXISTS(SELECT FROM pg_class c JOIN pg_roles own ON own.oid=c.relowner
+      WHERE c.relnamespace=n.oid AND c.relname='bindings' AND c.relkind='r'
+       AND own.rolname='dashboard_stepup_owner'
+       AND NOT(own.rolcanlogin OR own.rolsuper OR own.rolcreaterole OR own.rolcreatedb
+        OR own.rolreplication OR own.rolbypassrls)
+       AND NOT EXISTS(SELECT FROM pg_auth_members WHERE roleid=own.oid OR member=own.oid)
+       AND NOT EXISTS(SELECT FROM aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) a
+        WHERE a.grantee<>own.oid AND (a.grantee=0 OR a.privilege_type<>'SELECT')))
+    AND 3=(SELECT count(*) FROM pg_proc p WHERE p.pronamespace=n.oid
+      AND p.proname IN('install_interface','finalize_interface','deactivate_interface')
+      AND p.proowner=boot.oid AND p.pronargs=0 AND p.prosecdef
+      AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[])
+    AND 2=(SELECT count(*) FROM pg_proc p JOIN pg_roles own ON own.oid=p.proowner
+      WHERE p.pronamespace=n.oid AND own.rolname='dashboard_stepup_owner' AND p.prosecdef
+       AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[]
+       AND ((p.proname='ceremony' AND p.proargtypes='25 3802'::oidvector)
+        OR (p.proname='consume' AND p.proargtypes='25 25 25 25 25 25 25 3802'::oidvector)))
+    AND NOT EXISTS(SELECT FROM pg_proc p
+      CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a
+      WHERE p.pronamespace=n.oid AND a.grantee=0)) END")
+if [[ "$STEPUP_INTACT" != "t" ]]; then
+  echo "[restore] SECURITY FAILURE: dashboard step-up ownership/ACL is incomplete; do NOT promote." >&2
+  exit 1
+fi
+
 echo "[restore] done — '${TARGET_DB}' is populated"
 echo ""
 echo "Next step: verify integrity with:"
