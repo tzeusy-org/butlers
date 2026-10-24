@@ -1468,7 +1468,7 @@ class WhatsAppUserClientConnector:
             *(self._flush_chat_buffer(jid) for jid in chat_jids),
             return_exceptions=True,
         )
-        for jid, result in zip(chat_jids, results, strict=False):
+        for jid, result in zip(chat_jids, results, strict=True):
             if isinstance(result, Exception):
                 logger.warning(
                     "Error flushing chat buffer (chat_ref=%s, reason=%s, failure_class=%s)",

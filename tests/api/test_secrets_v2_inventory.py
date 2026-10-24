@@ -3152,18 +3152,20 @@ async def test_fetch_user_secrets_includes_real_issued_scopes_and_audit():
     )
 
     pool = AsyncMock()
+    user_rows = [google_row]
+    audit_rows = [audit_row]
 
     async def _fetch(sql, *args):
         if "secret_probe_log" in sql:
             return []
         if "audit_log" in sql:
-            return [audit_row]
+            return audit_rows
         if "provider_feature_catalogue" in sql:
             return [catalogue_row]
         if "granted_scopes" in sql:
             return [granted_row]
         if "entity_info" in sql:
-            return [google_row]
+            return user_rows
         return []
 
     pool.fetch = AsyncMock(side_effect=_fetch)
@@ -3177,6 +3179,39 @@ async def test_fetch_user_secrets_includes_real_issued_scopes_and_audit():
     assert secret.scopes_granted == ["https://www.googleapis.com/auth/calendar"]
     assert len(secret.audit) == 1
     assert secret.audit[0]["action"] == "verified"
+
+    # Keep the original single-row companion, then verify that each distinct
+    # provider stays paired with its own row when the inventory is mixed.
+    github_issued = _NOW - timedelta(days=2)
+    github_row = _make_row(
+        id=uuid4(),
+        entity_id=eid,
+        type="github_pat",
+        value="dummy-github-token",
+        label=None,
+        created_at=github_issued,
+        last_verified=None,
+        last_test_ok=True,
+        last_test_code=None,
+        last_test_message=None,
+    )
+    user_rows[:] = [github_row, google_row]
+    audit_rows.append(
+        _make_row(target="u:github", ts=_NOW, actor="owner", action="rotated", note=None)
+    )
+    results = await _fetch_user_secrets(pool, identity=UUID(eid))
+    assert [item.entity_id for item in results] == [eid, eid]
+    assert [item.id for item in results] == [str(github_row["id"]), str(google_row["id"])]
+    assert [item.type for item in results] == ["github_pat", "google_oauth_refresh"]
+    assert [item.issued for item in results] == [github_issued, issued_at]
+    assert [item.scopes_granted for item in results] == [
+        [],
+        ["https://www.googleapis.com/auth/calendar"],
+    ]
+    assert [[entry["action"] for entry in item.audit] for item in results] == [
+        ["rotated"],
+        ["verified"],
+    ]
 
 
 async def test_fetch_user_secrets_google_test_mode_account_flips_to_expiring():

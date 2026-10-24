@@ -48,6 +48,7 @@ def prepare_goal_input(source_ref, source_digest, payload, reply_locator, *, own
         text, spans = parsed.normalized_text, parsed.untrusted_spans or ()
         boundaries = sorted({0, len(text)} | {p for s in spans for p in (s.start, s.end)})
         segments = []
+        # Adjacent boundaries make N-1 intervals; the final boundary has no successor.
         for lo, hi in zip(boundaries, boundaries[1:], strict=False):
             covering = [s for s in spans if s.start <= lo and s.end >= hi]
             segments.append(
