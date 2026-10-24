@@ -193,8 +193,9 @@ and REQ-testing-053; the test budget is unchanged by it.
   owning job watchdog, and an incomplete receipt is UNKNOWN.
 - Keep every workflow job in `scripts/ci-job-timeouts.json`, including explicitly provisional
   rare-job/setup values. Current p95 and the full two-week long-tail audit require actual named
-  receipts; source caps alone are not calibration. Preserve faketime's existing 75-minute job
-  and 3600-second ABRT/30-second KILL watchdog until healthy measurements justify a change.
+  receipts; source caps alone are not calibration. Preserve faketime's provisional
+  136-minute job and 6360-second ABRT/30-second KILL watchdog until healthy
+  measurements justify a change.
 - Browser cache hits still run mandatory OS-dependency installation and locked-version launch.
   The shared installer's 720-second budget covers two dependency attempts (TERM150/KILL160,
   two-second cleanup reserves, one ten-second backoff) and three browser attempts
