@@ -1459,6 +1459,20 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     assert classify["id"] == "classify"
     guards = jobs["guards"]
     assert guards["needs"] == ["route"] and "if" not in guards
+    lint_cache = _workflow_step(job=guards, name="Cache pinned lint tools")
+    assert lint_cache["uses"] == "actions/cache@v4"
+    assert lint_cache["with"] == {
+        "path": ".tmp/lint-tools",
+        "key": (
+            "lint-tools-v1-${{ runner.os }}-${{ runner.arch }}-"
+            "${{ hashFiles('scripts/lint-tool-versions.json') }}"
+        ),
+    }
+    assert lint_cache["continue-on-error"] is True  # Advisory transport only.
+    assert "if" not in lint_cache
+    lint_install = _workflow_step(job=guards, name="Install lint tools")
+    assert lint_install == {"name": "Install lint tools", "run": "make install-lint-tools"}
+    assert guards["steps"][guards["steps"].index(lint_install) - 1] is lint_cache
     guard_outcomes = _workflow_step(job=guards, name="Fail if any guard failed")["env"][
         "GUARD_OUTCOMES"
     ]
