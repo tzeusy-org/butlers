@@ -2,8 +2,9 @@
 
 One accountable generalist lead fulfills each goal across domain-owned
 capabilities, directly or with optional focused children at depth one. Every
-reasoning session in the system is an invocation of an admitted goal. The
-design is RFC 0038; authorization is specified in `capability-authorization`.
+reasoning session in the system runs within an admitted goal, as a lead or
+child invocation or solely as its bounded D20 research subcall. The design is
+RFC 0038; authorization is specified in `capability-authorization`.
 
 ## ADDED Requirements
 
@@ -152,16 +153,26 @@ Scope: v1-mandatory
 - **THEN** its durable owner can initiate the appropriate goal with relevant context and the obligation is not lost because no agent was running
 
 ### Requirement: Goals are the only path to a reasoning session
-Every reasoning session SHALL be a lead or child invocation of an admitted goal,
-launched by the goal runner. Owner requests, third-party events, domain
-obligations and staffer work SHALL all enter through goal admission. No domain
-butler, staffer, module or scheduled job SHALL spawn a reasoning session by any
-other path, and no model-classification routing step SHALL precede admission.
-The only model use outside goals SHALL be the engineering executors and
-tool-less model functions that RFC 0038 names, which receive no capabilities.
+Every reasoning session SHALL run within an admitted goal, launched only by
+the goal runner. Lead and child sessions SHALL remain ordinary goal invocations
+with their existing admission, MCP, token, grant, eligibility, depth-one and
+deny-all sandbox requirements. The sole additional reasoning path within an
+already admitted goal SHALL be RFC 0038 D20 research: only after the broker
+accepts `web_research` from an authorized lead or child may the runner launch
+that bounded subcall on the separate research host, under the calling goal's
+existing authority, exposure and budget accounting. Research SHALL receive no
+invocation token, grant, MCP configuration, capability or delegation tool,
+SHALL add no hierarchy depth, and SHALL NOT admit a goal or spawn another
+reasoning session. It SHALL NOT be a lead, child or D18 outside-goal function.
+Owner requests, third-party events, domain obligations and staffer work SHALL
+all enter through goal admission. No domain butler, staffer, module or scheduled
+job SHALL spawn a reasoning session by any other path, and no model-classification
+routing step SHALL precede admission. The only model use outside goals SHALL
+remain the engineering executors and tool-less model functions that RFC 0038
+names, which receive no capabilities.
 
 ID: REQ-goal-orchestration-008
-Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, D1, D2, D18 and Hard cutover
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, D1, D2, D3, D7, D16, D18, D20 and Hard cutover
 Scope: v1-mandatory
 
 #### Scenario: A domain schedule needs reasoning
@@ -178,7 +189,7 @@ Scope: v1-mandatory
 - Non-Negotiable Rule 4 (deterministic daemon; intelligence in ephemeral sessions)
 - Non-Negotiable Rule 6 (governing documents; runtime-enforced depth and scope)
 - `about/heart-and-soul/vision.md`, What Butlers Is; `about/heart-and-soul/architecture.md`, One lead, focused children, depth one
-- RFC 0038 (goal runtime and capability authorization)
+- RFC 0038 (goal runtime and capability authorization, including the bounded D20 research subcall within an already admitted goal)
 - RFCs 0009, 0011 and 0026 (situational context, proactive delivery, commitments)
 
 ## ADDED Requirements
