@@ -118,8 +118,9 @@ Non-goals:
 - Multi-user authority. One owner; every grant is a narrowing of the owner's.
 - Replacing the approvals, insight, notify, scheduler, identity or memory
   subsystems. They remain the owners of their decisions.
-- Engineering executors and model functions (D18), which are not reasoning
-  sessions over owner capabilities and keep their own contracts.
+- Engineering executors, model functions and dashboard fast answers (D18),
+  which are not reasoning sessions over owner capabilities and keep their own
+  contracts.
 
 ## Vocabulary
 
@@ -959,8 +960,11 @@ digests, never arguments or results.
 
 ### D18. Model use outside goals
 
-Two kinds of model use are not goal invocations. Each keeps its own contract
-and never reaches the broker or a domain capability:
+Three kinds of model use are not goal invocations. Each keeps its own
+contract. Engineering executors and model functions never reach the broker or
+a domain capability. A dashboard fast answer reaches only allowlisted read
+capabilities, and only through deterministic code calling the broker, never
+through its model calls:
 
 - **Engineering executors.** QA investigation agents and self-healing agents
   (RFC 0015) work on the repository with a shell and a worktree. They keep
@@ -976,6 +980,75 @@ and never reaches the broker or a domain capability:
   They have no tools; any consequence comes from the deterministic code that
   reads their typed output, and their output entering a goal is third-party
   content except for the narrow authorship-preserving transform below.
+- **Dashboard fast answers** (later owner decision `bu-u5euwb.21`). A narrow
+  path that answers the owner's dashboard question from live data without a
+  goal. Its model calls are model functions; what sets the kind apart is that
+  deterministic code reads data between them and the result is an
+  owner-facing answer. Its contract:
+  - *Scope.* Only a question the owner types into the authenticated dashboard
+    (owner origin, D5). It is read-only: it produces no effect, parks no
+    approval, starts no goal, child or obligation, and writes nothing but its
+    one reply and its audit records.
+  - *Admission.* Deterministic control-plane code checks the turn's
+    eligibility, then makes one model-function call that returns a typed plan:
+    whether the turn is an eligible question and which reads, at most three,
+    answer it. The model holds no tools, MCP config, invocation token or
+    capability, and deterministic code validates the plan before acting on
+    it. This binary eligibility choice, between this fast answer and an
+    ordinary owner goal, is the only model classification before admission; it
+    selects no route, butler, origin, ceiling or goal, so D1's removed route
+    classification gains no successor here. The call may be retried
+    once on the same model, before any read, only when its output fails the
+    schema.
+  - *Reads.* Deterministic code, not the model, makes each planned read. Each
+    names a capability on a fixed, checked-in allowlist whose current catalog
+    entry (D4) is `read`, grantable, has no `approval_policy` gate, approval
+    mode `default` and no selection-bound `resource_params`; current owner
+    `never` tightening still applies. A plan naming anything else is rejected
+    whole before its first read. Each read's capability and arguments are fixed
+    by the validated plan; no read result selects or parameterizes another
+    read. The
+    broker forwards each read exactly as it forwards a dashboard
+    service-plane call (D7): origin `owner`, principal `dashboard`, `goal_id`
+    null, under a signed assertion the owning domain verifies. The allowlist
+    narrows the owner's ceiling and never widens it. Tool visibility,
+    discovery metadata, catalog search provenance and ranking grant no
+    authority. Broadening the allowlist needs an owner decision.
+  - *Phrasing.* Exactly one model-function call, with no retry, composes one
+    answer from the validated read results, which enter it fenced as data.
+    The answer's sources are derived by server code from the reads; the
+    model cannot add or change them.
+  - *Output and attribution.* One idempotent reply in the thread that asked,
+    attributed as a fast answer with its model calls and reads, not as a goal
+    or goal outcome. Reads and model calls are audited by identifier and
+    digest (D17); its spans and audit records carry its runtime identity in
+    place of `goal_id` and `invocation_id`, outside the goal ledger. When any
+    read's output is `untrusted`, or `stamped` with an item that is not
+    untainted owner authority (D6), the reply renders URLs inert with link
+    previews disabled, as D4 requires of owner `notify` under exposure. The
+    stored reply is stamped as non-owner model output, so any goal that reads
+    it, including as thread context at admission, is exposed (D6).
+  - *Stop and replay.* One durable runtime identity, owned by the control
+    plane and registered against the asking message before the first model
+    call, spans every call and the reply. Owner Stop on that message fences
+    every later read, model call and reply, and is confirmed only after
+    in-flight work settles. There is no provider failover, and no uncertain
+    attempt is replayed: an unknown reply outcome is settled from its durable
+    receipt or reported as unknown.
+  - *Fallback.* Before the first read starts, any ineligibility,
+    unavailability, schema or provider failure, or uncertainty ends the fast
+    answer and the unchanged message goes to owner-goal admission (D5);
+    nothing the fast answer produced enters that goal's admission, origin,
+    ceiling or exposure. A Stop admits no goal. Once a read has started,
+    nothing re-executes the turn: a failed read or phrasing call ends in an
+    honest failure reply, never a fabricated answer.
+
+  The kind is built on the control plane in the dark build and switched on by
+  the cutover release; it does not extend today's classification path, which
+  stays frozen and is deleted at the switch. Its mechanics (lease and recovery
+  timings, reply observation windows, the allowlist's entries, model
+  resolution and latency evidence) belong to the re-scoped
+  `define-dashboard-fast-answer-runtime` change.
 
 **Instruction-free ASR-class transcription** preserves the source's authorship,
 not a model's asserted authorship. It takes only audio and fixed server-held
@@ -995,12 +1068,14 @@ fallback. `payload.transcription` remains outcome metadata, not authorization.
 Model use that today runs outside a session but composes owner-facing text or
 judgment, such as briefing elaboration, chronicler narration, insight
 synthesis, dashboard quick-add and memory consolidation, becomes an obligation
-or owner goal at the switch rather than a model function.
+or owner goal at the switch rather than a model function. Dashboard fast
+answers are the single named exception.
 
 Any other model use is a goal invocation. Adding a kind to this list requires
-an RFC amendment. Pending OpenSpec changes that add a model path, such as
-`define-dashboard-fast-answer-runtime`, must be re-scoped as goals or as a
-named kind here before approval.
+an RFC amendment. `define-dashboard-fast-answer-runtime` is re-scoped to the
+dashboard fast-answer kind above (`bu-u5euwb.28`) before approval. Any other
+pending OpenSpec change that adds a model path must be re-scoped as goals or
+as a named kind here before approval.
 
 ### D19. Owner surface: one mind, specialized regions
 
@@ -1148,7 +1223,9 @@ All evidence is produced in a dev namespace against the release candidate:
    attempting grandchildren through every creation path, including caused
    admissions and runtime obligations; forged, replayed, expired and
    wrong-audience assertions; stale-epoch tokens; direct calls to domain ports
-   and service listeners from the sandbox; provider-hosted tool use.
+   and service listeners from the sandbox; provider-hosted tool use; dashboard
+   fast answers whose plan or read results attempt a read off the allowlist, a
+   fourth read, a tool call or any effect.
 3. Replay evaluation over a fixed set of recorded owner requests and
    scheduled obligations, graded by the owner rubric for whole-goal success,
    constraint preservation and corrections needed, with latency and total cost.
@@ -1246,6 +1323,7 @@ hard-cutover gates or alter the private-custody boundary.
 |---|---|---|
 | 2026-10-20T14:46Z, `bu-p5umi2.4` = A | Commits Butlers to an "always per-event" approval mode that no standing rule can satisfy, matching `bu-qlx055` = A (decision sets, wait envelopes) and `bu-o3638f` = A (standing-rule slots and categories). | D4 `approval_policy` gains the `always_per_event` mode and D13 applies it. Text conforming to the decision is adopted through independent conformance review (owner rule, 2026-10-21). |
 | 2026-10-20T14:46Z, `bu-p5umi2.4` = A (OQ1) | A grant's resource scope binds to the owner's exact selection through a control-plane selection record written only from the owner dashboard, not a General-owned record. | D4 `resource_params` may be selection-bound and D7 adds owner selection records. Adopted through the same conformance review. |
+| 2026-10-24T14:30Z, `bu-u5euwb.21` = C | Names dashboard fast answers as a D18 kind, instead of withdrawing `define-dashboard-fast-answer-runtime` or rewriting it as a goal. Adopted D18 reopens for this one kind only; owner latency work on the goal path (`bu-dhloi1.12`) continues unchanged. | D18 gains the dashboard fast-answer kind as the single exception to its owner-composition rule, and the change is re-scoped to it (`bu-u5euwb.28`). Amendment text: `bu-u5euwb.27`, adopted through the same conformance review. |
 
 ## Proposed shared switch and M7 interfaces (2026-10-24)
 
@@ -1945,7 +2023,7 @@ release approval or operational authorization.
 | `goal-orchestration` 005 finite work | D10 |
 | `goal-orchestration` 006 honest outcomes | D11, D12, D14 |
 | `goal-orchestration` 007 domain care | D2, D5 |
-| `goal-orchestration` 008 single admission path | D1, D2, D18, Hard cutover |
+| `goal-orchestration` 008 single admission path | D1, D2, D18, Hard cutover, later owner decision `bu-u5euwb.21` |
 | `capability-authorization` 001 sandbox | D1, D3 |
 | `capability-authorization` 002 catalog metadata | D4 |
 | `capability-authorization` 003 origin ceilings | D5 |

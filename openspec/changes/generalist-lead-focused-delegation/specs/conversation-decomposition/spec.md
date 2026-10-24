@@ -5,7 +5,7 @@
 **Migration**: A `conversation_history` batch envelope is admitted as one goal (`REQ-goal-orchestration-008`); its lead owns every domain signal in the batch (`REQ-goal-orchestration-001`).
 
 ### Requirement: Signal Extraction for Decomposition
-**Reason**: Signal extraction was a routing-session model call; RFC 0038 D18 allows no model use outside goals except the named model functions, and this is not one of them.
+**Reason**: Signal extraction was a routing-session model call; RFC 0038 D18 allows no model use outside goals except the kinds it names, and this is not one of them.
 **Migration**: The goal's lead identifies the signals while fulfilling the goal, reading third-party spans fenced as data (RFC 0038 D15) and calling each owning domain's capabilities (`REQ-goal-orchestration-004`).
 
 ### Requirement: Cherry-Picked Message Excerpts
