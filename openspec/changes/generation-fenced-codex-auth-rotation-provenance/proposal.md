@@ -11,6 +11,15 @@ contents, process identity, or timestamps.
 
 ## What Changes
 
+- Conform this existing packet to adopted RFC 0038 D3 before archive. The
+  control-plane goal runner resolves the existing Tier 1 authority; runtime
+  OAuth projection, synchronization, and dashboard CLI login use the session
+  host's credential volume through the control plane's service listener and
+  authenticated launch control channel. Domain daemons never receive provider
+  credentials; the session host has no database/credential-store access and no
+  inbound dashboard port. This is a specification-only conformance change,
+  not runtime activation or a change to an RFC decision.
+
 - Add a single explicit Codex authority-generation model for the existing
   system-global `cli-auth/codex` credential. Each accepted owner replacement
   and each accepted runtime/device-auth successor receives a fresh opaque
@@ -25,7 +34,7 @@ contents, process identity, or timestamps.
   an older operation from changing its replacement.
 - Define fail-closed outcomes for missing, malformed, ambiguous, expired, or
   unavailable authority/operation evidence, plus crash, restart, and
-  multi-daemon interleavings. Existing local files remain non-authoritative
+  concurrent session-host interleavings. Existing local files remain non-authoritative
   after an unprovable operation.
 - Separate normal runtime preparation from the privileged first-device-auth
   bootstrap entry point, and install the protected NOLOGIN-owned database
@@ -56,9 +65,9 @@ None.
   bind to an exact durable authority generation and fail closed on unprovable
   evidence through a full replacement of the canonical `Pre-Launch and
   Prewarm Codex Auth Synchronization` requirement.
-- `core-daemon`: startup restoration and restart recovery use the durable
-  system-global authority lineage rather than inferring a successor from a
-  local runtime file.
+- `core-daemon`: deterministic lifecycle wiring delegates runtime credential
+  restoration to the control-plane/session-host boundary; restart recovery
+  uses durable system-global lineage, never a domain-local runtime file.
 - `dashboard-api`: dashboard CLI-auth save, reauthorization, probe, and revoke
   paths serialize through the same owner-authoritative generation boundary
   without expanding response payloads.
@@ -69,10 +78,13 @@ None.
 ## Impact
 
 The eventual implementation touches the core credential migration chain,
-`CredentialStore`, Codex auth synchronization, the Codex adapter and its
-prewarm paths, CLI-auth persistence/session callbacks, dashboard Secrets/API
-handlers, lifecycle wiring, and focused migration/adapter/API/concurrency
-tests. It also updates the credential-store, CLI-runtime-auth, daemon-lifecycle,
+the control-plane `CredentialStore`, goal-runner Codex auth synchronization,
+session-host adapter/prewarm and private stages, CLI-auth transport through the
+control plane's service listener, dashboard Secrets/API handlers, deterministic
+lifecycle wiring, and focused migration/adapter/API/concurrency tests. Runtime
+permission-bypass flags and shared-file links are removed from goal invocations;
+deny-all built-in/provider-hosted tools and broker-only MCP remain mandatory.
+The engineering executor's separate permissions are not goal-runtime authority. It also updates the credential-store, CLI-runtime-auth, daemon-lifecycle,
 and spawner documentation. It adds no provider dependency, no public endpoint,
 and no live operational action in this planning change.
 

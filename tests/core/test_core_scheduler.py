@@ -352,7 +352,7 @@ async def test_legacy_lifecycle_recovery_derives_public_audit_identity(
             "butlers.core.runtime_config.RuntimeConfigAccessor",
             return_value=runtime_config_accessor,
         ),
-        patch("butlers.lifecycle.get_adapter", return_value=lambda **kwargs: runtime),
+        patch("butlers.lifecycle.build_runtime_adapter", return_value=runtime),
         patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         patch("butlers.lifecycle.Spawner", return_value=spawner),
         patch("butlers.lifecycle.FastMCP", return_value=MagicMock()),

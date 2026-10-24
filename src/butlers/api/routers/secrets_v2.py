@@ -2330,14 +2330,14 @@ async def _fetch_user_secrets(
 
     google_entity_ids = [
         str(row["entity_id"])
-        for row, provider in zip(rows, providers_by_row, strict=False)
+        for row, provider in zip(rows, providers_by_row, strict=True)
         if provider == "google"
     ]
     google_scopes_map = await _fetch_google_granted_scopes(pool, google_entity_ids)
     google_expiry_map = await _fetch_google_test_mode_expiry(pool, google_entity_ids)
 
     results: list[UserSecret] = []
-    for row, provider in zip(rows, providers_by_row, strict=False):
+    for row, provider in zip(rows, providers_by_row, strict=True):
         value: str | None = row["value"]
         last_test_ok: bool | None = row["last_test_ok"]
         entity_id = str(row["entity_id"])

@@ -1761,7 +1761,7 @@ class MessagePipeline:
                 "explicitly what you'd like recorded or reported."
             )
             try:
-                from butlers.api.conversations import conversation_reply_create
+                from butlers.conversation_messages import conversation_reply_create
 
                 await conversation_reply_create(
                     self._pool,
@@ -3179,9 +3179,9 @@ class MessagePipeline:
                                         },
                                     )
                                 else:
-                                    logger.debug(
-                                        "Identity resolution failed; proceeding without preamble",
-                                        exc_info=True,
+                                    logger.warning(
+                                        "pipeline.identity_resolution_failed",
+                                        extra={"failure_class": type(exc).__name__},
                                     )
 
                     if _decomp_messages is not None:

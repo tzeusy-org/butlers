@@ -135,6 +135,13 @@ jobs:
         if: ${{ !cancelled() }}
         run: uv lock --check
 
+      - name: Cache pinned lint tools
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: .tmp/lint-tools
+          key: lint-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/lint-tool-versions.json') }}
+
       - name: Install lint tools
         run: make install-lint-tools
 

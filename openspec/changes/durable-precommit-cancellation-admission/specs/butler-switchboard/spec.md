@@ -38,6 +38,30 @@ partial cancellation, recompute the cohort, or dispatch a provider action.
 Other rejected/ambiguous results retain the same action and remain
 scheduler-ineligible.
 
+This coordination SHALL remain deterministic under RFC 0038 D1/D2/D7 and SHALL
+NOT admit a reasoning goal, invoke an LLM, start a session or delegate reasoning.
+Any generic route proxy for cancellation traffic SHALL be replaced by named
+endpoints on Switchboard's service listener. Each endpoint SHALL fix its payload
+schema, one recipient service-plane operation and an allowlist of authenticated
+calling daemons; neither endpoint nor target SHALL be LLM-presentable or served
+on the session listener. Unknown endpoints, unauthenticated/unlisted callers,
+invalid schemas and mismatched targets SHALL be refused before recipient contact;
+a payload's claimed source SHALL NOT establish caller authority.
+
+Every frozen origin SHALL retain a separate declared, recipient-bound endpoint
+for each existing finalization, publication and parent DND-abort operation. The
+packet's origin identity SHALL match that endpoint's fixed recipient rather
+than select an arbitrary target/tool. Missing endpoints SHALL follow the
+existing unavailable-participant retention/retry rule, without shrinking the
+snapshot cohort, replacing actions or publishing a subset. These endpoint
+checks SHALL supplement, not replace, the complete run/fence/cohort/local-subset,
+replay, Messenger admission and DND evidence checks, and SHALL create no
+subscription, goal or grant.
+
+ID: REQ-butler-switchboard-010
+Source: proposal.md; design.md D0–D7; RFC 0038 D1/D2/D7; REQ-butler-switchboard-008
+Scope: v1-mandatory
+
 #### Scenario: Switchboard forwards only a durable current-fence decision
 - **WHEN** Health or an origin Scheduler supplies cancellation evidence for the
   current wake run

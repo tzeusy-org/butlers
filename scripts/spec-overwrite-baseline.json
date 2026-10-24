@@ -3381,6 +3381,66 @@
       "excerpt": "The Codex adapter SHALL perform live Codex device-auth reconciliation before evaluating token freshness, creating its...",
       "kind": "prose",
       "scenario": null
+    },
+    {
+      "digest": "eefe5944faa6",
+      "excerpt": "- **WHEN** a Codex adapter with a credential store invokes a new runtime session and a canonical home directory is av...",
+      "kind": "clause",
+      "scenario": "Reconciliation precedes a Codex subprocess"
+    },
+    {
+      "digest": "fb5dca133406",
+      "excerpt": "- **THEN** it SHALL await live device-auth reconciliation before starting the Codex CLI subprocess",
+      "kind": "clause",
+      "scenario": "Reconciliation precedes a Codex subprocess"
+    },
+    {
+      "digest": "b1e30c4d235f",
+      "excerpt": "- **AND** it SHALL continue the existing local-auth subprocess path without consuming the session runtime timeout for...",
+      "kind": "clause",
+      "scenario": "Unavailable auth synchronization does not consume session time"
+    },
+    {
+      "digest": "2302a9266626",
+      "excerpt": "- **THEN** the adapter SHALL retain its existing post-invocation rotation detection and persistence behavior",
+      "kind": "clause",
+      "scenario": "Existing local CLI rotation persistence remains intact"
+    },
+    {
+      "digest": "0f358f1b4f53",
+      "excerpt": "- **WHEN** a Codex invocation retries internally and successive attempts rotate the canonical auth file",
+      "kind": "clause",
+      "scenario": "Internal retries persist the final local rotation"
+    },
+    {
+      "digest": "843c4deb144e",
+      "excerpt": "- **AND** the invocation finalizer SHALL conditionally persist the final file state against the last attempt's captur...",
+      "kind": "clause",
+      "scenario": "Internal retries persist the final local rotation"
+    },
+    {
+      "digest": "571fbd2c5e7f",
+      "excerpt": "- **THEN** the adapter SHALL reconcile canonical auth before `codex login status` can run",
+      "kind": "clause",
+      "scenario": "Speculative prewarm receives reconciled auth"
+    },
+    {
+      "digest": "3cb20ed3ddfb",
+      "excerpt": "- **AND** it SHALL finalize afterward using the prewarm's captured authority snapshot so a prewarm-caused rotation is...",
+      "kind": "clause",
+      "scenario": "Speculative prewarm receives reconciled auth"
+    },
+    {
+      "digest": "24e7d4761f6f",
+      "excerpt": "- **WHEN** dashboard device authentication succeeds for Codex and its post-login prewarm modifies `auth.json`",
+      "kind": "clause",
+      "scenario": "Dashboard login captures its prewarm rotation"
+    },
+    {
+      "digest": "7b1fb0a8ba6e",
+      "excerpt": "- **THEN** the dashboard callback SHALL finalize the final file through the same authority-safe path using the snapsh...",
+      "kind": "clause",
+      "scenario": "Dashboard login captures its prewarm rotation"
     }
   ],
   "harden-runtime-auth-and-breaker-attention/core-credentials/Live Codex Device-Auth Reconciliation": [
@@ -5005,6 +5065,12 @@
       "excerpt": "- **AND** the remainder of the file contains butler-specific content following the AGENTS.md Content Principles",
       "kind": "clause",
       "scenario": "AGENTS.md composes shared instructions"
+    },
+    {
+      "digest": "e69f93fa9eaa",
+      "excerpt": "- **THEN** it engages interactive response mode as defined in the butler's CLAUDE.md",
+      "kind": "clause",
+      "scenario": "Interactive response mode"
     }
   ],
   "specify-roster-identity-owner-operations-overlay/core-spawner/System Prompt Composition": [

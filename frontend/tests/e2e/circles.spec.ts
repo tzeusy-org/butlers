@@ -1,3 +1,4 @@
+import { mockJson } from "./fixtures/api-responses";
 /**
  * Playwright smoke test — /entities/circles (bu-hmdqz.5)
  *
@@ -60,11 +61,11 @@ async function installGroupsStub(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ groups: [FAMILY_GROUP], total: 1 }),
+      body: mockJson("getGroups", { groups: [FAMILY_GROUP], total: 1 }),
     });
   });
   await page.route("**/api/relationship/labels", (route) => {
-    route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getLabels", []) });
   });
 }
 

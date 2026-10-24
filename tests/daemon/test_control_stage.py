@@ -267,6 +267,7 @@ def _assert_tracked_key_absence(root):
         if isinstance(target, ast.Name):
             scope.bindings.setdefault(target.id, []).append(value)
         elif isinstance(target, (ast.Tuple, ast.List)):
+            # Bind only the recoverable lexical prefix; opaque values may yield no items.
             for child, item in zip(target.elts, sequence(value, scope), strict=False):
                 bind(child, item, scope)
 
@@ -284,6 +285,7 @@ def _assert_tracked_key_absence(root):
                         local.bindings[arg.arg] = []
                 # Defaults are evaluated in the defining scope, before the
                 # parameter shadows an identically named enclosing constant.
+                # No defaults means [-0:] keeps positional args but maps no pairs.
                 pairs = list(zip(positional[-len(args.defaults) :], args.defaults, strict=False))
                 pairs.extend(zip(args.kwonlyargs, args.kw_defaults, strict=True))
                 for arg, default in pairs:
