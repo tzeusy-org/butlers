@@ -724,11 +724,83 @@ async def test_core_only_migration_replay_rollback_and_hostile_catalogue_refusal
         revisions={"core": "core_277"},
     )
     config = _build_alembic_config(url, chains=["core"])
-    await asyncio.to_thread(command.upgrade, config, "core@core_278")
     bootstrap_url = migration_bootstrap_db_url(postgres_container, name)
     admin = await asyncpg.connect(bootstrap_url.replace("postgresql+psycopg2", "postgresql"))
     migration_role = urlparse(url).username
     try:
+        # Use the actual production core240 owner, never an elevated fixture login.
+        assert (
+            await admin.fetchval(
+                "SELECT migration_role FROM dashboard_attention.bootstrap_configuration WHERE singleton"
+            )
+            == migration_role
+        )
+        assert (
+            await admin.fetchval(
+                "SELECT r.rolname FROM pg_namespace n JOIN pg_roles r ON r.oid=n.nspowner "
+                "WHERE n.nspname='dashboard_auth'"
+            )
+            == migration_role
+        )
+        assert not await admin.fetchval(
+            "SELECT rolsuper FROM pg_roles WHERE rolname=$1", migration_role
+        )
+        # Each hostile catalogue is rolled back before the next real installer call.
+        mutations = [
+            "COMMENT ON SCHEMA dashboard_auth IS 'not-the-core240-marker'",
+            "ALTER SCHEMA dashboard_auth OWNER TO butler_general_rw",
+        ]
+        for table in ("instance", "sessions"):
+            mutations.extend(
+                [
+                    f"ALTER TABLE dashboard_auth.{table} OWNER TO butler_general_rw",
+                    f"DROP TABLE dashboard_auth.{table} CASCADE",
+                ]
+            )
+        for mutation in mutations:
+            with pytest.raises(asyncpg.RaiseError, match="attention requires trusted owner"):
+                async with admin.transaction():
+                    await admin.execute(mutation)
+                    await admin.execute("SELECT dashboard_attention.install_interface()")
+        for table in ("instance", "sessions"):
+            with pytest.raises(asyncpg.RaiseError, match="attention requires trusted owner"):
+                async with admin.transaction():
+                    await admin.execute(f"DROP TABLE dashboard_auth.{table} CASCADE")
+                    await admin.execute(
+                        f"CREATE VIEW dashboard_auth.{table} AS SELECT true AS singleton"
+                    )
+                    await admin.execute(
+                        f'ALTER VIEW dashboard_auth.{table} OWNER TO "{migration_role}"'
+                    )
+                    await admin.execute("SELECT dashboard_attention.install_interface()")
+        # The other supported bootstrap-owned topology must also really install.
+        privileged = admin.transaction()
+        await privileged.start()
+        try:
+            bootstrap_role = await admin.fetchval("SELECT current_user")
+            quoted_bootstrap = '"' + bootstrap_role.replace('"', '""') + '"'
+            assert await admin.fetchval(
+                "SELECT rolsuper FROM pg_roles WHERE rolname=$1", bootstrap_role
+            )
+            await admin.execute(f"ALTER SCHEMA dashboard_auth OWNER TO {quoted_bootstrap}")
+            for table in ("instance", "sessions"):
+                await admin.execute(
+                    f"ALTER TABLE dashboard_auth.{table} OWNER TO {quoted_bootstrap}"
+                )
+            await admin.execute("SELECT dashboard_attention.install_interface()")
+            for relation in (
+                "dashboard_attention.tickets",
+                "dashboard_attention.stamps",
+                "dashboard_attention.candidate_causes",
+                "dashboard_attention.final_claims",
+                "public.break_through_clauses",
+            ):
+                assert await admin.fetchval("SELECT to_regclass($1)", relation) is not None
+        finally:
+            await privileged.rollback()
+        assert await admin.fetchval("SELECT to_regclass('dashboard_attention.tickets')") is None
+        # This is the genuine normal Alembic caller and ordinary owner positive.
+        await asyncio.to_thread(command.upgrade, config, "core@core_278")
         assert await admin.fetchval("SELECT to_regclass('public.approval_rules')") is None
         assert await admin.fetchval("SELECT to_regclass('dashboard_attention.tickets')") is not None
         # Bootstrap-only synthetic historical row: retention/catalogue control,

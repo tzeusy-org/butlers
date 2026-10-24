@@ -5998,12 +5998,20 @@ REVOKE ALL ON FUNCTION dashboard_attention.finalize_interface() FROM PUBLIC;
 
 CREATE OR REPLACE FUNCTION dashboard_attention.install_interface() RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $install$
+DECLARE auth_owner oid; migration_name name;
 BEGIN
- IF to_regclass('dashboard_auth.instance') IS NULL
-  OR to_regclass('dashboard_auth.sessions') IS NULL
-  OR NOT EXISTS(SELECT FROM pg_namespace n JOIN pg_roles r ON r.oid=n.nspowner
-   WHERE n.nspname='dashboard_auth' AND r.rolsuper
-   AND obj_description(n.oid,'pg_namespace')='butlers:dashboard-owner-auth:core_240') THEN
+ SELECT migration_role INTO STRICT migration_name
+  FROM dashboard_attention.bootstrap_configuration WHERE singleton;
+ SELECT n.nspowner INTO auth_owner FROM pg_namespace n
+  WHERE n.nspname='dashboard_auth'
+   AND obj_description(n.oid,'pg_namespace')='butlers:dashboard-owner-auth:core_240';
+ -- core240 creates this namespace under the recorded ordinary migration login.
+ -- Neither a marker alone nor an arbitrary runtime-owned relation is authority.
+ IF auth_owner IS NULL OR (auth_owner<>migration_name::regrole
+   AND NOT (SELECT rolsuper FROM pg_roles WHERE oid=auth_owner))
+  OR (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+   WHERE n.nspname='dashboard_auth' AND c.relname IN ('instance','sessions')
+    AND c.relkind='r' AND c.relowner=auth_owner)<>2 THEN
   RAISE EXCEPTION 'attention requires trusted owner authentication'; END IF;
  IF to_regclass('dashboard_attention.tickets') IS NOT NULL
   OR to_regclass('dashboard_attention.candidate_causes') IS NOT NULL

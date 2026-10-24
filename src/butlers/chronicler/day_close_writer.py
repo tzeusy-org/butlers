@@ -101,8 +101,10 @@ def _notify_signature() -> inspect.Signature | None:
 
     handlers = {}
 
-    def decorate(_group):
+    def decorate(_group, **tool_kwargs):
         def record(fn):
+            if fn.__name__ == "notify" and tool_kwargs != {"exclude_args": ["priority"]}:
+                raise ValueError("unsupported notify registration policy")
             handlers[fn.__name__] = fn
             return fn
 
