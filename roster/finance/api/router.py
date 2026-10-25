@@ -353,6 +353,8 @@ async def list_subscriptions(
         f"SELECT id, service, amount, currency, frequency, next_renewal, status,"
         f" auto_renew, payment_method, account_id, source_message_id,"
         f" cancellation_url, notice_period_days, cancel_by, metadata,"
+        f" renewal_source, price_source, service_source, date_epoch, price_epoch,"
+        f" value_revision, field_claims,"
         f" created_at, updated_at"
         f" FROM finance.subscriptions{where}"
         f" ORDER BY next_renewal ASC"
@@ -370,6 +372,13 @@ async def list_subscriptions(
             currency=r["currency"],
             frequency=r["frequency"],
             next_renewal=str(r["next_renewal"]),
+            renewal_source=r.get("renewal_source", "extracted"),
+            price_source=r.get("price_source", "extracted"),
+            service_source=r.get("service_source", "extracted"),
+            date_epoch=r.get("date_epoch", 0),
+            price_epoch=r.get("price_epoch", 0),
+            value_revision=r.get("value_revision", 0),
+            field_claims=r.get("field_claims", []),
             status=r["status"],
             auto_renew=r["auto_renew"],
             payment_method=r["payment_method"],

@@ -246,6 +246,7 @@ class ButlerDaemon:
         self._tool_module_map: dict[str, str] = {}
         self._resolved_tool_metadata: dict[str, ToolMeta] = {}
         self._tool_catalog: ToolCatalog | None = None
+        self._finance_warning_control_owner = None
         self._declared_tool_names: set[str] = set()
         self._effective_tool_names: set[str] = set()
         self._registered_tool_names: set[str] = set()
@@ -575,6 +576,31 @@ class ButlerDaemon:
         from butlers.core.fact_authority import FactReceiverContextRegistry
 
         self._fact_receiver_registry = FactReceiverContextRegistry(self.db.pool, self.config.name)
+        if self.config.name in {"finance", "switchboard"}:
+            from butlers.config import list_butlers
+            from butlers.core.control_plane_identity import IDENTITY_PATH, expected_from_roster
+            from butlers.core.finance_warning_control import VERIFY_PATH, FinanceWarningControlOwner
+
+            expected = next(
+                (
+                    target
+                    for target in expected_from_roster(list_butlers(self.config_dir.parent))
+                    if target.name == "switchboard"
+                ),
+                None,
+            )
+            verifier_url = (
+                expected.url.removesuffix(IDENTITY_PATH) + VERIFY_PATH if expected else None
+            )
+            route_call = None
+            if self.config.name == "switchboard":
+                from butlers.tools.switchboard.routing.route import route
+
+                route_call = route
+            self._finance_warning_control_owner = FinanceWarningControlOwner(
+                self, route_call=route_call, verifier_url=verifier_url
+            )
+
         app = self._build_mcp_http_app(
             self.mcp,
             butler_name=self.config.name,
@@ -584,6 +610,7 @@ class ButlerDaemon:
             route_preflight=self._build_route_preflight(),
             fact_source_registry=getattr(self, "_fact_source_registry", None),
             fact_receiver_registry=self._fact_receiver_registry,
+            finance_warning_control_owner=self._finance_warning_control_owner,
         )
         config = uvicorn.Config(
             app,
@@ -715,6 +742,7 @@ class ButlerDaemon:
         route_preflight: Any | None = None,
         fact_source_registry: Any | None = None,
         fact_receiver_registry: Any | None = None,
+        finance_warning_control_owner: Any | None = None,
     ) -> Any:
         """Build a unified ASGI app exposing streamable HTTP and legacy SSE MCP routes."""
         apply_streamable_http_disconnect_patch()
@@ -805,6 +833,11 @@ class ButlerDaemon:
             receiver_route = fact_receiver_registry.route()
             if not cls._attach_route_via_public_api(streamable_app, receiver_route):
                 streamable_app.routes.append(receiver_route)
+
+        if butler_name == "switchboard" and finance_warning_control_owner is not None:
+            control_route = finance_warning_control_owner.route()
+            if not cls._attach_route_via_public_api(streamable_app, control_route):
+                streamable_app.routes.append(control_route)
 
         guarded_app = _McpRuntimeSessionGuard(
             streamable_app,

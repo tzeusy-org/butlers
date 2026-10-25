@@ -94,6 +94,10 @@ CREATE TABLE IF NOT EXISTS finance.subscriptions (
                             CHECK (cancellation_url_source IN ('owner', 'extracted')),
     status_source       TEXT NOT NULL DEFAULT 'extracted'
                             CHECK (status_source IN ('owner', 'extracted')),
+    field_claims JSONB NOT NULL DEFAULT '[]'::jsonb,
+    date_epoch BIGINT NOT NULL DEFAULT 0,
+    renewal_source TEXT NOT NULL DEFAULT 'extracted',
+    price_source TEXT NOT NULL DEFAULT 'extracted',
     metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -2651,3 +2655,94 @@ async def test_monthly_finance_digest_degrades_gracefully_on_trend_failure(
         assert len(digest_cands) == 1
         message = digest_cands[0]["message"]
         assert "Month-over-month" not in message
+
+
+@pytest.fixture
+def field_scan_db(postgres_container):
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
+
+    # Full real core/Finance shape before this test enters an async loop.
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "finance"],
+        schemas={"finance": "finance"},
+    )
+
+
+@pytest.mark.parametrize(
+    "baseline_days,claim_days,selected_days",
+    [(40, [3], 3), (8, [3], 3), (3, [8], 3), (40, [-1, 4], 4)],
+)
+async def test_scan_filters_each_claim_before_selecting_date_and_binds_ledger_premise_expiry(
+    field_scan_db, baseline_days, claim_days, selected_days
+):
+    import asyncpg
+
+    from butlers.db import register_jsonb_codec
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with asyncpg.create_pool(
+        field_scan_db,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "finance,public"},
+    ) as pool:
+        await pool.execute(
+            "INSERT INTO insight_settings(id,verbosity) VALUES(1,'normal') "
+            "ON CONFLICT(id) DO UPDATE SET verbosity='normal'"
+        )
+        await _insert_subscription(
+            pool,
+            service="Synthetic claims",
+            frequency="yearly",
+            next_renewal=_today() + timedelta(days=baseline_days),
+        )
+        row = await pool.fetchrow(
+            "SELECT id FROM finance.subscriptions WHERE service='Synthetic claims'"
+        )
+        await pool.execute(
+            "UPDATE finance.subscriptions SET field_claims=$2::jsonb WHERE id=$1",
+            row["id"],
+            [
+                {
+                    "field": "renewal",
+                    "value": (_today() + timedelta(days=d)).isoformat(),
+                    "resolved": False,
+                    "epoch": 0,
+                }
+                for d in claim_days
+            ],
+        )
+        await run_insight_scan(pool)
+        candidates = [
+            c
+            for c in await pool.fetch("SELECT * FROM insight_candidates")
+            if c["category"] == "subscription-renewal"
+        ]
+        assert len(candidates) == 1
+        selected = _today() + timedelta(days=selected_days)
+        candidate = candidates[0]
+        assert candidate["dedup_key"].endswith(selected.isoformat())
+        metadata = candidate["metadata"]
+        assert metadata["event_date"] == selected.isoformat()
+        assert candidate["expires_at"] == datetime.combine(
+            selected + timedelta(days=1), datetime.min.time(), tzinfo=UTC
+        )
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM finance.obligation_ledger WHERE subscription_id=$1 AND period=$2",
+                row["id"],
+                selected,
+            )
+            == 1
+        )
+        premise = candidate["premise"]
+        if isinstance(premise, str):
+            premise = json.loads(premise)
+        assert premise["args"] == {
+            "subject": str(row["id"]),
+            "selected_date": selected.isoformat(),
+            "epoch": 0,
+        }

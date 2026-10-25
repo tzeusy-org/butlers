@@ -43,6 +43,13 @@ class SubscriptionModel(BaseModel):
     currency: str
     frequency: str
     next_renewal: str
+    renewal_source: str = "extracted"
+    price_source: str = "extracted"
+    service_source: str = "extracted"
+    date_epoch: int = 0
+    price_epoch: int = 0
+    value_revision: int = 0
+    field_claims: list[dict] = []
     status: str
     auto_renew: bool = True
     payment_method: str | None = None

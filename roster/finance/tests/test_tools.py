@@ -1472,3 +1472,124 @@ class TestSubscriptionFieldProvenance:
 
         assert result["cancellation_url_source"] == "extracted"
         assert result["status_source"] == "extracted"
+
+
+class TestProtectedDateAndPriceClaims:
+    @pytest.mark.parametrize("order", ["owner-first", "extracted-first", "concurrent", "rollback"])
+    async def test_native_committed_pair_claims_owner_confirmation_and_rollback(
+        self, pool, monkeypatch, order
+    ):
+        import asyncio
+        from contextvars import ContextVar
+        from decimal import Decimal
+
+        from butlers.tools.finance import subscriptions as subs
+        from butlers.tools.finance.expected_signals import FinanceSignalSource
+
+        actor = ContextVar("synthetic_actor", default=None)
+
+        async def attestation(connection):
+            # Every actual owning write attests using its held TX connection.
+            assert connection.is_in_transaction()
+            return actor.get()
+
+        monkeypatch.setattr(subs, "runtime_signal_source", attestation)
+        today = datetime.now(UTC).date()
+
+        async def write(owner, renewal, amount=10, currency="USD"):
+            token = actor.set(
+                FinanceSignalSource("owner")
+                if owner
+                else FinanceSignalSource("connector:gmail", "gmail:synthetic")
+            )
+            try:
+                return await subs.track_subscription(
+                    pool, "Synthetic fields", amount, currency, "yearly", renewal
+                )
+            finally:
+                actor.reset(token)
+
+        if order == "extracted-first":
+            await write(False, today + timedelta(days=3), 99, "EUR")
+            await write(True, today + timedelta(days=30))
+        else:
+            await write(True, today + timedelta(days=30))
+        if order == "concurrent":
+            await asyncio.gather(
+                *(write(False, today + timedelta(days=3), 99, "EUR") for _ in range(2))
+            )
+        elif order == "rollback":
+            async with pool.acquire() as conn:
+                tx = conn.transaction()
+                await tx.start()
+                try:
+                    await conn.execute(
+                        "UPDATE subscriptions SET field_claims=$1::jsonb",
+                        [
+                            {
+                                "field": "price",
+                                "value": {"amount": "999", "currency": "EUR"},
+                                "epoch": 0,
+                                "resolved": False,
+                            }
+                        ],
+                    )
+                finally:
+                    await tx.rollback()
+        else:
+            await write(False, today + timedelta(days=3), 99, "EUR")
+        async with pool.acquire() as observer:
+            row = await observer.fetchrow(
+                "SELECT * FROM subscriptions WHERE service='Synthetic fields'"
+            )
+            assert row["amount"] == Decimal("10") and row["currency"] == "USD"
+            assert row["next_renewal"] == today + timedelta(days=30)
+            assert row["price_source"] == row["renewal_source"] == "owner"
+            if order == "rollback":
+                assert row["field_claims"] == []
+            else:
+                assert len(row["field_claims"]) == 2
+                assert row["field_claims"][1]["value"] == {"amount": "99", "currency": "EUR"}
+                assert (
+                    await subs.subscription_warning_still_relevant(
+                        observer, row["id"], today + timedelta(days=3), row["date_epoch"]
+                    )
+                    is True
+                )
+        epoch = row["date_epoch"]
+        await write(True, today + timedelta(days=20), 12, "USD")
+        async with pool.acquire() as observer:
+            confirmed = await observer.fetchrow(
+                "SELECT * FROM subscriptions WHERE id=$1", row["id"]
+            )
+            assert confirmed["date_epoch"] == epoch + 1
+            assert all(claim["resolved"] for claim in confirmed["field_claims"])
+            assert (
+                await subs.subscription_warning_still_relevant(
+                    observer, row["id"], today + timedelta(days=3), epoch
+                )
+                is False
+            )
+
+
+async def test_attestation_sql_error_rolls_back_only_its_savepoint_and_commits_extracted(
+    pool, monkeypatch
+):
+    from butlers.tools.finance import subscriptions
+
+    async def unavailable(connection):
+        # A genuine native SQL failure with the legacy attestor's absorbed-error
+        # behavior. Without the writer's savepoint the next write must abort.
+        try:
+            await connection.fetchval("SELECT 1 / 0")
+        except asyncpg.DivisionByZeroError:
+            return None
+
+    monkeypatch.setattr(subscriptions, "runtime_signal_source", unavailable)
+    result = await subscriptions.track_subscription(
+        pool, "Unattested synthetic", 10, "USD", "yearly", datetime.now(UTC).date()
+    )
+    async with pool.acquire() as observer:
+        stored = await observer.fetchrow("SELECT * FROM subscriptions WHERE id=$1", result["id"])
+        assert stored["renewal_source"] == stored["price_source"] == "extracted"
+        assert stored["field_claims"] == []

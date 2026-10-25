@@ -2424,3 +2424,57 @@ async def test_staffer_briefing_exclusion_and_type_field(tmp_path: Path) -> None
         assert all(p["type"] == "staffer" for p in posted_payloads)
     finally:
         await daemon2.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_actual_http_app_keeps_finance_bearer_pending_through_mcp_handshake(monkeypatch):
+    """Real daemon HTTP assembly + fresh streamable Client, not a fake guard."""
+    from types import SimpleNamespace
+
+    import httpx
+    from fastmcp import Client
+    from fastmcp.client.transports import StreamableHttpTransport
+
+    from butlers.core import finance_warning_control as control
+    from butlers.modules.registry import default_registry
+
+    pool = object()
+    module = default_registry()._modules["finance"]()
+    mcp = RuntimeFastMCP("finance-http-proof")
+    await module.register_tools(mcp, module.config_schema(), SimpleNamespace(pool=pool), "finance")
+    daemon = SimpleNamespace(db=SimpleNamespace(pool=pool), config=SimpleNamespace(name="finance"))
+    owner = control.FinanceWarningControlOwner(daemon)
+    daemon._finance_warning_control_owner = owner
+    observed = []
+
+    async def consume(args, reader):
+        observed.append((control._pending.get(), args, reader.__name__))
+        return None
+
+    monkeypatch.setattr(owner, "consume_and_read", consume)
+    app = ButlerDaemon._build_mcp_http_app(
+        mcp, butler_name="finance", finance_warning_control_owner=owner
+    )
+
+    def factory(**kw):
+        return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), **kw)
+
+    args = {"subject": str(uuid.UUID(int=1)), "selected_date": "2026-10-27", "epoch": 0}
+    try:
+        async with app._app._app.router.lifespan_context(app._app._app):
+            async with asyncio.timeout(10):
+                async with Client(
+                    StreamableHttpTransport(
+                        "http://fixed/mcp",
+                        headers={control.HEADER: "synthetic-pending"},
+                        httpx_client_factory=factory,
+                    )
+                ) as client:
+                    await client.list_tools()
+                    assert observed == []
+                    result = await client.call_tool(control.TOOL, args)
+                    assert result.data is None
+                    assert observed == [("synthetic-pending", args, control.TOOL)]
+        assert control._pending.get() is None
+    finally:
+        await owner.close(1)
