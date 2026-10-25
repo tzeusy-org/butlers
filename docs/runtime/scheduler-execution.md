@@ -10,6 +10,39 @@
 
 The scheduler (`src/butlers/core/scheduler.py`) is a cron-driven task dispatch system. At daemon startup, it syncs schedule definitions from `butler.toml` into the `scheduled_tasks` database table. During operation, the daemon periodically calls `tick()`, which evaluates cron expressions and dispatches due tasks to the spawner. The scheduler supports two dispatch modes, deterministic staggering, complexity-aware model selection, and automatic task expiry.
 
+## Explicit owner break-through at creation
+
+A cookie-authenticated, CSRF-checked dashboard request may opt in with
+`interrupt_owner: true` and one canonical UUID `X-Butlers-Creation-Operation`.
+The existing owner-auth service issues a purpose-separated, hash-only creation
+ticket. It is not a D13 standing-permission factor and is never an MCP tool
+argument. The API sends its unpersisted nonce in per-call MCP metadata; it does
+not modify the cached client's headers. The daemon checks the raw RFC8785
+argument digest and receiver before entering the owning schedule transaction.
+
+That one physical-database transaction checks the current auth/session fence,
+consumes the ticket, creates the actual definition and seals its immutable
+stamp and closed result. Unknown-commit retry with the same operation returns
+the original task UUID. It never recreates a deleted task or blesses an edited
+definition. A changed operation payload, wrong receiver/session, expired ticket
+or revoked authority refuses. Ordinary model creation has no stamp.
+
+`tick()` carries the claimed task UUID and original due occurrence through
+private invocation context. A bare task UUID, trigger name or model-provided
+request context is insufficient. Both `notify` and the direct Insight delivery
+consumer use the same current persisted evaluator. Only the scheduler's mutable
+execution bookkeeping is excluded from the definition digest; edits to the
+owning definition invalidate its creation stamp. TOML sync and model edits do
+not retroactively opt in. The last valid `until_at` occurrence atomically records a
+separate final-claim witness while auto-disabling the task. The immutable
+creation stamp still includes `enabled`; the witness binds the actual original
+due occurrence and disabled definition, and survives completion bookkeeping.
+Explicit definition edits or disable revoke the witness, including an already
+disabled request. Revoked occurrence tombstones prevent a cached final invocation
+from regaining authority after re-enable. The fixed domain-role function derives
+the witness from the actual same-transaction row and current creation stamp;
+callers cannot supply a final flag or definition digest.
+
 ## TOML-to-DB Sync
 
 On startup, `sync_schedules()` reconciles `[[butler.schedule]]` entries from the butler's TOML config with the `scheduled_tasks` table:

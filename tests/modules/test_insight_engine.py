@@ -1724,6 +1724,36 @@ class TestBudgetEnforcement:
         )
         assert pending == 2
 
+        from butlers.tools.switchboard.insight.broker import expire_candidates
+
+        budget_rows = await insight_pool.fetch(
+            "SELECT id, metadata, expires_at FROM insight_candidates WHERE status = 'pending'"
+        )
+        assert len(budget_rows) == 2
+        assert all(row["metadata"]["blocked_by"] == "budget" for row in budget_rows)
+        expiry_now = max(row["expires_at"] for row in budget_rows) + timedelta(seconds=1)
+        with patch(
+            "butlers.tools.switchboard.insight.broker.record_attention_event",
+            new=AsyncMock(return_value="expiry-id"),
+        ) as expiry_ledger:
+            assert await expire_candidates(insight_pool, now=expiry_now) == 2
+            assert expiry_ledger.await_count == 2
+            receipts = [call.kwargs for call in expiry_ledger.call_args_list]
+            assert {receipt["notification_ref"] for receipt in receipts} == {
+                str(row["id"]) for row in budget_rows
+            }
+            assert all(receipt["outcome"] == "expired" for receipt in receipts)
+            assert all(receipt["reason"] == "blocked_by:budget" for receipt in receipts)
+            assert await expire_candidates(insight_pool, now=expiry_now) == 0
+            assert expiry_ledger.await_count == 2
+        assert (
+            await insight_pool.fetchval(
+                "SELECT COUNT(*) FROM insight_candidates WHERE status = 'delivered'"
+            )
+            == 1
+        )
+        notify_mock.assert_awaited_once()
+
     @pytest.mark.pg_clock
     async def test_highest_priority_candidate_wins_under_budget(self, insight_pool):
         """When budget=1, the highest-priority candidate is selected."""
@@ -2428,7 +2458,7 @@ class TestProposeInsightCandidateUnit:
             "custom_budget": custom_budget,
             "updated_at": datetime.now(UTC),
         }
-        pool.execute.return_value = "INSERT 0 1"
+        pool.fetchval.return_value = uuid.uuid4()
         return pool
 
     @pytest.mark.parametrize(
@@ -2468,7 +2498,7 @@ class TestProposeInsightCandidateUnit:
         result = await propose_insight_candidate(pool, **base)
         assert result["status"] == "error"
         assert match in result["reason"]
-        pool.execute.assert_not_called()
+        pool.fetchval.assert_not_called()
 
     async def test_past_expires_at_returns_error(self):
         from butlers.tools.switchboard.insight.broker import propose_insight_candidate
@@ -2512,7 +2542,7 @@ class TestProposeInsightCandidateUnit:
         )
 
         assert result["status"] == "accepted"
-        pool.execute.assert_called_once()
+        pool.fetchval.assert_called_once()
 
     async def test_injected_now_still_rejects_stale_expires_at(self):
         """Injecting ``now`` narrows the reference frame; it does not disable the check."""
@@ -2534,7 +2564,7 @@ class TestProposeInsightCandidateUnit:
 
         assert result["status"] == "error"
         assert "expires_at must be in the future" in result["reason"]
-        pool.execute.assert_not_called()
+        pool.fetchval.assert_not_called()
 
     @pytest.mark.parametrize(
         "verbosity,custom_budget",
@@ -2556,7 +2586,7 @@ class TestProposeInsightCandidateUnit:
         )
         assert result["status"] == "filtered"
         assert result["reason"] == "verbosity is off"
-        pool.execute.assert_not_called()
+        pool.fetchval.assert_not_called()
 
     async def test_valid_submission_with_optional_fields(self):
         """Valid submission accepted; 3/4-segment dedup_keys pass; optional args forwarded."""
@@ -2577,8 +2607,8 @@ class TestProposeInsightCandidateUnit:
             now=_PINNED_NOW,
         )
         assert result["status"] == "accepted"
-        pool.execute.assert_called_once()
-        call_args = pool.execute.call_args.args
+        pool.fetchval.assert_called_once()
+        call_args = pool.fetchval.call_args.args
         assert call_args[5] == 3
         assert call_args[8] == "telegram"
 
