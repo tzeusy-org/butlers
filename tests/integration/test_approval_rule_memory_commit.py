@@ -27,6 +27,7 @@ from butlers.db import register_jsonb_codec
 from butlers.modules.memory import tools as memory_tools
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import _DomainOwnerState
+from tests.audit_helpers import clear_audit_log_for_test
 
 pytestmark = [
     pytest.mark.integration,
@@ -113,8 +114,9 @@ async def database(migrated_db_url: str):
         )
         cleanup.push_async_callback(_close_pool, observer)
         try:
+            await clear_audit_log_for_test(owner)
             await owner.execute(
-                "TRUNCATE public.audit_log, home_mem.memory_links, home_mem.facts, "
+                "TRUNCATE home_mem.memory_links, home_mem.facts, "
                 "approval_events, pending_actions, approval_rules, "
                 "autonomy_approval_history, autonomy_suggestions CASCADE"
             )

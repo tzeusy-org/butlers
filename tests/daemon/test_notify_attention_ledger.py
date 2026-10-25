@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -228,13 +228,22 @@ async def _start_daemon_with_notify(
 def _make_mock_pool(*, approvals_policy_row: dict | None) -> AsyncMock:
     mock_conn = AsyncMock()
     mock_conn.execute = AsyncMock(return_value=None)
+    # Git defaults and the runtime row agree: no conditional update or audit append.
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
 
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock()
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    mock_conn.transaction = MagicMock(return_value=transaction)
+
+    @asynccontextmanager
+    async def mock_acquire():
+        yield mock_conn
+
     mock_pool = AsyncMock()
-    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_pool.acquire = mock_acquire
     mock_pool.fetchval = AsyncMock(return_value=str(uuid.uuid4()))
     mock_pool.execute = AsyncMock(return_value=None)
     mock_pool.fetchrow = AsyncMock(

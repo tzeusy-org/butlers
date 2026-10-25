@@ -241,9 +241,7 @@ check-duplicate-names:
 
 # Every guard the CI `guards` job runs, locally, before you push (bu-r5mnn).
 # check-openspec-strict is skipped with a message when `openspec` is not on
-# PATH; everything else is a plain python3 script. The frontend-copy inventory
-# check regenerates the committed file and fails on any diff, exactly as CI
-# does, so run it on a clean worktree or expect the diff to be yours.
+# PATH; everything else is a plain python3 script or an existing frontend lint step.
 # GUARDS_BASE is the fork point the frontend guard diffs against.
 GUARDS_BASE ?= origin/main
 export GUARDS_BASE
@@ -251,9 +249,7 @@ check-guards: check-lock lint check-format check-for-update-joins check-em-dashe
 	python3 scripts/check_archived_requirements_landed.py
 	python3 scripts/check_owner_emails.py
 	python3 scripts/check_cited_requirements_resolve.py
-	python3 scripts/extract-frontend-copy.py
-	git diff --exit-code -- frontend/COPY_INVENTORY.md
-	python3 scripts/frontend_guards.py --base "$${GUARDS_BASE}" --skip-inventory
+	python3 scripts/frontend_guards.py --base "$${GUARDS_BASE}"
 	@if command -v openspec >/dev/null 2>&1; then \
 		$(MAKE) check-openspec-strict; \
 	else \
