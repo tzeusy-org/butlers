@@ -864,3 +864,63 @@ asyncio.run(main())
         assert await asyncio.to_thread(lambda: list(sockets.iterdir())) == []
         assert module._approval_recovery_call is None and not module._approval_recovery_verifiers
         assert await source.verify(payload, proof) == {"allowed": False}
+
+
+async def test_actual_recovery_ledger_never_replays_native_telegram_unknown_receipt(
+    authority_pools, monkeypatch
+):
+    """Actual authenticated handoff retains an ambiguous provider attempt across callers."""
+    import httpx
+
+    from butlers.modules.telegram import TelegramModule
+
+    pools = authority_pools
+    module, switchboard_mcp, messenger_mcp, providers = await _registered_servers(pools)
+    native = TelegramModule()
+    native._db = SimpleNamespace(pool=pools["messenger"])
+    native._butler_name = "messenger"
+    requests = []
+
+    async def post(url, *, json):
+        requests.append(json)
+        raise httpx.ReadTimeout("controlled unknown provider receipt")
+
+    monkeypatch.setattr(native, "_get_client", lambda: SimpleNamespace(post=post))
+    monkeypatch.setattr(native, "_base_url", lambda: "https://telegram.test")
+    providers["telegram"]._send_message = native._send_message
+    providers["telegram"].supports_inert_link_delivery = True
+    source = SourceApprovalAdmission(
+        ApprovalDeliveryRepository(pools["relationship"]), owning_schema="relationship"
+    )
+    with tempfile.TemporaryDirectory(prefix="approval-long-", dir=Path.home()) as folder:
+        topology = ApprovalAuthorityTopology(
+            sources={"relationship": source},
+            switchboard_registered=switchboard_mcp,
+            switchboard_module=module,
+            messenger_registered=messenger_mcp,
+            messenger_registry_url=_MESSENGER_URL,
+            socket_directory=Path(folder),
+        )
+        async with asyncio.timeout(45), topology:
+            runtime = topology.runtime(
+                "relationship",
+                resolve_owner_recipient=lambda: asyncio.sleep(0, result=_RECIPIENT),
+                resolve_callback_secret=lambda: asyncio.sleep(0, result="synthetic-secret"),
+            )
+            _, claim, envelope = await _claimed_presentation(pools["relationship"], ordinal=70)
+            first = await runtime.handoff(claim, envelope)
+            second = await runtime.handoff(claim, envelope)
+            assert first.classification == second.classification == "ambiguous"
+            assert len(requests) == 1
+            if envelope.get("render_links_inert"):
+                assert requests[0]["link_preview_options"] == {"is_disabled": True}
+            else:
+                assert "link_preview_options" not in requests[0]
+            async with pools["messenger"].acquire() as independent:
+                row = await independent.fetchrow(
+                    "SELECT handoff_class,provider_reference,provider_started_at "
+                    "FROM approval_delivery_handoffs WHERE presentation_key=$1",
+                    claim.presentation_key,
+                )
+            assert row["handoff_class"] == "ambiguous"
+            assert row["provider_reference"] is None and row["provider_started_at"] is not None

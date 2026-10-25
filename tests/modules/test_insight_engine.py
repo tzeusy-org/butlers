@@ -2988,3 +2988,52 @@ class TestInsightDeliveryPathsSpec:
         assert engagement["delivered_at"] is not None, (
             "spec: delivered_at must be set on the engagement row"
         )
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _docker_available, reason="Docker not available")
+async def test_partial_insight_is_terminal_on_real_committed_candidate(insight_pool):
+    """A partial send consumes no cooldown/engagement and cannot re-enter the next cycle."""
+    from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+    await _set_owner_attention_policy(insight_pool, quiet_start_hour=None, quiet_end_hour=None)
+    await insight_pool.execute(
+        "INSERT INTO insight_settings(id,verbosity) VALUES(1,'normal') "
+        "ON CONFLICT(id) DO UPDATE SET verbosity='normal'"
+    )
+    candidate_id = await insight_pool.fetchval(
+        "INSERT INTO insight_candidates "
+        "(origin_butler, priority, category, dedup_key, expires_at, message, status, channel) "
+        "VALUES ('health',20,'controlled',$1,$2,$3,'pending','telegram') RETURNING id",
+        f"controlled:{uuid.uuid4()}",
+        _future(),
+        "x" * 5000,
+    )
+    notify = AsyncMock(
+        return_value={"status": "error", "partial_delivery": True, "retryable": False}
+    )
+    first = await delivery_cycle(insight_pool, notify_fn=notify, now=_PINNED_NOW)
+    second = await delivery_cycle(insight_pool, notify_fn=notify, now=_PINNED_NOW)
+    assert first["delivered"] == second["delivered"] == []
+    notify.assert_awaited_once()
+    async with insight_pool.acquire() as independent:
+        row = await independent.fetchrow(
+            "SELECT status, delivered_at, metadata FROM insight_candidates WHERE id=$1",
+            candidate_id,
+        )
+        assert row["status"] == "filtered" and row["delivered_at"] is None
+        assert row["metadata"]["partial_delivery"] is True
+        assert (
+            await independent.fetchval(
+                "SELECT count(*) FROM insight_engagement WHERE insight_id=$1", candidate_id
+            )
+            == 0
+        )
+        assert (
+            await independent.fetchval(
+                "SELECT count(*) FROM public.attention_ledger WHERE notification_ref=$1 "
+                "AND outcome='failed' AND metadata->>'partial_delivery'='true'",
+                str(candidate_id),
+            )
+            == 1
+        )

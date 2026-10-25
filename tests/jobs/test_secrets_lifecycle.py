@@ -1329,3 +1329,95 @@ async def test_run_secrets_lifecycle_check_unexpected_error_before_resolution_no
     assert ledger_mock.await_args.kwargs["notification_ref"] is None
     audit_append.assert_not_called()
     assert summary["errors"] == 1
+
+
+@pytest.mark.parametrize("terminal_field", ["partial_delivery", "telegram_effect_uncertain"])
+async def test_partial_transition_never_enqueues_or_resends_after_terminal_marker_fault(
+    terminal_field,
+):
+    from butlers.jobs import secrets_lifecycle as lifecycle
+
+    shared_pool, switchboard_pool = object(), object()
+    db = _FakeDatabaseManager(
+        butler_pools={"switchboard": switchboard_pool}, shared_pool=shared_pool
+    )
+    snapshot = CredentialSnapshot(
+        key="u:controlled", family="user", label="Controlled", state="expiring"
+    )
+    state = None
+    writes = 0
+
+    async def append(*args, **kwargs):
+        nonlocal state, writes
+        writes += 1
+        if writes == 1:
+            raise RuntimeError("controlled marker failure")
+        state = kwargs["note"]
+        return 1
+
+    with (
+        patch.object(
+            lifecycle, "_collect_snapshots", AsyncMock(side_effect=[[snapshot], [], [snapshot]])
+        ),
+        patch.object(lifecycle, "_last_notified_state", AsyncMock(side_effect=lambda *_: state)),
+        patch.object(lifecycle, "_delivery_preferences_deferral", AsyncMock(return_value=None)),
+        patch.object(lifecycle, "_check_suppression", AsyncMock(return_value=None)),
+        patch.object(lifecycle, "resolve_owner_telegram_recipient", AsyncMock(return_value="123")),
+        patch.object(
+            lifecycle, "_supersede_pending_retries", AsyncMock(return_value=0)
+        ) as supersede,
+        patch.object(lifecycle, "_enqueue_deferred_envelope", AsyncMock()) as enqueue,
+        patch.object(lifecycle, "record_attention_event", AsyncMock()) as ledger,
+        patch.object(lifecycle.audit_router, "append", append),
+        patch(
+            "butlers.tools.switchboard.notification.deliver.deliver",
+            AsyncMock(return_value={"status": "failed", terminal_field: True, "retryable": False}),
+        ) as deliver,
+    ):
+        first = await run_secrets_lifecycle_check(db)
+        second = await run_secrets_lifecycle_check(db)
+        third = await run_secrets_lifecycle_check(db)
+    assert first["delivered"] == second["delivered"] == third["delivered"] == 0
+    assert deliver.await_count == 1
+    enqueue.assert_not_awaited()
+    assert state == "expiring"
+    assert all(call.kwargs.get("required") is True for call in supersede.await_args_list)
+    assert all(call.kwargs["outcome"] == "failed" for call in ledger.await_args_list)
+    assert not lifecycle._PARTIAL_TRANSITIONS.contains(shared_pool, "u:controlled:expiring")
+
+    # A different credential on the same shared pool is a new logical transition.
+    fresh = CredentialSnapshot(key="u:fresh", family="user", label="Fresh", state="expired")
+    markers = {snapshot.key: state}
+
+    async def append_fresh(*args, **kwargs):
+        markers[kwargs["target"]] = kwargs["note"]
+        return 1
+
+    with (
+        patch.object(lifecycle, "_collect_snapshots", AsyncMock(return_value=[snapshot, fresh])),
+        patch.object(
+            lifecycle,
+            "_last_notified_state",
+            AsyncMock(side_effect=lambda p, key: markers.get(key)),
+        ),
+        patch.object(lifecycle, "_delivery_preferences_deferral", AsyncMock(return_value=None)),
+        patch.object(lifecycle, "_check_suppression", AsyncMock(return_value=None)),
+        patch.object(lifecycle, "resolve_owner_telegram_recipient", AsyncMock(return_value="123")),
+        patch.object(lifecycle, "_supersede_pending_retries", AsyncMock(return_value=0)),
+        patch.object(lifecycle, "_enqueue_deferred_envelope", enqueue),
+        patch.object(lifecycle, "record_attention_event", ledger),
+        patch.object(lifecycle.audit_router, "append", append_fresh),
+        patch(
+            "butlers.tools.switchboard.notification.deliver.deliver",
+            AsyncMock(return_value={"status": "sent", "notification_id": "fresh"}),
+        ) as fresh_deliver,
+    ):
+        fourth = await run_secrets_lifecycle_check(db)
+        fifth = await run_secrets_lifecycle_check(db)
+    assert fourth["delivered"] == 1 and fifth["delivered"] == 0
+    fresh_deliver.assert_awaited_once()
+    assert fresh_deliver.await_args.kwargs["metadata"]["credential_key"] == fresh.key
+    assert markers == {snapshot.key: "expiring", fresh.key: "expired"}
+    enqueue.assert_not_awaited()
+    assert [c.kwargs["outcome"] for c in ledger.await_args_list] == ["failed", "delivered"]
+    assert not lifecycle._PARTIAL_TRANSITIONS.keys(shared_pool)

@@ -1266,3 +1266,36 @@ def test_public_notify_refuses_link_claims_and_raw_urls():
     }
     with pytest.raises(ValidationError, match="server delivery output"):
         parse_notify_request(forged)
+
+
+async def test_telegram_effect_reconnect_requires_pre_transport_proof():
+    from importlib import import_module
+
+    mod = import_module("butlers.tools.switchboard.routing.route")
+    for tool, args, error, expected in [
+        (
+            "telegram_send_message",
+            {"chat_id": "123", "text": "long"},
+            OSError(errno.ECONNRESET, "controlled reset"),
+            1,
+        ),
+        (
+            "route.execute",
+            {
+                "input": {
+                    "context": {
+                        "notify_request": {"delivery": {"channel": "telegram", "intent": "send"}}
+                    }
+                }
+            },
+            OSError(errno.ECONNRESET, "controlled reset"),
+            1,
+        ),
+        ("telegram_send_message", {}, OSError(errno.ECONNREFUSED, "controlled refusal"), 2),
+        ("state_get", {}, OSError(errno.ECONNRESET, "controlled reset"), 2),
+    ]:
+        client = MagicMock(call_tool=AsyncMock(side_effect=error))
+        with patch.object(mod, "_get_cached_router_client", AsyncMock(return_value=client)):
+            with pytest.raises((ConnectionError, OSError)):
+                await mod._call_tool_with_router_client("http://localhost:9999/mcp/", tool, args)
+        assert client.call_tool.await_count == expected

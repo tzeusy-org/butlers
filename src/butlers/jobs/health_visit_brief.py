@@ -47,6 +47,8 @@ from butlers.core.state import decode_jsonb
 from butlers.core.tool_call_capture import get_current_switchboard_client
 from butlers.credential_store import resolve_owner_telegram_recipient
 from butlers.jobs.briefing import owner_briefing_zone
+from butlers.telegram_api import terminal_telegram_metadata
+from butlers.telegram_text import PartialDeliveryLatch
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +73,9 @@ DISCLAIMER = (
 DELIVERED = "delivered"
 SUPPRESSED = "suppressed"
 FAILED = "failed"
+PARTIAL = "partial_delivery"
+UNCERTAIN = "delivery_uncertain"
+_PARTIAL_BRIEFS = PartialDeliveryLatch()
 
 NotifyFn = Callable[[str], Awaitable[str]]
 
@@ -614,6 +619,10 @@ async def send_owner_brief(pool: asyncpg.Pool, message: str) -> str:
         await _record("failed", f"delivery_error:{type(exc).__name__}")
         return FAILED
     data = result.data
+    if terminal := terminal_telegram_metadata(data):
+        outcome = PARTIAL if terminal.get("partial_delivery") else UNCERTAIN
+        await _record("failed", "telegram_" + outcome)
+        return outcome
     if result.is_error or (isinstance(data, dict) and data.get("status") == "failed"):
         await _record("failed", "delivery_error")
         return FAILED
@@ -664,12 +673,45 @@ async def _run_locked(
     zone = await owner_briefing_zone(pool)
     result: dict[str, Any] = {"considered": 0, "sent": 0, "skipped": 0, "retry": 0}
 
+    # Finish existing terminal writes even after the appointment leaves the
+    # upcoming window. Keep the same row/digest, never synthesize delivery credit.
+    for event_id in _PARTIAL_BRIEFS.keys(pool):
+        await pool.execute(
+            "UPDATE visit_briefs SET digest = digest || $2::jsonb, "
+            "updated_at = now() WHERE event_id = $1",
+            event_id,
+            _PARTIAL_BRIEFS.metadata(pool, event_id),
+        )
+        _PARTIAL_BRIEFS.clear(pool, event_id)
+
     for appt in await pool.fetch(_UPCOMING_SQL, now, now + LEAD):
         result["considered"] += 1
         event_id: str = appt["event_id"]
         existing = await pool.fetchrow(
-            "SELECT delivered_at FROM visit_briefs WHERE event_id = $1", event_id
+            "SELECT delivered_at, digest FROM visit_briefs WHERE event_id = $1", event_id
         )
+        prior_digest = decode_jsonb(existing["digest"]) if existing is not None else {}
+        if _PARTIAL_BRIEFS.contains(pool, event_id) or (
+            isinstance(prior_digest, dict)
+            and (
+                prior_digest.get("partial_delivery") is True
+                or prior_digest.get("telegram_effect_uncertain") is True
+            )
+        ):
+            await pool.execute(
+                "UPDATE visit_briefs SET digest = digest || $2::jsonb, "
+                "updated_at = now() WHERE event_id = $1",
+                event_id,
+                _PARTIAL_BRIEFS.metadata(pool, event_id)
+                or {
+                    key: prior_digest[key]
+                    for key in ("partial_delivery", "telegram_effect_uncertain", "retryable")
+                    if key in prior_digest
+                },
+            )
+            _PARTIAL_BRIEFS.clear(pool, event_id)
+            result["skipped"] += 1
+            continue
         if existing is not None and existing["delivered_at"] is not None:
             # Already briefed; a reschedule only re-anchors the record.
             await pool.execute(
@@ -706,7 +748,21 @@ async def _run_locked(
             digest,
         )
         outcome = await send(message)
-        if outcome == DELIVERED:
+        if outcome in {PARTIAL, UNCERTAIN}:
+            terminal = {
+                "partial_delivery" if outcome == PARTIAL else "telegram_effect_uncertain": True,
+                "retryable": False,
+            }
+            _PARTIAL_BRIEFS.mark(pool, event_id, terminal)
+            await pool.execute(
+                "UPDATE visit_briefs SET digest = digest || "
+                "$2::jsonb, updated_at = now() WHERE event_id = $1",
+                event_id,
+                terminal,
+            )
+            _PARTIAL_BRIEFS.clear(pool, event_id)
+            result[outcome] = result.get(outcome, 0) + 1
+        elif outcome == DELIVERED:
             await pool.execute(
                 "UPDATE visit_briefs SET delivered_at = now(), updated_at = now() "
                 "WHERE event_id = $1",

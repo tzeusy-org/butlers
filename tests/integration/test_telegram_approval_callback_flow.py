@@ -966,3 +966,112 @@ async def test_tap_after_the_call_changed_executes_nothing(
     edits = [body for url, body in http_client.telegram_calls if url.endswith("editMessageText")]
     assert len(edits) == 1
     assert "changed since shown" in edits[0]["text"].lower()
+
+
+async def test_authenticated_approval_preserves_long_exact_args_digest_and_final_receipt(
+    approval_pool, monkeypatch
+):
+    """Actual callback approval executes the unchanged stored call before chunking."""
+    from butlers.modules.approvals.previews import args_digest
+    from butlers.modules.telegram import TelegramModule
+
+    telegram = TelegramModule()
+    telegram._db = SimpleNamespace(pool=approval_pool)
+    telegram._butler_name = "relationship"
+    payloads = []
+
+    async def post(url, *, json):
+        payloads.append(dict(json))
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={"ok": True, "result": {"message_id": len(payloads)}},
+        )
+
+    monkeypatch.setattr(telegram, "_get_client", lambda: SimpleNamespace(post=post))
+    monkeypatch.setattr(telegram, "_base_url", lambda: "https://telegram.test")
+    monkeypatch.setattr(
+        approvals_gate_module, "resolve_action_target_contact", AsyncMock(return_value=None)
+    )
+    source = "approved long text " * 600
+    args = {"chat_id": "42", "text": source}
+    gate = _make_gate_wrapper(
+        tool_name="telegram_send_message",
+        original_fn=telegram._send_message,
+        pool=approval_pool,
+        expiry_hours=72,
+        risk_tier=ApprovalRiskTier.MEDIUM,
+        rule_precedence=(),
+        butler_name="relationship",
+    )
+    parked = await gate(
+        **args,
+        _why="Explicit controlled outbound request.",
+        _evidence=[],
+        _blast_radius="contact",
+        _reversibility="compensable",
+    )
+    assert parked["status"] == "pending_approval" and payloads == []
+    action_id = UUID(parked["action_id"])
+    before = await approval_pool.fetchrow(
+        "SELECT tool_args, requested_at FROM pending_actions WHERE id=$1", action_id
+    )
+    pinned = args_digest(before["tool_args"])
+    module = ApprovalsModule()
+    await module.on_startup(config=None, db=approval_pool)
+
+    async def execute(tool_name, tool_args):
+        assert tool_name == "telegram_send_message" and tool_args == args
+        assert args_digest(tool_args) == pinned
+        return await telegram._send_message(**tool_args)
+
+    module.set_tool_executor(execute)
+    app = _protected_approvals_app(
+        approval_pool, mcp_mgr=_ExecutingMcpManager(_ExecutingButlerClient(module))
+    )
+    client = _CallbackHttpClient(app)
+    connector = TelegramBotConnector(
+        TelegramBotConnectorConfig(
+            switchboard_mcp_url="http://localhost:41100/sse",
+            endpoint_identity="telegram:bot:1",
+            telegram_token="test-token",
+            internal_api_url="http://dashboard-api:41200",
+            approval_callback_secret=_SECRET,
+            approval_callback_connector_token=_CALLBACK_CONNECTOR_TOKEN,
+        ),
+        db_pool=MagicMock(),
+        cursor_pool=MagicMock(),
+    )
+    connector._http_client = client
+    monkeypatch.setattr(
+        telegram_bot_module,
+        "resolve_owner_channel_via_definer",
+        AsyncMock(return_value=(SimpleNamespace(roles=["owner"]), True)),
+    )
+    token = mint_approval_callback_token(
+        action_id=action_id, verb="a", requested_at=before["requested_at"], secret=_SECRET
+    )
+    try:
+        assert await connector._maybe_handle_approval_callback(
+            {
+                "callback_query": {
+                    "id": "controlled-long-approve",
+                    "data": token,
+                    "from": {"id": 9001},
+                    "message": {"chat": {"id": 9001}, "message_id": 44},
+                }
+            }
+        )
+    finally:
+        await client.close()
+    async with approval_pool.acquire() as independent:
+        after = await independent.fetchrow(
+            "SELECT status, tool_args, execution_result FROM pending_actions WHERE id=$1", action_id
+        )
+    assert after["status"] == "executed"
+    assert after["tool_args"] == args and args_digest(after["tool_args"]) == pinned
+    assert "".join(p["text"] for p in payloads) == source
+    assert len(payloads) > 1
+    result = after["execution_result"]["result"]["result"]
+    assert result["message_id"] == len(payloads)
+    assert result["message_ids"] == list(range(1, len(payloads) + 1))

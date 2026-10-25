@@ -29,8 +29,12 @@ from butlers.core.approvals_policy import is_policy_quiet_now
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity, allowance_deferral, coerce_complexity_tier
 from butlers.core.owner_creation import owner_creation_transaction
+from butlers.telegram_api import terminal_telegram_metadata
+from butlers.telegram_text import PartialDeliveryLatch
 
 logger = logging.getLogger(__name__)
+_PARTIAL_DEFERRED = PartialDeliveryLatch()
+
 
 _DEFAULT_MAX_STAGGER_SECONDS = 15 * 60
 # Fallback timezone for cron evaluation when no per-schedule or owner timezone
@@ -1914,6 +1918,51 @@ async def _tick_deferred_notification_pass(
 
     import json as _json
 
+    from butlers.core.attention_ledger import record_attention_event
+
+    async def terminal_partial(group: list[dict[str, Any]], metadata: dict[str, bool]) -> None:
+        ids = [row["id"] for row in group]
+        for row in group:
+            _PARTIAL_DEFERRED.mark(pool, str(row["id"]), metadata)
+        await pool.execute(
+            "UPDATE deferred_notifications SET status = 'cancelled' "
+            "WHERE id = ANY($1::uuid[]) AND status = 'pending'",
+            ids,
+        )
+        for row in group:
+            _PARTIAL_DEFERRED.clear(pool, str(row["id"]))
+            await record_attention_event(
+                pool,
+                origin_butler=row["butler_name"],
+                source="notify",
+                outcome="failed",
+                channel=row["channel"],
+                intent="send",
+                priority=row["priority"],
+                notification_ref=str(row["id"]),
+                reason=(
+                    "telegram_partial_delivery"
+                    if metadata.get("partial_delivery")
+                    else "telegram_delivery_uncertain"
+                ),
+                metadata=metadata,
+            )
+
+    # Reconcile the exact old logical send even if its due/expiry window changed.
+    # No fresh-row grouping or provider call happens before this terminal write.
+    quarantined = _PARTIAL_DEFERRED.keys(pool)
+    if quarantined:
+        rows = await pool.fetch(
+            "SELECT id, butler_name, channel, priority FROM deferred_notifications "
+            "WHERE id = ANY($1::uuid[])",
+            quarantined,
+        )
+        for row in rows:
+            await terminal_partial([dict(row)], _PARTIAL_DEFERRED.metadata(pool, str(row["id"])))
+        # A deleted row cannot be re-admitted; release its process-local owner too.
+        for key in quarantined:
+            _PARTIAL_DEFERRED.clear(pool, key)
+
     # Expire stale pending notifications (> 24h past deliver_at)
     await pool.execute(
         """
@@ -1948,8 +1997,6 @@ async def _tick_deferred_notification_pass(
         )
         return 0
 
-    from butlers.core.attention_ledger import record_attention_event
-
     parsed_rows: list[dict[str, Any]] = []
     for row in due_rows:
         envelope = row["envelope"]
@@ -1966,7 +2013,10 @@ async def _tick_deferred_notification_pass(
             try:
                 # Deliver via the standard notify pipeline using the stored
                 # notify.v1 envelope, NOT via the LLM spawner.
-                await notify_fn(envelope)
+                outcome = await notify_fn(envelope)
+                if metadata := terminal_telegram_metadata(outcome):
+                    await terminal_partial(group, metadata)
+                    continue
                 await pool.execute(
                     """
                     UPDATE deferred_notifications
@@ -2000,7 +2050,10 @@ async def _tick_deferred_notification_pass(
         group_ids = [row["id"] for row in group]
         digest_envelope = _format_deferred_digest(group)
         try:
-            await notify_fn(digest_envelope)
+            outcome = await notify_fn(digest_envelope)
+            if metadata := terminal_telegram_metadata(outcome):
+                await terminal_partial(group, metadata)
+                continue
             await pool.execute(
                 """
                 UPDATE deferred_notifications

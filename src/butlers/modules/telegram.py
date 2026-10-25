@@ -10,9 +10,10 @@ Configured via [modules.telegram] with optional
 
 from __future__ import annotations
 
-import html
+import asyncio
 import logging
 import re
+import time
 from typing import Any
 
 import httpx
@@ -27,11 +28,15 @@ from butlers.core.channel_reactions import (
 from butlers.core.permissions import NOTIFY_PERMISSION, PermissionUnavailable, require_permission
 from butlers.modules.base import Module
 from butlers.telegram_api import (
+    TelegramPartialDeliveryError,
     TelegramReplyMarkupValidationError,
     edit_telegram_message_text,
     remove_telegram_inline_keyboard,
+    telegram_parse_rejection,
+    telegram_retry_after,
     validate_telegram_reply_markup,
 )
+from butlers.telegram_text import render_markdown, split_telegram_text, text_units
 
 logger = logging.getLogger(__name__)
 
@@ -127,47 +132,8 @@ class TelegramConfig(BaseModel):
 
 
 def _markdown_to_telegram_html(text: str) -> str:
-    """Convert common Markdown formatting to Telegram-compatible HTML.
-
-    Handles ``**bold**``, ``*italic*``, `` `code` ``, ``` ```code blocks``` ```,
-    and ``~~strikethrough~~``.  Other constructs (lists, links) pass through
-    as-is — Telegram renders them acceptably as plain text.
-
-    Uses HTML parse_mode rather than MarkdownV2 because HTML requires escaping
-    only ``<``, ``>``, ``&`` (handled by :func:`html.escape`), whereas
-    MarkdownV2 demands backslash-escaping of ``.-()!+=|{}~>#_`` which makes
-    LLM-generated text fragile.
-    """
-    placeholders: list[str] = []
-
-    def _save_code(match: re.Match[str]) -> str:
-        idx = len(placeholders)
-        placeholders.append(match.group(0))
-        return f"\x00PH{idx}\x00"
-
-    # Protect code blocks from further processing
-    text = re.sub(r"```(.*?)```", _save_code, text, flags=re.DOTALL)
-    text = re.sub(r"`([^`\n]+)`", _save_code, text)
-
-    # HTML-escape remaining text
-    text = html.escape(text)
-
-    # Markdown → HTML (order matters: bold before italic)
-    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
-    text = re.sub(r"(?<!\*)\*(?!\*)(?!\s)(.+?)(?<!\s)\*(?!\*)", r"<i>\1</i>", text)
-    text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text)
-
-    # Re-insert code placeholders with proper HTML tags
-    for idx, original in enumerate(placeholders):
-        if original.startswith("```"):
-            content = original[3:-3].lstrip("\n")
-            replacement = f"<pre>{html.escape(content)}</pre>"
-        else:
-            content = original[1:-1]
-            replacement = f"<code>{html.escape(content)}</code>"
-        text = text.replace(f"\x00PH{idx}\x00", replacement)
-
-    return text
+    """Compatibility entry point for the single shared safe renderer."""
+    return render_markdown(text)
 
 
 def _telegram_error_text(exc: httpx.HTTPStatusError) -> str:
@@ -198,6 +164,7 @@ class TelegramModule(Module):
         # Credentials cached at startup: user-scope from owner entity_info,
         # bot-scope from CredentialStore.
         self._resolved_credentials: dict[str, str] = {}
+        self._chat_locks: dict[str, tuple[asyncio.Lock, int]] = {}
 
     name = "telegram"
 
@@ -258,7 +225,7 @@ class TelegramModule(Module):
             """Send a Telegram message."""
             try:
                 return await module._send_message(chat_id, text, reply_markup=reply_markup)
-            except TelegramReplyMarkupValidationError as exc:
+            except (TelegramReplyMarkupValidationError, TelegramPartialDeliveryError) as exc:
                 return exc.to_tool_error()
 
         async def telegram_reply_to_message(
@@ -272,7 +239,7 @@ class TelegramModule(Module):
                 return await module._reply_to_message(
                     chat_id, message_id, text, reply_markup=reply_markup
                 )
-            except TelegramReplyMarkupValidationError as exc:
+            except (TelegramReplyMarkupValidationError, TelegramPartialDeliveryError) as exc:
                 return exc.to_tool_error()
 
         async def telegram_react_to_message(
@@ -401,7 +368,7 @@ class TelegramModule(Module):
 
         Prefers the switchboard audit pool (cross-butler, reads ``public``);
         falls back to the butler's own pool (which can also read ``public``).
-        ``None`` when neither is wired, which fails the gate open.
+        ``None`` when neither is wired; the send gate refuses before traffic.
         """
         if self._audit_pool is not None:
             return self._audit_pool
@@ -442,48 +409,54 @@ class TelegramModule(Module):
             await require_permission(
                 self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
             )
-            url = f"{self._base_url()}/sendMessage"
-            payload: dict[str, Any] = {
-                "chat_id": chat_id,
-                "text": _markdown_to_telegram_html(text),
-                "parse_mode": "HTML",
-            }
-            if render_links_inert:
-                # Explicit preformatted entities exclude URL/text_link entities.
-                # Telegram offsets/lengths count UTF-16 code units, not codepoints.
-                payload.pop("parse_mode")
-                payload["text"] = text
-                payload["entities"] = [
-                    {"type": "pre", "offset": 0, "length": len(text.encode("utf-16-le")) // 2}
-                ]
-                payload["link_preview_options"] = {"is_disabled": True}
-            if reply_to_message_id is not None:
-                payload["reply_to_message_id"] = reply_to_message_id
-            if validated_reply_markup is not None:
-                payload["reply_markup"] = validated_reply_markup
-            client = self._get_client()
-            resp = await client.post(url, json=payload)
-            response_status = resp.status_code
-            resp.raise_for_status()
+            chunks = split_telegram_text(text, inert=render_links_inert)
+            lock, users = self._chat_locks.get(chat_id, (asyncio.Lock(), 0))
+            self._chat_locks[chat_id] = (lock, users + 1)
+            message_ids: list[int] = []
             try:
-                data = resp.json()
-            except Exception as exc:
-                raise TelegramProviderResponseError(
-                    "telegram_provider_response: invalid JSON"
-                ) from exc
-            if not isinstance(data, dict) or data.get("ok") is not True:
-                raise TelegramProviderResponseError(
-                    "telegram_provider_response: provider did not confirm delivery",
-                    provider_rejected=isinstance(data, dict) and data.get("ok") is False,
-                )
-            result = data.get("result")
-            message_id = result.get("message_id") if isinstance(result, dict) else None
-            if not isinstance(message_id, int) or isinstance(message_id, bool) or message_id <= 0:
-                raise TelegramProviderResponseError(
-                    "telegram_provider_response: invalid message_id"
-                )
+                async with lock:
+                    deadline = time.monotonic() + 30
+                    for index, chunk in enumerate(chunks):
+                        payload: dict[str, Any] = {
+                            "chat_id": chat_id,
+                            "text": chunk.html,
+                            "parse_mode": "HTML",
+                        }
+                        if render_links_inert:
+                            payload.pop("parse_mode")
+                            payload["text"] = chunk.source
+                            payload["entities"] = [
+                                {"type": "pre", "offset": 0, "length": text_units(chunk.source)}
+                            ]
+                            payload["link_preview_options"] = {"is_disabled": True}
+                        if index == 0 and reply_to_message_id is not None:
+                            payload["reply_to_message_id"] = reply_to_message_id
+                        if index == len(chunks) - 1 and validated_reply_markup is not None:
+                            payload["reply_markup"] = validated_reply_markup
+                        data = await self._send_chunk(payload, chunk.source, deadline)
+                        message_ids.append(data["result"]["message_id"])
+            except (Exception, asyncio.CancelledError) as exc:
+                if message_ids:
+                    raise TelegramPartialDeliveryError(message_ids) from exc
+                raise
+            finally:
+                _, users = self._chat_locks[chat_id]
+                if users == 1:
+                    del self._chat_locks[chat_id]
+                else:
+                    self._chat_locks[chat_id] = (lock, users - 1)
+            message_id = message_ids[-1]
+            if len(message_ids) > 1:
+                data = {**data, "result": {**data["result"], "message_ids": message_ids}}
+
         except Exception as exc:
-            failure_category = _telegram_send_failure_category(exc)
+            failure_category = (
+                "telegram_partial_delivery"
+                if isinstance(exc, TelegramPartialDeliveryError)
+                else _telegram_send_failure_category(exc)
+            )
+            if isinstance(exc, TelegramPartialDeliveryError):
+                audit_summary["provider_message_ids"] = list(exc.message_ids)
             if isinstance(exc, PermissionUnavailable):
                 logger.error("Telegram sendMessage blocked: category=%s", failure_category)
                 # The guard already logged this refusal. An audit retry through the
@@ -506,6 +479,7 @@ class TelegramModule(Module):
             raise
 
         audit_summary["provider_message_id"] = message_id
+        audit_summary["provider_message_ids"] = message_ids
         await write_audit_entry(
             self._audit_pool,
             self._butler_name,
@@ -513,6 +487,50 @@ class TelegramModule(Module):
             audit_summary,
         )
         return data
+
+    async def _send_chunk(
+        self, payload: dict[str, Any], source: str, deadline: float
+    ) -> dict[str, Any]:
+        """One chunk: only proven rejection permits a bounded resend."""
+        client = self._get_client()
+        url = f"{self._base_url()}/sendMessage"
+        retries = 0
+        plain = False
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Telegram logical-send deadline expired.")
+            async with asyncio.timeout(remaining):
+                response = await client.post(url, json=payload)
+            if not plain and "parse_mode" in payload and telegram_parse_rejection(response):
+                payload = {k: v for k, v in payload.items() if k != "parse_mode"}
+                payload["text"] = source
+                plain = True
+                continue
+            delay = telegram_retry_after(response)
+            if delay is not None and retries < 2 and delay < deadline - time.monotonic():
+                retries += 1
+                await asyncio.sleep(delay)
+                continue
+            response.raise_for_status()
+            try:
+                data = response.json()
+            except Exception as exc:
+                raise TelegramProviderResponseError(
+                    "telegram_provider_response: invalid JSON"
+                ) from exc
+            if not isinstance(data, dict) or data.get("ok") is not True:
+                raise TelegramProviderResponseError(
+                    "telegram_provider_response: provider did not confirm delivery",
+                    provider_rejected=isinstance(data, dict) and data.get("ok") is False,
+                )
+            result = data.get("result")
+            message_id = result.get("message_id") if isinstance(result, dict) else None
+            if type(message_id) is not int or message_id <= 0:
+                raise TelegramProviderResponseError(
+                    "telegram_provider_response: invalid message_id"
+                )
+            return data
 
     async def _reply_to_message(
         self,
@@ -542,7 +560,7 @@ class TelegramModule(Module):
             self._base_url(),
             chat_id=chat_id,
             message_id=message_id,
-            text=_markdown_to_telegram_html(text),
+            text=text,
         )
 
     async def _edit_message_text_or_reject(

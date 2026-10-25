@@ -1844,3 +1844,31 @@ class TestWriteOutboundMessageInbox:
             notify_request=notify_request,
             delivered_at=datetime.now(UTC),
         )
+
+
+@pytest.mark.parametrize("terminal_field", ["partial_delivery", "telegram_effect_uncertain"])
+async def test_partial_legacy_delivery_never_uses_the_next_candidate(terminal_field):
+    from butlers.tools.switchboard.notification.deliver import deliver
+
+    pool = _make_mock_pool(registry_rows=[_registry_row("one"), _registry_row("two")])
+    route = AsyncMock(
+        return_value={
+            "result": {
+                "error": "telegram_partial_delivery",
+                terminal_field: True,
+                "retryable": False,
+            }
+        }
+    )
+    with (
+        patch("butlers.tools.switchboard.notification.deliver.route", route),
+        patch(
+            "butlers.tools.switchboard.notification.deliver._log_notification_best_effort",
+            AsyncMock(return_value="notification"),
+        ),
+    ):
+        result = await deliver(pool, channel="telegram", message="long", recipient="123")
+    assert result["status"] == "failed"
+    assert result[terminal_field] is True
+    assert result["retryable"] is False
+    assert route.await_count == 1

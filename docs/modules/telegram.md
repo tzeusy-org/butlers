@@ -49,17 +49,17 @@ When `webhook_url` is configured, the module calls the Telegram `setWebhook` API
 | `telegram_react_to_message` | React to a message with an arbitrary emoji |
 | `telegram_edit_message_text` | Edit the text of a message the bot already sent; a Telegram 400 returns `{"edited": false, "error_code": 400}` instead of raising |
 
-## Markdown Conversion
+## Text rendering and long replies
 
-Outbound message text is converted from Markdown to Telegram-compatible HTML before sending. The converter handles:
+Send and reply share one safe renderer and lossless source splitter. Each request conservatively holds at most 4000 UTF-16 source units, so the visible text stays below Telegram's limit. Splits prefer paragraphs, lines, sentences, then words. Fenced code reopens as a balanced `pre` block in each fragment; only an individually oversized code line is hard-split. The renderer supports bold, italic, strikethrough, inline/fenced code, bold headings and HTTP(S) Markdown anchors. Unknown HTML, other URL schemes, and malformed markers remain escaped/literal.
 
-- `**bold**` -> `<b>bold</b>`
-- `*italic*` -> `<i>italic</i>`
-- `` `code` `` -> `<code>code</code>`
-- ` ```code blocks``` ` -> `<pre>code blocks</pre>`
-- `~~strikethrough~~` -> `<s>strikethrough</s>`
+A per-chat lock keeps a logical send's chunks together. The first chunk carries reply threading; the final chunk carries its keyboard. Each chunk must have `ok=true` and a positive integer `message_id`. A multi-chunk response returns the last chunk's response with every accepted ID in `result.message_ids`; audits retain all IDs. Splitting happens after the existing exact-text approval and once-per-send permission check.
 
-HTML parse mode is used instead of MarkdownV2 because HTML only requires escaping `<`, `>`, `&`, whereas MarkdownV2 demands backslash-escaping of many special characters, making LLM-generated text fragile.
+An explicit HTTP 400 parse-entities rejection permits one resend of that chunk as its original raw source without parse mode. Other 400s are not retried. Actual rejected 429s allow at most two provider-declared retries inside a shared 30-second retry budget. Timeouts and unknown receipts do not authorize effect replay. If a later chunk fails, `TelegramPartialDeliveryError` carries only confirmed prefix IDs, with audit category `telegram_partial_delivery`. Messenger exposes `partial_delivery=true, retryable=false`. A first unknown effect is distinct `telegram_effect_uncertain=true`, without invented prefix IDs.
+
+Automatic deferred/Secrets/Insight/Health consumers record the failed tail in their existing terminal stores and do not resend the original text. A failed bookkeeping operation leaves a process-local exact-work fence; subsequent admissions settle that old work before fresh selection. After settlement, the existing stored terminal state prevents restart replay. The unresolved latch does not survive process death: there is no new durable chunk outbox or crash-atomic provider/database guarantee. Ordinary legacy failures and proven-not-attempted/read-only retries retain their existing behavior. Approval recovery retains its existing durable ambiguous-handoff fence.
+
+Edits cannot add messages. They clamp source conservatively to 4000 UTF-16 units including `… (truncated)`, use the same renderer and parse fallback, and retain the existing structured refusal for other 400s. Inert sends bypass rendering, split raw text with a per-chunk UTF-16 `pre` entity and keep previews disabled. Ordinary sends gain no `link_preview_options` override.
 
 ## Lifecycle Reactions
 

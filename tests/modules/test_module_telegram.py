@@ -671,3 +671,329 @@ class TestMarkdownToTelegramHtml:
 
     def test_empty_string(self) -> None:
         assert _markdown_to_telegram_html("") == ""
+
+
+async def test_registered_long_reply_keeps_order_receipts_and_keyboard(mock_mcp):
+    """The actual registered reply sends all source text and acknowledges the final chunk."""
+    module = TelegramModule()
+    await module.register_tools(mock_mcp, {}, None, "messenger")
+    payloads = []
+
+    async def post(url, *, json):
+        payloads.append(json)
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={"ok": True, "result": {"message_id": len(payloads)}},
+        )
+
+    markup = {"inline_keyboard": [[{"text": "Review", "callback_data": "review:1"}]]}
+    source = "x" * 10000
+    with (
+        patch.object(module, "_get_client", return_value=MagicMock(post=post)),
+        patch.object(module, "_base_url", return_value="https://telegram.test"),
+        patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock) as audit,
+    ):
+        result = await mock_mcp._registered_tools["telegram_reply_to_message"](
+            "123", 7, source, reply_markup=markup
+        )
+    assert len(payloads) == 3
+    assert "".join(p["text"] for p in payloads) == source
+    assert all(len(p["text"]) <= 4000 for p in payloads)
+    assert payloads[0]["reply_to_message_id"] == 7
+    assert all("reply_to_message_id" not in p for p in payloads[1:])
+    assert payloads[-1]["reply_markup"] == markup
+    assert all("reply_markup" not in p for p in payloads[:-1])
+    assert result["result"]["message_id"] == 3
+    assert result["result"]["message_ids"] == [1, 2, 3]
+    assert audit.await_args.args[3]["provider_message_ids"] == [1, 2, 3]
+
+
+def test_renderer_boundaries_are_balanced_and_source_is_never_lost():
+    from html.parser import HTMLParser
+
+    from butlers.telegram_text import render_markdown, split_telegram_text, text_units
+
+    class Balanced(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.stack = []
+            self.visible = ""
+
+        def handle_starttag(self, tag, attrs):
+            assert tag in {"b", "i", "s", "code", "pre", "a"}
+            self.stack.append(tag)
+            if tag == "a":
+                assert dict(attrs)["href"].startswith(("http://", "https://"))
+
+        def handle_endtag(self, tag):
+            assert self.stack.pop() == tag
+
+        def handle_data(self, data):
+            self.visible += data
+
+    corpus = [
+        "**a *b** c*",
+        "<unknown>& raw",
+        "## Plan\n[doc](https://example.test?a=1&b=2)",
+        "[unsafe](javascript:alert)",
+        "unclosed **bold",
+        "*" * 100,
+        "```\n" + ("print('line')\n" * 700) + "```",
+        "```\n" + "z" * 4500 + "```",
+        "😀" * 2100,
+        "paragraph\n\n" * 700,
+        "# Heading\n" + "word. " * 1000,
+        "x" * 4000,
+        "x" * 4001,
+        "```\n" + "z" * 3996 + "```",
+    ]
+    for source in corpus:
+        chunks = split_telegram_text(source)
+        assert "".join(chunk.source for chunk in chunks) == source
+        for chunk in chunks:
+            parser = Balanced()
+            parser.feed(chunk.html)
+            assert parser.stack == []
+            assert parser.visible
+            assert text_units(parser.visible) <= 4000
+    assert '<a href="https://example.test">doc</a>' in render_markdown(
+        "[doc](https://example.test)"
+    )
+    assert render_markdown("[unsafe](file:///private)") == "[unsafe](file:///private)"
+    assert render_markdown("# Plan") == "<b>Plan</b>"
+
+
+async def test_registered_partial_reply_is_terminal_and_audits_only_accepted_prefix(mock_mcp):
+    from butlers.telegram_api import TelegramPartialDeliveryError
+
+    module = TelegramModule()
+    await module.register_tools(mock_mcp, {}, None, "messenger")
+    calls = []
+
+    async def post(url, *, json):
+        calls.append(json)
+        return httpx.Response(
+            200 if len(calls) == 1 else 500,
+            request=httpx.Request("POST", url),
+            json={"ok": True, "result": {"message_id": 42}},
+        )
+
+    with (
+        patch.object(module, "_get_client", return_value=MagicMock(post=post)),
+        patch.object(module, "_base_url", return_value="https://telegram.test"),
+        patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock) as audit,
+    ):
+        with pytest.raises(TelegramPartialDeliveryError) as error:
+            await module._send_message("123", "x" * 9000)
+        assert error.value.message_ids == (42,)
+        assert error.value.retryable is False
+        calls.clear()
+        result = await mock_mcp._registered_tools["telegram_send_message"]("123", "y" * 9000)
+    assert result["partial_delivery"] is True
+    assert result["retryable"] is False
+    assert result["message_ids"] == [42]
+    assert len(calls) == 2
+    assert audit.await_args.kwargs["error"] == "telegram_partial_delivery"
+    assert audit.await_args.args[3]["provider_message_ids"] == [42]
+    assert module._chat_locks == {}
+
+
+async def test_parse_fallback_is_once_and_unrelated_errors_and_timeouts_never_replay():
+    module = TelegramModule()
+    for failure, expected in [("can't parse entities", 2), ("chat not found", 1)]:
+        calls = []
+
+        async def post(url, *, json, calls=calls, failure=failure):
+            calls.append(dict(json))
+            return httpx.Response(
+                400, request=httpx.Request("POST", url), json={"description": failure}
+            )
+
+        with (
+            patch.object(module, "_get_client", return_value=MagicMock(post=post)),
+            patch.object(module, "_base_url", return_value="https://telegram.test"),
+            patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock),
+        ):
+            with pytest.raises(httpx.HTTPStatusError):
+                await module._send_message("123", "**hello**")
+        assert len(calls) == expected
+        if expected == 2:
+            assert calls[1]["text"] == "**hello**"
+            assert "parse_mode" not in calls[1]
+    client = MagicMock(post=AsyncMock(side_effect=httpx.ReadTimeout("controlled")))
+    with (
+        patch.object(module, "_get_client", return_value=client),
+        patch.object(module, "_base_url", return_value="https://telegram.test"),
+        patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock),
+    ):
+        with pytest.raises(httpx.ReadTimeout):
+            await module._send_message("123", "hello")
+    assert client.post.await_count == 1
+
+
+async def test_rate_rejections_have_two_retries_and_one_thirty_second_budget():
+    module = TelegramModule()
+    for delay, expected in [(0, 3), (31, 1), (-1, 1), (True, 1), ("1", 1)]:
+        client = MagicMock(
+            post=AsyncMock(
+                return_value=httpx.Response(
+                    429,
+                    request=httpx.Request("POST", "https://telegram.test"),
+                    json={"parameters": {"retry_after": delay}},
+                )
+            )
+        )
+        with (
+            patch.object(module, "_get_client", return_value=client),
+            patch.object(module, "_base_url", return_value="https://telegram.test"),
+            patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock),
+        ):
+            with pytest.raises(httpx.HTTPStatusError):
+                await module._send_message("123", "hello")
+        assert client.post.await_count == expected
+
+
+async def test_long_inert_chunks_keep_raw_text_utf16_entities_and_preview_policy():
+    module = TelegramModule()
+    source = "😀 [link](https://example.test) " * 400
+    client = MagicMock(
+        post=AsyncMock(
+            return_value=httpx.Response(
+                200,
+                request=httpx.Request("POST", "https://telegram.test"),
+                json={"ok": True, "result": {"message_id": 1}},
+            )
+        )
+    )
+    with (
+        patch.object(module, "_get_client", return_value=client),
+        patch.object(module, "_base_url", return_value="https://telegram.test"),
+        patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock),
+    ):
+        await module._send_message("123", source, render_links_inert=True)
+        inert = [call.kwargs["json"] for call in client.post.await_args_list]
+        client.post.reset_mock()
+        await module._send_message("123", "[doc](https://example.test)")
+        ordinary = client.post.await_args.kwargs["json"]
+    assert "".join(p["text"] for p in inert) == source
+    assert len(inert) > 1
+    for payload in inert:
+        assert "parse_mode" not in payload
+        assert payload["entities"] == [
+            {"type": "pre", "offset": 0, "length": len(payload["text"].encode("utf-16-le")) // 2}
+        ]
+        assert payload["entities"][0]["length"] <= 4000
+        assert payload["link_preview_options"] == {"is_disabled": True}
+    assert "link_preview_options" not in ordinary
+    assert ordinary["text"] == '<a href="https://example.test">doc</a>'
+
+
+async def test_chat_lock_serializes_chunks_allows_other_chats_and_settles_cancel():
+    import asyncio
+
+    module = TelegramModule()
+    first = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    async def post(url, *, json):
+        calls.append((json["chat_id"], json["text"][0]))
+        if len(calls) == 1:
+            first.set()
+            await release.wait()
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={"ok": True, "result": {"message_id": len(calls)}},
+        )
+
+    with (
+        patch.object(module, "_get_client", return_value=MagicMock(post=post)),
+        patch.object(module, "_base_url", return_value="https://telegram.test"),
+        patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock),
+    ):
+        one = asyncio.create_task(module._send_message("one", "a" * 5000))
+        await first.wait()
+        two = asyncio.create_task(module._send_message("one", "b" * 5000))
+        await asyncio.sleep(0)  # Let the contender reach the real per-chat lock.
+        await module._send_message("two", "c")
+        assert calls == [("one", "a"), ("two", "c")]
+        two.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await two
+        release.set()
+        await one
+        await module._send_message("one", "d")
+    assert calls == [("one", "a"), ("two", "c"), ("one", "a"), ("one", "d")]
+    assert module._chat_locks == {}
+
+
+async def test_edit_clamps_source_and_parse_fallback_preserves_rejection_contract():
+    from butlers.telegram_text import TRUNCATED, text_units
+
+    module = TelegramModule()
+    calls = []
+
+    async def post(url, *, json):
+        calls.append(dict(json))
+        return httpx.Response(
+            400 if len(calls) == 1 else 200,
+            request=httpx.Request("POST", url),
+            json={"description": "can't parse entities", "ok": True, "result": {"message_id": 1}},
+        )
+
+    with (
+        patch.object(module, "_get_client", return_value=MagicMock(post=post)),
+        patch.object(module, "_base_url", return_value="https://telegram.test"),
+    ):
+        result = await module._edit_message_text_or_reject("123", 1, "x" * 5000)
+    assert result["edited"] is True
+    assert len(calls) == 2
+    assert all(text_units(p["text"]) <= 4000 and p["text"].endswith(TRUNCATED) for p in calls)
+    assert calls[0]["parse_mode"] == "HTML"
+    assert "parse_mode" not in calls[1]
+
+
+@pytest.mark.parametrize("terminal", ["deadline", "cancel"])
+async def test_logical_deadline_prevents_later_chunks_and_cancel_keeps_confirmed_prefix(terminal):
+    import asyncio
+    from types import SimpleNamespace
+
+    from butlers.telegram_api import TelegramPartialDeliveryError
+
+    module = TelegramModule()
+    calls = []
+    clock = [100.0]
+
+    async def post(url, *, json):
+        calls.append(dict(json))
+        if terminal == "cancel" and len(calls) == 2:
+            raise asyncio.CancelledError()
+        clock[0] += 31
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={"ok": True, "result": {"message_id": 41}},
+        )
+
+    with (
+        patch.object(module, "_get_client", return_value=MagicMock(post=post)),
+        patch.object(module, "_base_url", return_value="https://telegram.test"),
+        patch("butlers.modules.telegram.time", SimpleNamespace(monotonic=lambda: clock[0])),
+        patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock),
+    ):
+        # Cancellation after a confirmed first chunk differs from queued
+        # cancellation: it must carry the actual accepted prefix upstream.
+        if terminal == "cancel":
+            clock[0] = 100.0
+            # Keep time stable for this branch so it reaches the second POST.
+            with patch("butlers.modules.telegram.time", SimpleNamespace(monotonic=lambda: 100.0)):
+                with pytest.raises(TelegramPartialDeliveryError) as error:
+                    await module._send_message("123", "x" * 9000)
+        else:
+            with pytest.raises(TelegramPartialDeliveryError) as error:
+                await module._send_message("123", "x" * 9000)
+    assert error.value.message_ids == (41,)
+    assert len(calls) == (1 if terminal == "deadline" else 2)
+    assert module._chat_locks == {}

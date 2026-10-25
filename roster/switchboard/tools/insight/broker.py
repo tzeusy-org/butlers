@@ -35,10 +35,14 @@ from butlers.core.attention_ledger import (
 )
 from butlers.core.baselines import DEVIATION_CATEGORIES, validate_baseline_evidence
 from butlers.core.insight_premise import normalize_premise
+from butlers.telegram_api import terminal_telegram_metadata
+from butlers.telegram_text import PartialDeliveryLatch
 from butlers.tools.switchboard.insight.catchup import reconcile_catchup_task
 from butlers.tools.switchboard.insight.premises import check_premise
 
 logger = logging.getLogger(__name__)
+_PARTIAL_INSIGHTS = PartialDeliveryLatch()
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -2074,6 +2078,37 @@ async def delivery_cycle(
         result["skipped"] = True
         return result
 
+    async def settle_terminal_insights(ids: list[str], metadata: dict[str, bool]) -> None:
+        await pool.execute(
+            "UPDATE insight_candidates SET status = 'filtered', "
+            "metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb "
+            "WHERE id = ANY($1::uuid[])",
+            ids,
+            {"delivery_failure": True, **metadata},
+        )
+        for item in ids:
+            _PARTIAL_INSIGHTS.clear(pool, str(item))
+
+    quarantined = _PARTIAL_INSIGHTS.keys(pool)
+    for item in quarantined:
+        metadata = _PARTIAL_INSIGHTS.metadata(pool, item)
+        await settle_terminal_insights([item], metadata)
+        await record_attention_event(
+            pool,
+            origin_butler="switchboard",
+            source="insight",
+            outcome="failed",
+            channel="telegram",
+            intent="insight",
+            notification_ref=item,
+            reason=(
+                "telegram_partial_delivery"
+                if metadata.get("partial_delivery")
+                else "telegram_delivery_uncertain"
+            ),
+            metadata=metadata,
+        )
+
     # Step 2: Expire candidates. Runs unconditionally — expiry bookkeeping
     # must not stall just because this cycle is (or may be) suppressed.
     expired = await expire_candidates(pool, now=now)
@@ -2361,7 +2396,12 @@ async def delivery_cycle(
     failure_reason: str | None = None
     try:
         notify_result = await notify_fn(delivery_message, notify_metadata)
-        if isinstance(notify_result, dict) and notify_result.get("status") == "error":
+        if terminal_metadata := terminal_telegram_metadata(notify_result):
+            for item in selected_ids:
+                _PARTIAL_INSIGHTS.mark(pool, str(item), terminal_metadata)
+        if terminal_metadata or (
+            isinstance(notify_result, dict) and notify_result.get("status") == "error"
+        ):
             deliver_success = False
             failure_reason = f"delivery_error:{notify_result.get('error', 'unknown')}"
             logger.error(
@@ -2460,6 +2500,9 @@ async def delivery_cycle(
                 metadata=delivery_causes[str(_c["id"])],
             )
     else:
+        if terminal_metadata := terminal_telegram_metadata(notify_result):
+            await settle_terminal_insights(selected_ids, terminal_metadata)
+            result.update(terminal_metadata)
         # Delivery failed — increment attempt counter; filter candidates that have
         # reached the 3-consecutive-failure threshold
         await pool.execute(
@@ -2550,6 +2593,7 @@ async def delivery_cycle(
                     "failed_attempts": _r["delivery_attempt_count"],
                     "terminally_filtered": _terminally_filtered,
                     "retryable": not _terminally_filtered,
+                    **terminal_telegram_metadata(notify_result),
                 },
             )
 
