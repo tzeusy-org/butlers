@@ -17,13 +17,18 @@ day, and constant enough that the expected instants can be written down.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+import asyncpg
 import pytest
 
 from butlers.core.general_settings import save_general_settings
+from butlers.db import register_jsonb_codec
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.switchboard.insight.broker import create_insight_tables
 
 docker_available = shutil.which("docker") is not None
@@ -305,44 +310,56 @@ async def test_utc_owner_keeps_the_utc_window(provisioned_postgres_pool):
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def scan_db_url(postgres_container):
+    """Run full core and Finance migrations before entering the test's event loop."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "finance"],
+        schemas={"finance": "finance"},
+    )
+
+
+@pytest.fixture
+def migrated_scan_pool(scan_db_url):
+    """Keep public shared settings/Insight tables and real Finance tables distinct."""
+
+    @asynccontextmanager
+    async def _pool():
+        candidate = asyncpg.create_pool(
+            scan_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+        )
+        try:
+            pool = await candidate
+        except BaseException:
+            candidate.terminate()
+            raise
+        try:
+            yield pool
+        finally:
+            try:
+                async with asyncio.timeout(5):
+                    await pool.close()
+            except BaseException:
+                pool.terminate()
+                raise
+
+    return _pool
+
+
 async def _setup_scan(pool, *, timezone: str = OWNER_TZ) -> None:
     from butlers.core.owner_conditions import create_owner_conditions_table
 
-    await _setup(pool, timezone=timezone)
-    await pool.execute(
-        """
-        CREATE TABLE IF NOT EXISTS finance.bills (
-            id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            payee      TEXT NOT NULL,
-            amount     NUMERIC(14, 2) NOT NULL,
-            currency   CHAR(3) NOT NULL,
-            due_date   DATE NOT NULL,
-            frequency  TEXT,
-            status     TEXT NOT NULL DEFAULT 'pending',
-            paid_at    TIMESTAMPTZ
-        )
-        """
-    )
-    await pool.execute(
-        """
-        CREATE TABLE IF NOT EXISTS finance.subscriptions (
-            id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            service             TEXT NOT NULL,
-            amount              NUMERIC(14, 2) NOT NULL,
-            currency            CHAR(3) NOT NULL,
-            frequency           TEXT NOT NULL,
-            next_renewal        DATE,
-            status              TEXT NOT NULL DEFAULT 'active',
-            cancellation_url    TEXT,
-            notice_period_days  INTEGER,
-            cancel_by           DATE,
-            metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,
-            cancellation_url_source TEXT NOT NULL DEFAULT 'extracted'
-                                    CHECK (cancellation_url_source IN ('owner', 'extracted')),
-            status_source       TEXT NOT NULL DEFAULT 'extracted'
-                                    CHECK (status_source IN ('owner', 'extracted'))
-        )
-        """
+    # Domain tables come from real migrations; only deterministic test state is seeded here.
+    await save_general_settings(
+        pool,
+        timezone=timezone,
+        language="en-US",
+        date_format="YYYY-mm-dd",
+        time_format="HH:MM",
+        week_starts_on="Monday",
+        currency="USD",
     )
     await create_insight_tables(pool)
     await create_owner_conditions_table(pool)
@@ -384,9 +401,7 @@ def _budget_proposal(proposals: list[dict]) -> dict:
     return matches[0]
 
 
-async def test_insight_scan_dedup_key_uses_the_owners_iso_week(
-    provisioned_postgres_pool, monkeypatch
-):
+async def test_insight_scan_dedup_key_uses_the_owners_iso_week(migrated_scan_pool, monkeypatch):
     """The dedup token is derived from the owner's week, so it turns over on the owner's Monday.
 
     Anchored at 2026-07-05T17:00Z — Monday 01:00 SGT, ISO week 28 — while UTC is
@@ -395,7 +410,7 @@ async def test_insight_scan_dedup_key_uses_the_owners_iso_week(
     """
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_scan_pool() as pool:
         await _setup_scan(pool)
         proposals = _capture_proposals(monkeypatch)
         await _budget(pool, category="coffee", period="weekly", amount="50.00")
@@ -416,13 +431,11 @@ async def test_insight_scan_dedup_key_uses_the_owners_iso_week(
         assert cand["expires_at"] == datetime(2026, 7, 13, tzinfo=SGT)
 
 
-async def test_insight_scan_dedup_key_uses_the_owners_quarter(
-    provisioned_postgres_pool, monkeypatch
-):
+async def test_insight_scan_dedup_key_uses_the_owners_quarter(migrated_scan_pool, monkeypatch):
     """Anchored at 2026-06-30T17:00Z — Q3 for the owner, still Q2 for UTC."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_scan_pool() as pool:
         await _setup_scan(pool)
         proposals = _capture_proposals(monkeypatch)
         await _budget(pool, category="travel", period="quarterly", amount="1000.00")
@@ -440,7 +453,7 @@ async def test_insight_scan_dedup_key_uses_the_owners_quarter(
         assert cand["expires_at"] == datetime(2026, 10, 1, tzinfo=SGT)
 
 
-async def test_insight_scan_dedup_key_uses_the_owners_month(provisioned_postgres_pool, monkeypatch):
+async def test_insight_scan_dedup_key_uses_the_owners_month(migrated_scan_pool, monkeypatch):
     """The month-scoped identity comes from the owner's calendar too.
 
     One anchor governs every window the scan derives, so a key ending
@@ -449,7 +462,7 @@ async def test_insight_scan_dedup_key_uses_the_owners_month(provisioned_postgres
     """
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_scan_pool() as pool:
         await _setup_scan(pool)
         proposals = _capture_proposals(monkeypatch)
         await _budget(pool, category="rent", period="monthly", amount="100.00")
@@ -462,9 +475,7 @@ async def test_insight_scan_dedup_key_uses_the_owners_month(provisioned_postgres
         assert cand["expires_at"] == datetime(2026, 9, 1, tzinfo=SGT)
 
 
-async def test_daily_owner_windows_drive_status_alert_and_pressure(
-    provisioned_postgres_pool, monkeypatch
-):
+async def test_daily_owner_windows_drive_status_alert_and_pressure(migrated_scan_pool, monkeypatch):
     """Daily spending and both outputs use the same local day, including DST edges."""
     from datetime import date, time, timedelta
     from unittest.mock import AsyncMock
@@ -473,7 +484,7 @@ async def test_daily_owner_windows_drive_status_alert_and_pressure(
 
     publisher = AsyncMock()
     monkeypatch.setattr("butlers.core_tools._domain_events.publish_domain_event_once", publisher)
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_scan_pool() as pool:
         await _setup_scan(pool)
         for zone_name, day in (
             ("UTC", date(2026, 7, 6)),
@@ -481,7 +492,10 @@ async def test_daily_owner_windows_drive_status_alert_and_pressure(
             ("America/New_York", date(2026, 3, 8)),
             ("America/New_York", date(2026, 11, 1)),
         ):
-            await pool.execute("TRUNCATE finance.budgets, finance.transactions")
+            await pool.execute(
+                "TRUNCATE finance.budgets, finance.transactions, "
+                "finance.transaction_corrections, finance.claim_match_bindings"
+            )
             await save_general_settings(
                 pool,
                 timezone=zone_name,

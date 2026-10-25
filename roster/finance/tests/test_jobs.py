@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, patch
@@ -3285,6 +3286,60 @@ def _pipeline_product_mutant(module, name, mutation):
     return original, mutant
 
 
+def _pipeline_diagnostic(mutation, phase, status, exception="NONE"):
+    """Emit only closed technical labels, never exception values or task/row identities."""
+    if mutation not in {"field-protection", "prefilter-before-min", "boot-currentness"}:
+        raise ValueError("unsupported pipeline mutation label")
+    if phase not in {
+        "baseline",
+        "mutant_compile",
+        "counterfactual",
+        "module_restore",
+        "restored",
+        "cleanup",
+    }:
+        raise ValueError("unsupported pipeline phase label")
+    if status not in {"BEGIN", "END", "ERROR", "EXPECTED_VIOLATION"}:
+        raise ValueError("unsupported pipeline status label")
+    allowed_exceptions = {
+        "NONE",
+        "UNKNOWN",
+        "AssertionError",
+        "TypeError",
+        "RuntimeError",
+        "ValueError",
+        "TimeoutError",
+        "CancelledError",
+        "UniqueViolationError",
+        "UndefinedTableError",
+        "UndefinedColumnError",
+        "InsufficientPrivilegeError",
+        "ConnectionDoesNotExistError",
+        "_FieldProtectionViolation",
+        "_RenewalSelectionViolation",
+        "_BootAdmissionViolation",
+    }
+    if exception not in allowed_exceptions:
+        exception = "UNKNOWN"
+    print(
+        f"FINANCE_PIPELINE_DIAGNOSTIC mutation={mutation} phase={phase} "
+        f"status={status} exception={exception}",
+        flush=True,
+    )
+
+
+@contextmanager
+def _pipeline_phase(mutation, phase):
+    _pipeline_diagnostic(mutation, phase, "BEGIN")
+    try:
+        yield
+    except BaseException as exc:
+        _pipeline_diagnostic(mutation, phase, "ERROR", type(exc).__name__)
+        raise
+    else:
+        _pipeline_diagnostic(mutation, phase, "END")
+
+
 @pytest.mark.parametrize("mutation", ["field-protection", "prefilter-before-min"])
 async def test_registered_pipeline_real_sql_mutants_are_killed(
     registered_field_mutation_dbs, monkeypatch, mutation
@@ -3294,31 +3349,38 @@ async def test_registered_pipeline_real_sql_mutants_are_killed(
     from butlers.tools.finance import subscriptions
 
     baseline, counterfactual, restored = registered_field_mutation_dbs
-    with monkeypatch.context() as baseline_patch:
-        await test_registered_routed_fields_scan_and_durable_broker_pipeline(
-            baseline, baseline_patch, "current"
-        )
+    with _pipeline_phase(mutation, "baseline"):
+        with monkeypatch.context() as baseline_patch:
+            await test_registered_routed_fields_scan_and_durable_broker_pipeline(
+                baseline, baseline_patch, "current"
+            )
     module, name, expected = (
         (subscriptions, "merge_field_claims", _FieldProtectionViolation)
         if mutation == "field-protection"
         else (jobs, "run_insight_scan", _RenewalSelectionViolation)
     )
-    original, mutant = _pipeline_product_mutant(module, name, mutation)
+    with _pipeline_phase(mutation, "mutant_compile"):
+        original, mutant = _pipeline_product_mutant(module, name, mutation)
     token = _pipeline_mutation.set(mutation)
     try:
-        with monkeypatch.context() as patcher:
-            patcher.setattr(module, name, mutant)
-            with pytest.raises(expected):
-                await test_registered_routed_fields_scan_and_durable_broker_pipeline(
-                    counterfactual, patcher, "current"
-                )
+        with _pipeline_phase(mutation, "counterfactual"):
+            with monkeypatch.context() as patcher:
+                patcher.setattr(module, name, mutant)
+                with pytest.raises(expected):
+                    await test_registered_routed_fields_scan_and_durable_broker_pipeline(
+                        counterfactual, patcher, "current"
+                    )
+            _pipeline_diagnostic(mutation, "counterfactual", "EXPECTED_VIOLATION")
     finally:
-        _pipeline_mutation.reset(token)
-    assert getattr(module, name) is original
-    with monkeypatch.context() as restored_patch:
-        await test_registered_routed_fields_scan_and_durable_broker_pipeline(
-            restored, restored_patch, "current"
-        )
+        with _pipeline_phase(mutation, "cleanup"):
+            _pipeline_mutation.reset(token)
+    with _pipeline_phase(mutation, "module_restore"):
+        assert getattr(module, name) is original
+    with _pipeline_phase(mutation, "restored"):
+        with monkeypatch.context() as restored_patch:
+            await test_registered_routed_fields_scan_and_durable_broker_pipeline(
+                restored, restored_patch, "current"
+            )
 
 
 class _BootAdmissionViolation(AssertionError):
@@ -3338,45 +3400,53 @@ async def test_registered_pipeline_committed_boot_rotation_causal_carrier(
 
     from butlers.core import finance_warning_control as control
 
-    original = control.FinanceWarningControlOwner._receiver_publication_current
-    tree = ast.parse(textwrap.dedent(inspect.getsource(original)))
-    replaced = 0
-    for node in ast.walk(tree):
-        if isinstance(node, ast.BoolOp):
-            for index, value in enumerate(node.values):
-                if (
-                    isinstance(value, ast.Compare)
-                    and isinstance(value.left, ast.Subscript)
-                    and isinstance(value.left.value, ast.Name)
-                    and value.left.value.id == "row"
-                    and isinstance(value.left.slice, ast.Constant)
-                    and value.left.slice.value == "boot_current"
-                ):
-                    node.values[index] = ast.Constant(value=True)
-                    replaced += 1
-    assert replaced == 1
-    namespace = dict(control.__dict__)
-    exec(
-        compile(ast.fix_missing_locations(tree), inspect.getsourcefile(original), "exec"), namespace
-    )
-    mutant = namespace[original.__name__]
+    with _pipeline_phase("boot-currentness", "mutant_compile"):
+        original = control.FinanceWarningControlOwner._receiver_publication_current
+        tree = ast.parse(textwrap.dedent(inspect.getsource(original)))
+        replaced = 0
+        for node in ast.walk(tree):
+            if isinstance(node, ast.BoolOp):
+                for index, value in enumerate(node.values):
+                    if (
+                        isinstance(value, ast.Compare)
+                        and isinstance(value.left, ast.Subscript)
+                        and isinstance(value.left.value, ast.Name)
+                        and value.left.value.id == "row"
+                        and isinstance(value.left.slice, ast.Constant)
+                        and value.left.slice.value == "boot_current"
+                    ):
+                        node.values[index] = ast.Constant(value=True)
+                        replaced += 1
+        assert replaced == 1
+        namespace = dict(control.__dict__)
+        exec(
+            compile(ast.fix_missing_locations(tree), inspect.getsourcefile(original), "exec"),
+            namespace,
+        )
+        mutant = namespace[original.__name__]
     baseline, counterfactual, restored = registered_field_mutation_dbs
     token = _pipeline_boot_race.set(True)
     try:
-        with monkeypatch.context() as baseline_patch:
-            await test_registered_routed_fields_scan_and_durable_broker_pipeline(
-                baseline, baseline_patch, "current"
-            )
-        with monkeypatch.context() as mutant_patch:
-            mutant_patch.setattr(control.FinanceWarningControlOwner, original.__name__, mutant)
-            with pytest.raises(_BootAdmissionViolation):
+        with _pipeline_phase("boot-currentness", "baseline"):
+            with monkeypatch.context() as baseline_patch:
                 await test_registered_routed_fields_scan_and_durable_broker_pipeline(
-                    counterfactual, mutant_patch, "current"
+                    baseline, baseline_patch, "current"
                 )
-        assert control.FinanceWarningControlOwner._receiver_publication_current is original
-        with monkeypatch.context() as restored_patch:
-            await test_registered_routed_fields_scan_and_durable_broker_pipeline(
-                restored, restored_patch, "current"
-            )
+        with _pipeline_phase("boot-currentness", "counterfactual"):
+            with monkeypatch.context() as mutant_patch:
+                mutant_patch.setattr(control.FinanceWarningControlOwner, original.__name__, mutant)
+                with pytest.raises(_BootAdmissionViolation):
+                    await test_registered_routed_fields_scan_and_durable_broker_pipeline(
+                        counterfactual, mutant_patch, "current"
+                    )
+            _pipeline_diagnostic("boot-currentness", "counterfactual", "EXPECTED_VIOLATION")
+        with _pipeline_phase("boot-currentness", "module_restore"):
+            assert control.FinanceWarningControlOwner._receiver_publication_current is original
+        with _pipeline_phase("boot-currentness", "restored"):
+            with monkeypatch.context() as restored_patch:
+                await test_registered_routed_fields_scan_and_durable_broker_pipeline(
+                    restored, restored_patch, "current"
+                )
     finally:
-        _pipeline_boot_race.reset(token)
+        with _pipeline_phase("boot-currentness", "cleanup"):
+            _pipeline_boot_race.reset(token)
