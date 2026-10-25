@@ -70,7 +70,7 @@ def clamp_failure_category(value: str | None) -> str | None:
 
 
 class AuditTableNotAvailableError(Exception):
-    """Raised by ``append()`` when ``public.audit_log`` does not exist.
+    """Raised by ``append()`` when required audit storage cannot produce a receipt.
 
     Callers (HTTP endpoints) should propagate this as HTTP 503 so that
     missing-table conditions surface explicitly rather than silently failing.
@@ -99,8 +99,20 @@ def on_error_row(listener: Callable[[dict[str, Any]], None]) -> None:
         _error_row_listeners.append(listener)
 
 
+def _native_storage_unavailable(storage: Any) -> bool:
+    """Classify driver lifetime state, never InterfaceError message text."""
+    if isinstance(storage, asyncpg.Pool):
+        return storage.is_closing()
+    if isinstance(storage, asyncpg.pool.PoolConnectionProxy) and storage._con is None:
+        # A released proxy is an invalid caller reference, not closed storage.
+        return False
+    if isinstance(storage, asyncpg.Connection):
+        return storage.is_closed()
+    return False
+
+
 async def append(
-    pool: asyncpg.Pool | asyncpg.Connection,
+    pool: asyncpg.Pool | asyncpg.Connection | None,
     actor: str,
     action: str,
     *,
@@ -178,9 +190,12 @@ async def append(
     Raises
     ------
     AuditTableNotAvailableError
-        When ``public.audit_log`` does not exist (migration not yet applied).
+        When required storage is unavailable or cannot return an audit receipt.
         Callers should propagate this as HTTP 503.
     """
+    if pool is None or _native_storage_unavailable(pool):
+        raise AuditTableNotAvailableError("Required audit storage is not available")
+
     # Sanitize metadata into a fully JSON-safe dict (UUID/datetime -> str) via
     # a json.dumps/loads round-trip. Bind the resulting DICT directly (no
     # json.dumps, no ::jsonb cast): every asyncpg pool in this codebase
@@ -212,8 +227,8 @@ async def append(
         row_id: int = await pool.fetchval(
             "INSERT INTO public.audit_log "
             "(actor, action, target, note, ip, request_id, metadata, result, error, "
-            "failure_category) "
-            "VALUES ($1, $2, $3, $4, $5::inet, $6, $7, $8, $9, $10) "
+            "failure_category, writer_role) "
+            "VALUES ($1, $2, $3, $4, $5::inet, $6, $7, $8, $9, $10, CURRENT_USER) "
             "RETURNING id",
             actor,
             action,
@@ -226,10 +241,24 @@ async def append(
             error,
             safe_failure_category,
         )
-    except UndefinedTableError as exc:
+    except asyncpg.InterfaceError as exc:
+        # Native close can race the initial lifetime check. Other InterfaceError
+        # states (uninitialized pools, released proxies, query misuse) retain
+        # their programming-error identity instead of becoming HTTP 503.
+        if not _native_storage_unavailable(pool):
+            raise
+        raise AuditTableNotAvailableError("Required audit storage is not available") from exc
+    except (
+        UndefinedTableError,
+        asyncpg.UndefinedColumnError,
+        asyncpg.InsufficientPrivilegeError,
+        asyncpg.PostgresConnectionError,
+    ) as exc:
         raise AuditTableNotAvailableError(
-            "public.audit_log is not available — migration core_092 may not have run"
+            "Required public.audit_log storage is unavailable or not migrated"
         ) from exc
+    if type(row_id) is not int or row_id <= 0:
+        raise AuditTableNotAvailableError("Required audit storage returned no receipt")
     audit_log_appended_total.labels(action=action).inc()
 
     # Notify listeners (the dashboard's live "issue" event) whenever an

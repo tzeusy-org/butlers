@@ -42,6 +42,7 @@ from butlers.api.deps import get_db
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
+from tests.audit_helpers import clear_audit_log_for_test
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -74,7 +75,7 @@ async def pool(postgres_container, migrated_db_url: str):
     )
     await p.execute("TRUNCATE TABLE public.permissions CASCADE")
     await p.execute("TRUNCATE TABLE public.webhooks CASCADE")
-    await p.execute("TRUNCATE TABLE public.audit_log CASCADE")
+    await clear_audit_log_for_test(p)
     await p.execute(
         "INSERT INTO butler_registry (name, endpoint_url) VALUES ($1, $2) "
         "ON CONFLICT (name) DO NOTHING",

@@ -67,7 +67,7 @@ import asyncpg
 import httpx
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers import audit as audit_router
+from butlers.core import audit as audit_router
 
 logger = logging.getLogger(__name__)
 

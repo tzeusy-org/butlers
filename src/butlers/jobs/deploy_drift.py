@@ -82,7 +82,7 @@ import asyncpg
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import discover_butlers
-from butlers.api.routers import audit as audit_router
+from butlers.core import audit as audit_router
 from butlers.core.healing.tracking import create_or_join_attempt, update_attempt_status
 from butlers.core.infra_conditions import (
     ConditionTransition,

@@ -33,6 +33,7 @@ from butlers.modules.approvals.gate import _make_gate_wrapper
 from butlers.modules.approvals.module import ApprovalsModule
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import _DomainOwnerState
+from tests.audit_helpers import clear_audit_log_for_test
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -184,8 +185,9 @@ async def approval_pool(migrated_db_url: str):
         max_size=3,
         init=register_jsonb_codec,
     )
+    await clear_audit_log_for_test(pool)
     await pool.execute(
-        "TRUNCATE TABLE public.audit_log, autonomy_suggestions, autonomy_approval_history, "
+        "TRUNCATE TABLE autonomy_suggestions, autonomy_approval_history, "
         "approval_events, pending_actions, approval_rules CASCADE"
     )
     await pool.execute(
