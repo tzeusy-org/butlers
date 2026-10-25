@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 
 from butlers.modules.memory import consolidation as consolidation_module
+from butlers.testing.fake_pool import AsyncCtx
 
 # ---------------------------------------------------------------------------
 # Migration file path / loader
@@ -115,23 +116,10 @@ class TestCore119Structure:
 # ---------------------------------------------------------------------------
 
 
-class _FakeTransaction:
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
+_FakeTransaction = AsyncCtx
 
 
-class _FakeAcquire:
-    def __init__(self, conn: _FakeConn):
-        self._conn = conn
-
-    async def __aenter__(self):
-        return self._conn
-
-    async def __aexit__(self, *exc):
-        return False
+_FakeAcquire = AsyncCtx
 
 
 class _FakeConn:
@@ -146,7 +134,7 @@ class _FakeConn:
         return True
 
     def transaction(self):
-        return _FakeTransaction()
+        return _FakeTransaction(None)
 
     async def fetch(self, query, *args, **kwargs):
         if "last_consolidation_error=" in query:
