@@ -1693,8 +1693,11 @@ async def _run_chronicler_gap_interview_job(
 ) -> dict[str, Any]:
     """Ask Chronicler's day-close gap interview for yesterday (bu-idc5mx.4; zero LLM)."""
     from butlers.chronicler.gap_interview_job import run_gap_interview_job
+    from butlers.core.tool_call_capture import get_current_credential_store
 
-    return await run_gap_interview_job(pool, job_args)
+    store = get_current_credential_store()
+    store_kwargs = {"credential_store": store} if store is not None else {}
+    return await run_gap_interview_job(pool, job_args, **store_kwargs)
 
 
 async def _run_chronicler_project_sessions_job(
