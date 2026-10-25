@@ -3340,6 +3340,26 @@ def _pipeline_phase(mutation, phase):
         _pipeline_diagnostic(mutation, phase, "END")
 
 
+@contextmanager
+def _expect_dedicated_invariant(expected):
+    """Accept only the dedicated violation from a completed counterfactual exit."""
+
+    def only_expected(error):
+        if isinstance(error, BaseExceptionGroup):
+            return bool(error.exceptions) and all(
+                only_expected(child) for child in error.exceptions
+            )
+        return type(error) is expected
+
+    try:
+        yield
+    except BaseException as exc:
+        if not only_expected(exc):
+            raise
+    else:
+        pytest.fail("Counterfactual completed without the dedicated invariant")
+
+
 @pytest.mark.parametrize("mutation", ["field-protection", "prefilter-before-min"])
 async def test_registered_pipeline_real_sql_mutants_are_killed(
     registered_field_mutation_dbs, monkeypatch, mutation
@@ -3366,7 +3386,7 @@ async def test_registered_pipeline_real_sql_mutants_are_killed(
         with _pipeline_phase(mutation, "counterfactual"):
             with monkeypatch.context() as patcher:
                 patcher.setattr(module, name, mutant)
-                with pytest.raises(expected):
+                with _expect_dedicated_invariant(expected):
                     await test_registered_routed_fields_scan_and_durable_broker_pipeline(
                         counterfactual, patcher, "current"
                     )
@@ -3435,7 +3455,7 @@ async def test_registered_pipeline_committed_boot_rotation_causal_carrier(
         with _pipeline_phase("boot-currentness", "counterfactual"):
             with monkeypatch.context() as mutant_patch:
                 mutant_patch.setattr(control.FinanceWarningControlOwner, original.__name__, mutant)
-                with pytest.raises(_BootAdmissionViolation):
+                with _expect_dedicated_invariant(_BootAdmissionViolation):
                     await test_registered_routed_fields_scan_and_durable_broker_pipeline(
                         counterfactual, mutant_patch, "current"
                     )
@@ -3450,3 +3470,88 @@ async def test_registered_pipeline_committed_boot_rotation_causal_carrier(
     finally:
         with _pipeline_phase("boot-currentness", "cleanup"):
             _pipeline_boot_race.reset(token)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "field-direct",
+        "field-grouped",
+        "field-nested",
+        "renewal-direct",
+        "renewal-grouped",
+        "renewal-nested",
+        "boot-direct",
+        "boot-grouped",
+        "boot-nested",
+        "normal",
+        "distinct",
+        "mixed",
+        "wrong-family",
+        "timeout",
+        "cancel",
+        "setup",
+        "teardown",
+        "assertion",
+        "subclass",
+    ],
+)
+def test_dedicated_invariant_gate_rejects_unrelated_or_incomplete_failures(case):
+    """Software exception-shape controls; these never exercise or credit SQL mutations."""
+    import asyncio
+
+    family = case.split("-", 1)[0]
+    expected = {
+        "field": _FieldProtectionViolation,
+        "renewal": _RenewalSelectionViolation,
+        "boot": _BootAdmissionViolation,
+    }.get(family, _FieldProtectionViolation)
+    accepted = family in {"field", "renewal", "boot"}
+    error = None
+    if accepted:
+        error = expected()
+        if case.endswith("grouped"):
+            error = ExceptionGroup("controlled", [error, expected()])
+        elif case.endswith("nested"):
+            error = ExceptionGroup("controlled", [ExceptionGroup("controlled", [error])])
+    elif case == "distinct":
+        error = ValueError()
+    elif case == "mixed":
+        error = ExceptionGroup("controlled", [expected(), ValueError()])
+    elif case == "wrong-family":
+        error = _RenewalSelectionViolation()
+    elif case == "timeout":
+        error = TimeoutError()
+    elif case == "cancel":
+        error = asyncio.CancelledError()
+    elif case in {"setup", "teardown"}:
+        error = RuntimeError()
+    elif case == "assertion":
+        error = AssertionError()
+    elif case == "subclass":
+
+        class OtherViolation(expected):
+            pass
+
+        error = OtherViolation()
+    caught = None
+    try:
+        with _expect_dedicated_invariant(expected):
+            try:
+                if case == "setup":
+                    raise error
+                if case == "teardown":
+                    raise expected()
+                if error is not None:
+                    raise error
+            finally:
+                if case == "teardown":
+                    raise error
+    except BaseException as exc:
+        caught = exc
+    if accepted:
+        assert caught is None
+    elif case == "normal":
+        assert isinstance(caught, pytest.fail.Exception)
+    else:
+        assert caught is error
