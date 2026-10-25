@@ -9,22 +9,18 @@ column and backfilled by mem_008) may be cleared.
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
 
 from butlers.modules.memory import storage
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.records import row as _Row
 
 pytestmark = pytest.mark.unit
 
 _NOW = datetime.now(UTC)
-
-
-class _Row(dict):
-    def __getitem__(self, key):
-        return super().__getitem__(key)
 
 
 class _Connection:
@@ -48,18 +44,16 @@ class _Connection:
     async def execute(self, sql, *args):
         self.updates.append((sql, args))
 
-    @asynccontextmanager
-    async def transaction(self):
-        yield
+    def transaction(self):
+        return AsyncCtx(None)
 
 
 class _Pool:
     def __init__(self, connection):
         self._connection = connection
 
-    @asynccontextmanager
-    async def acquire(self):
-        yield self._connection
+    def acquire(self):
+        return AsyncCtx(self._connection)
 
 
 def _fact(*, confidence, validity="active", metadata):
