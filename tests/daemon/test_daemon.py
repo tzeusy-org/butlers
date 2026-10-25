@@ -315,6 +315,10 @@ def _make_runtime_config_row(
     return {
         "butler_name": butler_name,
         "core_groups": core_groups,
+        # Restricted fixture rows are legitimate, explicitly reasoned narrowing.
+        "core_groups_narrowing_reason": "Fixture group restriction"
+        if core_groups is not None
+        else None,
         "catalog_read_sensitivity": "normal",
         "max_concurrent": 3,
         "max_queued": 10,
@@ -344,9 +348,13 @@ def _patch_infra(*, core_groups: list[str] | None = None):
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
+    mock_conn.transaction = MagicMock()
+    mock_conn.transaction.return_value.__aenter__ = AsyncMock(return_value=None)
+    mock_conn.transaction.return_value.__aexit__ = AsyncMock(return_value=False)
 
     mock_pool = AsyncMock()
-    # Support `async with pool.acquire() as conn:` for _ensure_owner_entity
+    # Acquire and transaction are synchronous factories for async contexts.
+    mock_pool.acquire = MagicMock()
     mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
     mock_pool.fetchval = AsyncMock(return_value=None)
