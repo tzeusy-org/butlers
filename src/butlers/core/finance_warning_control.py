@@ -64,6 +64,14 @@ class _HeldCall:
     args: dict
     receiver: tuple
 
+    def pool_operations(self, pool):
+        # Keep the native pool as the authority identity. Only this already
+        # admitted fixed call receives an execution view; it grants no SQL
+        # surface to MCP arguments or to ordinary route callers.
+        if lookup_owner(pool) is not self.owner or self.owner.call is not self:
+            raise PermissionError("finance_warning_binding_refused")
+        return _OwnedPoolOperations(self.owner)
+
     def client_context(self, client):
         return self.owner.client_context(client)
 
@@ -80,6 +88,32 @@ class _HeldCall:
         ):
             raise PermissionError("finance_warning_binding_refused")
         return {HEADER: self.token}
+
+
+class _OwnedPoolOperations:
+    """Route DB phases settle native release without holding a lease over IO."""
+
+    def __init__(self, owner):
+        self._owner = owner
+
+    def acquire(self):
+        return self._owner.connection()
+
+    async def _call(self, method, *args, **kwargs):
+        async with self.acquire() as conn:
+            return await self._owner._child(getattr(conn, method)(*args, **kwargs), cancel=True)
+
+    async def execute(self, *args, **kwargs):
+        return await self._call("execute", *args, **kwargs)
+
+    async def fetch(self, *args, **kwargs):
+        return await self._call("fetch", *args, **kwargs)
+
+    async def fetchrow(self, *args, **kwargs):
+        return await self._call("fetchrow", *args, **kwargs)
+
+    async def fetchval(self, *args, **kwargs):
+        return await self._call("fetchval", *args, **kwargs)
 
 
 class FinanceWarningControlOwner:

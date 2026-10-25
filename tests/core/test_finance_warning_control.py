@@ -832,3 +832,190 @@ async def test_native_acquire_and_query_remain_owned_after_the_original_deadline
         await owner.close(1)
         await owner.settle()
         await pool.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["resolver", "confirmed-bookkeeping", "failed-bookkeeping"])
+@pytest.mark.parametrize("interrupt", ["deadline", "repeated-cancel"])
+async def test_actual_route_native_release_stays_owned_until_shutdown_settlement(
+    monkeypatch, phase, interrupt
+):
+    """The real route must retain implicit native pool release at every DB phase."""
+    import asyncio
+    import importlib
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import asyncpg
+
+    from butlers.config import load_config
+    from butlers.core import finance_warning_control as control
+    from butlers.daemon import ButlerDaemon
+    from butlers.db import Database
+    from butlers.lifecycle import run_shutdown
+
+    route = importlib.import_module("butlers.tools.switchboard.routing.route")
+    baseline_tasks = set(asyncio.all_tasks())
+    entered, release = asyncio.Event(), asyncio.Event()
+    pool = await asyncpg.create_pool(min_size=0, max_size=1)
+    holder = pool._holders[0]
+    events = []
+
+    class Connection:
+        _protocol = SimpleNamespace(queries_count=0, _is_cancelling=lambda: False)
+        closed = False
+
+        def _set_proxy(self, proxy):
+            self.proxy = proxy
+
+        def is_closed(self):
+            return self.closed
+
+        def _on_release(self):
+            pass
+
+        async def fetchrow(self, sql, *args, **kwargs):
+            events.append("receiver-query")
+            return None
+
+        async def execute(self, sql, *args, **kwargs):
+            assert "switchboard.routing_log" in sql or "switchboard.butler_registry" in sql
+            events.append("route-bookkeeping")
+            return "INSERT 0 1"
+
+        async def reset(self, **kwargs):
+            entered.set()
+            await release.wait()
+            events.append("native-release-settled")
+
+        async def close(self, **kwargs):
+            self.closed = True
+            events.append("physical-close")
+            holder._release_on_close()
+
+        def terminate(self):
+            self.closed = True
+            holder._release_on_close()
+
+    holder._con = Connection()
+    holder._generation = pool._generation
+    db = Database(db_name="software-only", schema="switchboard")
+    db.pool = pool
+    daemon = ButlerDaemon(_ROOT / "roster/switchboard", db=db)
+    daemon.config = load_config(daemon.config_dir)
+    daemon.config.shutdown_timeout_s = 0.02
+    daemon._disconnect_switchboard = AsyncMock()
+
+    class Catalog(dict):
+        classification_complete = True
+        generation_digest = "controlled-catalog"
+
+    catalog = Catalog({control.TOOL: SimpleNamespace(effect_class="read", owner_authority=False)})
+    daemon._tool_catalog = catalog
+    daemon._boot_instance_id, daemon._boot_epoch = UUID(int=7), 1
+    owner = control.FinanceWarningControlOwner(daemon, route_call=route.route)
+    daemon._finance_warning_control_owner = owner
+    registrations = {
+        "switchboard": SimpleNamespace(instance_id=UUID(int=7), epoch=1, catalog=catalog),
+        "finance": SimpleNamespace(instance_id=UUID(int=8), epoch=1, catalog=catalog),
+    }
+    owner.registrations = AsyncMock(
+        return_value=SimpleNamespace(registration=registrations.__getitem__)
+    )
+    decision = SimpleNamespace(
+        state="ready",
+        endpoint_url="http://controlled.invalid/mcp",
+        boot_instance_id=UUID(int=8),
+        boot_epoch=1,
+    )
+    if phase == "resolver":
+        # Real receiver resolver, real native fetch/release; only policy row decoding is controlled.
+        async def receiver_query(operation_pool, *args, **kwargs):
+            await operation_pool.fetchrow("SELECT controlled_receiver")
+            return decision
+
+        monkeypatch.setattr(route, "resolve_control_plane_target", receiver_query)
+    else:
+        monkeypatch.setattr(
+            route,
+            "_resolve_receiver_route_target",
+            AsyncMock(return_value=(decision, "ready", False)),
+        )
+
+    class Client:
+        def __init__(self, *args):
+            pass
+
+        async def __aenter__(self):
+            assert pool._queue.qsize() == 1  # no native lease crosses network/client IO
+            return self
+
+        async def __aexit__(self, *exc):
+            pass
+
+        async def call_tool(self, *args, **kwargs):
+            if phase == "failed-bookkeeping":
+                raise ConnectionError("synthetic peer refusal")
+            return SimpleNamespace(isError=False, structuredContent=True)
+
+    monkeypatch.setattr(route, "MCPClient", Client)
+    caller = None
+    try:
+        assert control.DEADLINE_SECONDS == 5.0
+        started = asyncio.get_running_loop().time()
+        caller = asyncio.create_task(
+            owner.read(
+                {
+                    "subject": str(UUID(int=1)),
+                    "selected_date": "2026-10-27",
+                    "epoch": 0,
+                }
+            )
+        )
+        await asyncio.wait_for(entered.wait(), 2)
+        assert not caller.done()  # even a confirmed peer cannot succeed before physical release
+        if interrupt == "repeated-cancel":
+            caller.cancel()
+            await asyncio.sleep(0)
+            caller.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(caller, 1)
+        else:
+            assert await asyncio.wait_for(caller, 6) is None
+            assert 4.8 <= asyncio.get_running_loop().time() - started < 6
+        await asyncio.sleep(0)
+        assert owner.tasks and owner.children and owner.quarantined
+        assert holder._in_use is not None and not holder._in_use.done()
+        before_readmission = list(events)
+        assert (
+            await owner.read(
+                {
+                    "subject": str(UUID(int=1)),
+                    "selected_date": "2026-10-27",
+                    "epoch": 0,
+                }
+            )
+            is None
+        )
+        assert events == before_readmission
+        assert not await owner.close(0)
+        shutdown_started = asyncio.get_running_loop().time()
+        with pytest.raises(TimeoutError, match="cleanup incomplete"):
+            await run_shutdown(daemon)
+        assert asyncio.get_running_loop().time() - shutdown_started < 0.5
+        assert not pool.is_closing() and "physical-close" not in events
+        release.set()
+        await asyncio.wait_for(daemon._chronicler_cleanup_task, 2)
+        assert not owner.tasks and not owner.children
+        assert events.count("physical-close") == 1
+        assert events.index("native-release-settled") < events.index("physical-close")
+    finally:
+        release.set()
+        if caller is not None:
+            await asyncio.gather(caller, return_exceptions=True)
+        await owner.settle()
+        if vars(daemon).get("_catalog_shutdown_task"):
+            await asyncio.gather(daemon._catalog_shutdown_task, return_exceptions=True)
+        await pool.close()
+        await asyncio.sleep(0)
+    assert not [task for task in asyncio.all_tasks() - baseline_tasks if not task.done()]

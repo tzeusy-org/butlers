@@ -360,6 +360,13 @@ async def route(
         folded into the standard ``input.context`` envelope field; it is never
         forwarded as a target MCP keyword or to an arbitrary target tool.
     """
+    operation_pool = pool
+    if finance_warning_call is not None:
+        from butlers.core.finance_warning_control import _HeldCall
+
+        if type(finance_warning_call) is not _HeldCall:
+            raise PermissionError("finance_warning_binding_refused")
+        operation_pool = finance_warning_call.pool_operations(pool)
     tracer = trace.get_tracer("butlers")
     telemetry = get_switchboard_telemetry()
     route_args, route_context = _extract_route_context(args)
@@ -438,7 +445,10 @@ async def route(
             # identities.
             if tool_name == "delegate_wake":
                 wake_error = await _verify_delegate_wake_callback(
-                    pool, route_args, source_butler=source_butler, target_butler=target_butler
+                    operation_pool,
+                    route_args,
+                    source_butler=source_butler,
+                    target_butler=target_butler,
                 )
                 if wake_error is not None:
                     span.set_status(trace.StatusCode.ERROR, wake_error)
@@ -454,7 +464,13 @@ async def route(
                         },
                     )
                     await _log_routing(
-                        pool, source_butler, target_butler, tool_name, False, 0, wake_error
+                        operation_pool,
+                        source_butler,
+                        target_butler,
+                        tool_name,
+                        False,
+                        0,
+                        wake_error,
                     )
                     return {
                         "error": wake_error,
@@ -469,7 +485,7 @@ async def route(
             transient_refusal = False
             if receiver_cutover or finance_warning_call is not None:
                 decision, resolve_error, transient_refusal = await _resolve_receiver_route_target(
-                    pool,
+                    operation_pool,
                     target_butler,
                     required_capability=required_capability,
                     route_contract_version=route_contract_version,
@@ -483,7 +499,7 @@ async def route(
                 # they cannot bypass an owner hold or an unverified receiver.
             else:
                 target_row, resolve_error = await resolve_routing_target(
-                    pool,
+                    operation_pool,
                     target_butler,
                     required_capability=required_capability,
                     route_contract_version=route_contract_version,
@@ -505,7 +521,7 @@ async def route(
                     },
                 )
                 await _log_routing(
-                    pool, source_butler, target_butler, tool_name, False, 0, error_msg
+                    operation_pool, source_butler, target_butler, tool_name, False, 0, error_msg
                 )
                 return {
                     "error": error_msg,
@@ -616,7 +632,13 @@ async def route(
                     },
                 )
                 await _log_routing(
-                    pool, source_butler, target_butler, tool_name, False, duration_ms, error_msg
+                    operation_pool,
+                    source_butler,
+                    target_butler,
+                    tool_name,
+                    False,
+                    duration_ms,
+                    error_msg,
                 )
                 return {
                     "error": error_msg,
@@ -643,7 +665,7 @@ async def route(
                 },
             )
             await _record_confirmed_route(
-                pool,
+                operation_pool,
                 source_butler=source_butler,
                 target_butler=target_butler,
                 tool_name=tool_name,

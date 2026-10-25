@@ -2746,3 +2746,355 @@ async def test_scan_filters_each_claim_before_selecting_date_and_binds_ledger_pr
             "selected_date": selected.isoformat(),
             "epoch": 0,
         }
+
+
+@pytest.fixture
+def registered_field_pipeline_db(postgres_container):
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
+
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "finance", "switchboard"],
+        schemas={"core": "finance", "finance": "finance", "switchboard": "switchboard"},
+    )
+
+
+@pytest.mark.parametrize("after_scan", ["current", "owner-confirmed", "unknown"])
+async def test_registered_routed_fields_scan_and_durable_broker_pipeline(
+    registered_field_pipeline_db, monkeypatch, after_scan
+):
+    """Real registered write + roles + migrated scan + stored broker/currentness consumer.
+
+    Only the external HTTP carrier is in-process and notify is a no-send sink.
+    No provenance attestor, owning writer, scan SQL, proposal or broker is patched.
+    Unrelated fleet publications use the existing closed catalog fixture; the
+    Finance publication is the actual registered Finance module catalog.
+    """
+    import asyncio
+    import importlib
+    from contextlib import AsyncExitStack
+    from types import SimpleNamespace
+    from uuid import UUID, uuid4
+
+    import asyncpg
+    import httpx
+    from fastmcp import Client, FastMCP
+    from fastmcp.client.transports import StreamableHttpTransport
+    from starlette.applications import Starlette
+
+    from butlers.config import load_config
+    from butlers.core import fact_authority
+    from butlers.core import finance_warning_control as control
+    from butlers.core import tool_call_capture as capture
+    from butlers.core.catalog_publication import CatalogPublisher
+    from butlers.core.catalog_reader import DOMAINS
+    from butlers.core.mcp_urls import runtime_mcp_url
+    from butlers.daemon import ButlerDaemon
+    from butlers.db import register_jsonb_codec
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+    from butlers.modules.registry import default_registry
+    from butlers.tools.switchboard.insight import broker
+    from butlers.tools.switchboard.registry.registry import (
+        expected_route_target,
+        record_probe,
+        register_boot,
+        register_butler,
+        reserve_probe,
+    )
+    from tests.contracts.test_catalog_publication import registered_catalog
+
+    route = importlib.import_module("butlers.tools.switchboard.routing.route")
+    from pathlib import Path
+
+    root = Path(__file__).parents[3]
+    url = registered_field_pipeline_db
+    baseline_tasks = set(asyncio.all_tasks())
+    owner = receiver = None
+    actual_http = httpx.AsyncClient
+    now = datetime.now(UTC)
+    today = now.date()
+    selected = today + timedelta(days=3)
+    baseline_date = today + timedelta(days=40)
+    async with AsyncExitStack() as stack:
+        admin = await stack.enter_async_context(
+            asyncpg.create_pool(
+                url,
+                min_size=1,
+                max_size=3,
+                init=register_jsonb_codec,
+                server_settings={"search_path": "finance,public"},
+            )
+        )
+
+        async def runtime(domain):
+            async def role(conn):
+                await conn.execute(f'SET ROLE "butler_{domain}_rw"')
+
+            return await stack.enter_async_context(
+                asyncpg.create_pool(
+                    url,
+                    min_size=1,
+                    max_size=3,
+                    init=register_jsonb_codec,
+                    setup=role,
+                    server_settings={"search_path": f"{domain},public"},
+                )
+            )
+
+        finance_pool, switchboard_pool = await runtime("finance"), await runtime("switchboard")
+        async with finance_pool.acquire() as conn:
+            assert await conn.fetchval("SELECT current_user") == "butler_finance_rw"
+        # Explicit privileged fixture configuration; no runtime grant or authority bypass.
+        await admin.execute(
+            "ALTER TABLE public.capability_catalog_control DISABLE ROW LEVEL SECURITY"
+        )
+        try:
+            await admin.execute("UPDATE public.capability_catalog_control SET enabled=true")
+        finally:
+            await admin.execute(
+                "ALTER TABLE public.capability_catalog_control ENABLE ROW LEVEL SECURITY"
+            )
+        await admin.execute(
+            "UPDATE public.approvals_policy SET quiet_start_hour=NULL, quiet_end_hour=NULL, "
+            "timezone='UTC' WHERE id=1"
+        )
+        await admin.execute(
+            "INSERT INTO finance.insight_settings(id,verbosity) VALUES(1,'normal') "
+            "ON CONFLICT(id) DO UPDATE SET verbosity='normal'"
+        )
+        entity = await admin.fetchval(
+            "INSERT INTO public.entities(canonical_name,entity_type,roles) "
+            "VALUES('Synthetic pipeline owner','person',ARRAY['owner']) RETURNING id"
+        )
+        finance = ButlerDaemon(root / "roster/finance", db=SimpleNamespace(pool=finance_pool))
+        finance.config = load_config(finance.config_dir)
+        finance.mcp = FastMCP("registered-finance-pipeline")
+        finance._modules = [default_registry()._modules["finance"]()]
+        finance._module_configs = finance._validate_module_configs()
+        await finance._register_module_tools()
+        await finance._finalize_tool_catalog()
+        publishers = {}
+        catalogs = {}
+        for domain in DOMAINS:
+            runtime_pool = (
+                finance_pool
+                if domain == "finance"
+                else (switchboard_pool if domain == "switchboard" else await runtime(domain))
+            )
+            catalog = (
+                finance._tool_catalog
+                if domain == "finance"
+                else (await registered_catalog(domain))[1]
+            )
+            publisher = CatalogPublisher(runtime_pool, domain)
+            await publisher.publish(catalog)
+            publishers[domain], catalogs[domain] = publisher, catalog
+        finance._boot_instance_id = publishers["finance"].instance
+        finance._boot_epoch = await register_boot(
+            finance_pool, "finance", finance._boot_instance_id
+        )
+        assert finance._boot_epoch == 1
+        source = SimpleNamespace(
+            db=SimpleNamespace(pool=switchboard_pool),
+            config=SimpleNamespace(name="switchboard"),
+            _tool_catalog=catalogs["switchboard"],
+            _boot_instance_id=publishers["switchboard"].instance,
+            _boot_epoch=1,
+        )
+        owner = control.FinanceWarningControlOwner(source, route_call=route.route)
+        source._finance_warning_control_owner = owner
+        receiver = control.FinanceWarningControlOwner(
+            finance, verifier_url="http://controlled.invalid" + control.VERIFY_PATH
+        )
+        finance._finance_warning_control_owner = receiver
+        expected = expected_route_target("finance")
+        assert expected is not None
+        await register_butler(
+            switchboard_pool, "finance", runtime_mcp_url(expected.port), modules=["finance"]
+        )
+        epoch, sequence = await reserve_probe(switchboard_pool, "finance")
+        assert epoch == finance._boot_epoch
+        assert await record_probe(
+            switchboard_pool,
+            "finance",
+            boot_epoch=epoch,
+            probe_sequence=sequence,
+            healthy=True,
+            compatible=True,
+            accepting=True,
+        )
+        app = ButlerDaemon._build_mcp_http_app(
+            finance.mcp, butler_name="finance", finance_warning_control_owner=receiver
+        )
+        raw = app._app._app
+        await stack.enter_async_context(raw.router.lifespan_context(raw))
+
+        def http_client(**kw):
+            return actual_http(transport=httpx.ASGITransport(app=app), **kw)
+
+        def routing_client(transport, **kw):
+            headers = getattr(transport, "headers", {})
+            return Client(
+                StreamableHttpTransport(
+                    runtime_mcp_url(expected.port),
+                    headers=headers,
+                    httpx_client_factory=http_client,
+                ),
+                **kw,
+            )
+
+        monkeypatch.setattr(route, "MCPClient", routing_client)
+        verifier_app = Starlette(routes=[owner.route()])
+        monkeypatch.setattr(
+            control.httpx,
+            "AsyncClient",
+            lambda **kw: actual_http(transport=httpx.ASGITransport(app=verifier_app), **kw),
+        )
+
+        async def routed_write(*, explicit_owner, renewal, amount, currency):
+            session = str(uuid4())
+            context = (
+                {"source_entity_id": str(entity), "request_context": {}}
+                if explicit_owner
+                else {
+                    "request_context": {
+                        "source_channel": "email",
+                        "source_endpoint_identity": "gmail:synthetic",
+                    }
+                }
+            )
+            capture.set_runtime_session_routing_context(session, context)
+            invocation = await fact_authority.register_invocation(
+                "finance", session, source_endpoint=None, routed=True
+            )
+            try:
+                # The actual HTTP middleware resolves this server-issued binding;
+                # a query/session locator or caller metadata is never substituted.
+                async def wire(endpoint, name, args):
+                    async with Client(
+                        StreamableHttpTransport(
+                            endpoint,
+                            headers={fact_authority.INVOCATION_HEADER: invocation},
+                            httpx_client_factory=http_client,
+                        )
+                    ) as peer:
+                        return (await peer.call_tool(name, args)).data
+
+                result = await route.route(
+                    switchboard_pool,
+                    "finance",
+                    "track_subscription",
+                    {
+                        "service": "Synthetic wire subscription",
+                        "amount": amount,
+                        "currency": currency,
+                        "frequency": "yearly",
+                        "next_renewal": renewal.isoformat(),
+                    },
+                    call_fn=wire,
+                )
+                assert "error" not in result
+                return result["result"]
+            finally:
+                fact_authority.settle_invocation(invocation)
+                capture.clear_runtime_session_routing_context(session)
+
+        try:
+            initial = await routed_write(
+                explicit_owner=True, renewal=baseline_date, amount=10, currency="USD"
+            )
+            # A real earlier expired extraction must not mask a later in-window date.
+            await routed_write(
+                explicit_owner=False, renewal=today - timedelta(days=1), amount=99, currency="EUR"
+            )
+            extracted = await routed_write(
+                explicit_owner=False, renewal=selected, amount=99, currency="EUR"
+            )
+            await routed_write(explicit_owner=False, renewal=selected, amount=99, currency="EUR")
+            assert extracted["id"] == initial["id"]
+            subject = UUID(extracted["id"])
+            # Independent acquisition observes committed owning fields, never a return DTO oracle.
+            async with admin.acquire() as observer:
+                row = await observer.fetchrow(
+                    "SELECT * FROM finance.subscriptions WHERE id=$1", subject
+                )
+                assert row["next_renewal"] == baseline_date
+                assert str(row["amount"]) == "10.00" and row["currency"] == "USD"
+                assert row["renewal_source"] == row["price_source"] == "owner"
+                assert {
+                    claim["field"] for claim in row["field_claims"] if not claim["resolved"]
+                } == {"renewal", "price"}
+                assert (
+                    len(row["field_claims"]) == 3
+                )  # two dates + one complete price; replay dedups
+            scan = await run_insight_scan(finance_pool, now=now)
+            assert scan["errors"] == 0
+            async with admin.acquire() as observer:
+                candidate = await observer.fetchrow(
+                    "SELECT * FROM finance.insight_candidates WHERE category='subscription-renewal'"
+                )
+                assert candidate is not None and candidate["status"] == "pending"
+                assert candidate["dedup_key"].endswith(selected.isoformat())
+                assert candidate["metadata"]["event_date"] == selected.isoformat()
+                assert candidate["expires_at"] == datetime.combine(
+                    selected + timedelta(days=1), datetime.min.time(), tzinfo=UTC
+                )
+                assert (
+                    await observer.fetchval(
+                        "SELECT count(*) FROM finance.obligation_ledger WHERE subscription_id=$1 AND period=$2",
+                        subject,
+                        selected,
+                    )
+                    == 1
+                )
+                premise = candidate["premise"]
+                assert premise["args"] == {
+                    "subject": str(subject),
+                    "selected_date": selected.isoformat(),
+                    "epoch": 0,
+                }
+            assert await owner.read(premise["args"]) is True
+            if after_scan == "owner-confirmed":
+                await routed_write(explicit_owner=True, renewal=selected, amount=99, currency="EUR")
+                async with admin.acquire() as observer:
+                    confirmed = await observer.fetchrow(
+                        "SELECT * FROM finance.subscriptions WHERE id=$1", subject
+                    )
+                    assert confirmed["next_renewal"] == selected and confirmed["date_epoch"] == 1
+                    assert all(claim["resolved"] for claim in confirmed["field_claims"])
+                assert await owner.read(premise["args"]) is False
+            elif after_scan == "unknown":
+                receiver.stop_admission()  # real closed receiver, not a fabricated false/SQL response
+                assert await owner.read(premise["args"]) is None
+            notify = AsyncMock(return_value={"status": "sent"})
+            result = await broker.delivery_cycle(
+                finance_pool, notify_fn=notify, now=now, finance_warning_reader=owner.read
+            )
+            async with admin.acquire() as observer:
+                stored = await observer.fetchrow(
+                    "SELECT status FROM finance.insight_candidates WHERE id=$1", candidate["id"]
+                )
+                if after_scan == "owner-confirmed":
+                    assert result["withdrawn"] == 1 and stored["status"] == "withdrawn"
+                    notify.assert_not_awaited()
+                else:
+                    assert stored["status"] == "delivered"
+                    assert result["delivered"] == [str(candidate["id"])]
+                    notify.assert_awaited_once()
+                    if after_scan == "unknown":
+                        assert "as of" in notify.call_args.args[0].lower()
+                        assert "unverified" in notify.call_args.args[0].lower()
+            # The already consumed/withdrawn durable row cannot send again on restart/replay.
+            await broker.delivery_cycle(
+                finance_pool, notify_fn=notify, now=now, finance_warning_reader=owner.read
+            )
+            assert notify.await_count == (0 if after_scan == "owner-confirmed" else 1)
+        finally:
+            await route._reset_router_client_cache_for_tests()
+            await owner.close(5)
+            await receiver.close(5)
+            await owner.settle()
+            await receiver.settle()
+    await asyncio.sleep(0)
+    assert not [task for task in asyncio.all_tasks() - baseline_tasks if not task.done()]
