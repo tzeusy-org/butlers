@@ -11,6 +11,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -173,7 +174,8 @@ async def pool(migrated_db_url):
         await p.execute(_DDL_FACTS_UNIQUE_INDEX)
         yield p
     finally:
-        await p.close(timeout=5)
+        async with asyncio.timeout(5):
+            await p.close()
 
 
 # ---------------------------------------------------------------------------

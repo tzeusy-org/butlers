@@ -2761,6 +2761,36 @@ def registered_field_pipeline_db(postgres_container):
     )
 
 
+async def _settle_pipeline_sse_watchers(baseline_tasks):
+    """Join only this fixture's idle native SSE process-lifetime watcher.
+
+    The in-process server has no Uvicorn shutdown signal. Native SSE starts
+    a per-loop watcher outside its session task group, so the fixture must
+    settle that exact new task after its clients and server have exited.
+    """
+    import asyncio
+
+    import sse_starlette.sse as sse
+
+    watchers = [
+        task
+        for task in asyncio.all_tasks() - baseline_tasks
+        if not task.done()
+        and getattr(task.get_coro(), "cr_code", None) is sse._shutdown_watcher.__code__
+    ]
+    if not watchers:
+        return
+    state = sse._get_shutdown_state()
+    assert not state.events, "SSE streams remain active after pipeline server settlement"
+    assert len(watchers) == 1, "Expected the native per-loop SSE shutdown watcher"
+    watcher = watchers[0]
+    watcher.cancel()
+    async with asyncio.timeout(5):
+        await asyncio.gather(watcher, return_exceptions=True)
+    assert watcher.done()
+    assert not state.watcher_started
+
+
 @pytest.mark.parametrize("after_scan", ["current", "owner-confirmed", "unknown"])
 async def test_registered_routed_fields_scan_and_durable_broker_pipeline(
     registered_field_pipeline_db, monkeypatch, after_scan
@@ -2819,6 +2849,9 @@ async def test_registered_routed_fields_scan_and_durable_broker_pipeline(
     selected = today + timedelta(days=3)
     baseline_date = today + timedelta(days=40)
     async with AsyncExitStack() as stack:
+        # Registered first, settled last: no client/session or native pool may
+        # still depend on the watcher when the fixture joins it.
+        stack.push_async_callback(_settle_pipeline_sse_watchers, baseline_tasks)
         admin = await stack.enter_async_context(
             asyncpg.create_pool(
                 url,
