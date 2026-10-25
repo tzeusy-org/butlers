@@ -58,14 +58,60 @@ def migrated_db_url(postgres_container) -> str:
         postgres_container,
         migration_db_name(),
         chains=["core"],
+        schemas={"core": "general"},
     )
 
 
 @pytest.fixture
-async def pool(migrated_db_url: str):
+def legacy_public_db_url(postgres_container) -> str:
+    """Model a fully current public-backed legacy DB, without runtime fallback.
+
+    Both definitions come from the real full core chain. core_050 upgrades
+    named butler schemas rather than public, so clone its current scheduler
+    table transparently for the explicit schema-less lifecycle/audit case.
+    This fresh administrative setup refuses data or unexpected dependencies.
+    """
+    from sqlalchemy import create_engine, text
+
+    from butlers.migrations import run_migrations
+
+    url = create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+    asyncio.run(run_migrations(url, chain="core", schema="general"))
+    engine = create_engine(url)
+    try:
+        with engine.begin() as connection:
+            assert not connection.execute(
+                text("SELECT EXISTS (SELECT 1 FROM public.scheduled_tasks)")
+            ).scalar_one()
+            connection.execute(text("DROP TABLE public.scheduled_tasks"))
+            connection.execute(
+                text(
+                    "CREATE TABLE public.scheduled_tasks "
+                    "(LIKE general.scheduled_tasks INCLUDING ALL)"
+                )
+            )
+    finally:
+        engine.dispose()
+    return url
+
+
+@pytest.fixture
+def scheduler_pool_source(request, migrated_db_url: str) -> tuple[str, str]:
+    """Keep the one explicit public-authority case separate from normal pools."""
+    if request.node.name == "test_legacy_lifecycle_recovery_derives_public_audit_identity":
+        return request.getfixturevalue("legacy_public_db_url"), "public"
+    return migrated_db_url, "general,public"
+
+
+@pytest.fixture
+async def pool(scheduler_pool_source: tuple[str, str]):
     """Return an asyncpg pool with scheduler table cleared between tests."""
     p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+        scheduler_pool_source[0],
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+        server_settings={"search_path": scheduler_pool_source[1]},
     )
     await p.execute("TRUNCATE TABLE scheduled_tasks CASCADE")
     yield p
@@ -220,7 +266,7 @@ async def test_sync_removal_does_not_re_disable_a_concurrently_recovered_default
             cron="0 3 * * *",
             job_name="memory_consolidation",
             owner_butler="legacy-general",
-            owner_schema="public",
+            owner_schema="general",
         )
 
     await sync_schedules(
@@ -249,7 +295,7 @@ async def test_sync_removal_does_not_re_disable_a_concurrently_recovered_default
         cron="0 3 * * *",
         job_name="memory_consolidation",
         owner_butler="legacy-general",
-        owner_schema="public",
+        owner_schema="general",
     )
     assert (
         await pool.fetchval(
@@ -617,7 +663,7 @@ async def test_module_default_recovery_attributes_same_name_across_butler_schema
         for schema in schemas:
             await admin.execute(f"CREATE SCHEMA {schema}")
             await admin.execute(
-                f"CREATE TABLE {schema}.scheduled_tasks (LIKE public.scheduled_tasks INCLUDING ALL)"
+                f"CREATE TABLE {schema}.scheduled_tasks (LIKE general.scheduled_tasks INCLUDING ALL)"
             )
             pools.append(
                 await asyncpg.create_pool(
