@@ -544,7 +544,10 @@ async def _startup_spawner(daemon: Any, state: StartupState) -> None:
 async def _startup_core_tools(daemon: Any, state: StartupState) -> None:
     """Create FastMCP and register core tools."""
     # 13. Create FastMCP and register core tools
+    from butlers.core.owner_creation import OwnerCreationMiddleware
+
     daemon.mcp = FastMCP(daemon.config.name)
+    daemon.mcp.add_middleware(OwnerCreationMiddleware(daemon.config.name))
     daemon._register_core_tools()
 
 

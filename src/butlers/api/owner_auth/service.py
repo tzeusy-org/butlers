@@ -108,6 +108,20 @@ class OwnerAuthService:
             "SELECT dashboard_auth.api($1, $2::jsonb)", action, values
         )
 
+    async def attention_call(
+        self, action: str, authority: Authority, csrf: str, **values: Any
+    ) -> dict:
+        """Closed cookie-only authoring surface, independent of D13 factor kinds."""
+        if action not in {"issue", "clause_create", "clause_revoke"}:
+            raise AuthError("INVALID_REQUEST")
+        if authority.method != "cookie" or not authority.session_digest:
+            raise AuthError("FORBIDDEN")
+        return await self._capability_call(
+            "SELECT dashboard_attention.api($1,$2::jsonb)",
+            action,
+            values | {"session_digest": authority.session_digest, "csrf_digest": _digest(csrf)},
+        )
+
     async def _stepup_call(self, action: str, **values: Any) -> dict:
         return await self._capability_call(
             "SELECT dashboard_stepup.ceremony($1, $2::jsonb)", action, values

@@ -119,6 +119,7 @@ class ChroniclerModule(Module):
 
     def __init__(self) -> None:
         self._db: Any = None
+        self._credential_store: Any = None
 
     name = "chronicler"
 
@@ -134,6 +135,8 @@ class ChroniclerModule(Module):
         blob_store: Any = None,
     ) -> None:
         self._db = db
+        # Borrow the daemon-selected store; its pools remain owned by the daemon.
+        self._credential_store = credential_store
         await self._register_default_schedules(db)
 
     async def _register_default_schedules(self, db: Any) -> None:
@@ -172,6 +175,7 @@ class ChroniclerModule(Module):
                 )
 
     async def on_shutdown(self) -> None:
+        self._credential_store = None
         self._db = None
 
     def _get_pool(self) -> Any:
@@ -449,7 +453,14 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         """
         from butlers.chronicler.gap_interview_job import ask_gap_interview
 
-        return await ask_gap_interview(module._get_pool(), date_label=date_label, timezone=timezone)
+        store_kwargs = (
+            {"credential_store": module._credential_store}
+            if module._credential_store is not None
+            else {}
+        )
+        return await ask_gap_interview(
+            module._get_pool(), date_label=date_label, timezone=timezone, **store_kwargs
+        )
 
     # ------------------------------------------------------------------
     # chronicler_resolve_gap_interview  — day-close gap interview ANSWER

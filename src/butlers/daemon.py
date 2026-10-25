@@ -1103,6 +1103,7 @@ class ButlerDaemon:
             max_token_budget=max_token_budget,
             switchboard_client=self.switchboard_client,
             approval_push_runtime=self._approval_push_runtime,
+            credential_store=self._credential_store,
             chronicler_continuation=vars(self).get("_chronicler_continuation"),
         )
 
