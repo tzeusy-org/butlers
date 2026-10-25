@@ -248,5 +248,4 @@ cron = "0 9 * * *"
 dispatch_mode = "job"
 job_name = "chronicler_gap_interview"
 
-# RFC 0015: report errors to QA; this module never dispatches locally.
-[modules.self_healing]
+# RFC 0015: core always registers the error relay; no module opt-in is required.

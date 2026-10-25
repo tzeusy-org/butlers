@@ -158,6 +158,7 @@ Continuity lookup SHALL be fail-open, not fail-closed: any exception during look
 
 Tasks that do not opt in (`continuity=false`, the default) SHALL see no behavior change: `tick()` SHALL NOT query `task_continuity` for them and SHALL NOT alter their admission's goal input.
 
+ID: REQ-core-scheduler-002
 Source: RFC 0038 D5, D6 and D7
 Scope: v1-mandatory
 
@@ -200,10 +201,10 @@ Scope: v1-mandatory
 - **THEN** `carry_forward` is NOT among them
 - **AND** this does not affect any other butler's tool registration
 
-#### Scenario: Legacy schema without the continuity column
-- **WHEN** `tick()` runs against a `scheduled_tasks` table that predates migration `core_229`
-- **THEN** the column probe treats `continuity` as absent
-- **AND** every task is treated as `continuity_enabled=False`, with no behavior change from before the ledger existed
+#### Scenario: Missing migrated continuity column is a storage fault
+- **WHEN** `tick()` runs against a `scheduled_tasks` table missing `continuity`
+- **THEN** the database error remains visible without a column probe or implicit opt-out
+- **AND** migrated rows with `continuity=false` still dispatch without a continuity block
 
 #### Scenario: The ledger is excluded from the nightly backup, by design
 - **WHEN** the nightly `pg_dump` backup runs

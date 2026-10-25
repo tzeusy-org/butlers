@@ -1,4 +1,4 @@
-"""All-roster declared RFC 0015 relay guidance reachability."""
+"""All-roster core QA guidance; retired module configuration and skill stay absent."""
 
 from __future__ import annotations
 
@@ -21,52 +21,33 @@ ROSTERS_WITH_BUTLER_TOML = tuple(
 
 def test_shared_skill_exists() -> None:
     skill_md = SHARED_SKILL / "SKILL.md"
-    assert skill_md.is_file(), f"Expected shared skill at {skill_md}"
-    content = skill_md.read_text(encoding="utf-8")
+    assert not skill_md.exists()
+    content = (ROSTER_DIR / "shared" / "BUTLER_SKILLS.md").read_text(encoding="utf-8")
     assert "report_error" in content
     assert "get_healing_status" in content
 
 
 def test_butler_skills_md_mentions_self_healing_conditionally() -> None:
     content = (ROSTER_DIR / "shared" / "BUTLER_SKILLS.md").read_text(encoding="utf-8")
-    assert "self-healing" in content
-    # Must not read as an unconditional/universal claim — the module is
-    # opt-in per butler, so the doc must say so (bu-402cy).
-    assert "Only present when the `self_healing` module is enabled" in content
+    assert "core QA relay" in content
+    assert "Only present when the `self_healing` module is enabled" not in content
 
 
 @pytest.mark.parametrize("butler", ROSTERS_WITH_BUTLER_TOML)
 def test_roster_enabling_self_healing_module_carries_the_skill(butler: str) -> None:
-    """If a roster opts into `[modules.self_healing]`, it must symlink the skill.
-
-    Currently no roster enables the module, so this is a forward guard: it
-    passes vacuously today and starts failing the moment a roster enables
-    `self_healing` without also wiring the shared skill in, which is exactly
-    the inconsistency this bead fixed for the doc claim.
-    """
+    """Every original roster keeps core relay access without a module/skill opt-in."""
     config = load_config(ROSTER_DIR / butler)
-    assert "self_healing" in config.modules
-
+    assert "self_healing" not in config.modules
     link = ROSTER_DIR / butler / ".agents" / "skills" / "self-healing"
-    assert link.is_symlink(), (
-        f"{butler} enables [modules.self_healing] but does not symlink the "
-        f"shared self-healing skill at {link}"
-    )
-    assert link.resolve() == SHARED_SKILL.resolve()
-    assert (link / "SKILL.md").is_file()
+    assert not link.is_symlink()
+    assert not link.exists()
 
 
 def test_every_roster_carries_self_healing_skill() -> None:
-    """Documents present-day ground truth (bu-402cy investigation).
-
-    No roster symlinks the shared self-healing skill today, because no
-    roster enables the module. If this starts failing, update
-    `roster/shared/BUTLER_SKILLS.md`'s self-healing entry and this test
-    together — the doc's conditional wording assumed this baseline.
-    """
+    """No roster carries the retired skill; the core tools remain universal."""
     linked = [
         butler
         for butler in ROSTERS_WITH_BUTLER_TOML
         if (ROSTER_DIR / butler / ".agents" / "skills" / "self-healing").exists()
     ]
-    assert linked == list(ROSTERS_WITH_BUTLER_TOML)
+    assert linked == []

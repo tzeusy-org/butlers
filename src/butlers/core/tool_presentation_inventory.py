@@ -3966,8 +3966,8 @@ TOOL_PRESENTATION_INVENTORY = (
         presentable=False,
     ),
     *_declare(
-        "self_healing",
-        "control",
+        "core",
+        "direct",
         "get_healing_status",
         effect_class="read",
         output_trust="untrusted",
@@ -3983,8 +3983,8 @@ TOOL_PRESENTATION_INVENTORY = (
         presentable=False,
     ),
     *_declare(
-        "self_healing",
-        "control",
+        "core",
+        "direct",
         "report_error",
         effect_class="record",
         output_trust="untrusted",

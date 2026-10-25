@@ -71,7 +71,7 @@ from butlers.api.models import (
 )
 from butlers.config import ConfigError, load_config
 from butlers.core.failover_classifier import is_provider_auth_marker
-from butlers.core.healing.dispatch import CIRCUIT_BREAKER_FAILURE_STATUSES
+from butlers.core.healing.constants import CIRCUIT_BREAKER_FAILURE_STATUSES
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.core.model_routing import get_breaker_states
 from butlers.core.qa.github_pr import GithubPrClient, get_pr_client, parse_pr_url
@@ -135,7 +135,7 @@ _QA_CASE_STATE_SQL: dict[str, str] = {
     # 'timeout'/'anonymization_failed' never carry a human-action marker check
     # (failed_with_human_action() only ever escalates 'unfixable'/'failed'), so
     # they always land here alongside marker-less 'failed' rows. Mirrors
-    # ``butlers.core.healing.dispatch.CIRCUIT_BREAKER_FAILURE_STATUSES`` and the
+    # ``butlers.core.healing.constants.CIRCUIT_BREAKER_FAILURE_STATUSES`` and the
     # precedence baked into ``butlers.core.qa.severity.state_of_case`` (bu-hmdqz.9).
     "failed": (
         f"a.status IN ('timeout', 'anonymization_failed') "
@@ -1219,7 +1219,7 @@ def _row_to_journal_event(row: Any) -> QaJournalEvent:
 
 # ---------------------------------------------------------------------------
 # Circuit breaker constants — shared by /summary and /circuit-breaker endpoints.
-# CIRCUIT_BREAKER_FAILURE_STATUSES is imported from butlers.core.healing.dispatch
+# CIRCUIT_BREAKER_FAILURE_STATUSES is imported from butlers.core.healing.constants
 # (the canonical definition). Threshold matches QaDispatchConfig default.
 # ---------------------------------------------------------------------------
 
@@ -1672,7 +1672,7 @@ async def get_qa_summary(
 
     # All-time PR stats for QA-originated attempts.
     # Uses the same failure statuses as CIRCUIT_BREAKER_FAILURE_STATUSES in
-    # butlers.core.healing.dispatch: 'failed', 'timeout', 'anonymization_failed'.
+    # butlers.core.healing.constants: 'failed', 'timeout', 'anonymization_failed'.
     # 'unfixable' is intentionally excluded — it indicates "no fix is possible"
     # (a design decision), not a dispatch failure.
     pr_stats_row = await pool.fetchrow(

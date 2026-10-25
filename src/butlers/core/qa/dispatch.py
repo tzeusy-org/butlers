@@ -4,7 +4,7 @@ Unified investigation lifecycle management for all QA-originated issues
 regardless of discovery source.  Creates worktrees, spawns LLM agents,
 monitors timeouts, creates anonymized PRs, and records outcomes.
 
-The dispatcher applies the same 10-gate sequence as the self-healing dispatcher
+The dispatcher applies the central investigation 10-gate sequence
 but with QA-specific wiring:
  - Gate 0: QA self-recursion barrier (suppress findings from QA self-healing/investigation sessions)
  - Gate 1: No-recursion guard (trigger_source == "healing" → skip)
@@ -64,7 +64,7 @@ import asyncpg
 
 from butlers.core.git_env import FETCH_COMMAND_ARGS, harden_git_env, isolated_git_env
 from butlers.core.healing.anonymizer import anonymize, sanitize_labels, validate_anonymized
-from butlers.core.healing.dispatch import (
+from butlers.core.healing.constants import (
     CIRCUIT_BREAKER_FAILURE_STATUSES,
     UNFIXABLE_SENTINEL_FILENAME,
 )

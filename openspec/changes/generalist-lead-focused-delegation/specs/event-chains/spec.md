@@ -3,12 +3,14 @@
 ### Requirement: Event Chain CRUD Tools
 The module SHALL register MCP tools: `event_chain_create`, `event_chain_update`, `event_chain_list`, `event_chain_delete`. Creating, updating, pausing, resuming, or deleting a chain changes schedules and, for `prompt` actions, creates obligations at runtime, so those tools SHALL be `administer` capabilities that are never granted to a depth-1 child; `event_chain_list` is a `read` capability. A chain SHALL record a capability set no larger than its creator's grant at creation, and a chain created under exposure SHALL admit every goal it fires exposed.
 
+ID: REQ-event-chains-005
 Source: RFC 0038 D4, D5, D8
 Scope: v1-mandatory
 
 #### Scenario: List chains by trigger type
 - **WHEN** `event_chain_list(trigger_type="calendar_event_end")` is called
-- **THEN** only chains with `trigger_type='calendar_event_end'` for this butler are returned
+- **THEN** only historical chains with `trigger_type='calendar_event_end'` for this butler are returned, without making the trigger writable or runnable
+- **AND** these historical rows remain inert; new or explicit updated calendar-end triggers are refused before storage access
 
 #### Scenario: Update chain actions
 - **WHEN** `event_chain_update(id, actions=[...])` is called
