@@ -83,6 +83,7 @@ async def dispatch_scheduled_task(
     max_token_budget: int | None = None,
     switchboard_client: Any | None = None,
     approval_push_runtime: Any | None = None,
+    chronicler_continuation: Any | None = None,
 ) -> Any:
     """Dispatch one scheduled task via deterministic jobs or prompt fallback.
 
@@ -167,7 +168,17 @@ async def dispatch_scheduled_task(
                 butler_name=butler_name,
                 spawner=spawner,
             ):
-                return await handler(pool, job_args)
+                result = await handler(pool, job_args)
+                if chronicler_continuation is not None and butler_name == "chronicler":
+                    # Fixed source registry identity, not a job_args callback.
+                    original = get_deterministic_schedule_job_registry().get("chronicler", {})
+                    eligible = (
+                        resolved_job_name.startswith("chronicler_project_")
+                        or resolved_job_name == "chronicler_rollup_daily"
+                    )
+                    if eligible and original.get(resolved_job_name) is handler:
+                        chronicler_continuation.after_job(resolved_job_name, result)
+                return result
         finally:
             reset_current_codex_auth_authority(_codex_authority_token)
             reset_current_approval_push_runtime(_push_token)
@@ -177,6 +188,8 @@ async def dispatch_scheduled_task(
         raise RuntimeError("Scheduler dispatch requires an initialized spawner")
     if prompt is None or not prompt.strip():
         raise RuntimeError("Prompt-mode scheduler dispatch requires a non-empty prompt payload")
+    if chronicler_continuation is not None and trigger_source == "schedule:chronicler_day_close":
+        chronicler_continuation.day_close_ran = True
     return await spawner.trigger(
         prompt=prompt,
         trigger_source=trigger_source,
@@ -229,6 +242,7 @@ async def scheduler_loop(
     completion_hooks: dict[str, Any] | None = None,
     get_eligibility_pool: Callable[[], Any] | None = None,
     default_timezone: str = "UTC",
+    chronicler_continuation: Any | None = None,
 ) -> None:
     """Periodically call tick() to dispatch due scheduled tasks.
 
@@ -348,6 +362,8 @@ async def scheduler_loop(
         while True:
             await asyncio.sleep(interval)
             eligibility_pool = get_eligibility_pool() if get_eligibility_pool is not None else None
+            if chronicler_continuation is not None:
+                chronicler_continuation.begin_tick()
             tick_task = asyncio.create_task(
                 tick_fn(
                     pool,
@@ -384,6 +400,12 @@ async def scheduler_loop(
                     "Scheduler loop: tick() raised an exception for butler %s; continuing",
                     butler_name,
                 )
+            if chronicler_continuation is not None:
+                try:
+                    # Durable discovery also recovers a missed postcommit hook.
+                    await chronicler_continuation.resume_once()
+                except Exception:
+                    logger.exception("Chronicler continuation deferred after tick")
             await _sweep_domain_event_reactions(pool, butler_name)
     except asyncio.CancelledError:
         logger.info("Scheduler loop cancelled for butler %s", butler_name)

@@ -504,8 +504,8 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         Fetches all non-tombstoned episodes and events for *date_label*
         (``YYYY-MM-DD`` in *timezone*), then applies:
 
-        1. **Sensitive masking** — ``canonical_privacy='sensitive'`` rows
-           are excluded from the bundle unconditionally.
+        1. **Sensitive masking** — sensitive payloads are excluded; only
+           bounded time/category envelopes survive. Restricted rows are absent.
         2. **Field stripping** — low-signal payload keys are removed.
         3. **Per-source roll-up** — sources emitting > *rollup_threshold*
            items are collapsed to a count/time-range/subjects summary.
@@ -535,7 +535,11 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         from datetime import UTC, datetime
         from zoneinfo import ZoneInfo
 
-        from butlers.chronicler.bundle_assembler import BundleConfig, assemble_day_close_bundle
+        from butlers.chronicler.bundle_assembler import (
+            BundleConfig,
+            assemble_day_close_bundle,
+            partition_day_close_rows,
+        )
         from butlers.chronicler.reconciliation import reconcile_day
         from butlers.chronicler.storage import list_episodes, list_point_events
 
@@ -571,12 +575,17 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         episode_dicts = [asdict(ep) for ep in episodes]
         event_dicts = [asdict(ev) for ev in events]
 
+        # Partition before reconciliation can select titles, merge source refs,
+        # or derive contradictions. Private rows cannot affect normal narration.
+        normal_episodes, sensitive_episodes = partition_day_close_rows(episode_dicts)
+        normal_events, sensitive_events = partition_day_close_rows(event_dicts)
+
         # Deterministic reconciliation core (tasks.md §7): merge duplicate
         # same-lane activity candidates and drop calendar intents contradicted
         # by activity evidence, BEFORE the LLM ever sees this bundle. Aggregate
         # correctness (what counts, what's dropped) is decided entirely here;
         # the day-close LLM only narrates over the result.
-        reconciled = reconcile_day(episode_dicts)
+        reconciled = reconcile_day(normal_episodes)
         reconciled_episodes = [
             *reconciled.activities,
             *reconciled.kept_intents,
@@ -592,8 +601,8 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         )
         bundle_input = assemble_day_close_bundle(
             date_label=date_label,
-            episodes=reconciled_episodes,
-            events=event_dicts,
+            episodes=[*reconciled_episodes, *sensitive_episodes],
+            events=[*normal_events, *sensitive_events],
             timezone=timezone,
             config=cfg,
             dropped_intents=dropped_intents_payload,
