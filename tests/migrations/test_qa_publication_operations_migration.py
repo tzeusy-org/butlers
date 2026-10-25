@@ -9,7 +9,6 @@ on each run, so the durable fence is forced row security keyed to the QA role.
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import shutil
 import uuid
@@ -22,13 +21,15 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError
 
 from alembic import command
-from butlers.migrations import _build_alembic_config, run_migrations
+from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import (
     create_migrated_test_db,
     create_migration_db,
     init_db_sql_for_dbapi,
     migration_bootstrap_db_url,
     migration_db_name,
+    run_test_alembic_command,
+    stage_test_migration_history,
 )
 
 pytestmark = [
@@ -264,8 +265,12 @@ def test_core_266_shared_table_survives_all_but_the_last_schema_downgrade(
 ) -> None:
     """The core chain runs once per butler schema over the shared public table (K1)."""
     url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(url, chain="core", schema="general"))
-    asyncio.run(run_migrations(url, chain="core", schema="switchboard"))
+    # Historical shared-DDL round trip stays before the core_281 cutover;
+    # all original downgrade targets, seeds and observers remain real.
+    stage_test_migration_history(postgres_container, url, plans=(("core", "general", "core_280"),))
+    stage_test_migration_history(
+        postgres_container, url, plans=(("core", "switchboard", "core_280"),)
+    )
     general = _build_alembic_config(url, chains=["core"], target_schema="general")
     switchboard = _build_alembic_config(url, chains=["core"], target_schema="switchboard")
     attempt = uuid.uuid4()
@@ -289,7 +294,7 @@ def test_core_266_shared_table_survives_all_but_the_last_schema_downgrade(
 
         # The first schema to leave core_266 keeps the shared table: the other schema's head
         # code still queries it, and the unresolved hold is not what stops this downgrade.
-        command.downgrade(general, "core_265")
+        run_test_alembic_command(postgres_container, command.downgrade, general, "core_265")
         with engine.connect() as conn:
             assert conn.exec_driver_sql(f"SELECT to_regclass('{_TABLE}')").scalar() is not None
             held = conn.exec_driver_sql(
@@ -299,19 +304,19 @@ def test_core_266_shared_table_survives_all_but_the_last_schema_downgrade(
 
         # The last schema runs the hold check, then drops the table.
         with pytest.raises(DBAPIError, match="unresolved publication hold"):
-            command.downgrade(switchboard, "core_265")
+            run_test_alembic_command(postgres_container, command.downgrade, switchboard, "core_265")
         _update_as_qa(
             url,
             f"UPDATE {_TABLE} SET stage = 'reconciled', stage_order = 4, "
             f"reconciliation = 'resource_absent', reconciled_at = now() "
             f"WHERE attempt_id = '{attempt}'",
         )
-        command.downgrade(switchboard, "core_265")
+        run_test_alembic_command(postgres_container, command.downgrade, switchboard, "core_265")
         with engine.connect() as conn:
             assert conn.exec_driver_sql(f"SELECT to_regclass('{_TABLE}')").scalar() is None
 
-        command.upgrade(general, "core@head")
-        command.upgrade(switchboard, "core@head")
+        run_test_alembic_command(postgres_container, command.upgrade, general, "core_280")
+        run_test_alembic_command(postgres_container, command.upgrade, switchboard, "core_280")
         with engine.connect() as conn:
             assert conn.exec_driver_sql(f"SELECT to_regclass('{_TABLE}')").scalar() is not None
     finally:

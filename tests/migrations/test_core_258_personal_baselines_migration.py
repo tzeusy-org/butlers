@@ -8,16 +8,24 @@ runtime-role grant stays inside the owning schema.
 
 from __future__ import annotations
 
-import asyncio
 import shutil
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
 from alembic import command
-from butlers.migrations import _build_alembic_config, run_migrations
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.migrations import _build_alembic_config
+from butlers.testing.migration import (
+    bind_historical_test_environment,
+    create_migration_db,
+    migrate_test_database,
+    migration_db_name,
+    run_historical_test_alembic_command,
+    run_test_alembic_command,
+    stage_test_migration_history,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -37,10 +45,10 @@ def _scalar(db_url: str, statement: str):
 def test_core_258_creates_per_schema_tables_and_round_trips(postgres_container) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, ["core"])
-    command.upgrade(config, "core_257")
-    command.upgrade(config, "core_258")
-    asyncio.run(run_migrations(db_url, chain="core", schema="health"))
-    asyncio.run(run_migrations(db_url, chain="core", schema="general"))
+    run_test_alembic_command(postgres_container, command.upgrade, config, "core_257")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "core_258")
+    migrate_test_database(postgres_container, db_url, plans=(("core", "health", None),))
+    migrate_test_database(postgres_container, db_url, plans=(("core", "general", None),))
 
     for table in ("metric_baselines", "metric_deviation_episodes"):
         assert _scalar(db_url, f"SELECT to_regclass('health.{table}') IS NOT NULL") is True
@@ -72,17 +80,17 @@ def test_core_258_creates_per_schema_tables_and_round_trips(postgres_container) 
         )
 
     # The alembic downgrade acts on the unscoped (public) run only.
-    command.downgrade(config, "core_257")
+    run_test_alembic_command(postgres_container, command.downgrade, config, "core_257")
     assert _scalar(db_url, "SELECT to_regclass('public.metric_baselines') IS NULL") is True
-    command.upgrade(config, "core_258")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "core_258")
     assert _scalar(db_url, "SELECT to_regclass('public.metric_baselines') IS NOT NULL") is True
 
 
 def test_core_258_grant_stays_inside_the_owning_schema(postgres_container) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, ["core"])
-    command.upgrade(config, "core_258")
-    asyncio.run(run_migrations(db_url, chain="core", schema="health"))
+    run_test_alembic_command(postgres_container, command.upgrade, config, "core_258")
+    migrate_test_database(postgres_container, db_url, plans=(("core", "health", None),))
 
     roles = _scalar(
         db_url,
@@ -97,13 +105,16 @@ def test_core_258_grant_stays_inside_the_owning_schema(postgres_container) -> No
 
 def test_core_258_bootstrap_replay_leaves_tables_visible_to_the_migration_login(
     postgres_container,
+    tmp_path,
 ) -> None:
     """The smoke test's shape: ordinary upgrade, managed-bootstrap down/up, same inventory."""
     from butlers.testing.migration import migration_bootstrap_db_url
 
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    # Historical metadata/ownership diagnostic: observe real258 through280
+    # before current281 finalization changes authority.
+    stage_test_migration_history(postgres_container, db_url, plans=(("core", None, "core_280"),))
     # An aggregate's ORDER BY 1 is a constant, not an output-column ordinal.
     # Bootstrap recreates the tables, so their catalog input order can change.
     aggregate = (
@@ -135,9 +146,32 @@ def test_core_258_bootstrap_replay_leaves_tables_visible_to_the_migration_login(
     bootstrap = _build_alembic_config(
         migration_bootstrap_db_url(postgres_container, db_name), ["core"]
     )
-    command.downgrade(bootstrap, "core_257")
+    pinned_environment = (
+        Path(__file__).with_name("data") / "core_255_env_a090a8ac.py.txt"
+    ).read_text()
+    bind_historical_test_environment(
+        bootstrap,
+        tmp_path / "historical_admin",
+        pinned_environment,
+        expected_sha256="d8a717988914d2c697db58d3e13212ed3ca3d69df6f9e66f8ffdc61487b46a1d",
+    )
+    run_historical_test_alembic_command(
+        postgres_container,
+        command.downgrade,
+        bootstrap,
+        "core_257",
+        normal_url=db_url,
+        administrative=True,
+    )
     assert _scalar(db_url, inventory) is None
-    command.upgrade(bootstrap, "core_258")
+    run_historical_test_alembic_command(
+        postgres_container,
+        command.upgrade,
+        bootstrap,
+        "core_258",
+        normal_url=db_url,
+        administrative=True,
+    )
 
     assert _scalar(db_url, inventory) == before
     assert _scalar(db_url, ordinary_login) is True

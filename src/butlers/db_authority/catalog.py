@@ -216,14 +216,16 @@ async def observe_catalog_owned[Result](
 
 
 async def close_after_catalog_diagnostics(
-    pool: Any, *, on_closed: Callable[[], None] | None = None
+    pool: Any, *, on_closed: Callable[[], None] | None = None, wait_timeout: float | None = 5
 ) -> None:
     """Join physical diagnostic releases before closing this exact pool.
 
-    One retained close task survives repeated caller cancellation. A five-second
-    wait is an incomplete result, never permission to discard the pool or to
+    One retained close task survives repeated caller cancellation. The default
+    five-second wait is an incomplete result, never permission to discard the pool or to
     terminate unrelated shared leases. The owner callback clears its reference
-    only after actual close succeeds, including late completion.
+    only after actual close succeeds, including late completion. A retained
+    dependent-cleanup owner may join without a second internal deadline while
+    independently bounding its own caller.
     """
     owner = _diagnostic_owner(pool)
     if on_closed is not None:
@@ -249,7 +251,7 @@ async def close_after_catalog_diagnostics(
 
         task.add_done_callback(settled)
     task = owner.close_task
-    completed, _ = await asyncio.wait({task}, timeout=5)
+    completed, _ = await asyncio.wait({task}, timeout=wait_timeout)
     if not completed:
         raise TimeoutError("Database pool cleanup is still pending")
     task.result()

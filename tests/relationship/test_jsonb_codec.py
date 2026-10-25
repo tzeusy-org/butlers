@@ -16,6 +16,7 @@ mismatches that produce incorrect results.
 
 from __future__ import annotations
 
+import os
 import shutil
 import uuid
 
@@ -32,6 +33,20 @@ pytestmark = [
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def postgres_container():
+    """Own physical butlers on an isolated server without source-profile aliases."""
+    from testcontainers.postgres import PostgresContainer
+
+    from conftest import _configure_postgres_container
+
+    container = _configure_postgres_container(
+        PostgresContainer("pgvector/pgvector:pg17"), os.environ
+    )
+    with container as postgres:
+        yield postgres
 
 
 def _unique_db_name() -> str:
@@ -122,53 +137,46 @@ class TestDatabaseManagerJsonbCodec:
     async def test_api_pool_decodes_jsonb_as_dict(self, postgres_container):
         """DatabaseManager pools decode JSONB columns to dicts."""
         from butlers.api.db import DatabaseManager
-        from butlers.db import Database
+        from butlers.testing.migration import async_serving_test_deployment
 
-        pg = postgres_container
-
-        # Provision a fresh database for this test
-        db = Database(
-            db_name=_unique_db_name(),
-            host=pg.get_container_host_ip(),
-            port=int(pg.get_exposed_port(5432)),
-            user=pg.username,
-            password=pg.password,
-            min_pool_size=1,
-            max_pool_size=2,
-        )
-        await db.provision()
-
-        mgr = DatabaseManager(
-            host=pg.get_container_host_ip(),
-            port=int(pg.get_exposed_port(5432)),
-            user=pg.username,
-            password=pg.password,
-            min_pool_size=1,
-            max_pool_size=2,
-        )
-        try:
-            await mgr.add_butler("test_rel", db_name=db.db_name)
-            pool = mgr.pool("test_rel")
-
-            await pool.execute("""
-                CREATE TEMP TABLE _api_jsonb_test (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    metadata JSONB NOT NULL
-                )
-            """)
-            metadata = {"needs_disambiguation": False, "provenance": "email", "score": 1}
-            # Pass Python dict directly so the JSONB encoder is invoked.
-            await pool.execute("INSERT INTO _api_jsonb_test (metadata) VALUES ($1)", metadata)
-            row = await pool.fetchrow("SELECT metadata FROM _api_jsonb_test LIMIT 1")
-            result = row["metadata"]
-            assert isinstance(result, dict), (
-                f"DatabaseManager pool returned {type(result).__name__!r} for JSONB column; "
-                "register_jsonb_codec may not be wired into _create_pool."
+        async with async_serving_test_deployment(postgres_container) as deployment:
+            login = deployment.purpose_logins["dashboard"]
+            mgr = DatabaseManager(
+                host=deployment.host,
+                port=deployment.port,
+                user=login.user,
+                password=login.password,
+                ssl="disable",
+                min_pool_size=1,
+                max_pool_size=2,
             )
-            assert result["needs_disambiguation"] is False
-            assert result["provenance"] == "email"
-        finally:
-            await mgr.close()
+            deployment.retain(mgr)
+            await mgr.add_butler("general", db_name="butlers", db_schema="general")
+            pool = mgr.pool("general")
+            # Keep the temporary relation on its actual admitted native lease.
+            async with pool.acquire() as connection:
+                identity = await connection.fetchrow("SELECT session_user, current_user")
+                assert identity["session_user"] == login.user
+                assert identity["current_user"] == "dashboard_api"
+                await connection.execute("""
+                    CREATE TEMP TABLE _api_jsonb_test (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        metadata JSONB NOT NULL
+                    )
+                """)
+                metadata = {"needs_disambiguation": False, "provenance": "email", "score": 1}
+                # Pass Python dict directly so the JSONB encoder is invoked.
+                await connection.execute(
+                    "INSERT INTO _api_jsonb_test (metadata) VALUES ($1)", metadata
+                )
+                row = await connection.fetchrow("SELECT metadata FROM _api_jsonb_test LIMIT 1")
+                result = row["metadata"]
+                assert isinstance(result, dict), (
+                    f"DatabaseManager pool returned {type(result).__name__!r} for JSONB column; "
+                    "register_jsonb_codec may not be wired into _create_pool."
+                )
+                assert result["needs_disambiguation"] is False
+                assert result["provenance"] == "email"
 
 
 # ---------------------------------------------------------------------------

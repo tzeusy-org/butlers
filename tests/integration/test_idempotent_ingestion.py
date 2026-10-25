@@ -28,185 +28,171 @@ def _unique_db_name() -> str:
 
 
 @pytest.fixture
-async def pool(postgres_container):
-    """Provision a fresh database with relationship tables and return a pool."""
-    from butlers.db import Database
+async def pool(provisioned_postgres_pool):
+    """Administrative SQL fixture; serving identity is proved separately."""
+    async with provisioned_postgres_pool(min_pool_size=1, max_pool_size=3) as p:
+        # Create relationship tables (mirrors Alembic relationship migrations)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS contacts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name TEXT NOT NULL,
+                first_name TEXT,
+                last_name TEXT,
+                nickname TEXT,
+                company TEXT,
+                job_title TEXT,
+                entity_id UUID,
+                details JSONB DEFAULT '{}',
+                metadata JSONB DEFAULT '{}',
+                listed BOOLEAN NOT NULL DEFAULT true,
+                archived_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS important_dates (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL,
+                label TEXT NOT NULL,
+                month INT NOT NULL,
+                day INT NOT NULL,
+                year INT,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS notes (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL,
+                content TEXT NOT NULL,
+                emotion TEXT,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS interactions (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL,
+                type TEXT NOT NULL,
+                summary TEXT,
+                occurred_at TIMESTAMPTZ DEFAULT now(),
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_interactions_contact_occurred
+                ON interactions (contact_id, occurred_at)
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS life_events (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL,
+                type TEXT NOT NULL,
+                description TEXT,
+                occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_life_events_contact_occurred
+                ON life_events (contact_id, occurred_at)
+        """)
+        # SPO facts infrastructure (needed by store_fact)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS public.entities (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                canonical_name VARCHAR NOT NULL DEFAULT '',
+                name TEXT NOT NULL DEFAULT '',
+                entity_type VARCHAR NOT NULL DEFAULT 'other',
+                aliases TEXT[] NOT NULL DEFAULT '{}',
+                metadata JSONB DEFAULT '{}'::jsonb,
+                roles TEXT[] NOT NULL DEFAULT '{}',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS predicate_registry (
+                name TEXT PRIMARY KEY,
+                expected_subject_type TEXT,
+                expected_object_type TEXT,
+                is_edge BOOLEAN NOT NULL DEFAULT false,
+                is_temporal BOOLEAN NOT NULL DEFAULT false,
+                description TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                status TEXT NOT NULL DEFAULT 'active',
+                superseded_by TEXT,
+                deprecated_at TIMESTAMPTZ,
+                search_vector TSVECTOR,
+                description_embedding TEXT,
+                usage_count INTEGER NOT NULL DEFAULT 0,
+                last_used_at TIMESTAMPTZ,
+                scope TEXT NOT NULL DEFAULT 'global',
+                aliases TEXT[] NOT NULL DEFAULT '{}',
+                inverse_of TEXT,
+                is_symmetric BOOLEAN NOT NULL DEFAULT false,
+                example_json JSONB
+            )
+        """)
+        await p.execute("""
+            INSERT INTO predicate_registry (name, is_temporal) VALUES
+                ('interaction', true),
+                ('life_event', true),
+                ('contact_note', true),
+                ('activity', true)
+            ON CONFLICT (name) DO NOTHING
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS facts (
+                content_authority TEXT, authority_entity_id UUID,
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                subject TEXT NOT NULL,
+                predicate TEXT NOT NULL,
+                content TEXT NOT NULL,
+                embedding TEXT,
+                search_vector TSVECTOR,
+                importance FLOAT NOT NULL DEFAULT 5.0,
+                confidence FLOAT NOT NULL DEFAULT 1.0,
+                decay_rate FLOAT NOT NULL DEFAULT 0.008,
+                permanence TEXT NOT NULL DEFAULT 'standard',
+                source_butler TEXT,
+                source_episode_id UUID,
+                supersedes_id UUID REFERENCES facts(id) ON DELETE SET NULL,
+                validity TEXT NOT NULL DEFAULT 'active',
+                scope TEXT NOT NULL DEFAULT 'global',
+                reference_count INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                last_confirmed_at TIMESTAMPTZ,
+                tags JSONB DEFAULT '[]'::jsonb,
+                metadata JSONB DEFAULT '{}'::jsonb,
+                entity_id UUID REFERENCES public.entities(id),
+                object_entity_id UUID REFERENCES public.entities(id),
+                valid_at TIMESTAMPTZ DEFAULT NULL,
+                tenant_id TEXT NOT NULL DEFAULT 'owner',
+                request_id TEXT,
+                retention_class TEXT NOT NULL DEFAULT 'operational',
+                sensitivity TEXT NOT NULL DEFAULT 'normal',
+                idempotency_key TEXT,
+                observed_at TIMESTAMPTZ DEFAULT now(),
+                invalid_at TIMESTAMPTZ,
+                embedding_model_version TEXT DEFAULT 'unknown'
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS memory_links (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                source_type TEXT NOT NULL,
+                source_id UUID NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id UUID NOT NULL,
+                relation TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (source_type, source_id, target_type, target_id)
+            )
+        """)
 
-    db = Database(
-        db_name=_unique_db_name(),
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        min_pool_size=1,
-        max_pool_size=3,
-    )
-    await db.provision()
-    p = await db.connect()
-
-    # Create relationship tables (mirrors Alembic relationship migrations)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS contacts (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT NOT NULL,
-            first_name TEXT,
-            last_name TEXT,
-            nickname TEXT,
-            company TEXT,
-            job_title TEXT,
-            entity_id UUID,
-            details JSONB DEFAULT '{}',
-            metadata JSONB DEFAULT '{}',
-            listed BOOLEAN NOT NULL DEFAULT true,
-            archived_at TIMESTAMPTZ,
-            created_at TIMESTAMPTZ DEFAULT now(),
-            updated_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS important_dates (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL,
-            label TEXT NOT NULL,
-            month INT NOT NULL,
-            day INT NOT NULL,
-            year INT,
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS notes (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL,
-            content TEXT NOT NULL,
-            emotion TEXT,
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS interactions (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL,
-            type TEXT NOT NULL,
-            summary TEXT,
-            occurred_at TIMESTAMPTZ DEFAULT now(),
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_interactions_contact_occurred
-            ON interactions (contact_id, occurred_at)
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS life_events (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL,
-            type TEXT NOT NULL,
-            description TEXT,
-            occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_life_events_contact_occurred
-            ON life_events (contact_id, occurred_at)
-    """)
-    # SPO facts infrastructure (needed by store_fact)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS public.entities (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            canonical_name VARCHAR NOT NULL DEFAULT '',
-            name TEXT NOT NULL DEFAULT '',
-            entity_type VARCHAR NOT NULL DEFAULT 'other',
-            aliases TEXT[] NOT NULL DEFAULT '{}',
-            metadata JSONB DEFAULT '{}'::jsonb,
-            roles TEXT[] NOT NULL DEFAULT '{}',
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS predicate_registry (
-            name TEXT PRIMARY KEY,
-            expected_subject_type TEXT,
-            expected_object_type TEXT,
-            is_edge BOOLEAN NOT NULL DEFAULT false,
-            is_temporal BOOLEAN NOT NULL DEFAULT false,
-            description TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            status TEXT NOT NULL DEFAULT 'active',
-            superseded_by TEXT,
-            deprecated_at TIMESTAMPTZ,
-            search_vector TSVECTOR,
-            description_embedding TEXT,
-            usage_count INTEGER NOT NULL DEFAULT 0,
-            last_used_at TIMESTAMPTZ,
-            scope TEXT NOT NULL DEFAULT 'global',
-            aliases TEXT[] NOT NULL DEFAULT '{}',
-            inverse_of TEXT,
-            is_symmetric BOOLEAN NOT NULL DEFAULT false,
-            example_json JSONB
-        )
-    """)
-    await p.execute("""
-        INSERT INTO predicate_registry (name, is_temporal) VALUES
-            ('interaction', true),
-            ('life_event', true),
-            ('contact_note', true),
-            ('activity', true)
-        ON CONFLICT (name) DO NOTHING
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS facts (
-            content_authority TEXT, authority_entity_id UUID,
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            subject TEXT NOT NULL,
-            predicate TEXT NOT NULL,
-            content TEXT NOT NULL,
-            embedding TEXT,
-            search_vector TSVECTOR,
-            importance FLOAT NOT NULL DEFAULT 5.0,
-            confidence FLOAT NOT NULL DEFAULT 1.0,
-            decay_rate FLOAT NOT NULL DEFAULT 0.008,
-            permanence TEXT NOT NULL DEFAULT 'standard',
-            source_butler TEXT,
-            source_episode_id UUID,
-            supersedes_id UUID REFERENCES facts(id) ON DELETE SET NULL,
-            validity TEXT NOT NULL DEFAULT 'active',
-            scope TEXT NOT NULL DEFAULT 'global',
-            reference_count INTEGER NOT NULL DEFAULT 0,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            last_confirmed_at TIMESTAMPTZ,
-            tags JSONB DEFAULT '[]'::jsonb,
-            metadata JSONB DEFAULT '{}'::jsonb,
-            entity_id UUID REFERENCES public.entities(id),
-            object_entity_id UUID REFERENCES public.entities(id),
-            valid_at TIMESTAMPTZ DEFAULT NULL,
-            tenant_id TEXT NOT NULL DEFAULT 'owner',
-            request_id TEXT,
-            retention_class TEXT NOT NULL DEFAULT 'operational',
-            sensitivity TEXT NOT NULL DEFAULT 'normal',
-            idempotency_key TEXT,
-            observed_at TIMESTAMPTZ DEFAULT now(),
-            invalid_at TIMESTAMPTZ,
-            embedding_model_version TEXT DEFAULT 'unknown'
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS memory_links (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            source_type TEXT NOT NULL,
-            source_id UUID NOT NULL,
-            target_type TEXT NOT NULL,
-            target_id UUID NOT NULL,
-            relation TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            UNIQUE (source_type, source_id, target_type, target_id)
-        )
-    """)
-
-    yield p
-    await p.close()
+        yield p
 
 
 def _extract_fact_id(result: dict) -> uuid.UUID:

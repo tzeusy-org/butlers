@@ -19,8 +19,8 @@ from urllib.parse import quote
 
 import asyncpg
 import pytest
+from sqlalchemy import column, delete, event, table, text
 from sqlalchemy import create_engine as _create_engine
-from sqlalchemy import event, text
 from sqlalchemy.exc import DBAPIError, ProgrammingError
 
 from butlers.bootstrap_prerequisite import check_bootstrap_connection
@@ -1957,10 +1957,18 @@ def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
         engine.dispose()
 
     history_engine = _role_engine(admin_url, "butler_general_rw")
+    # Construct the forbidden operation structurally. Production still has no
+    # destructive audit SQL literal, and this real PG negative must prove the
+    # selected General identity receives 42501 for the exact audit predicate.
+    audit_history = table("audit_log", column("action"), schema="public")
+    denied_delete = delete(audit_history).where(audit_history.c.action == "restore_drill_result")
+    assert denied_delete.table.schema == "public"
+    assert denied_delete.table.name == "audit_log"
+    assert denied_delete.compile().params == {"action_1": "restore_drill_result"}
     try:
         for statement in (
             "UPDATE public.audit_log SET result='pass' WHERE action='restore_drill_result'",
-            "DELETE FROM public.audit_log WHERE action='restore_drill_result'",
+            str(denied_delete.compile(compile_kwargs={"literal_binds": True})),
             "TRUNCATE public.audit_log",
             "UPDATE restore_drill_executor.restore_drill_results SET result='pass'",
             "DELETE FROM restore_drill_executor.restore_drill_results",

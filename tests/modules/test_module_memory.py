@@ -1685,12 +1685,30 @@ def runtime_role_boundary(monkeypatch):
     connection = AsyncMock()
     connection.terminate = MagicMock()
     connection.fetchval.return_value = True
+    # Only driver observations are doubled: the actual source profile,
+    # authority predicates, SET ROLE, private ownership and catalog call run.
+    connection.fetchrow.return_value = dict.fromkeys(
+        (
+            "identity_ok",
+            "role_set_ok",
+            "attributes_ok",
+            "ownership_ok",
+            "create_ok",
+            "target_member",
+        ),
+        True,
+    )
     connect = AsyncMock(return_value=connection)
     pools = []
 
     async def create_pool(**kwargs):
         pool = AsyncMock()
         pool.fetchval.return_value = None
+        pool.acquire = MagicMock()
+        pool.acquire.return_value.__aenter__ = AsyncMock(return_value=connection)
+        pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+        # Exercise the same fresh setup that native asyncpg runs at handoff.
+        await kwargs["setup"](connection)
         pools.append((pool, kwargs))
         return pool
 
@@ -1717,7 +1735,14 @@ class TestOwnedRuntimePools:
             await pools[1][1]["setup"](connection)
             assert connection.execute.await_count == 2
             connection.execute.assert_awaited_with('SET ROLE "butler_chronicler_rw"')
-            assert connection.fetchval.await_count == 2
+            usage_calls = [
+                call
+                for call in connection.fetchval.await_args_list
+                if call.args == ("SELECT has_schema_privilege($1, 'USAGE')", "chronicler_mem")
+            ]
+            assert len(usage_calls) == 2
+            assert connection.fetchrow.await_count == 2
+            assert connection.fetchval.await_count == 4
             connection.fetchval.assert_awaited_with(
                 "SELECT has_schema_privilege($1, 'USAGE')", "chronicler_mem"
             )

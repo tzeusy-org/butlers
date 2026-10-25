@@ -192,7 +192,9 @@ def _build_infra_patches(
 
     return {
         "db_from_env": patch("butlers.lifecycle.Database.from_env", side_effect=_db_from_env),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
+        "run_migrations": patch(
+            "butlers.lifecycle.require_installed_chain", new_callable=AsyncMock
+        ),
         "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
         "validate_module_credentials": patch(
             "butlers.lifecycle.validate_module_credentials_async",

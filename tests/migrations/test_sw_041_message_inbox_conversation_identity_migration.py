@@ -5,7 +5,6 @@ bu-7exe4.2.  Real PostgreSQL; seeded rows use synthetic identities only.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import shutil
 
@@ -13,8 +12,13 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from alembic import command
-from butlers.migrations import _build_alembic_config, run_migrations
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.migrations import _build_alembic_config
+from butlers.testing.migration import (
+    create_migration_db,
+    migrate_test_database,
+    migration_db_name,
+    run_test_alembic_command,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -97,9 +101,9 @@ def _snapshot(engine) -> dict[str, tuple[dict, dict]]:
 
 def test_sw_041_backfills_conversation_key_once(postgres_container) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(db_url, chain="core"))
+    migrate_test_database(postgres_container, db_url, plans=(("core", None, None),))
     config = _build_alembic_config(db_url, ["switchboard"], target_schema="switchboard")
-    command.upgrade(config, "switchboard@sw_040")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_040")
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
@@ -132,7 +136,7 @@ def test_sw_041_backfills_conversation_key_once(postgres_container) -> None:
                     },
                 )
 
-        command.upgrade(config, "switchboard@sw_041")
+        run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_041")
         after = _snapshot(engine)
         keys = {label: ctx.get("external_conversation_id") for label, (ctx, _) in after.items()}
         assert keys == {
@@ -162,7 +166,9 @@ def test_sw_041_backfills_conversation_key_once(postgres_container) -> None:
             ).scalar()
 
         # Downgrade drops only the index; re-upgrade changes no row.
-        command.downgrade(config, "switchboard@sw_040")
+        run_test_alembic_command(
+            postgres_container, command.downgrade, config, "switchboard@sw_040"
+        )
         with engine.connect() as conn:
             assert (
                 conn.execute(
@@ -173,7 +179,7 @@ def test_sw_041_backfills_conversation_key_once(postgres_container) -> None:
                 ).scalar()
                 is None
             )
-        command.upgrade(config, "switchboard@sw_041")
+        run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_041")
         assert _snapshot(engine) == after
     finally:
         engine.dispose()

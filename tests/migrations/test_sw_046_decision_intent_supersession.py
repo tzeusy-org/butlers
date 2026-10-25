@@ -6,7 +6,6 @@ this migration and its full storage/rollback assertions remain until later DDL.
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 
 import pytest
@@ -14,8 +13,13 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from alembic import command
-from butlers.migrations import _build_alembic_config, run_migrations
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.migrations import _build_alembic_config
+from butlers.testing.migration import (
+    create_migration_db,
+    migrate_test_database,
+    migration_db_name,
+    run_test_alembic_command,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -25,14 +29,16 @@ pytestmark = [
 
 def test_sw_046_upgrade_downgrade_preserves_intent_history(postgres_container) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(db_url, chain="core"))
+    migrate_test_database(postgres_container, db_url, plans=(("core", None, None),))
     config = _build_alembic_config(db_url, ["switchboard"], target_schema="switchboard")
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
-        command.upgrade(config, "switchboard@sw_044")
+        run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_044")
         # Empty, representable databases round-trip too.
-        command.upgrade(config, "switchboard@sw_046")
-        command.downgrade(config, "switchboard@sw_044")
+        run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_046")
+        run_test_alembic_command(
+            postgres_container, command.downgrade, config, "switchboard@sw_044"
+        )
         with engine.connect() as conn:
             original = (
                 conn.execute(
@@ -52,7 +58,7 @@ def test_sw_046_upgrade_downgrade_preserves_intent_history(postgres_container) -
                     "AND indexname = 'uq_decision_intents_live_bead'"
                 )
             ).scalar_one()
-        command.upgrade(config, "switchboard@sw_046")
+        run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_046")
         with engine.connect() as conn:
             unchanged = (
                 conn.execute(
@@ -123,7 +129,9 @@ def test_sw_046_upgrade_downgrade_preserves_intent_history(postgres_container) -
                 )
 
         with pytest.raises(DBAPIError, match="Cannot downgrade sw_046"):
-            command.downgrade(config, "switchboard@sw_044")
+            run_test_alembic_command(
+                postgres_container, command.downgrade, config, "switchboard@sw_044"
+            )
         with engine.connect() as conn:
             retained = (
                 conn.execute(
@@ -140,7 +148,9 @@ def test_sw_046_upgrade_downgrade_preserves_intent_history(postgres_container) -
                 text("DELETE FROM switchboard.decision_intents WHERE id = :id"),
                 {"id": original["id"]},
             )
-        command.downgrade(config, "switchboard@sw_044")
+        run_test_alembic_command(
+            postgres_container, command.downgrade, config, "switchboard@sw_044"
+        )
         with engine.connect() as conn:
             with pytest.raises(IntegrityError):
                 conn.execute(
@@ -149,7 +159,7 @@ def test_sw_046_upgrade_downgrade_preserves_intent_history(postgres_container) -
                         "WHERE bead_id = 'bu-reopen'"
                     )
                 )
-        command.upgrade(config, "switchboard@sw_046")
+        run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_046")
         with engine.connect() as conn:
             assert (
                 conn.execute(

@@ -42,9 +42,11 @@ import shutil
 import signal
 import time
 from collections.abc import AsyncIterator, Iterator
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
 from testcontainers.postgres import PostgresContainer
@@ -340,9 +342,10 @@ async def butler_ecosystem(
     """
     from butlers.config import list_butlers, load_config
     from butlers.daemon import ButlerDaemon
-    from butlers.db import Database
+    from butlers.testing.migration import async_serving_test_deployment
 
     ecosystem = ButlerEcosystem(postgres_container=postgres_container)
+    owned = AsyncExitStack()
     butler_names: list[str] = []
 
     # Install SIGTERM → KeyboardInterrupt so finally blocks run on container stop.
@@ -365,23 +368,15 @@ async def butler_ecosystem(
         butler_names = [b.name for b in butler_configs_raw]
         logger.info("Discovered %d butlers: %s", len(butler_names), butler_names)
 
-        # Provision and migrate one shared database for all butlers (one-DB topology).
-        # Each butler gets its own schema within the shared "butlers" database.
-        db_url = f"postgresql://{user}:{password}@{host}:{port}/butlers"
-
-        # Provision the shared database first
-        provision_db = Database(
-            db_name="butlers",
-            host=host,
-            port=port,
-            user=user,
-            password=password,
+        deployment = await owned.enter_async_context(
+            async_serving_test_deployment(postgres_container)
         )
-        await provision_db.provision()
-
-        # Run core migrations (creates shared schema + core tables in all butler schemas)
-        logger.info("Running core migrations...")
-        await _run_all_migrations(db_url, butler_configs_raw)
+        owned.enter_context(
+            patch.dict(
+                os.environ,
+                {"BUTLERS_CREDENTIAL_DATABASE_URL": deployment.purpose_url("credential")},
+            )
+        )
 
         # Ensure the message_inbox partition for the current month exists.
         # This lives in the switchboard schema; the switchboard migration chain
@@ -411,16 +406,7 @@ async def butler_ecosystem(
             butler_name = butler_config.name
 
             # Create per-butler Database instance (schema-scoped)
-            db = Database(
-                db_name="butlers",
-                schema=butler_config.db_schema,
-                host=host,
-                port=port,
-                user=user,
-                password=password,
-                min_pool_size=2,
-                max_pool_size=10,
-            )
+            db = deployment.runtime_database(butler_config.db_schema, min_size=2, max_size=10)
             pool = await db.connect()
             ecosystem.pools[butler_name] = pool
 
@@ -457,6 +443,7 @@ async def butler_ecosystem(
 
             daemon = ButlerDaemon(butler_name=butler_name, db=db)
             daemon.config = butler_config
+            deployment.retain(daemon, "shutdown")
             await daemon.start()
             ecosystem.butlers[butler_name] = daemon
 
@@ -484,17 +471,7 @@ async def butler_ecosystem(
         # Teardown: stop daemons, close pools, container auto-stops via fixture
         # ------------------------------------------------------------------
         logger.info("Tearing down ecosystem (daemons + DB pools)...")
-        for butler_name in reversed(butler_names):
-            if butler_name in ecosystem.butlers:
-                try:
-                    await ecosystem.butlers[butler_name].shutdown()
-                except Exception:
-                    logger.exception("Error shutting down butler: %s", butler_name)
-            if butler_name in ecosystem.pools:
-                try:
-                    await ecosystem.pools[butler_name].close()
-                except Exception:
-                    logger.exception("Error closing pool for butler: %s", butler_name)
+        await owned.aclose()
         logger.info("Ecosystem teardown complete")
 
 
@@ -522,58 +499,6 @@ def _install_sigterm_handler() -> None:
     except (ValueError, OSError):
         # Can't set signal handlers in non-main threads — ignore
         pass
-
-
-async def _run_all_migrations(db_url: str, butler_configs: list[ButlerConfig]) -> None:
-    """Run core + butler-specific + module migrations for all butlers.
-
-    Core migrations create the ``shared`` schema and per-butler schemas.
-    Butler-specific and module chains are run per butler that declares them.
-    """
-    from butlers.migrations import get_all_chains, has_butler_chain, run_migrations
-
-    # Run core chain first (creates shared schema, all core tables)
-    logger.info("Running core migration chain...")
-    for butler_config in butler_configs:
-        schema = butler_config.db_schema
-        await run_migrations(db_url, chain="core", schema=schema)
-        logger.debug("Core migrations complete for schema: %s", schema or "<default>")
-
-    # Run butler-specific chains
-    for butler_config in butler_configs:
-        schema = butler_config.db_schema
-        if has_butler_chain(butler_config.name):
-            logger.info(
-                "Running butler-specific migrations for: %s (schema=%s)",
-                butler_config.name,
-                schema or "<default>",
-            )
-            await run_migrations(db_url, chain=butler_config.name, schema=schema)
-
-    # Run module-level chains (module name is the chain key)
-    all_chains = get_all_chains()
-    # Chains that aren't "core" and aren't butler names are module chains
-    butler_names_set = {c.name for c in butler_configs}
-    module_chains = [c for c in all_chains if c != "core" and c not in butler_names_set]
-    for chain in module_chains:
-        # Run module chains against the first butler schema that has the module enabled,
-        # or against every butler schema to be safe (idempotent)
-        for butler_config in butler_configs:
-            schema = butler_config.db_schema
-            if chain in (butler_config.modules or {}):
-                logger.debug(
-                    "Running module migration chain '%s' for butler: %s",
-                    chain,
-                    butler_config.name,
-                )
-                try:
-                    await run_migrations(db_url, chain=chain, schema=schema)
-                except Exception:
-                    logger.debug(
-                        "Module migration '%s' skipped/failed for butler '%s' (non-fatal)",
-                        chain,
-                        butler_config.name,
-                    )
 
 
 async def _ensure_message_inbox_partition(

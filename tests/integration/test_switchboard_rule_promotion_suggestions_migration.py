@@ -26,7 +26,6 @@ migrated Postgres instance (testcontainers):
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import shutil
 import uuid
@@ -44,7 +43,9 @@ from butlers.testing.migration import (
     create_migrated_test_db,
     create_migration_db,
     index_exists,
+    migrate_test_database,
     migration_db_name,
+    run_test_alembic_command,
     table_exists,
 )
 
@@ -612,12 +613,12 @@ def test_upgrade_locks_writers_immediately_before_normalizing_legacy_demotion_ro
 
 def test_upgrade_clears_legacy_demotion_identity_fields(postgres_container) -> None:
     """The forward migration removes stray sampled identity data before pinning NULL."""
-    from butlers.migrations import _build_alembic_config, run_migrations
+    from butlers.migrations import _build_alembic_config
 
     db_url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(db_url, chain="core"))
+    migrate_test_database(postgres_container, db_url, plans=(("core", None, None),))
     config = _build_alembic_config(db_url, chains=["switchboard"], target_schema="switchboard")
-    command.upgrade(config, "switchboard@sw_026")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_026")
 
     rule_id = uuid.uuid4()
     suggestion_id = uuid.uuid4()
@@ -651,7 +652,7 @@ def test_upgrade_clears_legacy_demotion_identity_fields(postgres_container) -> N
                 {"suggestion_id": suggestion_id, "rule_id": rule_id},
             )
 
-        command.upgrade(config, "switchboard@head")
+        run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@head")
 
         with engine.connect() as conn:
             row = conn.execute(
@@ -688,7 +689,7 @@ def test_downgrade_drops_table_indexes_and_ingestion_rules_column(
     )
 
     config = _build_alembic_config(db_url, chains=["switchboard"], target_schema="switchboard")
-    command.downgrade(config, "switchboard@sw_019")
+    run_test_alembic_command(postgres_container, command.downgrade, config, "switchboard@sw_019")
 
     assert not table_exists(db_url, "rule_promotion_suggestions", schema="switchboard")
     assert not index_exists(
@@ -757,7 +758,9 @@ def test_source_endpoint_rows_block_data_losing_downgrade_to_sw_028(
         with pytest.raises(
             IntegrityError, match="chk_rule_promotion_suggestions_proposed_rule_type"
         ):
-            command.downgrade(config, "switchboard@sw_028")
+            run_test_alembic_command(
+                postgres_container, command.downgrade, config, "switchboard@sw_028"
+            )
 
         with engine.connect() as conn:
             row = conn.execute(

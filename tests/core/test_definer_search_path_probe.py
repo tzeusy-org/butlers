@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-from urllib.parse import unquote, urlparse
 
 import asyncpg
 import pytest
@@ -22,6 +21,7 @@ from butlers.core.definer_search_path import (
 from butlers.migrations import run_migrations
 from butlers.testing.migration import (
     create_migration_db,
+    migrate_test_database,
     migration_bootstrap_db_url,
     migration_db_name,
 )
@@ -39,7 +39,7 @@ _IS_DUE = "restore_drill_executor.is_due(p_interval_seconds integer)"
 def bootstrapped(postgres_container) -> tuple[str, str]:
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    migrate_test_database(postgres_container, db_url, plans=(("core", None, None),))
     return db_url, migration_bootstrap_db_url(postgres_container, db_name)
 
 
@@ -98,7 +98,7 @@ async def test_probe_is_clean_then_names_a_fenced_regression_until_init_db_rerun
         )
     ]
 
-    _rerun_init_db(bootstrap_url, db_url)
+    await asyncio.to_thread(_rerun_init_db, bootstrap_url, db_url)
     converged = await _probe(db_url)
     assert converged.is_available
     assert converged.entries == ()
@@ -107,11 +107,10 @@ async def test_probe_is_clean_then_names_a_fenced_regression_until_init_db_rerun
 async def test_probe_judges_only_the_search_path_entry_and_degrades_on_read_failure(
     bootstrapped,
 ) -> None:
-    db_url, _bootstrap_url = bootstrapped
-    migration_login = unquote(urlparse(db_url).username or "")
+    db_url, bootstrap_url = bootstrapped
     # A missing pg_temp is unpinned: implicit pg_temp is searched first.
     _execute(
-        db_url,
+        bootstrap_url,
         "ALTER FUNCTION public.dashboard_turn_require_role(text) SET search_path = pg_catalog",
     )
     # An invoker is out of scope whatever its path.
@@ -128,7 +127,7 @@ async def test_probe_judges_only_the_search_path_entry_and_degrades_on_read_fail
     ] == [
         (
             "public.dashboard_turn_require_role(p_expected_role text)",
-            migration_login,
+            "dashboard_turn_owner",
             "pg_catalog",
             REMEDY_CONTROLLED_MIGRATOR,
         )

@@ -137,9 +137,7 @@ async def test_provisioned_pool_is_administrative(monkeypatch, schema):
         return pool
 
     monkeypatch.setattr(asyncpg, "create_pool", create_pool)
-    monkeypatch.setattr(
-        asyncpg, "connect", AsyncMock(side_effect=AssertionError("network forbidden"))
-    )
+    admin, admin_connect = _administrative_driver(monkeypatch)
     container = _AdminContainer()
     factory = root_conftest.provisioned_postgres_pool.__wrapped__(container)
     async with factory(schema=schema, min_pool_size=2, max_pool_size=4) as actual:
@@ -147,7 +145,19 @@ async def test_provisioned_pool_is_administrative(monkeypatch, schema):
         pool.close.assert_not_awaited()
     pool.close.assert_awaited_once()
     pool.terminate.assert_not_called()
-    provision.assert_awaited_once()
+    provision.assert_not_awaited()
+    assert admin_connect.await_args.kwargs == {
+        "host": "127.0.0.1",
+        "port": 5433,
+        "user": "synthetic_admin",
+        "password": "synthetic_only",
+        "database": "postgres",
+        "timeout": 5,
+    }
+    admin.fetchval.assert_awaited_once()
+    assert admin.fetchval.await_args.args[1] == "synthetic_admin"
+    admin.close.assert_awaited_once_with(timeout=5)
+    admin.terminate.assert_not_called()
     assert len(calls) == 1
     kwargs = calls[0]
     assert kwargs["host"] == "127.0.0.1"
@@ -155,6 +165,9 @@ async def test_provisioned_pool_is_administrative(monkeypatch, schema):
     assert kwargs["user"] == "synthetic_admin"
     assert kwargs["password"] == "synthetic_only"
     assert kwargs["database"].startswith("test_")
+    admin.execute.assert_awaited_once_with(
+        f'CREATE DATABASE "{kwargs["database"]}" OWNER "synthetic_admin" TEMPLATE template0'
+    )
     assert kwargs["min_size"] == 2
     assert kwargs["max_size"] == 4
     assert kwargs["init"] is register_jsonb_codec
@@ -167,6 +180,52 @@ async def test_provisioned_pool_is_administrative(monkeypatch, schema):
     assert codec["schema"] == "pg_catalog" and codec["format"] == "binary"
     value = {"nested": [True, None, 2]}
     assert codec["decoder"](codec["encoder"](value)) == value
+    if schema is None:
+        import asyncio
+
+        from butlers.db_authority.roles import AuthorityError
+
+        for failure in (
+            AuthorityError("missing selected authority"),
+            ValueError("synthetic administrative create failure"),
+            asyncio.CancelledError(),
+        ):
+            admin.reset_mock()
+            admin.execute.side_effect = failure
+            if isinstance(failure, AuthorityError):
+                admin.fetchval.return_value = False
+            else:
+                admin.fetchval.return_value = True
+            with pytest.raises(type(failure)):
+                async with factory():
+                    pytest.fail("Failed administrative setup published a pool")
+            admin.close.assert_awaited_once_with(timeout=5)
+            admin.terminate.assert_not_called()
+        # Cleanup failure cannot replace the primary create exception/cancel.
+        for primary in (ValueError("synthetic primary"), asyncio.CancelledError()):
+            admin.reset_mock()
+            admin.fetchval.return_value = True
+            admin.execute.side_effect = primary
+            admin.close.side_effect = RuntimeError("synthetic cleanup")
+            with pytest.raises(type(primary)) as raised:
+                async with factory():
+                    pytest.fail("Failed administrative setup published a pool")
+            assert raised.value is primary
+            admin.terminate.assert_called_once()
+
+
+def _administrative_driver(monkeypatch):
+    """Physical driver facts only; run the actual fixture's ownership predicate."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    import asyncpg
+
+    connection = AsyncMock()
+    connection.fetchval.return_value = True
+    connection.terminate = MagicMock()
+    connect = AsyncMock(return_value=connection)
+    monkeypatch.setattr(asyncpg, "connect", connect)
+    return connection, connect
 
 
 class _AdminContainer:
@@ -245,9 +304,7 @@ async def test_provisioned_pool_owns_failure_cleanup(monkeypatch, failure):
 
     pool = Pool()
     monkeypatch.setattr(asyncpg, "create_pool", lambda **kwargs: pool)
-    monkeypatch.setattr(
-        asyncpg, "connect", AsyncMock(side_effect=AssertionError("network forbidden"))
-    )
+    admin, admin_connect = _administrative_driver(monkeypatch)
     factory = root_conftest.provisioned_postgres_pool.__wrapped__(_AdminContainer())
 
     async def consume():
@@ -283,7 +340,10 @@ async def test_provisioned_pool_ssl_retry_is_bounded(monkeypatch, retryable):
 
     from butlers.db import Database
 
-    monkeypatch.setattr(Database, "provision", AsyncMock())
+    monkeypatch.setattr(
+        Database, "provision", AsyncMock(side_effect=AssertionError("implicit provision forbidden"))
+    )
+    admin, admin_connect = _administrative_driver(monkeypatch)
     calls = []
     terminated = []
     closed = []
@@ -347,7 +407,10 @@ async def test_provisioned_pool_terminates_native_initialization(monkeypatch, ca
 
     from butlers.db import Database
 
-    monkeypatch.setattr(Database, "provision", AsyncMock())
+    monkeypatch.setattr(
+        Database, "provision", AsyncMock(side_effect=AssertionError("implicit provision forbidden"))
+    )
+    admin, admin_connect = _administrative_driver(monkeypatch)
     entered = asyncio.Event()
     pools = []
     create_pool = asyncpg.create_pool

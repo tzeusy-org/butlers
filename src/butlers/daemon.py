@@ -84,9 +84,8 @@ from butlers.core.tool_catalog import (
 from butlers.core.utils import generate_uuid7_string
 from butlers.credential_store import (
     CredentialStore,
-    ensure_secrets_schema,
+    create_system_global_credential_store_from_env,
     resolve_owner_entity_info,
-    shared_db_name_from_env,
 )
 from butlers.daemon_utils import (
     _extract_identity_scope_credentials,
@@ -271,7 +270,7 @@ class ButlerDaemon:
         # Switchboard-schema pool (butler_registry) used by the scheduler loop to
         # gate scheduled dispatch on eligibility_state. Set during startup.
         self._audit_pool: asyncpg.Pool | None = None
-        self._shared_credentials_db: Database | None = None
+        self._credential_purpose_pool: asyncpg.Pool | None = None
         self._credential_store: CredentialStore | None = None
         # Cached park -> Switchboard delivery boundary (bu-mda0r). Built once
         # in _apply_approval_gates() (after the credential store and DB pool
@@ -2199,88 +2198,24 @@ class ButlerDaemon:
         await run_shutdown(self)
 
     async def _build_credential_store(self, local_pool: asyncpg.Pool) -> CredentialStore:
-        """Build local/fallback resolution plus an explicit global authority.
+        """Keep local resolution separate from explicit global writer authority.
 
-        ``cli-auth/codex`` must receive ``system_global_pool`` even in a flat
-        topology where it is the same object as ``local_pool``.  A missing
-        global pool is intentionally represented as absent rather than being
-        inferred from the local credential scope.
+        An unconfigured global purpose is absent, never inferred from topology
+        or the primary database name. A configured purpose must pass its actual
+        native admission; failures propagate. Serving never provisions a DB.
         """
-        fallback_pools: list[asyncpg.Pool] = []
-        schema_topology = bool(self.config.db_schema)
-        configured_shared_db_name = shared_db_name_from_env()
-        shared_db_name = configured_shared_db_name
-        shared_db_schema: str | None = None
-        if schema_topology:
-            shared_db_name = self.config.db_name
-            shared_db_schema = "public"
-            if (
-                os.environ.get("BUTLER_SHARED_DB_NAME") is not None
-                and configured_shared_db_name != shared_db_name
-            ):
-                logger.warning(
-                    "Using transitional BUTLER_SHARED_DB_NAME=%s override in one-db mode; "
-                    "expected %s",
-                    configured_shared_db_name,
-                    shared_db_name,
-                )
-                shared_db_name = configured_shared_db_name
+        from butlers.db_authority.roles import AuthorityError
 
-        shared_pool: asyncpg.Pool | None = None
-
-        if schema_topology:
-            shared_db = Database.from_env(shared_db_name)
-            shared_db.set_schema(shared_db_schema)
-            if shared_db is self.db:
-                # Test harnesses may patch Database.from_env to always return the
-                # main DB object. Treat that as local-only mode.
-                shared_pool = local_pool
-            else:
-                try:
-                    await shared_db.provision()
-                    shared_pool = await shared_db.connect()
-                    await ensure_secrets_schema(shared_pool)
-                    self._shared_credentials_db = shared_db
-                except Exception:
-                    logger.warning(
-                        "Shared credential DB unavailable (db=%s, schema=%s); "
-                        "Codex system-global authority is unavailable",
-                        shared_db_name,
-                        shared_db_schema,
-                    )
-                    await shared_db.close()
-                    shared_pool = None
-        elif self.db is not None and self.db.db_name == shared_db_name:
-            shared_pool = local_pool
-        else:
-            shared_db = Database.from_env(shared_db_name)
-            if shared_db is self.db:
-                # Test harnesses may patch Database.from_env to always return the
-                # main DB object. Treat that as local-only mode.
-                shared_pool = local_pool
-            else:
-                try:
-                    await shared_db.provision()
-                    shared_pool = await shared_db.connect()
-                    await ensure_secrets_schema(shared_pool)
-                    self._shared_credentials_db = shared_db
-                except Exception:
-                    logger.warning(
-                        "Shared credential DB unavailable (db=%s); "
-                        "Codex system-global authority is unavailable",
-                        shared_db_name,
-                    )
-                    await shared_db.close()
-                    shared_pool = None
-
-        if shared_pool is not None and shared_pool is not local_pool:
-            fallback_pools.append(shared_pool)
-
-        return CredentialStore(
-            local_pool,
-            fallback_pools=fallback_pools,
-            system_global_pool=shared_pool,
-        )
+        if getattr(self, "_credential_purpose_pool", None) is not None:
+            raise AuthorityError("Daemon credential purpose is already owned")
+        if "BUTLERS_CREDENTIAL_DATABASE_URL" not in os.environ:
+            return CredentialStore(local_pool)
+        authority = await create_system_global_credential_store_from_env()
+        pool = authority.require_system_global_pool()
+        # Retain physical ownership before publishing the layered store. Failed
+        # startup and shutdown use the same diagnostic-aware close fence.
+        self._credential_purpose_pool = pool
+        return CredentialStore(local_pool, fallback_pools=[pool], system_global_pool=pool)
 
     @staticmethod
     def _validate_dashboard_read_arguments(tool_name: str, arguments: dict[str, Any]) -> None:

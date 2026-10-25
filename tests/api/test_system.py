@@ -920,11 +920,17 @@ async def test_conditions_without_marker_report_not_raised_or_within_grace(
 
 
 def test_attention_grace_mirror_agrees_with_the_producer():
-    """The Python mirror of the producer's attention grace must match init-db.sql."""
+    """The Python mirror matches the selected current protected producer."""
     from butlers.api.runtime_attention_status import CONDITION_ATTENTION_GRACE
+    from butlers.db_authority.interfaces import protected_group_functions
+    from butlers.db_authority.roles import runtime_profiles
 
-    sql = (Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql").read_text()
-    match = re.search(r"v_attention_grace CONSTANT INTERVAL := interval '(\d+) minutes'", sql)
+    definitions = protected_group_functions(runtime_profiles("butlers"), "butlers", {"attention"})
+    producers = [row for row in definitions if "v_attention_grace CONSTANT" in row.body]
+    assert len(producers) == 1
+    match = re.search(
+        r"v_attention_grace CONSTANT INTERVAL := interval '(\d+) minutes'", producers[0].body
+    )
     assert match is not None
     assert CONDITION_ATTENTION_GRACE.total_seconds() == int(match.group(1)) * 60
 

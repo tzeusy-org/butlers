@@ -8,7 +8,6 @@ lets update the ledger, and must be refused by the database itself.
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 import uuid
 
@@ -17,11 +16,13 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError
 
 from alembic import command
-from butlers.migrations import _build_alembic_config, run_migrations
+from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import (
     create_migrated_test_db,
     create_migration_db,
     migration_db_name,
+    run_test_alembic_command,
+    stage_test_migration_history,
 )
 
 pytestmark = [
@@ -295,8 +296,12 @@ def test_core_267_shared_guard_survives_all_but_the_last_schema_downgrade(
 ) -> None:
     """The core chain runs once per butler schema over the shared table."""
     url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(url, chain="core", schema="general"))
-    asyncio.run(run_migrations(url, chain="core", schema="switchboard"))
+    # Historical shared-DDL round trip stays before the core_281 cutover;
+    # all original downgrade targets, seeds and observers remain real.
+    stage_test_migration_history(postgres_container, url, plans=(("core", "general", "core_280"),))
+    stage_test_migration_history(
+        postgres_container, url, plans=(("core", "switchboard", "core_280"),)
+    )
     general = _build_alembic_config(url, chains=["core"], target_schema="general")
     switchboard = _build_alembic_config(url, chains=["core"], target_schema="switchboard")
     engine = create_engine(url)
@@ -305,18 +310,18 @@ def test_core_267_shared_guard_survives_all_but_the_last_schema_downgrade(
             assert _guard_objects(conn) == (1, 1, 1)
 
         # The first schema to leave core_267 keeps the guard: the other still runs head code.
-        command.downgrade(general, "core_266")
+        run_test_alembic_command(postgres_container, command.downgrade, general, "core_266")
         with engine.connect() as conn:
             assert _guard_objects(conn) == (1, 1, 1)
 
         # The last schema removes it.
-        command.downgrade(switchboard, "core_266")
+        run_test_alembic_command(postgres_container, command.downgrade, switchboard, "core_266")
         with engine.connect() as conn:
             assert _guard_objects(conn) == (0, 0, 0)
             assert conn.exec_driver_sql(f"SELECT to_regclass('{_TABLE}')").scalar() is not None
 
-        command.upgrade(general, "core@head")
-        command.upgrade(switchboard, "core@head")
+        run_test_alembic_command(postgres_container, command.upgrade, general, "core_280")
+        run_test_alembic_command(postgres_container, command.upgrade, switchboard, "core_280")
         with engine.connect() as conn:
             assert _guard_objects(conn) == (1, 1, 1)
     finally:
@@ -480,8 +485,12 @@ def test_core_268_shared_hardening_survives_all_but_the_last_schema_downgrade(
     postgres_container,
 ) -> None:
     url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(url, chain="core", schema="general"))
-    asyncio.run(run_migrations(url, chain="core", schema="switchboard"))
+    # Historical shared-DDL round trip stays before the core_281 cutover;
+    # all original downgrade targets, seeds and observers remain real.
+    stage_test_migration_history(postgres_container, url, plans=(("core", "general", "core_280"),))
+    stage_test_migration_history(
+        postgres_container, url, plans=(("core", "switchboard", "core_280"),)
+    )
     general = _build_alembic_config(url, chains=["core"], target_schema="general")
     switchboard = _build_alembic_config(url, chains=["core"], target_schema="switchboard")
     engine = create_engine(url)
@@ -490,17 +499,17 @@ def test_core_268_shared_hardening_survives_all_but_the_last_schema_downgrade(
             assert _hardening_objects(conn) == (1, 1, True, 1)
 
         # The other schema still runs core_268 code, so everything stays.
-        command.downgrade(general, "core_267")
+        run_test_alembic_command(postgres_container, command.downgrade, general, "core_267")
         with engine.connect() as conn:
             assert _hardening_objects(conn) == (1, 1, True, 1)
 
         # The last schema leaves: core_268 objects go and the core_267 guard is restored.
-        command.downgrade(switchboard, "core_267")
+        run_test_alembic_command(postgres_container, command.downgrade, switchboard, "core_267")
         with engine.connect() as conn:
             assert _hardening_objects(conn) == (0, 0, False, 1)
 
-        command.upgrade(general, "core@head")
-        command.upgrade(switchboard, "core@head")
+        run_test_alembic_command(postgres_container, command.upgrade, general, "core_280")
+        run_test_alembic_command(postgres_container, command.upgrade, switchboard, "core_280")
         with engine.connect() as conn:
             assert _hardening_objects(conn) == (1, 1, True, 1)
     finally:

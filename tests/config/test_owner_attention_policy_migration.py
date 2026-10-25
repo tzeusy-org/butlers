@@ -7,13 +7,14 @@ downgrade compatibility visible without requiring a live deployment database.
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import migrate_test_database, run_test_alembic_command
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MIGRATION_PATH = (
@@ -83,15 +84,20 @@ def _prepare_core_176(postgres_container) -> str:
 
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, chains=["core"])
-    command.upgrade(config, "core@core_176")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "core@core_176")
     return db_url
 
 
-def _apply_core_177(db_url: str) -> None:
+def _apply_core_177(db_url: str, *, postgres_container) -> None:
     from alembic import command
     from butlers.migrations import _build_alembic_config
 
-    command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core@core_177")
+    run_test_alembic_command(
+        postgres_container,
+        command.upgrade,
+        _build_alembic_config(db_url, chains=["core"]),
+        "core@core_177",
+    )
 
 
 @pytest.mark.integration
@@ -153,7 +159,7 @@ def test_upgrade_consolidates_real_pre_177_schema(
     finally:
         engine.dispose()
 
-    _apply_core_177(db_url)
+    _apply_core_177(db_url, postgres_container=postgres_container)
     engine = create_engine(db_url)
     try:
         with engine.connect() as conn:
@@ -201,7 +207,7 @@ def test_upgrade_fails_open_for_partial_canonical_without_legacy_schema(postgres
     finally:
         engine.dispose()
 
-    _apply_core_177(db_url)
+    _apply_core_177(db_url, postgres_container=postgres_container)
     engine = create_engine(db_url)
     try:
         with engine.connect() as conn:
@@ -220,12 +226,11 @@ def test_upgrade_fails_open_for_partial_canonical_without_legacy_schema(postgres
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 def test_core_chain_replay_skips_retired_legacy_insight_seed(postgres_container) -> None:
     """Schema-scoped core replays remain safe after core_177 removes legacy fields."""
-    from butlers.migrations import run_migrations
 
     db_url = _prepare_core_176(postgres_container)
-    _apply_core_177(db_url)
+    _apply_core_177(db_url, postgres_container=postgres_container)
 
-    asyncio.run(run_migrations(db_url, chain="core", schema="general"))
+    migrate_test_database(postgres_container, db_url, plans=(("core", "general", None),))
 
 
 @pytest.mark.integration
@@ -252,9 +257,9 @@ def test_downgrade_restores_legacy_values_from_canonical_policy(postgres_contain
     finally:
         engine.dispose()
 
-    _apply_core_177(db_url)
+    _apply_core_177(db_url, postgres_container=postgres_container)
     config = _build_alembic_config(db_url, chains=["core"])
-    command.downgrade(config, "core@core_176")
+    run_test_alembic_command(postgres_container, command.downgrade, config, "core@core_176")
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:

@@ -385,7 +385,9 @@ def _patch_infra(*, core_groups: list[str] | None = None):
 
     return {
         "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
+        "run_migrations": patch(
+            "butlers.lifecycle.require_installed_chain", new_callable=AsyncMock
+        ),
         "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
         "validate_module_credentials": patch(
             "butlers.lifecycle.validate_module_credentials_async",
@@ -483,7 +485,7 @@ async def test_startup_sequence(butler_dir: Path) -> None:
             patches["mock_pool"],
         )[-1]
         mock_migrations.side_effect = lambda *a, **kw: call_order.append(
-            f"run_migrations({kw.get('chain', a[1] if len(a) > 1 else 'core')})"
+            f"require_installed_chain({kw.get('chain', a[1] if len(a) > 1 else 'core')})"
         )
 
         async def _record_mod_validate(*a: object, **kw: object) -> dict:
@@ -506,6 +508,10 @@ async def test_startup_sequence(butler_dir: Path) -> None:
         before = time.monotonic()
         await daemon.start()
         after = time.monotonic()
+        mock_db.provision.assert_not_awaited()
+        mock_migrations.assert_awaited_once_with(
+            patches["mock_pool"], chain="core", schema="test_butler"
+        )
 
     # Config is loaded
     assert daemon.config is not None
@@ -522,9 +528,8 @@ async def test_startup_sequence(butler_dir: Path) -> None:
         "init_telemetry",
         "validate_credentials",
         "db_from_env",
-        "provision",
         "connect",
-        "run_migrations(core)",
+        "require_installed_chain(core)",
         "validate_module_credentials_async",
         "sync_schedules",
         "Spawner",
@@ -660,7 +665,7 @@ async def test_graph_core_group_registration(
 
 
 async def test_module_lifecycle(butler_dir_with_modules: Path, tmp_path, monkeypatch) -> None:
-    """Module tools registered, order is topological, on_startup called, migrations run."""
+    """Module tools register in topological order after installed-chain admission."""
     registry = _make_registry(StubModuleA, StubModuleB)
     patches = _patch_infra()
     module_root = tmp_path / "module_chains"
@@ -700,13 +705,17 @@ async def test_module_lifecycle(butler_dir_with_modules: Path, tmp_path, monkeyp
     module_names = [m.name for m in daemon._modules]
     assert module_names.index("stub_a") < module_names.index("stub_b")
 
-    # Migrations run for core and stub_a's directory; stub_b has no chain.
+    # Installed core/stub_a are admitted; stub_b declares no migration chain.
     migration_chains = [
         c.kwargs.get("chain", c.args[1] if len(c.args) > 1 else None)
-        for c in mock_migrations.call_args_list
+        for c in mock_migrations.await_args_list
     ]
     assert "core" in migration_chains
     assert "stub_a" in migration_chains
+    assert "stub_b" not in migration_chains
+    mock_migrations.assert_any_await(patches["mock_pool"], chain="core", schema="test_butler")
+    mock_migrations.assert_any_await(patches["mock_pool"], chain="stub_a", schema="test_butler")
+    patches["mock_db"].provision.assert_not_awaited()
 
 
 async def test_schedule_sync_precedes_enabled_module_startup(tmp_path: Path) -> None:
@@ -1267,8 +1276,8 @@ async def test_health_degraded(butler_dir: Path) -> None:
 
 
 async def test_startup_failure_propagation(butler_dir: Path) -> None:
-    """Credential failure prevents DB; DB provision failure prevents migrations."""
-    # Credential failure: DB never provisioned
+    """Credential refusal prevents DB; physical connection failure prevents admission."""
+    # Credential failure: no Database is constructed
     patches = _patch_infra()
     with (
         patches["db_from_env"] as mock_from_env,
@@ -1293,9 +1302,9 @@ async def test_startup_failure_propagation(butler_dir: Path) -> None:
             await daemon.start()
     mock_from_env.assert_not_called()
 
-    # DB provision failure: migrations not run
+    # Physical connection failure: no installed-chain admission or later startup
     patches2 = _patch_infra()
-    patches2["mock_db"].provision.side_effect = ConnectionRefusedError("no pg")
+    patches2["mock_db"].connect.side_effect = ConnectionRefusedError("no pg")
     with (
         patches2["db_from_env"],
         patches2["run_migrations"] as mock_migrations,
@@ -1307,7 +1316,7 @@ async def test_startup_failure_propagation(butler_dir: Path) -> None:
         patches2["Spawner"],
         patches2["build_runtime_adapter"],
         patches2["shutil_which"],
-        patches2["start_mcp_server"],
+        patches2["start_mcp_server"] as start_server,
         patches2["connect_switchboard"],
         patches2["create_audit_pool"],
         patches2["recover_route_inbox"],
@@ -1316,6 +1325,8 @@ async def test_startup_failure_propagation(butler_dir: Path) -> None:
         with pytest.raises(ConnectionRefusedError):
             await daemon2.start()
     mock_migrations.assert_not_awaited()
+    start_server.assert_not_awaited()
+    patches2["mock_db"].provision.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

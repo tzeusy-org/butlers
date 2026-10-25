@@ -20,12 +20,14 @@ from butlers.connectors.spotify import (
     record_gap_fill_track_play,
     upsert_open_track_play,
 )
-from butlers.migrations import _build_alembic_config, run_migrations
+from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import (
     create_migrated_test_db,
     create_migration_db,
+    migrate_test_database,
     migration_bootstrap_db_url,
     migration_db_name,
+    run_test_alembic_command,
 )
 
 pytestmark = pytest.mark.integration
@@ -33,7 +35,7 @@ pytestmark = pytest.mark.integration
 
 def _migrate_core(postgres_container, db_name: str) -> str:
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    migrate_test_database(postgres_container, db_url, plans=(("core", None, None),))
     return db_url
 
 
@@ -437,7 +439,7 @@ def test_downgrade_drops_table_and_revokes_sessions_grant(postgres_container) ->
     bootstrap_core = _build_alembic_config(
         migration_bootstrap_db_url(postgres_container, db_name), chains=["core"]
     )
-    command.downgrade(bootstrap_core, "core_229")
+    run_test_alembic_command(postgres_container, command.downgrade, bootstrap_core, "core_229")
     engine = create_engine(db_url)
     try:
         with engine.connect() as connection:

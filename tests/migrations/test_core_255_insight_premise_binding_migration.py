@@ -16,8 +16,13 @@ import os
 import re
 import runpy
 import shutil
+import tempfile
 import time
+import uuid
 import warnings
+from contextlib import ExitStack
+from contextvars import ContextVar
+from functools import wraps
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -26,13 +31,24 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from alembic import command
-from butlers.migrations import ALEMBIC_DIR, _build_alembic_config, run_migrations
+from butlers.migrations import ALEMBIC_DIR, _build_alembic_config
 from butlers.testing.migration import (
-    _bootstrap_migration_prerequisites,
+    _bootstrap_migration_prerequisites as _prepare_current_migration_prerequisites,
+)
+from butlers.testing.migration import (
     assert_at_chain_head,
-    create_migration_db,
+    bind_historical_test_environment,
+    migrate_test_database,
     migration_bootstrap_db_url,
     migration_db_name,
+    run_historical_test_alembic_command,
+    stage_test_migration_history,
+)
+from butlers.testing.migration import (
+    create_migration_db as _create_current_migration_db,
+)
+from butlers.testing.migration import (
+    run_test_alembic_command as _run_current_test_alembic_command,
 )
 
 pytestmark = [
@@ -49,6 +65,100 @@ _TABLE_GRANT = (
     '        f"GRANT SELECT, INSERT, UPDATE ON TABLE public.insight_amendments TO {_SWITCHBOARD_ROLE}"\n'
     "    )\n"
 )
+
+
+# Explicit test-only historical ownership diagnostics. Current replay below
+# always calls the current environment and preparation by their separate names.
+_PINNED_ENV = Path(__file__).with_name("data") / "core_255_env_a090a8ac.py.txt"
+_PINNED_INIT = Path(__file__).with_name("data") / "core_255_init_db_f461e7e3.sql.txt"
+_PINNED_ENV_DIGEST = "d8a717988914d2c697db58d3e13212ed3ca3d69df6f9e66f8ffdc61487b46a1d"
+_PINNED_INIT_DIGEST = "6f0772904a5637d83209a703fc43e369d1e1bf2eeaf4704c8da597809413d205"
+_HISTORICAL_CONTEXT = ContextVar("core255_historical_fixture", default=None)
+
+
+def _pinned_historical_producers(test):
+    @wraps(test)
+    def execute(*args, **kwargs):
+        with ExitStack() as stack:
+            state = {"normal_urls": {}, "stack": stack}
+            token = _HISTORICAL_CONTEXT.set(state)
+            try:
+                return test(*args, **kwargs)
+            finally:
+                _HISTORICAL_CONTEXT.reset(token)
+
+    return execute
+
+
+def _bootstrap_migration_prerequisites(admin_url, migration_user):
+    state = _HISTORICAL_CONTEXT.get()
+    if state is None:
+        return _prepare_current_migration_prerequisites(admin_url, migration_user)
+    import butlers.testing.migration as fixture
+
+    # Existing neutralized-block control supplies its explicit temporary source;
+    # otherwise execute the byte-exact pinned old bootstrap, never current init.
+    current_init = Path(__file__).resolve().parents[2] / "scripts/init-db.sql"
+    selected = fixture._INIT_DB if fixture._INIT_DB != current_init else _PINNED_INIT
+    source = selected.read_text()
+    pinned = _PINNED_INIT.read_text()
+    assert hashlib.sha256(pinned.encode()).hexdigest() == _PINNED_INIT_DIGEST
+    if selected != _PINNED_INIT:
+        start = pinned.index("-- AMENDMENT_OWNER_CONVERGENCE_BEGIN")
+        end = pinned.index("-- AMENDMENT_OWNER_CONVERGENCE_END") + len(
+            "-- AMENDMENT_OWNER_CONVERGENCE_END"
+        )
+        assert source == pinned[:start] + pinned[end:]
+    directive = "\\set ON_ERROR_STOP on\n"
+    assert source.count(directive) == 1
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            connection.exec_driver_sql(
+                "SELECT pg_catalog.set_config('butlers.connecting_user', %s, false)",
+                (migration_user,),
+            )
+            connection.exec_driver_sql(source.replace(directive, "", 1))
+    finally:
+        engine.dispose()
+
+
+def create_migration_db(postgres_container, db_name):
+    normal = _create_current_migration_db(postgres_container, db_name)
+    state = _HISTORICAL_CONTEXT.get()
+    if state is not None:
+        state["normal_urls"][db_name] = normal
+        _bootstrap_migration_prerequisites(
+            migration_bootstrap_db_url(postgres_container, db_name),
+            unquote(urlparse(normal).username),
+        )
+    return normal
+
+
+def run_test_alembic_command(postgres_container, operation, config, revision):
+    state = _HISTORICAL_CONTEXT.get()
+    if state is None:
+        return _run_current_test_alembic_command(postgres_container, operation, config, revision)
+    selected = config.get_main_option("sqlalchemy.url").replace("%%", "%")
+    database = unquote(urlparse(selected).path.lstrip("/"))
+    normal = state["normal_urls"][database]
+    if not config.attributes.get("core255.historical_environment"):
+        temporary = state["stack"].enter_context(
+            tempfile.TemporaryDirectory(prefix="core255-online-")
+        )
+        destination = Path(temporary) / ("historical_online_" + uuid.uuid4().hex)
+        bind_historical_test_environment(
+            config, destination, _PINNED_ENV.read_text(), expected_sha256=_PINNED_ENV_DIGEST
+        )
+        config.attributes["core255.historical_environment"] = True
+    return run_historical_test_alembic_command(
+        postgres_container,
+        operation,
+        config,
+        revision,
+        normal_url=normal,
+        administrative=selected != normal,
+    )
 
 
 def _experiment_config(db_url: str, tmp_path: Path, variant: str, source: str):
@@ -215,7 +325,9 @@ def _expect_permission_denied(conn, statement: str, params: dict | None = None) 
     return error.value.orig.pgcode
 
 
-def _ordinary_bootstrap_owned_core_replay(db_url: str, admin_url: str, scope: str) -> dict:
+def _ordinary_bootstrap_owned_core_replay(
+    db_url: str, admin_url: str, scope: str, *, postgres_container
+) -> dict:
     """Reach canonical core_255 before any DROP changes the amendment owner.
 
     Shared predecessors have already run through core_255. Only health's
@@ -224,7 +336,8 @@ def _ordinary_bootstrap_owned_core_replay(db_url: str, admin_url: str, scope: st
     Its failed Alembic transaction is closed before separate catalog readback.
     """
     config = _build_alembic_config(db_url, ["core"], target_schema="health")
-    command.stamp(config, "core_254")
+    _prepare_current_migration_prerequisites(admin_url, unquote(urlparse(db_url).username))
+    _run_current_test_alembic_command(postgres_container, command.stamp, config, "core_254")
 
     def versions() -> dict:
         engine = create_engine(db_url)
@@ -253,7 +366,7 @@ def _ordinary_bootstrap_owned_core_replay(db_url: str, admin_url: str, scope: st
     assert before["ordinary"]["identity"]["current_user"] != before["admin"]["table"]["owner"]
     assert before["ordinary"]["ownership"]["rolsuper"] is False
     with pytest.raises(DBAPIError) as error:
-        asyncio.run(run_migrations(db_url, chain="core", schema="health"))
+        migrate_test_database(postgres_container, db_url, plans=(("core", "health", None),))
     assert error.value.orig.pgcode == "42501"
     reached = []
     traceback = error.value.__traceback__
@@ -376,7 +489,7 @@ def _historical_visibility_controls(postgres_container, tmp_path: Path) -> list[
     fresh_name = migration_db_name()
     fresh_url = create_migration_db(postgres_container, fresh_name)
     fresh_config = _experiment_config(fresh_url, tmp_path, "historic-fresh", historical)
-    command.upgrade(fresh_config, "core_255")
+    run_test_alembic_command(postgres_container, command.upgrade, fresh_config, "core_255")
     fresh_inventory = _metadata_inventory(fresh_url)
     assert "public.insight_amendments" in fresh_inventory
     receipts = []
@@ -385,14 +498,14 @@ def _historical_visibility_controls(postgres_container, tmp_path: Path) -> list[
         db_url = create_migration_db(postgres_container, db_name)
         admin_url = migration_bootstrap_db_url(postgres_container, db_name)
         config = _experiment_config(db_url, tmp_path, variant, source)
-        command.upgrade(config, "core_255")
+        run_test_alembic_command(postgres_container, command.upgrade, config, "core_255")
         before = _amendment_catalog(db_url)
         assert before["qualified_object"] and before["ordinary_columns"]
         # Destructive historical/hypothetical variants run only on empty ledgers.
         assert _amendment_rows(admin_url) == []
         config.set_main_option("sqlalchemy.url", admin_url.replace("%", "%%"))
-        command.downgrade(config, "core_254")
-        command.upgrade(config, "core_255")
+        run_test_alembic_command(postgres_container, command.downgrade, config, "core_254")
+        run_test_alembic_command(postgres_container, command.upgrade, config, "core_255")
         admin = _amendment_catalog(admin_url)
         ordinary = _amendment_catalog(db_url)
         assert admin["qualified_object"] and admin["ordinary_columns"]
@@ -415,7 +528,10 @@ def _historical_visibility_controls(postgres_container, tmp_path: Path) -> list[
         ordinary_core_entrypoint = None
         if variant.startswith("current-hypothetical-drop-"):
             ordinary_core_entrypoint = _ordinary_bootstrap_owned_core_replay(
-                db_url, admin_url, scope="hypothetical empty-DROP diagnostic: " + variant
+                db_url,
+                admin_url,
+                scope="hypothetical empty-DROP diagnostic: " + variant,
+                postgres_container=postgres_container,
             )
         if recreated:
             # A database owner implicitly owns public through pg_database_owner
@@ -446,10 +562,10 @@ def _historical_visibility_controls(postgres_container, tmp_path: Path) -> list[
             finally:
                 engine.dispose()
             config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
-            command.downgrade(config, "core_254")
+            run_test_alembic_command(postgres_container, command.downgrade, config, "core_254")
             assert _amendment_catalog(admin_url)["qualified_object"] is False
             assert _amendment_catalog(admin_url)["functions"] == []
-            command.upgrade(config, "core_255")
+            run_test_alembic_command(postgres_container, command.upgrade, config, "core_255")
             assert (
                 _amendment_catalog(db_url)["table"]["owner"] == before["identity"]["session_user"]
             )
@@ -479,9 +595,9 @@ def _historical_visibility_controls(postgres_container, tmp_path: Path) -> list[
     neutral_config = _experiment_config(
         neutral_url, tmp_path, "current-grant-neutralized", neutral_source
     )
-    command.upgrade(neutral_config, "core_254")
+    run_test_alembic_command(postgres_container, command.upgrade, neutral_config, "core_254")
     neutral_config.set_main_option("sqlalchemy.url", neutral_admin_url.replace("%", "%%"))
-    command.upgrade(neutral_config, "core_255")
+    run_test_alembic_command(postgres_container, command.upgrade, neutral_config, "core_255")
     neutral_ordinary = _amendment_catalog(neutral_url)
     neutral_admin = _amendment_catalog(neutral_admin_url)
     with pytest.raises(AssertionError, match="targeted grant must expose"):
@@ -500,6 +616,7 @@ def _historical_visibility_controls(postgres_container, tmp_path: Path) -> list[
     return receipts
 
 
+@_pinned_historical_producers
 def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority(
     postgres_container, tmp_path
 ) -> None:
@@ -509,7 +626,8 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
 
     import butlers.testing.migration as bootstrap_fixture
 
-    production_path = bootstrap_fixture._INIT_DB
+    current_production_path = bootstrap_fixture._INIT_DB
+    production_path = _PINNED_INIT
     production = production_path.read_text(encoding="utf-8")
     begin = "-- AMENDMENT_OWNER_CONVERGENCE_BEGIN"
     finish = "-- AMENDMENT_OWNER_CONVERGENCE_END"
@@ -527,9 +645,16 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
         db_name = migration_db_name()
         db_url = create_migration_db(postgres_container, db_name)
         admin_url = migration_bootstrap_db_url(postgres_container, db_name)
-        command.upgrade(_build_alembic_config(db_url, ["core"]), "core_254")
+        run_test_alembic_command(
+            postgres_container, command.upgrade, _build_alembic_config(db_url, ["core"]), "core_254"
+        )
         assert _amendment_catalog(db_url)["qualified_object"] is False
-        command.upgrade(_build_alembic_config(admin_url, ["core"]), "core_255")
+        run_test_alembic_command(
+            postgres_container,
+            command.upgrade,
+            _build_alembic_config(admin_url, ["core"]),
+            "core_255",
+        )
         ordinary = _amendment_catalog(db_url)
         administrative = _amendment_catalog(admin_url)
         assert ordinary["ownership"]["database_owner"] == ordinary["identity"]["session_user"]
@@ -555,7 +680,9 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
         assert len(administrative["functions"]) == 2
 
         # The real finance chain supplies the bill; no copied two-column stand-in.
-        asyncio.run(run_migrations(db_url, chain="finance", schema="finance"))
+        stage_test_migration_history(
+            postgres_container, db_url, plans=(("finance", "finance", None),)
+        )
         engine = create_engine(admin_url)
         try:
             with engine.begin() as conn:
@@ -859,7 +986,10 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
             finally:
                 engine.dispose()
         supported_current_replay = _ordinary_bootstrap_owned_core_replay(
-            db_url, admin_url, scope="exact current bootstrap install after two init-db replays"
+            db_url,
+            admin_url,
+            scope="exact current bootstrap install after two init-db replays",
+            postgres_container=postgres_container,
         )
         _publish_disposable_receipt(
             {
@@ -874,7 +1004,7 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
             }
         )
 
-    assert bootstrap_fixture._INIT_DB == production_path
+    assert bootstrap_fixture._INIT_DB == current_production_path
     assert production_path.read_text() == production
     original_rows = _amendment_rows(admin_url)
     assert len(original_rows) == 43
@@ -1308,11 +1438,20 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
     repeated_success = asyncio.run(psql(production_path))
     assert snapshot(admin_url) == after_transfer
     for schema in ("health", "general"):
-        asyncio.run(run_migrations(db_url, chain="core", schema=schema))
+        # This is the pinned prior-bootstrap ownership diagnostic. Replay
+        # the actual pre-cutover source endpoint before current281 convergence.
+        stage_test_migration_history(
+            postgres_container, db_url, plans=(("core", schema, "core_280"),)
+        )
         engine = create_engine(db_url)
         try:
             with engine.connect() as conn:
-                assert_at_chain_head(conn, chain="core", schema=schema)
+                assert (
+                    conn.execute(
+                        text(f'SELECT version_num FROM "{schema}".alembic_version')
+                    ).scalar_one()
+                    == "core_280"
+                )
         finally:
             engine.dispose()
         assert _amendment_rows(admin_url) == original_rows
@@ -1385,7 +1524,9 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
         assert _run(admin_url, "SELECT to_regclass('public.insight_amendments')") is None
         asyncio.run(psql(production_path))
         assert _run(admin_url, "SELECT to_regclass('public.insight_amendments')") is None
-        command.upgrade(_build_alembic_config(db_url, ["core"]), "core_255")
+        run_test_alembic_command(
+            postgres_container, command.upgrade, _build_alembic_config(db_url, ["core"]), "core_255"
+        )
         ordinary_first = snapshot(admin_url)
         asyncio.run(psql(production_path))
         asyncio.run(psql(production_path))
@@ -1564,7 +1705,7 @@ def test_current_attention_outcomes_survive_populated_schema_replay(postgres_con
         "amended",
     )
     db_url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(db_url, chain="core", schema="general"))
+    migrate_test_database(postgres_container, db_url, plans=(("core", "general", None),))
     engine = create_engine(db_url)
     try:
         with engine.begin() as conn:
@@ -1591,9 +1732,9 @@ def test_current_attention_outcomes_survive_populated_schema_replay(postgres_con
         # Baseline falsification: before the repair this genuine production
         # traversal reaches core_168's narrower CHECK with all eight rows present.
         # Do not catch that failure, stamp past it, or hand-build a newer table.
-        asyncio.run(run_migrations(db_url, chain="core", schema="health"))
+        migrate_test_database(postgres_container, db_url, plans=(("core", "health", None),))
         for schema in ("general", "health", "health"):
-            asyncio.run(run_migrations(db_url, chain="core", schema=schema))
+            migrate_test_database(postgres_container, db_url, plans=(("core", schema, None),))
             with engine.connect() as conn:
                 assert_at_chain_head(conn, schema=schema)
             assert _attention_ledger_snapshot(db_url) == before
@@ -1619,7 +1760,7 @@ def test_current_attention_outcomes_survive_populated_schema_replay(postgres_con
 
     # A genuinely empty database is a positive control, not the reproduction.
     fresh_url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(fresh_url, chain="core", schema="health"))
+    migrate_test_database(postgres_container, fresh_url, plans=(("core", "health", None),))
     fresh = _attention_ledger_snapshot(fresh_url)
     assert fresh[0] == []
     assert fresh[1:] == before[1:]
@@ -1675,7 +1816,7 @@ def _assert_bounded_attention_downgrade(postgres_container, revision, predecesso
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, ["core"])
     # Bound the actual upgrade: this never rolls back unrelated later boundaries.
-    command.upgrade(config, revision)
+    run_test_alembic_command(postgres_container, command.upgrade, config, revision)
     engine = create_engine(db_url)
     try:
         with engine.begin() as conn:
@@ -1688,7 +1829,7 @@ def _assert_bounded_attention_downgrade(postgres_container, revision, predecesso
             before[1],
             before[2],
         )
-        command.downgrade(config, predecessor)
+        run_test_alembic_command(postgres_container, command.downgrade, config, predecessor)
         assert _attention_ledger_snapshot(db_url) == expected
         check = next(c for c in expected[2] if c[0] == "chk_attention_ledger_outcome")
         assert check[2] is True
@@ -1703,18 +1844,19 @@ def _assert_bounded_attention_downgrade(postgres_container, revision, predecesso
                             "VALUES ('general', 'insight', 'unadopted-outcome')"
                         )
                     )
-        command.upgrade(config, revision)
+        run_test_alembic_command(postgres_container, command.upgrade, config, revision)
         assert _attention_ledger_snapshot(db_url) == expected
     finally:
         engine.dispose()
 
 
+@_pinned_historical_producers
 def test_core_255_adds_premise_objects_idempotently_and_downgrades_cleanly(
     postgres_container,
 ) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, ["core"])
-    command.upgrade(config, "core_254")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "core_254")
     candidate = _run(
         db_url,
         "INSERT INTO public.insight_candidates (origin_butler, priority, category, dedup_key,"
@@ -1722,14 +1864,16 @@ def test_core_255_adds_premise_objects_idempotently_and_downgrades_cleanly(
         " now() + interval '1 day', 'Bill due') RETURNING id::text",
     )
 
-    command.upgrade(config, "core_255")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "core_255")
     unbound = (
         f"SELECT premise IS NULL AND delivery_ref IS NULL FROM public.insight_candidates"
         f" WHERE id = '{candidate}'"
     )
     assert _run(db_url, unbound) is True
     # The core chain replays per butler schema against the shared public objects.
-    asyncio.run(run_migrations(db_url, chain="core", schema="general"))
+    stage_test_migration_history(
+        postgres_container, db_url, plans=(("core", "general", "core_280"),)
+    )
 
     _run(
         db_url,
@@ -1755,7 +1899,7 @@ def test_core_255_adds_premise_objects_idempotently_and_downgrades_cleanly(
         " RETURNING 1",
     )
 
-    command.downgrade(config, "core_254")
+    run_test_alembic_command(postgres_container, command.downgrade, config, "core_254")
     # The amendment ledger is durable evidence and survives a downgrade.
     assert _run(db_url, "SELECT to_regclass('public.insight_amendments') IS NOT NULL") is True
     assert (
@@ -1769,7 +1913,7 @@ def test_core_255_adds_premise_objects_idempotently_and_downgrades_cleanly(
     assert _run(db_url, status) == "filtered"
     assert _run(db_url, "SELECT outcome FROM public.attention_ledger") == "suppressed"
 
-    command.upgrade(config, "core_255")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "core_255")
     assert _run(db_url, "SELECT count(*) FROM public.insight_amendments") == 1
     pins = (
         "SELECT bool_and(proconfig = ARRAY['search_path=pg_catalog, pg_temp']) FROM pg_proc"
@@ -1829,7 +1973,7 @@ def test_core_255_adds_premise_objects_idempotently_and_downgrades_cleanly(
             )
             is True
         )
-        command.downgrade(rollback_config, "core_254")
+        run_test_alembic_command(postgres_container, command.downgrade, rollback_config, "core_254")
         assert _amendment_rows(db_url) == before
         down_catalog = _amendment_catalog(db_url)
         assert down_catalog["table"] == before_catalog["table"]
@@ -1844,7 +1988,7 @@ def test_core_255_adds_premise_objects_idempotently_and_downgrades_cleanly(
             is True
         )
         assert _amendment_catalog(admin_url)["functions"] == []
-        command.upgrade(rollback_config, "core_255")
+        run_test_alembic_command(postgres_container, command.upgrade, rollback_config, "core_255")
         assert _amendment_rows(db_url) == before
         up_catalog = _amendment_catalog(db_url)
         assert up_catalog["table"] == before_catalog["table"]
@@ -1868,9 +2012,11 @@ def test_core_255_adds_premise_objects_idempotently_and_downgrades_cleanly(
                 _expect_permission_denied(conn, runpy.run_path(str(_CORE_255))[source_name])
     finally:
         engine.dispose()
-    asyncio.run(run_migrations(db_url, chain="core", schema="health"))
+    stage_test_migration_history(
+        postgres_container, db_url, plans=(("core", "health", "core_280"),)
+    )
     assert _amendment_catalog(db_url)["functions"] == bootstrap_functions
-    command.downgrade(config, "core_254")
+    run_test_alembic_command(postgres_container, command.downgrade, config, "core_254")
     assert _amendment_rows(db_url) == before
     assert _amendment_catalog(db_url)["functions"] == []
     engine = create_engine(db_url)
@@ -1891,7 +2037,7 @@ def test_core_255_adds_premise_objects_idempotently_and_downgrades_cleanly(
             assert error.value.orig.pgcode == "42883"
     finally:
         engine.dispose()
-    command.upgrade(config, "core_255")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "core_255")
     ordinary_functions = _amendment_catalog(db_url)["functions"]
     assert len(ordinary_functions) == 2
     assert all(f["owner"] == before_catalog["identity"]["session_user"] for f in ordinary_functions)

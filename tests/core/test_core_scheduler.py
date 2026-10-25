@@ -73,10 +73,12 @@ def legacy_public_db_url(postgres_container) -> str:
     """
     from sqlalchemy import create_engine, text
 
-    from butlers.migrations import run_migrations
+    from butlers.testing.migration import create_migration_db, migrate_test_database
 
-    url = create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-    asyncio.run(run_migrations(url, chain="core", schema="general"))
+    url = create_migration_db(postgres_container, migration_db_name())
+    migrate_test_database(
+        postgres_container, url, plans=(("core", None, None), ("core", "general", None))
+    )
     engine = create_engine(url)
     try:
         with engine.begin() as connection:
@@ -385,7 +387,7 @@ async def test_legacy_lifecycle_recovery_derives_public_audit_identity(
             new_callable=AsyncMock,
             return_value={},
         ),
-        patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
+        patch("butlers.lifecycle.require_installed_chain", new_callable=AsyncMock),
         patch(
             "butlers.lifecycle.resolve_general_timezone", new_callable=AsyncMock, return_value="UTC"
         ),

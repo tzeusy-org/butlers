@@ -11,7 +11,7 @@ Each test class below maps to one of the six acceptance criteria on the bead:
 
 from __future__ import annotations
 
-import asyncio
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,7 +21,14 @@ import asyncpg
 import pytest
 from sqlalchemy import create_engine, text
 
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.testing.migration import (
+    async_serving_test_deployment,
+    create_migration_db,
+    migrate_test_database,
+    migration_bootstrap_db_url,
+    migration_db_name,
+    run_test_alembic_command,
+)
 
 # All async tests in this file must share the session event loop so that the
 # asyncpg pools created in module/function-scoped fixtures (which themselves
@@ -98,36 +105,56 @@ def _execute_as_role(db_url: str, role_name: str, sql: str, *, scalar: bool = Fa
 
 
 @pytest.fixture(scope="module")
-def fleet_db_url(postgres_container) -> str:
-    from butlers.migrations import run_migrations
+def postgres_container():
+    """Own physical butlers on an isolated server for real source-profile logins."""
+    from testcontainers.postgres import PostgresContainer
 
-    db_url = create_migration_db(postgres_container, migration_db_name())
-    for schema in _FLEET_SCHEMAS:
-        asyncio.run(run_migrations(db_url, chain="core", schema=schema))
-    asyncio.run(run_migrations(db_url, chain="concierge", schema="concierge"))
-    return db_url
+    from conftest import _configure_postgres_container
+
+    with _configure_postgres_container(
+        PostgresContainer("pgvector/pgvector:pg17"), os.environ
+    ) as pg:
+        yield pg
+
+
+@pytest.fixture(scope="module")
+async def serving_deployment(postgres_container):
+    async with async_serving_test_deployment(postgres_container) as deployment:
+        yield deployment
+
+
+@pytest.fixture(scope="module")
+async def fleet_db_url(serving_deployment) -> str:
+    return serving_deployment.migration_url
+
+
+@pytest.fixture(scope="module")
+def fleet_control_url(postgres_container):
+    return migration_bootstrap_db_url(postgres_container, "butlers")
 
 
 @pytest.fixture
 async def admin_pool(fleet_db_url):
     pool = await asyncpg.create_pool(fleet_db_url, min_size=1, max_size=8)
-    yield pool
-    await pool.close()
+    try:
+        yield pool
+    finally:
+        await pool.close()
 
 
 @pytest.fixture
-async def concierge_db(fleet_db_url):
-    """A production-faithful ``Database`` that ``SET ROLE``s to butler_concierge_rw."""
-    from butlers.db import Database
-
-    db = Database(
-        schema="concierge",
-        role="butler_concierge_rw",
-        **_conn_kwargs(fleet_db_url),
-    )
+async def concierge_db(serving_deployment):
+    """Admit actual source Concierge LOGIN and fresh capability-scoped leases."""
+    db = serving_deployment.runtime_database("concierge")
     await db.connect()
-    yield db
-    await db.close()
+    try:
+        async with db.pool.acquire() as connection:
+            identity = await connection.fetchrow("SELECT session_user, current_user")
+            assert identity["session_user"] == serving_deployment.runtime_logins["concierge"].user
+            assert identity["current_user"] == "butler_concierge_rw"
+        yield db
+    finally:
+        await db.close()
 
 
 async def _insert_session(
@@ -394,7 +421,7 @@ class TestParity:
         assert {priced_id, unpriced_id} <= seen_ids
 
     async def test_fleet_status_matches_butlers_v1_query_sessions_24h(
-        self, fleet_db_url, admin_pool, concierge_db
+        self, fleet_db_url, admin_pool, concierge_db, serving_deployment
     ):
         from butlers.api.db import DatabaseManager
         from butlers.api.read_models.butlers import query_sessions_24h
@@ -418,21 +445,21 @@ class TestParity:
         )
 
         conn_kwargs = _conn_kwargs(fleet_db_url)
+        login = serving_deployment.purpose_logins["dashboard"]
         mgr = DatabaseManager(
-            host=conn_kwargs["host"],
-            port=conn_kwargs["port"],
-            user=conn_kwargs["user"],
-            password=conn_kwargs["password"],
+            host=serving_deployment.host,
+            port=serving_deployment.port,
+            user=login.user,
+            password=login.password,
+            ssl="disable",
         )
+        serving_deployment.retain(mgr)
         try:
             for schema in _FLEET_SCHEMAS:
                 await mgr.add_butler(schema, db_name=conn_kwargs["db_name"], db_schema=schema)
             expected_counts = await query_sessions_24h(mgr, butler_names=list(_FLEET_SCHEMAS))
         finally:
-            for schema in _FLEET_SCHEMAS:
-                pool = mgr.pool(schema)
-                if pool is not None:
-                    await pool.close()
+            await mgr.close()
 
         rows = await q.query_fleet_status(concierge_db.pool, butler="general")
         assert rows, "expected a fleet_status row for 'general'"
@@ -468,24 +495,26 @@ _ALLOWLISTED_SPEND_COLUMNS = {
 
 
 class TestDbSecurity:
-    def test_direct_cross_schema_select_denied(self, fleet_db_url, admin_pool):
+    def test_direct_cross_schema_select_denied(self, fleet_db_url, admin_pool, fleet_control_url):
         with pytest.raises(Exception, match="permission denied"):
             _execute_as_role(
-                fleet_db_url,
+                fleet_control_url,
                 "butler_concierge_rw",
                 "SELECT * FROM health.sessions",
             )
 
-    def test_view_select_succeeds_with_allowlisted_columns_only(self, fleet_db_url, admin_pool):
+    def test_view_select_succeeds_with_allowlisted_columns_only(
+        self, fleet_db_url, admin_pool, fleet_control_url
+    ):
         sessions_cols = _execute_as_role(
-            fleet_db_url,
+            fleet_control_url,
             "butler_concierge_rw",
             "SELECT * FROM concierge.v_fleet_sessions LIMIT 1",
         )
         assert sessions_cols is not None  # query itself did not raise
 
         column_rows = _execute_as_role(
-            fleet_db_url,
+            fleet_control_url,
             "butler_concierge_rw",
             """
             SELECT column_name FROM information_schema.columns
@@ -497,7 +526,7 @@ class TestDbSecurity:
         assert not (column_names & _FORBIDDEN_COLUMNS)
 
         spend_column_rows = _execute_as_role(
-            fleet_db_url,
+            fleet_control_url,
             "butler_concierge_rw",
             """
             SELECT column_name FROM information_schema.columns
@@ -508,7 +537,9 @@ class TestDbSecurity:
         assert spend_column_names == _ALLOWLISTED_SPEND_COLUMNS
         assert not (spend_column_names & _FORBIDDEN_COLUMNS)
 
-    def test_concierge_role_has_no_grant_on_other_schema_tables(self, fleet_db_url, admin_pool):
+    def test_concierge_role_has_no_grant_on_other_schema_tables(
+        self, fleet_db_url, admin_pool, fleet_control_url
+    ):
         # butler_concierge_rw holds no USAGE on 'health' at all, so it cannot
         # even resolve 'health.sessions' to check a privilege on it -- an even
         # stronger boundary than "SELECT denied": the object is not visible.
@@ -524,7 +555,7 @@ class TestDbSecurity:
             engine.dispose()
 
         has_priv = _execute_as_role(
-            fleet_db_url,
+            fleet_control_url,
             "butler_concierge_rw",
             f"SELECT has_table_privilege(current_user, {health_table_oid}, 'SELECT')",
             scalar=True,
@@ -539,15 +570,18 @@ class TestDbSecurity:
 
 class TestMigrationChain:
     def test_upgrade_downgrade_round_trip(self, postgres_container):
-        from butlers.migrations import _build_alembic_config, get_chain_head, run_migrations
+        from butlers.migrations import _build_alembic_config, get_chain_head
 
         db_url = create_migration_db(postgres_container, migration_db_name())
         # The view union spans every fleet schema, so all of them need the
         # core chain's `sessions` table before the concierge chain can create
         # concierge.v_fleet_sessions / v_fleet_spend.
-        for schema in _FLEET_SCHEMAS:
-            asyncio.run(run_migrations(db_url, chain="core", schema=schema))
-        asyncio.run(run_migrations(db_url, chain="concierge", schema="concierge"))
+        migrate_test_database(
+            postgres_container,
+            db_url,
+            plans=tuple(("core", schema, None) for schema in _FLEET_SCHEMAS)
+            + (("concierge", "concierge", None),),
+        )
 
         engine = create_engine(db_url)
         try:
@@ -566,7 +600,7 @@ class TestMigrationChain:
         from alembic import command
 
         config = _build_alembic_config(db_url, ["concierge"], target_schema="concierge")
-        command.downgrade(config, "concierge@base")
+        run_test_alembic_command(postgres_container, command.downgrade, config, "concierge@base")
 
         engine = create_engine(db_url)
         try:

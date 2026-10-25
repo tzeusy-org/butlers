@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -16,7 +15,9 @@ from butlers.testing.migration import (
     create_migration_db,
     get_column_info,
     index_exists,
+    migrate_test_database,
     migration_db_name,
+    run_test_alembic_command,
     table_exists,
 )
 
@@ -83,25 +84,25 @@ def _get_partition_count(db_url: str, parent_table: str, *, schema_name: str = "
 
 
 def _run_core_and_switchboard(postgres_container) -> str:
-    from butlers.migrations import run_migrations
 
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
-    asyncio.run(run_migrations(db_url, chain="switchboard"))
+    migrate_test_database(
+        postgres_container, db_url, plans=(("core", None, None), ("switchboard", None, None))
+    )
     return db_url
 
 
 def _run_schema_scoped_core_and_switchboard(postgres_container, schema_name: str) -> str:
-    from butlers.migrations import run_migrations
 
     # Production layout: core lives in public, switchboard lives in its own
     # schema. Mirroring that here keeps the search_path/SECURITY DEFINER
     # behavior under test honest.
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
-    asyncio.run(run_migrations(db_url, chain="switchboard", schema=schema_name))
+    migrate_test_database(
+        postgres_container, db_url, plans=(("core", None, None), ("switchboard", schema_name, None))
+    )
     return db_url
 
 
@@ -245,7 +246,7 @@ def test_downgrade_drops_all_objects(postgres_container):
     db_url = _run_core_and_switchboard(postgres_container)
 
     config = _build_alembic_config(db_url, chains=["switchboard"])
-    command.downgrade(config, "switchboard@sw_001")
+    run_test_alembic_command(postgres_container, command.downgrade, config, "switchboard@sw_001")
 
     assert not table_exists(db_url, "connector_registry")
     assert not table_exists(db_url, "connector_heartbeat_log")

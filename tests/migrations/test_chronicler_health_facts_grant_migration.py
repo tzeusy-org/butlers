@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 from pathlib import Path
 from unittest.mock import patch
@@ -13,9 +12,9 @@ from alembic.runtime.migration import MigrationContext
 from sqlalchemy import Connection, create_engine, text
 from sqlalchemy.exc import ProgrammingError
 
-from butlers.migrations import run_migrations
 from butlers.testing.migration import (
     create_migration_db,
+    migrate_test_database,
     migration_bootstrap_db_url,
     migration_db_name,
 )
@@ -53,7 +52,7 @@ def test_fresh_core_then_health_memory_chain_grants_chronicler_select(
     ``health.facts`` does not exist until ``mem_001`` runs.
     """
     db_url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(db_url, chain="core", schema="health"))
+    migrate_test_database(postgres_container, db_url, plans=(("core", "health", None),))
 
     engine = create_engine(db_url)
     try:
@@ -64,7 +63,7 @@ def test_fresh_core_then_health_memory_chain_grants_chronicler_select(
     finally:
         engine.dispose()
 
-    asyncio.run(run_migrations(db_url, chain="memory", schema="health"))
+    migrate_test_database(postgres_container, db_url, plans=(("memory", "health", None),))
 
     engine = create_engine(db_url)
     try:
@@ -88,8 +87,8 @@ def test_memory_chain_does_not_grant_chronicler_select_in_non_health_schema(
 ) -> None:
     """The read surface is limited to the Health memory schema."""
     db_url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(db_url, chain="core", schema="finance"))
-    asyncio.run(run_migrations(db_url, chain="memory", schema="finance"))
+    migrate_test_database(postgres_container, db_url, plans=(("core", "finance", None),))
+    migrate_test_database(postgres_container, db_url, plans=(("memory", "finance", None),))
 
     engine = create_engine(db_url)
     try:

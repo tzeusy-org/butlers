@@ -39,8 +39,7 @@ from butlers.core.tool_call_capture import (
     set_current_runtime_trigger_source,
 )
 from butlers.db import register_jsonb_codec
-from butlers.migrations import run_migrations
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.testing.migration import create_migration_db, migrate_test_database, migration_db_name
 
 # ---------------------------------------------------------------------------
 # Skip guard
@@ -145,11 +144,10 @@ def memory_migrated_db(postgres_container) -> str:
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
 
-    # 1. Core chain: creates public.entities, extensions, roles, etc.
-    asyncio.run(run_migrations(db_url, chain="core"))
-
-    # 2. Memory chain: mem_001 (schema) → mem_002 (predicates) → mem_003 (wellness)
-    asyncio.run(run_migrations(db_url, chain="memory"))
+    # Real core then Memory under one selected administrative lock/finalizer.
+    migrate_test_database(
+        postgres_container, db_url, plans=(("core", None, None), ("memory", None, None))
+    )
 
     return db_url
 
@@ -1568,8 +1566,9 @@ def test_backfill_reverse_reconciliation_marks_drifted_rows_stale(postgres_conta
     """
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
-    asyncio.run(run_migrations(db_url, chain="memory"))
+    migrate_test_database(
+        postgres_container, db_url, plans=(("core", None, None), ("memory", None, None))
+    )
 
     out = asyncio.run(_reconcile_drifted_catalog_rows(db_url))
 
@@ -1624,10 +1623,13 @@ def test_migration_is_idempotent(postgres_container) -> None:
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
 
-    asyncio.run(run_migrations(db_url, chain="core"))
-    asyncio.run(run_migrations(db_url, chain="memory"))
-    # Second run must succeed without errors
-    asyncio.run(run_migrations(db_url, chain="memory"))
+    # Keep both real Memory executions in one complete selected plan, then
+    # finalize core + Memory together after the second replay succeeds.
+    migrate_test_database(
+        postgres_container,
+        db_url,
+        plans=(("core", None, None), ("memory", None, None), ("memory", None, None)),
+    )
 
     # Tables still exist
     assert _table_exists_in_schema(db_url, "public", "facts")

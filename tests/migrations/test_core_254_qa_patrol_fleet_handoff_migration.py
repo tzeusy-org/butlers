@@ -6,15 +6,19 @@ core run is a no-op, and downgrade/upgrade drop and restore it.
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 
 import pytest
 from sqlalchemy import create_engine, text
 
 from alembic import command
-from butlers.migrations import _build_alembic_config, run_migrations
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.migrations import _build_alembic_config
+from butlers.testing.migration import (
+    create_migration_db,
+    migrate_test_database,
+    migration_db_name,
+    run_test_alembic_command,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -40,13 +44,13 @@ def _scalar(db_url: str, statement: str):
 def test_core_254_adds_a_nullable_unbackfilled_column_idempotently(postgres_container) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, ["core"])
-    command.upgrade(config, "core_253")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "core_253")
     assert _scalar(db_url, _COLUMN_SQL) is None
     legacy_id = _scalar(
         db_url, "INSERT INTO public.qa_patrols (status) VALUES ('clean') RETURNING id::text"
     )
 
-    command.upgrade(config, "core_254")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "core_254")
     assert _scalar(db_url, _COLUMN_SQL) == "YES"
     assert (
         _scalar(
@@ -58,10 +62,10 @@ def test_core_254_adds_a_nullable_unbackfilled_column_idempotently(postgres_cont
     )
 
     # The core chain replays per butler schema against the shared public table.
-    asyncio.run(run_migrations(db_url, chain="core", schema="general"))
+    migrate_test_database(postgres_container, db_url, plans=(("core", "general", None),))
     assert _scalar(db_url, _COLUMN_SQL) == "YES"
 
-    command.downgrade(config, "core_253")
+    run_test_alembic_command(postgres_container, command.downgrade, config, "core_253")
     assert _scalar(db_url, _COLUMN_SQL) is None
-    command.upgrade(config, "core_254")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "core_254")
     assert _scalar(db_url, _COLUMN_SQL) == "YES"

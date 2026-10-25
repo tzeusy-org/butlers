@@ -9,7 +9,6 @@ prior path, then upgrades and proves no decoy runs.
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import json
 import shutil
@@ -21,8 +20,13 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError
 
 from alembic import command
-from butlers.migrations import _build_alembic_config, run_migrations
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.migrations import _build_alembic_config
+from butlers.testing.migration import (
+    create_migration_db,
+    migration_db_name,
+    run_test_alembic_command,
+    stage_test_migration_history,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -116,9 +120,14 @@ def _core_config(db_url: str, schema: str | None):
 
 def _migrated_db(postgres_container) -> str:
     db_url = create_migration_db(postgres_container, migration_db_name())
-    for schema in _CORE_SCHEMAS:
-        asyncio.run(run_migrations(db_url, chain="core", schema=schema))
-    asyncio.run(run_migrations(db_url, chain="relationship", schema="relationship"))
+    # The search-path round trip is a pre-cutover historical migration subject.
+    # Do not install core_281 and then bypass its preserving-reverse protocol.
+    stage_test_migration_history(
+        postgres_container,
+        db_url,
+        plans=tuple(("core", schema, "core_280") for schema in _CORE_SCHEMAS)
+        + (("relationship", "relationship", None),),
+    )
     return db_url
 
 
@@ -261,7 +270,9 @@ def test_core_252_downgrade_restores_exact_prior_paths_and_reupgrade_is_idempote
     db_url = _migrated_db(postgres_container)
     pinned = _definers(db_url)
 
-    command.downgrade(_core_config(db_url, "general"), "core_251")
+    run_test_alembic_command(
+        postgres_container, command.downgrade, _core_config(db_url, "general"), "core_251"
+    )
     restored = _definers(db_url)
     assert set(restored) == set(pinned)
     for signature, (schema, name, config) in restored.items():
@@ -271,12 +282,18 @@ def test_core_252_downgrade_restores_exact_prior_paths_and_reupgrade_is_idempote
         assert config == prior, signature
 
     # A second schema's downgrade finds nothing left to restore.
-    command.downgrade(_core_config(db_url, "switchboard"), "core_251")
+    run_test_alembic_command(
+        postgres_container, command.downgrade, _core_config(db_url, "switchboard"), "core_251"
+    )
     assert _definers(db_url) == restored
 
-    command.upgrade(_core_config(db_url, "general"), "core_252")
+    run_test_alembic_command(
+        postgres_container, command.upgrade, _core_config(db_url, "general"), "core_252"
+    )
     assert _definers(db_url) == pinned
-    command.upgrade(_core_config(db_url, "switchboard"), "core_252")
+    run_test_alembic_command(
+        postgres_container, command.upgrade, _core_config(db_url, "switchboard"), "core_252"
+    )
     assert _definers(db_url) == pinned
 
 
@@ -284,7 +301,9 @@ def test_core_252_refuses_an_unknown_prior_path_without_changing_anything(
     postgres_container,
 ) -> None:
     db_url = _migrated_db(postgres_container)
-    command.downgrade(_core_config(db_url, "general"), "core_251")
+    run_test_alembic_command(
+        postgres_container, command.downgrade, _core_config(db_url, "general"), "core_251"
+    )
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
@@ -299,7 +318,9 @@ def test_core_252_refuses_an_unknown_prior_path_without_changing_anything(
     before = _definers(db_url)
 
     with pytest.raises(RuntimeError, match="core_252 refuses to pin"):
-        command.upgrade(_core_config(db_url, "general"), "core_252")
+        run_test_alembic_command(
+            postgres_container, command.upgrade, _core_config(db_url, "general"), "core_252"
+        )
     assert _definers(db_url) == before
 
 
@@ -310,7 +331,9 @@ def test_core_252_definers_never_run_a_temp_or_schema_decoy(postgres_container) 
     assert len(calls) >= len(_CALLS) + 4
 
     for schema in _CORE_SCHEMAS:
-        command.downgrade(_core_config(db_url, schema), "core_251")
+        run_test_alembic_command(
+            postgres_container, command.downgrade, _core_config(db_url, schema), "core_251"
+        )
     _plant_schema_decoys(db_url)
 
     # The hole: every group whose body resolves a type or overload by name.
@@ -327,7 +350,9 @@ def test_core_252_definers_never_run_a_temp_or_schema_decoy(postgres_container) 
         assert "hijacked as" in outcome, (name, outcome)
 
     for schema in _CORE_SCHEMAS:
-        command.upgrade(_core_config(db_url, schema), "core_252")
+        run_test_alembic_command(
+            postgres_container, command.upgrade, _core_config(db_url, schema), "core_252"
+        )
 
     for name, (statement, params) in calls.items():
         outcome = _outcome(db_url, statement, params())

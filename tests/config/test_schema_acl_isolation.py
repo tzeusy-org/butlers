@@ -215,7 +215,10 @@ def _serving_login(control_url: str, role: str):
     isolated server remains the final cleanup authority in that failure case.
     """
     declared = {profile.role for profile in runtime_profiles("butlers")}
-    declared.add(purpose_profile("butlers", "connector").role)
+    declared.update(
+        purpose_profile("butlers", purpose).role
+        for purpose in ("connector", "credential", "dashboard")
+    )
     if role not in declared:
         raise ValueError("Not an existing source-selected capability")
     login = f"acl_serving_{uuid.uuid4().hex}"
@@ -1035,3 +1038,428 @@ def test_role_reset_requires_normal_migration_login_membership(postgres_containe
                 await db.close()
 
         asyncio.run(_run())
+
+
+def _native_dsn(db_url: str, login: str, password: str) -> str:
+    """Synthetic fixture transport, with the actual deployed source identity."""
+    from urllib.parse import quote
+
+    parsed = urlparse(db_url)
+    return (
+        f"postgresql://{quote(login, safe='')}:{quote(password, safe='')}"
+        f"@{parsed.hostname}:{parsed.port}/butlers?sslmode=disable"
+    )
+
+
+@contextmanager
+def _foreign_membership(control_url: str, login: str):
+    """Committed negative fault only; remove precisely the owned fault."""
+    with _engine_connection(control_url) as connection:
+        assert not connection.execute(
+            text("SELECT pg_has_role(:login,'butler_general_rw','MEMBER')"), {"login": login}
+        ).scalar_one()
+        connection.execute(text(f'GRANT "butler_general_rw" TO {_quote_ident(login)}'))
+    try:
+        yield
+    finally:
+        with _engine_connection(control_url) as connection:
+            connection.execute(text(f'REVOKE "butler_general_rw" FROM {_quote_ident(login)}'))
+
+
+async def _native_identity(pool, login: str, role: str) -> None:
+    async with pool.acquire() as connection:
+        row = await connection.fetchrow("SELECT session_user,current_user,current_database()")
+        assert tuple(row) == (login, role, "butlers")
+
+
+async def _close_native_pool(pool) -> None:
+    try:
+        async with asyncio.timeout(5):
+            await pool.close()
+    except BaseException:
+        pool.terminate()
+        raise
+
+
+def test_actual_native_credential_factory_keeps_writer_identity_and_fences_rotation(
+    postgres_container, monkeypatch
+):
+    """Actual credential factory, native login, CAS and fresh drift refusal."""
+    import json
+
+    from butlers.credential_store import create_system_global_credential_store_from_env
+    from butlers.db_authority.roles import AuthorityError
+
+    db_url = _create_db(postgres_container, _unique_db_name())
+    control = _control_url(postgres_container)
+    role = purpose_profile("butlers", "credential").role
+    with _serving_login(control, role) as (login, password):
+        monkeypatch.setenv("BUTLERS_CREDENTIAL_DATABASE_URL", _native_dsn(db_url, login, password))
+        monkeypatch.setenv("BUTLER_SHARED_DB_SCHEMA", "public")
+
+        async def exercise():
+            store = await create_system_global_credential_store_from_env()
+            pool = store.require_system_global_pool()
+            key = f"native-proof/{uuid.uuid4().hex}"
+            old = None
+            old_loaded = False
+            first = json.dumps({"synthetic_native_proof": uuid.uuid4().hex})
+            second = json.dumps({"synthetic_native_proof": uuid.uuid4().hex})
+            try:
+                old = await store.load_codex_cli_auth()
+                old_loaded = True
+                await _native_identity(pool, login, role)
+                await store.store_codex_cli_auth(first)
+                assert await store.store_codex_cli_auth_if_unchanged(second, expected_value=first)
+                assert not await store.store_codex_cli_auth_if_unchanged(
+                    first, expected_value=first
+                )
+                assert await store.record_codex_cli_auth_test_result_if_unchanged(
+                    ok=True, expected_value=second
+                )
+                assert not await store.record_codex_cli_auth_test_result_if_unchanged(
+                    ok=False, expected_value=first
+                )
+                assert await store.store_shared_if_unchanged(key, first, expected_value=None)
+                assert await store.record_test_result_if_unchanged(
+                    key, True, expected_value=first, use_shared_authority=True
+                )
+                assert (
+                    _scalar(
+                        control,
+                        "SELECT secret_value FROM public.butler_secrets WHERE secret_key=:k",
+                        {"k": "cli-auth/codex"},
+                    )
+                    == second
+                )
+                with _foreign_membership(control, login):
+                    with pytest.raises(AuthorityError):
+                        async with pool.acquire():
+                            pytest.fail("Unsafe credential identity was handed out")
+                    assert (
+                        _scalar(
+                            control,
+                            "SELECT secret_value FROM public.butler_secrets WHERE secret_key=:k",
+                            {"k": "cli-auth/codex"},
+                        )
+                        == second
+                    )
+                await _native_identity(pool, login, role)
+                assert await store.load_codex_cli_auth() == second
+            finally:
+                await _close_native_pool(pool)
+                with _engine_connection(control) as connection:
+                    connection.execute(
+                        text("DELETE FROM public.butler_secrets WHERE secret_key=:k"), {"k": key}
+                    )
+                    if not old_loaded:
+                        # A failed initial read must never erase prior state.
+                        pass
+                    elif old is None:
+                        connection.execute(
+                            text("DELETE FROM public.butler_secrets WHERE secret_key=:k"),
+                            {"k": "cli-auth/codex"},
+                        )
+                    else:
+                        connection.execute(
+                            text(
+                                "UPDATE public.butler_secrets SET secret_value=:v WHERE secret_key=:k"
+                            ),
+                            {"k": "cli-auth/codex", "v": old},
+                        )
+            monkeypatch.delenv("BUTLERS_CREDENTIAL_DATABASE_URL")
+            with pytest.raises(AuthorityError):
+                await create_system_global_credential_store_from_env()
+            monkeypatch.setenv(
+                "BUTLERS_CREDENTIAL_DATABASE_URL",
+                _native_dsn(db_url, login, password).replace("/butlers?", "/not_declared?"),
+            )
+            with pytest.raises((AuthorityError, ValueError)):
+                await create_system_global_credential_store_from_env()
+
+        asyncio.run(exercise())
+    with _serving_login(control, "butler_general_rw") as (login, password):
+        monkeypatch.setenv("BUTLERS_CREDENTIAL_DATABASE_URL", _native_dsn(db_url, login, password))
+        with pytest.raises(AuthorityError):
+            asyncio.run(create_system_global_credential_store_from_env())
+
+
+def test_actual_native_dashboard_manager_proves_all_owned_pools_and_reacquires(postgres_container):
+    """Both real manager pools prove the same dedicated session on every checkout."""
+    from butlers.api.db import DatabaseManager
+    from butlers.db_authority.roles import AuthorityError
+
+    db_url = _create_db(postgres_container, _unique_db_name())
+    control = _control_url(postgres_container)
+    parsed = urlparse(db_url)
+    role = purpose_profile("butlers", "dashboard").role
+    with _serving_login(control, role) as (login, password):
+
+        async def exercise():
+            options = dict(
+                host=parsed.hostname,
+                port=parsed.port,
+                user=login,
+                password=password,
+                ssl="disable",
+                min_pool_size=0,
+                max_pool_size=1,
+            )
+            manager = DatabaseManager(**options)
+            try:
+                await manager.add_butler(
+                    "general", "butlers", "general", modules=frozenset({"memory"})
+                )
+                await manager.set_credential_shared_pool("butlers", "public")
+                assert manager.butlers_with_module("memory") == ["general"]
+                pools = (manager.pool("general"), manager.credential_shared_pool())
+                for pool in pools:
+                    await _native_identity(pool, login, role)
+                    async with pool.acquire() as connection:
+                        assert isinstance(
+                            await connection.fetchval("SELECT count(*) FROM general.state_store"),
+                            int,
+                        )
+                        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                            await connection.execute(
+                                "INSERT INTO general.state_store(key,value) VALUES ('native-dashboard-forbidden','{}')"
+                            )
+                assert (
+                    _scalar(
+                        control,
+                        "SELECT count(*) FROM general.state_store WHERE key='native-dashboard-forbidden'",
+                    )
+                    == 0
+                )
+                with _foreign_membership(control, login):
+                    for pool in pools:
+                        with pytest.raises(AuthorityError):
+                            async with pool.acquire():
+                                pytest.fail("Unsafe dashboard connection was handed out")
+                    failed = DatabaseManager(**options)
+                    try:
+                        with pytest.raises(AuthorityError):
+                            await failed.add_butler("general", "butlers", "general")
+                        with pytest.raises(KeyError):
+                            failed.pool("general")
+                    finally:
+                        await failed.close()
+                for pool in pools:
+                    await _native_identity(pool, login, role)
+            finally:
+                async with asyncio.timeout(10):
+                    await manager.close()
+
+        asyncio.run(exercise())
+
+
+def test_actual_native_restore_executor_loop_uses_fixed_login_and_rechecks(
+    postgres_container, monkeypatch, tmp_path
+):
+    """Run the real loop/persistence as the fixed direct LOGIN, without a restore."""
+    import subprocess
+    from pathlib import Path
+
+    from butlers.db_authority.roles import AuthorityError
+    from butlers.jobs.restore_drill_executor import (
+        PostgresRestoreDrillPersistence,
+        RestoreDrillExecutorConfig,
+        run_restore_drill_executor_loop,
+    )
+
+    _create_db(postgres_container, _unique_db_name())
+    control = _control_url(postgres_container)
+    admin = urlparse(control)
+    password = uuid.uuid4().hex
+    secret = tmp_path / "synthetic-executor-password"
+    secret.write_text(password)
+    secret.chmod(0o600)
+    try:
+        provision = subprocess.run(
+            [
+                str(
+                    Path(__file__).resolve().parents[2]
+                    / "scripts/provision_restore_drill_executor.sh"
+                )
+            ],
+            env={
+                **os.environ,
+                "PGHOST": admin.hostname,
+                "PGPORT": str(admin.port),
+                "PGUSER": unquote(admin.username),
+                "PGPASSWORD": unquote(admin.password),
+                "PGDATABASE": "butlers",
+                "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE": str(secret),
+            },
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert provision.returncode == 0, "Source executor provisioning did not complete"
+    finally:
+        secret.unlink()
+    backup = tmp_path / "empty-backups"
+    backup.mkdir()
+    config = RestoreDrillExecutorConfig(
+        host=admin.hostname,
+        port=admin.port,
+        application_db="butlers",
+        maintenance_db="postgres",
+        user="restore_drill_executor",
+        password=password,
+        backup_dir=backup,
+        drill_interval_s=3600,
+        check_interval_s=1,
+        sslmode="disable",
+    )
+    original = PostgresRestoreDrillPersistence.is_due
+
+    async def exercise():
+        observations = asyncio.Queue()
+
+        async def observe(self, interval):
+            try:
+                result = await original(self, interval)
+            except AuthorityError:
+                observations.put_nowait(("refused", self._pool))
+                raise
+            observations.put_nowait(("admitted", self._pool))
+            return result
+
+        monkeypatch.setattr(PostgresRestoreDrillPersistence, "is_due", observe)
+        task = asyncio.create_task(run_restore_drill_executor_loop(config))
+        pool = None
+        try:
+            async with asyncio.timeout(20):
+                status, pool = await observations.get()
+                assert status == "admitted"
+                await _native_identity(pool, "restore_drill_executor", "restore_drill_executor")
+                persistence = PostgresRestoreDrillPersistence(pool)
+                result_id = await persistence.record_result(
+                    backup_name="native-proof.dump",
+                    result="pass",
+                    detail="synthetic proof",
+                    table_count=0,
+                )
+                assert (
+                    _scalar(
+                        control,
+                        "SELECT count(*) FROM restore_drill_executor.restore_drill_results WHERE id=:id AND result='pass'",
+                        {"id": result_id},
+                    )
+                    == 1
+                )
+                # Drain only already-observed healthy ticks before the committed fault.
+                while not observations.empty():
+                    observations.get_nowait()
+                with _foreign_membership(control, "restore_drill_executor"):
+                    while (await observations.get())[0] != "refused":
+                        pass
+                    with pytest.raises(AuthorityError):
+                        async with pool.acquire():
+                            pytest.fail("Unsafe fixed executor connection was handed out")
+                while (await observations.get())[0] != "admitted":
+                    pass
+                await _native_identity(pool, "restore_drill_executor", "restore_drill_executor")
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                async with asyncio.timeout(10):
+                    await task
+            assert pool is not None and pool._closed
+
+    asyncio.run(exercise())
+
+
+def test_actual_native_operator_deploy_pool_keeps_selected_session_and_ledger_boundary(
+    postgres_container, monkeypatch
+):
+    """Administrative operator proof stays distinct from serving role admission."""
+    from butlers.core.deploy import DeployError, _make_pool
+    from butlers.db_authority.roles import AuthorityError
+
+    db_url = _create_db(postgres_container, _unique_db_name())
+    control = _control_url(postgres_container)
+    selected = urlparse(db_url)
+    normal = unquote(selected.username)
+    monkeypatch.setenv(
+        "BUTLERS_DEPLOY_DATABASE_URL", _native_dsn(db_url, normal, unquote(selected.password))
+    )
+
+    async def positive():
+        pool = await _make_pool()
+        marker = uuid.uuid4().hex
+        try:
+            await _native_identity(pool, normal, normal)
+            async with pool.acquire() as connection:
+                row_id = await connection.fetchval(
+                    "INSERT INTO public.deployments(git_sha,result) VALUES ($1,'success') RETURNING id",
+                    marker,
+                )
+            assert (
+                _scalar(
+                    control, "SELECT git_sha FROM public.deployments WHERE id=:id", {"id": row_id}
+                )
+                == marker
+            )
+            await _native_identity(pool, normal, normal)
+        finally:
+            await _close_native_pool(pool)
+
+    asyncio.run(positive())
+    monkeypatch.delenv("BUTLERS_DEPLOY_DATABASE_URL")
+    with pytest.raises(DeployError):
+        asyncio.run(_make_pool())
+    for forbidden in ("butler_general_rw", "dashboard_api", "restore_drill_executor"):
+        monkeypatch.setenv(
+            "BUTLERS_DEPLOY_DATABASE_URL", _native_dsn(db_url, forbidden, "synthetic")
+        )
+        with pytest.raises(AuthorityError):
+            asyncio.run(_make_pool())
+    # A genuine selected native login with no ledger authority must not be
+    # published. No fixture object grant supplies the missing positive.
+    login = f"operator_denied_{uuid.uuid4().hex}"
+    password = uuid.uuid4().hex
+    created = False
+    try:
+        with _engine_connection(control) as connection:
+            connection.execute(
+                text(
+                    f"CREATE ROLE {_quote_ident(login)} LOGIN NOINHERIT NOCREATEDB NOCREATEROLE NOSUPERUSER NOREPLICATION NOBYPASSRLS PASSWORD :password"
+                ),
+                {"password": password},
+            )
+            created = True
+        monkeypatch.setenv("BUTLERS_DEPLOY_DATABASE_URL", _native_dsn(db_url, login, password))
+
+        async def missing_ledger():
+            # Transport success is a prerequisite to this negative: CONNECT or
+            # authentication refusal cannot stand in for same-session ledger
+            # admission. No positive object privilege is injected.
+            connection = await asyncpg.connect(_native_dsn(db_url, login, password), timeout=5)
+            try:
+                assert tuple(
+                    await connection.fetchrow("SELECT session_user,current_user,current_database()")
+                ) == (login, login, "butlers")
+                assert tuple(
+                    await connection.fetchrow(
+                        "SELECT has_table_privilege(current_user,'public.deployments','SELECT'), "
+                        "has_table_privilege(current_user,'public.deployments','INSERT')"
+                    )
+                ) == (False, False)
+            finally:
+                try:
+                    await connection.close(timeout=5)
+                except BaseException:
+                    connection.terminate()
+                    raise
+            with pytest.raises(
+                AuthorityError, match="Operator deployment authority is unavailable"
+            ):
+                await _make_pool()
+
+        asyncio.run(missing_ledger())
+    finally:
+        if created:
+            with _engine_connection(control) as connection:
+                connection.execute(text(f"DROP ROLE {_quote_ident(login)}"))

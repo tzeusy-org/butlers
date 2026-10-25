@@ -3,7 +3,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import FrozenInstanceError
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
 
@@ -3086,3 +3086,1450 @@ def test_ordinary_purpose_policy_reverse_preserves_full_shape_and_savepoint_clea
     with pytest.raises(AuthorityError, match="full shape"):
         apply._preview_predecessor_purpose_policy_shape(rejected, manifest, before)
     assert rejected.events[-1] == "ROLLBACK SAVEPOINT"
+
+
+def test_disposable_serving_deployment_keeps_control_and_native_identities_separate():
+    """Execute producer orchestration; physical SQL is doubled, never PG credit."""
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from butlers.testing import migration
+
+    calls = []
+    fail_create = [None]
+    fail_revoke = [False]
+    create_count = [0]
+    held = object()
+    container = SimpleNamespace(
+        get_container_host_ip=lambda: "localhost",
+        get_exposed_port=lambda _: 5432,
+    )
+
+    class PhysicalConnection:
+        def execute(self, statement, params=None):
+            calls.append((str(statement), params))
+            if str(statement).startswith("CREATE ROLE"):
+                create_count[0] += 1
+                if create_count[0] == fail_create[0]:
+                    raise RuntimeError("Selected CREATE was not acknowledged")
+            return SimpleNamespace(scalar_one=lambda: True)
+
+        def exec_driver_sql(self, statement):
+            calls.append((statement, None))
+            if statement.startswith("REVOKE") and fail_revoke[0]:
+                raise RuntimeError("Independent cleanup failure")
+
+    @contextmanager
+    def connect():
+        yield PhysicalConnection()
+
+    engine = SimpleNamespace(connect=connect, dispose=Mock())
+
+    @contextmanager
+    def maintenance(url, *, source_database):
+        assert url == "postgresql://selected_control@localhost/butlers"
+        assert source_database == "butlers"
+        yield held
+
+    with (
+        patch.object(migration, "create_migration_db", return_value="normal-owner-url") as create,
+        patch.object(
+            migration,
+            "migration_bootstrap_db_url",
+            return_value="postgresql://selected_control@localhost/butlers",
+        ),
+        patch.object(migration, "create_engine", return_value=engine),
+        patch.object(migration, "_upgrade_chain_to_revision") as stage,
+        patch("butlers.migrations.migration_session", maintenance),
+        patch("butlers.migrations.run_migrations", new_callable=AsyncMock) as upgrade,
+        patch("butlers.migrations.finalize_authority") as finalize,
+    ):
+        with migration.serving_test_deployment(container) as deployment:
+            create.assert_called_once_with(container, "butlers", _owned_creation=[])
+            assert deployment.migration_url == "normal-owner-url"
+            assert stage.call_count > 0
+            assert upgrade.await_count > stage.call_count
+            assert all(call.kwargs["connection"] is held for call in stage.call_args_list)
+            assert all(call.kwargs["connection"] is held for call in upgrade.await_args_list)
+            assert all(call.args[0] == "normal-owner-url" for call in upgrade.await_args_list)
+            finalize.assert_called_once()
+            assert finalize.call_args.args == (held,)
+            assert finalize.call_args.kwargs["source_database"] == "butlers"
+            runtime = deployment.runtime_database("general")
+            assert runtime.user != "selected_control"
+            assert runtime.role == "butler_general_rw"
+            assert runtime.db_name == "butlers"
+            assert deployment.purpose_logins["dashboard"].role == "dashboard_api"
+            assert deployment.purpose_logins["credential"].role == "credential_store_writer"
+            created = [sql for sql, _ in calls if sql.startswith("CREATE ROLE")]
+            assert len(created) == len(deployment.runtime_logins) + 2
+            assert all("LOGIN NOINHERIT NOSUPERUSER" in sql for sql in created)
+            grants = [sql for sql, _ in calls if sql.startswith("GRANT")]
+            assert len(grants) == len(created)
+            assert all(" ON " not in sql and " TO " in sql for sql in grants)
+        drops = [sql for sql, _ in calls if sql.startswith("DROP ROLE")]
+        assert len(drops) == len(created)
+        engine.dispose.assert_called()
+        # An unacknowledged/ambiguous CREATE never owns a drop, while an
+        # earlier acknowledged role still receives independent cleanup.
+        for failed_ordinal in (1, 2):
+            calls.clear()
+            create_count[0] = 0
+            fail_create[0] = failed_ordinal
+            fail_revoke[0] = failed_ordinal == 2
+            with pytest.raises(RuntimeError, match="not acknowledged") as original:
+                with migration.serving_test_deployment(container):
+                    pytest.fail("Partial serving identity setup was published")
+            attempted = [sql for sql, _ in calls if sql.startswith("CREATE ROLE")]
+            dropped = [sql for sql, _ in calls if sql.startswith("DROP ROLE")]
+            assert len(dropped) == failed_ordinal - 1
+            unacknowledged = attempted[-1].split('"')[1]
+            assert all(unacknowledged not in sql for sql in dropped)
+            if failed_ordinal == 2:
+                assert "cleanup was incomplete" in " ".join(original.value.__notes__)
+
+
+@pytest.mark.parametrize("cancel_phase", ["enter", "resources", "exit"])
+@pytest.mark.parametrize("resource_fails", [False, True])
+async def test_disposable_serving_deployment_joins_cancelled_worker_and_cleanup(
+    cancel_phase, resource_fails
+):
+    """No cancelled caller abandons a creating or closing testcontainer worker."""
+    import threading
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from butlers.testing import migration
+
+    loop = asyncio.get_running_loop()
+    reached = asyncio.Event()
+    release = threading.Event()
+    order = []
+
+    async def close_resources():
+        order.append("resources_closed")
+        if cancel_phase == "resources":
+            reached.set()
+            await asyncio.to_thread(release.wait, 5)
+        if resource_fails:
+            raise ValueError("Actual resource close failed")
+
+    resource_closed = AsyncMock(side_effect=close_resources)
+
+    @contextmanager
+    def physical_producer(container):
+        if cancel_phase == "enter":
+            loop.call_soon_threadsafe(reached.set)
+            release.wait(5)
+        order.append("prepared")
+        try:
+            yield SimpleNamespace(close_resources=resource_closed)
+        finally:
+            if cancel_phase == "exit":
+                loop.call_soon_threadsafe(reached.set)
+                release.wait(5)
+            order.append("identities_closed")
+
+    async def consumer():
+        async with migration.async_serving_test_deployment(object()):
+            order.append("body")
+
+    with patch.object(migration, "serving_test_deployment", physical_producer):
+        task = asyncio.create_task(consumer())
+        try:
+            await asyncio.wait_for(reached.wait(), 1)
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+            assert "identities_closed" not in order
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 1)
+            resource_closed.assert_awaited_once()
+            assert order.index("resources_closed") < order.index("identities_closed")
+            if cancel_phase == "enter":
+                assert "body" not in order
+            else:
+                assert "body" in order
+        finally:
+            release.set()
+            if not task.done():
+                await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_disposable_serving_deployment_preserves_body_and_resource_failure_identity():
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from butlers.testing import migration
+
+    for body_fails in (False, True):
+        resource_error = LookupError("Actual resource cleanup error")
+        body_error = ValueError("Actual body error")
+        identities_closed = []
+
+        @contextmanager
+        def physical_producer(
+            container, resource_error=resource_error, identities_closed=identities_closed
+        ):
+            try:
+                yield SimpleNamespace(close_resources=AsyncMock(side_effect=resource_error))
+            finally:
+                identities_closed.append(True)
+
+        with patch.object(migration, "serving_test_deployment", physical_producer):
+            with pytest.raises(ValueError if body_fails else LookupError) as observed:
+                async with migration.async_serving_test_deployment(object()):
+                    if body_fails:
+                        raise body_error
+            assert observed.value is (body_error if body_fails else resource_error)
+            assert identities_closed == [True]
+
+
+def test_explicit_disposable_migration_plans_keep_one_held_session_and_normal_subject():
+    """Execute the real test producer; physical driver boundaries alone are doubled."""
+    from contextlib import contextmanager
+
+    from butlers.testing import migration
+
+    held = object()
+    container = object()
+    normal = "postgresql://migration_selected@localhost/selected"
+    plans = (
+        ("core", "general", None),
+        ("memory", "general_memory", None),
+        ("core", "switchboard", None),
+        ("switchboard", "switchboard", "sw_021"),
+        ("switchboard", "switchboard", "sw_021"),
+    )
+    lifetime = []
+
+    @contextmanager
+    def maintenance(url, *, source_database):
+        assert url == "postgresql://selected_control@localhost/selected"
+        assert source_database == "butlers"
+        lifetime.append("enter")
+        try:
+            yield held
+        finally:
+            lifetime.append("exit")
+
+    with (
+        patch.object(
+            migration,
+            "migration_bootstrap_db_url",
+            return_value="postgresql://selected_control@localhost/selected",
+        ) as selected,
+        patch("butlers.migrations.migration_session", maintenance),
+        patch("butlers.migrations.run_migrations", new_callable=AsyncMock) as upgrade,
+        patch.object(migration, "_upgrade_chain_to_revision") as bounded,
+        patch("butlers.migrations.finalize_authority") as finalize,
+    ):
+        assert migration.migrate_test_database(container, normal, plans=plans) == normal
+        selected.assert_called_once_with(container, "selected")
+        assert upgrade.await_args_list == [
+            call(normal, chain="core", schema="general", connection=held),
+            call(normal, chain="memory", schema="general_memory", connection=held),
+            call(normal, chain="core", schema="switchboard", connection=held),
+        ]
+        assert bounded.call_args_list == [
+            call(
+                normal,
+                chain="switchboard",
+                schema="switchboard",
+                revision="sw_021",
+                connection=held,
+            ),
+            call(
+                normal,
+                chain="switchboard",
+                schema="switchboard",
+                revision="sw_021",
+                connection=held,
+            ),
+        ]
+        finalize.assert_called_once_with(held, source_database="butlers", plans=plans)
+        assert lifetime == ["enter", "exit"]
+        finalize.reset_mock()
+        lifetime.clear()
+        failure = RuntimeError("Bounded revision failed")
+        bounded.side_effect = failure
+        with pytest.raises(RuntimeError) as actual:
+            migration.migrate_test_database(container, normal, plans=plans)
+        assert actual.value is failure
+        finalize.assert_not_called()
+        assert lifetime == ["enter", "exit"]
+
+
+@pytest.mark.parametrize("credential_tail_preexists", [False, True])
+async def test_disposable_deployment_joins_late_credential_tail_before_dependent_close(
+    credential_tail_preexists,
+):
+    """Compose actual lifecycle, diagnostic ownership and disposable cleanup without SQL."""
+    import asyncio
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from butlers.db_authority.catalog import observe_catalog_owned
+    from butlers.lifecycle import _shutdown_resources
+    from butlers.testing import migration
+
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    settle_owner = asyncio.Event()
+    main_closed = asyncio.Event()
+    order = []
+
+    async def physical_diagnostic():
+        entered.set()
+        await release.wait()
+        order.append("credential_released")
+
+    async def credential_close():
+        order.append("credential_closed")
+
+    async def main_close():
+        if not main_closed.is_set():
+            order.append("main_closed")
+            main_closed.set()
+
+    pool = SimpleNamespace(close=AsyncMock(side_effect=credential_close))
+    main = SimpleNamespace(close=AsyncMock(side_effect=main_close))
+    daemon = SimpleNamespace(
+        config=SimpleNamespace(shutdown_timeout_s=0),
+        _chronicler_refresh_service=SimpleNamespace(
+            closed=False,
+            close=AsyncMock(return_value=False),
+            settle=settle_owner.wait,
+        ),
+        _server=None,
+        _server_task=None,
+        _mcp_socket=None,
+        _buffer=None,
+        _route_inbox_tasks=set(),
+        spawner=None,
+        _switchboard_heartbeat_task=None,
+        _disconnect_switchboard=AsyncMock(),
+        _scheduler_loop_task=None,
+        _route_inbox_recovery_task=None,
+        _liveness_reporter_task=None,
+        _active_modules=[],
+        _modules=[],
+        blob_store=None,
+        _db_log_handler=None,
+        _audit_db=None,
+        _credential_purpose_pool=pool,
+        db=main,
+    )
+
+    async def shutdown():
+        await _shutdown_resources(daemon)
+
+    daemon.shutdown = shutdown
+    deployment = migration.ServingTestDeployment("localhost", 5432, "normal", {}, {})
+    deployment.retain(main)
+    deployment.retain(daemon, "shutdown")
+
+    @contextmanager
+    def physical_producer(container):
+        try:
+            yield deployment
+        finally:
+            order.append("identities_closed")
+
+    diagnostic = asyncio.create_task(observe_catalog_owned(pool, physical_diagnostic))
+    await entered.wait()
+    diagnostic.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await diagnostic
+    if credential_tail_preexists:
+        with pytest.raises(TimeoutError):
+            await _shutdown_resources(daemon)
+        settle_owner.set()
+        for _ in range(100):
+            if hasattr(daemon, "_credential_dependents_close_task"):
+                break
+            await asyncio.sleep(0.01)
+        assert hasattr(daemon, "_credential_dependents_close_task")
+    body_done = asyncio.Event()
+
+    async def consumer():
+        async with migration.async_serving_test_deployment(object()):
+            body_done.set()
+
+    with patch.object(migration, "serving_test_deployment", physical_producer):
+        caller = asyncio.create_task(consumer())
+        try:
+            await asyncio.wait_for(body_done.wait(), 1)
+            for _ in range(100):
+                if hasattr(daemon, "_chronicler_cleanup_task"):
+                    break
+                await asyncio.sleep(0.01)
+            assert hasattr(daemon, "_chronicler_cleanup_task")
+            if not credential_tail_preexists:
+                assert not hasattr(daemon, "_credential_dependents_close_task")
+            caller.cancel()
+            await asyncio.sleep(0)
+            settle_owner.set()
+            first = daemon._chronicler_cleanup_task
+            with pytest.raises(TimeoutError):
+                # Exercise the actual independent five-second lifecycle bound.
+                await asyncio.wait_for(asyncio.shield(first), 6)
+            caller.cancel()
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert not caller.done()
+            assert not daemon._credential_dependents_close_task.done()
+            assert not main_closed.is_set()
+            pool.close.assert_not_awaited()
+            assert "identities_closed" not in order
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(caller, 1)
+            assert order == [
+                "credential_released",
+                "credential_closed",
+                "main_closed",
+                "identities_closed",
+            ]
+            assert daemon._credential_dependents_close_task.done()
+            assert daemon._credential_purpose_pool is None
+        finally:
+            settle_owner.set()
+            release.set()
+            tasks = [
+                caller,
+                *[
+                    vars(daemon)[n]
+                    for n in ("_chronicler_cleanup_task", "_credential_dependents_close_task")
+                    if n in vars(daemon)
+                ],
+            ]
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_disposable_held_transition_settles_real_worker_before_caller_cancellation(
+    monkeypatch,
+):
+    """The actual async adapter retains a running selected migration through cancellation."""
+    import threading
+    from types import SimpleNamespace
+
+    from butlers.testing import migration
+
+    loop = asyncio.get_running_loop()
+    started, release, exited = asyncio.Event(), threading.Event(), threading.Event()
+    config = SimpleNamespace()
+    failure = LookupError("selected exact transition failed")
+
+    def transition(container, operation, selected_config, revision):
+        assert container is marker and operation is actual_operation
+        assert selected_config is config and revision == "core@core_255"
+        loop.call_soon_threadsafe(started.set)
+        try:
+            assert release.wait(5)
+            raise failure
+        finally:
+            exited.set()
+
+    marker, actual_operation = object(), object()
+    monkeypatch.setattr(migration, "run_test_alembic_command", transition)
+    task = asyncio.create_task(
+        migration.async_run_test_alembic_command(marker, actual_operation, config, "core@core_255")
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done() and not exited.is_set()
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert exited.is_set()
+
+    monkeypatch.setattr(migration, "run_test_alembic_command", Mock(side_effect=failure))
+    with pytest.raises(LookupError) as actual:
+        await migration.async_run_test_alembic_command(
+            marker, actual_operation, config, "core@core_255"
+        )
+    assert actual.value is failure
+
+
+def test_historical_disposable_command_keeps_exact_graph_normal_role_and_owned_session(monkeypatch):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from butlers import migrations
+    from butlers.db_authority import interfaces
+    from butlers.testing import migration
+
+    events = []
+    connection = SimpleNamespace(commit=Mock(), rollback=Mock())
+    container = SimpleNamespace(
+        get_connection_url=lambda: "postgresql://control@localhost/postgres"
+    )
+    normal = "postgresql://migration_subject@localhost/test_exact_history"
+    marker = LookupError("historical SQL denial")
+
+    @contextmanager
+    def session(url, *, source_database):
+        assert url == "postgresql://control@localhost/test_exact_history"
+        assert source_database == "butlers"
+        events.append("maintenance_enter")
+        try:
+            yield connection
+        finally:
+            events.append("maintenance_exit")
+
+    @contextmanager
+    def ordinary(selected):
+        assert selected is connection
+        events.append("ordinary_enter")
+        try:
+            yield
+        finally:
+            events.append("ordinary_exit")
+
+    monkeypatch.setattr(migrations, "migration_session", session)
+    monkeypatch.setattr(migrations, "ordinary_migration_identity", ordinary)
+    monkeypatch.setattr(interfaces, "stage_dashboard_interfaces", lambda c: events.append("stage"))
+    config = migrations._build_alembic_config(normal, ["core"], target_schema="health")
+
+    def upgrade(selected, target):
+        assert selected is config and selected.attributes["connection"] is connection
+        assert selected.get_main_option("sqlalchemy.url") == normal
+        assert selected.get_main_option("butlers.target_schema") == "health"
+        assert target in {"core@core_255", "core@core_280"}
+        assert events[-1] == "ordinary_enter"
+        events.append(target)
+        if target == "core@core_255":
+            raise marker
+        return "actual command result"
+
+    with pytest.raises(LookupError) as failure:
+        migration.run_test_alembic_command(container, upgrade, config, "core@core_255")
+    assert failure.value is marker
+    assert events == [
+        "maintenance_enter",
+        "ordinary_enter",
+        "core@core_255",
+        "ordinary_exit",
+        "maintenance_exit",
+    ]
+    assert "connection" not in config.attributes
+    events.clear()
+    assert (
+        migration.run_test_alembic_command(container, upgrade, config, "core@core_280")
+        == "actual command result"
+    )
+    assert events == [
+        "maintenance_enter",
+        "stage",
+        "ordinary_enter",
+        "core@core_280",
+        "ordinary_exit",
+        "maintenance_exit",
+    ]
+    assert "connection" not in config.attributes
+    config.attributes["connection"] = connection
+    events.clear()
+    with pytest.raises(RuntimeError, match="already owns a connection"):
+        migration.run_test_alembic_command(container, upgrade, config, "core@core_255")
+    assert not events and config.attributes["connection"] is connection
+
+
+def test_disposable_partial_transition_finalizes_complete_prior_plan_without_replaying_seeds(
+    monkeypatch,
+):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from butlers import migrations
+    from butlers.testing import migration
+
+    connection = object()
+    events = []
+    container = SimpleNamespace(
+        get_connection_url=lambda: "postgresql://control@localhost/postgres"
+    )
+    normal = "postgresql://normal@localhost/selected_history"
+    prior = (("core", "relationship", None), ("relationship", "relationship", None))
+    transitions = (("core", "health", None), ("memory", "health", "memory_020"))
+    complete = prior + transitions + (("memory", "health", "memory_020"),)
+
+    @contextmanager
+    def session(url, *, source_database):
+        assert url == "postgresql://control@localhost/selected_history"
+        assert source_database == "butlers"
+        events.append("enter")
+        try:
+            yield connection
+        finally:
+            events.append("exit")
+
+    async def run(url, *, chain, schema, connection):
+        assert url == normal and connection is held
+        events.append((chain, schema, None))
+
+    def bounded(url, *, chain, schema, revision, connection):
+        assert url == normal and connection is held
+        events.append((chain, schema, revision))
+
+    def finalize(selected, *, source_database, plans):
+        assert selected is held and source_database == "butlers"
+        assert plans == complete
+        assert events == ["enter", *transitions]
+        events.append("finalize")
+
+    held = connection
+    monkeypatch.setattr(migrations, "migration_session", session)
+    monkeypatch.setattr(migrations, "run_migrations", run)
+    monkeypatch.setattr(migrations, "finalize_authority", finalize)
+    monkeypatch.setattr(migration, "_upgrade_chain_to_revision", bounded)
+    assert (
+        migration.migrate_test_database(container, normal, plans=transitions, final_plans=complete)
+        == normal
+    )
+    assert events == ["enter", *transitions, "finalize", "exit"]
+
+
+def test_historical_window_uses_real_pre_cutover_graph_without_installing_current_authority(
+    monkeypatch,
+):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from butlers import migrations
+    from butlers.testing import migration
+
+    events = []
+    held = object()
+    container = SimpleNamespace(
+        get_connection_url=lambda: "postgresql://control@localhost/postgres"
+    )
+    normal = "postgresql://normal@localhost/history_window"
+
+    @contextmanager
+    def session(url, *, source_database):
+        assert url == "postgresql://control@localhost/history_window"
+        assert source_database == "butlers"
+        events.append("enter")
+        try:
+            yield held
+        finally:
+            events.append("exit")
+
+    def bounded(url, *, chain, schema, revision, connection):
+        assert url == normal and connection is held
+        events.append((chain, schema, revision))
+
+    async def run(url, *, chain, schema, connection):
+        assert url == normal and connection is held
+        events.append((chain, schema, None))
+
+    def forbidden_finalizer(*args, **kwargs):
+        pytest.fail("Historical window must not install current authority before its observations")
+
+    monkeypatch.setattr(migrations, "migration_session", session)
+    monkeypatch.setattr(migrations, "run_migrations", run)
+    monkeypatch.setattr(migrations, "finalize_authority", forbidden_finalizer)
+    monkeypatch.setattr(migration, "_upgrade_chain_to_revision", bounded)
+    plans = (("core", "general", "core_280"), ("relationship", "relationship", None))
+    assert migration.stage_test_migration_history(container, normal, plans=plans) == normal
+    assert events == ["enter", *plans, "exit"]
+    events.clear()
+    for revision in (None, "core_281"):
+        with pytest.raises(ValueError, match="explicit pre-core_281"):
+            migration.stage_test_migration_history(
+                container, normal, plans=(("core", "general", revision),)
+            )
+        assert events == []
+    with pytest.raises(RuntimeError, match="not source-owned"):
+        migration.stage_test_migration_history(
+            container, normal, plans=(("core", "general", "invented_revision"),)
+        )
+    assert events == []
+
+
+async def test_serving_deployment_reentry_drops_only_acknowledged_database_after_owned_resources(
+    monkeypatch,
+):
+    """Execute actual producer/wrapper twice; only network/SQL drivers are doubled."""
+    import asyncio
+    import re
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from butlers import migrations
+    from butlers.testing import migration
+
+    events, roles, databases = [], {}, {}
+    serial = [100]
+    ambiguous_database = [False]
+
+    def next_oid():
+        serial[0] += 1
+        return serial[0]
+
+    class Result:
+        def __init__(self, row):
+            self.row = row
+
+        def scalar_one(self):
+            return self.row[0]
+
+        def one(self):
+            assert self.row is not None
+            return self.row
+
+        def one_or_none(self):
+            return self.row
+
+    class Connection:
+        def execute(self, statement, params=None):
+            sql = str(statement).strip()
+            if sql.startswith("SELECT oid FROM pg_catalog.pg_roles"):
+                return Result(
+                    None
+                    if params.get("role", params.get("name")) not in roles
+                    else (roles[params.get("role", params.get("name"))],)
+                )
+            if sql.startswith("SELECT oid,datdba FROM pg_catalog.pg_database"):
+                return Result(databases.get(params.get("database", params.get("name"))))
+            if sql.startswith("CREATE DATABASE"):
+                name, owner = re.findall(r'"([^\"]+)"', sql)
+                if name in databases:
+                    raise RuntimeError("Database already exists")
+                databases[name] = (next_oid(), roles[owner])
+                events.append("database_created")
+                if ambiguous_database[0]:
+                    raise RuntimeError("CREATE acknowledgement unavailable")
+            elif sql.startswith("CREATE ROLE"):
+                name = re.findall(r'"([^\"]+)"', sql)[0]
+                assert name not in roles
+                roles[name] = next_oid()
+            elif sql.startswith("SELECT NOT rolcanlogin"):
+                return Result((True,))
+            else:
+                pytest.fail("Unexpected disposable driver statement")
+            return Result((True,))
+
+        def exec_driver_sql(self, sql):
+            if sql.startswith("DROP DATABASE"):
+                assert events[-1] == "resources_closed"
+                name = re.findall(r'"([^\"]+)"', sql)[0]
+                del databases[name]
+                events.append("database_dropped")
+            elif sql.startswith("DROP ROLE"):
+                name = re.findall(r'"([^\"]+)"', sql)[0]
+                if any(owner == roles[name] for _, owner in databases.values()):
+                    raise RuntimeError("Role still owns a database")
+                del roles[name]
+            elif not sql.startswith(("GRANT ", "REVOKE ")):
+                pytest.fail("Unexpected disposable driver command")
+
+    @contextmanager
+    def connect():
+        yield Connection()
+
+    engine = SimpleNamespace(connect=connect, dispose=lambda: None)
+    container = SimpleNamespace(
+        get_connection_url=lambda: "postgresql://selected_control@localhost/postgres",
+        get_container_host_ip=lambda: "localhost",
+        get_exposed_port=lambda _: 5432,
+    )
+
+    def create_role(url, role, password):
+        assert url == container.get_connection_url() and password
+        if role in roles:
+            raise RuntimeError("Role already exists")
+        roles[role] = next_oid()
+
+    @contextmanager
+    def maintenance(url, *, source_database):
+        assert url == "postgresql://selected_control@localhost/butlers"
+        assert source_database == "butlers"
+        yield object()
+
+    class Resource:
+        async def close(self):
+            events.append("resources_closed")
+
+    monkeypatch.setattr(migration, "create_engine", lambda *a, **k: engine)
+    monkeypatch.setattr(migration, "_create_test_migration_role", create_role)
+    monkeypatch.setattr(migration, "bootstrap_extensions", lambda *_: None)
+    monkeypatch.setattr(migration, "_bootstrap_migration_prerequisites", lambda *_: None)
+    monkeypatch.setattr(migration, "_upgrade_chain_to_revision", lambda *a, **k: None)
+    monkeypatch.setattr(migrations, "migration_session", maintenance)
+    monkeypatch.setattr(migrations, "run_migrations", AsyncMock())
+    monkeypatch.setattr(migrations, "finalize_authority", lambda *a, **k: None)
+    for _ in range(2):
+        async with migration.async_serving_test_deployment(container) as deployment:
+            assert "butlers" in databases
+            deployment.retain(Resource())
+        assert not databases and not roles
+    assert events == [
+        "database_created",
+        "resources_closed",
+        "database_dropped",
+        "database_created",
+        "resources_closed",
+        "database_dropped",
+    ]
+    # Cancellation cannot advance identity teardown while a retained physical
+    # resource is still closing, including repeated cancellation of the caller.
+    entered, closing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class BlockedResource:
+        async def close(self):
+            closing.set()
+            await release.wait()
+            events.append("resources_closed")
+
+    async def cancelled_deployment():
+        async with migration.async_serving_test_deployment(container) as deployment:
+            deployment.retain(BlockedResource())
+            entered.set()
+            await asyncio.Future()
+
+    caller = asyncio.create_task(cancelled_deployment())
+    await entered.wait()
+    caller.cancel()
+    await closing.wait()
+    caller.cancel()
+    await asyncio.sleep(0)
+    assert not caller.done() and "butlers" in databases and roles
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    assert not databases and not roles
+    assert events[-2:] == ["resources_closed", "database_dropped"]
+
+    # A failed CREATE ROLE never owns an existing role, even with the expected
+    # disposable name. An obscured CREATE DATABASE acknowledgement also cannot
+    # authorize dropping the database merely because it now exists.
+    roles["migration_butlers"] = 700
+    with pytest.raises(RuntimeError, match="Role already exists"):
+        async with migration.async_serving_test_deployment(container):
+            pytest.fail("Preexisting normal role was admitted as ours")
+    assert roles == {"migration_butlers": 700} and not databases
+    roles.clear()
+    ambiguous_database[0] = True
+    with pytest.raises(RuntimeError, match="acknowledgement unavailable") as ambiguous:
+        async with migration.async_serving_test_deployment(container):
+            pytest.fail("Ambiguous database creation was admitted as owned")
+    assert "butlers" in databases and "migration_butlers" in roles
+    assert any("cleanup was incomplete" in note for note in ambiguous.value.__notes__)
+    # Only the IO double's catalog is reset between independent scenarios.
+    databases.clear()
+    roles.clear()
+    ambiguous_database[0] = False
+    # A preexisting database is not a creator receipt. Only our newly
+    # acknowledged normal role may be removed after CREATE DATABASE refuses.
+    databases["butlers"] = (777, 888)
+    with pytest.raises(RuntimeError, match="already exists"):
+        async with migration.async_serving_test_deployment(container):
+            pytest.fail("Preexisting database was admitted as ours")
+    assert databases == {"butlers": (777, 888)} and not roles
+    # Even an old valid receipt must refuse a replaced foreign catalog identity.
+    roles["foreign"] = 901
+    with pytest.raises(RuntimeError, match="cleanup was incomplete"):
+        migration._close_created_test_database(container, [("role", "foreign", 900, None)])
+    assert roles == {"foreign": 901}
+
+
+def test_pinned_historical_environment_preserves_physical_transaction_and_failure_ownership(
+    monkeypatch,
+    tmp_path,
+):
+    """Actual pinned online/Alembic/SQLAlchemy transaction protocol; no PostgreSQL IO."""
+    import asyncio
+    import hashlib
+    from contextlib import contextmanager
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from alembic.config import Config
+    from alembic.runtime.environment import EnvironmentContext
+    from alembic.script import ScriptDirectory
+    from alembic.util import load_python_file
+    from sqlalchemy import create_engine, event
+
+    from butlers import migrations
+    from butlers.testing import migration
+
+    source = (
+        Path(__file__).resolve().parents[1] / "migrations/data/core_255_env_a090a8ac.py.txt"
+    ).read_text()
+    digest = hashlib.sha256(source.encode()).hexdigest()
+    assert digest == "d8a717988914d2c697db58d3e13212ed3ca3d69df6f9e66f8ffdc61487b46a1d"
+    engine = create_engine(f"sqlite:///{tmp_path / 'transactions.sqlite'}")
+    events, held = [], []
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE retained (value INTEGER)")
+
+    @event.listens_for(engine, "before_cursor_execute", retval=True)
+    def physical_sql(connection, cursor, statement, parameters, context, executemany):
+        if statement.startswith(("SET ROLE ", "RESET ROLE", "CREATE SCHEMA ", "SET search_path")):
+            events.append(statement)
+            return "SELECT 1", ()
+        return statement, parameters
+
+    container = SimpleNamespace(
+        get_connection_url=lambda: "postgresql://control@localhost/postgres"
+    )
+    normal = "postgresql://normal@localhost/history_adapter"
+    control = "postgresql://control@localhost/history_adapter"
+
+    @contextmanager
+    def session(url, *, source_database):
+        assert url == control and source_database == "butlers"
+        with engine.connect() as connection:
+            held.append(connection)
+            events.append("lock_enter")
+            connection.exec_driver_sql("SELECT 1")  # actual SQLAlchemy autobegin
+            try:
+                yield connection
+            finally:
+                assert not connection.closed
+                connection.rollback()
+                events.append("lock_exit")
+                held.pop()
+
+    @contextmanager
+    def ordinary(connection):
+        connection.exec_driver_sql("SET ROLE normal")
+        try:
+            yield connection
+        finally:
+            connection.exec_driver_sql("RESET ROLE")
+
+    monkeypatch.setattr(migrations, "migration_session", session)
+    monkeypatch.setattr(migrations, "ordinary_migration_identity", ordinary)
+    versions = tmp_path / "versions"
+    versions.mkdir()
+    attempt = 0
+    try:
+        for schema in (None, "general"):
+            for administrative in (False, True):
+                for failure in (None, "error", "cancel"):
+                    attempt += 1
+                    config = Config()
+                    config.set_main_option("sqlalchemy.url", control if administrative else normal)
+                    config.set_main_option("version_locations", str(versions))
+                    config.set_main_option("path_separator", "os")
+                    if schema is not None:
+                        config.set_main_option("butlers.target_schema", schema)
+                    migration.bind_historical_test_environment(
+                        config, tmp_path / f"online_{attempt}", source, expected_sha256=digest
+                    )
+                    primary = (
+                        asyncio.CancelledError("historical caller cancelled")
+                        if failure == "cancel"
+                        else LookupError("actual historical operation failed")
+                    )
+
+                    def command(
+                        config, revision, *, value=attempt, failure_kind=failure, original=primary
+                    ):
+                        assert revision == "historical_protocol_control"
+                        script = ScriptDirectory.from_config(config)
+
+                        def actual_operation(revision, context):
+                            assert context.connection is held[-1]
+                            assert not context._in_external_transaction
+                            context.connection.exec_driver_sql(
+                                "INSERT INTO retained(value) VALUES (?)", (value,)
+                            )
+                            if failure_kind is not None:
+                                raise original
+                            return []
+
+                        with EnvironmentContext(config, script, fn=actual_operation):
+                            load_python_file(script.dir, "env.py")
+
+                    if failure is not None:
+                        with pytest.raises(type(primary)) as error:
+                            migration.run_historical_test_alembic_command(
+                                container,
+                                command,
+                                config,
+                                "historical_protocol_control",
+                                normal_url=normal,
+                                administrative=administrative,
+                            )
+                        assert error.value is primary
+                    else:
+                        migration.run_historical_test_alembic_command(
+                            container,
+                            command,
+                            config,
+                            "historical_protocol_control",
+                            normal_url=normal,
+                            administrative=administrative,
+                        )
+                    assert not held and events[-1] == "lock_exit"
+                    assert not any(k.startswith("historical.") for k in config.attributes)
+                    with engine.connect() as independent:
+                        observed = independent.exec_driver_sql(
+                            "SELECT count(*) FROM retained WHERE value=?", (attempt,)
+                        ).scalar_one()
+                    assert observed == (0 if failure is not None else 1)
+        assert any(s.startswith("CREATE SCHEMA ") for s in events)
+        assert "SET ROLE normal" in events and "RESET ROLE" in events
+        before = len(events)
+        config.set_main_option("sqlalchemy.url", "postgresql://foreign@localhost/history_adapter")
+        with pytest.raises(AssertionError, match="explicit selected subject"):
+            migration.run_historical_test_alembic_command(
+                container, command, config, "historical_protocol_control", normal_url=normal
+            )
+        assert len(events) == before
+        with pytest.raises(AssertionError, match="Pinned historical environment"):
+            migration.bind_historical_test_environment(
+                config, tmp_path / "invalid", source + "\n", expected_sha256=digest
+            )
+    finally:
+        engine.dispose()
+
+
+def test_core255_historical_fixture_binds_pinned_sources_without_redirecting_current_replay(
+    monkeypatch,
+    tmp_path,
+):
+    import ast
+    import asyncio
+    import hashlib
+    from contextlib import contextmanager
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from butlers.testing import migration
+
+    owner = migration.load_migration(
+        Path(__file__).resolve().parents[1]
+        / "migrations/test_core_255_insight_premise_binding_migration.py"
+    )
+    calls, current, created_environments = [], [], []
+    normal = "postgresql://normal@localhost/history_source"
+    control = "postgresql://control@localhost/history_source"
+    container = SimpleNamespace(
+        get_connection_url=lambda: "postgresql://control@localhost/postgres"
+    )
+
+    class Connection:
+        def exec_driver_sql(self, statement, parameters=None):
+            calls.append((statement, parameters))
+
+    @contextmanager
+    def connection():
+        yield Connection()
+
+    monkeypatch.setattr(
+        owner,
+        "create_engine",
+        lambda *a, **k: SimpleNamespace(connect=connection, dispose=lambda: None),
+    )
+    monkeypatch.setattr(owner, "_create_current_migration_db", lambda *_: normal)
+    monkeypatch.setattr(
+        owner, "_prepare_current_migration_prerequisites", lambda *a: current.append(a)
+    )
+    monkeypatch.setattr(owner, "_run_current_test_alembic_command", lambda *a: current.append(a))
+
+    def historical(container_arg, operation, config, revision, *, normal_url, administrative):
+        assert container_arg is container and normal_url == normal
+        assert administrative == (config.get_main_option("sqlalchemy.url") == control)
+        environment = Path(config.get_main_option("script_location")) / "env.py"
+        created_environments.append(environment)
+        old, new = ast.parse(owner._PINNED_ENV.read_text()), ast.parse(environment.read_text())
+
+        def online(tree):
+            return next(
+                n
+                for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == "run_migrations_online"
+            )
+
+        assert ast.dump(online(old)) == ast.dump(online(new))
+        calls.append(("historical", revision))
+        return operation(config, revision)
+
+    monkeypatch.setattr(owner, "run_historical_test_alembic_command", historical)
+    pinned = owner._PINNED_INIT.read_text()
+    assert hashlib.sha256(pinned.encode()).hexdigest() == owner._PINNED_INIT_DIGEST
+
+    @owner._pinned_historical_producers
+    def exercise(primary=None):
+        assert owner.create_migration_db(container, "history_source") == normal
+        for selected in (normal, control):
+            config = owner._build_alembic_config(selected, ["core"])
+            assert (
+                owner.run_test_alembic_command(container, lambda *_: "done", config, "core_255")
+                == "done"
+            )
+        neutral = tmp_path / "neutral.sql"
+        start = pinned.index("-- AMENDMENT_OWNER_CONVERGENCE_BEGIN")
+        end = pinned.index("-- AMENDMENT_OWNER_CONVERGENCE_END") + len(
+            "-- AMENDMENT_OWNER_CONVERGENCE_END"
+        )
+        neutral.write_text(pinned[:start] + pinned[end:])
+        with monkeypatch.context() as scoped:
+            scoped.setattr(migration, "_INIT_DB", neutral)
+            owner._bootstrap_migration_prerequisites(control, "normal")
+        if primary is not None:
+            raise primary
+
+    exercise()
+    for primary in (LookupError("body failure"), asyncio.CancelledError("body cancelled")):
+        with pytest.raises(type(primary)) as raised:
+            exercise(primary)
+        assert raised.value is primary
+        assert owner._HISTORICAL_CONTEXT.get() is None
+    assert all(not p.exists() for p in created_environments)
+    assert (pinned.replace("\\set ON_ERROR_STOP on\n", "", 1), None) in calls
+    assert sum(statement == "historical" for statement, _ in calls) == 6
+    assert current == []
+    owner._bootstrap_migration_prerequisites(control, "normal")
+    owner.run_test_alembic_command(container, lambda *_: None, object(), "core_254")
+    assert len(current) == 2
+    # The actual canonical negative retains separate current preparation,
+    # current stamp and migrate_test_database calls, not the pinned adapter.
+    negative = ast.parse(Path(owner.__file__).read_text())
+    negative = next(
+        n
+        for n in negative.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_ordinary_bootstrap_owned_core_replay"
+    )
+    invoked = {
+        n.func.id
+        for n in ast.walk(negative)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    }
+    assert {
+        "_prepare_current_migration_prerequisites",
+        "_run_current_test_alembic_command",
+        "migrate_test_database",
+    } <= invoked
+    assert "run_test_alembic_command" not in invoked
+
+
+def test_current_held_alembic_command_commits_public_and_schema_or_rolls_back_primary(
+    monkeypatch, tmp_path
+):
+    """Actual current env + SQLAlchemy/Alembic transaction ownership, without PG IO."""
+    import asyncio
+    from contextlib import contextmanager
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from alembic.config import Config
+    from alembic.runtime.environment import EnvironmentContext
+    from alembic.script import ScriptDirectory
+    from alembic.util import load_python_file
+    from sqlalchemy import create_engine, event
+
+    from butlers import bootstrap_prerequisite, migrations
+    from butlers.testing import migration
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'current_transactions.sqlite'}")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE retained (value INTEGER)")
+    events, held = [], []
+
+    @event.listens_for(engine, "before_cursor_execute", retval=True)
+    def physical_sql(connection, cursor, statement, parameters, context, executemany):
+        if statement.startswith(("SET ROLE ", "RESET ROLE", "CREATE SCHEMA ", "SET search_path")):
+            events.append(statement)
+            return "SELECT 1", ()
+        if statement.startswith("SELECT pg_catalog.to_regclass("):
+            return "SELECT NULL", ()  # fresh selected version table, before real operation
+        return statement, parameters
+
+    container = SimpleNamespace(
+        get_connection_url=lambda: "postgresql://control@localhost/postgres"
+    )
+    normal = "postgresql://normal@localhost/current_protocol"
+    control = "postgresql://control@localhost/current_protocol"
+
+    @contextmanager
+    def session(url, *, source_database):
+        assert url == control and source_database == "butlers"
+        with engine.connect() as connection:
+            held.append(connection)
+            events.append("lock_enter")
+            try:
+                yield connection
+            finally:
+                assert not connection.closed
+                connection.rollback()
+                events.append("lock_exit")
+                held.pop()
+
+    monkeypatch.setattr(migrations, "migration_session", session)
+    monkeypatch.setattr(migrations, "maintenance_profile", lambda connection: "normal")
+    monkeypatch.setattr(
+        bootstrap_prerequisite, "check_bootstrap_connection", lambda connection: None
+    )
+    attempt = 0
+    try:
+        for schema in (None, "general"):
+            for failure in (None, "error", "cancel"):
+                attempt += 1
+                config = Config()
+                config.set_main_option("sqlalchemy.url", normal)
+                config.set_main_option("script_location", str(Path(migrations.ALEMBIC_DIR)))
+                config.set_main_option("path_separator", "os")
+                if schema is not None:
+                    config.set_main_option("butlers.target_schema", schema)
+                primary = (
+                    asyncio.CancelledError("current operation cancelled")
+                    if failure == "cancel"
+                    else LookupError("current operation failed")
+                )
+                observed_context = []
+
+                def command(
+                    config,
+                    revision,
+                    *,
+                    observed=observed_context,
+                    value=attempt,
+                    failure_kind=failure,
+                    original=primary,
+                ):
+                    assert revision == "current_protocol"
+                    script = ScriptDirectory.from_config(config)
+
+                    def actual_operation(revision, context):
+                        assert context.connection is held[-1]
+                        observed.append(context._in_external_transaction)
+                        context.connection.exec_driver_sql(
+                            "INSERT INTO retained(value) VALUES (?)", (value,)
+                        )
+                        if failure_kind is not None:
+                            raise original
+                        return []
+
+                    # PostgreSQL uses transactional DDL. The real SQLite connection
+                    # supplies SQLAlchemy transaction behavior; only PG control IO
+                    # above is translated, and the actual current env runs unchanged.
+                    with EnvironmentContext(
+                        config,
+                        script,
+                        fn=actual_operation,
+                        destination_rev="current_protocol",
+                        transactional_ddl=True,
+                    ):
+                        load_python_file(script.dir, "env.py")
+                    return "actual current command result"
+
+                if failure is None:
+                    result = migration.run_test_alembic_command(
+                        container, command, config, "current_protocol"
+                    )
+                    assert result == "actual current command result"
+                else:
+                    with pytest.raises(type(primary)) as error:
+                        migration.run_test_alembic_command(
+                            container, command, config, "current_protocol"
+                        )
+                    assert error.value is primary
+                assert observed_context == [False]
+                assert "connection" not in config.attributes
+                assert not held and events[-1] == "lock_exit"
+                with engine.connect() as independent:
+                    count = independent.exec_driver_sql(
+                        "SELECT count(*) FROM retained WHERE value=?", (attempt,)
+                    ).scalar_one()
+                assert count == (1 if failure is None else 0)
+        assert sum(s == 'SET ROLE "normal"' for s in events) == 12
+        assert sum(s == "RESET ROLE" for s in events) == 12
+    finally:
+        engine.dispose()
+
+
+def test_current_environment_preserves_successive_public_and_schema_chain_transactions(
+    monkeypatch, tmp_path
+):
+    """Real current-env transaction boundaries across actual selected helper routes."""
+    import asyncio
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from alembic.runtime.environment import EnvironmentContext
+    from alembic.script import ScriptDirectory
+    from alembic.util import load_python_file
+    from sqlalchemy import create_engine, event
+
+    from alembic import command
+    from butlers import bootstrap_prerequisite, migrations
+    from butlers.db_authority import interfaces
+    from butlers.testing import migration
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'successive_transactions.sqlite'}")
+
+    @event.listens_for(engine, "connect")
+    def schema_transport(dbapi_connection, record):
+        dbapi_connection.execute(
+            "ATTACH DATABASE ? AS general", (str(tmp_path / "general.sqlite"),)
+        )
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE retained (value INTEGER)")
+    held, events, observations = [], [], []
+
+    @event.listens_for(engine, "before_cursor_execute", retval=True)
+    def physical_sql(connection, cursor, statement, parameters, context, executemany):
+        if statement.startswith(("SET ROLE ", "RESET ROLE", "CREATE SCHEMA ", "SET search_path")):
+            events.append(statement)
+            return "SELECT 1", ()
+        if statement.startswith("SELECT pg_catalog.to_regclass("):
+            return "SELECT NULL", ()
+        return statement, parameters
+
+    container = SimpleNamespace(
+        get_connection_url=lambda: "postgresql://control@localhost/postgres"
+    )
+    normal = "postgresql://normal@localhost/current_successive"
+
+    @contextmanager
+    def session(url, *, source_database):
+        assert url == "postgresql://control@localhost/current_successive"
+        assert source_database == "butlers"
+        with engine.connect() as connection:
+            held.append(connection)
+            events.append("lock_enter")
+            try:
+                yield connection
+            finally:
+                assert not connection.closed
+                connection.rollback()
+                held.pop()
+                events.append("lock_exit")
+
+    monkeypatch.setattr(migrations, "migration_session", session)
+    monkeypatch.setattr(migrations, "maintenance_profile", lambda connection: "normal")
+    monkeypatch.setattr(migrations, "check_bootstrap_connection", lambda connection: None)
+    monkeypatch.setattr(
+        bootstrap_prerequisite, "check_bootstrap_connection", lambda connection: None
+    )
+    monkeypatch.setattr(migrations, "_bootstrap_extensions", lambda *args, **kwargs: None)
+    monkeypatch.setattr(interfaces, "stage_dashboard_interfaces", lambda connection: None)
+    state = {}
+
+    def execute_chain(config, target):
+        assert config.attributes["connection"] is held[-1]
+        state["targets"].append(target)
+        script = ScriptDirectory.from_config(config)
+        value = state["base"] + len(state["targets"])
+
+        def actual_operation(revision, context):
+            assert context.connection is held[-1]
+            observations.append(context._in_external_transaction)
+            context.connection.exec_driver_sql("INSERT INTO retained(value) VALUES (?)", (value,))
+            if len(state["targets"]) == 2 and state["failure"] is not None:
+                raise state["primary"]
+            return []
+
+        with EnvironmentContext(
+            config, script, fn=actual_operation, destination_rev=target, transactional_ddl=True
+        ):
+            load_python_file(script.dir, "env.py")
+        assert not config.attributes["connection"].closed
+
+    def finalize(connection, *, source_database, plans):
+        assert connection is held[-1] and source_database == "butlers"
+        assert plans == state["plans"]
+        # Read independently BEFORE the real finalizer's concluding commit.
+        # It cannot retroactively save the first public chain from the next
+        # current env's deliberate preflight rollback.
+        with engine.connect() as independent:
+            values = (
+                independent.exec_driver_sql(
+                    "SELECT value FROM retained WHERE value > ? ORDER BY value", (state["base"],)
+                )
+                .scalars()
+                .all()
+            )
+        assert values == [state["base"] + 1, state["base"] + 2]
+        state["finalized"] = True
+        connection.commit()
+
+    monkeypatch.setattr(command, "upgrade", execute_chain)
+    monkeypatch.setattr(migrations, "finalize_authority", finalize)
+    attempt = 0
+    try:
+        for route in ("run_migrations", "migrate_test_database", "stage_test_migration_history"):
+            for schema in (None, "general"):
+                for failure in (None, "error", "cancel"):
+                    attempt += 1
+                    plans = (("core", schema, "core_114"), ("switchboard", schema, None))
+                    primary = (
+                        asyncio.CancelledError("second current chain cancelled")
+                        if failure == "cancel"
+                        else LookupError("second current chain failed")
+                    )
+                    state.clear()
+                    state.update(
+                        base=attempt * 10,
+                        targets=[],
+                        plans=plans,
+                        failure=failure,
+                        primary=primary,
+                        finalized=False,
+                    )
+                    observations.clear()
+
+                    def operation(route=route, schema=schema, plans=plans):
+                        if route == "run_migrations":
+                            with session(
+                                "postgresql://control@localhost/current_successive",
+                                source_database="butlers",
+                            ) as connection:
+                                for chain in ("core", "switchboard"):
+                                    asyncio.run(
+                                        migrations.run_migrations(
+                                            normal,
+                                            chain=chain,
+                                            schema=schema,
+                                            connection=connection,
+                                        )
+                                    )
+                        else:
+                            selected = getattr(migration, route)
+                            assert selected(container, normal, plans=plans) == normal
+
+                    if failure is None:
+                        operation()
+                    else:
+                        with pytest.raises(type(primary)) as error:
+                            operation()
+                        assert error.value is primary
+                    assert not held and events[-1] == "lock_exit"
+                    with engine.connect() as independent:
+                        values = (
+                            independent.exec_driver_sql(
+                                "SELECT value FROM retained WHERE value > ? ORDER BY value",
+                                (state["base"],),
+                            )
+                            .scalars()
+                            .all()
+                        )
+                    assert values == [state["base"] + 1] + (
+                        [state["base"] + 2] if failure is None else []
+                    )
+                    assert observations == [False, False]
+                    assert state["finalized"] is (
+                        route == "migrate_test_database" and failure is None
+                    )
+                    assert state["targets"] == (
+                        ["core@head", "switchboard@head"]
+                        if route == "run_migrations"
+                        else ["core@core_114", "switchboard@head"]
+                    )
+    finally:
+        engine.dispose()

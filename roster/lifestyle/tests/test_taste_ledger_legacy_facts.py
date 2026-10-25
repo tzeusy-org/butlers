@@ -18,8 +18,11 @@ import asyncpg
 import pytest
 
 from butlers.db import register_jsonb_codec, schema_search_path
-from butlers.migrations import run_migrations
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import (
+    async_migrate_test_database,
+    create_migrated_test_db,
+    migration_db_name,
+)
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -65,7 +68,16 @@ def test_active_lifestyle_fact_survives_upgrade_as_verdict(postgres_container) -
         finally:
             await pool.close()
 
-        await run_migrations(db_url, chain="lifestyle", schema="lifestyle")
+        await async_migrate_test_database(
+            postgres_container,
+            db_url,
+            plans=(("lifestyle", "lifestyle", None),),
+            final_plans=(
+                ("core", None, None),
+                ("memory", "lifestyle", None),
+                ("lifestyle", "lifestyle", None),
+            ),
+        )
 
         pool = await asyncpg.create_pool(
             db_url, server_settings={"search_path": search_path}, init=register_jsonb_codec

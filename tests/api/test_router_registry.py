@@ -55,8 +55,26 @@ def test_complete_route_and_openapi_snapshot(tmp_path, monkeypatch):
     }
     encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "42622fa9c5e46d2f5cb3cfc94b0cfedb45ea150f0ee8078cec141397410e0c19"
+        "7bb5e2bb4ef71cfd69089437f203920e93cdf28d007906c39f7bbc3e2bfa50c9"
     )
+    # Exact replacement of the retired bootstrap-body endpoint, independently
+    # inverse-bound to the previous whole snapshot; no route-count relaxation.
+    assert "/api/system/stored-functions" not in snapshot["openapi"]["paths"]
+    authority = snapshot["openapi"]["paths"]["/api/system/database-authority"]["get"]
+    assert authority["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ApiResponse_DatabaseAuthorityFacts_"
+    }
+    assert set(
+        snapshot["openapi"]["components"]["schemas"]["DatabaseAuthorityFacts"]["properties"]
+    ) == {
+        "checked_at",
+        "status",
+        "catalog_check_available",
+        "objects_ok",
+        "functions",
+        "unpinned_definers",
+        "definer_check_available",
+    }
     assert len(snapshot["routes"]) == 614
     assert len(snapshot["openapi"]["paths"]) == 523
     assert not any(

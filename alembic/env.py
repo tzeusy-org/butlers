@@ -238,7 +238,7 @@ def _run_admitted_chain(connection) -> None:
         own_schema = _quote_ident(target_schema)
         connection.exec_driver_sql(f"CREATE SCHEMA IF NOT EXISTS {own_schema}")
         connection.exec_driver_sql(f"SET search_path TO {own_schema}, public")
-        connection.commit()
+    connection.commit()
     configure_kwargs = {
         "connection": connection,
         "target_metadata": None,

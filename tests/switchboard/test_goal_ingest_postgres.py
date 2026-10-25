@@ -19,7 +19,7 @@ import pytest
 from butlers.core.fact_authority import FactWriteContext, dashboard_origin_digest
 from butlers.core.goal_admission import AdmissionUnavailable, EvidenceRefused, decode_grants
 from butlers.db import register_jsonb_codec
-from butlers.migrations import run_migrations
+from butlers.testing.migration import migrate_test_database
 from butlers.tools.switchboard.connector.heartbeat import heartbeat
 from butlers.tools.switchboard.ingestion.accepted_source import AcceptedSourceEvidence
 from butlers.tools.switchboard.ingestion.feed_admission import DeterministicFeeds, FeedChannel
@@ -38,11 +38,21 @@ DECLARATIONS = Path(__file__).parent / "fixtures" / "goal_feed_subscriptions.tom
 
 
 @pytest.fixture(scope="module")
-def source_db(ledger_url):
+def source_db(ledger_url, postgres_container):
     # Actual Home migrations provide the deterministic receiver's existing
     # domain store; no raw-event ledger or stand-in schema is introduced.
-    asyncio.run(run_migrations(ledger_url, chain="core", schema="home"))
-    asyncio.run(run_migrations(ledger_url, chain="home", schema="home"))
+    migrate_test_database(
+        postgres_container,
+        ledger_url,
+        plans=(("core", "home", None), ("home", "home", None)),
+        final_plans=(
+            ("core", "switchboard", None),
+            ("switchboard", "switchboard", None),
+            ("relationship", "relationship", None),
+            ("core", "home", None),
+            ("home", "home", None),
+        ),
+    )
     return ledger_url
 
 

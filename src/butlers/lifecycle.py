@@ -972,13 +972,32 @@ async def _shutdown_chronicler_dependents(daemon: Any) -> None:
         await daemon._audit_db.close()
         daemon._audit_db = None
 
-    # 8. Close credential-layer DB pools
-    if daemon._shared_credentials_db is not None:
-        await daemon._shared_credentials_db.close()
-        daemon._shared_credentials_db = None
+    # 8/9. Retain the complete dependent close sequence across caller timeout
+    # and repeated cancellation. The main pool cannot close before a pending
+    # credential diagnostic has physically released its lease.
+    tail = getattr(daemon, "_credential_dependents_close_task", None)
+    if tail is None:
 
-    # 9. Close DB pool
-    if daemon.db:
-        await daemon.db.close()
+        async def close_databases() -> None:
+            credential_pool = getattr(daemon, "_credential_purpose_pool", None)
+            if credential_pool is not None:
+                from butlers.db_authority.catalog import close_after_catalog_diagnostics
+
+                def credential_closed() -> None:
+                    daemon._credential_purpose_pool = None
+
+                await close_after_catalog_diagnostics(
+                    credential_pool, on_closed=credential_closed, wait_timeout=None
+                )
+            if daemon.db:
+                await daemon.db.close()
+
+        tail = asyncio.create_task(close_databases(), name="daemon-credential-dependent-close")
+        daemon._credential_dependents_close_task = tail
+        tail.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+    completed, _ = await asyncio.wait({tail}, timeout=5)
+    if not completed:
+        raise TimeoutError("Daemon credential cleanup is still pending")
+    tail.result()
 
     logger.info("Butler shutdown complete")

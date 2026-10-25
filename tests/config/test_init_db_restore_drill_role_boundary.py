@@ -979,7 +979,14 @@ def test_migration_probes_each_demand_full_installer_provenance(monkeypatch) -> 
     monkeypatch.setattr(migration.op, "get_bind", lambda: connection)
     with pytest.raises(AuthorityError, match="maintenance prerequisite"):
         migration.upgrade()
-    assert connection.shape_reads == [("restore_drill_executor", "restore_drill_results")]
+    # The current provenance preflight now proves the selected maintenance
+    # actor before even reading the protected ledger shape. A stale initial
+    # ownership proof cannot authorize that earlier boundary either.
+    assert connection.shape_reads == []
+    assert any(
+        sql.startswith("SELECT current_user=session_user AND rolsuper")
+        for sql in connection.statements
+    )
     assert connection.statements.count("RESET ROLE") == 1
     assert connection.statements[-1] == 'SET ROLE "normal_migration"'
     assert connection.effect_statements == []
@@ -1255,9 +1262,20 @@ def test_bootstrap_docs_require_a_cluster_superuser_distinct_from_the_migration_
     for path in (_SCRIPTS_README, _SCHEMA_TOPOLOGY_DOC, _COMPOSE_FILE):
         source = path.read_text(encoding="utf-8")
         normalized_source = " ".join(source.split())
-        # Fixed vocabulary: the GUC an operator sets.
-        assert "butlers.connecting_user" in source, path
-        # Deliberate wording fences, as above.
-        assert "privileged cluster superuser" in normalized_source, path
-        assert "must not be the active bootstrap identity" in normalized_source, path
+        if path == _SCHEMA_TOPOLOGY_DOC:
+            # Current topology has replaced the retired caller-selected GUC:
+            # the held source compiler independently observes the normal owner
+            # and requires a separate explicit maintenance prerequisite.
+            assert "selected privileged maintenance connection" in normalized_source, path
+            assert (
+                "Ordinary DDL runs as the independently observed normal owner" in normalized_source
+            ), path
+            assert "Missing prerequisites or unlisted objects refuse" in normalized_source, path
+            assert "butlers.connecting_user" not in source, path
+        else:
+            # Historical script/Compose operator notes retain their stricter
+            # explicit identity separation; no owner allowance is introduced.
+            assert "butlers.connecting_user" in source, path
+            assert "privileged cluster superuser" in normalized_source, path
+            assert "must not be the active bootstrap identity" in normalized_source, path
         assert _DATABASE_OWNER_ALLOWANCE.search(normalized_source) is None, path

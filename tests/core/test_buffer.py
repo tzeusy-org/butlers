@@ -580,7 +580,9 @@ async def test_buffer_daemon_integration(tmp_path: Any) -> None:
 
     common_patches = {
         "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
+        "run_migrations": patch(
+            "butlers.lifecycle.require_installed_chain", new_callable=AsyncMock
+        ),
         "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
         "validate_module_credentials": patch(
             "butlers.lifecycle.validate_module_credentials_async",

@@ -31,17 +31,22 @@ Adding a migration column or table requires zero changes in tests — the next
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import hashlib
 import importlib.util
 import sys
 import threading
 import uuid
+from contextlib import asynccontextmanager, contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 from urllib.parse import quote, unquote, urlparse
 
 import asyncpg
 from sqlalchemy import Connection, create_engine, text
+from sqlalchemy.pool import NullPool
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _INIT_DB = _REPO_ROOT / "scripts" / "init-db.sql"
@@ -65,7 +70,12 @@ def migration_bootstrap_db_url(postgres_container: object, db_name: str) -> str:
     return parsed._replace(path=f"/{quote(db_name, safe='')}").geturl()
 
 
-def create_migration_db(postgres_container: object, db_name: str) -> str:
+def create_migration_db(
+    postgres_container: object,
+    db_name: str,
+    *,
+    _owned_creation: list[tuple[str, str, int, int | None]] | None = None,
+) -> str:
     """Provision a fresh bootstrapped database on *postgres_container*.
 
     Parameters
@@ -84,9 +94,25 @@ def create_migration_db(postgres_container: object, db_name: str) -> str:
     engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
+            role_oid = None
+            if _owned_creation is not None:
+                role_oid = conn.execute(
+                    text("SELECT oid FROM pg_catalog.pg_roles WHERE rolname=:role"),
+                    {"role": migration_user},
+                ).scalar_one()
+                # Only the acknowledged CREATE above can populate this receipt.
+                _owned_creation.append(("role", migration_user, role_oid, None))
             safe_db_name = db_name.replace('"', '""')
             safe_migration_user = migration_user.replace('"', '""')
             conn.execute(text(f'CREATE DATABASE "{safe_db_name}" OWNER "{safe_migration_user}"'))
+            if _owned_creation is not None:
+                database_oid, owner_oid = conn.execute(
+                    text("SELECT oid,datdba FROM pg_catalog.pg_database WHERE datname=:database"),
+                    {"database": db_name},
+                ).one()
+                if owner_oid != role_oid:
+                    raise RuntimeError("Acknowledged disposable database identity changed")
+                _owned_creation.append(("database", db_name, database_oid, owner_oid))
     finally:
         engine.dispose()
 
@@ -399,18 +425,32 @@ def create_migrated_test_db(
                 schemas={"relationship": "relationship"},
             )
     """
-    # Local import avoids a circular import at module load time.
+    schemas = {} if schemas is None else schemas
+    revisions = {} if revisions is None else revisions
+    db_url = create_migration_db(postgres_container, db_name)
+    plans = tuple((chain, schemas.get(chain), revisions.get(chain)) for chain in chains)
+    return migrate_test_database(postgres_container, db_url, plans=plans)
+
+
+def migrate_test_database(
+    postgres_container: object,
+    db_url: str,
+    *,
+    plans: tuple[tuple[str, str | None, str | None], ...],
+    final_plans: tuple[tuple[str, str | None, str | None], ...] | None = None,
+) -> str:
+    """Run an explicit disposable test deployment under one held maintenance session.
+
+    ``db_url`` remains the normal migration/query identity. Administrative
+    transport comes only from the caller's actual selected testcontainer, never
+    from the normal URL or host environment. Ordered plans retain duplicates,
+    selected schemas and bounded historical targets; finalization happens only
+    after every requested transition succeeds, on that same physical session.
+    """
     from butlers.migrations import finalize_authority, migration_session, run_migrations
 
-    if schemas is None:
-        schemas = {}
-    if revisions is None:
-        revisions = {}
-
-    db_url = create_migration_db(postgres_container, db_name)
-
-    plans = tuple((chain, schemas.get(chain), revisions.get(chain)) for chain in chains)
-    maintenance_url = migration_bootstrap_db_url(postgres_container, db_name)
+    selected_database = unquote(urlparse(db_url).path.lstrip("/"))
+    maintenance_url = migration_bootstrap_db_url(postgres_container, selected_database)
     with migration_session(maintenance_url, source_database="butlers") as connection:
         for chain, schema, revision in plans:
             if revision is None:
@@ -421,9 +461,227 @@ def create_migrated_test_db(
                 _upgrade_chain_to_revision(
                     db_url, chain=chain, schema=schema, revision=revision, connection=connection
                 )
-        finalize_authority(connection, source_database="butlers", plans=plans)
-
+        finalize_authority(
+            connection,
+            source_database="butlers",
+            plans=plans if final_plans is None else final_plans,
+        )
     return db_url
+
+
+def stage_test_migration_history(postgres_container, db_url, *, plans):
+    """Stage an explicit pre-cutover migration window without current finalization.
+
+    This disposable historical fixture never crosses core_281 or claims serving
+    admission. Every core target must be an actual source revision before the
+    cutover. Later current deployment proof uses the separate complete finalizer.
+    """
+    from butlers.migrations import get_chain_revision_path, migration_session, run_migrations
+
+    for chain, _schema, revision in plans:
+        if chain == "core" and (
+            revision is None or "core_281" in get_chain_revision_path("core", revision)
+        ):
+            raise ValueError("Historical core setup requires an explicit pre-core_281 target")
+    selected_database = unquote(urlparse(db_url).path.lstrip("/"))
+    maintenance_url = migration_bootstrap_db_url(postgres_container, selected_database)
+    with migration_session(maintenance_url, source_database="butlers") as connection:
+        for chain, schema, revision in plans:
+            if revision is None:
+                asyncio.run(
+                    run_migrations(db_url, chain=chain, schema=schema, connection=connection)
+                )
+            else:
+                _upgrade_chain_to_revision(
+                    db_url, chain=chain, schema=schema, revision=revision, connection=connection
+                )
+    return db_url
+
+
+def bind_historical_test_environment(config, directory, source, *, expected_sha256):
+    """Bind one pinned historical online producer to explicitly held test IO.
+
+    This never replaces the current environment. The literal historical online
+    body is preserved; only its engine and version-location inputs borrow the
+    caller-owned physical maintenance connection. It supports ownership/metadata
+    diagnostics, not current serving admission or a reverse across core_281.
+    """
+    if hashlib.sha256(source.encode()).hexdigest() != expected_sha256:
+        raise AssertionError("Pinned historical environment changed")
+    entry = "if context.is_offline_mode():\n"
+    if source.count(entry) != 1:
+        raise AssertionError("Pinned historical entrypoint changed")
+    adapter = """
+# Test-only physical transport; the historical online function above is exact.
+from contextlib import nullcontext
+from types import SimpleNamespace
+
+def _historical_held_engine(url, **kwargs):
+    if url != context.config.attributes["historical.selected_url"]:
+        raise AssertionError("Historical configured subject changed")
+    held = context.config.attributes["historical.held_connection"]
+    return SimpleNamespace(connect=lambda: nullcontext(held))
+
+def _historical_selected_locations():
+    return context.config.get_main_option("version_locations").split(os.pathsep)
+
+create_engine = _historical_held_engine
+get_version_locations = _historical_selected_locations
+
+"""
+    final = source.replace(entry, adapter + entry, 1)
+
+    def online(text_source):
+        return next(
+            node
+            for node in ast.parse(text_source).body
+            if isinstance(node, ast.FunctionDef) and node.name == "run_migrations_online"
+        )
+
+    if ast.dump(online(source)) != ast.dump(online(final)):
+        raise AssertionError("Historical online producer changed")
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=False)
+    (directory / "env.py").write_text(final, encoding="utf-8")
+    config.set_main_option("script_location", str(directory))
+    return config
+
+
+def run_historical_test_alembic_command(
+    postgres_container, operation, config, revision, *, normal_url, administrative=False
+):
+    """Execute a labeled historical subject on the same actual maintenance session.
+
+    Role selection is committed before the old public/no-schema online entry;
+    success commits and failure rolls back before restoring role/outer lock.
+    No normal URL is promoted into administrative credentials, and the borrowed
+    physical connection is never closed by the historical environment.
+    """
+    from contextlib import nullcontext
+
+    from butlers.migrations import migration_session, ordinary_migration_identity
+
+    database = unquote(urlparse(normal_url).path.lstrip("/"))
+    control = migration_bootstrap_db_url(postgres_container, database)
+    selected = config.get_main_option("sqlalchemy.url").replace("%%", "%")
+    if selected != (control if administrative else normal_url):
+        raise AssertionError("Historical identity is not the explicit selected subject")
+    names = ("historical.selected_url", "historical.held_connection")
+    if any(name in config.attributes for name in names):
+        raise AssertionError("Historical config already owns transport")
+    with migration_session(control, source_database="butlers") as connection:
+        config.attributes.update({names[0]: selected, names[1]: connection})
+        try:
+            subject = (
+                nullcontext(connection)
+                if administrative
+                else ordinary_migration_identity(connection)
+            )
+            with subject:
+                if administrative:
+                    connection.exec_driver_sql("RESET ROLE")
+                connection.commit()
+                try:
+                    result = operation(config, revision)
+                    connection.commit()
+                    return result
+                except BaseException as primary:
+                    try:
+                        connection.rollback()
+                    except BaseException:
+                        primary.add_note("Historical operation rollback failed")
+                    raise
+        finally:
+            for name in names:
+                config.attributes.pop(name, None)
+
+
+def run_test_alembic_command(postgres_container, operation, config, revision):
+    """Execute the caller's exact Alembic operation on held test maintenance.
+
+    Bounded transitions deliberately do not synthesize a future deployment or
+    stamp. The original operation/target and its normal DDL role remain real;
+    the selected testcontainer supplies only explicit administrative transport.
+    """
+    from butlers.migrations import migration_session, ordinary_migration_identity
+
+    db_url = config.get_main_option("sqlalchemy.url").replace("%%", "%")
+    selected_database = unquote(urlparse(db_url).path.lstrip("/"))
+    maintenance_url = migration_bootstrap_db_url(postgres_container, selected_database)
+    missing = object()
+    previous = config.attributes.get("connection", missing)
+    if previous is not missing:
+        raise RuntimeError("Historical test config already owns a connection")
+    with migration_session(maintenance_url, source_database="butlers") as connection:
+        config.attributes["connection"] = connection
+        try:
+            if getattr(operation, "__name__", None) == "upgrade":
+                from alembic.script import ScriptDirectory
+
+                from butlers.db_authority.interfaces import stage_dashboard_interfaces
+
+                # Resolve the actual selected source graph, including test-owned
+                # producer variants. Historical targets below D13 gain no future
+                # interfaces merely because current code has them.
+                script = ScriptDirectory.from_config(config)
+                targets = script.get_revisions(revision)
+                ancestors = {
+                    item.revision
+                    for target in targets
+                    for item in script.iterate_revisions(target.revision, "base")
+                }
+                if {"core_277", "core_278"} & ancestors:
+                    stage_dashboard_interfaces(connection)
+            with ordinary_migration_identity(connection):
+                try:
+                    result = operation(config, revision)
+                    # Current env may borrow the transaction opened by SET ROLE
+                    # for a public-schema command. This wrapper owns completion
+                    # before maintenance cleanup rolls back role restoration.
+                    connection.commit()
+                    return result
+                except BaseException as primary:
+                    try:
+                        connection.rollback()
+                    except BaseException:
+                        primary.add_note("Selected disposable command rollback was incomplete")
+                    raise
+        finally:
+            config.attributes.pop("connection", None)
+
+
+async def _settle_test_migration(operation, *args, **kwargs):
+    """Retain an off-loop physical test migration until its owned session exits."""
+    task = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
+    cancelled = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancelled = exc
+        except BaseException:
+            break
+    if cancelled is not None:
+        try:
+            task.result()
+        except BaseException:
+            cancelled.add_note("Selected disposable migration also failed during cancellation")
+        raise cancelled
+    return task.result()
+
+
+async def async_migrate_test_database(postgres_container, db_url, *, plans, final_plans=None):
+    """Run the explicit complete selected test plan without blocking the active loop."""
+    return await _settle_test_migration(
+        migrate_test_database, postgres_container, db_url, plans=plans, final_plans=final_plans
+    )
+
+
+async def async_run_test_alembic_command(postgres_container, operation, config, revision):
+    """Retain the caller's exact historical command and held-session cleanup."""
+    return await _settle_test_migration(
+        run_test_alembic_command, postgres_container, operation, config, revision
+    )
 
 
 def _upgrade_chain_to_revision(
@@ -542,3 +800,385 @@ def load_migration(
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = previous
+
+
+@dataclass(frozen=True)
+class ServingTestLogin:
+    """Synthetic operator-created identity, never a runtime capability alias."""
+
+    user: str
+    password: str = field(repr=False)
+    role: str
+
+
+@dataclass(frozen=True)
+class ServingTestDeployment:
+    """Actual source deployment on one disposable testcontainer server."""
+
+    host: str
+    port: int
+    migration_url: str = field(repr=False)
+    runtime_logins: dict[str, ServingTestLogin]
+    purpose_logins: dict[str, ServingTestLogin]
+    _resources: list[tuple[object, str]] = field(default_factory=list, repr=False, compare=False)
+
+    def retain(self, owner: object, method: str = "close") -> None:
+        """Own a real pool manager/Database/daemon before its first startup await."""
+        if method not in {"close", "shutdown"}:
+            raise ValueError("Unsupported disposable serving cleanup")
+        self._resources.append((owner, method))
+
+    async def close_resources(self) -> None:
+        from butlers.db_authority.catalog import close_after_catalog_diagnostics
+
+        failures = []
+        for owner, method in reversed(self._resources):
+            try:
+                await getattr(owner, method)()
+            except TimeoutError:
+                # These are the actual source-owned retained shutdown tails,
+                # not permission to close a dependent pool early.
+                joined = False
+                # Resolve each source-owned tail only when its predecessor has
+                # settled. The Chronicler tail can create the credential tail
+                # after shutdown's first bounded refusal; snapshotting both
+                # beforehand misses that physical dependent cleanup.
+                for name in ("_chronicler_cleanup_task", "_credential_dependents_close_task"):
+                    tail = vars(owner).get(name)
+                    if tail is None:
+                        continue
+                    joined = True
+                    try:
+                        await asyncio.shield(tail)
+                    except BaseException as exc:
+                        failures.append(exc)
+                if not joined:
+                    pools = list(vars(owner).get("_pools", {}).values())
+                    pool = vars(owner).get("_pool")
+                    if pool is not None:
+                        pools.append(pool)
+                    try:
+                        if not pools:
+                            raise RuntimeError("Disposable cleanup has no retained owner")
+                        for pool in pools:
+                            await close_after_catalog_diagnostics(pool, wait_timeout=None)
+                        await getattr(owner, method)()
+                    except BaseException as exc:
+                        failures.append(exc)
+            except BaseException as exc:
+                failures.append(exc)
+        if failures:
+            raise RuntimeError("Disposable serving resources did not close") from failures[0]
+        self._resources.clear()
+
+    def purpose_url(self, purpose: str) -> str:
+        selected = self.purpose_logins[purpose]
+        return (
+            f"postgresql://{quote(selected.user, safe='')}:{quote(selected.password, safe='')}"
+            f"@{self.host}:{self.port}/butlers?sslmode=disable"
+        )
+
+    def runtime_database(self, schema: str, *, min_size: int = 1, max_size: int = 3):
+        from butlers.db import Database
+
+        selected = self.runtime_logins[schema]
+        database = Database(
+            db_name="butlers",
+            schema=schema,
+            role=selected.role,
+            host=self.host,
+            port=self.port,
+            user=selected.user,
+            password=selected.password,
+            ssl="disable",
+            min_pool_size=min_size,
+            max_pool_size=max_size,
+        )
+        self.retain(database)
+        return database
+
+
+def _close_created_test_database(postgres_container, created):
+    """Drop only acknowledged disposable identities, with catalog identity fencing."""
+    from butlers.db_authority.apply import quote_identifier
+
+    if not created:
+        return
+    engine = create_engine(
+        postgres_container.get_connection_url(),
+        isolation_level="AUTOCOMMIT",
+        poolclass=NullPool,
+        connect_args={"connect_timeout": 5, "options": "-c statement_timeout=5000"},
+    )
+    errors = []
+    try:
+        for kind, name, oid, owner_oid in reversed(created):
+            try:
+                with engine.connect() as connection:
+                    if kind == "database":
+                        observed = connection.execute(
+                            text(
+                                "SELECT oid,datdba FROM pg_catalog.pg_database WHERE datname=:name"
+                            ),
+                            {"name": name},
+                        ).one_or_none()
+                        expected = (oid, owner_oid)
+                        statement = f"DROP DATABASE {quote_identifier(name)}"
+                    else:
+                        observed = connection.execute(
+                            text("SELECT oid FROM pg_catalog.pg_roles WHERE rolname=:name"),
+                            {"name": name},
+                        ).one_or_none()
+                        expected = (oid,)
+                        statement = f"DROP ROLE {quote_identifier(name)}"
+                    if observed is None:
+                        continue
+                    if tuple(observed) != expected:
+                        raise RuntimeError("Disposable cleanup identity changed; retained unknown")
+                    # No FORCE/termination: outstanding physical leases refuse cleanup.
+                    connection.exec_driver_sql(statement)
+            except BaseException as exc:
+                errors.append(exc)
+    finally:
+        try:
+            engine.dispose()
+        except BaseException as exc:
+            errors.append(exc)
+    if errors:
+        raise RuntimeError("Disposable database cleanup was incomplete") from errors[0]
+
+
+@contextmanager
+def serving_test_deployment(postgres_container: object):
+    """Explicit disposable operator preparation for genuine serving tests.
+
+    The caller owns an isolated server and closes every serving pool before
+    leaving this scope. All source profiles, real chains, ordinary ownership,
+    held maintenance and the finalizer remain unpatched. The selected container
+    control login creates only synthetic dedicated logins and their sole
+    existing capability memberships; no object privilege is manufactured.
+    ``create_migration_db`` still returns only the normal migration URL.
+    """
+    from butlers.db_authority.apply import quote_identifier
+    from butlers.db_authority.grants import deployment_function_plans
+    from butlers.db_authority.roles import purpose_profile, runtime_profiles
+    from butlers.migrations import (
+        finalize_authority,
+        get_all_chains,
+        migration_session,
+        run_migrations,
+    )
+
+    owned: list[tuple[str, str]] = []
+    created: list[tuple[str, str, int, int | None]] = []
+    primary = None
+    control_url = migration_bootstrap_db_url(postgres_container, "butlers")
+    try:
+        migration_url = create_migration_db(postgres_container, "butlers", _owned_creation=created)
+        profiles = runtime_profiles("butlers")
+        available = frozenset(get_all_chains())
+        plans = tuple(row for row in deployment_function_plans(profiles) if row[0] in available)
+        core = tuple(row for row in plans if row[0] == "core")
+        others = tuple(row for row in plans if row[0] != "core")
+        with migration_session(control_url, source_database="butlers") as connection:
+            for _, schema, _ in core:
+                _upgrade_chain_to_revision(
+                    migration_url,
+                    chain="core",
+                    schema=schema,
+                    revision="core_114",
+                    connection=connection,
+                )
+            for chain, schema, _ in (*core, *others):
+                asyncio.run(
+                    run_migrations(
+                        migration_url,
+                        chain=chain,
+                        schema=schema,
+                        connection=connection,
+                    )
+                )
+            finalize_authority(connection, source_database="butlers", plans=plans)
+
+        engine = create_engine(
+            control_url,
+            isolation_level="AUTOCOMMIT",
+            poolclass=NullPool,
+            connect_args={"connect_timeout": 5, "options": "-c statement_timeout=5000"},
+        )
+        setup_error = None
+        try:
+
+            def create_login(role: str) -> ServingTestLogin:
+                login = f"serving_test_{uuid.uuid4().hex}"
+                password = uuid.uuid4().hex
+                with engine.connect() as connection:
+                    safe = connection.execute(
+                        text("""
+                        SELECT NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper
+                          AND NOT rolcreatedb AND NOT rolcreaterole
+                          AND NOT rolreplication AND NOT rolbypassrls
+                        FROM pg_catalog.pg_roles WHERE rolname=:role
+                    """),
+                        {"role": role},
+                    ).scalar_one()
+                    if safe is not True:
+                        raise RuntimeError("Source test capability is unavailable")
+                    connection.execute(
+                        text(
+                            f"CREATE ROLE {quote_identifier(login)} LOGIN NOINHERIT NOSUPERUSER "
+                            "NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD :password"
+                        ),
+                        {"password": password},
+                    )
+                    # Only an acknowledged CREATE owns cleanup. Ambiguous
+                    # creation never authorizes dropping another identity.
+                    owned.append((login, role))
+                    connection.exec_driver_sql(
+                        f"GRANT {quote_identifier(role)} TO {quote_identifier(login)}"
+                    )
+                return ServingTestLogin(login, password, role)
+
+            runtime = {p.primary_schema: create_login(p.role) for p in profiles}
+            purposes = {
+                purpose: create_login(purpose_profile("butlers", purpose).role)
+                for purpose in ("credential", "dashboard")
+            }
+        except BaseException as exc:
+            setup_error = exc
+            raise
+        finally:
+            try:
+                engine.dispose()
+            except BaseException:
+                if setup_error is None:
+                    raise
+                setup_error.add_note("Disposable setup connection disposal failed")
+        yield ServingTestDeployment(
+            host=postgres_container.get_container_host_ip(),
+            port=int(postgres_container.get_exposed_port(5432)),
+            migration_url=migration_url,
+            runtime_logins=runtime,
+            purpose_logins=purposes,
+        )
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        failures = []
+        if owned:
+            cleanup = None
+            try:
+                cleanup = create_engine(
+                    control_url,
+                    isolation_level="AUTOCOMMIT",
+                    poolclass=NullPool,
+                    connect_args={"connect_timeout": 5, "options": "-c statement_timeout=5000"},
+                )
+                for login, role in reversed(owned):
+                    statements = (
+                        f"REVOKE {quote_identifier(role)} FROM {quote_identifier(login)}",
+                        f"DROP ROLE {quote_identifier(login)}",
+                    )
+                    for statement in statements:
+                        try:
+                            with cleanup.connect() as connection:
+                                connection.exec_driver_sql(statement)
+                        except BaseException as exc:
+                            failures.append(exc)
+            except BaseException as exc:
+                failures.append(exc)
+            finally:
+                if cleanup is not None:
+                    try:
+                        cleanup.dispose()
+                    except BaseException as exc:
+                        failures.append(exc)
+        try:
+            _close_created_test_database(postgres_container, created)
+        except BaseException as exc:
+            failures.append(exc)
+        if failures:
+            if primary is None:
+                raise RuntimeError(
+                    "Disposable serving identity cleanup was incomplete"
+                ) from failures[0]
+            primary.add_note("Disposable serving identity cleanup was incomplete")
+
+
+@asynccontextmanager
+async def async_serving_test_deployment(postgres_container: object):
+    """Own off-loop preparation and cleanup through repeated caller cancellation.
+
+    The synchronous producer uses real Alembic/DBAPI and bootstrap's asyncio.run.
+    A cancelled caller joins its exact worker before disposing acknowledged
+    identities; it cannot abandon a still-creating thread or close its server.
+    """
+    context = serving_test_deployment(postgres_container)
+
+    async def settle(task):
+        cancelled = None
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as exc:
+                if cancelled is None:
+                    cancelled = exc
+            except BaseException:
+                break
+        return cancelled
+
+    entry = asyncio.create_task(asyncio.to_thread(context.__enter__))
+    cancelled = await settle(entry)
+    try:
+        deployment = entry.result()
+    except BaseException as exc:
+        if cancelled is not None:
+            cancelled.add_note("Disposable deployment preparation failed during cancellation")
+            raise cancelled from exc
+        raise
+    primary = cancelled
+    try:
+        if primary is not None:
+            raise primary
+        yield deployment
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        resources = asyncio.create_task(deployment.close_resources())
+        resources_cancelled = await settle(resources)
+        resource_error = None
+        try:
+            resources.result()
+        except BaseException as exc:
+            resource_error = exc
+        selected_primary = primary or resources_cancelled or resource_error
+        exit_args = (
+            (None, None, None)
+            if selected_primary is None
+            else (type(selected_primary), selected_primary, selected_primary.__traceback__)
+        )
+        cleanup = asyncio.create_task(asyncio.to_thread(context.__exit__, *exit_args))
+        cleanup_cancelled = await settle(cleanup)
+        cleanup_error = None
+        try:
+            cleanup.result()
+        except BaseException as exc:
+            cleanup_error = exc
+        # Keep the body's exception; otherwise caller cancellation outranks
+        # cleanup errors. With neither, retain the actual exception identity.
+        cancelled = resources_cancelled or cleanup_cancelled
+        if primary is not None:
+            if resource_error is not None or cleanup_error is not None:
+                primary.add_note("Disposable deployment cleanup failed")
+        elif cancelled is not None:
+            if resource_error is not None or cleanup_error is not None:
+                cancelled.add_note("Disposable deployment cleanup failed")
+            raise cancelled
+        elif resource_error is not None:
+            if cleanup_error is not None:
+                resource_error.add_note("Disposable identity cleanup also failed")
+            raise resource_error
+        elif cleanup_error is not None:
+            raise cleanup_error
