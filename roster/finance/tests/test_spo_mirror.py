@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.testing.records import row as record_row
+
 # Async tests: apply asyncio mark at function level to avoid warnings on sync tests.
 pytestmark = pytest.mark.unit
 
@@ -70,24 +72,12 @@ def _make_row(
     }
 
 
-def _make_asyncpg_record(row_dict: dict):
-    """Build a MagicMock that looks like an asyncpg Record."""
-    record = MagicMock()
-    record.__getitem__ = MagicMock(side_effect=lambda k: row_dict[k])
-    record.__iter__ = MagicMock(side_effect=lambda: iter(row_dict.items()))
-    record.keys = MagicMock(return_value=list(row_dict.keys()))
-    record.items = MagicMock(return_value=list(row_dict.items()))
-    # __contains__ for dict(record) usage
-    record.__contains__ = MagicMock(side_effect=lambda k: k in row_dict)
-    return record
-
-
 def _make_pool(fetchrow_return=None):
     """Build a minimal asyncpg pool mock."""
     pool = AsyncMock()
     row_dict = fetchrow_return or _make_row()
     if not isinstance(fetchrow_return, MagicMock):
-        record = _make_asyncpg_record(row_dict)
+        record = record_row(**row_dict)
     else:
         record = fetchrow_return
     pool.fetchrow = AsyncMock(return_value=record)
@@ -170,7 +160,7 @@ async def test_spo_mirror_called_with_correct_predicate_for_debit():
 
     async def _fetchrow(query, *args):
         if "INSERT INTO transactions" in query:
-            return _make_asyncpg_record(inserted_row)
+            return record_row(**inserted_row)
         return None
 
     pool.fetchrow = AsyncMock(side_effect=_fetchrow)
@@ -237,7 +227,7 @@ async def test_spo_mirror_not_called_on_dedup_hit():
     existing_row = _make_row(source_message_id="msg-dedup-001")
     pool = _make_pool()
     # Simulate dedup: fetchrow returns existing row for source_message_id check
-    pool.fetchrow = AsyncMock(return_value=_make_asyncpg_record(existing_row))
+    pool.fetchrow = AsyncMock(return_value=record_row(**existing_row))
     mirror_calls = []
 
     async def _capture_mirror(*args, **kwargs):
@@ -652,11 +642,11 @@ def _make_bill_pool(bill_row: dict | None = None, *, existing_id: str | None = N
     """
     pool = AsyncMock()
     row = bill_row or _make_bill_row()
-    record = _make_asyncpg_record(row)
+    record = record_row(**row)
 
     if existing_id is not None:
         # First fetchrow → SELECT existing id; second fetchrow → UPDATE RETURNING *
-        existing_record = _make_asyncpg_record({"id": existing_id})
+        existing_record = record_row(**{"id": existing_id})
         pool.fetchrow = AsyncMock(side_effect=[existing_record, record])
     else:
         # First fetchrow → None (no existing); second fetchrow → INSERT RETURNING *
