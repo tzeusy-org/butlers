@@ -272,12 +272,15 @@ async def _run_switchboard_insight_delivery_cycle_job(
     regardless of whether the owner is reachable yet.
     """
     del job_args
+    from butlers.core.finance_warning_control import lookup_owner
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
+    owner = lookup_owner(pool)
     notify_fn = _build_switchboard_insight_notify_fn(pool)
     return await delivery_cycle(
         pool,
         notify_fn=notify_fn,
+        **({"finance_warning_reader": owner.read} if owner is not None else {}),
         daily_hold_mode=True,
         amend_fn=_build_switchboard_insight_amend_fn(pool),
     )
@@ -300,12 +303,15 @@ async def _run_switchboard_insight_urgent_subcycle_job(
     selection and cadence differ.
     """
     del job_args
+    from butlers.core.finance_warning_control import lookup_owner
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
+    owner = lookup_owner(pool)
     notify_fn = _build_switchboard_insight_notify_fn(pool)
     return await delivery_cycle(
         pool,
         notify_fn=notify_fn,
+        **({"finance_warning_reader": owner.read} if owner is not None else {}),
         urgent_only=True,
         amend_fn=_build_switchboard_insight_amend_fn(pool),
     )

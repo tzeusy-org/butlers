@@ -2027,3 +2027,38 @@ async def test_expected_signals_failure_is_degraded_not_empty_all_clear():
         "available": False,
         "degraded_reason": "expected_signals_unavailable",
     }
+
+
+@pytest.mark.asyncio
+async def test_subscription_field_claims_readback_keeps_raw_values_and_unverified_origins():
+    row = _sub_row(service="Synthetic extracted service", amount="10", currency="USD")
+    row.update(
+        renewal_source="owner",
+        price_source="extracted",
+        service_source="extracted",
+        date_epoch=3,
+        price_epoch=0,
+        value_revision=9,
+        field_claims=[
+            {
+                "field": "price",
+                "value": {"amount": "12", "currency": "EUR"},
+                "epoch": 0,
+                "resolved": False,
+            }
+        ],
+    )
+    app, _ = _make_app(fetch_rows=[row], fetchval_return=1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/subscriptions")
+    assert response.status_code == 200
+    stored = response.json()["data"][0]
+    assert (stored["service"], stored["amount"], stored["currency"]) == (
+        "Synthetic extracted service",
+        "10",
+        "USD",
+    )
+    assert stored["date_epoch"] == 3 and stored["price_source"] == "extracted"
+    assert stored["field_claims"] == row["field_claims"]

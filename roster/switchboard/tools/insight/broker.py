@@ -1660,7 +1660,7 @@ def _json_object(value: Any) -> dict[str, Any] | None:
 
 
 async def _revalidate_premises(
-    pool: asyncpg.Pool, *, now: datetime, urgent_only: bool
+    pool: asyncpg.Pool, *, now: datetime, urgent_only: bool, finance_warning_reader=None
 ) -> tuple[dict[str, bool | None], int]:
     """Re-check every pending candidate's premise; withdraw those whose fact is false.
 
@@ -1692,7 +1692,9 @@ async def _revalidate_premises(
     verdicts: dict[str, bool | None] = {}
     withdrawn = 0
     for row in rows:
-        verdict = await check_premise(pool, _json_object(row["premise"]))
+        verdict = await check_premise(
+            pool, _json_object(row["premise"]), finance_warning_reader=finance_warning_reader
+        )
         if verdict is not False:
             verdicts[str(row["id"])] = verdict
             continue
@@ -1933,6 +1935,7 @@ async def delivery_cycle(
     daily_hold_mode: bool = False,
     credential_store: Any | None = None,
     amend_fn: Any | None = None,
+    finance_warning_reader: Any | None = None,
 ) -> dict[str, Any]:
     """Orchestrate the full insight delivery pipeline.
 
@@ -2083,7 +2086,7 @@ async def delivery_cycle(
     # before suppression, cooldown, dedup and budget ever see it, so it can
     # neither be sent nor consume a delivery slot.
     premise_verdicts, result["withdrawn"] = await _revalidate_premises(
-        pool, now=now, urgent_only=False
+        pool, now=now, urgent_only=False, finance_warning_reader=finance_warning_reader
     )
 
     # Priority remains a ranking signal, never an authorization selector.
@@ -2350,6 +2353,53 @@ async def delivery_cycle(
         if evidence["attention_cause"] == "routine":
             evidence["downgrade"] = "unverified_urgency"
         delivery_causes[candidate_id] = evidence
+
+    # Final dispatch barrier: owner confirmation may have committed during selection,
+    # suppression, synthesis or restart. Re-read the stored exact tuple immediately
+    # before send; no public candidate supplies this trusted reader.
+    for candidate in selected:
+        premise = _json_object(candidate.get("premise"))
+        if premise and (premise.get("butler"), premise.get("probe")) == (
+            "finance",
+            "subscription_warning_still_relevant",
+        ):
+            current = await check_premise(
+                pool, premise, finance_warning_reader=finance_warning_reader
+            )
+            if current is False:
+                # The known-false final observation is itself the receipt; never
+                # replace it with a second potentially UNKNOWN read.
+                updated = await pool.execute(
+                    "UPDATE insight_candidates SET status = 'withdrawn', "
+                    "metadata = COALESCE(metadata, '{}'::jsonb) || "
+                    "jsonb_build_object('withdrawn_at', $2::text, "
+                    "'withdrawn_reason', 'premise_false') "
+                    "WHERE id = $1 AND status = 'pending'",
+                    candidate["id"],
+                    dispatch_now.isoformat(),
+                )
+                if str(updated).endswith(" 1"):
+                    await record_attention_event(
+                        pool,
+                        origin_butler=candidate["origin_butler"],
+                        source="insight",
+                        outcome="withdrawn",
+                        channel=candidate.get("channel"),
+                        intent="insight",
+                        priority=candidate["priority"],
+                        dedup_key=candidate.get("dedup_key"),
+                        notification_ref=str(candidate["id"]),
+                        reason="premise_false",
+                    )
+                result.update(skipped=True, reason="finance_warning_superseded")
+                return result
+            if current is None and premise_verdicts.get(str(candidate["id"])) is True:
+                # Synthesis may already have run. Add the same explicit as-of floor
+                # to the final wire, without changing the durable candidate or
+                # claiming that an unavailable read confirmed its current state.
+                stamp = _stamp_unverified(candidate)["message"]
+                delivery_message += "\n\nUnverified Finance report: " + stamp
+                result["delivery_message"] = delivery_message
 
     # notify_fn is guaranteed non-None here (None case returns early above)
     deliver_success = True

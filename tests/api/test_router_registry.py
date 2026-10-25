@@ -55,7 +55,7 @@ def test_complete_route_and_openapi_snapshot(tmp_path, monkeypatch):
     }
     encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "62cba10ae371b7ea12ad103350e21754621011d76efae8c8d8c17549580df8a0"
+        "42622fa9c5e46d2f5cb3cfc94b0cfedb45ea150f0ee8078cec141397410e0c19"
     )
     assert len(snapshot["routes"]) == 614
     assert len(snapshot["openapi"]["paths"]) == 523

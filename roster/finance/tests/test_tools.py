@@ -51,6 +51,80 @@ async def pool(migrated_db_url: str):
 # ---------------------------------------------------------------------------
 
 
+async def _registered_subscription_write(pool, *, source_context=None, owner=False, **values):
+    """Genuine registered HTTP invocation; observe committed native SQL afterward.
+
+    These are trusted fixture inputs, never production tool authority arguments.
+    No provenance attestor or owning storage function is replaced.
+    """
+    import json
+    from contextlib import AsyncExitStack
+    from pathlib import Path
+    from types import SimpleNamespace
+    from uuid import UUID, uuid4
+
+    import httpx
+    from fastmcp import Client, FastMCP
+    from fastmcp.client.transports import StreamableHttpTransport
+
+    from butlers.config import load_config
+    from butlers.core import fact_authority
+    from butlers.core import tool_call_capture as capture
+    from butlers.daemon import ButlerDaemon
+    from butlers.modules.registry import default_registry
+
+    if owner:
+        # The module's migrated DB retains the unique owner across test cases.
+        # Reuse that real entity instead of attempting another singleton insert.
+        entity = await pool.fetchval("SELECT id FROM public.entities WHERE 'owner'=ANY(roles)")
+        if entity is None:
+            entity = await pool.fetchval(
+                "INSERT INTO public.entities(canonical_name,entity_type,roles) "
+                "VALUES('Synthetic subscription owner','person',ARRAY['owner']) RETURNING id"
+            )
+        source_context = {"source_entity_id": str(entity), "request_context": {}}
+    daemon = ButlerDaemon(
+        Path(__file__).parents[3] / "roster/finance", db=SimpleNamespace(pool=pool)
+    )
+    daemon.config = load_config(daemon.config_dir)
+    daemon.mcp = FastMCP("subscription-write-fixture")
+    daemon._modules = [default_registry()._modules["finance"]()]
+    daemon._module_configs = daemon._validate_module_configs()
+    await daemon._register_module_tools()
+    app = ButlerDaemon._build_mcp_http_app(daemon.mcp, butler_name="finance")
+    raw = app._app._app
+    session = str(uuid4())
+    capture.set_runtime_session_routing_context(session, source_context or {})
+    invocation = await fact_authority.register_invocation(
+        "finance", session, source_endpoint=None, routed=True
+    )
+    values = dict(values)
+    values["next_renewal"] = str(values["next_renewal"])
+    if isinstance(values.get("metadata"), dict):
+        values["metadata"] = json.dumps(values["metadata"])
+    try:
+        async with AsyncExitStack() as stack:
+            await stack.enter_async_context(raw.router.lifespan_context(raw))
+            async with Client(
+                StreamableHttpTransport(
+                    "http://synthetic.invalid/mcp",
+                    headers={fact_authority.INVOCATION_HEADER: invocation},
+                    httpx_client_factory=lambda **kw: httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=app), **kw
+                    ),
+                )
+            ) as peer:
+                result = (await peer.call_tool("track_subscription", values)).data
+        async with pool.acquire() as observer:
+            row = await observer.fetchrow(
+                "SELECT * FROM subscriptions WHERE id=$1", UUID(result["id"])
+            )
+            return dict(row) | {"id": str(row["id"])}
+    finally:
+        fact_authority.settle_invocation(invocation)
+        capture.clear_runtime_session_routing_context(session)
+
+
 class TestTrackSubscription:
     """Tests for the track_subscription tool."""
 
@@ -171,7 +245,7 @@ class TestTrackSubscription:
         assert second["notice_period_days"] == 14
 
     async def test_caller_metadata_cannot_assert_expected_signal_authority(self, pool):
-        from butlers.tools.finance import track_subscription
+        track_subscription = _registered_subscription_write
 
         result = await track_subscription(
             pool=pool,
@@ -191,8 +265,7 @@ class TestTrackSubscription:
         assert "expected_signal_source" not in result["metadata"]
 
     async def test_internal_attestation_persists_exact_gmail_endpoint(self, pool):
-        from butlers.tools.finance.expected_signals import FinanceSignalSource
-        from butlers.tools.finance.subscriptions import track_subscription
+        track_subscription = _registered_subscription_write
 
         result = await track_subscription(
             pool=pool,
@@ -201,9 +274,12 @@ class TestTrackSubscription:
             currency="USD",
             frequency="monthly",
             next_renewal=datetime.now(UTC).date() + timedelta(days=30),
-            _expected_signal_source=FinanceSignalSource(
-                "connector:gmail", "gmail:user:owner@example.invalid"
-            ),
+            source_context={
+                "request_context": {
+                    "source_channel": "email",
+                    "source_endpoint_identity": "gmail:user:owner@example.invalid",
+                }
+            },
         )
 
         assert result["metadata"]["expected_signal_source"] == {
@@ -212,11 +288,16 @@ class TestTrackSubscription:
         }
 
     async def test_unproven_update_removes_prior_gmail_authority_from_renewal_signal(self, pool):
-        from butlers.tools.finance.expected_signals import FinanceSignalSource
         from butlers.tools.finance.overview import subscription_audit
-        from butlers.tools.finance.subscriptions import track_subscription
 
-        gmail = FinanceSignalSource("connector:gmail", "gmail:user:owner@example.invalid")
+        track_subscription = _registered_subscription_write
+
+        gmail = {
+            "request_context": {
+                "source_channel": "email",
+                "source_endpoint_identity": "gmail:user:owner@example.invalid",
+            }
+        }
         first = await track_subscription(
             pool=pool,
             service="Rotating provenance",
@@ -225,7 +306,7 @@ class TestTrackSubscription:
             frequency="monthly",
             next_renewal=datetime.now(UTC).date() + timedelta(days=30),
             metadata={"plan": "old"},
-            _expected_signal_source=gmail,
+            source_context=gmail,
         )
         updated = await track_subscription(
             pool=pool,
@@ -261,13 +342,12 @@ class TestTrackSubscription:
         monkeypatch: pytest.MonkeyPatch,
         endpoint: str | None,
     ):
-        from butlers.tools.finance import expected_signals as expected_signals_module
         from butlers.tools.finance.expected_signals import (
-            FinanceSignalSource,
             runtime_signal_source,
         )
         from butlers.tools.finance.overview import subscription_audit
-        from butlers.tools.finance.subscriptions import track_subscription
+
+        track_subscription = _registered_subscription_write
 
         first = await track_subscription(
             pool=pool,
@@ -276,21 +356,17 @@ class TestTrackSubscription:
             currency="USD",
             frequency="monthly",
             next_renewal=datetime.now(UTC).date() + timedelta(days=30),
-            _expected_signal_source=FinanceSignalSource(
-                "connector:gmail", "gmail:user:owner@example.invalid"
-            ),
-        )
-        monkeypatch.setattr(
-            expected_signals_module,
-            "get_current_runtime_session_routing_context",
-            lambda: {
-                "source_entity_id": "00000000-0000-0000-0000-000000000001",
+            source_context={
                 "request_context": {
                     "source_channel": "email",
-                    "source_endpoint_identity": endpoint,
-                },
+                    "source_endpoint_identity": "gmail:user:owner@example.invalid",
+                }
             },
         )
+        source_context = {
+            "source_entity_id": "00000000-0000-0000-0000-000000000001",
+            "request_context": {"source_channel": "email", "source_endpoint_identity": endpoint},
+        }
         current_source = await runtime_signal_source(pool)
         assert current_source is None
         updated = await track_subscription(
@@ -300,7 +376,7 @@ class TestTrackSubscription:
             currency="USD",
             frequency="monthly",
             next_renewal=datetime.now(UTC).date() + timedelta(days=31),
-            _expected_signal_source=current_source,
+            source_context=source_context,
         )
 
         assert updated["id"] == first["id"]
@@ -318,11 +394,16 @@ class TestTrackSubscription:
         }
 
     async def test_owner_update_replaces_prior_gmail_authority_for_renewal_signal(self, pool):
-        from butlers.tools.finance.expected_signals import FinanceSignalSource
         from butlers.tools.finance.overview import subscription_audit
-        from butlers.tools.finance.subscriptions import track_subscription
 
-        gmail = FinanceSignalSource("connector:gmail", "gmail:user:owner@example.invalid")
+        track_subscription = _registered_subscription_write
+
+        gmail = {
+            "request_context": {
+                "source_channel": "email",
+                "source_endpoint_identity": "gmail:user:owner@example.invalid",
+            }
+        }
         first = await track_subscription(
             pool=pool,
             service="Owner replacement",
@@ -330,7 +411,7 @@ class TestTrackSubscription:
             currency="USD",
             frequency="monthly",
             next_renewal=datetime.now(UTC).date() + timedelta(days=30),
-            _expected_signal_source=gmail,
+            source_context=gmail,
         )
         updated = await track_subscription(
             pool=pool,
@@ -339,7 +420,7 @@ class TestTrackSubscription:
             currency="USD",
             frequency="monthly",
             next_renewal=datetime.now(UTC).date() + timedelta(days=31),
-            _expected_signal_source=FinanceSignalSource("owner"),
+            owner=True,
         )
 
         assert updated["id"] == first["id"]
@@ -361,7 +442,7 @@ class TestTrackSubscription:
 
     async def test_upsert_updates_existing_on_service_frequency_match(self, pool):
         """Calling track_subscription twice with same service+frequency updates in place."""
-        from butlers.tools.finance import track_subscription
+        track_subscription = _registered_subscription_write
 
         renewal_1 = datetime.now(UTC).date() + timedelta(days=30)
         first = await track_subscription(
@@ -375,6 +456,7 @@ class TestTrackSubscription:
 
         renewal_2 = datetime.now(UTC).date() + timedelta(days=31)
         second = await track_subscription(
+            owner=True,
             pool=pool,
             service="Adobe Creative Cloud",
             amount=59.99,
@@ -1472,3 +1554,124 @@ class TestSubscriptionFieldProvenance:
 
         assert result["cancellation_url_source"] == "extracted"
         assert result["status_source"] == "extracted"
+
+
+class TestProtectedDateAndPriceClaims:
+    @pytest.mark.parametrize("order", ["owner-first", "extracted-first", "concurrent", "rollback"])
+    async def test_native_committed_pair_claims_owner_confirmation_and_rollback(
+        self, pool, monkeypatch, order
+    ):
+        import asyncio
+        from contextvars import ContextVar
+        from decimal import Decimal
+
+        from butlers.tools.finance import subscriptions as subs
+        from butlers.tools.finance.expected_signals import FinanceSignalSource
+
+        actor = ContextVar("synthetic_actor", default=None)
+
+        async def attestation(connection):
+            # Every actual owning write attests using its held TX connection.
+            assert connection.is_in_transaction()
+            return actor.get()
+
+        monkeypatch.setattr(subs, "runtime_signal_source", attestation)
+        today = datetime.now(UTC).date()
+
+        async def write(owner, renewal, amount=10, currency="USD"):
+            token = actor.set(
+                FinanceSignalSource("owner")
+                if owner
+                else FinanceSignalSource("connector:gmail", "gmail:synthetic")
+            )
+            try:
+                return await subs.track_subscription(
+                    pool, "Synthetic fields", amount, currency, "yearly", renewal
+                )
+            finally:
+                actor.reset(token)
+
+        if order == "extracted-first":
+            await write(False, today + timedelta(days=3), 99, "EUR")
+            await write(True, today + timedelta(days=30))
+        else:
+            await write(True, today + timedelta(days=30))
+        if order == "concurrent":
+            await asyncio.gather(
+                *(write(False, today + timedelta(days=3), 99, "EUR") for _ in range(2))
+            )
+        elif order == "rollback":
+            async with pool.acquire() as conn:
+                tx = conn.transaction()
+                await tx.start()
+                try:
+                    await conn.execute(
+                        "UPDATE subscriptions SET field_claims=$1::jsonb",
+                        [
+                            {
+                                "field": "price",
+                                "value": {"amount": "999", "currency": "EUR"},
+                                "epoch": 0,
+                                "resolved": False,
+                            }
+                        ],
+                    )
+                finally:
+                    await tx.rollback()
+        else:
+            await write(False, today + timedelta(days=3), 99, "EUR")
+        async with pool.acquire() as observer:
+            row = await observer.fetchrow(
+                "SELECT * FROM subscriptions WHERE service='Synthetic fields'"
+            )
+            assert row["amount"] == Decimal("10") and row["currency"] == "USD"
+            assert row["next_renewal"] == today + timedelta(days=30)
+            assert row["price_source"] == row["renewal_source"] == "owner"
+            if order == "rollback":
+                assert row["field_claims"] == []
+            else:
+                assert len(row["field_claims"]) == 2
+                assert row["field_claims"][1]["value"] == {"amount": "99", "currency": "EUR"}
+                assert (
+                    await subs.subscription_warning_still_relevant(
+                        observer, row["id"], today + timedelta(days=3), row["date_epoch"]
+                    )
+                    is True
+                )
+        epoch = row["date_epoch"]
+        await write(True, today + timedelta(days=20), 12, "USD")
+        async with pool.acquire() as observer:
+            confirmed = await observer.fetchrow(
+                "SELECT * FROM subscriptions WHERE id=$1", row["id"]
+            )
+            assert confirmed["date_epoch"] == epoch + 1
+            assert all(claim["resolved"] for claim in confirmed["field_claims"])
+            assert (
+                await subs.subscription_warning_still_relevant(
+                    observer, row["id"], today + timedelta(days=3), epoch
+                )
+                is False
+            )
+
+
+async def test_attestation_sql_error_rolls_back_only_its_savepoint_and_commits_extracted(
+    pool, monkeypatch
+):
+    from butlers.tools.finance import subscriptions
+
+    async def unavailable(connection):
+        # A genuine native SQL failure with the legacy attestor's absorbed-error
+        # behavior. Without the writer's savepoint the next write must abort.
+        try:
+            await connection.fetchval("SELECT 1 / 0")
+        except asyncpg.DivisionByZeroError:
+            return None
+
+    monkeypatch.setattr(subscriptions, "runtime_signal_source", unavailable)
+    result = await subscriptions.track_subscription(
+        pool, "Unattested synthetic", 10, "USD", "yearly", datetime.now(UTC).date()
+    )
+    async with pool.acquire() as observer:
+        stored = await observer.fetchrow("SELECT * FROM subscriptions WHERE id=$1", result["id"])
+        assert stored["renewal_source"] == stored["price_source"] == "extracted"
+        assert stored["field_claims"] == []
