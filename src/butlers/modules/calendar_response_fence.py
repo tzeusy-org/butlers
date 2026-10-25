@@ -124,25 +124,19 @@ class CalendarResponseFence:
                 raise ResponseFenceUnavailable("response_fence_unavailable")
             if self._pool is None:
                 source = self.module._db
-                if not isinstance(source, Database) or source.role_enforcement_disabled:
+                if not isinstance(source, Database):
                     raise ResponseFenceUnavailable("response_fence_unavailable")
                 if source.schema != self.module._butler_name or source.role != (
                     f"butler_{self.module._butler_name}_rw"
                 ):
                     raise ResponseFenceUnavailable("response_fence_unavailable")
-                self._database = Database(
-                    db_name=source.db_name,
-                    schema=source.schema,
-                    role=source.role,
-                    host=source.host,
-                    port=source.port,
-                    user=source.user,
-                    password=source.password,
-                    ssl=source.ssl,
-                    min_pool_size=0,
-                    max_pool_size=2,
-                )
-                self._pool = await self._database.connect()
+                try:
+                    self._database = source.for_owned_schema(source.schema)
+                    self._database.min_pool_size = 0
+                    self._database.max_pool_size = 2
+                    self._pool = await self._database.connect()
+                except RuntimeError as exc:
+                    raise ResponseFenceUnavailable("response_fence_unavailable") from exc
             return self._pool
 
     @asynccontextmanager

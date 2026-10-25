@@ -85,7 +85,6 @@ _NON_SWITCHBOARD_RUNTIME_ROLES = (
     "butler_qa_rw",
     "butler_relationship_rw",
     "butler_travel_rw",
-    "butler_calendar_rw",
     "connector_writer",
     "restore_drill_executor",
 )

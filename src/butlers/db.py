@@ -11,7 +11,11 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import asyncpg
 
-from butlers.db_authority.catalog import assert_runtime_authority, create_owned_pool
+from butlers.db_authority.catalog import (
+    assert_runtime_authority,
+    close_after_catalog_diagnostics,
+    create_owned_pool,
+)
 from butlers.db_authority.roles import RuntimeProfile, load_runtime_profile
 
 logger = logging.getLogger(__name__)
@@ -344,24 +348,6 @@ class Database:
         self._owner_pool: asyncpg.Pool | None = None
         self._runtime_profile: RuntimeProfile | None = None
 
-    @property
-    def role_enforcement_disabled(self) -> bool:
-        """Return True when SET ROLE enforcement is NOT active on this database.
-
-        Enforcement is disabled when:
-        - No role is configured (``self.role is None``), or
-        - The role exists check ran but the role was not found / verification failed
-          (``self._role_verified`` is False after ``connect()``).
-
-        Returns ``True`` by default before ``connect()`` is called, since
-        enforcement has not yet been established.  After ``connect()``, reflects
-        the actual outcome of role-existence verification.
-
-        Intended for the dashboard health surface — read after startup to report
-        whether schema isolation via SET ROLE is active.
-        """
-        return self.role is None or not self._role_verified
-
     def set_schema(self, schema: str | None) -> None:
         """Set schema context for runtime query resolution."""
         self.schema = _normalize_schema_name(schema)
@@ -496,57 +482,88 @@ class Database:
         """
         await register_jsonb_codec(conn)
 
-    async def provision(self) -> None:
-        """Create the database if it doesn't exist.
+    async def provision(
+        self, *, administrative_dsn: str | None = None, owner_role: str | None = None
+    ) -> None:
+        """Explicit operator-created database, with an explicit ordinary owner.
 
-        Connects to the 'postgres' maintenance database to check for and
-        optionally create the butler's database.
+        Neither a serving pool nor its ambient credentials are an administrative
+        fallback. Validate the actual selected login and normal owner before
+        touching template/catalog state. This does not provision logins/grants.
         """
-        connect_kwargs: dict[str, Any] = {
-            "host": self.host,
-            "port": self.port,
-            "user": self.user,
-            "password": self.password,
-            "database": "postgres",
-        }
-        if self.ssl is not None:
-            connect_kwargs["ssl"] = self.ssl
+        from butlers.db_authority.apply import quote_identifier
+        from butlers.db_authority.roles import AuthorityError, bootstrap_role_manifest
+
+        if not administrative_dsn or not owner_role:
+            raise AuthorityError("Explicit provisioning connection and normal owner are required")
+        selected = urlparse(administrative_dsn)
+        login = unquote(selected.username or "")
+        if not login:
+            raise AuthorityError("Explicit provisioning identity is required")
+        # Reject any serving/protected owner as the ordinary database owner.
+        bootstrap_role_manifest(self.db_name, owner_role, source_database="butlers")
+        ssl = _normalize_ssl_mode(parse_qs(selected.query).get("sslmode", [None])[0])
+        options = dict(dsn=administrative_dsn, database="postgres", timeout=5)
+        if ssl is not None:
+            options["ssl"] = ssl
         try:
-            conn = await asyncpg.connect(**connect_kwargs)
+            conn = await asyncpg.connect(**options)
         except Exception as exc:
-            if not should_retry_with_ssl_disable(exc, self.ssl):
+            if not should_retry_with_ssl_disable(exc, ssl):
                 raise
-            retry_kwargs = dict(connect_kwargs)
-            retry_kwargs["ssl"] = "disable"
-            logger.info(
-                "Retrying PostgreSQL provision connection with ssl=disable after SSL upgrade loss"
-            )
-            conn = await asyncpg.connect(**retry_kwargs)
+            conn = await asyncpg.connect(**options, ssl="disable")
+        primary = None
         try:
-            # Refresh collation version on template1 to prevent CREATE DATABASE
-            # failures when the OS collation library version differs from what
-            # was recorded when the template was created (e.g. after a
-            # container image or OS update).  This is a no-op when versions
-            # already match.
+            valid = await conn.fetchval(
+                """SELECT session_user=$1 AND current_user=$1
+                AND EXISTS(SELECT FROM pg_catalog.pg_roles actor
+                  WHERE actor.rolname=session_user AND (actor.rolsuper OR actor.rolcreatedb))
+                AND EXISTS(SELECT FROM pg_catalog.pg_roles owner
+                  WHERE owner.rolname=$2 AND NOT owner.rolsuper AND NOT owner.rolcreatedb
+                  AND NOT owner.rolcreaterole AND NOT owner.rolreplication
+                  AND NOT owner.rolbypassrls AND NOT owner.rolinherit)
+                AND (pg_catalog.pg_has_role(session_user,$2,'MEMBER') OR
+                  EXISTS(SELECT FROM pg_catalog.pg_roles WHERE rolname=session_user AND rolsuper))
+                """,
+                login,
+                owner_role,
+            )
+            if valid is not True:
+                raise AuthorityError("Selected provisioning authority is unavailable")
             try:
                 await conn.execute("ALTER DATABASE template1 REFRESH COLLATION VERSION")
             except Exception:
                 logger.debug("Could not refresh template1 collation version (non-fatal)")
-
             exists = await conn.fetchval(
                 "SELECT 1 FROM pg_database WHERE datname = $1",
                 self.db_name,
             )
             if not exists:
-                # Can't use parameterized query for CREATE DATABASE
-                # Sanitize db_name to prevent SQL injection
-                safe_name = self.db_name.replace('"', '""')
-                await conn.execute(f'CREATE DATABASE "{safe_name}" TEMPLATE template0')
-                logger.info("Created database: %s", self.db_name)
-            else:
-                logger.info("Database already exists: %s", self.db_name)
+                await conn.execute(
+                    f"CREATE DATABASE {quote_identifier(self.db_name)} "
+                    f"OWNER {quote_identifier(owner_role)} TEMPLATE template0"
+                )
+            elif (
+                await conn.fetchval(
+                    "SELECT pg_catalog.pg_get_userbyid(datdba)=$2 "
+                    "FROM pg_catalog.pg_database WHERE datname=$1",
+                    self.db_name,
+                    owner_role,
+                )
+                is not True
+            ):
+                raise AuthorityError("Existing database ownership does not match selection")
+        except BaseException as exc:
+            primary = exc
+            raise
         finally:
-            await conn.close()
+            try:
+                await conn.close(timeout=5)
+            except BaseException:
+                conn.terminate()
+                if primary is None:
+                    raise
+                primary.add_note("Provisioning connection cleanup was incomplete")
 
     async def connect(self) -> asyncpg.Pool:
         """Create and return a connection pool to the butler's database."""
@@ -640,10 +657,15 @@ class Database:
 
     async def close(self) -> None:
         """Close the connection pool."""
-        if self.pool:
-            await self.pool.close()
-            self.pool = None
-            logger.info("Connection pool closed for: %s", self.db_name)
+        if self.pool is not None:
+            pool = self.pool
+
+            def closed() -> None:
+                if self.pool is pool:
+                    self.pool = None
+                    logger.info("Connection pool closed for: %s", self.db_name)
+
+            await close_after_catalog_diagnostics(pool, on_closed=closed)
 
     # -- Pool proxy methods ------------------------------------------------
     # Modules receive a Database instance but need to call asyncpg pool

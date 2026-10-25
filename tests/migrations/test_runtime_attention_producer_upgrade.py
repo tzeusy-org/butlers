@@ -17,11 +17,20 @@ import asyncpg
 import pytest
 import pytest_asyncio
 from sqlalchemy import Engine, create_engine, text
-from sqlalchemy.exc import DBAPIError
 
 from alembic import command
-from butlers.migrations import _build_alembic_config
+from butlers.bootstrap_prerequisite import BootstrapPrerequisiteError
+from butlers.db_authority.apply import transition_runtime_attention
+from butlers.db_authority.interfaces import install_revision_group, protected_group_functions
+from butlers.db_authority.roles import AuthorityError, compile_deployment_profiles
+from butlers.migrations import (
+    _build_alembic_config,
+    finalize_authority,
+    maintenance_profile,
+    migration_session,
+)
 from butlers.testing.migration import (
+    _upgrade_chain_to_revision,
     assert_at_chain_head,
     create_migrated_test_db,
     create_migration_db,
@@ -65,14 +74,44 @@ def migrated_v2_bootstrap_url(
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
-async def migrated_v2_pool(migrated_v2_db_url: str) -> asyncpg.Pool:
+async def migrated_v2_pool(migrated_v2_bootstrap_url: str) -> asyncpg.Pool:
     pool = await asyncpg.create_pool(
-        migrated_v2_db_url.replace("postgresql+psycopg2://", "postgresql://", 1),
+        migrated_v2_bootstrap_url.replace("postgresql+psycopg2://", "postgresql://", 1),
         min_size=1,
         max_size=2,
     )
     yield pool
     await pool.close()
+
+
+def _upgrade_current(bootstrap_url: str, db_url: str, revision: str) -> None:
+    """One physical held session owns ordinary DDL and current authority finalization."""
+    with migration_session(bootstrap_url, source_database="butlers") as connection:
+        _upgrade_chain_to_revision(
+            db_url, chain="core", schema=None, revision=revision, connection=connection
+        )
+        if revision == "core@head":
+            finalize_authority(connection, source_database="butlers", plans=(("core", None, None),))
+        connection.commit()
+
+
+def _attention_transition(bootstrap_url: str, component: str, enabled: bool) -> None:
+    with migration_session(bootstrap_url, source_database="butlers") as connection:
+        transition_runtime_attention(connection, component=component, enabled=enabled)
+        connection.commit()
+
+
+def _insert_breaker_attempts(connection, entry_id):
+    trigger_id = None
+    for _ in range(5):
+        trigger_id = connection.execute(
+            text(
+                "INSERT INTO public.model_dispatch_attempts(catalog_entry_id,butler,outcome) "
+                "VALUES(:id,'general','runtime_failure') RETURNING id"
+            ),
+            {"id": entry_id},
+        ).scalar_one()
+    return trigger_id
 
 
 def test_core_199_is_the_versioned_runtime_attention_upgrade() -> None:
@@ -94,51 +133,33 @@ def test_core_199_is_the_versioned_runtime_attention_upgrade() -> None:
 def test_upgrade_requires_bootstrap_installed_v2_and_revokes_upgrade_authority(
     postgres_container,
 ) -> None:
-    db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
-    core_config = _build_alembic_config(db_url, chains=["core"])
-
-    command.upgrade(core_config, "core_198")
-    command.upgrade(core_config, "core@head")
-
-    engine = create_engine(db_url)
+    """Current held maintenance installs, without a serving installer capability."""
+    name = migration_db_name()
+    url = create_migration_db(postgres_container, name)
+    admin = migration_bootstrap_db_url(postgres_container, name)
+    _upgrade_current(admin, url, "core_198")
+    with pytest.raises((AuthorityError, BootstrapPrerequisiteError)):
+        command.upgrade(_build_alembic_config(url, chains=["core"]), "core@head")
+    _upgrade_current(admin, url, "core@head")
+    engine = create_engine(admin)
     try:
         with engine.connect() as connection:
             assert_at_chain_head(connection)
+            assert not connection.execute(
+                text(
+                    "SELECT EXISTS(SELECT FROM pg_trigger WHERE "
+                    "tgrelid='public.model_dispatch_attempts'::regclass AND "
+                    "tgname='runtime_attention_plant_legacy_debounce_marker_trigger' AND NOT tgisinternal)"
+                )
+            ).scalar_one()
             assert connection.execute(
                 text(
-                    """
-                    SELECT EXISTS (
-                        SELECT 1
-                        FROM pg_trigger
-                        WHERE tgrelid = 'public.model_dispatch_attempts'::regclass
-                          AND tgname = 'runtime_attention_plant_legacy_debounce_marker_trigger'
-                          AND NOT tgisinternal
-                    )
-                    """
+                    "SELECT to_regprocedure("
+                    "'runtime_attention_admin.upgrade_producers_v2()') IS NULL"
                 )
             ).scalar_one()
-            assert not connection.execute(
-                text(
-                    """
-                    SELECT has_function_privilege(
-                        current_user,
-                        upgrader.oid,
-                        'EXECUTE'
-                    )
-                    FROM pg_proc AS upgrader
-                    JOIN pg_namespace AS admin_schema
-                      ON admin_schema.oid = upgrader.pronamespace
-                    WHERE admin_schema.nspname = 'runtime_attention_admin'
-                      AND upgrader.proname = 'upgrade_producers_v2'
-                      AND upgrader.pronargs = 0
-                    """
-                )
-            ).scalar_one()
-            assert not connection.execute(
-                text(
-                    "SELECT has_schema_privilege(current_user, 'runtime_attention_admin', 'USAGE')"
-                )
+            assert connection.execute(
+                text("SELECT to_regnamespace('runtime_attention_admin') IS NULL")
             ).scalar_one()
     finally:
         engine.dispose()
@@ -148,15 +169,10 @@ def test_upgrade_requires_bootstrap_installed_v2_and_revokes_upgrade_authority(
 async def test_legacy_runtime_writers_get_debounce_markers_planted_for_them(
     migrated_v2_pool: asyncpg.Pool,
 ) -> None:
-    """A pre-v2 writer's INSERT succeeds and leaves one marker row per branch.
+    """Legacy INSERTs still work; notification belongs to the validated current producer.
 
-    Nothing is fenced here and the old name of this test said otherwise.  The
-    trigger returns NEW unconditionally, so both INSERTs below land; the only
-    effect asserted is the (target, action) pair the retired
-    model_breaker_attention and fleet_halt_attention helpers debounced on --
-    with no actor filter, which is what let a row planted by a different actor
-    suppress them.  This is cooperative self-suppression by a binary that still
-    honours its own debounce, not an ingress gate.
+    No retired debounce marker is planted. The case now proves both retained
+    write success and positive real current outbox emission, not broad refusal.
     """
     pool = migrated_v2_pool
     await clear_audit_log_for_test(pool)
@@ -203,18 +219,37 @@ async def test_legacy_runtime_writers_get_debounce_markers_planted_for_them(
             ORDER BY id
             """
         )
-        assert [row["action"] for row in rows] == [
-            "model_breaker_open_notified",
-            "ceiling_halt_notified",
-        ]
-        assert rows[0]["target"] == f"model_breaker:{entry_id}"
-        assert rows[1]["target"] == "ceiling_halt"
-        # The breaker note is read by nobody, so bu-95gq7 renamed it.  The
-        # ceiling note is the retired fleet-halt helper's debounce key and must
-        # stay the current UTC month, formatted exactly this way.
-        assert rows[0]["note"] == "legacy_debounce_planted"
-        assert rows[1]["note"] == await pool.fetchval(
-            "SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM')"
+        assert rows == []
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM public.model_dispatch_attempts WHERE catalog_entry_id=$1",
+                entry_id,
+            )
+            == 2
+        )
+        async with pool.acquire() as connection:
+            await connection.execute('SET ROLE "butler_general_rw"')
+            try:
+                trigger_id = None
+                for _ in range(5):
+                    trigger_id = await connection.fetchval(
+                        "INSERT INTO public.model_dispatch_attempts(catalog_entry_id,butler,outcome) "
+                        "VALUES($1,'general','runtime_failure') RETURNING id",
+                        entry_id,
+                    )
+                episode_id = await connection.fetchval(
+                    "SELECT public.append_runtime_attention_model_breaker($1)",
+                    trigger_id,
+                )
+            finally:
+                await connection.execute("RESET ROLE")
+        assert isinstance(episode_id, uuid.UUID)
+        assert (
+            await pool.fetchval(
+                "SELECT triggering_attempt_id FROM public.runtime_attention_outbox WHERE id=$1",
+                episode_id,
+            )
+            == trigger_id
         )
         assert not await pool.fetchval(
             """
@@ -341,54 +376,40 @@ async def test_rollover_crossing_denial_is_evidence_for_the_month_being_guarded(
 def test_bootstrap_rollback_disables_producers_without_restoring_direct_paths(
     postgres_container,
 ) -> None:
-    db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
-    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
-    command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core@head")
-
-    command.downgrade(_build_alembic_config(bootstrap_url, chains=["core"]), "core_198")
-
-    engine = create_engine(bootstrap_url)
+    """Positive operator disable/re-enable retains evidence; a restamp is no substitute."""
+    name = migration_db_name()
+    url = create_migrated_test_db(postgres_container, name, chains=["core"])
+    admin = migration_bootstrap_db_url(postgres_container, name)
+    _attention_transition(admin, "producers", False)
+    engine = create_engine(admin)
     try:
+        with pytest.raises(AuthorityError):
+            with migration_session(admin, source_database="butlers") as held:
+                config = _build_alembic_config(url, chains=["core"])
+                config.attributes["connection"] = held
+                command.downgrade(config, "core_198")
         with engine.begin() as connection:
             enabled = connection.execute(
                 text(
-                    """
-                    SELECT producers_enabled
-                    FROM runtime_attention_admin.bootstrap_configuration
-                    WHERE singleton
-                    """
+                    "SELECT producers_enabled FROM "
+                    "public.runtime_attention_producer_control WHERE singleton"
                 )
             ).scalar_one()
             assert enabled is False
             entry_id = uuid.uuid4()
             connection.execute(
                 text(
-                    """
-                    INSERT INTO public.model_catalog (id, alias, runtime_type, model_id)
-                    VALUES (:id, 'rollback-disabled', 'codex', 'rollback-disabled-model')
-                    """
+                    "INSERT INTO public.model_catalog(id,alias,runtime_type,model_id) "
+                    "VALUES(:id,'rollback-disabled','codex','rollback-disabled-model')"
                 ),
                 {"id": entry_id},
             )
-            trigger_id = None
-            for _ in range(5):
-                trigger_id = connection.execute(
-                    text(
-                        """
-                        INSERT INTO public.model_dispatch_attempts (
-                            catalog_entry_id, butler, outcome
-                        ) VALUES (:id, 'general', 'runtime_failure')
-                        RETURNING id
-                        """
-                    ),
-                    {"id": entry_id},
-                ).scalar_one()
+            trigger_id = _insert_breaker_attempts(connection, entry_id)
             connection.execute(text('SET ROLE "butler_general_rw"'))
             try:
                 episode_id = connection.execute(
-                    text("SELECT public.append_runtime_attention_model_breaker(:trigger_id)"),
-                    {"trigger_id": trigger_id},
+                    text("SELECT public.append_runtime_attention_model_breaker(:id)"),
+                    {"id": trigger_id},
                 ).scalar_one_or_none()
             finally:
                 connection.execute(text("RESET ROLE"))
@@ -399,28 +420,49 @@ def test_bootstrap_rollback_disables_producers_without_restoring_direct_paths(
                 ).scalar_one()
                 == 0
             )
-            assert connection.execute(
+            assert not connection.execute(
                 text(
-                    """
-                    SELECT EXISTS (
-                        SELECT 1 FROM pg_trigger
-                        WHERE tgrelid = 'public.model_dispatch_attempts'::regclass
-                          AND tgname = 'runtime_attention_plant_legacy_debounce_marker_trigger'
-                          AND NOT tgisinternal
-                    )
-                    """
+                    "SELECT EXISTS(SELECT FROM pg_trigger WHERE "
+                    "tgrelid='public.model_dispatch_attempts'::regclass AND "
+                    "tgname='runtime_attention_plant_legacy_debounce_marker_trigger' AND NOT tgisinternal)"
                 )
             ).scalar_one()
             assert connection.execute(
                 text(
-                    "SELECT to_regprocedure('public.append_runtime_attention_model_breaker(bigint)') IS NOT NULL"
+                    "SELECT to_regprocedure("
+                    "'public.append_runtime_attention_model_breaker(bigint)') IS NOT NULL"
                 )
             ).scalar_one()
             assert connection.execute(
                 text(
-                    "SELECT to_regprocedure('public.append_runtime_attention_fleet_halt()') IS NOT NULL"
+                    "SELECT to_regprocedure("
+                    "'public.append_runtime_attention_fleet_halt()') IS NOT NULL"
                 )
             ).scalar_one()
+        _attention_transition(admin, "producers", True)
+        with engine.begin() as connection:
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT count(*) FROM public.model_dispatch_attempts "
+                        "WHERE catalog_entry_id=:id"
+                    ),
+                    {"id": entry_id},
+                ).scalar_one()
+                == 5
+            )
+            trigger_id = _insert_breaker_attempts(connection, entry_id)
+            connection.execute(text('SET ROLE "butler_general_rw"'))
+            try:
+                assert (
+                    connection.execute(
+                        text("SELECT public.append_runtime_attention_model_breaker(:id)"),
+                        {"id": trigger_id},
+                    ).scalar_one()
+                    is not None
+                )
+            finally:
+                connection.execute(text("RESET ROLE"))
     finally:
         engine.dispose()
 
@@ -447,132 +489,88 @@ def _transient_role(engine: Engine, role: str, options: str) -> Iterator[None]:
 
 
 def _database_at_finalized_v1(postgres_container) -> tuple[str, str]:
-    """Provision a disposable database parked at the finalized v1 interface.
-
-    ``core_198`` runs as the ordinary NOSUPERUSER migration login the harness
-    creates, exactly as production does, so
-    ``bootstrap_configuration.migration_role`` is that login and no superuser
-    session can accidentally also satisfy the guard's migration-role disjunct.
-    """
-    db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
-    command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core_198")
-    return db_name, migration_bootstrap_db_url(postgres_container, db_name)
+    """Real historical edge with the current held, source-owned installer."""
+    name = migration_db_name()
+    url = create_migration_db(postgres_container, name)
+    admin = migration_bootstrap_db_url(postgres_container, name)
+    _upgrade_current(admin, url, "core_198")
+    return name, admin
 
 
 def test_upgrade_admits_a_cluster_superuser_that_is_not_the_migration_role(
     postgres_container,
 ) -> None:
-    """The ``rolsuper`` disjunct alone must admit the manual-rerun operator.
-
-    ``scripts/init-db.sql`` documents that "a different superuser may perform a
-    later rerun", and that operator has no automated caller in the tree.  Every
-    other test that reaches ``upgrade_producers_v2`` arrives through Alembic as
-    the migration login, which ``butlers.testing.migration`` creates
-    NOSUPERUSER, so the migration-role disjunct is the only one they can
-    exercise.  This test drives the other one directly.
-    """
+    """A separately selected maintenance actor executes the real current installer."""
     db_name, bootstrap_url = _database_at_finalized_v1(postgres_container)
     operator_role = f"rerun_operator_{db_name}"
-
     engine = create_engine(bootstrap_url)
     try:
         with _transient_role(engine, operator_role, "NOLOGIN SUPERUSER"):
-            with engine.begin() as connection:
-                connection.execute(text(f'SET SESSION AUTHORIZATION "{operator_role}"'))
-                (
-                    caller_is_superuser,
-                    caller_is_migration_role,
-                    caller_is_bootstrap_owner,
-                ) = connection.execute(
-                    text(
-                        """
-                        SELECT
-                            COALESCE(
-                                (SELECT rolsuper FROM pg_roles WHERE rolname = session_user),
-                                false
+            with migration_session(bootstrap_url, source_database="butlers") as connection:
+                original_actor = connection.exec_driver_sql("SELECT session_user").scalar_one()
+                connection.exec_driver_sql(f'SET SESSION AUTHORIZATION "{operator_role}"')
+                try:
+                    owner = maintenance_profile(connection)
+                    caller_is_superuser, caller_is_migration_role, caller_is_bootstrap_owner = (
+                        connection.execute(
+                            text(
+                                "SELECT (SELECT rolsuper FROM pg_roles WHERE rolname=session_user), "
+                                "session_user=:owner, session_user=:original"
                             ),
-                            session_user = configuration.migration_role,
-                            session_user = configuration.bootstrap_role
-                        FROM runtime_attention_admin.bootstrap_configuration AS configuration
-                        WHERE configuration.singleton
-                        """
+                            {"owner": owner, "original": original_actor},
+                        ).one()
                     )
-                ).one()
-                # Without these three facts an admitted call proves nothing:
-                # it could have been admitted by the migration-role disjunct,
-                # or by the caller happening to be the bootstrap owner.
-                assert caller_is_superuser
-                assert not caller_is_migration_role
-                assert not caller_is_bootstrap_owner
-
-                connection.execute(text("SELECT runtime_attention_admin.upgrade_producers_v2()"))
-
-                assert connection.execute(
-                    text(
-                        """
-                        SELECT interface_version = 2 AND producers_enabled
-                        FROM runtime_attention_admin.bootstrap_configuration
-                        WHERE singleton
-                        """
-                    )
-                ).scalar_one()
-                assert connection.execute(
-                    text(
-                        """
-                        SELECT interface_version = 2 AND producers_enabled
-                        FROM public.runtime_attention_producer_control
-                        WHERE singleton
-                        """
-                    )
-                ).scalar_one()
+                    assert caller_is_superuser
+                    assert not caller_is_migration_role
+                    assert not caller_is_bootstrap_owner
+                    install_revision_group(connection, "attention")
+                    assert connection.execute(
+                        text("SELECT to_regnamespace('runtime_attention_admin') IS NULL")
+                    ).scalar_one()
+                    assert connection.execute(
+                        text(
+                            "SELECT producers_enabled FROM "
+                            "public.runtime_attention_producer_control WHERE singleton"
+                        )
+                    ).scalar_one()
+                    connection.commit()
+                finally:
+                    connection.exec_driver_sql("RESET SESSION AUTHORIZATION")
+                    connection.commit()
     finally:
         engine.dispose()
 
 
-def test_upgrade_refuses_a_non_superuser_that_is_not_the_migration_role(
-    postgres_container,
-) -> None:
-    """Admission has to be attributable to one of the guard's two properties.
-
-    The superuser test above would stay green if the guard were deleted
-    outright.  This one goes red in that case, so the pair pins the guard to
-    exactly its two disjuncts rather than to "the function can be called".
-    """
+def test_upgrade_refuses_a_non_superuser_that_is_not_the_migration_role(postgres_container) -> None:
+    """Real source prerequisite refuses before effects, without arbitrary object GRANTs."""
     db_name, bootstrap_url = _database_at_finalized_v1(postgres_container)
     probe_role = f"upgrade_probe_{db_name}"
-
     engine = create_engine(bootstrap_url)
     try:
         with _transient_role(engine, probe_role, "NOLOGIN NOSUPERUSER"):
-            with engine.begin() as connection:
-                connection.execute(
-                    text(f'GRANT USAGE ON SCHEMA runtime_attention_admin TO "{probe_role}"')
-                )
-                connection.execute(
-                    text(
-                        "GRANT EXECUTE ON FUNCTION "
-                        f'runtime_attention_admin.upgrade_producers_v2() TO "{probe_role}"'
-                    )
-                )
             with engine.connect() as connection:
-                connection.execute(text(f'SET SESSION AUTHORIZATION "{probe_role}"'))
-                assert probe_role != f"migration_{db_name}"
-                # The grants above exist so that the refusal below comes from
-                # the guard and not from an ACL check the caller never reached.
+                connection.info["butlers.source_database"] = "butlers"
                 assert connection.execute(
                     text(
-                        "SELECT has_function_privilege(session_user, "
-                        "'runtime_attention_admin.upgrade_producers_v2()', 'EXECUTE')"
+                        "SELECT to_regprocedure("
+                        "'runtime_attention_admin.upgrade_producers_v2()') IS NULL"
                     )
                 ).scalar_one()
-                with pytest.raises(DBAPIError) as refusal:
-                    connection.execute(
-                        text("SELECT runtime_attention_admin.upgrade_producers_v2()")
-                    )
-        assert "runtime-attention v2 upgrade requires its configured migration role" in str(
-            refusal.value
-        )
+                connection.execute(text(f'SET SESSION AUTHORIZATION "{probe_role}"'))
+                assert probe_role != f"migration_{db_name}"
+                with pytest.raises(AuthorityError) as refusal:
+                    install_revision_group(connection, "attention")
+                assert "maintenance/ownership prerequisite" in str(refusal.value)
+                connection.rollback()
+                connection.exec_driver_sql("RESET SESSION AUTHORIZATION")
+                connection.commit()
+        with engine.connect() as connection:
+            assert (
+                connection.execute(
+                    text("SELECT count(*) FROM public.runtime_attention_outbox")
+                ).scalar_one()
+                == 0
+            )
     finally:
         engine.dispose()
 
@@ -596,35 +594,42 @@ def test_runtime_attention_downgrade_functions_refuse_an_executable_nonsuperuser
     function_name: str,
     expected_message: str,
 ) -> None:
-    """The rolsuper guard, not missing ACL, refuses both rollback functions."""
+    """Retained parameter identities now execute the current source operator refusal.
+
+    The old raw-message oracle is superseded by the closed authority category;
+    no legacy function or executable grant is recreated to make it reachable.
+    """
     db_name, bootstrap_url = _database_at_finalized_v1(postgres_container)
     probe_role = f"runtime_attention_rollback_probe_{db_name}"
     function_ref = f"runtime_attention_admin.{function_name}()"
-
     engine = create_engine(bootstrap_url)
     try:
         with _transient_role(engine, probe_role, "NOLOGIN NOSUPERUSER"):
-            with engine.begin() as connection:
-                connection.execute(
-                    text(f'GRANT USAGE ON SCHEMA runtime_attention_admin TO "{probe_role}"')
-                )
-                connection.execute(
-                    text(f'GRANT EXECUTE ON FUNCTION {function_ref} TO "{probe_role}"')
-                )
-
             with engine.connect() as connection:
+                connection.info["butlers.source_database"] = "butlers"
+                assert connection.execute(
+                    text("SELECT to_regprocedure(:identity) IS NULL"), {"identity": function_ref}
+                ).scalar_one()
                 connection.execute(text(f'SET SESSION AUTHORIZATION "{probe_role}"'))
                 assert not connection.execute(
-                    text("SELECT rolsuper FROM pg_roles WHERE rolname = session_user")
+                    text("SELECT rolsuper FROM pg_roles WHERE rolname=session_user")
                 ).scalar_one()
-                assert connection.execute(
+                with pytest.raises(AuthorityError) as refusal:
+                    transition_runtime_attention(connection, component="producers", enabled=False)
+                assert "maintenance/ownership prerequisite" in str(refusal.value)
+                connection.rollback()
+                connection.exec_driver_sql("RESET SESSION AUTHORIZATION")
+                connection.commit()
+        with engine.connect() as connection:
+            assert (
+                connection.execute(
                     text(
-                        f"SELECT has_function_privilege(session_user, '{function_ref}', 'EXECUTE')"
+                        "SELECT producers_enabled FROM "
+                        "public.runtime_attention_producer_control WHERE singleton"
                     )
                 ).scalar_one()
-                with pytest.raises(DBAPIError) as refusal:
-                    connection.execute(text(f"SELECT {function_ref}"))
-                assert str(refusal.value.orig).splitlines()[0] == expected_message
+                is True
+            )
     finally:
         engine.dispose()
 
@@ -650,9 +655,12 @@ def test_core_251_condition_producer_pins_the_controller_identities() -> None:
     spec.loader.exec_module(migration)
     assert (migration.revision, migration.down_revision) == ("core_251", "core_250")
 
-    init_db = (root / "scripts/init-db.sql").read_text()
-    start = init_db.index("CREATE OR REPLACE FUNCTION public.append_runtime_attention_condition")
-    body = init_db[start : init_db.index("$append_runtime_attention_condition$;", start)]
+    definitions = protected_group_functions(
+        compile_deployment_profiles("butlers", source_database="butlers"),
+        "normal_owner",
+        ("attention",),
+    )
+    body = next(d.body for d in definitions if d.name == "append_runtime_attention_condition")
     assert f"'{FLEET_FINGERPRINT}'" in body
     assert f"'{QA_PATROL_OVERDUE_FINGERPRINT}'" in body
     assert QA_PATROL_STOPPED_FINGERPRINT not in body
@@ -661,64 +669,31 @@ def test_core_251_condition_producer_pins_the_controller_identities() -> None:
 def test_core_251_upgrade_requires_the_bootstrap_upgrader_and_then_revokes_it(
     postgres_container,
 ) -> None:
-    """The migration login installs v4 only through the bootstrap handoff, once."""
-    db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
-    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
-    core_config = _build_alembic_config(db_url, chains=["core"])
-    command.upgrade(core_config, "core_250")
-
-    migration_login = create_engine(db_url).url.username
-    bootstrap = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
-    upgrader = "public.runtime_attention_upgrade_condition_v4()"
-    try:
-        with bootstrap.connect() as connection:
-            connection.execute(
-                text(f'REVOKE EXECUTE ON FUNCTION {upgrader} FROM "{migration_login}"')
-            )
-        with pytest.raises(RuntimeError, match="upgrader is unavailable"):
-            command.upgrade(core_config, "core@head")
-        with bootstrap.connect() as connection:
-            assert (
-                connection.execute(
-                    text("SELECT to_regclass('public.runtime_attention_condition_control')")
-                ).scalar_one()
-                is None
-            )
-            connection.execute(text(f'GRANT EXECUTE ON FUNCTION {upgrader} TO "{migration_login}"'))
-        command.upgrade(core_config, "core@head")
-    finally:
-        bootstrap.dispose()
-
-    engine = create_engine(db_url)
+    """Held maintenance installs; no delegated upgrade function authority survives."""
+    name = migration_db_name()
+    url = create_migration_db(postgres_container, name)
+    admin = migration_bootstrap_db_url(postgres_container, name)
+    _upgrade_current(admin, url, "core_250")
+    with pytest.raises((AuthorityError, BootstrapPrerequisiteError)):
+        command.upgrade(_build_alembic_config(url, chains=["core"]), "core@head")
+    _upgrade_current(admin, url, "core@head")
+    migration_login = create_engine(url).url.username
+    engine = create_engine(admin)
     try:
         with engine.connect() as connection:
             assert_at_chain_head(connection)
             proof = connection.execute(
-                text(
-                    f"""
-                    SELECT
-                        NOT has_function_privilege(current_user, '{upgrader}', 'EXECUTE'),
-                        -- Only Switchboard's role is granted the producer; the
-                        -- shared login reaches it solely through that SET ROLE.
-                        NOT EXISTS (
-                            SELECT 1
-                            FROM pg_proc AS producer
-                            CROSS JOIN LATERAL aclexplode(producer.proacl) AS acl
-                            WHERE producer.oid
-                                  = 'public.append_runtime_attention_condition(uuid)'::regprocedure
-                              AND acl.grantee <> producer.proowner
-                              AND acl.grantee <> 'butler_switchboard_rw'::regrole
-                        ),
-                        has_function_privilege(
-                            current_user,
-                            'public.observe_runtime_attention_conditions()',
-                            'EXECUTE'
-                        ),
-                        (SELECT producer_enabled
-                         FROM public.runtime_attention_condition_control WHERE singleton)
-                    """
-                )
+                text("""
+                SELECT to_regprocedure('public.runtime_attention_upgrade_condition_v4()') IS NULL,
+                  NOT EXISTS(SELECT FROM pg_proc producer
+                    CROSS JOIN LATERAL aclexplode(producer.proacl) acl
+                    WHERE producer.oid='public.append_runtime_attention_condition(uuid)'::regprocedure
+                      AND acl.grantee<>producer.proowner
+                      AND acl.grantee<>'butler_switchboard_rw'::regrole),
+                  has_function_privilege(:login,'public.observe_runtime_attention_conditions()','EXECUTE'),
+                  (SELECT producer_enabled FROM public.runtime_attention_condition_control WHERE singleton)
+            """),
+                {"login": migration_login},
             ).one()
             assert all(proof)
     finally:
@@ -728,21 +703,34 @@ def test_core_251_upgrade_requires_the_bootstrap_upgrader_and_then_revokes_it(
 def test_core_251_upgrade_names_the_bootstrap_when_the_upgrader_was_never_installed(
     postgres_container,
 ) -> None:
-    """A database bootstrapped before v4 gets the guidance, not a raw UndefinedFunction."""
-    db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
-    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
-    core_config = _build_alembic_config(db_url, chains=["core"])
-    command.upgrade(core_config, "core_250")
-
-    bootstrap = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    """A genuine missing owner prerequisite refuses before revisions or protected writes."""
+    name = migration_db_name()
+    url = create_migration_db(postgres_container, name)
+    admin = migration_bootstrap_db_url(postgres_container, name)
+    _upgrade_current(admin, url, "core_250")
+    bootstrap = create_engine(admin, isolation_level="AUTOCOMMIT")
     try:
         with bootstrap.connect() as connection:
-            connection.execute(
-                text("DROP FUNCTION public.runtime_attention_upgrade_condition_v4()")
-            )
-        with pytest.raises(RuntimeError, match="run scripts/init-db.sql"):
-            command.upgrade(core_config, "core@head")
+            before = connection.exec_driver_sql("SELECT version_num FROM alembic_version").all()
+            assert connection.execute(
+                text(
+                    "SELECT to_regprocedure("
+                    "'public.runtime_attention_upgrade_condition_v4()') IS NULL"
+                )
+            ).scalar_one()
+            connection.exec_driver_sql('ALTER ROLE "runtime_attention_outbox_owner" LOGIN')
+        try:
+            with pytest.raises(BootstrapPrerequisiteError):
+                _upgrade_current(admin, url, "core@head")
+            with bootstrap.connect() as connection:
+                assert (
+                    connection.exec_driver_sql("SELECT version_num FROM alembic_version").all()
+                    == before
+                )
+        finally:
+            with bootstrap.connect() as connection:
+                connection.exec_driver_sql('ALTER ROLE "runtime_attention_outbox_owner" NOLOGIN')
+        _upgrade_current(admin, url, "core@head")
     finally:
         bootstrap.dispose()
 
@@ -750,107 +738,100 @@ def test_core_251_upgrade_names_the_bootstrap_when_the_upgrader_was_never_instal
 def test_core_251_downgrade_never_refuses_and_only_bootstrap_disables_the_producer(
     postgres_container,
 ) -> None:
-    """Rollback keeps evidence; it is not a trusted-bootstrap downgrade boundary."""
-    db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
-    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
-    command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core@head")
+    """Restamping cannot disable; a stopped operator preserves markers across disable/re-enable."""
+    name = migration_db_name()
+    url = create_migrated_test_db(postgres_container, name, chains=["core"])
+    admin = migration_bootstrap_db_url(postgres_container, name)
     enabled_sql = text(
         "SELECT producer_enabled FROM public.runtime_attention_condition_control WHERE singleton"
     )
-
-    bootstrap = create_engine(bootstrap_url)
+    engine = create_engine(admin)
     try:
-        command.downgrade(_build_alembic_config(db_url, chains=["core"]), "core_250")
-        with bootstrap.connect() as connection:
+        with pytest.raises((AuthorityError, BootstrapPrerequisiteError)):
+            command.downgrade(_build_alembic_config(url, chains=["core"]), "core_250")
+        with engine.connect() as connection:
             assert connection.execute(enabled_sql).scalar_one() is True
-        command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core@head")
-
-        command.downgrade(_build_alembic_config(bootstrap_url, chains=["core"]), "core_250")
-        with bootstrap.connect() as connection:
+            before = connection.exec_driver_sql(
+                "SELECT * FROM public.runtime_attention_condition_episodes ORDER BY condition_id"
+            ).all()
+        _attention_transition(admin, "conditions", False)
+        with engine.connect() as connection:
             assert connection.execute(enabled_sql).scalar_one() is False
+            assert connection.execute(
+                text(
+                    "SELECT to_regclass('public.runtime_attention_condition_episodes') IS NOT NULL"
+                )
+            ).scalar_one()
             assert (
-                connection.execute(
-                    text("SELECT to_regclass('public.runtime_attention_condition_episodes')")
-                ).scalar_one()
-                is not None
+                connection.exec_driver_sql(
+                    "SELECT * FROM public.runtime_attention_condition_episodes "
+                    "ORDER BY condition_id"
+                ).all()
+                == before
             )
+        _attention_transition(admin, "conditions", True)
+        with engine.connect() as connection:
+            assert connection.execute(enabled_sql).scalar_one() is True
     finally:
-        bootstrap.dispose()
+        engine.dispose()
 
 
 def test_core_253_marker_sync_upgrade_is_one_shot_and_downgrade_keeps_markers(
     postgres_container,
 ) -> None:
-    """bu-giazn6: the marker sync installs once through the bootstrap handoff.
-
-    Downgrade as the migration login restamps and leaves the truth-preserving
-    trigger; as the bootstrap it removes trigger and function, keeps every
-    marker, and re-offers the upgrader so a later upgrade is a plain step.
-    """
-    db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
-    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
-    core_config = _build_alembic_config(db_url, chains=["core"])
-    command.upgrade(core_config, "core_252")
-
-    migration_login = create_engine(db_url).url.username
-    upgrader = "public.runtime_attention_upgrade_condition_marker_v5()"
-    installed_sql = text(
-        """
-        SELECT to_regprocedure('public.runtime_attention_sync_condition_marker()') IS NOT NULL
-           AND EXISTS (
-               SELECT 1 FROM pg_trigger
-               WHERE tgrelid = 'public.runtime_attention_outbox'::regclass
-                 AND tgname = 'runtime_attention_condition_marker_sync_trigger'
-           )
-        """
-    )
+    """Actual operator disable/reinstall retains every existing marker and fixed trigger ABI."""
+    name = migration_db_name()
+    create_migrated_test_db(postgres_container, name, chains=["core"])
+    admin = migration_bootstrap_db_url(postgres_container, name)
+    installed_sql = text("""SELECT to_regprocedure('public.runtime_attention_sync_condition_marker()') IS NOT NULL
+        AND EXISTS(SELECT FROM pg_trigger WHERE tgrelid='public.runtime_attention_outbox'::regclass
+        AND tgname='runtime_attention_condition_marker_sync_trigger')""")
     marker_count_sql = text("SELECT count(*) FROM public.runtime_attention_condition_episodes")
-    bootstrap = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    engine = create_engine(admin)
     try:
-        with bootstrap.connect() as connection:
-            connection.execute(
-                text(f'REVOKE EXECUTE ON FUNCTION {upgrader} FROM "{migration_login}"')
-            )
-        with pytest.raises(RuntimeError, match="marker upgrader is unavailable"):
-            command.upgrade(core_config, "core@head")
-        with bootstrap.connect() as connection:
-            assert connection.execute(installed_sql).scalar_one() is False
-            connection.execute(text(f'GRANT EXECUTE ON FUNCTION {upgrader} TO "{migration_login}"'))
-            # One pre-existing marker proves the rollback keeps evidence.
+        with engine.begin() as connection:
             connection.execute(
                 text(
                     "INSERT INTO public.runtime_attention_condition_episodes "
-                    "(condition_id, condition_kind, episode_id, last_delivery_state) "
-                    "VALUES (gen_random_uuid(), 'fleet_control', gen_random_uuid(), 'sent')"
+                    "(condition_id,condition_kind,episode_id,last_delivery_state) "
+                    "VALUES(gen_random_uuid(),'fleet_control',gen_random_uuid(),'sent')"
                 )
             )
-        command.upgrade(core_config, "core@head")
-        with bootstrap.connect() as connection:
+            before = connection.exec_driver_sql(
+                "SELECT * FROM public.runtime_attention_condition_episodes ORDER BY condition_id"
+            ).all()
             assert connection.execute(installed_sql).scalar_one() is True
-            assert (
-                connection.execute(
-                    text(
-                        f"SELECT has_function_privilege('{migration_login}', "
-                        f"'{upgrader}', 'EXECUTE')"
-                    )
-                ).scalar_one()
-                is False
-            )
-
-        command.downgrade(core_config, "core_252")
-        with bootstrap.connect() as connection:
-            assert connection.execute(installed_sql).scalar_one() is True
-        command.upgrade(core_config, "core@head")
-
-        command.downgrade(_build_alembic_config(bootstrap_url, chains=["core"]), "core_252")
-        with bootstrap.connect() as connection:
+            assert connection.execute(
+                text(
+                    "SELECT to_regprocedure("
+                    "'public.runtime_attention_upgrade_condition_marker_v5()') IS NULL"
+                )
+            ).scalar_one()
+        _attention_transition(admin, "marker", False)
+        with engine.connect() as connection:
             assert connection.execute(installed_sql).scalar_one() is False
             assert connection.execute(marker_count_sql).scalar_one() == 1
-        command.upgrade(core_config, "core@head")
-        with bootstrap.connect() as connection:
+        _attention_transition(admin, "marker", True)
+        with engine.connect() as connection:
             assert connection.execute(installed_sql).scalar_one() is True
             assert connection.execute(marker_count_sql).scalar_one() == 1
+            assert (
+                connection.exec_driver_sql(
+                    "SELECT * FROM public.runtime_attention_condition_episodes "
+                    "ORDER BY condition_id"
+                ).all()
+                == before
+            )
+        _attention_transition(admin, "marker", True)
+        with engine.connect() as connection:
+            assert connection.execute(installed_sql).scalar_one() is True
+            assert connection.execute(marker_count_sql).scalar_one() == 1
+            assert (
+                connection.exec_driver_sql(
+                    "SELECT * FROM public.runtime_attention_condition_episodes "
+                    "ORDER BY condition_id"
+                ).all()
+                == before
+            )
     finally:
-        bootstrap.dispose()
+        engine.dispose()

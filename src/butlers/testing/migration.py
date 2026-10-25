@@ -38,7 +38,7 @@ import threading
 import uuid
 from pathlib import Path
 from types import ModuleType
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 import asyncpg
 from sqlalchemy import Connection, create_engine, text
@@ -137,27 +137,26 @@ def init_db_sql_for_dbapi() -> str:
 def _bootstrap_migration_prerequisites(bootstrap_db_url: str, migration_user: str) -> None:
     """Stage the production bootstrap contract in a disposable migration database.
 
-    ``core_196`` deliberately invokes only the installer provisioned by
-    ``scripts/init-db.sql``.  Migration tests use a fresh testcontainer database,
-    so they must stage that trusted bootstrap boundary before exercising the
-    ordinary, non-privileged migration path.
+    The same production preparation compiles the selected deployment's source
+    identities. No fixture-specific grant or stored installer is substituted.
     """
-    source = init_db_sql_for_dbapi()
-    engine = create_engine(bootstrap_db_url, isolation_level="AUTOCOMMIT")
-    raw_connection = engine.raw_connection()
+    from butlers.bootstrap_prerequisite import prepare_bootstrap_connection
+
+    database = unquote(urlparse(bootstrap_db_url).path.lstrip("/"))
+    engine = create_engine(
+        bootstrap_db_url, isolation_level="AUTOCOMMIT", connect_args={"connect_timeout": 5}
+    )
+    raw_connection = None
     try:
+        raw_connection = engine.raw_connection()
         raw_connection.autocommit = True
-        with raw_connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT set_config('butlers.connecting_user', %s, false)",
-                (migration_user,),
-            )
-            # Do not pass an empty parameter mapping: PostgreSQL's SQL-format
-            # placeholders in init-db.sql are not DBAPI bind parameters.
-            cursor.execute(source)
+        prepare_bootstrap_connection(raw_connection, database, migration_user)
     finally:
-        raw_connection.close()
-        engine.dispose()
+        try:
+            if raw_connection is not None:
+                raw_connection.close()
+        finally:
+            engine.dispose()
 
 
 def bootstrap_extensions(db_url: str) -> None:
@@ -401,7 +400,7 @@ def create_migrated_test_db(
             )
     """
     # Local import avoids a circular import at module load time.
-    from butlers.migrations import run_migrations
+    from butlers.migrations import finalize_authority, migration_session, run_migrations
 
     if schemas is None:
         schemas = {}
@@ -410,19 +409,25 @@ def create_migrated_test_db(
 
     db_url = create_migration_db(postgres_container, db_name)
 
-    for chain in chains:
-        schema = schemas.get(chain)
-        revision = revisions.get(chain)
-        if revision is None:
-            asyncio.run(run_migrations(db_url, chain=chain, schema=schema))
-        else:
-            _upgrade_chain_to_revision(db_url, chain=chain, schema=schema, revision=revision)
+    plans = tuple((chain, schemas.get(chain), revisions.get(chain)) for chain in chains)
+    maintenance_url = migration_bootstrap_db_url(postgres_container, db_name)
+    with migration_session(maintenance_url, source_database="butlers") as connection:
+        for chain, schema, revision in plans:
+            if revision is None:
+                asyncio.run(
+                    run_migrations(db_url, chain=chain, schema=schema, connection=connection)
+                )
+            else:
+                _upgrade_chain_to_revision(
+                    db_url, chain=chain, schema=schema, revision=revision, connection=connection
+                )
+        finalize_authority(connection, source_database="butlers", plans=plans)
 
     return db_url
 
 
 def _upgrade_chain_to_revision(
-    db_url: str, *, chain: str, schema: str | None, revision: str
+    db_url: str, *, chain: str, schema: str | None, revision: str, connection: Connection
 ) -> None:
     """Upgrade one chain to *revision* instead of its head.
 
@@ -432,11 +437,27 @@ def _upgrade_chain_to_revision(
     """
     # Local import avoids a circular import at module load time.
     from alembic import command
-    from butlers.migrations import _build_alembic_config, _normalize_schema
+    from butlers.migrations import (
+        _build_alembic_config,
+        _normalize_schema,
+        ordinary_migration_identity,
+    )
 
     normalized_schema = _normalize_schema(schema)
+    if chain == "core":
+        from butlers.db_authority.interfaces import stage_dashboard_interfaces
+        from butlers.migrations import get_chain_revision_path
+
+        # Use the same actual maintenance producer as the production chain.
+        # Only source revisions depending on these independent D13 interfaces
+        # stage them; a bounded old target gains no future runtime capability.
+        ancestors = get_chain_revision_path(chain, revision)
+        if {"core_277", "core_278"} & ancestors:
+            stage_dashboard_interfaces(connection)
     config = _build_alembic_config(db_url, [chain], target_schema=normalized_schema)
-    command.upgrade(config, f"{chain}@{revision}")
+    config.attributes["connection"] = connection
+    with ordinary_migration_identity(connection):
+        command.upgrade(config, f"{chain}@{revision}")
 
 
 async def create_migrated_test_pool(
@@ -448,13 +469,17 @@ async def create_migrated_test_pool(
     min_pool_size: int = 1,
     max_pool_size: int = 3,
 ) -> asyncpg.Pool:
-    """Create a schema-accurate asyncpg pool without blocking an active event loop.
+    """Create an administrative schema-accurate test pool off the active loop.
 
     The synchronous migration factory deliberately owns disposable database
     creation, privileged ``init-db.sql`` staging, and ordinary NOCREATEDB
-    migrations.  Async integration fixtures must use it in a worker thread,
-    then connect their pool with the same JSONB and search-path behavior as the
-    production :class:`butlers.db.Database` wrapper.
+    migrations. This utility then opens the selected disposable database with
+    its testcontainer control login for administrative seeds/readback and
+    explicit SET ROLE probes. It retains JSONB/search-path behavior, not a
+    production serving identity. Native admission/RLS proofs must separately
+    connect as a real dedicated serving login; an administrative acquisition
+    cannot discharge them. create_migrated_test_db still returns only the
+    normal migration-owner URL.
     """
     from butlers.db import register_jsonb_codec, schema_search_path
 
@@ -475,7 +500,12 @@ async def create_migrated_test_pool(
         assert search_path is not None
         pool_kwargs["server_settings"] = {"search_path": search_path}
 
-    return await asyncpg.create_pool(db_url, **pool_kwargs)
+    selected_database = unquote(urlparse(db_url).path.lstrip("/"))
+    control_url = migration_bootstrap_db_url(postgres_container, selected_database)
+    # testcontainers exposes a SQLAlchemy driver-qualified URL; asyncpg needs
+    # the native scheme. Preserve every other selected connection component.
+    control_url = urlparse(control_url)._replace(scheme="postgresql").geturl()
+    return await asyncpg.create_pool(control_url, timeout=5, **pool_kwargs)
 
 
 def load_migration(

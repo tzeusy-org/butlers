@@ -30,6 +30,12 @@ database:
   poolMaxSize: 4
   apiPoolMinSize: 0
   apiPoolMaxSize: 2
+  # Secret key names only. No fallback between serving and migration purposes.
+  credentials:
+    runtime: {userKey: POSTGRES_USER, passwordKey: POSTGRES_PASSWORD}
+    dashboard: {userKey: DASHBOARD_DB_USER, passwordKey: DASHBOARD_DB_PASSWORD}
+    connector: {userKey: CONNECTOR_DB_USER, passwordKey: CONNECTOR_DB_PASSWORD}
+    backup: {userKey: BACKUP_DB_USER, passwordKey: BACKUP_DB_PASSWORD}
 
 # Bitwarden Secrets Manager -> Secret `<release>-bws` via External Secrets.
 # Map of env var name -> BWS secret key. Only these keys are synced; the BWS
@@ -41,6 +47,14 @@ externalSecrets:
   data:
     POSTGRES_USER: BUTLERS_RUNTIME_DB_USER
     POSTGRES_PASSWORD: BUTLERS_RUNTIME_DB_PASSWORD
+    MIGRATOR_DATABASE_URL: BUTLERS_MIGRATOR_DATABASE_URL
+    CREDENTIAL_DATABASE_URL: BUTLERS_CREDENTIAL_DATABASE_URL
+    DASHBOARD_DB_USER: BUTLERS_DASHBOARD_DB_USER
+    DASHBOARD_DB_PASSWORD: BUTLERS_DASHBOARD_DB_PASSWORD
+    CONNECTOR_DB_USER: BUTLERS_CONNECTOR_DB_USER
+    CONNECTOR_DB_PASSWORD: BUTLERS_CONNECTOR_DB_PASSWORD
+    BACKUP_DB_USER: BUTLERS_BACKUP_DB_USER
+    BACKUP_DB_PASSWORD: BUTLERS_BACKUP_DB_PASSWORD
     DASHBOARD_AUTH_DB_PASSWORD: BUTLERS_RUNTIME_DASHBOARD_AUTH_DB_PASSWORD
   # Used only when localSecrets.source=bws: BWS key names (never values) for the
   # two Secrets below. Each key is listed explicitly; nothing is wildcard-synced.

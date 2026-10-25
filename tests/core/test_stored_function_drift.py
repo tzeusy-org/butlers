@@ -1,240 +1,382 @@
-"""Unit tests for the stored-function body drift probe's comparison rules (bu-bi5an).
+"""Executing successors for retired init-source/body-variant diagnostics.
 
-The real-PostgreSQL contract -- drift is reported, a cosmetic rewrite is not --
-lives in ``tests/config/test_stored_function_body_drift.py``.  What is here is
-the part that needs no database: parsing ``scripts/init-db.sql`` into committed
-definitions, and the comparison rules that a live catalog cannot easily be made
-to exhibit.
+Historical test names remain as population identities. The adopted DB authority
+contract supersedes path overrides, nested installer parsing and acceptance of
+old function bodies. Each control exercises source compilation/catalog facts;
+none executes PostgreSQL or claims SQL/catalog permission proof.
 """
 
-from __future__ import annotations
-
-import logging
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from butlers.core.stored_function_drift import (
-    DRIFTED,
-    INIT_DB_SQL_PATH,
-    MATCHED,
-    NOT_DEPLOYED,
-    STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH_ENV,
-    FunctionDefinition,
-    StoredFunctionDriftReport,
-    compare_stored_functions,
-    compute_stored_function_drift,
-    log_stored_function_drift,
-    parse_function_definitions,
+    compare_catalog_functions,
+    compute_database_authority,
+    log_database_authority,
 )
+from butlers.db_authority.grants import serving_catalog_contract
 
 pytestmark = pytest.mark.unit
 
-#: A ``CREATE FUNCTION`` nested inside an installer body -- the hard parser case.
-_PLANTER = "public.runtime_attention_plant_legacy_debounce_marker"
-#: A top-level ``CREATE OR REPLACE FUNCTION``.
-_TOP_LEVEL = "runtime_attention_admin.finalize_interface"
-#: Two committed variants: v1 from ``install_interface``, v2 from
-#: ``upgrade_producers_v2`` (invoked once by ``core_199``).
-_TWO_VARIANT = "public.append_runtime_attention_model_breaker"
 
-
-def test_parses_top_level_and_nested_committed_function_bodies() -> None:
-    definitions = parse_function_definitions(INIT_DB_SQL_PATH.read_text(encoding="utf-8"))
-
-    by_name: dict[str, list[FunctionDefinition]] = {}
-    for definition in definitions:
-        by_name.setdefault(definition.function, []).append(definition)
-
-    assert _TOP_LEVEL in by_name, "a top-level CREATE FUNCTION was not parsed"
-    assert _PLANTER in by_name, "a CREATE FUNCTION nested inside an installer was not parsed"
-    assert len(by_name[_TWO_VARIANT]) == 2, (
-        f"{_TWO_VARIANT} has a v1 and a v2 committed body; both must be parsed, "
-        "or a database on either one reads as drift"
-    )
-    assert "legacy_debounce_planted" in by_name[_PLANTER][0].body, (
-        "the parsed planter body does not carry the literal init-db.sql commits, "
-        "so the parser sliced the wrong span"
-    )
-    assert by_name[_PLANTER][0].line > 1
-
-
-def test_an_overload_the_committed_source_does_not_describe_is_reported() -> None:
-    """Every deployed body must match a committed one, not merely one of them."""
-    definitions = (FunctionDefinition(function="public.f", line=10, body="BEGIN\nRETURN 1;\nEND"),)
-
-    entries = compare_stored_functions(
-        definitions, {"public.f": ["BEGIN\nRETURN 1;\nEND", "BEGIN\nRETURN 2;\nEND"]}
+def _source():
+    return dict(
+        schema="public",
+        name="fixed",
+        signature="uuid",
+        owner=None,
+        digest="a" * 64,
+        executors=[],
+        settings=["search_path=pg_catalog, pg_temp"],
     )
 
-    assert [entry.status for entry in entries] == [DRIFTED]
 
-
-def test_a_deployed_body_matching_the_second_committed_variant_is_matched() -> None:
-    definitions = (
-        FunctionDefinition(function="public.f", line=10, body="BEGIN\nRETURN 1;\nEND"),
-        FunctionDefinition(function="public.f", line=90, body="BEGIN\nRETURN 2;\nEND"),
+def _observed(**changes):
+    return (
+        dict(
+            schema_name="public",
+            name="fixed",
+            signature="uuid",
+            present=True,
+            owner_ok=True,
+            settings_ok=True,
+            acl_ok=True,
+            digest="a" * 64,
+        )
+        | changes
     )
 
-    entries = compare_stored_functions(definitions, {"public.f": ["BEGIN\nRETURN 2;\nEND"]})
 
-    assert [entry.status for entry in entries] == [MATCHED]
-    assert entries[0].matched_line == 90
-
-
-def test_a_committed_function_absent_from_the_catalog_is_named() -> None:
-    definitions = (FunctionDefinition(function="public.f", line=10, body="BEGIN\nEND"),)
-
-    entries = compare_stored_functions(definitions, {})
-
-    assert [entry.status for entry in entries] == [NOT_DEPLOYED]
-    assert entries[0].deployed_digests == ()
-    assert entries[0].matched_line is None
-
-
-async def test_an_unreadable_committed_source_degrades_rather_than_reporting_all_clear(
-    tmp_path: Path,
-) -> None:
-    """A probe that cannot read init-db.sql must not answer 'no drift'."""
-    report: StoredFunctionDriftReport = await compute_stored_function_drift(
-        None,  # type: ignore[arg-type]
-        init_db_path=tmp_path / "does-not-exist.sql",
-    )
-
-    assert not report.is_available
-    assert report.check_error
-    assert report.entries == ()
-    assert not report.is_drifted
-
-
-async def test_configured_committed_source_path_is_used(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """An explicit source path takes precedence over the package-relative default."""
-    configured_source = tmp_path / "mounted-init-db.sql"
-    configured_source.write_text(
-        """
-        CREATE FUNCTION public.configured_probe()
-        RETURNS void
-        LANGUAGE plpgsql
-        AS $body$
-        BEGIN
-        END;
-        $body$;
-        """,
-        encoding="utf-8",
-    )
+def _driver(*, catalog=True):
     connection = MagicMock()
-    connection.fetch = AsyncMock(return_value=[])
-    pool = MagicMock()
-    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=connection)
-    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
-    monkeypatch.setenv(STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH_ENV, str(configured_source))
-
-    report = await compute_stored_function_drift(pool)
-
-    assert report.is_available
-    entry = report.entry("public.configured_probe")
-    assert entry is not None
-    assert entry.status == NOT_DEPLOYED
-    connection.fetch.assert_awaited_once()
-
-
-async def test_missing_configured_committed_source_degrades_with_a_reason(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A missing configured source is unknown, never an all-clear result."""
-    missing_source = tmp_path / "not-mounted-init-db.sql"
-    monkeypatch.setenv(STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH_ENV, str(missing_source))
-
-    report: StoredFunctionDriftReport = await compute_stored_function_drift(
-        None  # type: ignore[arg-type]
-    )
-
-    assert not report.is_available
-    assert report.check_error == "cannot read not-mounted-init-db.sql: FileNotFoundError"
-    assert report.entries == ()
-    assert report.drifted == ()
-    assert not report.is_drifted
-
-
-async def test_invalid_utf8_committed_source_degrades_rather_than_raising(
-    tmp_path: Path,
-) -> None:
-    """A source with invalid UTF-8 is unknown, never an all-clear result."""
-    invalid_source = tmp_path / "invalid-init-db.sql"
-    invalid_source.write_bytes(b"CREATE FUNCTION public.invalid() AS $body$\xff$body$;")
-
-    report = await compute_stored_function_drift(None, init_db_path=invalid_source)  # type: ignore[arg-type]
-
-    assert not report.is_available
-    assert report.check_error == "cannot read invalid-init-db.sql: UnicodeDecodeError"
-    assert report.entries == ()
-    assert not report.is_drifted
-
-
-async def test_configured_source_is_named_in_drift_remediation_log(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Drift remediation identifies the source selected by the operator."""
-    configured_source = tmp_path / "mounted-init-db.sql"
-    configured_source.write_text(
-        """
-        CREATE FUNCTION public.configured_probe()
-        RETURNS void
-        LANGUAGE plpgsql
-        AS $body$
-        BEGIN
-        END;
-        $body$;
-        """,
-        encoding="utf-8",
-    )
-    connection = MagicMock()
+    connection.fetchval = AsyncMock(return_value=catalog)
+    source = serving_catalog_contract("butlers")
     connection.fetch = AsyncMock(
         return_value=[
-            {
-                "function_name": "public.configured_probe",
-                "body": "BEGIN\nRETURN 1;\nEND;",
-            }
+            dict(
+                schema_name=row["schema"],
+                name=row["name"],
+                signature=row["signature"],
+                present=True,
+                owner_ok=True,
+                settings_ok=True,
+                acl_ok=True,
+                digest=row["digest"],
+            )
+            for row in source["functions"]
         ]
     )
     pool = MagicMock()
     pool.acquire.return_value.__aenter__ = AsyncMock(return_value=connection)
-    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
-    monkeypatch.setenv(STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH_ENV, str(configured_source))
-
-    report = await compute_stored_function_drift(pool)
-
-    assert report.is_drifted
-    with caplog.at_level(logging.WARNING, logger="butlers.core.stored_function_drift"):
-        log_stored_function_drift(report)
-
-    message = "\n".join(record.getMessage() for record in caplog.records)
-    assert configured_source.name in message
-    assert STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH_ENV in message
-    assert "scripts/init-db.sql" not in message
+    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    return pool, connection
 
 
-async def test_configured_source_is_named_in_unavailable_log(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """An unavailable configured source names the source operators must repair."""
-    missing_source = tmp_path / "mounted-init-db.sql"
-    monkeypatch.setenv(STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH_ENV, str(missing_source))
+def test_parses_top_level_and_nested_committed_function_bodies():
+    # Explicit successor: current typed source registry, no runtime SQL parser.
+    source = serving_catalog_contract("butlers")
+    identities = [(row["schema"], row["name"], row["signature"]) for row in source["functions"]]
+    assert len(identities) == len(set(identities))
+    assert (
+        "public",
+        "context_dnd_mutate",
+        "uuid,text,text,timestamp with time zone,text,real,jsonb",
+    ) in identities
+    assert all("body" not in row for row in source["functions"])
+    assert not any("legacy_debounce" in row["name"] for row in source["functions"])
 
-    report = await compute_stored_function_drift(None)  # type: ignore[arg-type]
 
+def test_an_overload_the_committed_source_does_not_describe_is_reported():
+    with pytest.raises(ValueError, match="unsupported identity"):
+        compare_catalog_functions([_source()], [_observed(signature="text")])
+    with pytest.raises(ValueError, match="unsupported identity"):
+        compare_catalog_functions([_source()], [_observed(), _observed()])
+
+
+def test_a_deployed_body_matching_the_second_committed_variant_is_matched():
+    # Explicit successor: only the one final body may conform, not old variants.
+    current = compare_catalog_functions([_source()], [_observed()])
+    old = compare_catalog_functions([_source()], [_observed(digest="b" * 64)])
+    assert current[0].status == "conforming"
+    assert old[0].status == "mismatch"
+    assert old[0].actual_digest == "b" * 64
+
+
+def test_a_committed_function_absent_from_the_catalog_is_named():
+    facts = compare_catalog_functions(
+        [_source()],
+        [_observed(present=False, digest=None, owner_ok=False, settings_ok=False, acl_ok=False)],
+    )
+    assert facts[0].status == "missing"
+    assert facts[0].function == "public.fixed(uuid)"
+    with pytest.raises(ValueError, match="incomplete"):
+        compare_catalog_functions([_source()], [])
+
+
+async def test_an_unreadable_committed_source_degrades_rather_than_reporting_all_clear():
+    pool, connection = _driver()
+    connection.fetchval.side_effect = RuntimeError("synthetic-private-driver-payload")
+    report = await compute_database_authority(pool)
     assert not report.is_available
-    with caplog.at_level(logging.WARNING, logger="butlers.core.stored_function_drift"):
-        log_stored_function_drift(report)
+    assert report.status == "unavailable" and report.objects_ok is None
+    assert report.functions == ()
+    assert report.check_error == "RuntimeError"
 
-    message = "\n".join(record.getMessage() for record in caplog.records)
-    assert missing_source.name in message
-    assert STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH_ENV in message
-    assert "scripts/init-db.sql" not in message
+
+async def test_configured_committed_source_path_is_used(monkeypatch, tmp_path):
+    # Explicit successor: an environment path cannot override source authority.
+    monkeypatch.setenv("STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH", str(tmp_path / "not-a-source"))
+    pool, connection = _driver()
+    report = await compute_database_authority(pool)
+    assert report.is_available and report.status == "conforming"
+    assert report.objects_ok is True
+    connection.fetch.assert_awaited_once()
+    assert all(row.owner_ok and row.settings_ok and row.acl_ok for row in report.functions)
+
+
+async def test_missing_configured_committed_source_degrades_with_a_reason():
+    pool, connection = _driver()
+    connection.fetch.return_value = []
+    report = await compute_database_authority(pool)
+    assert not report.is_available
+    assert report.functions == () and report.check_error == "ValueError"
+
+
+async def test_invalid_utf8_committed_source_degrades_rather_than_raising():
+    # Catalog transport/type failure cannot produce a green diagnostic.
+    pool, connection = _driver()
+    connection.fetch.side_effect = UnicodeError("synthetic-private-driver-payload")
+    report = await compute_database_authority(pool)
+    assert not report.is_available
+    assert report.status == "unavailable" and report.functions == ()
+    assert report.check_error == "UnicodeError"
+
+
+async def test_configured_source_is_named_in_drift_remediation_log(caplog):
+    pool, _ = _driver(catalog=False)
+    report = await compute_database_authority(pool)
+    assert report.is_available and report.status == "mismatch"
+    log_database_authority(report)
+    assert "controlled migrator" in caplog.text
+    assert "init-db.sql" not in caplog.text
+
+
+async def test_configured_source_is_named_in_unavailable_log(caplog):
+    pool, connection = _driver()
+    connection.fetch.side_effect = RuntimeError("synthetic-private-driver-payload")
+    report = await compute_database_authority(pool)
+    log_database_authority(report)
+    assert "unavailable" in caplog.text
+    assert "synthetic-private-driver-payload" not in caplog.text
+    assert "RuntimeError" not in caplog.text
+
+
+@pytest.mark.parametrize("field", ["owner_ok", "settings_ok", "acl_ok", "present"])
+def test_actual_catalog_strict_fields_cannot_be_integer_or_unknown(field):
+    for value in (1, None, "true"):
+        with pytest.raises(ValueError, match="untyped"):
+            compare_catalog_functions([_source()], [_observed(**{field: value})])
+    if field != "present":
+        assert (
+            compare_catalog_functions([_source()], [_observed(**{field: False})])[0].status
+            == "mismatch"
+        )
+
+
+async def test_diagnostic_release_is_owned_across_cancel_and_actual_database_close():
+    """Software release resistance is ownership proof, not a deployed leak claim."""
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    from butlers.db import Database
+
+    pool, conn = _driver()
+    releasing = asyncio.Event()
+    settled = asyncio.Event()
+    closed = []
+
+    @asynccontextmanager
+    async def acquire(**_options):
+        try:
+            yield conn
+        finally:
+            releasing.set()
+            await settled.wait()
+
+    pool.acquire.side_effect = acquire
+    pool.close = AsyncMock(side_effect=lambda: closed.append(True))
+    diagnostic = asyncio.create_task(compute_database_authority(pool))
+    await releasing.wait()
+    diagnostic.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await diagnostic
+    db = Database("butlers")
+    db.pool = pool
+    close = asyncio.create_task(db.close())
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert closed == []
+    assert db.pool is pool
+    # Repeated caller cancellation must not cancel the retained physical release.
+    close.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await close
+    assert closed == []
+    settled.set()
+    await db.close()
+    assert closed == [True]
+    assert db.pool is None
+
+
+@pytest.mark.parametrize("cancel_diagnostic", [False, True])
+async def test_native_diagnostic_default_release_is_joined_before_manager_close(
+    monkeypatch, cancel_diagnostic
+):
+    """Actual Pool/Connection/reset/close, with an isolated protocol, no socket.
+
+    Blocking protocol IO models release still in flight. It does not establish
+    a deployed leak, nor substitute for genuine PostgreSQL/catalog execution.
+    """
+    import asyncio
+    from types import SimpleNamespace
+
+    import asyncpg
+    from asyncpg.connect_utils import _ClientConfiguration
+
+    from butlers.api.db import DatabaseManager
+    from butlers.db_authority.catalog import _DIAGNOSTIC_OWNERS
+
+    _, facts = _driver()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    closed = []
+    live = True
+
+    async def query(statement, timeout):  # noqa: ASYNC109 - native protocol signature
+        assert "RESET ALL" in statement
+        entered.set()
+        await release.wait()
+        return "RESET"
+
+    async def close(timeout):  # noqa: ASYNC109 - native protocol signature
+        nonlocal live
+        closed.append(True)
+        live = False
+
+    protocol = MagicMock()
+    protocol.get_settings.return_value = SimpleNamespace(server_version="16.0")
+    protocol.is_connected.side_effect = lambda: live
+    protocol.is_in_transaction.return_value = False
+    protocol._is_cancelling.return_value = False
+    protocol.queries_count = 0
+    protocol.query = query
+    protocol.close = close
+    connection = asyncpg.Connection(
+        protocol,
+        MagicMock(),
+        asyncio.get_running_loop(),
+        ("synthetic", 0),
+        _ClientConfiguration(None, 0, 0, 0),
+        None,
+    )
+    monkeypatch.setattr(asyncpg.Connection, "fetchval", facts.fetchval)
+    monkeypatch.setattr(asyncpg.Connection, "fetch", facts.fetch)
+    pool = await asyncpg.create_pool(min_size=0, max_size=1, max_inactive_connection_lifetime=0)
+    holder = pool._holders[0]
+    holder._con = connection
+    holder._generation = pool._generation
+    manager = DatabaseManager()
+    manager._pools["general"] = pool
+    healthy_closed = asyncio.Event()
+    healthy_pool = MagicMock()
+    healthy_pool.close = AsyncMock(side_effect=healthy_closed.set)
+    manager._pools["health"] = healthy_pool
+    diagnostic = asyncio.create_task(compute_database_authority(pool))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        assert type(pool) is asyncpg.Pool and type(connection) is asyncpg.Connection
+        assert pool._reset is None  # Native default Connection.reset, not custom reset.
+        assert not diagnostic.done()  # No reference/success before full release.
+        if cancel_diagnostic:
+            diagnostic.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await diagnostic
+            assert id(pool) in _DIAGNOSTIC_OWNERS
+            refused = await compute_database_authority(pool)
+            assert refused.status == "unavailable"
+        healthy, _ = _driver()
+        assert (await compute_database_authority(healthy)).status == "conforming"
+        for _ in range(2):
+            closing = asyncio.create_task(manager.close())
+            await asyncio.wait_for(healthy_closed.wait(), 1)
+            await asyncio.sleep(0)
+            assert closed == [] and not pool._closing
+            closing.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await closing
+            assert manager.pool("general") is pool
+        release.set()
+        await manager.close()
+        if not cancel_diagnostic:
+            assert (await diagnostic).status == "conforming"
+        healthy_pool.close.assert_awaited_once()
+        assert closed == [True] and pool._closed
+        assert connection.is_closed() and holder._in_use is None
+        assert id(pool) not in _DIAGNOSTIC_OWNERS
+        assert manager._pools == {}
+        protocol.abort.assert_not_called()
+    finally:
+        release.set()
+        await manager.close()
+        if not pool._closed:
+            await pool.close()
+
+
+async def test_diagnostic_original_deadline_retains_query_release_and_late_close():
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    from butlers.db import Database
+    from butlers.db_authority.catalog import _DIAGNOSTIC_OWNERS
+
+    pool, conn = _driver()
+    release = asyncio.Event()
+    entered_release = asyncio.Event()
+    query_cancelled = asyncio.Event()
+
+    async def query(*args):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            query_cancelled.set()
+
+    @asynccontextmanager
+    async def acquire(**options):
+        assert options == {"timeout": 5}
+        try:
+            yield conn
+        finally:
+            entered_release.set()
+            await release.wait()
+
+    pool.acquire.side_effect = acquire
+    pool.close = AsyncMock()
+    conn.fetchval.side_effect = query
+    db = Database("butlers")
+    db.pool = pool
+    started = asyncio.get_running_loop().time()
+    try:
+        report = await compute_database_authority(pool)
+        elapsed = asyncio.get_running_loop().time() - started
+        assert report.status == "unavailable" and report.check_error == "TimeoutError"
+        assert 4.8 <= elapsed < 6.5  # Original five-second caller, not a widened budget.
+        await asyncio.wait_for(query_cancelled.wait(), 1)
+        await asyncio.wait_for(entered_release.wait(), 1)
+        assert id(pool) in _DIAGNOSTIC_OWNERS
+        pool.close.assert_not_awaited()
+    finally:
+        release.set()
+        await db.close()
+    pool.close.assert_awaited_once()
+    assert db.pool is None and id(pool) not in _DIAGNOSTIC_OWNERS

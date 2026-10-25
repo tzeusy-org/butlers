@@ -7,9 +7,10 @@ import gzip
 import logging
 import ssl
 import subprocess
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -86,6 +87,32 @@ def _prepared_firewall_capability(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         encoding="utf-8",
     )
     capability_path.chmod(0o400)
+
+
+def _native_pool_driver(pool, options):
+    """Only physical IO is doubled; the real purpose/init/setup callbacks run."""
+    connection = AsyncMock()
+    connection.fetchrow.return_value = dict.fromkeys(
+        (
+            "identity_ok",
+            "role_set_ok",
+            "attributes_ok",
+            "ownership_ok",
+            "create_ok",
+            "target_member",
+        ),
+        True,
+    )
+    connection.fetchval.return_value = True
+
+    @asynccontextmanager
+    async def acquire():
+        await options["init"](connection)
+        await options["setup"](connection)
+        yield connection
+
+    pool.acquire = MagicMock(side_effect=acquire)
+    return pool
 
 
 def _completed(returncode: int = 0, stdout: bytes = b"", stderr: bytes = b""):
@@ -432,7 +459,7 @@ async def test_executor_pool_uses_the_hostname_as_verify_full_tls_identity(
 
     async def fake_create_pool(**kwargs: object):
         captured.update(kwargs)
-        return pool
+        return _native_pool_driver(pool, kwargs)
 
     monkeypatch.setattr("butlers.jobs.restore_drill_executor.asyncpg.create_pool", fake_create_pool)
     monkeypatch.setattr(
@@ -657,7 +684,7 @@ async def test_executor_tick_failure_logs_only_fixed_safe_diagnostic(
     pool = AsyncMock()
 
     async def fake_create_pool(**_kwargs: object):
-        return pool
+        return _native_pool_driver(pool, _kwargs)
 
     async def cancel_after_first_sleep(_delay: int) -> None:
         raise asyncio.CancelledError

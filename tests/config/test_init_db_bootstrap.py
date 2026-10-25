@@ -6,10 +6,16 @@ import asyncio
 import os
 import shutil
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import ProgrammingError
+
+from butlers.bootstrap_prerequisite import prepare_bootstrap_connection
+from butlers.db_authority.roles import AuthorityError, bootstrap_role_manifest, load_runtime_profile
+from butlers.migrations import finalize_authority, migration_session, run_migrations
 
 docker_available = shutil.which("docker") is not None
 psql_available = shutil.which("psql") is not None
@@ -75,6 +81,8 @@ def _run_psql_file(
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["PGPASSWORD"] = password
+    # Legacy asserted GUC is an adversarial input in the refusal cases only;
+    # successful preparation always uses the real source compiler above.
     if connecting_user is not None:
         env["PGOPTIONS"] = f"-c butlers.connecting_user={connecting_user}"
     command = ["psql"]
@@ -105,492 +113,396 @@ def _run_psql_file(
     )
 
 
-def test_init_db_bootstrap_grants_connector_writer_switchboard_access(postgres_container):
-    """connector_writer can access switchboard connector registry after bootstrap."""
-    host, port, admin_user, admin_password = _admin_params(postgres_container)
-    admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
-    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+def _fresh_database(postgres_container):
+    """Provision only the distinct normal owner; production prepares capabilities."""
+    host, port, user, password = _admin_params(postgres_container)
+    admin = create_engine(
+        f"postgresql://{user}:{password}@{host}:{port}/postgres",
+        isolation_level="AUTOCOMMIT",
+    )
     try:
-        with engine.connect() as conn:
-            conn.execute(text("CREATE ROLE butlers LOGIN PASSWORD 'butlers'"))
-            conn.execute(text("CREATE DATABASE butlers OWNER butlers"))
+        with admin.connect() as connection:
+            connection.execute(text("DROP DATABASE IF EXISTS butlers"))
+            connection.execute(text("DROP ROLE IF EXISTS butlers"))
+            connection.execute(
+                text(
+                    "CREATE ROLE butlers LOGIN NOINHERIT NOSUPERUSER NOCREATEROLE "
+                    "NOCREATEDB NOREPLICATION PASSWORD 'butlers'"
+                )
+            )
+            connection.execute(text("CREATE DATABASE butlers OWNER butlers"))
     finally:
-        engine.dispose()
-
-    script_path = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
-    _run_psql_file(
-        host=host,
-        port=port,
-        user=admin_user,
-        password=admin_password,
-        database="butlers",
-        file_path=script_path,
+        admin.dispose()
+    return (
+        f"postgresql://butlers:butlers@{host}:{port}/butlers",
+        f"postgresql://{user}:{password}@{host}:{port}/butlers",
     )
 
-    migration_user_url = f"postgresql://butlers:butlers@{host}:{port}/butlers"
-    engine = create_engine(migration_user_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            # schema-standin-exempt: a two-column GRANT target, not a query
-            # stand-in. This fixture runs before any migration, on purpose:
-            # it tests init-db.sql's privilege boundary, and the registry's
-            # real column list is irrelevant to that.
-            conn.execute(
-                text(
-                    "CREATE TABLE switchboard.connector_registry ("
-                    "  connector_type TEXT NOT NULL,"
-                    "  endpoint_identity TEXT NOT NULL,"
-                    "  PRIMARY KEY (connector_type, endpoint_identity)"
-                    ")"
-                )
-            )
-    finally:
-        engine.dispose()
 
-    butlers_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
-    engine = create_engine(butlers_url)
+def _prepare(control_url):
+    """Call the source compiler/script, never an old connecting-user GUC."""
+    engine = create_engine(control_url, isolation_level="AUTOCOMMIT")
+    raw = None
     try:
-        with engine.connect() as conn:
-            row = (
-                conn.execute(
-                    text(
-                        "SELECT "
-                        "  has_schema_privilege('connector_writer', 'switchboard', 'USAGE') AS schema_usage,"
-                        "  has_table_privilege("
-                        "    'connector_writer',"
-                        "    'switchboard.connector_registry',"
-                        "    'SELECT,INSERT,UPDATE,DELETE'"
-                        "  ) AS registry_dml"
+        raw = engine.raw_connection()
+        raw.autocommit = True
+        prepare_bootstrap_connection(raw, "butlers", "butlers")
+    finally:
+        try:
+            if raw is not None:
+                raw.close()
+        finally:
+            engine.dispose()
+
+
+def _migrate_selected(migration_url, control_url, plans):
+    """One production maintenance session owns all selected chains and finalization."""
+    from butlers.testing.migration import _upgrade_chain_to_revision
+
+    with migration_session(control_url, source_database="butlers") as connection:
+        # Real historical shared-table transitions must finish in each selected
+        # core schema before the first chain retires those shared tables.
+        core_schemas = [schema for chain, schema, _ in plans if chain == "core"]
+        if len(core_schemas) > 1:
+            for schema in core_schemas:
+                _upgrade_chain_to_revision(
+                    migration_url,
+                    chain="core",
+                    schema=schema,
+                    revision="core_114",
+                    connection=connection,
+                )
+        for chain, schema, revision in plans:
+            if revision is None:
+                asyncio.run(
+                    run_migrations(
+                        migration_url,
+                        chain=chain,
+                        schema=schema,
+                        connection=connection,
                     )
                 )
-                .mappings()
-                .one()
-            )
+            else:
+                _upgrade_chain_to_revision(
+                    migration_url,
+                    chain=chain,
+                    schema=schema,
+                    revision=revision,
+                    connection=connection,
+                )
+        finalize_authority(connection, source_database="butlers", plans=tuple(plans))
+
+
+@contextmanager
+def _control(control_url):
+    engine = create_engine(control_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            yield connection
     finally:
         engine.dispose()
 
+
+def _role_scalar(control_url, role, sql):
+    with _control(control_url) as connection:
+        connection.execute(text('SET ROLE "' + role.replace('"', '""') + '"'))
+        try:
+            return connection.execute(text(sql)).scalar_one()
+        finally:
+            connection.execute(text("RESET ROLE"))
+
+
+def test_init_db_bootstrap_grants_connector_writer_switchboard_access(postgres_container):
+    """Exact source registry DML is finalized after its real producer exists."""
+    migration_url, control_url = _fresh_database(postgres_container)
+    _prepare(control_url)
+    plans = (("core", "switchboard", None), ("switchboard", "switchboard", None))
+    _migrate_selected(migration_url, control_url, plans)
+    with _control(control_url) as connection:
+        row = (
+            connection.execute(
+                text(
+                    "SELECT has_schema_privilege('connector_writer','switchboard','USAGE') "
+                    "AS schema_usage, has_table_privilege('connector_writer', "
+                    "'switchboard.connector_registry','SELECT,INSERT,UPDATE') AS registry_dml"
+                )
+            )
+            .mappings()
+            .one()
+        )
     assert row["schema_usage"] is True
     assert row["registry_dml"] is True
+    assert (
+        _role_scalar(
+            control_url, "connector_writer", "SELECT count(*) FROM switchboard.connector_registry"
+        )
+        == 0
+    )
+
+    async def checkpoint_roundtrip():
+        import asyncpg
+        from sqlalchemy.engine import make_url
+
+        from butlers.connectors.cursor_store import (
+            load_connector_settings,
+            load_cursor,
+            save_connector_settings,
+            save_cursor,
+        )
+        from butlers.db import register_jsonb_codec
+
+        async def setup(connection):
+            await connection.execute("SET ROLE connector_writer")
+
+        native_url = (
+            make_url(control_url).set(drivername="postgresql").render_as_string(hide_password=False)
+        )
+        pool = await asyncpg.create_pool(
+            native_url, min_size=1, max_size=1, init=register_jsonb_codec, setup=setup
+        )
+        try:
+            for value in ("first-checkpoint", "second-checkpoint"):
+                await save_cursor(
+                    pool, "test", "acl-checkpoint", value, parent_endpoint_identity=None
+                )
+            assert await load_cursor(pool, "test", "acl-checkpoint") == "second-checkpoint"
+            assert await save_connector_settings(pool, "test", "acl-checkpoint", {"first": 1}) == {
+                "first": 1
+            }
+            assert await save_connector_settings(pool, "test", "acl-checkpoint", {"second": 2}) == {
+                "first": 1,
+                "second": 2,
+            }
+            assert await load_connector_settings(pool, "test", "acl-checkpoint") == {
+                "first": 1,
+                "second": 2,
+            }
+            before = await pool.fetchrow(
+                "SELECT checkpoint_cursor,settings FROM switchboard.connector_registry "
+                "WHERE connector_type='test' AND endpoint_identity='acl-checkpoint'"
+            )
+            with pytest.raises(asyncpg.InsufficientPrivilegeError) as error:
+                await pool.execute(
+                    "DELETE FROM switchboard.connector_registry "
+                    "WHERE connector_type='test' AND endpoint_identity='acl-checkpoint'"
+                )
+            assert error.value.sqlstate == "42501"
+        finally:
+            await pool.close()
+        # Independent administrative physical connection sees the committed row
+        # unchanged after the denied DELETE, rather than a driver/cache echo.
+        observer = await asyncpg.connect(native_url)
+        try:
+            await register_jsonb_codec(observer)
+            after = await observer.fetchrow(
+                "SELECT checkpoint_cursor,settings FROM switchboard.connector_registry "
+                "WHERE connector_type='test' AND endpoint_identity='acl-checkpoint'"
+            )
+            assert dict(after) == dict(before)
+        finally:
+            await observer.close()
+
+    asyncio.run(checkpoint_roundtrip())
 
 
 def test_init_db_bootstrap_repairs_connector_function_execute_grant(postgres_container):
-    """bootstrap grants connector_writer EXECUTE on existing connectors functions."""
-    host, port, admin_user, admin_password = _admin_params(postgres_container)
-    admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
-    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    """A fixed partition producer works; an arbitrary function never gains EXECUTE."""
+    migration_url, control_url = _fresh_database(postgres_container)
+    _prepare(control_url)
+    _migrate_selected(migration_url, control_url, (("core", None, None),))
+    engine = create_engine(migration_url, isolation_level="AUTOCOMMIT")
     try:
-        with engine.connect() as conn:
-            conn.execute(text("DROP DATABASE IF EXISTS butlers"))
-            conn.execute(text("DROP ROLE IF EXISTS butlers"))
-            conn.execute(text("CREATE ROLE butlers LOGIN PASSWORD 'butlers'"))
-            conn.execute(text("CREATE DATABASE butlers OWNER butlers"))
-    finally:
-        engine.dispose()
-
-    script_path = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
-    _run_psql_file(
-        host=host,
-        port=port,
-        user=admin_user,
-        password=admin_password,
-        database="butlers",
-        file_path=script_path,
-    )
-
-    migration_user_url = f"postgresql://butlers:butlers@{host}:{port}/butlers"
-    engine = create_engine(migration_user_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("CREATE SCHEMA IF NOT EXISTS connectors"))
-            conn.execute(
+        with engine.connect() as connection:
+            connection.execute(
                 text(
-                    "CREATE OR REPLACE FUNCTION connectors.test_connector_acl() "
-                    "RETURNS integer LANGUAGE sql AS $$ SELECT 1 $$"
+                    "CREATE FUNCTION connectors.test_connector_acl() RETURNS integer "
+                    "LANGUAGE sql AS $$ SELECT 1 $$"
                 )
             )
-            conn.execute(text("REVOKE ALL ON FUNCTION connectors.test_connector_acl() FROM PUBLIC"))
-            conn.execute(
-                text("REVOKE ALL ON FUNCTION connectors.test_connector_acl() FROM connector_writer")
+            connection.execute(
+                text("REVOKE ALL ON FUNCTION connectors.test_connector_acl() FROM PUBLIC")
             )
     finally:
         engine.dispose()
-
-    _run_psql_file(
-        host=host,
-        port=port,
-        user=admin_user,
-        password=admin_password,
-        database="butlers",
-        file_path=script_path,
+    _prepare(control_url)
+    with _control(control_url) as connection:
+        can_execute = connection.execute(
+            text(
+                "SELECT has_function_privilege('connector_writer', "
+                "'connectors.test_connector_acl()', 'EXECUTE')"
+            )
+        ).scalar_one()
+    assert can_execute is False
+    with pytest.raises(ProgrammingError):
+        _role_scalar(control_url, "connector_writer", "SELECT connectors.test_connector_acl()")
+    with migration_session(control_url, source_database="butlers") as connection:
+        with pytest.raises(AuthorityError, match="not declared"):
+            finalize_authority(connection, plans=(("core", None, None),))
+    # Refusal cannot replace the separate positive fixed-function contract.
+    assert (
+        _role_scalar(
+            control_url,
+            "connector_writer",
+            "SELECT connectors.connectors_filtered_events_ensure_partition('2099-03-15'::timestamptz)",
+        )
+        == "filtered_events_209903"
     )
-
-    butlers_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
-    engine = create_engine(butlers_url)
-    try:
-        with engine.connect() as conn:
-            can_execute = conn.execute(
-                text(
-                    "SELECT has_function_privilege("
-                    "  'connector_writer',"
-                    "  'connectors.test_connector_acl()',"
-                    "  'EXECUTE'"
-                    ")"
-                )
-            ).scalar_one()
-    finally:
-        engine.dispose()
-
-    assert can_execute is True
 
 
 def test_init_db_bootstrap_grants_relationship_read_access_to_switchboard_message_inbox(
     postgres_container,
 ):
-    """relationship runtime role can read switchboard.message_inbox after bootstrap."""
-    host, port, admin_user, admin_password = _admin_params(postgres_container)
-    admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
-    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("DROP DATABASE IF EXISTS butlers"))
-            conn.execute(text("DROP ROLE IF EXISTS butlers"))
-            conn.execute(text("CREATE ROLE butlers LOGIN PASSWORD 'butlers'"))
-            conn.execute(text("CREATE DATABASE butlers OWNER butlers"))
-    finally:
-        engine.dispose()
-
-    script_path = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
-    _run_psql_file(
-        host=host,
-        port=port,
-        user=admin_user,
-        password=admin_password,
-        database="butlers",
-        file_path=script_path,
-    )
-
-    migration_user_url = f"postgresql://butlers:butlers@{host}:{port}/butlers"
-    engine = create_engine(migration_user_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            conn.execute(
-                text(
-                    "CREATE TABLE switchboard.message_inbox ("
-                    "  id UUID PRIMARY KEY,"
-                    "  direction TEXT NOT NULL,"
-                    "  request_context JSONB NOT NULL DEFAULT '{}'::jsonb,"
-                    "  received_at TIMESTAMPTZ NOT NULL DEFAULT now()"
-                    ")"
-                )
-            )
-    finally:
-        engine.dispose()
-
-    butlers_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
-    engine = create_engine(butlers_url)
-    try:
-        with engine.connect() as conn:
-            row = (
-                conn.execute(
-                    text(
-                        "SELECT "
-                        "  has_schema_privilege('butler_relationship_rw', 'switchboard', 'USAGE') "
-                        "    AS schema_usage,"
-                        "  has_table_privilege("
-                        "    'butler_relationship_rw',"
-                        "    'switchboard.message_inbox',"
-                        "    'SELECT'"
-                        "  ) AS inbox_select"
-                    )
-                )
-                .mappings()
-                .one()
-            )
-    finally:
-        engine.dispose()
-
-    assert row["schema_usage"] is True
-    assert row["inbox_select"] is True
-
-
-def test_init_db_bootstrap_repairs_membership_set_option_for_qa(postgres_container):
-    """bootstrap repairs stale role membership so SET ROLE succeeds for QA."""
-    host, port, admin_user, admin_password = _admin_params(postgres_container)
-    admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
-    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("DROP DATABASE IF EXISTS butlers"))
-            conn.execute(text("DROP ROLE IF EXISTS butler_qa_rw"))
-            conn.execute(text("DROP ROLE IF EXISTS butlers"))
-            conn.execute(text("CREATE ROLE butlers LOGIN PASSWORD 'butlers'"))
-            conn.execute(text("CREATE ROLE butler_qa_rw LOGIN"))
-            conn.execute(text("CREATE DATABASE butlers OWNER butlers"))
-    finally:
-        engine.dispose()
-
-    broken_membership_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
-    engine = create_engine(broken_membership_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("GRANT butler_qa_rw TO butlers WITH ADMIN TRUE"))
-            conn.execute(text("GRANT butler_qa_rw TO butlers WITH INHERIT FALSE"))
-            conn.execute(text("GRANT butler_qa_rw TO butlers WITH SET FALSE"))
-    finally:
-        engine.dispose()
-
-    script_path = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
-    _run_psql_file(
-        host=host,
-        port=port,
-        user=admin_user,
-        password=admin_password,
-        database="butlers",
-        file_path=script_path,
-    )
-
-    migration_user_url = f"postgresql://butlers:butlers@{host}:{port}/butlers"
-    engine = create_engine(migration_user_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            row = (
-                conn.execute(
-                    text(
-                        "SELECT "
-                        "  am.inherit_option,"
-                        "  am.set_option "
-                        "FROM pg_auth_members am "
-                        "JOIN pg_roles role_r ON role_r.oid = am.roleid "
-                        "JOIN pg_roles member_r ON member_r.oid = am.member "
-                        "WHERE role_r.rolname = 'butler_qa_rw' "
-                        "  AND member_r.rolname = 'butlers' "
-                        "  AND am.set_option IS TRUE"
-                    )
-                )
-                .mappings()
-                .one()
-            )
-            conn.execute(text('SET ROLE "butler_qa_rw"'))
-            current_user = conn.execute(text("SELECT current_user")).scalar_one()
-            conn.execute(text("RESET ROLE"))
-    finally:
-        engine.dispose()
-
-    assert row["inherit_option"] is True
-    assert row["set_option"] is True
-    assert current_user == "butler_qa_rw"
-
-
-def test_init_db_bootstrap_normalizes_existing_normal_role_privileges(postgres_container):
-    """Rerun strips every recovery-capable flag without changing normal role semantics."""
-    host, port, admin_user, admin_password = _admin_params(postgres_container)
-    admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
-    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
-    normal_roles = ("butlers", *_NORMAL_RUNTIME_ROLES)
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("DROP DATABASE IF EXISTS butlers"))
-            for role in reversed(normal_roles):
-                conn.execute(text(f"DROP ROLE IF EXISTS {role}"))
-            conn.execute(
-                text(
-                    "CREATE ROLE butlers LOGIN SUPERUSER CREATEROLE CREATEDB REPLICATION "
-                    "PASSWORD 'butlers'"
-                )
-            )
-            for role in _NORMAL_RUNTIME_ROLES:
-                conn.execute(
-                    text(f"CREATE ROLE {role} LOGIN SUPERUSER CREATEROLE CREATEDB REPLICATION")
-                )
-            conn.execute(text("CREATE DATABASE butlers OWNER butlers"))
-    finally:
-        engine.dispose()
-
-    script_path = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
-    _run_psql_file(
-        host=host,
-        port=port,
-        user=admin_user,
-        password=admin_password,
-        database="butlers",
-        file_path=script_path,
-    )
-
-    butlers_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
-    engine = create_engine(butlers_url)
-    try:
-        with engine.connect() as conn:
-            role_rows = (
-                conn.execute(
-                    text(
-                        """
-                        SELECT
-                            rolname,
-                            rolcanlogin,
-                            rolinherit,
-                            rolsuper,
-                            rolcreaterole,
-                            rolcreatedb,
-                            rolreplication
-                        FROM pg_roles
-                        WHERE rolname = ANY(:normal_roles)
-                        ORDER BY rolname
-                        """
-                    ),
-                    {"normal_roles": list(normal_roles)},
-                )
-                .mappings()
-                .all()
-            )
-            membership_rows = (
-                conn.execute(
-                    text(
-                        """
-                        SELECT role_r.rolname, member.inherit_option, member.set_option
-                        FROM pg_auth_members AS member
-                        JOIN pg_roles AS role_r ON role_r.oid = member.roleid
-                        JOIN pg_roles AS member_r ON member_r.oid = member.member
-                        WHERE member_r.rolname = 'butlers'
-                          AND role_r.rolname = ANY(:runtime_roles)
-                        ORDER BY role_r.rolname
-                        """
-                    ),
-                    {"runtime_roles": list(_NORMAL_RUNTIME_ROLES)},
-                )
-                .mappings()
-                .all()
-            )
-    finally:
-        engine.dispose()
-
-    assert {row["rolname"] for row in role_rows} == set(normal_roles)
-    for row in role_rows:
-        assert dict(row) == {
-            "rolname": row["rolname"],
-            "rolcanlogin": True,
-            "rolinherit": True,
-            "rolsuper": False,
-            "rolcreaterole": False,
-            "rolcreatedb": False,
-            "rolreplication": False,
-        }
-    assert [dict(row) for row in membership_rows] == [
-        {"rolname": role, "inherit_option": True, "set_option": True}
-        for role in sorted(_NORMAL_RUNTIME_ROLES)
-    ]
-
-
-def test_init_db_bootstrap_hardens_existing_optional_calendar_role(postgres_container):
-    """An existing optional calendar login cannot retain restore-drill authority."""
-    host, port, admin_user, admin_password = _admin_params(postgres_container)
-    admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
-    calendar_password = "calendar-test-password"
-    calendar_url = (
-        f"postgresql://{_OPTIONAL_CALENDAR_RUNTIME_ROLE}:{calendar_password}@{host}:{port}/butlers"
-    )
-    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("DROP DATABASE IF EXISTS butlers"))
-            conn.execute(text(f"DROP ROLE IF EXISTS {_OPTIONAL_CALENDAR_RUNTIME_ROLE}"))
-            conn.execute(text("DROP ROLE IF EXISTS butlers"))
-            conn.execute(text("CREATE ROLE butlers LOGIN PASSWORD 'butlers'"))
-            conn.execute(text("CREATE DATABASE butlers OWNER butlers"))
-    finally:
-        engine.dispose()
-
-    script_path = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
-    _run_psql_file(
-        host=host,
-        port=port,
-        user=admin_user,
-        password=admin_password,
-        database="butlers",
-        file_path=script_path,
-    )
-
-    from butlers.migrations import run_migrations
-
-    migration_url = f"postgresql://butlers:butlers@{host}:{port}/butlers"
-    asyncio.run(run_migrations(migration_url, chain="core"))
-
-    control_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
-    engine = create_engine(control_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            conn.execute(
-                text(
-                    "CREATE ROLE butler_calendar_rw LOGIN SUPERUSER CREATEROLE "
-                    "CREATEDB REPLICATION PASSWORD 'calendar-test-password'"
-                )
-            )
-            conn.execute(text("GRANT USAGE ON SCHEMA calendar TO butler_calendar_rw"))
-            for authority_role in _RESTORE_DRILL_AUTHORITY_ROLES:
-                conn.execute(text(f"GRANT {authority_role} TO {_OPTIONAL_CALENDAR_RUNTIME_ROLE}"))
-            conn.execute(text("GRANT USAGE ON SCHEMA restore_drill_executor TO butler_calendar_rw"))
-            conn.execute(
-                text(
-                    "GRANT SELECT, INSERT ON TABLE "
-                    "restore_drill_executor.restore_drill_results TO butler_calendar_rw"
-                )
-            )
-            conn.execute(
-                text(
-                    "GRANT USAGE, SELECT, UPDATE ON SEQUENCE "
-                    "restore_drill_executor.restore_drill_results_id_seq TO butler_calendar_rw"
-                )
-            )
-    finally:
-        engine.dispose()
-
-    def membership_pairs(connection) -> set[tuple[str, str]]:
-        rows = (
+    """RFC0010 named inbox read survives without future switchboard SELECT."""
+    migration_url, control_url = _fresh_database(postgres_container)
+    _prepare(control_url)
+    plans = (("core", "switchboard", None), ("switchboard", "switchboard", None))
+    _migrate_selected(migration_url, control_url, plans)
+    with _control(control_url) as connection:
+        row = (
             connection.execute(
                 text(
-                    """
-                    SELECT granted_role.rolname, member_role.rolname
-                    FROM pg_auth_members AS membership
-                    JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
-                    JOIN pg_roles AS member_role ON member_role.oid = membership.member
-                    WHERE (
-                        granted_role.rolname = ANY(:authority_roles)
-                        AND member_role.rolname = :calendar_role
-                    ) OR (
-                        granted_role.rolname = :calendar_role
-                        AND member_role.rolname = ANY(:authority_roles)
-                    )
-                    """
-                ),
-                {
-                    "authority_roles": list(_RESTORE_DRILL_AUTHORITY_ROLES),
-                    "calendar_role": _OPTIONAL_CALENDAR_RUNTIME_ROLE,
-                },
-            )
-            .tuples()
-            .all()
-        )
-        return set(rows)
-
-    def calendar_role_attributes(connection) -> dict[str, bool]:
-        return dict(
-            connection.execute(
-                text(
-                    """
-                    SELECT rolsuper, rolcreaterole, rolcreatedb, rolreplication
-                    FROM pg_roles
-                    WHERE rolname = :calendar_role
-                    """
-                ),
-                {"calendar_role": _OPTIONAL_CALENDAR_RUNTIME_ROLE},
+                    "SELECT has_schema_privilege('butler_relationship_rw','switchboard','USAGE') "
+                    "AS schema_usage, has_table_privilege('butler_relationship_rw', "
+                    "'switchboard.message_inbox','SELECT') AS inbox_select"
+                )
             )
             .mappings()
             .one()
         )
+    assert row["schema_usage"] is True
+    assert row["inbox_select"] is True
+    assert (
+        _role_scalar(
+            control_url, "butler_relationship_rw", "SELECT count(*) FROM switchboard.message_inbox"
+        )
+        == 0
+    )
+    engine = create_engine(migration_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("CREATE TABLE switchboard.future_read_probe (id integer)"))
+    finally:
+        engine.dispose()
+    _prepare(control_url)
+    with pytest.raises(ProgrammingError):
+        _role_scalar(
+            control_url,
+            "butler_relationship_rw",
+            "SELECT count(*) FROM switchboard.future_read_probe",
+        )
+
+
+def test_init_db_bootstrap_repairs_membership_set_option_for_qa(postgres_container):
+    """Bootstrap no longer makes the ordinary migrator a serving-role member."""
+    migration_url, control_url = _fresh_database(postgres_container)
+    _prepare(control_url)
+    with _control(control_url) as connection:
+        row = (
+            connection.execute(
+                text(
+                    "SELECT EXISTS(SELECT FROM pg_auth_members m "
+                    "JOIN pg_roles r ON r.oid=m.roleid JOIN pg_roles u ON u.oid=m.member "
+                    "WHERE r.rolname='butler_qa_rw' AND u.rolname='butlers') AS membership, "
+                    "(SELECT rolcanlogin FROM pg_roles WHERE rolname='butler_qa_rw') AS login"
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert row["membership"] is False
+    assert row["login"] is False
+    assert _role_scalar(control_url, "butler_qa_rw", "SELECT current_user") == "butler_qa_rw"
+    engine = create_engine(migration_url)
+    try:
+        with engine.connect() as connection:
+            with pytest.raises(ProgrammingError):
+                connection.execute(text("SET ROLE butler_qa_rw"))
+    finally:
+        engine.dispose()
+
+
+def test_init_db_bootstrap_normalizes_existing_normal_role_privileges(postgres_container):
+    """Declared capabilities are NOLOGIN/non-inheriting; normal owner stays distinct."""
+    migration_url, control_url = _fresh_database(postgres_container)
+    _prepare(control_url)
+    manifest = bootstrap_role_manifest("butlers", "butlers", source_database="butlers")
+    with _control(control_url) as connection:
+        for role in _NORMAL_RUNTIME_ROLES:
+            # Adversarial existing-role input, not a fixture grant of application authority.
+            connection.execute(
+                text(
+                    f'ALTER ROLE "{role}" LOGIN INHERIT SUPERUSER CREATEROLE '
+                    "CREATEDB REPLICATION BYPASSRLS"
+                )
+            )
+    _prepare(control_url)
+    with _control(control_url) as connection:
+        role_rows = (
+            connection.execute(
+                text(
+                    "SELECT rolname,rolcanlogin,rolinherit,rolsuper,rolcreaterole,rolcreatedb,"
+                    "rolreplication,rolbypassrls "
+                    "FROM pg_roles WHERE rolname=ANY(:roles) ORDER BY rolname"
+                ),
+                {"roles": ["butlers", *manifest["roles"]]},
+            )
+            .mappings()
+            .all()
+        )
+        membership_rows = (
+            connection.execute(
+                text(
+                    "SELECT role.rolname,m.inherit_option,m.set_option FROM pg_auth_members m "
+                    "JOIN pg_roles role ON role.oid=m.roleid JOIN pg_roles member ON member.oid=m.member "
+                    "WHERE member.rolname='butlers' AND role.rolname=ANY(:roles)"
+                ),
+                {"roles": manifest["roles"]},
+            )
+            .mappings()
+            .all()
+        )
+    assert {row["rolname"] for row in role_rows} == {"butlers", *manifest["roles"]}
+    for row in role_rows:
+        assert dict(row) == {
+            "rolname": row["rolname"],
+            "rolcanlogin": row["rolname"] == "butlers",
+            "rolinherit": False,
+            "rolsuper": False,
+            "rolcreaterole": False,
+            "rolcreatedb": False,
+            "rolreplication": False,
+            "rolbypassrls": False,
+        }
+    assert [dict(row) for row in membership_rows] == []
+
+
+def test_init_db_bootstrap_hardens_existing_optional_calendar_role(postgres_container):
+    """An unlisted calendar principal cannot become a source-owned runtime.
+
+    Normalizing/adopting an optional LOGIN and restoring its calendar access
+    is retired. The full effective restore-ledger/sequence/membership refusal
+    matrix remains against real migrated objects and an explicit SET ROLE.
+    """
+    migration_url, control_url = _fresh_database(postgres_container)
+    _prepare(control_url)
+    _migrate_selected(migration_url, control_url, (("core", None, None),))
+    manifest = bootstrap_role_manifest("butlers", "butlers", source_database="butlers")
+    assert _OPTIONAL_CALENDAR_RUNTIME_ROLE not in manifest["roles"]
+    with pytest.raises(AuthorityError, match="not declared"):
+        load_runtime_profile("butlers", "calendar", _OPTIONAL_CALENDAR_RUNTIME_ROLE)
+    with _control(control_url) as connection:
+        connection.execute(
+            text(
+                "CREATE ROLE butler_calendar_rw NOLOGIN NOINHERIT NOSUPERUSER "
+                "NOCREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS"
+            )
+        )
 
     def direct_calendar_effective_privileges() -> dict[str, bool | str]:
-        calendar_engine = create_engine(calendar_url)
+        calendar_engine = create_engine(control_url)
         try:
             with calendar_engine.connect() as conn:
+                conn.execute(text('SET LOCAL ROLE "butler_calendar_rw"'))
                 return dict(
                     conn.execute(
                         text(
@@ -731,189 +643,77 @@ def test_init_db_bootstrap_hardens_existing_optional_calendar_role(postgres_cont
         finally:
             calendar_engine.dispose()
 
-    engine = create_engine(control_url)
-    try:
-        with engine.connect() as conn:
-            assert calendar_role_attributes(conn) == {
-                "rolsuper": True,
-                "rolcreaterole": True,
-                "rolcreatedb": True,
-                "rolreplication": True,
-            }
-            assert membership_pairs(conn) == {
-                (authority_role, _OPTIONAL_CALENDAR_RUNTIME_ROLE)
-                for authority_role in _RESTORE_DRILL_AUTHORITY_ROLES
-            }
-    finally:
-        engine.dispose()
-    assert direct_calendar_effective_privileges() == {
+    expected = {
         "current_role": _OPTIONAL_CALENDAR_RUNTIME_ROLE,
-        "is_superuser": True,
-        "can_create_role": True,
-        "can_create_database": True,
-        "can_replicate": True,
-        "schema_usage": True,
-        "calendar_schema_usage": True,
-        "ledger_select": True,
-        "ledger_insert": True,
-        "ledger_sequence_usage": True,
-        "ledger_sequence_select": True,
-        "ledger_sequence_update": True,
-        "has_executor_membership": True,
-        "has_owner_membership": True,
-        "has_audit_writer_membership": True,
+        "is_superuser": False,
+        "can_create_role": False,
+        "can_create_database": False,
+        "can_replicate": False,
+        "schema_usage": False,
+        "calendar_schema_usage": False,
+        "ledger_select": False,
+        "ledger_insert": False,
+        "ledger_sequence_usage": False,
+        "ledger_sequence_select": False,
+        "ledger_sequence_update": False,
+        "has_executor_membership": False,
+        "has_owner_membership": False,
+        "has_audit_writer_membership": False,
         "executor_has_calendar_membership": False,
         "owner_has_calendar_membership": False,
         "audit_writer_has_calendar_membership": False,
     }
-
-    _run_psql_file(
-        host=host,
-        port=port,
-        user=admin_user,
-        password=admin_password,
-        database="butlers",
-        file_path=script_path,
-    )
-
-    engine = create_engine(control_url)
-    try:
-        with engine.connect() as conn:
-            assert calendar_role_attributes(conn) == {
-                "rolsuper": False,
-                "rolcreaterole": False,
-                "rolcreatedb": False,
-                "rolreplication": False,
-            }
-            assert membership_pairs(conn) == set()
-            has_migration_membership = conn.execute(
-                text(
-                    """
-                    SELECT EXISTS (
-                        SELECT 1
-                        FROM pg_auth_members AS membership
-                        JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
-                        JOIN pg_roles AS member_role ON member_role.oid = membership.member
-                        WHERE granted_role.rolname = :calendar_role
-                          AND member_role.rolname = 'butlers'
+    assert direct_calendar_effective_privileges() == expected
+    for _ in range(2):
+        # Replaying production preparation neither adds this role to the
+        # source profile nor restores any old broad/calendar/restore grant.
+        _prepare(control_url)
+        with pytest.raises(AuthorityError, match="not declared"):
+            load_runtime_profile("butlers", "calendar", _OPTIONAL_CALENDAR_RUNTIME_ROLE)
+        with _control(control_url) as connection:
+            attributes = dict(
+                connection.execute(
+                    text(
+                        "SELECT rolsuper,rolcreaterole,rolcreatedb,rolreplication,"
+                        "rolcanlogin,rolinherit,rolbypassrls FROM pg_roles "
+                        "WHERE rolname='butler_calendar_rw'"
                     )
-                    """
-                ),
-                {"calendar_role": _OPTIONAL_CALENDAR_RUNTIME_ROLE},
+                )
+                .mappings()
+                .one()
+            )
+            memberships = connection.execute(
+                text(
+                    "SELECT count(*) FROM pg_auth_members WHERE member="
+                    "(SELECT oid FROM pg_roles WHERE rolname='butler_calendar_rw') OR roleid="
+                    "(SELECT oid FROM pg_roles WHERE rolname='butler_calendar_rw')"
+                )
             ).scalar_one()
-    finally:
-        engine.dispose()
-
-    assert has_migration_membership is False
-    # The optional calendar role intentionally receives no persistent CONNECT
-    # grant from init-db. This control-only harness grant makes its direct
-    # LOGIN identity observable after SUPERUSER removal without changing the
-    # production calendar ACL or membership topology.
-    engine = create_engine(control_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("GRANT CONNECT ON DATABASE butlers TO butler_calendar_rw"))
-    finally:
-        engine.dispose()
-    assert direct_calendar_effective_privileges() == {
-        "current_role": _OPTIONAL_CALENDAR_RUNTIME_ROLE,
-        "is_superuser": False,
-        "can_create_role": False,
-        "can_create_database": False,
-        "can_replicate": False,
-        "schema_usage": False,
-        "calendar_schema_usage": True,
-        "ledger_select": False,
-        "ledger_insert": False,
-        "ledger_sequence_usage": False,
-        "ledger_sequence_select": False,
-        "ledger_sequence_update": False,
-        "has_executor_membership": False,
-        "has_owner_membership": False,
-        "has_audit_writer_membership": False,
-        "executor_has_calendar_membership": False,
-        "owner_has_calendar_membership": False,
-        "audit_writer_has_calendar_membership": False,
-    }
-
-    # PostgreSQL rejects reciprocal memberships as a cycle, so exercise the
-    # inverse authority direction after the first rerun has removed the grants
-    # above. This proves both executor-is-member-of-calendar and
-    # calendar-is-member-of-executor repair paths without inventing a topology
-    # PostgreSQL cannot represent.
-    engine = create_engine(control_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            for authority_role in _RESTORE_DRILL_AUTHORITY_ROLES:
-                conn.execute(text(f"GRANT {_OPTIONAL_CALENDAR_RUNTIME_ROLE} TO {authority_role}"))
-    finally:
-        engine.dispose()
-
-    engine = create_engine(control_url)
-    try:
-        with engine.connect() as conn:
-            assert membership_pairs(conn) == {
-                (_OPTIONAL_CALENDAR_RUNTIME_ROLE, authority_role)
-                for authority_role in _RESTORE_DRILL_AUTHORITY_ROLES
-            }
-    finally:
-        engine.dispose()
-    assert direct_calendar_effective_privileges() == {
-        "current_role": _OPTIONAL_CALENDAR_RUNTIME_ROLE,
-        "is_superuser": False,
-        "can_create_role": False,
-        "can_create_database": False,
-        "can_replicate": False,
-        "schema_usage": False,
-        "calendar_schema_usage": True,
-        "ledger_select": False,
-        "ledger_insert": False,
-        "ledger_sequence_usage": False,
-        "ledger_sequence_select": False,
-        "ledger_sequence_update": False,
-        "has_executor_membership": False,
-        "has_owner_membership": False,
-        "has_audit_writer_membership": False,
-        "executor_has_calendar_membership": True,
-        "owner_has_calendar_membership": True,
-        "audit_writer_has_calendar_membership": True,
-    }
-
-    _run_psql_file(
-        host=host,
-        port=port,
-        user=admin_user,
-        password=admin_password,
-        database="butlers",
-        file_path=script_path,
-    )
-
-    engine = create_engine(control_url)
-    try:
-        with engine.connect() as conn:
-            assert membership_pairs(conn) == set()
-    finally:
-        engine.dispose()
-    assert direct_calendar_effective_privileges() == {
-        "current_role": _OPTIONAL_CALENDAR_RUNTIME_ROLE,
-        "is_superuser": False,
-        "can_create_role": False,
-        "can_create_database": False,
-        "can_replicate": False,
-        "schema_usage": False,
-        "calendar_schema_usage": True,
-        "ledger_select": False,
-        "ledger_insert": False,
-        "ledger_sequence_usage": False,
-        "ledger_sequence_select": False,
-        "ledger_sequence_update": False,
-        "has_executor_membership": False,
-        "has_owner_membership": False,
-        "has_audit_writer_membership": False,
-        "executor_has_calendar_membership": False,
-        "owner_has_calendar_membership": False,
-        "audit_writer_has_calendar_membership": False,
-    }
+            has_migration_membership = connection.execute(
+                text("SELECT pg_has_role('butlers','butler_calendar_rw','MEMBER')")
+            ).scalar_one()
+        assert attributes == dict.fromkeys(
+            (
+                "rolsuper",
+                "rolcreaterole",
+                "rolcreatedb",
+                "rolreplication",
+                "rolcanlogin",
+                "rolinherit",
+                "rolbypassrls",
+            ),
+            False,
+        )
+        assert memberships == 0
+        assert has_migration_membership is False
+        assert direct_calendar_effective_privileges() == expected
+        with pytest.raises(ProgrammingError) as denied:
+            _role_scalar(
+                control_url,
+                _OPTIONAL_CALENDAR_RUNTIME_ROLE,
+                "SELECT count(*) FROM restore_drill_executor.restore_drill_results",
+            )
+        assert denied.value.orig.pgcode == "42501"
 
 
 def test_init_db_rejects_migration_user_bootstrap_before_normal_role_mutation(postgres_container):
@@ -1027,9 +827,7 @@ def test_init_db_rejects_migration_user_bootstrap_before_normal_role_mutation(po
     ]
     assert membership_count == 0
     assert installed_script_extensions == []
-    assert (
-        "restore-drill admin bootstrap cannot run as the shared migration role" in completed.stderr
-    )
+    assert "source-compiled deployment manifest required" in completed.stderr
 
 
 def test_init_db_rejects_distinct_non_superuser_owner_before_any_mutation(postgres_container):
@@ -1230,7 +1028,7 @@ def test_init_db_rejects_distinct_non_superuser_owner_before_any_mutation(postgr
     finally:
         engine.dispose()
 
-    assert "restore-drill admin bootstrap requires a cluster superuser" in completed.stderr
+    assert "explicit privileged bootstrap identity required" in completed.stderr
 
 
 def test_init_db_default_psql_stops_before_extension_mutation_after_preflight_error(
@@ -1309,7 +1107,7 @@ def test_init_db_default_psql_stops_before_extension_mutation_after_preflight_er
         f"exit code={completed.returncode}, extensions={installed_script_extensions}"
     )
     assert installed_script_extensions == []
-    assert "restore-drill admin bootstrap requires a cluster superuser" in completed.stderr
+    assert "explicit privileged bootstrap identity required" in completed.stderr
 
 
 def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
@@ -1318,120 +1116,30 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
     RFC 0014 §D1: Chronicler LLM sessions read only named evidence surfaces.
     The bootstrap must NOT grant SELECT ON ALL TABLES — only specific tables.
     """
-    host, port, admin_user, admin_password = _admin_params(postgres_container)
-    admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
-    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("DROP DATABASE IF EXISTS butlers"))
-            conn.execute(text("DROP ROLE IF EXISTS butlers"))
-            conn.execute(text("CREATE ROLE butlers LOGIN PASSWORD 'butlers'"))
-            conn.execute(text("CREATE DATABASE butlers OWNER butlers"))
-    finally:
-        engine.dispose()
-
-    script_path = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
-    _run_psql_file(
-        host=host,
-        port=port,
-        user=admin_user,
-        password=admin_password,
-        database="butlers",
-        file_path=script_path,
+    migration_user_url, butlers_url = _fresh_database(postgres_container)
+    _prepare(butlers_url)
+    _migrate_selected(
+        migration_user_url,
+        butlers_url,
+        (
+            ("core", "education", None),
+            ("core", "general", None),
+        ),
     )
-
-    # Create representative tables in two butler schemas as the migration user.
-    migration_user_url = f"postgresql://butlers:butlers@{host}:{port}/butlers"
     engine = create_engine(migration_user_url, isolation_level="AUTOCOMMIT")
     try:
-        with engine.connect() as conn:
-            # education.sessions — approved evidence surface
-            conn.execute(
+        with engine.connect() as connection:
+            # A genuinely undeclared future relation must not acquire a default grant.
+            connection.execute(
                 text(
-                    "CREATE TABLE education.sessions ("
-                    "  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),"
-                    "  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
-                    "  completed_at TIMESTAMPTZ,"
-                    "  trigger_source TEXT,"
-                    "  success BOOLEAN,"
-                    "  request_id TEXT,"
-                    "  duration_ms BIGINT,"
-                    "  model TEXT"
-                    ")"
-                )
-            )
-            # education.state_store — NOT an approved evidence surface
-            conn.execute(
-                text(
-                    "CREATE TABLE education.state_store ("
-                    "  key TEXT PRIMARY KEY,"
-                    "  value JSONB NOT NULL DEFAULT '{}'::jsonb"
-                    ")"
-                )
-            )
-            # general.calendar_event_instances — approved evidence surface
-            conn.execute(
-                text(
-                    # schema-standin-exempt: privilege-only GRANT target; the
-                    # fixture checks init-db ACLs, not the calendar table shape.
-                    "CREATE TABLE general.calendar_event_instances ("
-                    "  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),"
-                    "  event_id UUID,"
-                    "  source_id UUID,"
-                    "  origin_instance_ref TEXT,"
-                    "  starts_at TIMESTAMPTZ,"
-                    "  ends_at TIMESTAMPTZ,"
-                    "  status TEXT,"
-                    "  timezone TEXT,"
-                    "  metadata JSONB,"
-                    "  updated_at TIMESTAMPTZ"
-                    ")"
-                )
-            )
-            # The completed-instance projection also reads these join
-            # companions; each is an approved Chronicler read surface.
-            conn.execute(
-                text(
-                    # schema-standin-exempt: privilege-only GRANT target; the
-                    # fixture checks init-db ACLs, not the calendar table shape.
-                    "CREATE TABLE general.calendar_sources ("
-                    "  id UUID PRIMARY KEY DEFAULT gen_random_uuid()"
-                    ")"
-                )
-            )
-            conn.execute(
-                text(
-                    # schema-standin-exempt: privilege-only GRANT target; the
-                    # fixture checks init-db ACLs, not the calendar table shape.
-                    "CREATE TABLE general.calendar_events ("
-                    "  id UUID PRIMARY KEY DEFAULT gen_random_uuid()"
-                    ")"
-                )
-            )
-            conn.execute(
-                text(
-                    # schema-standin-exempt: privilege-only GRANT target; the
-                    # fixture checks init-db ACLs, not the calendar table shape.
-                    "CREATE TABLE general.calendar_event_entities ("
-                    "  event_id UUID NOT NULL,"
-                    "  entity_id UUID NOT NULL"
-                    ")"
+                    "CREATE TABLE education.state_store (key TEXT PRIMARY KEY, "
+                    "value JSONB NOT NULL DEFAULT '{}'::jsonb)"
                 )
             )
     finally:
         engine.dispose()
+    _prepare(butlers_url)
 
-    # Re-run init-db.sql so the existing tables receive their specific grants.
-    _run_psql_file(
-        host=host,
-        port=port,
-        user=admin_user,
-        password=admin_password,
-        database="butlers",
-        file_path=script_path,
-    )
-
-    butlers_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
     engine = create_engine(butlers_url)
     try:
         with engine.connect() as conn:
@@ -1502,3 +1210,47 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
         "butler_chronicler_rw must NOT be able to SELECT education.state_store "
         "(not an approved RFC 0014 evidence surface — broad grants violate RFC 0014 §D1)"
     )
+
+    async def actual_evidence_readers():
+        import uuid
+        from datetime import UTC, datetime
+
+        import asyncpg
+        from sqlalchemy.engine import make_url
+
+        from butlers.chronicler.adapters import CalendarCompletedAdapter, CoreSessionsAdapter
+        from butlers.db import register_jsonb_codec
+
+        async def setup(connection):
+            await connection.execute("SET ROLE butler_chronicler_rw")
+
+        native_url = (
+            make_url(butlers_url).set(drivername="postgresql").render_as_string(hide_password=False)
+        )
+        pool = await asyncpg.create_pool(
+            native_url, min_size=1, max_size=1, init=register_jsonb_codec, setup=setup
+        )
+        try:
+            sessions = CoreSessionsAdapter(("education",))
+            assert await sessions._fetch_sessions(pool, "education", None) == ([], None)
+            calendar = CalendarCompletedAdapter(("general",))
+            assert await calendar._fetch_instances(pool, "general", None, datetime.now(UTC)) == []
+            assert await calendar._fetch_event_entities(pool, "general", [uuid.uuid4()]) == {}
+            for table in (
+                "education.sessions",
+                "general.calendar_event_instances",
+                "general.calendar_sources",
+                "general.calendar_events",
+                "general.calendar_event_entities",
+            ):
+                assert await pool.fetch(f"SELECT * FROM {table} LIMIT 1") == []
+                with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                    # Even an empty match requires DELETE authority. No source
+                    # data is changed by this negative proof.
+                    await pool.execute(f"DELETE FROM {table} WHERE false")
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await pool.fetch("SELECT * FROM education.state_store")
+        finally:
+            await pool.close()
+
+    asyncio.run(actual_evidence_readers())

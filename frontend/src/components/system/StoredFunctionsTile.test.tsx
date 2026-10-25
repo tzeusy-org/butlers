@@ -1,348 +1,131 @@
 // @vitest-environment jsdom
-// ---------------------------------------------------------------------------
-// StoredFunctionsTile tests -- bu-uoctv
-//
-// Coverage:
-//   - Loading state: skeleton rendered, no content
-//   - Error state: error message rendered, no content
-//   - Check unavailable (stored_function_check_available=false): unknown
-//     notice, never rendered as a clean all-clear
-//   - All matched (is_drifted=false, no not_deployed): green badge
-//   - Drifted: red badge, one row per drifted function with its init-db.sql
-//     line reference(s); no digest or body text reaches the DOM
-//   - not_deployed: distinct (amber, non-red) styling from drifted, never
-//     alarm-shaped on its own
-//   - Unpinned definers (bu-hefzis): owner, path and remedy per function;
-//     an unavailable definer check says so; nothing new when clean
-// ---------------------------------------------------------------------------
-
 import { describe, expect, it, vi } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
-
-import type { ApiResponse, StoredFunctionFacts } from "@/api/types"
+import type { ApiResponse, StoredFunctionEntry, StoredFunctionFacts } from "@/api/types"
 import { StoredFunctionsTile } from "./StoredFunctionsTile"
 
-// ---------------------------------------------------------------------------
-// Mock useStoredFunctionFacts
-// ---------------------------------------------------------------------------
-
-type HookResult = Partial<{
-  isPending: boolean
-  isError: boolean
-  data: ApiResponse<StoredFunctionFacts>
-}>
-
+type HookResult = Partial<{ isPending: boolean; isError: boolean; data: ApiResponse<StoredFunctionFacts> }>
 let mockResult: HookResult = { isPending: false }
-
-vi.mock("@/hooks/use-system", () => ({
-  useStoredFunctionFacts: () => ({
-    ...mockResult,
-    status: mockResult.isPending ? "pending" : mockResult.isError ? "error" : "success",
-    fetchStatus: "idle",
-    isPlaceholderData: false,
-    refetch: vi.fn(),
-  }),
-}))
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function makeStoredFunctionFacts(
-  overrides: Partial<StoredFunctionFacts> = {},
-): ApiResponse<StoredFunctionFacts> {
-  return {
-    data: {
-      checked_at: "2026-07-11T00:00:00Z",
-      is_drifted: false,
-      drifted: [],
-      not_deployed: [],
-      matched_count: 0,
-      stored_function_check_available: true,
-      unpinned_definers: [],
-      definer_check_available: true,
-      ...overrides,
-    },
-    meta: {},
-  }
+vi.mock("@/hooks/use-system", () => ({ useStoredFunctionFacts: () => ({
+  ...mockResult, status: mockResult.isPending ? "pending" : mockResult.isError ? "error" : "success",
+  fetchStatus: "idle", isPlaceholderData: false, refetch: vi.fn(),
+}) }))
+function fact(overrides: Partial<StoredFunctionEntry> = {}): StoredFunctionEntry {
+  return { function: "public.fixed(uuid)", status: "conforming", expected_digest: "a".repeat(64),
+    actual_digest: "b".repeat(64), owner_ok: true, settings_ok: true, acl_ok: true, ...overrides }
 }
-
-function render(): string {
+function show(overrides: Partial<StoredFunctionFacts> = {}) {
+  mockResult = { data: { data: { checked_at: "2026-10-25T00:00:00Z", status: "conforming",
+    catalog_check_available: true, objects_ok: true, functions: [fact()], unpinned_definers: [],
+    definer_check_available: true, ...overrides }, meta: {} } }
   return renderToStaticMarkup(<StoredFunctionsTile />)
 }
+function render() { return renderToStaticMarkup(<StoredFunctionsTile />) }
 
-// ---------------------------------------------------------------------------
-// 1. Loading state
-// ---------------------------------------------------------------------------
-
-describe("StoredFunctionsTile -- loading state", () => {
-  it("renders skeleton when isPending=true", () => {
+describe("Database authority actual catalog facts", () => {
+  it("renders skeleton while loading", () => {
     mockResult = { isPending: true }
     expect(render()).toContain("stored-functions-tile-skeleton")
   })
-
-  it("does not render content while loading", () => {
+  it("never renders conformance or mismatch while loading", () => {
     mockResult = { isPending: true }
-    const html = render()
-    expect(html).not.toContain("stored-functions-tile-clean")
-    expect(html).not.toContain("stored-functions-tile-drifted")
-    expect(html).not.toContain("stored-functions-tile-unavailable")
+    expect(render()).not.toContain("stored-functions-tile-clean")
+    expect(render()).not.toContain("stored-functions-tile-drifted")
+    expect(render()).not.toContain("stored-functions-tile-unavailable")
   })
-})
-
-// ---------------------------------------------------------------------------
-// 2. Error state
-// ---------------------------------------------------------------------------
-
-describe("StoredFunctionsTile -- error state", () => {
-  it("renders error message when isError=true", () => {
-    mockResult = { isPending: false, isError: true }
+  it("renders query errors distinctly", () => {
+    mockResult = { isError: true }
     expect(render()).toContain("stored-functions-tile-error")
   })
-
-  it("does not render content or unavailable state when isError=true", () => {
-    mockResult = { isPending: false, isError: true }
-    const html = render()
-    expect(html).not.toContain("stored-functions-tile-clean")
-    expect(html).not.toContain("stored-functions-tile-unavailable")
+  it("never renders conformance on query error", () => {
+    mockResult = { isError: true }
+    expect(render()).not.toContain("stored-functions-tile-clean")
+    expect(render()).not.toContain("stored-functions-tile-unavailable")
   })
-})
-
-// ---------------------------------------------------------------------------
-// 3. Check unavailable (degraded, never a fabricated all-clear)
-// ---------------------------------------------------------------------------
-
-describe("StoredFunctionsTile -- check unavailable", () => {
-  it("renders the unavailable state, not the clean state", () => {
-    mockResult = {
-      isPending: false,
-      data: makeStoredFunctionFacts({ stored_function_check_available: false }),
-    }
-    const html = render()
+  it("renders unavailable rather than conformance", () => {
+    const html = show({ catalog_check_available: false })
     expect(html).toContain("stored-functions-tile-unavailable")
     expect(html).not.toContain("stored-functions-tile-clean")
   })
-
-  it("shows 'Stored-function check unavailable' text", () => {
-    mockResult = {
-      isPending: false,
-      data: makeStoredFunctionFacts({ stored_function_check_available: false }),
-    }
-    expect(render()).toContain("Stored-function check unavailable")
+  it("explains unavailable authority without offering old bootstrap repair", () => {
+    const html = show({ status: "unavailable", objects_ok: null })
+    expect(html).toContain("not a clean bill of health")
+    expect(html).not.toContain("init-db.sql")
   })
-})
-
-// ---------------------------------------------------------------------------
-// 4. All matched
-// ---------------------------------------------------------------------------
-
-describe("StoredFunctionsTile -- all matched", () => {
-  it("renders the clean badge with the matched count", () => {
-    mockResult = {
-      isPending: false,
-      data: makeStoredFunctionFacts({ matched_count: 7 }),
-    }
-    const html = render()
-    expect(html).toContain("stored-functions-tile-clean")
-    expect(html).toContain("stored-functions-tile-clean-badge")
-    expect(html).toContain("All 7 matched")
+  it("renders current conforming overload count", () => {
+    expect(show()).toContain("Catalog conforms to source (1 function overloads)")
+    expect(show()).toContain("stored-functions-tile-clean-badge")
   })
-
-  it("does not render the drifted state", () => {
-    mockResult = { isPending: false, data: makeStoredFunctionFacts() }
-    expect(render()).not.toContain("stored-functions-tile-drifted")
+  it("does not render mismatch when actual complete facts conform", () => {
+    expect(show()).not.toContain("stored-functions-tile-drifted")
   })
-})
-
-// ---------------------------------------------------------------------------
-// 5. Drifted
-// ---------------------------------------------------------------------------
-
-describe("StoredFunctionsTile -- drifted", () => {
-  it("renders the drifted badge with the correct count", () => {
-    mockResult = {
-      isPending: false,
-      data: makeStoredFunctionFacts({
-        is_drifted: true,
-        matched_count: 4,
-        drifted: [
-          {
-            function: "notify",
-            committed_lines: [412],
-            committed_digests: ["abc123def456"],
-            deployed_digests: ["fedcba654321"],
-          },
-        ],
-      }),
-    }
-    const html = render()
-    expect(html).toContain("stored-functions-tile-drifted")
-    expect(html).toContain("1 function drifted")
-    expect(html).toContain("4 matched, 1 drifted, 0 not deployed")
-  })
-
-  it("names the drifted function with its init-db.sql line reference", () => {
-    mockResult = {
-      isPending: false,
-      data: makeStoredFunctionFacts({
-        is_drifted: true,
-        drifted: [
-          {
-            function: "notify",
-            committed_lines: [412],
-            committed_digests: ["abc123def456"],
-            deployed_digests: ["fedcba654321"],
-          },
-        ],
-      }),
-    }
-    const html = render()
-    expect(html).toContain("notify")
-    expect(html).toContain("412")
-  })
-
-  it("joins multiple committed line references for one function", () => {
-    mockResult = {
-      isPending: false,
-      data: makeStoredFunctionFacts({
-        is_drifted: true,
-        drifted: [
-          {
-            function: "resolve_entity",
-            committed_lines: [88, 140],
-            committed_digests: ["a1", "a2"],
-            deployed_digests: ["b1"],
-          },
-        ],
-      }),
-    }
-    const html = render()
-    expect(html).toContain("resolve_entity")
-    expect(html).toContain("88, 140")
-  })
-
-  it("never renders a committed or deployed digest", () => {
-    mockResult = {
-      isPending: false,
-      data: makeStoredFunctionFacts({
-        is_drifted: true,
-        drifted: [
-          {
-            function: "notify",
-            committed_lines: [412],
-            committed_digests: ["abc123def456"],
-            deployed_digests: ["fedcba654321"],
-          },
-        ],
-      }),
-    }
-    const html = render()
-    expect(html).not.toContain("abc123def456")
-    expect(html).not.toContain("fedcba654321")
-  })
-})
-
-// ---------------------------------------------------------------------------
-// 6. not_deployed -- distinct from drifted, never alarm-shaped alone
-// ---------------------------------------------------------------------------
-
-describe("StoredFunctionsTile -- not_deployed", () => {
-  it("renders a not-deployed badge distinct from the drifted badge", () => {
-    mockResult = {
-      isPending: false,
-      data: makeStoredFunctionFacts({
-        not_deployed: ["seed_defaults"],
-      }),
-    }
-    const html = render()
-    expect(html).toContain("stored-functions-tile-not-deployed-badge")
-    expect(html).not.toContain("stored-functions-tile-drifted-badge")
-    expect(html).toContain("seed_defaults")
-  })
-
-  it("does not mark is_drifted-driven state when only not_deployed is present", () => {
-    mockResult = {
-      isPending: false,
-      data: makeStoredFunctionFacts({
-        not_deployed: ["seed_defaults"],
-      }),
-    }
-    const html = render()
-    expect(html).not.toContain("border-[var(--red)]/40")
-  })
-
-  it("renders both drifted and not_deployed sections when both are present", () => {
-    mockResult = {
-      isPending: false,
-      data: makeStoredFunctionFacts({
-        is_drifted: true,
-        drifted: [
-          {
-            function: "notify",
-            committed_lines: [412],
-            committed_digests: ["abc123"],
-            deployed_digests: ["def456"],
-          },
-        ],
-        not_deployed: ["seed_defaults"],
-      }),
-    }
-    const html = render()
+  it("renders mismatches and the controlled maintenance remedy", () => {
+    const html = show({ status: "mismatch", functions: [fact({ status: "mismatch" })] })
     expect(html).toContain("stored-functions-tile-drifted-badge")
+    expect(html).toContain("controlled migrator before serving")
+  })
+  it("names exact source overloads instead of obsolete init line numbers", () => {
+    const html = show({ status: "mismatch", functions: [fact({ status: "mismatch" })] })
+    expect(html).toContain("public.fixed(uuid)")
+    expect(html).not.toContain("init-db.sql")
+  })
+  it("distinguishes owner settings and privilege mismatch facts", () => {
+    const html = show({ status: "mismatch", functions: [fact({ owner_ok: false, settings_ok: false, acl_ok: false })] })
+    expect(html).toContain("owner mismatch")
+    expect(html).toContain("settings mismatch")
+    expect(html).toContain("privileges mismatch")
+    expect(html).not.toContain("stored-functions-tile-clean-badge")
+  })
+  it("never renders actual or expected digests", () => {
+    const html = show({ status: "mismatch", functions: [fact({ status: "mismatch" })] })
+    expect(html).not.toContain("a".repeat(64))
+    expect(html).not.toContain("b".repeat(64))
+  })
+  it("names missing required functions as an authority failure", () => {
+    const html = show({ status: "mismatch", functions: [fact({ status: "missing", actual_digest: null })] })
     expect(html).toContain("stored-functions-tile-not-deployed-badge")
+    expect(html).toContain("public.fixed(uuid): missing")
+    expect(html).toContain("stored-functions-tile-drifted-badge")
   })
-})
-
-// ---------------------------------------------------------------------------
-// Unpinned definer search paths (bu-hefzis)
-// ---------------------------------------------------------------------------
-
-describe("StoredFunctionsTile -- definer search path", () => {
-  it("lists each unpinned definer with its owner, path and remedy", () => {
-    mockResult = {
-      isPending: false,
-      data: makeStoredFunctionFacts({
-        matched_count: 3,
-        unpinned_definers: [
-          {
-            function: "restore_drill_executor.is_due(p_interval_seconds integer)",
-            owner: "restore_drill_executor_owner",
-            search_path: "pg_catalog, public, pg_temp",
-            remedy: "init_db",
-          },
-          {
-            function: "public.dashboard_turn_require_role(p_expected_role text)",
-            owner: "butlers",
-            search_path: null,
-            remedy: "migrations",
-          },
-        ],
-      }),
-    }
-    const html = render()
-    expect(html).toContain("stored-functions-tile-unpinned")
-    expect(html).toContain("2 definers not pinned to pg_catalog, pg_temp")
-    expect(html).toContain("restore_drill_executor.is_due(p_interval_seconds integer)")
+  it("cannot render a green badge for a contradictory missing function", () => {
+    const html = show({ functions: [fact({ status: "missing" })] })
+    expect(html).not.toContain("stored-functions-tile-clean-badge")
+    expect(html).toContain("border-[var(--red)]/40")
+  })
+  it("retains both missing and mismatched overload facts", () => {
+    const html = show({ status: "mismatch", functions: [fact({ status: "mismatch" }),
+      fact({ function: "public.second()", status: "missing", actual_digest: null })] })
+    expect(html).toContain("public.fixed(uuid)")
+    expect(html).toContain("public.second(): missing")
+  })
+  it("preserves independent unpinned definer owner path and remedy", () => {
+    const html = show({ unpinned_definers: [
+      { function: "restore_drill_executor.is_due(integer)", owner: "restore_drill_executor_owner",
+        search_path: "pg_catalog, public, pg_temp", remedy: "controlled_migrator" },
+      { function: "public.second()", owner: "normal_owner", search_path: null, remedy: "controlled_migrator" },
+    ] })
+    expect(html).toContain("2 unpinned definers")
     expect(html).toContain("owner restore_drill_executor_owner")
-    expect(html).toContain("re-run scripts/init-db.sql as a cluster superuser")
     expect(html).toContain("search_path unset")
-    expect(html).toContain("run migrations to head")
-    // Body drift is a separate verdict: the clean body badge still shows.
-    expect(html).toContain("All 3 matched")
+    expect(html).toContain("operator maintenance prerequisite")
+    expect(html).toContain("stored-functions-tile-clean-badge")
   })
-
-  it("says the definer check is unavailable and adds nothing when clean", () => {
-    mockResult = {
-      isPending: false,
-      data: makeStoredFunctionFacts({ definer_check_available: false }),
-    }
-    const degraded = render()
+  it("preserves independent unavailable definer observation and clean absence", () => {
+    const degraded = show({ definer_check_available: false })
     expect(degraded).toContain("stored-functions-tile-definer-unavailable")
     expect(degraded).not.toContain("stored-functions-tile-unpinned")
-
-    mockResult = { isPending: false, data: makeStoredFunctionFacts() }
-    const clean = render()
+    const clean = show()
     expect(clean).not.toContain("stored-functions-tile-definer-unavailable")
     expect(clean).not.toContain("stored-functions-tile-unpinned")
+  })
+  it("requires positive object facts even if the status claims conformance", () => {
+    for (const objects_ok of [false, null]) {
+      expect(show({ objects_ok })).not.toContain("stored-functions-tile-clean-badge")
+      expect(show({ objects_ok })).toContain("Object ownership or privileges do not conform")
+    }
+  })
+  it("does not interpret an unknown status as conformance", () => {
+    expect(show({ status: "unknown" })).toContain("stored-functions-tile-unavailable")
+    expect(show({ status: "unknown" })).not.toContain("stored-functions-tile-clean-badge")
   })
 })

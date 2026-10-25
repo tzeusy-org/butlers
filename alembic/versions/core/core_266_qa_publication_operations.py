@@ -54,7 +54,6 @@ _OTHER_RUNTIME_ROLES = (
     "butler_relationship_rw",
     "butler_switchboard_rw",
     "butler_travel_rw",
-    "butler_calendar_rw",
     "connector_writer",
 )
 

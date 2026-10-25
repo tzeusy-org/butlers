@@ -25,7 +25,7 @@ spec:
               image: postgres:17-alpine
               command: ["sh", "/backup/pg_dump.sh"]
               env:
-                {{- include "butlers.postgresEnv" . | nindent 16 }}
+                {{- include "butlers.databaseEnv" (dict "root" . "purpose" "backup") | nindent 16 }}
                 - name: BACKUP_DIR
                   value: /backups
                 - name: BACKUP_RETAIN_DAYS

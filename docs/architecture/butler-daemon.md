@@ -8,7 +8,7 @@
 
 
 ![Daemon Startup Sequence](./startup-sequence.svg)
-Every butler in the system is a long-running Python process managed by the `ButlerDaemon` class (`src/butlers/daemon.py`). The daemon owns the full lifecycle of a butler: loading configuration, provisioning infrastructure, wiring modules, and serving MCP tools over an SSE transport. It is the single entry point for both `butlers run --config` (single butler) and `butlers up` (multi-butler) execution modes.
+Every butler in the system is a long-running Python process managed by the `ButlerDaemon` class (`src/butlers/daemon.py`). The daemon owns the full lifecycle of a butler: loading configuration, verifying installed database authority, wiring modules, and serving MCP tools over an SSE transport. It is the single entry point for both `butlers run --config` (single butler) and `butlers up` (multi-butler) execution modes. Privileged provisioning and migrations are explicit pre-serving operations.
 
 ## Key-absent control stage
 
@@ -38,7 +38,7 @@ The daemon reads `butler.toml` from the config directory, parses it into a `Butl
 
 ### Phase 3: Initialize Modules (Topological Order)
 
-The `ModuleRegistry` registers classes without constructors and constructs only names explicitly declared in `[modules.*]`, independent of configuration schema shape. It returns them in dependency order. Unknown declarations and missing declared dependencies fail before database provisioning or migrations. Discovery, successful startup and user-enabled state are separate sets. Dependency cycles are startup-blocking errors.
+The `ModuleRegistry` registers classes without constructors and constructs only names explicitly declared in `[modules.*]`, independent of configuration schema shape. It returns them in dependency order. Unknown declarations and missing declared dependencies fail before database admission. Discovery, successful startup and user-enabled state are separate sets. Dependency cycles are startup-blocking errors.
 
 ### Phase 4: Validate Module Configs
 
@@ -48,17 +48,17 @@ Each module's `config_schema` (a Pydantic model) is validated against its TOML s
 
 Butler-level `[butler.env].required` and `[butler.env].optional` variables are checked before database work. Missing required variables block startup; module credentials are resolved later through the database-backed credential store.
 
-### Phase 6: Provision Database and Establish Butler Identity
+### Phase 6: Admit the Existing Database and Establish Butler Identity
 
-The daemon provisions and connects a `Database` unless an already-connected instance was injected. It assigns `db.owner_butler` from the configured butler name before any module can make an auditable recovery. In the one-db/multi-schema topology, all butlers share `butlers` and use a schema-scoped search path; legacy per-butler databases retain the unqualified `public` schema.
+The daemon connects a `Database` under its dedicated runtime login and exact source-derived capability unless an already-connected instance was injected. It verifies the actual connecting login, recursive role reach and source catalog before exposing the pool, then repeats admission on acquisition after reset. It assigns `db.owner_butler` from the configured butler name before any module can make an auditable recovery. The declared primary schema and any owned private Memory schema come from the source roster; the serving process cannot provision a database, invent a schema profile or fall back to a migration login.
 
-### Phase 7: Run Core and Butler Migrations
+### Phase 7: Verify Core and Butler Revisions
 
-Alembic runs the core chain and, where present, the butler-specific chain. These migrations create the mandatory state, schedule, session, and process-log tables.
+Read-only admission verifies the required core and, where present, butler-specific chain heads. The explicit CLI migrator must have completed these chains and final catalog convergence before startup; missing or unreadable evidence stops dependent consumers. Startup does not execute Alembic or repair schema/ACLs.
 
 ### Phase 8: Prepare Module Dependencies and Bootstrap State
 
-Module migration chains run next. The daemon builds a DB-first `CredentialStore`, explicitly selects its system-global Codex authority before restore (even when the local and global pool are the same object), validates module credentials, initializes optional blob storage, restores CLI auth, bootstraps owner/catalogue records, and recovers orphaned sessions. A missing Codex authority is safe degraded startup evidence, not permission to recover from a schema-local row. Module migration and credential failures remain isolated to the affected module.
+Declared module revision checks run next, including the actual owned private Memory target. The daemon builds a DB-first `CredentialStore`, explicitly selects its system-global Codex authority before restore (even when the local and global pool are the same object), validates module credentials, initializes optional blob storage, restores CLI auth, bootstraps owner/catalogue records, and recovers orphaned sessions. A missing Codex authority is safe degraded startup evidence, not permission to recover from a schema-local row. Module admission and credential failures remain isolated to the affected module and its dependents.
 
 ### Phase 9: Resolve Runtime Config
 
@@ -226,9 +226,9 @@ kill -TERM $(pgrep -f "butlers run --config roster/general")
 - [Spawner](../runtime/spawner.md) — the runtime invocation component
 - [Scheduler Execution](../runtime/scheduler-execution.md) — cron-driven task dispatch behavior
 
-## Proposed read-only migration admission
+## Database-authority source and deployment boundary
 
-The ROOT3745-authorized db-authority-rebuild target replaces only the daemon's migration-writing startup responsibility. At source 0cf196b5 the existing lifecycle still executes migrations; this section is not an assertion that the target is delivered. See [the cutover procedure](../identity_and_secrets/database-authority-cutover.md).
+This branch implements the read-only startup successor described above. Source and software checks do not prove the live database has undergone the transition. The complete migrated-role, deployment and preserving-rollback acceptance gates remain required before delivery; see [the cutover procedure](../identity_and_secrets/database-authority-cutover.md).
 
 After connecting under its exact runtime role/reach profile, the daemon verifies required core/domain/declared-module revisions and final interfaces read-only. The CLI migrator handles upgrades before serving. Missing core admission stops consumers; module admission preserves current failure/dependency cascades, private Memory target selection, actual config seed and schedule CAS ordering. It does not manufacture an empty source or install schema from runtime credentials.
 

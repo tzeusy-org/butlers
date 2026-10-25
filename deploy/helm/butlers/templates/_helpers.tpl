@@ -18,8 +18,13 @@ app.kubernetes.io/component: {{ .component }}
 {{ .Release.Name }}-bws
 {{- end -}}
 
-{{/* Postgres connection env, shared by every app container. */}}
-{{- define "butlers.postgresEnv" -}}
+{{/* Source-selected workload credentials. commonEnv cannot override authority. */}}
+{{- define "butlers.databaseEnv" -}}
+{{- $root := .root -}}
+{{- $purpose := .purpose -}}
+{{- $keys := index $root.Values.database.credentials $purpose -}}
+{{- if not $keys -}}{{ fail "unknown database workload purpose" }}{{- end -}}
+{{- with $root -}}
 - name: POSTGRES_HOST
   value: {{ required "database.host is required" .Values.database.host | quote }}
 - name: POSTGRES_PORT
@@ -30,10 +35,10 @@ app.kubernetes.io/component: {{ .component }}
   value: {{ .Values.database.sslmode | quote }}
 - name: POSTGRES_USER
   valueFrom:
-    secretKeyRef: {name: {{ include "butlers.bwsSecret" . }}, key: POSTGRES_USER}
+    secretKeyRef: {name: {{ include "butlers.bwsSecret" . }}, key: {{ $keys.userKey }}}
 - name: POSTGRES_PASSWORD
   valueFrom:
-    secretKeyRef: {name: {{ include "butlers.bwsSecret" . }}, key: POSTGRES_PASSWORD}
+    secretKeyRef: {name: {{ include "butlers.bwsSecret" . }}, key: {{ $keys.passwordKey }}}
 - name: BUTLERS_DB_POOL_MIN_SIZE
   value: {{ .Values.database.poolMinSize | quote }}
 - name: BUTLERS_DB_POOL_MAX_SIZE
@@ -41,9 +46,28 @@ app.kubernetes.io/component: {{ .component }}
 - name: GIT_SHA
   value: {{ .Values.image.tag | quote }}
 {{- range $k, $v := .Values.commonEnv }}
+{{- if or (hasPrefix "POSTGRES_" $k) (hasPrefix "BUTLERS_MIGRATOR_" $k) (hasPrefix "BUTLERS_CREDENTIAL_" $k) (eq $k "DATABASE_URL") -}}
+{{- fail "commonEnv cannot override database authority profiles" -}}
+{{- end }}
 - name: {{ $k }}
   value: {{ $v | quote }}
 {{- end }}
+{{- if ne $purpose "backup" }}
+- name: BUTLERS_CREDENTIAL_DATABASE_URL
+  valueFrom:
+    secretKeyRef: {name: {{ include "butlers.bwsSecret" . }}, key: CREDENTIAL_DATABASE_URL}
+{{- end }}
+{{- end }}
+{{- end -}}
+
+{{- define "butlers.postgresEnv" -}}
+{{- include "butlers.databaseEnv" (dict "root" . "purpose" "runtime") -}}
+{{- end -}}
+
+{{- define "butlers.migratorEnv" -}}
+- name: BUTLERS_MIGRATOR_DATABASE_URL
+  valueFrom:
+    secretKeyRef: {name: {{ include "butlers.bwsSecret" . }}, key: MIGRATOR_DATABASE_URL}
 {{- end -}}
 
 {{- define "butlers.publicBase" -}}
@@ -70,7 +94,7 @@ https://{{ .Values.publicUrl.host }}
   imagePullPolicy: {{ .Values.image.pullPolicy }}
   command: ["uv", "run", "--frozen", "--no-dev", "python", "scripts/oauth_gate.py"]
   env:
-    {{- include "butlers.postgresEnv" . | nindent 4 }}
+    {{- include "butlers.databaseEnv" (dict "root" . "purpose" "connector") | nindent 4 }}
     - name: OAUTH_GATE_TIMEOUT
       value: {{ .Values.oauthGate.timeoutSeconds | quote }}
     - name: SKIP_OAUTH_CHECK

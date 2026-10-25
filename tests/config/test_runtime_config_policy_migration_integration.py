@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-import time
 from concurrent.futures import ThreadPoolExecutor
 
 import asyncpg
@@ -36,28 +35,46 @@ _DOCKER_AVAILABLE = shutil.which("docker") is not None
 _skip_without_docker = pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 
 
-def _prepare_core_222(postgres_container) -> str:
-    """Create a real core database at core_222, immediately before core_224.
+def _prepare_core_222(postgres_container) -> tuple[str, str]:
+    """Select the actual graph predecessor through held maintenance authority."""
+    from urllib.parse import unquote, urlparse
 
-    The merged graph uses a non-monotonic identifier later in the chain:
-    core_223 follows core_231. This helper deliberately tests core_224's
-    core_222 predecessor rather than assuming numeric order means graph order.
+    from butlers.testing.migration import (
+        create_migrated_test_db,
+        migration_bootstrap_db_url,
+        migration_db_name,
+    )
+
+    db_url = create_migrated_test_db(
+        postgres_container, migration_db_name(), ["core"], revisions={"core": "core_222"}
+    )
+    return db_url, migration_bootstrap_db_url(
+        postgres_container, unquote(urlparse(db_url).path[1:])
+    )
+
+
+def _apply_selected_revision(db_url: str, control_url: str, direction: str, target: str) -> None:
+    """Keep one selected administrative session; ordinary DDL keeps its normal owner.
+
+    These historical column/constraint controls deliberately remain below the
+    final core281 serving transition. They are not runtime catalog admission.
     """
     from alembic import command
-    from butlers.migrations import _build_alembic_config
-    from butlers.testing.migration import create_migration_db, migration_db_name
+    from butlers.migrations import _build_alembic_config, migration_session
 
-    db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, chains=["core"])
-    command.upgrade(config, "core@core_222")
-    return db_url
+    with migration_session(control_url, source_database="butlers") as held:
+        config.attributes["connection"] = held
+        if direction == "upgrade":
+            command.upgrade(config, target)
+        elif direction == "downgrade":
+            command.downgrade(config, target)
+        else:
+            raise ValueError("Unsupported migration direction")
 
 
-def _apply_core_224(db_url: str) -> None:
-    from alembic import command
-    from butlers.migrations import _build_alembic_config
-
-    command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core@core_224")
+def _apply_core_224(db_url: str, control_url: str) -> None:
+    _apply_selected_revision(db_url, control_url, "upgrade", "core@core_224")
 
 
 @_skip_without_docker
@@ -68,7 +85,7 @@ def test_migration_defaults_existing_row_to_eager_filtered_under_db_constraint(
     from sqlalchemy import create_engine, text
     from sqlalchemy.exc import IntegrityError
 
-    db_url = _prepare_core_222(postgres_container)
+    db_url, control_url = _prepare_core_222(postgres_container)
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
@@ -76,7 +93,7 @@ def test_migration_defaults_existing_row_to_eager_filtered_under_db_constraint(
     finally:
         engine.dispose()
 
-    _apply_core_224(db_url)
+    _apply_core_224(db_url, control_url)
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
@@ -104,12 +121,9 @@ def test_downgrade_removes_column_without_dropping_existing_rows(postgres_contai
     """Rollback is eager-first: the column goes, the row (and its identity) does not."""
     from sqlalchemy import create_engine, text
 
-    from alembic import command
-    from butlers.migrations import _build_alembic_config
-
-    db_url = _prepare_core_222(postgres_container)
-    _apply_core_224(db_url)
-    command.downgrade(_build_alembic_config(db_url, chains=["core"]), "core@core_222")
+    db_url, control_url = _prepare_core_222(postgres_container)
+    _apply_core_224(db_url, control_url)
+    _apply_selected_revision(db_url, control_url, "downgrade", "core@core_222")
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
@@ -469,25 +483,23 @@ def test_core_232_deep_downgrade_preflight_preserves_head_and_round_trips(
     failed_predicate: str,
 ) -> None:
     """Every core_198 refusal fails before core_231 can commit."""
-    from unittest.mock import patch
-
     from sqlalchemy import create_engine, text
 
-    from alembic import command
-    from butlers.bootstrap_prerequisite import BootstrapPrerequisiteError, check_bootstrap_database
-    from butlers.migrations import _build_alembic_config, get_chain_head, run_migrations
+    from butlers.db_authority.roles import AuthorityError
     from butlers.testing.migration import (
-        create_migration_db,
+        create_migrated_test_db,
         migration_bootstrap_db_url,
         migration_db_name,
     )
     from tests.bootstrap_prerequisite_helpers import _readback
 
     db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    # Own the historical pre-autocommit boundary without crossing core281.
+    # Current operator R0/R1 and its genuine PG matrix own the final reversal.
+    db_url = create_migrated_test_db(
+        postgres_container, db_name, ["core"], revisions={"core": "core_232"}
+    )
     bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
-    bootstrap_config = _build_alembic_config(bootstrap_url, chains=["core"])
 
     admin_engine = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
     try:
@@ -535,25 +547,22 @@ def test_core_232_deep_downgrade_preflight_preserves_head_and_round_trips(
                 )
 
         before_refusal = _readback(db_url)
-        if failed_predicate == "acl":
-            # Distinct actual early-boundary refusal, never credited as old preflight.
-            with pytest.raises(BootstrapPrerequisiteError):
-                command.downgrade(bootstrap_config, "core_197")
-            assert _readback(db_url) == before_refusal
-        else:
-            # Durable history affects protected rollback, not catalog provenance.
-            check_bootstrap_database(bootstrap_url)
-        # Neutralize ONLY the newly added outer check in this disposable test.
-        # The immutable state-specific protected guard and all old readbacks stay.
-        with patch("butlers.bootstrap_prerequisite.check_bootstrap_connection", return_value=None):
-            with pytest.raises(RuntimeError, match="protected core_198 rollback preflight failed"):
-                command.downgrade(bootstrap_config, "core_197")
+        # Both fault species remain actual catalog/evidence mutations. The
+        # source-owned boundary now refuses all installed protected states,
+        # before core231's autocommit; no bootstrap/guard monkeypatch bypass.
+        with pytest.raises(AuthorityError, match="Protected boundary remains installed"):
+            _apply_selected_revision(db_url, bootstrap_url, "downgrade", "core_197")
+        assert _readback(db_url) == before_refusal
+        with pytest.raises(AuthorityError, match="Protected boundary remains installed"):
+            _apply_selected_revision(db_url, bootstrap_url, "downgrade", "core_197")
         assert _readback(db_url) == before_refusal
 
         with create_engine(db_url).connect() as conn:
-            assert conn.execute(
-                text("SELECT version_num FROM alembic_version")
-            ).scalar_one() == get_chain_head("core")
+            # pinned-revision: this owner bounds the rollback at core232 before the protected edge.
+            assert (
+                conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+                == "core_232"
+            )
             assert (
                 conn.execute(
                     text(
@@ -575,20 +584,21 @@ def test_core_232_deep_downgrade_preflight_preserves_head_and_round_trips(
             else:
                 conn.execute(text("TRUNCATE public.runtime_attention_outbox"))
 
-        # Restore a genuine good-profile positive before permitted managed rollback.
-        check_bootstrap_database(db_url)
+        # Fault repair preserves the ordinary bounded revision's data. Installed
+        # protection still cannot be crossed by a raw version downgrade.
         restored = _readback(db_url)
         assert restored["row"] == before_refusal["row"]
 
         # A bounded rollback never crosses core_198 and remains reversible.
-        command.downgrade(bootstrap_config, "core@-1")
-        command.upgrade(bootstrap_config, "core@head")
+        _apply_selected_revision(db_url, bootstrap_url, "downgrade", "core@-1")
+        _apply_selected_revision(db_url, bootstrap_url, "upgrade", "core@core_232")
         with create_engine(db_url).connect() as conn:
-            assert conn.execute(
-                text("SELECT version_num FROM alembic_version")
-            ).scalar_one() == get_chain_head("core")
+            # pinned-revision: this owner bounds the rollback at core232 before the protected edge.
+            assert (
+                conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+                == "core_232"
+            )
         assert _readback(db_url)["row"] == before_refusal["row"]
-        check_bootstrap_database(db_url)
     finally:
         admin_engine.dispose()
 
@@ -597,23 +607,23 @@ def test_core_232_deep_downgrade_preflight_preserves_head_and_round_trips(
 def test_core_232_deep_downgrade_rechecks_evidence_after_lock_wait(
     postgres_container,
 ) -> None:
-    """Evidence committed while preflight waits preserves the current head."""
+    """Installed protection refuses before a concurrent evidence commit can race DDL."""
     from sqlalchemy import create_engine, text
 
-    from alembic import command
-    from butlers.migrations import _build_alembic_config, run_migrations
+    from butlers.db_authority.roles import AuthorityError
     from butlers.testing.migration import (
-        assert_at_chain_head,
-        create_migration_db,
+        create_migrated_test_db,
         migration_bootstrap_db_url,
         migration_db_name,
     )
 
     db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    # Own the historical pre-autocommit boundary without crossing core281.
+    # Current operator R0/R1 and its genuine PG matrix own the final reversal.
+    db_url = create_migrated_test_db(
+        postgres_container, db_name, ["core"], revisions={"core": "core_232"}
+    )
     bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
-    bootstrap_config = _build_alembic_config(bootstrap_url, chains=["core"])
     engine = create_engine(bootstrap_url)
     admin_engine = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
     try:
@@ -647,36 +657,26 @@ def test_core_232_deep_downgrade_rechecks_evidence_after_lock_wait(
             )
         )
         with ThreadPoolExecutor(max_workers=1) as pool:
-            downgrade = pool.submit(command.downgrade, bootstrap_config, "core_197")
+            downgrade = pool.submit(
+                _apply_selected_revision, db_url, bootstrap_url, "downgrade", "core_197"
+            )
             try:
-                deadline = time.monotonic() + 30
-                while time.monotonic() < deadline:
-                    with admin_engine.connect() as observer:
-                        waiting = observer.execute(
-                            text(
-                                "SELECT EXISTS ("
-                                "SELECT 1 FROM pg_locks WHERE NOT granted "
-                                "AND locktype = 'relation' AND mode = 'AccessExclusiveLock' "
-                                "AND relation = 'public.runtime_attention_outbox'::regclass"
-                                ")"
-                            )
-                        ).scalar_one()
-                    if waiting:
-                        break
-                    time.sleep(0.05)
-                else:
-                    raise AssertionError("core_232 preflight never waited for the evidence lock")
-
-                writer.commit()
-                with pytest.raises(
-                    RuntimeError, match="protected core_198 rollback preflight failed"
-                ):
+                # Stronger successor: installed boundary refusal completes while
+                # the genuine evidence writer still owns its uncommitted row.
+                # No wait/commit window can let a newer revision mutate first.
+                with pytest.raises(AuthorityError, match="Protected boundary remains installed"):
                     downgrade.result(timeout=60)
+                assert writer.in_transaction()
+                writer.commit()
             finally:
                 writer.close()
 
         with engine.connect() as conn:
-            assert_at_chain_head(conn)
+            # pinned-revision: concurrent downgrade must not cross the selected core232 source.
+            assert (
+                conn.execute(text("SELECT version_num FROM public.alembic_version")).scalar_one()
+                == "core_232"
+            )
             assert conn.execute(
                 text(
                     "SELECT EXISTS ("

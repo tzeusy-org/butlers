@@ -68,20 +68,39 @@ async def _make_pool(postgres_container, *chains: str):
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_generic_core_pool_stages_trusted_restore_bootstrap(postgres_container) -> None:
-    """The generic migration fixture must stage the privileged bootstrap first."""
+    """Administrative transport probes explicit normal and restore purposes."""
     pool = await _make_pool(postgres_container, "core")
     try:
-        assert (
-            await pool.fetchval("SELECT rolcreatedb FROM pg_roles WHERE rolname = current_user")
-            is False
+        normal_owner = await pool.fetchval(
+            "SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_catalog.pg_database "
+            "WHERE datname=current_database()"
         )
-        assert await pool.fetchval("SELECT restore_drill_executor.latest_result()") is None
-        assert (
-            await pool.fetchval(
-                "SELECT has_schema_privilege(current_user, 'restore_drill_executor_admin', 'USAGE')"
-            )
-            is False
-        )
+        async with pool.acquire() as connection:
+            quoted_owner = '"' + normal_owner.replace('"', '""') + '"'
+            await connection.execute(f"SET ROLE {quoted_owner}")
+            try:
+                assert (
+                    await connection.fetchval(
+                        "SELECT rolcreatedb FROM pg_roles WHERE rolname = current_user"
+                    )
+                    is False
+                )
+                assert (
+                    await connection.fetchval(
+                        "SELECT has_schema_privilege(current_user, 'restore_drill_executor_admin', 'USAGE')"
+                    )
+                    is False
+                )
+            finally:
+                await connection.execute("RESET ROLE")
+            await connection.execute("SET ROLE restore_drill_executor")
+            try:
+                assert (
+                    await connection.fetchval("SELECT restore_drill_executor.latest_result()")
+                    is None
+                )
+            finally:
+                await connection.execute("RESET ROLE")
     finally:
         await pool.close()
 

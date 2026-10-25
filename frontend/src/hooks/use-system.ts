@@ -140,15 +140,10 @@ export function useDriftFacts() {
   });
 }
 
-/**
- * Fetch the stored-function drift comparison (bu-bi5an).
- *
- * Always HTTP 200 -- `data.stored_function_check_available === false` means
- * the comparison itself failed server-side; render "unknown", never "clean".
- */
+/** Read-only database authority facts. Unavailable or missing never means clean. */
 export function useStoredFunctionFacts() {
   return useQuery({
-    queryKey: ["system-stored-functions"],
+    queryKey: ["system-database-authority"],
     queryFn: () => getStoredFunctionFacts(),
     refetchInterval: SYSTEM_POLL_MS,
   });

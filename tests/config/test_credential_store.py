@@ -6,6 +6,7 @@ All tests mock the asyncpg pool — no real database required.
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -267,9 +268,9 @@ async def test_connector_global_codex_authority_uses_its_own_writable_pool(
     """REQ-core-credentials-001: connector auth avoids a local/cursor pool.
 
     ``connector_writer`` has intentionally read-only access to public
-    credentials, so the separate authority pool must retain the configured DB
-    principal for Codex's fenced rotation and health writes.  This is not a
-    fallback: the pool targets the configured shared database explicitly.
+    credentials. The separate authority uses its explicit dedicated login and
+    freshly proves credential_store_writer before Codex rotation/health writes.
+    A connector's unrelated legacy configuration is never a credential fallback.
     """
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("POSTGRES_HOST", "db-host")
@@ -277,17 +278,53 @@ async def test_connector_global_codex_authority_uses_its_own_writable_pool(
     monkeypatch.setenv("POSTGRES_USER", "db-user")
     monkeypatch.setenv("POSTGRES_PASSWORD", "db-password")
     monkeypatch.setenv("BUTLER_SHARED_DB_NAME", "shared-credentials-db")
+    monkeypatch.setenv(
+        "BUTLERS_CREDENTIAL_DATABASE_URL",
+        "postgresql://credential-login:synthetic%40password@credential-host:5440/butlers",
+    )
+    monkeypatch.delenv("BUTLER_SHARED_DB_SCHEMA", raising=False)
     created_pool = _make_pool()
+    driver = created_pool._conn
+    driver.fetchrow.return_value = dict.fromkeys(
+        (
+            "identity_ok",
+            "role_set_ok",
+            "attributes_ok",
+            "ownership_ok",
+            "create_ok",
+            "target_member",
+        ),
+        True,
+    )
+    driver.fetchval.return_value = True
 
-    with patch("asyncpg.create_pool", new=AsyncMock(return_value=created_pool)) as create_pool:
+    async def native_pool(**options):
+        # Only the driver is doubled; real purpose selection, JSONB init and
+        # fresh authority/object-catalog admission run before publication.
+        @asynccontextmanager
+        async def acquire():
+            await options["init"](driver)
+            await options["setup"](driver)
+            yield driver
+
+        created_pool.acquire.side_effect = acquire
+        return created_pool
+
+    with patch("asyncpg.create_pool", new=AsyncMock(side_effect=native_pool)) as create_pool:
         store = await create_system_global_credential_store_from_env()
 
     assert store.require_system_global_pool() is created_pool
-    assert create_pool.await_args.kwargs["database"] == "shared-credentials-db"
+    assert create_pool.await_args.kwargs["database"] == "butlers"
     assert create_pool.await_args.kwargs["server_settings"] == {"search_path": "public"}
     # Do not downgrade the designated authority to connector_writer: that
     # role deliberately cannot persist cli-auth/codex rotation/health state.
-    assert "setup" not in create_pool.await_args.kwargs
+    assert callable(create_pool.await_args.kwargs["setup"])
+    assert create_pool.await_args.kwargs["user"] == "credential-login"
+    assert create_pool.await_args.kwargs["host"] == "credential-host"
+    assert create_pool.await_args.kwargs["port"] == 5440
+    assert create_pool.await_args.kwargs["password"] == "synthetic@password"
+    driver.execute.assert_awaited_once_with('SET ROLE "credential_store_writer"')
+    driver.set_type_codec.assert_awaited_once()
 
 
 async def test_load_has_delete() -> None:

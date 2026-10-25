@@ -9,7 +9,6 @@ perform validated appends while Switchboard owns delivery transitions.
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
 import os
 import re
@@ -20,6 +19,7 @@ import sys
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -31,13 +31,32 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import DBAPIError
 
 from alembic import command
-from butlers.migrations import _build_alembic_config, get_chain_head, run_migrations
+from butlers.core.audit import append as append_audit
+from butlers.db_authority.apply import transition_runtime_attention
+from butlers.db_authority.interfaces import (
+    _attention_stage,
+    function_matches,
+    inspect_function,
+    install_revision_group,
+    selected_protected_functions,
+)
+from butlers.db_authority.roles import AuthorityError, compile_deployment_profiles
+from butlers.migrations import (
+    _build_alembic_config,
+    finalize_authority,
+    get_chain_head,
+    migration_session,
+    run_migrations,
+)
 from butlers.testing.migration import (
+    _bootstrap_migration_prerequisites,
+    _upgrade_chain_to_revision,
     assert_at_chain_head,
-    create_migration_db,
-    init_db_sql_for_dbapi,
     migration_bootstrap_db_url,
     migration_db_name,
+)
+from butlers.testing.migration import (
+    create_migration_db as _create_migration_db,
 )
 
 docker_available = shutil.which("docker") is not None
@@ -50,16 +69,239 @@ pytestmark = [
 _OUTBOX = "public.runtime_attention_outbox"
 _MODEL_PRODUCER = "butler_general_rw"
 _SWITCHBOARD = "butler_switchboard_rw"
+_DASHBOARD = "dashboard_api"
 _CONNECTOR = "connector_writer"
 _FUNCTION_MODEL_BREAKER = "public.append_runtime_attention_model_breaker(bigint)"
 _FUNCTION_FLEET_HALT = "public.append_runtime_attention_fleet_halt()"
-_CORE_198_MIGRATION = (
-    Path(__file__).resolve().parents[2]
-    / "alembic"
-    / "versions"
-    / "core"
-    / "core_198_runtime_attention_outbox.py"
-)
+# These mappings identify only test-owned administrative databases. Serving
+# Database identity/admission is tested by its separate native owner.
+_MAINTENANCE_URLS: dict[str, str] = {}
+_NORMAL_URLS: dict[str, str] = {}
+_SELECTED_PLANS: dict[str, dict[str | None, str | None]] = {}
+_ROLE_CONTROL_URLS: dict[asyncpg.Pool, str] = {}
+_NORMAL_POOL_URLS: dict[asyncpg.Pool, str] = {}
+
+
+def create_migration_db(postgres_container, db_name: str) -> str:
+    db_url = _create_migration_db(postgres_container, db_name)
+    _MAINTENANCE_URLS[db_name] = migration_bootstrap_db_url(postgres_container, db_name)
+    _NORMAL_URLS[db_name] = db_url
+    _SELECTED_PLANS[db_name] = {}
+    return db_url
+
+
+def _database(db_url: str) -> str:
+    return unquote(urlparse(db_url).path.lstrip("/"))
+
+
+def _maintenance_url(db_url: str) -> str:
+    return _MAINTENANCE_URLS[_database(db_url)]
+
+
+def _selected_upgrade(config, target: str) -> None:
+    db_url = _NORMAL_URLS[_database(config.get_main_option("sqlalchemy.url"))]
+    schema = config.get_main_option("butlers.target_schema") or None
+    revision = None if target == "core@head" else target
+    with migration_session(_maintenance_url(db_url), source_database="butlers") as held:
+        if revision is None:
+            asyncio.run(run_migrations(db_url, chain="core", schema=schema, connection=held))
+        else:
+            _upgrade_chain_to_revision(
+                db_url, chain="core", schema=schema, revision=revision, connection=held
+            )
+        plans = dict(_SELECTED_PLANS[_database(db_url)])
+        plans[schema] = revision
+        finalize_authority(
+            held,
+            source_database="butlers",
+            plans=tuple(("core", selected, value) for selected, value in plans.items()),
+        )
+    _SELECTED_PLANS[_database(db_url)] = plans
+
+
+def _selected_downgrade(config, target: str) -> None:
+    # This is an actual unprepared reverse request. Current source must refuse
+    # before effects; only the separate source-owned R0/R1 operator can reverse.
+    with migration_session(
+        _maintenance_url(config.get_main_option("sqlalchemy.url")), source_database="butlers"
+    ) as held:
+        config.attributes["connection"] = held
+        command.downgrade(config, target)
+
+
+def _empty_install_rollback(db_url: str) -> None:
+    # A transaction rollback proves current installer atomicity without reviving
+    # the retired stored teardown or claiming an operator cutover occurred.
+    with migration_session(_maintenance_url(db_url), source_database="butlers") as held:
+        install_revision_group(held, "attention")
+        assert held.execute(
+            text("SELECT to_regclass('public.runtime_attention_outbox') IS NOT NULL")
+        ).scalar_one()
+        held.rollback()
+
+
+def _attention_transition(db_url: str, component: str, enabled: bool, *, maintenance: bool = True):
+    """Run the real preserving operator on its actual held physical session.
+
+    Ordinary identity is selected only for explicit refusal controls. No test
+    control-row UPDATE, stored upgrade function or prepared-reverse flag exists.
+    """
+    url = _maintenance_url(db_url) if maintenance else _NORMAL_URLS[_database(db_url)]
+    with migration_session(url, source_database="butlers") as held:
+        result = transition_runtime_attention(held, component=component, enabled=enabled)
+        held.commit()
+        return result
+
+
+def _attention_snapshot(db_url: str):
+    """Independent immutable catalog, protected data and actual-stamp observer."""
+    engine = create_engine(_maintenance_url(db_url), connect_args={"connect_timeout": 5})
+    try:
+        with engine.connect() as conn:
+            catalog = conn.execute(
+                text("""
+                SELECT 'relation', c.oid::text, n.nspname, c.relname,
+                       pg_get_userbyid(c.relowner), c.relrowsecurity::text,
+                       c.relforcerowsecurity::text, c.relacl::text
+                FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE n.nspname='public' AND c.relname LIKE 'runtime_attention%'
+                UNION ALL
+                SELECT 'function', p.oid::text, n.nspname, p.proname,
+                       pg_get_userbyid(p.proowner), p.prosecdef::text,
+                       p.proconfig::text, pg_get_functiondef(p.oid) || COALESCE(p.proacl::text,'')
+                FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+                WHERE n.nspname='public' AND (p.proname LIKE '%runtime_attention%'
+                    OR p.proname='hashtextextended')
+                ORDER BY 1,2
+            """)
+            ).all()
+            policies = conn.execute(
+                text("""
+                SELECT p.polrelid, p.polname, p.polcmd, p.polpermissive, p.polroles,
+                       pg_get_expr(p.polqual,p.polrelid),pg_get_expr(p.polwithcheck,p.polrelid)
+                FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid
+                WHERE c.relname LIKE 'runtime_attention%' ORDER BY 1,2
+            """)
+            ).all()
+            triggers = conn.execute(
+                text("""
+                SELECT t.oid,pg_get_triggerdef(t.oid) FROM pg_trigger t
+                JOIN pg_class c ON c.oid=t.tgrelid
+                WHERE c.relname LIKE 'runtime_attention%' AND NOT t.tgisinternal ORDER BY 1
+            """)
+            ).all()
+            constraints = conn.execute(
+                text("""
+                SELECT c.oid, c.conrelid, c.conname, c.convalidated, pg_get_constraintdef(c.oid)
+                FROM pg_constraint c JOIN pg_class r ON r.oid=c.conrelid
+                WHERE r.relname LIKE 'runtime_attention%' ORDER BY 1
+            """)
+            ).all()
+            indexes = conn.execute(
+                text("""
+                SELECT i.indexrelid,i.indrelid,i.indisvalid,i.indisready,pg_get_indexdef(i.indexrelid)
+                FROM pg_index i JOIN pg_class r ON r.oid=i.indrelid
+                WHERE r.relname LIKE 'runtime_attention%' OR r.relname='model_dispatch_attempts'
+                ORDER BY 1
+            """)
+            ).all()
+            namespaces = conn.execute(
+                text("""
+                SELECT oid,nspname,nspowner,nspacl FROM pg_namespace
+                WHERE nspname IN ('public','runtime_attention_admin') ORDER BY 1
+            """)
+            ).all()
+            data = {}
+            for name in (
+                "runtime_attention_outbox",
+                "runtime_attention_delivery_lease",
+                "runtime_attention_producer_control",
+                "runtime_attention_operator_control",
+                "runtime_attention_condition_control",
+                "runtime_attention_condition_episodes",
+                "infra_conditions",
+            ):
+                data[name] = conn.execute(
+                    text(
+                        f"SELECT to_jsonb(data_row)::text FROM public.{_quote_ident(name)} AS data_row "
+                        "ORDER BY to_jsonb(data_row)::text"
+                    )
+                ).all()
+            stamps = {}
+            for schema in _SELECTED_PLANS[_database(db_url)]:
+                namespace = schema or "public"
+                stamps[namespace] = conn.execute(
+                    text(
+                        f"SELECT version_num FROM {_quote_ident(namespace)}.alembic_version ORDER BY 1"
+                    )
+                ).all()
+            return {
+                "catalog": catalog,
+                "policies": policies,
+                "triggers": triggers,
+                "constraints": constraints,
+                "indexes": indexes,
+                "namespaces": namespaces,
+                "data": data,
+                "stamps": stamps,
+            }
+    finally:
+        engine.dispose()
+
+
+def _append_synthetic_legacy_history(db_url: str, entry_id: uuid.UUID):
+    """Real audit.append receipts; legacy text is data, never writer authority."""
+
+    async def write():
+        connection = await asyncpg.connect(
+            _asyncpg_url(_maintenance_url(db_url)), timeout=10, command_timeout=30
+        )
+        try:
+            await _decode_jsonb(connection)
+            await connection.execute(f"SET ROLE {_quote_ident(_MODEL_PRODUCER)}")
+            ids = []
+            for action, target, note in (
+                ("model_breaker_open_notified", f"model_breaker:{entry_id}", "blocked_old_binary"),
+                ("ceiling_halt_notified", "ceiling_halt", "synthetic retained legacy month"),
+            ):
+                receipt = await append_audit(
+                    connection, _LEGACY_MARKER_ACTOR, action, target=target, note=note
+                )
+                assert type(receipt) is int and receipt > 0
+                ids.append(receipt)
+            return ids
+        finally:
+            try:
+                await asyncio.wait_for(connection.close(), timeout=10)
+            except BaseException:
+                connection.terminate()
+                raise
+
+    return asyncio.run(write())
+
+
+def _validated_current_episode(db_url: str, *, fleet: bool = False):
+    async def produce():
+        pool = await asyncpg.create_pool(
+            _asyncpg_url(_maintenance_url(db_url)), min_size=1, max_size=2, init=_decode_jsonb
+        )
+        try:
+            if fleet:
+                await _seed_fleet_halt_evidence(pool)
+                return await _call_as_role(
+                    pool, _MODEL_PRODUCER, "SELECT public.append_runtime_attention_fleet_halt()"
+                )
+            _entry_id, attempt = await _seed_breaker_edge(pool, f"current-{uuid.uuid4()}")
+            return await _call_as_role(
+                pool,
+                _MODEL_PRODUCER,
+                "SELECT public.append_runtime_attention_model_breaker($1)",
+                attempt,
+            )
+        finally:
+            await _close_pool(pool)
+
+    return asyncio.run(produce())
 
 
 # Durable evidence a rollback must refuse to delete, written straight to the
@@ -86,63 +328,84 @@ def _quote_ident(identifier: str) -> str:
 
 
 def _upgrade_to_core_197(db_url: str) -> None:
-    command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core_197")
+    _selected_upgrade(_build_alembic_config(db_url, chains=["core"]), "core_197")
 
 
 def _upgrade_to_core_head(db_url: str) -> None:
-    command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core@head")
+    _selected_upgrade(_build_alembic_config(db_url, chains=["core"]), "core@head")
 
 
-def _load_core_198_migration():
-    """Load the migration so catalog proof uses its canonical predicate."""
-    spec = importlib.util.spec_from_file_location(
-        "core_198_runtime_attention_outbox", _CORE_198_MIGRATION
+def _source_attention_definitions(profiles, operator, plans):
+    """Execute the actual source compiler rather than load a retired installer."""
+    definitions = tuple(
+        row
+        for row in selected_protected_functions(profiles, operator, plans)
+        if row.owner == "runtime_attention_outbox_owner"
     )
-    assert spec is not None and spec.loader is not None
-    migration = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(migration)
-    return migration
+    assert profiles, "actual source deployment must contain runtime profiles"
+    assert len({row.identity for row in definitions}) == len(definitions), (
+        "source-selected attention definitions must have unambiguous identities"
+    )
+    return definitions
 
 
 def _has_finalized_runtime_attention_interface(db_url: str, proof_sql: str) -> bool:
-    """Evaluate one caller-specific finalized ACL/catalog predicate."""
-    engine = create_engine(db_url)
-    try:
-        with engine.connect() as conn:
-            return bool(conn.execute(text(proof_sql)).scalar_one())
-    finally:
-        engine.dispose()
+    """Read back actual current/historical source-defined attention catalogs.
+
+    The former proof_sql label selects no SQL/authority. Bodies, ACLs, protected
+    shapes and retired namespace absence come from the actual source compiler.
+    """
+    del proof_sql
+    database = _database(db_url)
+    plans = tuple(
+        ("core", schema, revision) for schema, revision in _SELECTED_PLANS[database].items()
+    ) or (("core", None, None),)
+    with migration_session(_maintenance_url(db_url), source_database="butlers") as conn:
+        normal = unquote(urlparse(_NORMAL_URLS[database]).username or "")
+        profiles = compile_deployment_profiles(database, source_database="butlers")
+        definitions = _source_attention_definitions(profiles, normal, plans)
+        if not definitions:
+            return False
+        if not all(function_matches(conn, row, inspect_function(conn, row)) for row in definitions):
+            return False
+        if _attention_stage(conn, profiles=profiles) != 5:
+            return False
+        return (
+            conn.execute(
+                text(
+                    "SELECT NOT EXISTS (SELECT FROM pg_catalog.pg_namespace "
+                    "WHERE nspname='runtime_attention_admin')"
+                )
+            ).scalar_one()
+            is True
+        )
 
 
 def _has_exact_finalized_runtime_attention_interface(db_url: str) -> bool:
-    """Evaluate the ordinary migration-role finalized predicate."""
-    return _has_finalized_runtime_attention_interface(
-        db_url, _load_core_198_migration()._TRUSTED_FINALIZED_INTERFACE_SQL
-    )
+    """Current source catalog proof, shared by both administrative callers."""
+    return _has_finalized_runtime_attention_interface(db_url, "source-current")
 
 
 def _has_bootstrap_finalized_runtime_attention_interface(db_url: str) -> bool:
-    """Evaluate the managed-bootstrap finalized predicate."""
-    return _has_finalized_runtime_attention_interface(
-        db_url, _load_core_198_migration()._TRUSTED_BOOTSTRAP_FINALIZED_INTERFACE_SQL
-    )
+    """Current source catalog proof; no bootstrap-stored callable is adopted."""
+    return _has_finalized_runtime_attention_interface(db_url, "source-current")
 
 
 _CORE_HEAD_UPGRADE_PROCESS = """
+import asyncio
 import os
 import sys
 import traceback
+from butlers.migrations import finalize_authority, migration_session, run_migrations
 
-from alembic import command
-from butlers.migrations import _build_alembic_config
-
-db_url, target_schema, ready_fd, release_fd = sys.argv[1:]
+db_url, maintenance_url, target_schema, ready_fd, release_fd = sys.argv[1:]
 try:
-    config = _build_alembic_config(db_url, chains=["core"], target_schema=target_schema)
     os.write(int(ready_fd), b"1")
     if os.read(int(release_fd), 1) != b"1":
         raise RuntimeError("concurrent core-upgrade barrier was not released")
-    command.upgrade(config, "core@head")
+    with migration_session(maintenance_url, source_database="butlers") as held:
+        asyncio.run(run_migrations(db_url, chain="core", schema=target_schema, connection=held))
+        finalize_authority(held, source_database="butlers", plans=(("core",target_schema,None),))
 except BaseException:
     traceback.print_exc()
     raise
@@ -153,17 +416,18 @@ _CORE_197_DOWNGRADE_PROCESS = """
 import os
 import sys
 import traceback
-
 from alembic import command
-from butlers.migrations import _build_alembic_config
+from butlers.migrations import _build_alembic_config, migration_session
 
-db_url, target_schema, ready_fd, release_fd = sys.argv[1:]
+db_url, maintenance_url, target_schema, ready_fd, release_fd = sys.argv[1:]
 try:
-    config = _build_alembic_config(db_url, chains=["core"], target_schema=target_schema)
     os.write(int(ready_fd), b"1")
     if os.read(int(release_fd), 1) != b"1":
         raise RuntimeError("concurrent core-downgrade barrier was not released")
-    command.downgrade(config, "core_197")
+    with migration_session(maintenance_url, source_database="butlers") as held:
+        config = _build_alembic_config(db_url, chains=["core"], target_schema=target_schema)
+        config.attributes["connection"] = held
+        command.downgrade(config, "core_197")
 except BaseException:
     traceback.print_exc()
     raise
@@ -185,6 +449,7 @@ def _run_concurrent_core_head_upgrades(
                     "-c",
                     _CORE_HEAD_UPGRADE_PROCESS,
                     db_url,
+                    _maintenance_url(db_url),
                     target_schema,
                     str(ready_write),
                     str(release_read),
@@ -219,6 +484,9 @@ def _run_concurrent_core_head_upgrades(
             stdout, stderr = process.communicate(timeout=45)
             assert process.returncode is not None
             results[target_schema] = (process.returncode, stdout, stderr)
+        for schema, (status, _stdout, _stderr) in results.items():
+            if status == 0:
+                _SELECTED_PLANS[_database(db_url)][schema] = None
         return results
     finally:
         for process in processes.values():
@@ -226,7 +494,11 @@ def _run_concurrent_core_head_upgrades(
                 process.terminate()
         for process in processes.values():
             if process.poll() is None:
-                process.communicate(timeout=5)
+                try:
+                    process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate(timeout=5)
         for file_descriptor in (ready_read, ready_write, release_read, release_write):
             if file_descriptor >= 0:
                 os.close(file_descriptor)
@@ -247,6 +519,7 @@ def _run_concurrent_core_197_downgrades(
                     "-c",
                     _CORE_197_DOWNGRADE_PROCESS,
                     db_url,
+                    _maintenance_url(db_url),
                     target_schema,
                     str(ready_write),
                     str(release_read),
@@ -288,34 +561,31 @@ def _run_concurrent_core_197_downgrades(
                 process.terminate()
         for process in processes.values():
             if process.poll() is None:
-                process.communicate(timeout=5)
+                try:
+                    process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate(timeout=5)
         for file_descriptor in (ready_read, ready_write, release_read, release_write):
             if file_descriptor >= 0:
                 os.close(file_descriptor)
 
 
 def _rerun_actual_init_db(bootstrap_url: str, migration_url: str) -> None:
-    """Execute the checked-in bootstrap source again, as production does.
+    """Execute current production preparation and held source finalization.
 
-    This is intentionally not a hand-written ACL approximation: the broad
-    public grants in init-db must run first so the finalizer proves it repairs
-    them on every rerun.
+    No ad-hoc object grants or stored installer are supplied by this fixture.
+    Administrative preparation is distinct from normal migration/serving login.
     """
     migration_role = unquote(urlparse(migration_url).username or "")
     assert migration_role
-    engine = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
-    raw_connection = engine.raw_connection()
-    try:
-        raw_connection.autocommit = True
-        with raw_connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT set_config('butlers.connecting_user', %s, false)",
-                (migration_role,),
-            )
-            cursor.execute(init_db_sql_for_dbapi())
-    finally:
-        raw_connection.close()
-        engine.dispose()
+    _bootstrap_migration_prerequisites(bootstrap_url, migration_role)
+    with migration_session(bootstrap_url, source_database="butlers") as held:
+        plans = tuple(
+            ("core", schema, revision)
+            for schema, revision in _SELECTED_PLANS[_database(migration_url)].items()
+        )
+        finalize_authority(held, source_database="butlers", plans=plans)
 
 
 async def _decode_jsonb(connection: asyncpg.Connection) -> None:
@@ -378,22 +648,32 @@ def upgraded_db_url(postgres_container) -> str:
 def core_only_db_url(postgres_container) -> str:
     """A fresh core-only database has no specialist-schema prerequisites."""
     db_url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(db_url, chain="core"))
+    _upgrade_to_core_head(db_url)
     return db_url
 
 
-@pytest_asyncio.fixture(scope="module", loop_scope="module")
+@pytest_asyncio.fixture(loop_scope="module")
 async def upgraded_pool(upgraded_db_url: str) -> asyncpg.Pool:
     pool = await asyncpg.create_pool(upgraded_db_url, min_size=1, max_size=3, init=_decode_jsonb)
-    yield pool
-    await pool.close()
+    _ROLE_CONTROL_URLS[pool] = _asyncpg_url(_maintenance_url(upgraded_db_url))
+    _NORMAL_POOL_URLS[pool] = upgraded_db_url
+    try:
+        yield pool
+    finally:
+        _ROLE_CONTROL_URLS.pop(pool, None)
+        _NORMAL_POOL_URLS.pop(pool, None)
+        await _close_pool(pool)
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def core_only_pool(core_only_db_url: str) -> asyncpg.Pool:
     pool = await asyncpg.create_pool(core_only_db_url, min_size=1, max_size=2, init=_decode_jsonb)
-    yield pool
-    await pool.close()
+    _ROLE_CONTROL_URLS[pool] = _asyncpg_url(_maintenance_url(core_only_db_url))
+    try:
+        yield pool
+    finally:
+        _ROLE_CONTROL_URLS.pop(pool, None)
+        await _close_pool(pool)
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
@@ -403,8 +683,10 @@ async def core_only_admin_pool(postgres_container, core_only_db_url: str) -> asy
         "postgresql+psycopg2://", "postgresql://", 1
     )
     pool = await asyncpg.create_pool(bootstrap_url, min_size=1, max_size=2, init=_decode_jsonb)
-    yield pool
-    await pool.close()
+    try:
+        yield pool
+    finally:
+        await _close_pool(pool)
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
@@ -419,8 +701,37 @@ async def upgraded_admin_pool(postgres_container, upgraded_db_url: str) -> async
         max_size=2,
         init=_decode_jsonb,
     )
-    yield pool
-    await pool.close()
+    try:
+        yield pool
+    finally:
+        await _close_pool(pool)
+
+
+async def _close_pool(pool: asyncpg.Pool) -> None:
+    try:
+        await asyncio.wait_for(pool.close(), timeout=10)
+    except BaseException:
+        pool.terminate()
+        raise
+
+
+@asynccontextmanager
+async def _effective_role_connection(pool: asyncpg.Pool):
+    control_url = _ROLE_CONTROL_URLS.get(pool)
+    if control_url is None:
+        async with pool.acquire() as connection:
+            yield connection
+        return
+    connection = await asyncpg.connect(control_url, timeout=10, command_timeout=30)
+    try:
+        await _decode_jsonb(connection)
+        yield connection
+    finally:
+        try:
+            await asyncio.wait_for(connection.close(), timeout=10)
+        except BaseException:
+            connection.terminate()
+            raise
 
 
 async def _call_as_role(
@@ -429,7 +740,7 @@ async def _call_as_role(
     statement: str,
     *args: object,
 ) -> object:
-    async with pool.acquire() as conn:
+    async with _effective_role_connection(pool) as conn:
         await conn.execute(f"SET ROLE {_quote_ident(role)}")
         try:
             return await conn.fetchval(statement, *args)
@@ -443,7 +754,7 @@ async def _execute_as_role(
     statement: str,
     *args: object,
 ) -> None:
-    async with pool.acquire() as conn:
+    async with _effective_role_connection(pool) as conn:
         await conn.execute(f"SET ROLE {_quote_ident(role)}")
         try:
             await conn.execute(statement, *args)
@@ -457,10 +768,24 @@ async def _fetchrow_as_role(
     statement: str,
     *args: object,
 ) -> asyncpg.Record | None:
-    async with pool.acquire() as conn:
+    async with _effective_role_connection(pool) as conn:
         await conn.execute(f"SET ROLE {_quote_ident(role)}")
         try:
             return await conn.fetchrow(statement, *args)
+        finally:
+            await conn.execute("RESET ROLE")
+
+
+async def _fetch_as_role(
+    pool: asyncpg.Pool,
+    role: str,
+    statement: str,
+    *args: object,
+) -> list[asyncpg.Record]:
+    async with _effective_role_connection(pool) as conn:
+        await conn.execute(f"SET ROLE {_quote_ident(role)}")
+        try:
+            return await conn.fetch(statement, *args)
         finally:
             await conn.execute("RESET ROLE")
 
@@ -579,18 +904,6 @@ async def test_core_only_database_has_guarded_outbox_without_specialist_schema(
                 AND lease_guard.proconfig = ARRAY[
                     'search_path=pg_catalog, pg_temp'
                 ]::text[] AS fixed_lease_guard_path,
-            operator_upgrade.prosecdef
-                AND pg_get_userbyid(operator_upgrade.proowner)
-                    = 'runtime_attention_outbox_owner'
-                AND operator_upgrade.proconfig = ARRAY[
-                    'search_path=pg_catalog, pg_temp'
-                ]::text[] AS fenced_operator_upgrade,
-            operator_deactivate.prosecdef
-                AND pg_get_userbyid(operator_deactivate.proowner)
-                    = 'runtime_attention_outbox_owner'
-                AND operator_deactivate.proconfig = ARRAY[
-                    'search_path=pg_catalog, pg_temp'
-                ]::text[] AS fenced_operator_deactivate,
             has_table_privilege(owner_role.oid, 'public.model_catalog'::regclass, 'SELECT')
                 AND has_table_privilege(
                     owner_role.oid, 'public.model_dispatch_attempts'::regclass, 'SELECT'
@@ -624,39 +937,14 @@ async def test_core_only_database_has_guarded_outbox_without_specialist_schema(
                     'EXECUTE'
                 ) AS no_public_or_connector_execute,
             NOT EXISTS (
-                SELECT 1
-                FROM aclexplode(
-                    COALESCE(admin_schema.nspacl, acldefault('n', admin_schema.nspowner))
-                ) AS acl
-                WHERE acl.grantee <> bootstrap_owner.oid
-            )
-                AND NOT EXISTS (
-                    SELECT 1
-                    FROM aclexplode(
-                        COALESCE(
-                            bootstrap_configuration.relacl,
-                            acldefault('r', bootstrap_configuration.relowner)
-                        )
-                    ) AS acl
-                    WHERE acl.grantee <> bootstrap_owner.oid
-                )
-                AND NOT EXISTS (
-                    SELECT 1
-                    FROM pg_proc AS admin_function
-                    CROSS JOIN LATERAL aclexplode(
-                        COALESCE(
-                            admin_function.proacl,
-                            acldefault('f', admin_function.proowner)
-                        )
-                    ) AS acl
-                    WHERE admin_function.oid IN (
-                        'runtime_attention_admin.install_interface()'::regprocedure,
-                        'runtime_attention_admin.finalize_interface()'::regprocedure,
-                        'runtime_attention_admin.rollback_interface()'::regprocedure
-                    )
-                      AND acl.privilege_type = 'EXECUTE'
-                      AND acl.grantee <> bootstrap_owner.oid
-                ) AS bootstrap_interface_private
+                SELECT 1 FROM pg_catalog.pg_namespace
+                WHERE nspname='runtime_attention_admin'
+            ) AND NOT EXISTS (
+                SELECT FROM pg_catalog.pg_proc p
+                JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+                WHERE n.nspname='public' AND (p.proname LIKE 'runtime_attention_upgrade_%'
+                     OR p.proname LIKE 'runtime_attention_deactivate_%')
+            ) AS retired_repair_unavailable
         FROM pg_roles AS owner_role
         JOIN pg_proc AS model_breaker
           ON model_breaker.oid = 'public.append_runtime_attention_model_breaker(bigint)'::regprocedure
@@ -664,16 +952,6 @@ async def test_core_only_database_has_guarded_outbox_without_specialist_schema(
           ON fleet_halt.oid = 'public.append_runtime_attention_fleet_halt()'::regprocedure
         JOIN pg_proc AS lease_guard
           ON lease_guard.oid = 'public.runtime_attention_delivery_lease_guard()'::regprocedure
-        JOIN pg_proc AS operator_upgrade
-          ON operator_upgrade.oid = 'public.runtime_attention_upgrade_operator_v3()'::regprocedure
-        JOIN pg_proc AS operator_deactivate
-          ON operator_deactivate.oid = 'public.runtime_attention_deactivate_operator_v3()'::regprocedure
-        JOIN pg_namespace AS admin_schema
-          ON admin_schema.nspname = 'runtime_attention_admin'
-        JOIN pg_roles AS bootstrap_owner ON bootstrap_owner.oid = admin_schema.nspowner
-        JOIN pg_class AS bootstrap_configuration
-          ON bootstrap_configuration.relnamespace = admin_schema.oid
-         AND bootstrap_configuration.relname = 'bootstrap_configuration'
         WHERE owner_role.rolname = 'runtime_attention_outbox_owner'
         """
     )
@@ -967,6 +1245,26 @@ async def test_validated_producers_append_only_safe_server_derived_episodes(
     assert fleet_row["source_snapshot"]["denied_count"] >= 1
     assert fleet_row["payload"]["classification"] == "monthly_spend_ceiling"
 
+    observed_models = {
+        observed["catalog_entry_id"]: observed
+        for observed in await _fetch_as_role(
+            upgraded_admin_pool,
+            _DASHBOARD,
+            "SELECT * FROM public.observe_runtime_attention_models()",
+        )
+    }
+    assert observed_models[entry_id]["episode_id"] == episode_id
+    observed_fleet = await _fetchrow_as_role(
+        upgraded_admin_pool,
+        _DASHBOARD,
+        "SELECT * FROM public.observe_runtime_attention_fleet_halt()",
+    )
+    assert observed_fleet is not None
+    assert observed_fleet["episode_id"] == fleet_episode_id
+    for observer in ("observe_runtime_attention_models", "observe_runtime_attention_fleet_halt"):
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await upgraded_pool.fetch(f"SELECT * FROM public.{observer}()")
+
 
 @pytest.mark.asyncio(loop_scope="module")
 async def test_constraints_reject_non_edge_forgery_keep_source_snapshot_and_fence_reissues(
@@ -1110,7 +1408,7 @@ async def test_operator_rollback_disables_reissue_without_deleting_evidence_or_a
 ) -> None:
     """REQ-runtime-attention-outbox-003: rollback is additive and evidence-safe."""
     assert (
-        await upgraded_pool.fetchval(
+        await upgraded_admin_pool.fetchval(
             "SELECT reissue_enabled FROM public.runtime_attention_operator_control WHERE singleton"
         )
         is True
@@ -1157,8 +1455,24 @@ async def test_operator_rollback_disables_reissue_without_deleting_evidence_or_a
         str(entry_id),
         claim_token,
     )
-    successor = await upgraded_pool.fetchrow(
-        "SELECT * FROM public.reissue_runtime_attention_episode($1)", episode_id
+    # A genuine normal login and delivery-only Switchboard cannot impersonate
+    # the fixed dashboard caller even while the semantic episode is eligible.
+    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+        await upgraded_pool.fetchrow(
+            "SELECT * FROM public.reissue_runtime_attention_episode($1)", episode_id
+        )
+    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+        await _fetchrow_as_role(
+            upgraded_admin_pool,
+            _SWITCHBOARD,
+            "SELECT * FROM public.reissue_runtime_attention_episode($1)",
+            episode_id,
+        )
+    successor = await _fetchrow_as_role(
+        upgraded_admin_pool,
+        _DASHBOARD,
+        "SELECT * FROM public.reissue_runtime_attention_episode($1)",
+        episode_id,
     )
     assert successor is not None
     before_attempts = await upgraded_admin_pool.fetchval(
@@ -1166,13 +1480,20 @@ async def test_operator_rollback_disables_reissue_without_deleting_evidence_or_a
         entry_id,
     )
 
+    # The current operator requires stopped serving/ordinary sessions. This
+    # function-scoped pool is closed before the held administrative transition;
+    # later calls use the actual fixed dashboard effective role on an
+    # administrative connection; this is not native serving admission proof.
+    db_url = _NORMAL_POOL_URLS[upgraded_pool]
+    await _close_pool(upgraded_pool)
     try:
-        await upgraded_admin_pool.execute(
-            "SELECT public.runtime_attention_deactivate_operator_v3()"
-        )
+        _attention_transition(db_url, "reissue", False)
         with pytest.raises(asyncpg.ObjectNotInPrerequisiteStateError):
-            await upgraded_pool.fetchrow(
-                "SELECT * FROM public.reissue_runtime_attention_episode($1)", episode_id
+            await _fetchrow_as_role(
+                upgraded_admin_pool,
+                _DASHBOARD,
+                "SELECT * FROM public.reissue_runtime_attention_episode($1)",
+                episode_id,
             )
         assert (
             await upgraded_admin_pool.fetchval(
@@ -1189,9 +1510,22 @@ async def test_operator_rollback_disables_reissue_without_deleting_evidence_or_a
             == before_attempts
         )
     finally:
-        await upgraded_admin_pool.execute(
-            "UPDATE public.runtime_attention_operator_control SET reissue_enabled = true WHERE singleton"
+        _attention_transition(db_url, "reissue", True)
+    restored = await _fetchrow_as_role(
+        upgraded_admin_pool,
+        _DASHBOARD,
+        "SELECT * FROM public.reissue_runtime_attention_episode($1)",
+        episode_id,
+    )
+    assert restored is not None
+    assert restored["successor_episode_id"] == successor["successor_episode_id"]
+    assert (
+        await upgraded_admin_pool.fetchval(
+            "SELECT count(*) FROM public.runtime_attention_outbox WHERE id=$1 OR manual_reissue_of=$1",
+            episode_id,
         )
+        == 2
+    )
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -1416,8 +1750,12 @@ def test_core_chain_is_idempotent_for_two_target_schemas_without_switchboard_dep
     """The database-global outbox installs once across two core-chain targets."""
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core", schema="general"))
-    asyncio.run(run_migrations(db_url, chain="core", schema="switchboard"))
+    _selected_upgrade(
+        _build_alembic_config(db_url, chains=["core"], target_schema="general"), "core@head"
+    )
+    _selected_upgrade(
+        _build_alembic_config(db_url, chains=["core"], target_schema="switchboard"), "core@head"
+    )
 
     engine = create_engine(migration_bootstrap_db_url(postgres_container, db_name))
     try:
@@ -1453,7 +1791,7 @@ def test_core_chain_serializes_global_runtime_attention_install_across_processes
     db_url = create_migration_db(postgres_container, db_name)
     target_schemas = ("general", "switchboard")
     for target_schema in target_schemas:
-        command.upgrade(
+        _selected_upgrade(
             _build_alembic_config(db_url, chains=["core"], target_schema=target_schema),
             "core_197",
         )
@@ -1495,13 +1833,13 @@ def test_core_chain_serializes_global_runtime_attention_install_across_processes
 def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_across_processes(
     postgres_container,
 ) -> None:
-    """core_199 refuses a teardown that would remove the old-binary fence."""
+    """Current unprepared reverse refuses before stamp or protected effects."""
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
     bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
     target_schemas = ("general", "switchboard")
     for target_schema in target_schemas:
-        command.upgrade(
+        _selected_upgrade(
             _build_alembic_config(db_url, chains=["core"], target_schema=target_schema),
             "core_197",
         )
@@ -1522,7 +1860,7 @@ def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_ac
     }
     assert set(failed_downgrades) == set(target_schemas)
     assert all(
-        "protected core_198 rollback preflight failed" in stderr
+        "Explicit preserving operator reverse is required" in stderr
         for stderr in failed_downgrades.values()
     )
 
@@ -1604,8 +1942,8 @@ def test_core_chain_rejects_preexisting_exact_index_before_install_and_on_reappl
                 )
             )
 
-        with pytest.raises(DBAPIError, match="reserved deterministic index already exists"):
-            command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core_198")
+        with pytest.raises(DBAPIError, match="already exists"):
+            _selected_upgrade(_build_alembic_config(db_url, chains=["core"]), "core_198")
 
         with engine.connect() as conn:
             assert conn.execute(
@@ -1615,12 +1953,11 @@ def test_core_chain_rejects_preexisting_exact_index_before_install_and_on_reappl
                 text("SELECT to_regclass('public.runtime_attention_outbox') IS NULL")
             ).scalar_one()
 
-        # A clean install owns both reserved indexes, so its bounded empty
-        # rollback may remove them before returning the installer handoff.
+        # A real current install rolled back in its own transaction owns no
+        # durable indexes. This is installer atomicity, not operator reversal.
         with engine.begin() as conn:
             conn.execute(text(f"DROP INDEX public.{index_name}"))
-        command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core_198")
-        command.downgrade(_build_alembic_config(bootstrap_url, chains=["core"]), "core_197")
+        _empty_install_rollback(db_url)
         with engine.connect() as conn:
             assert conn.execute(
                 text(f"SELECT to_regclass('public.{index_name}') IS NULL")
@@ -1637,8 +1974,8 @@ def test_core_chain_rejects_preexisting_exact_index_before_install_and_on_reappl
                     """
                 )
             )
-        with pytest.raises(DBAPIError, match="reserved deterministic index already exists"):
-            command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core_198")
+        with pytest.raises(DBAPIError, match="already exists"):
+            _selected_upgrade(_build_alembic_config(db_url, chains=["core"]), "core_198")
         with engine.connect() as conn:
             assert conn.execute(
                 text(f"SELECT to_regclass('public.{index_name}') IS NOT NULL")
@@ -1673,7 +2010,7 @@ def test_core_chain_rejects_partial_runtime_attention_index_across_processes(
     db_url = create_migration_db(postgres_container, db_name)
     target_schemas = ("general", "switchboard")
     for target_schema in target_schemas:
-        command.upgrade(
+        _selected_upgrade(
             _build_alembic_config(db_url, chains=["core"], target_schema=target_schema),
             "core_197",
         )
@@ -1707,10 +2044,7 @@ def test_core_chain_rejects_partial_runtime_attention_index_across_processes(
         for target_schema, (returncode, _stdout, stderr) in process_results.items()
         if returncode != 0
     }
-    assert all(
-        "runtime-attention reserved deterministic index already exists" in stderr
-        for stderr in failed_processes.values()
-    )
+    assert all("already exists" in stderr for stderr in failed_processes.values())
 
     engine = create_engine(bootstrap_url)
     try:
@@ -1773,7 +2107,7 @@ def test_core_chain_rejects_invalid_runtime_attention_index_across_processes(
     db_url = create_migration_db(postgres_container, db_name)
     target_schemas = ("general", "switchboard")
     for target_schema in target_schemas:
-        command.upgrade(
+        _selected_upgrade(
             _build_alembic_config(db_url, chains=["core"], target_schema=target_schema),
             "core_197",
         )
@@ -1859,10 +2193,7 @@ def test_core_chain_rejects_invalid_runtime_attention_index_across_processes(
         for target_schema, (returncode, _stdout, stderr) in process_results.items()
         if returncode != 0
     }
-    assert all(
-        "runtime-attention reserved deterministic index already exists" in stderr
-        for stderr in failed_processes.values()
-    )
+    assert all("already exists" in stderr for stderr in failed_processes.values())
     assert not _has_exact_finalized_runtime_attention_interface(db_url)
 
 
@@ -1889,7 +2220,7 @@ def test_core_chain_rejects_wrong_direction_runtime_attention_index_across_proce
     db_url = create_migration_db(postgres_container, db_name)
     target_schemas = ("general", "switchboard")
     for target_schema in target_schemas:
-        command.upgrade(
+        _selected_upgrade(
             _build_alembic_config(db_url, chains=["core"], target_schema=target_schema),
             "core_197",
         )
@@ -1921,10 +2252,7 @@ def test_core_chain_rejects_wrong_direction_runtime_attention_index_across_proce
         for target_schema, (returncode, _stdout, stderr) in process_results.items()
         if returncode != 0
     }
-    assert all(
-        "runtime-attention reserved deterministic index already exists" in stderr
-        for stderr in failed_processes.values()
-    )
+    assert all("already exists" in stderr for stderr in failed_processes.values())
     assert not _has_exact_finalized_runtime_attention_interface(db_url)
 
 
@@ -1940,7 +2268,9 @@ def test_actual_init_db_rerun_repairs_function_only_acl_and_effective_roles(
     _entry_id, trigger_id = _seed_legacy_breaker_edge(db_url)
 
     def execute_as(role: str | None, statement: str):
-        engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+        engine = create_engine(
+            bootstrap_url if role is not None else db_url, isolation_level="AUTOCOMMIT"
+        )
         try:
             with engine.connect() as conn:
                 if role is not None:
@@ -1955,10 +2285,11 @@ def test_actual_init_db_rerun_repairs_function_only_acl_and_effective_roles(
         finally:
             engine.dispose()
 
-    # The shared login inherits ordinary runtime memberships, but no active
-    # role is not a producer identity.  ACL inheritance alone must not pass.
-    with pytest.raises(DBAPIError, match="active canonical SET ROLE"):
+    # The selected normal migration login is not a runtime identity. Unset
+    # normal identity must not become a producer through a shared-login fallback.
+    with pytest.raises(DBAPIError) as unset_producer:
         execute_as(None, "SELECT public.append_runtime_attention_model_breaker(:trigger_id)")
+    assert getattr(unset_producer.value.orig, "pgcode", None) == "42501"
 
     episode_id = execute_as(
         _MODEL_PRODUCER, "SELECT public.append_runtime_attention_model_breaker(:trigger_id)"
@@ -1976,38 +2307,14 @@ def test_actual_init_db_rerun_repairs_function_only_acl_and_effective_roles(
         with pytest.raises(DBAPIError):
             execute_as(role, statement)
 
-    # A role with only PUBLIC grants and a deliberately nonproducer role both
-    # lack the narrowly granted function interface.
-    migration_role = unquote(urlparse(db_url).username or "")
-    nonproducer_role = f"runtime_attention_nonproducer_{db_name}"
+    # Actual owner EXECUTE reaches the allowlist guard without an artificial
+    # fixture grant. PUBLIC-only has no authority; the purpose owner is still
+    # not a canonical runtime producer even though it owns the callable.
     public_only_role = f"runtime_attention_public_only_{db_name}"
     admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
     try:
         with admin.connect() as conn:
-            conn.execute(text(f"CREATE ROLE {_quote_ident(nonproducer_role)} NOLOGIN"))
             conn.execute(text(f"CREATE ROLE {_quote_ident(public_only_role)} NOLOGIN"))
-            conn.execute(
-                text(
-                    f"GRANT {_quote_ident(nonproducer_role)} TO {_quote_ident(migration_role)} WITH INHERIT TRUE"
-                )
-            )
-            conn.execute(
-                text(
-                    f"GRANT {_quote_ident(nonproducer_role)} TO {_quote_ident(migration_role)} WITH SET TRUE"
-                )
-            )
-            # Deliberately simulate an accidental direct EXECUTE grant.  The
-            # function must still reject an active role outside the canonical
-            # producer allowlist; ACL membership alone is not a producer
-            # identity in this shared-login topology.
-            conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {_quote_ident(nonproducer_role)}"))
-            conn.execute(
-                text(
-                    "GRANT EXECUTE ON FUNCTION "
-                    "public.append_runtime_attention_model_breaker(bigint) "
-                    f"TO {_quote_ident(nonproducer_role)}"
-                )
-            )
             conn.execute(text(f"SET ROLE {_quote_ident(public_only_role)}"))
             try:
                 with pytest.raises(DBAPIError):
@@ -2017,30 +2324,37 @@ def test_actual_init_db_rerun_repairs_function_only_acl_and_effective_roles(
                     )
             finally:
                 conn.execute(text("RESET ROLE"))
+            conn.execute(text("SET ROLE runtime_attention_outbox_owner"))
+            try:
+                with pytest.raises(DBAPIError, match="active canonical SET ROLE"):
+                    conn.execute(
+                        text("SELECT public.append_runtime_attention_model_breaker(:trigger_id)"),
+                        {"trigger_id": trigger_id},
+                    )
+            finally:
+                conn.execute(text("RESET ROLE"))
     finally:
         admin.dispose()
-    with pytest.raises(DBAPIError, match="active canonical SET ROLE"):
-        execute_as(
-            nonproducer_role, "SELECT public.append_runtime_attention_model_breaker(:trigger_id)"
-        )
 
-    # Switchboard alone gets direct read/claim access, and its RLS policy also
-    # requires the active role (the un-set shared-login read fails below).
+    # Switchboard alone gets direct read/claim access. The native normal login
+    # is separately refused; the administrative SET ROLE probe is not native
+    # dedicated-login admission evidence.
     assert execute_as(_SWITCHBOARD, f"SELECT count(*) FROM {_OUTBOX}") == 1
-    with pytest.raises(DBAPIError, match="SET ROLE butler_switchboard_rw"):
+    with pytest.raises(DBAPIError) as unset_reader:
         execute_as(None, f"SELECT count(*) FROM {_OUTBOX}")
+    assert getattr(unset_reader.value.orig, "pgcode", None) == "42501"
 
 
 def test_empty_outbox_can_disable_and_reenable_producers_through_bootstrap(
     postgres_container,
 ) -> None:
-    """core_199 rollback retains the fence and reactivation remains versioned."""
+    """Current preserving disable/re-enable retains objects, stamps and evidence."""
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
     bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
     _upgrade_to_core_head(db_url)
     config = _build_alembic_config(bootstrap_url, chains=["core"])
-    command.downgrade(config, "core_198")
+    _attention_transition(db_url, "producers", False)
     engine = create_engine(bootstrap_url)
     try:
         with engine.connect() as conn:
@@ -2063,7 +2377,8 @@ def test_empty_outbox_can_disable_and_reenable_producers_through_bootstrap(
             ).scalar_one()
     finally:
         engine.dispose()
-    command.upgrade(config, "core@head")
+    _attention_transition(db_url, "producers", True)
+    _selected_upgrade(config, "core@head")
     assert _has_bootstrap_finalized_runtime_attention_interface(bootstrap_url)
     # The regular migration role must still recognize the exact finalized
     # interface without becoming a bootstrap fallback.
@@ -2092,27 +2407,19 @@ def test_empty_outbox_can_disable_and_reenable_producers_through_bootstrap(
     finally:
         engine.dispose()
 
+    assert isinstance(_validated_current_episode(db_url), uuid.UUID)
+    assert isinstance(_validated_current_episode(db_url, fleet=True), uuid.UUID)
+
 
 def test_nonempty_outbox_survives_a_refused_core_197_downgrade(
     postgres_container,
 ) -> None:
-    """REQ-runtime-attention-outbox-001: rollback never deletes durable evidence.
+    """REQ-runtime-attention-outbox-001: current reverse refuses before effects.
 
-    From core@head this stops at the *outer* refusal, not the
-    forward-remediation one.  Alembic walks core_199 down before core_198, and
-    core_199's downgrade deliberately retains
-    ``public.runtime_attention_producer_control`` and the legacy debounce-marker
-    planter; ``_TRUSTED_BOOTSTRAP_ROLLBACK_SQL`` requires both to be absent, so
-    core_198's downgrade stops at ``core_198 downgrade requires trusted
-    bootstrap rollback interface`` without ever calling
-    ``runtime_attention_admin.rollback_interface()``.  The refusal inside that
-    function is reached only by a chain that never installed core_199's
-    retained objects -- see
-    ``test_core_198_downgrade_refuses_durable_evidence_and_names_forward_remediation``.
-
-    What this test proves, and the empty-outbox sibling above cannot: a
-    populated outbox is not a downgrade the chain will let through, and the
-    evidence row is intact afterwards.
+    The actual current-head Alembic direction guard requires the source-owned
+    preserving R0/R1 path before crossing core281. It cannot tear down or restamp
+    this populated outbox. Bounded core198 separately proves its direct protected
+    boundary guard; neither refusal substitutes for positive R0/R1 proof.
     """
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
@@ -2126,8 +2433,8 @@ def test_nonempty_outbox_survives_a_refused_core_197_downgrade(
         engine.dispose()
 
     config = _build_alembic_config(bootstrap_url, chains=["core"])
-    with pytest.raises(RuntimeError, match="protected core_198 rollback preflight failed"):
-        command.downgrade(config, "core_197")
+    with pytest.raises(AuthorityError, match="preserving operator reverse"):
+        _selected_downgrade(config, "core_197")
 
     engine = create_engine(bootstrap_url)
     try:
@@ -2149,30 +2456,23 @@ def test_nonempty_outbox_survives_a_refused_core_197_downgrade(
 
 
 def _run_bootstrap_rollback(engine: Engine) -> None:
-    """Call the trusted bootstrap teardown on its own connection."""
-    with engine.connect() as conn:
-        # Fail loudly rather than hanging if the teardown lock never arrives.
-        conn.execute(text("SET lock_timeout = '45s'"))
-        conn.execute(text("SELECT runtime_attention_admin.rollback_interface()"))
+    """Drive the actual preserving transition through a separate held session."""
+    _attention_transition(engine.url.render_as_string(hide_password=False), "producers", False)
 
 
 def test_core_198_downgrade_refuses_durable_evidence_and_names_forward_remediation(
     postgres_container,
 ) -> None:
-    """The evidence refusal itself, on the one chain state that can reach it.
+    """Current boundary refusal preserves both durable relations and the stamp.
 
-    ``public.runtime_attention_producer_control`` and the legacy debounce-marker
-    planter arrive with core_199 and are retained by its downgrade, so a
-    database that stopped at core_198 is the only one whose core_197 downgrade
-    gets past ``_TRUSTED_BOOTSTRAP_ROLLBACK_SQL`` and into
-    ``runtime_attention_admin.rollback_interface()``.  Stage it there, then put
-    durable evidence in the outbox: the operator is told to remediate forward,
-    and nothing is torn down on the way out.
+    The stored teardown/forward-remediation API is retired. The source-owned
+    pre-autocommit boundary guard now refuses the same destructive request;
+    positive preserving R0/R1 remains a separate real operator carrier.
     """
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
     bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
-    command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core_198")
+    _selected_upgrade(_build_alembic_config(db_url, chains=["core"]), "core_198")
 
     engine = create_engine(bootstrap_url)
     try:
@@ -2182,8 +2482,8 @@ def test_core_198_downgrade_refuses_durable_evidence_and_names_forward_remediati
         engine.dispose()
 
     config = _build_alembic_config(bootstrap_url, chains=["core"])
-    with pytest.raises(DBAPIError, match="use forward remediation"):
-        command.downgrade(config, "core_197")
+    with pytest.raises(AuthorityError, match="Protected boundary remains installed"):
+        _selected_downgrade(config, "core_197")
 
     engine = create_engine(bootstrap_url)
     try:
@@ -2225,22 +2525,16 @@ def _await_blocked_outbox_teardown_lock(engine: Engine, timeout: float = 30.0) -
 def test_bootstrap_rollback_refuses_evidence_committed_while_it_waits_for_the_lock(
     postgres_container,
 ) -> None:
-    """The teardown-lock recheck catches evidence that lands after the first look.
+    """An actual waiting operator retains the writer committed behind its lock.
 
-    ``rollback_interface`` looks for durable evidence, takes ACCESS EXCLUSIVE on
-    both relations, then looks again.  Only the second look can see a writer
-    that committed while the rollback was queued behind it, so this drives that
-    exact interleaving: an append is left uncommitted -- invisible to the first
-    look, but already holding ROW EXCLUSIVE -- and commits only once the
-    rollback is provably waiting for the lock.  The function is called directly
-    rather than through ``command.downgrade`` because the interleaving has to be
-    timed against that one lock wait, not against a whole migration step.
+    The retired teardown is replaced by a preserving disable. This keeps the
+    real concurrent SQL interleaving and then independently refuses destructive
+    reverse; a pre-lock empty snapshot cannot justify deleting the new row.
     """
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
     bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
-    command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core_198")
-
+    _upgrade_to_core_head(db_url)
     engine = create_engine(bootstrap_url)
     try:
         writer = engine.connect()
@@ -2250,17 +2544,23 @@ def test_bootstrap_rollback_refuses_evidence_committed_while_it_waits_for_the_lo
             try:
                 _await_blocked_outbox_teardown_lock(engine)
                 writer.commit()
-                with pytest.raises(DBAPIError, match="use forward remediation"):
-                    rollback.result(timeout=60)
+                rollback.result(timeout=60)
             finally:
-                # Release the row lock before the pool waits on the rollback,
-                # so a failure here cannot park both on each other.
                 writer.close()
-
+        config = _build_alembic_config(db_url, chains=["core"])
+        with pytest.raises(AuthorityError, match="preserving operator reverse"):
+            _selected_downgrade(config, "core_197")
         with engine.connect() as conn:
             assert conn.execute(text(f"SELECT count(*) FROM {_OUTBOX}")).scalar_one() == 1
             assert conn.execute(
                 text("SELECT to_regclass('public.runtime_attention_delivery_lease') IS NOT NULL")
+            ).scalar_one()
+            assert_at_chain_head(conn)
+            assert conn.execute(
+                text(
+                    "SELECT NOT producers_enabled FROM public.runtime_attention_producer_control "
+                    "WHERE singleton"
+                )
             ).scalar_one()
     finally:
         engine.dispose()
@@ -2269,189 +2569,67 @@ def test_bootstrap_rollback_refuses_evidence_committed_while_it_waits_for_the_lo
 def test_init_db_rerun_adopts_the_renamed_debounce_marker_planter(
     postgres_container,
 ) -> None:
-    """bu-kww1r's rename must converge a database bootstrapped under the old name.
+    """Retired-name successor: current bootstrap never revives either planter.
 
-    The marker planter's body lives in ``upgrade_producers_v2``, which does not
-    re-run once a database is at v2, so the rename cannot arrive that way.
-    ``finalize_interface`` adopts it instead.  Every other test here bootstraps
-    under the new name and never exercises that branch, so this one puts the
-    database back into the pre-rename shape first and proves the rerun both
-    renames the objects and leaves the trigger planting.
+    An actual old-style writer still inserts both dispatch outcomes. It creates
+    no debounce audit row, while the validated current producer remains live.
+    This explicitly retires rename/OID adoption, not the successful writer.
     """
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
     bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
     _upgrade_to_core_head(db_url)
-
-    admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
-    try:
-        with admin.connect() as conn:
-            # Regress to exactly the shape the previous bootstrap left behind.
-            conn.execute(
-                text(
-                    "ALTER FUNCTION public.runtime_attention_plant_legacy_debounce_marker() "
-                    "RENAME TO runtime_attention_legacy_producer_fence"
-                )
-            )
-            conn.execute(
-                text(
-                    "ALTER TRIGGER runtime_attention_plant_legacy_debounce_marker_trigger "
-                    "ON public.model_dispatch_attempts "
-                    "RENAME TO runtime_attention_legacy_producer_fence_trigger"
-                )
-            )
-            assert conn.execute(
-                text(
-                    "SELECT to_regprocedure("
-                    "'public.runtime_attention_plant_legacy_debounce_marker()'"
-                    ") IS NULL"
-                )
-            ).scalar_one(), "the pre-rename shape was not actually restored"
-    finally:
-        admin.dispose()
-
     _rerun_actual_init_db(bootstrap_url, db_url)
-
     admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
     try:
         with admin.connect() as conn:
             assert conn.execute(
                 text(
-                    "SELECT to_regprocedure("
-                    "'public.runtime_attention_plant_legacy_debounce_marker()'"
-                    ") IS NOT NULL"
+                    "SELECT to_regprocedure('public.runtime_attention_plant_legacy_debounce_marker()') "
+                    "IS NULL"
                 )
-            ).scalar_one(), "the rerun did not adopt the new function name"
+            ).scalar_one()
             assert conn.execute(
                 text(
-                    "SELECT to_regprocedure("
-                    "'public.runtime_attention_legacy_producer_fence()'"
-                    ") IS NULL"
+                    "SELECT to_regprocedure('public.runtime_attention_legacy_producer_fence()') IS NULL"
                 )
-            ).scalar_one(), "the old function name survived the rerun"
+            ).scalar_one()
             assert conn.execute(
-                text(
-                    """
-                    SELECT EXISTS (
-                        SELECT 1 FROM pg_trigger
-                        WHERE tgrelid = 'public.model_dispatch_attempts'::regclass
-                          AND tgname =
-                              'runtime_attention_plant_legacy_debounce_marker_trigger'
-                          AND NOT tgisinternal
-                    )
-                    """
-                )
-            ).scalar_one(), "the rerun did not adopt the new trigger name"
-
-            # The rename is OID-preserving, so the planter must still plant.  A
-            # pre-v2 writer sets no ABI marker, which is the branch that fires.
+                text("""
+                SELECT NOT EXISTS (SELECT FROM pg_trigger WHERE NOT tgisinternal
+                  AND tgrelid='public.model_dispatch_attempts'::regclass
+                  AND tgname IN ('runtime_attention_plant_legacy_debounce_marker_trigger',
+                                 'runtime_attention_legacy_producer_fence_trigger'))
+            """)
+            ).scalar_one()
             entry_id = uuid.uuid4()
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO public.model_catalog (id, alias, runtime_type, model_id)
-                    VALUES (:id, 'rename-adoption', 'codex', 'rename-adoption-model')
-                    """
-                ),
-                {"id": entry_id},
-            )
-            conn.execute(text(f"SET ROLE {_quote_ident(_MODEL_PRODUCER)}"))
-            try:
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO public.model_dispatch_attempts (
-                            catalog_entry_id, butler, outcome
-                        ) VALUES (:id, 'general', 'runtime_failure')
-                        """
-                    ),
-                    {"id": entry_id},
-                )
-            finally:
-                conn.execute(text("RESET ROLE"))
+            _plant_marker_for_legacy_writer(conn, entry_id, "rename-retired-writer")
             assert (
                 conn.execute(
                     text(
-                        """
-                        SELECT count(*) FROM public.audit_log
-                        WHERE action = 'model_breaker_open_notified'
-                          AND target = :target
-                        """
+                        "SELECT count(*) FROM public.model_dispatch_attempts WHERE catalog_entry_id=:id"
                     ),
-                    {"target": f"model_breaker:{entry_id}"},
+                    {"id": entry_id},
                 ).scalar_one()
-                == 1
-            ), "the renamed planter stopped planting its debounce marker"
+                == 2
+            )
+            assert _marker_rows(conn, entry_id) == []
     finally:
         admin.dispose()
+    assert isinstance(_validated_current_episode(db_url), uuid.UUID)
+    assert isinstance(_validated_current_episode(db_url, fleet=True), uuid.UUID)
+    assert _has_exact_finalized_runtime_attention_interface(db_url)
 
 
 _LEGACY_MARKER_ACTOR = "runtime_attention_cutover_fence"
-_MARKER_ACTOR = "runtime_attention_legacy_debounce_marker"
-
-# The exact body a database bootstrapped before bu-95gq7 carries: the pre-rename
-# audit vocabulary, everything else identical.  Restoring it with CREATE OR
-# REPLACE keeps the OID the trigger binds to, so the regressed database is the
-# real pre-migration shape rather than a look-alike.
-_LEGACY_MARKER_BODY = """
-CREATE OR REPLACE FUNCTION public.runtime_attention_plant_legacy_debounce_marker()
-RETURNS trigger
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog, public, pg_temp
-AS $legacy_marker$
-DECLARE
-    v_active_role TEXT := COALESCE(current_setting('role', true), '');
-BEGIN
-    IF v_active_role = ANY (ARRAY[
-        'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-        'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
-        'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
-        'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
-    ]) AND COALESCE(
-        current_setting('butlers.runtime_attention_producer_abi', true), ''
-    ) <> '2' THEN
-        IF NEW.outcome = 'runtime_failure' THEN
-            INSERT INTO public.audit_log (actor, action, target, note)
-            VALUES (
-                'runtime_attention_cutover_fence',
-                'model_breaker_open_notified',
-                'model_breaker:' || NEW.catalog_entry_id::text,
-                'blocked_old_binary'
-            );
-        ELSIF NEW.outcome = 'quota_skip'
-              AND left(
-                  COALESCE(NEW.failure_reason, ''),
-                  length('Monthly spend ceiling reached')
-              ) = 'Monthly spend ceiling reached' THEN
-            INSERT INTO public.audit_log (actor, action, target, note)
-            VALUES (
-                'runtime_attention_cutover_fence',
-                'ceiling_halt_notified',
-                'ceiling_halt',
-                to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM')
-            );
-        END IF;
-    END IF;
-    RETURN NEW;
-END;
-$legacy_marker$;
-"""
-
-_MARKER_DEFINITION_SQL = (
-    "SELECT pg_get_functiondef("
-    "'public.runtime_attention_plant_legacy_debounce_marker()'::regprocedure)"
-)
-_MARKER_OID_SQL = (
-    "SELECT 'public.runtime_attention_plant_legacy_debounce_marker()'::regprocedure::oid"
-)
 
 
 def _plant_marker_for_legacy_writer(conn, entry_id: uuid.UUID, alias: str) -> None:
-    """Insert one dispatch attempt per marker branch as a pre-v2 writer.
+    """Execute both old-style writer INSERTs without an ABI annotation.
 
-    A pre-v2 writer sets no ABI marker, which is the branch the planter fires
-    on.  Both INSERTs land: the trigger returns NEW unconditionally.
+    Current source has retired the debounce planter. Both real INSERTs must
+    still commit; the owning cases separately assert no new legacy marker and
+    positive validated current producers. No old trigger execution is claimed.
     """
     conn.execute(
         text(
@@ -2511,102 +2689,107 @@ def _marker_rows(conn, entry_id: uuid.UUID) -> list[tuple[str, str, str]]:
 def test_init_db_rerun_converges_the_debounce_marker_audit_vocabulary(
     postgres_container,
 ) -> None:
-    """bu-95gq7: an existing v2 database must adopt the new actor and note.
+    """Current retirement preserves immutable old vocabulary without re-planting.
 
-    The literals live inside the planter's stored body, which
-    ``upgrade_producers_v2`` emits once and never re-runs, so editing
-    ``init-db.sql`` alone would reach fresh bootstraps only.  Both callers now
-    share one definition in
-    ``runtime_attention_admin.install_legacy_debounce_marker``, and
-    ``finalize_interface`` adopts it on every init-db rerun.
-
-    This is a body rewrite, not a row backfill: the assertions below are on rows
-    planted *after* the rerun, and the pre-existing row is asserted to keep the
-    old vocabulary.
+    Synthetic historical text is written through real audit.append under the
+    actual General role. It is not evidence that the retired planter ran. The
+    new source converges only current interfaces and preserves these rows.
     """
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
     bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
     _upgrade_to_core_head(db_url)
-
     legacy_entry_id = uuid.uuid4()
+    receipts = _append_synthetic_legacy_history(db_url, legacy_entry_id)
     admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
     try:
         with admin.connect() as conn:
-            fresh_definition = conn.execute(text(_MARKER_DEFINITION_SQL)).scalar_one()
-            assert _MARKER_ACTOR in fresh_definition, (
-                "a fresh bootstrap does not plant the current actor; init-db.sql and this "
-                "test disagree about the canonical vocabulary"
-            )
-            marker_oid = conn.execute(text(_MARKER_OID_SQL)).scalar_one()
-
-            # Regress to exactly what a database bootstrapped before bu-95gq7
-            # carries.  ``::regprocedure`` above already raised if the planter
-            # was missing, so this cannot silently install a look-alike.
-            conn.exec_driver_sql(_LEGACY_MARKER_BODY)
-            assert conn.execute(text(_MARKER_OID_SQL)).scalar_one() == marker_oid, (
-                "restoring the legacy body replaced the function instead of rewriting it, "
-                "so the trigger is no longer bound to the object under test"
-            )
-            legacy_definition = conn.execute(text(_MARKER_DEFINITION_SQL)).scalar_one()
-            assert _LEGACY_MARKER_ACTOR in legacy_definition, (
-                "the pre-migration audit vocabulary was not actually restored"
-            )
-
-            # One row planted while the legacy body is live.  It must survive the
-            # rerun unchanged -- convergence is forward-only.
-            _plant_marker_for_legacy_writer(conn, legacy_entry_id, "pre-convergence")
-            assert _marker_rows(conn, legacy_entry_id) == [
+            before = _marker_rows(conn, legacy_entry_id)
+            assert before == [
                 (_LEGACY_MARKER_ACTOR, "model_breaker_open_notified", "blocked_old_binary"),
-                (
-                    _LEGACY_MARKER_ACTOR,
-                    "ceiling_halt_notified",
-                    conn.execute(
-                        text("SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM')")
-                    ).scalar_one(),
-                ),
+                (_LEGACY_MARKER_ACTOR, "ceiling_halt_notified", "synthetic retained legacy month"),
             ]
+            writers = conn.execute(
+                text("SELECT id,writer_role FROM public.audit_log WHERE id=ANY(:ids) ORDER BY id"),
+                {"ids": receipts},
+            ).all()
+            assert writers == [(receipt, _MODEL_PRODUCER) for receipt in receipts]
+            retained_rows = conn.execute(
+                text(
+                    "SELECT to_jsonb(history)::text FROM public.audit_log AS history "
+                    "WHERE id=ANY(:ids) ORDER BY id"
+                ),
+                {"ids": receipts},
+            ).all()
+            assert len(retained_rows) == 2
+            assert conn.execute(
+                text(
+                    "SELECT to_regprocedure('public.runtime_attention_plant_legacy_debounce_marker()') "
+                    "IS NULL"
+                )
+            ).scalar_one()
     finally:
         admin.dispose()
-
     _rerun_actual_init_db(bootstrap_url, db_url)
-
-    entry_id = uuid.uuid4()
+    _rerun_actual_init_db(bootstrap_url, db_url)
     admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
     try:
         with admin.connect() as conn:
-            assert conn.execute(text(_MARKER_OID_SQL)).scalar_one() == marker_oid, (
-                "the rerun replaced the planter instead of rewriting it in place"
-            )
-            _plant_marker_for_legacy_writer(conn, entry_id, "post-convergence")
-            current_month = conn.execute(
-                text("SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM')")
-            ).scalar_one()
-            assert _marker_rows(conn, entry_id)[-2:] == [
-                (_MARKER_ACTOR, "model_breaker_open_notified", "legacy_debounce_planted"),
-                # Byte-identical to the retired fleet-halt helper's debounce key.
-                (_MARKER_ACTOR, "ceiling_halt_notified", current_month),
-            ]
-            assert conn.execute(text(_MARKER_DEFINITION_SQL)).scalar_one() == fresh_definition, (
-                "a migrated database and a fresh bootstrap disagree on the planter body"
-            )
-
-            # The historical row is untouched, which is why any query filtering
-            # on actor has to tolerate both vocabularies.
+            assert _marker_rows(conn, legacy_entry_id) == before
             assert (
                 conn.execute(
                     text(
-                        """
-                        SELECT count(*) FROM public.audit_log
-                        WHERE actor = :legacy_actor AND note = 'blocked_old_binary'
-                        """
+                        "SELECT to_jsonb(history)::text FROM public.audit_log AS history "
+                        "WHERE id=ANY(:ids) ORDER BY id"
                     ),
-                    {"legacy_actor": _LEGACY_MARKER_ACTOR},
+                    {"ids": receipts},
+                ).all()
+                == retained_rows
+            )
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT id,writer_role FROM public.audit_log WHERE id=ANY(:ids) ORDER BY id"
+                    ),
+                    {"ids": receipts},
+                ).all()
+                == writers
+            )
+            entry_id = uuid.uuid4()
+            _plant_marker_for_legacy_writer(conn, entry_id, "post-retirement")
+            # Only the deliberately retained historical fleet row is visible;
+            # no current legacy writer adds or rewrites a debounce marker.
+            assert _marker_rows(conn, entry_id) == [before[1]]
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT count(*) FROM public.model_dispatch_attempts WHERE catalog_entry_id=:id"
+                    ),
+                    {"id": entry_id},
+                ).scalar_one()
+                == 2
+            )
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT count(*) FROM public.audit_log WHERE actor=:actor "
+                        "AND note='blocked_old_binary'"
+                    ),
+                    {"actor": _LEGACY_MARKER_ACTOR},
                 ).scalar_one()
                 == 1
-            ), "the rerun rewrote history instead of only rewriting the planter body"
+            )
+            assert conn.execute(
+                text(
+                    "SELECT to_regprocedure('public.runtime_attention_plant_legacy_debounce_marker()') "
+                    "IS NULL"
+                )
+            ).scalar_one()
     finally:
         admin.dispose()
+    assert isinstance(_validated_current_episode(db_url), uuid.UUID)
+    assert isinstance(_validated_current_episode(db_url, fleet=True), uuid.UUID)
+    assert _has_exact_finalized_runtime_attention_interface(db_url)
 
 
 _FLEET_HALT_DEFINITION_SQL = (
@@ -2710,14 +2893,11 @@ $clock_timestamp_fleet_halt$;
 
 
 def test_init_db_rerun_converges_the_fleet_halt_month_clock(postgres_container) -> None:
-    """bu-jxelx: an existing v2 database must adopt the transaction-stable month.
+    """bu-jxelx: current finalization restores the transaction-stable month.
 
-    ``v_month`` lives inside the producer's stored body, which
-    ``upgrade_producers_v2`` emits once and never re-runs, so editing
-    ``init-db.sql`` alone would reach fresh bootstraps only.  Both callers now
-    share one definition in
-    ``runtime_attention_admin.install_fleet_halt_producer_v2``, and
-    ``finalize_interface`` adopts it on every init-db rerun.
+    Regress only the actual producer body, retaining its identity. The real
+    selected held-maintenance finalizer must restore the exact source body
+    without recreating a retired stored installer or replacing the function.
     """
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
@@ -2838,6 +3018,7 @@ def test_condition_producer_appends_one_safe_episode_per_condition_even_after_re
         pool = await asyncpg.create_pool(
             _asyncpg_url(db_url), min_size=1, max_size=8, init=_decode_jsonb
         )
+        _ROLE_CONTROL_URLS[pool] = _asyncpg_url(bootstrap_url)
         try:
             fleet = await _insert_condition(admin, FLEET_SOURCE, FLEET_FINGERPRINT)
             qa = await _insert_condition(
@@ -2985,8 +3166,8 @@ def test_condition_producer_appends_one_safe_episode_per_condition_even_after_re
             assert await admin.fetchval(_CONDITION_OUTBOX_COUNT) == 1
             observed = {
                 row["condition_id"]: row
-                for row in await pool.fetch(
-                    "SELECT * FROM public.observe_runtime_attention_conditions()"
+                for row in await _fetch_as_role(
+                    pool, _DASHBOARD, "SELECT * FROM public.observe_runtime_attention_conditions()"
                 )
             }
             assert observed[fleet]["episode_id"] == fleet_episode
@@ -2994,7 +3175,10 @@ def test_condition_producer_appends_one_safe_episode_per_condition_even_after_re
             assert observed[fleet]["lifecycle_state"] == "pending"
             assert observed[qa]["outbox_retained"] is True
             assert observed[qa]["condition_kind"] == "qa_patrol_overdue"
-            # The projection is the migration login's alone and forbids SET ROLE.
+            # The fixed dashboard capability owns observation. The actual normal
+            # login and delivery-only Switchboard cannot acquire that authority.
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await pool.fetch("SELECT * FROM public.observe_runtime_attention_conditions()")
             with pytest.raises(asyncpg.InsufficientPrivilegeError):
                 await _call_as_role(
                     pool,
@@ -3002,8 +3186,11 @@ def test_condition_producer_appends_one_safe_episode_per_condition_even_after_re
                     "SELECT count(*) FROM public.observe_runtime_attention_conditions()",
                 )
         finally:
-            await pool.close()
-            await admin.close()
+            _ROLE_CONTROL_URLS.pop(pool, None)
+            try:
+                await _close_pool(pool)
+            finally:
+                await _close_pool(admin)
 
     asyncio.run(scenario())
 
@@ -3011,12 +3198,12 @@ def test_condition_producer_appends_one_safe_episode_per_condition_even_after_re
 def test_condition_attention_survives_bootstrap_replay_and_rollback_keeps_evidence(
     postgres_container,
 ) -> None:
-    """REQ-butler-control-plane-liveness-007 AC3: grants, RLS, and rollback on replay.
+    """REQ-butler-control-plane-liveness-007 AC3: retained evidence and fencing.
 
-    A rerun of the real bootstrap strips planted grants and restores the one
-    owner policy without disturbing emitted evidence, and the core_198 finalized
-    proof still holds.  Rollback stops new appends only; a re-enable never
-    re-pages a condition that already has its marker.
+    REQ-database-security-017/025 replaces arbitrary policy auto-repair with
+    pre-effect refusal, complete immutable readback, and exact fixture-poison
+    inverse before current finalization. All original forced-RLS, single-policy,
+    role, retained-evidence, marker backfill and re-enable/dedup positives execute.
     """
     from butlers.core.fleet_conditions import (
         FLEET_FINGERPRINT,
@@ -3033,34 +3220,48 @@ def test_condition_attention_survives_bootstrap_replay_and_rollback_keeps_eviden
 
     async def open_pools() -> tuple[asyncpg.Pool, asyncpg.Pool]:
         admin = await asyncpg.create_pool(_asyncpg_url(bootstrap_url), min_size=1, max_size=2)
-        pool = await asyncpg.create_pool(_asyncpg_url(db_url), min_size=1, max_size=2)
+        try:
+            pool = await asyncpg.create_pool(_asyncpg_url(db_url), min_size=1, max_size=2)
+        except BaseException:
+            await _close_pool(admin)
+            raise
+        _ROLE_CONTROL_URLS[pool] = _asyncpg_url(bootstrap_url)
         return admin, pool
 
     async def before_replay() -> tuple[uuid.UUID, uuid.UUID]:
         admin, pool = await open_pools()
         try:
             fleet = await _insert_condition(admin, FLEET_SOURCE, FLEET_FINGERPRINT)
-            episode = await append(pool, fleet)
+            episode = await append(admin, fleet)
             assert episode is not None
-            # Plant the broad grants an ad-hoc repair might leave behind.
-            await admin.execute(
-                f"GRANT SELECT, UPDATE ON public.runtime_attention_condition_episodes "
-                f"TO {_MODEL_PRODUCER}"
-            )
-            await admin.execute(
-                f"GRANT EXECUTE ON FUNCTION public.append_runtime_attention_condition(uuid) "
-                f"TO {_MODEL_PRODUCER}, {_quote_ident(migration_role)}"
-            )
+            # Named adversarial poison only: no fabricated object grant.
             await admin.execute(
                 "CREATE POLICY stray_open ON public.runtime_attention_condition_episodes "
                 "FOR ALL TO PUBLIC USING (true)"
             )
             return fleet, episode
         finally:
-            await pool.close()
-            await admin.close()
+            _ROLE_CONTROL_URLS.pop(pool, None)
+            try:
+                await _close_pool(pool)
+            finally:
+                await _close_pool(admin)
 
     fleet, episode = asyncio.run(before_replay())
+    poisoned = _attention_snapshot(db_url)
+    with pytest.raises(AuthorityError):
+        _rerun_actual_init_db(bootstrap_url, db_url)
+    assert _attention_snapshot(db_url) == poisoned
+    # REQ-database-security-017/025: exact inverse of this named fixture poison,
+    # then actual current convergence. No broad policy reset or refusal-only case.
+    repair = create_engine(bootstrap_url)
+    try:
+        with repair.begin() as conn:
+            conn.execute(
+                text("DROP POLICY stray_open ON public.runtime_attention_condition_episodes")
+            )
+    finally:
+        repair.dispose()
     _rerun_actual_init_db(bootstrap_url, db_url)
     assert _has_exact_finalized_runtime_attention_interface(db_url)
 
@@ -3086,20 +3287,21 @@ def test_condition_attention_survives_bootstrap_replay_and_rollback_keeps_eviden
                         'public.append_runtime_attention_condition(uuid)'::regprocedure,
                         'EXECUTE'
                     ) AS switchboard_appends,
-                    has_function_privilege(
-                        $1::name,
-                        'public.runtime_attention_upgrade_condition_v4()'::regprocedure,
-                        'EXECUTE'
-                    ) AS migration_upgrades,
+                    to_regprocedure('public.runtime_attention_upgrade_condition_v4()') IS NOT NULL AS migration_upgrades,
                     has_function_privilege(
                         $1::name,
                         'public.observe_runtime_attention_conditions()'::regprocedure,
                         'EXECUTE'
                     ) AS migration_observes,
+                    has_function_privilege(
+                        'dashboard_api',
+                        'public.observe_runtime_attention_conditions()'::regprocedure,
+                        'EXECUTE'
+                    ) AS dashboard_observes,
                     pg_get_userbyid(upgrader.proowner) AS upgrader_owner
                 FROM pg_class AS marker
                 JOIN pg_proc AS upgrader
-                  ON upgrader.oid = 'public.runtime_attention_upgrade_condition_v4()'::regprocedure
+                  ON upgrader.oid = 'public.append_runtime_attention_condition(uuid)'::regprocedure
                 WHERE marker.oid = 'public.runtime_attention_condition_episodes'::regclass
                 """,
                 migration_role,
@@ -3112,10 +3314,11 @@ def test_condition_attention_survives_bootstrap_replay_and_rollback_keeps_eviden
                 "producer_appends": False,
                 "switchboard_appends": True,
                 "migration_upgrades": False,
-                "migration_observes": True,
+                "migration_observes": False,
+                "dashboard_observes": True,
                 "upgrader_owner": "runtime_attention_outbox_owner",
             }
-            assert await append(pool, fleet) == episode
+            assert await append(admin, fleet) == episode
 
             # bu-giazn6: the v5 marker sync survives the replay re-fenced.
             marker_sync = await admin.fetchrow(
@@ -3128,11 +3331,7 @@ def test_condition_attention_survives_bootstrap_replay_and_rollback_keeps_eviden
                     has_function_privilege($1::name, sync.oid, 'EXECUTE') AS migration_executes,
                     has_function_privilege('{_SWITCHBOARD}', sync.oid, 'EXECUTE')
                         AS switchboard_executes,
-                    has_function_privilege(
-                        $1::name,
-                        'public.runtime_attention_upgrade_condition_marker_v5()'::regprocedure,
-                        'EXECUTE'
-                    ) AS migration_upgrades,
+                    to_regprocedure('public.runtime_attention_upgrade_condition_marker_v5()') IS NOT NULL AS migration_upgrades,
                     ARRAY(
                         SELECT trigger_row.tgname::text
                         FROM pg_trigger AS trigger_row
@@ -3156,13 +3355,14 @@ def test_condition_attention_survives_bootstrap_replay_and_rollback_keeps_eviden
                 "sync_triggers": ["runtime_attention_condition_marker_sync_trigger"],
             }
 
-            # v5 rollback: trigger and function go, the marker stays; only the
-            # bootstrap superuser may run it.
-            with pytest.raises(asyncpg.InsufficientPrivilegeError):
-                await pool.execute(
-                    "SELECT public.runtime_attention_deactivate_condition_marker_v5()"
-                )
-            await admin.execute("SELECT public.runtime_attention_deactivate_condition_marker_v5()")
+            # Stop the genuine normal-login session before the actual selected
+            # maintenance operator proves quiescence. All later producer probes
+            # use explicit administrative SET ROLE on separate acquisitions.
+            _ROLE_CONTROL_URLS.pop(pool, None)
+            await _close_pool(pool)
+            with pytest.raises(AuthorityError):
+                _attention_transition(db_url, "marker", False, maintenance=False)
+            _attention_transition(db_url, "marker", False)
             assert (
                 await admin.fetchval(
                     "SELECT to_regprocedure('public.runtime_attention_sync_condition_marker()')"
@@ -3185,13 +3385,13 @@ def test_condition_attention_survives_bootstrap_replay_and_rollback_keeps_eviden
                 == episode
             )
             # A marker left stale while the trigger was absent is backfilled by
-            # the re-offered upgrader, which the migration login may run again.
+            # the actual held maintenance transition, not a serving capability.
             await admin.execute(
                 "UPDATE public.runtime_attention_condition_episodes "
                 "SET last_delivery_state = 'failed' WHERE condition_id = $1",
                 fleet,
             )
-            await pool.execute("SELECT public.runtime_attention_upgrade_condition_marker_v5()")
+            _attention_transition(db_url, "marker", True)
             assert (
                 await admin.fetchval(
                     "SELECT last_delivery_state FROM public.runtime_attention_condition_episodes "
@@ -3201,16 +3401,16 @@ def test_condition_attention_survives_bootstrap_replay_and_rollback_keeps_eviden
                 == "pending"
             )
             assert await admin.fetchval(_CONDITION_OUTBOX_COUNT) == 1
-            with pytest.raises(asyncpg.InsufficientPrivilegeError):
-                await pool.execute("SELECT public.runtime_attention_upgrade_condition_marker_v5()")
+            with pytest.raises(AuthorityError):
+                _attention_transition(db_url, "marker", True, maintenance=False)
 
             # Rollback: no new appends, every emitted row and marker kept.
-            await admin.execute("SELECT public.runtime_attention_deactivate_condition_v4()")
-            with pytest.raises(asyncpg.InsufficientPrivilegeError):
-                await pool.execute("SELECT public.runtime_attention_deactivate_condition_v4()")
+            _attention_transition(db_url, "conditions", False)
+            with pytest.raises(AuthorityError):
+                _attention_transition(db_url, "conditions", False, maintenance=False)
             qa = await _insert_condition(admin, QA_PATROL_SOURCE, QA_PATROL_OVERDUE_FINGERPRINT)
-            assert await append(pool, qa) is None
-            assert await append(pool, fleet) is None
+            assert await append(admin, qa) is None
+            assert await append(admin, fleet) is None
             assert await admin.fetchval(_CONDITION_OUTBOX_COUNT) == 1
             assert (
                 await admin.fetchval(
@@ -3222,15 +3422,16 @@ def test_condition_attention_survives_bootstrap_replay_and_rollback_keeps_eviden
             )
 
             # Re-enable: the due QA condition pages once; the fleet one does not re-page.
-            await admin.execute(
-                "UPDATE public.runtime_attention_condition_control SET producer_enabled = true"
-            )
-            assert await append(pool, fleet) == episode
-            assert await append(pool, qa) is not None
+            _attention_transition(db_url, "conditions", True)
+            assert await append(admin, fleet) == episode
+            assert await append(admin, qa) is not None
             assert await admin.fetchval(_CONDITION_OUTBOX_COUNT) == 2
         finally:
-            await pool.close()
-            await admin.close()
+            _ROLE_CONTROL_URLS.pop(pool, None)
+            try:
+                await _close_pool(pool)
+            finally:
+                await _close_pool(admin)
 
     asyncio.run(after_replay())
 
@@ -3350,7 +3551,7 @@ def test_runtime_attention_definers_never_run_a_public_decoy(postgres_container)
                 "SELECT public.append_runtime_attention_fleet_halt()",
             ),
             "reissue": (
-                None,
+                _DASHBOARD,
                 "SELECT successor_episode_id "
                 "FROM public.reissue_runtime_attention_episode(:uncertain)",
             ),
@@ -3358,7 +3559,7 @@ def test_runtime_attention_definers_never_run_a_public_decoy(postgres_container)
 
         def call(name: str):
             role, statement = calls[name]
-            with migration.connect() as conn:
+            with (admin if role is not None else migration).connect() as conn:
                 if role is not None:
                     conn.execute(text(f"SET ROLE {_quote_ident(role)}"))
                 try:
@@ -3376,7 +3577,18 @@ def test_runtime_attention_definers_never_run_a_public_decoy(postgres_container)
             with pytest.raises(DBAPIError, match="hijacked as runtime_attention_outbox_owner"):
                 call(name)
 
-        # The real bootstrap rerun converges it, idempotently.
+        # Unknown source-unlisted overloads refuse before convergence. The
+        # planted decoy stays unchanged; remove only this test-owned poison,
+        # then the actual source finalizer repairs the regressed safe functions.
+        poisoned = _attention_snapshot(db_url)
+        with pytest.raises(AuthorityError):
+            _rerun_actual_init_db(bootstrap_url, db_url)
+        assert _attention_snapshot(db_url) == poisoned
+        with admin.connect() as conn:
+            assert conn.execute(
+                text("SELECT to_regprocedure('public.hashtextextended(text,integer)') IS NOT NULL")
+            ).scalar_one()
+            conn.execute(text("DROP FUNCTION public.hashtextextended(text,integer)"))
         _rerun_actual_init_db(bootstrap_url, db_url)
         _rerun_actual_init_db(bootstrap_url, db_url)
         with admin.connect() as conn:

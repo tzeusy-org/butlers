@@ -13,14 +13,23 @@ from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 
 from alembic import command
 from butlers.bootstrap_prerequisite import (
     BootstrapPrerequisiteError,
     check_bootstrap_connection,
     check_bootstrap_database,
+    prepare_bootstrap_connection,
 )
-from butlers.migrations import _build_alembic_config, get_chain_head, run_migrations
+from butlers.db_authority.roles import AuthorityError
+from butlers.migrations import (
+    _build_alembic_config,
+    finalize_authority,
+    get_chain_head,
+    migration_session,
+    run_migrations,
+)
 
 _ROOT = Path(__file__).resolve().parents[1]
 _FIXTURES = _ROOT / "tests" / "fixtures" / "bootstrap_prerequisite"
@@ -211,7 +220,7 @@ def exercise_historical_bootstrap(postgres_container, tmp_path: Path, prepare, b
         before = _readback(normal_url)
         # pinned-revision: deliberately exercise the actual historical predecessor.
         assert before["versions"] == ("core_195",)
-        with pytest.raises(BootstrapPrerequisiteError, match="scripts/init-db.sql"):
+        with pytest.raises(BootstrapPrerequisiteError):
             asyncio.run(run_migrations(normal_url, chain="core"))
         assert _readback(normal_url) == before
         current = _build_alembic_config(
@@ -220,66 +229,92 @@ def exercise_historical_bootstrap(postgres_container, tmp_path: Path, prepare, b
         with pytest.raises(BootstrapPrerequisiteError):
             command.upgrade(current, "core_196")
         assert _readback(normal_url) == before
-        # Neutralizing only admission reaches the existing protected guard AFTER
-        # the old env creates its schema. This is separate from the no-write proof.
+        # Neutralizing the read-only preparation predicate still cannot grant
+        # maintenance identity. The independently checked real actor refuses
+        # BEFORE even the former schema side effect. This executing successor
+        # tightens the old admission-neutralized partial-write observation.
         with patch("butlers.bootstrap_prerequisite.check_bootstrap_connection", return_value=None):
-            with pytest.raises(
-                Exception, match="restore-drill bootstrap installer is missing or untrusted"
-            ):
+            with pytest.raises(AuthorityError, match="maintenance/ownership prerequisite"):
                 command.upgrade(current, "core_196")
         neutralized = _readback(normal_url)
-        assert any(row[0] == "bootstrap_probe" for row in neutralized["schemas"])
+        assert not any(row[0] == "bootstrap_probe" for row in neutralized["schemas"])
         assert neutralized["versions"] == before["versions"]
         assert neutralized["row"] == before["row"]
-        bootstrap(
-            host=host,
-            port=port,
-            user=admin_user,
-            password=admin_password,
-            database=admin_url.rsplit("/", 1)[1],
-            file_path=_ROOT / "scripts" / "init-db.sql",
-        )
+        # Current preparation requires the actual source compiler on the owned
+        # privileged connection. A raw psql callback cannot supply authority.
+        # Retain the public helper signature for its existing real caller.
+        selected = make_url(normal_url)
+        admin = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+        raw = None
+        try:
+            raw = admin.raw_connection()
+            prepare_bootstrap_connection(
+                raw, selected.database, selected.username, source_database="butlers"
+            )
+            raw.commit()
+        finally:
+            if raw is not None:
+                raw.close()
+            admin.dispose()
         check_bootstrap_database(normal_url)
         # Independent catalog negatives restored transactionally before a
         # separate normal-connection positive; no poisoned state reaches upgrade.
         admin = create_engine(admin_url)
         try:
+            from butlers.db_authority.apply import quote_identifier
+
+            owner = quote_identifier(selected.username)
+            # These eight actual catalog poisons replace the retired bunker,
+            # shared-membership and broad-default checks. Each targets a current
+            # read-only admission requirement, not an intentionally absent API.
             poisons = (
-                "ALTER ROLE butlers CREATEDB",
-                "ALTER SCHEMA restore_drill_executor_admin OWNER TO butlers",
-                "ALTER FUNCTION runtime_attention_admin.finalize_interface() RENAME TO forged_finalizer",
-                "ALTER FUNCTION restore_drill_executor_admin.install_interface() SECURITY INVOKER",
-                "ALTER FUNCTION dnd_generation_admin.finalize_interface() SET search_path TO public",
-                "REVOKE butler_general_rw FROM butlers",
-                "ALTER DEFAULT PRIVILEGES FOR ROLE butlers IN SCHEMA general "
-                "REVOKE INSERT ON TABLES FROM butler_general_rw",
-                "ALTER TABLE runtime_attention_admin.bootstrap_configuration OWNER TO butlers",
+                f"ALTER ROLE {owner} CREATEDB",
+                "ALTER SCHEMA general OWNER TO butler_general_rw",
+                "DROP EXTENSION pg_trgm",
+                "ALTER ROLE dnd_generation_owner LOGIN",
+                f"GRANT dnd_generation_owner TO {owner}",
+                "ALTER ROLE dashboard_api RENAME TO poisoned_dashboard_capability",
+                "ALTER SCHEMA chronicler_mem RENAME TO poisoned_private_namespace",
+                f"ALTER ROLE {owner} CREATEROLE",
             )
             for poison in poisons:
                 with admin.connect() as connection:
                     transaction = connection.begin()
                     connection.execute(text(poison))
-                    # Inspect this connection under actual SET ROLE, retaining
-                    # the same uncommitted poisoned catalog for the negative.
-                    connection.execute(text("SET LOCAL ROLE butlers"))
+                    # Real session identity sees this connection's uncommitted
+                    # catalog change; a caller-controlled GUC is never used.
+                    connection.exec_driver_sql(f"SET SESSION AUTHORIZATION {owner}")
                     with pytest.raises(BootstrapPrerequisiteError):
                         check_bootstrap_connection(connection)
                     transaction.rollback()
                 check_bootstrap_database(normal_url)
         finally:
             admin.dispose()
-        asyncio.run(run_migrations(normal_url, chain="core"))
+        # An ordinary connection can now pass preparation admission, but it
+        # cannot acquire the separate maintenance identity or repair protected
+        # functions. Prove refusal and a complete unchanged observer readback.
+        prepared_before = _readback(normal_url)
+        with pytest.raises(AuthorityError, match="maintenance/ownership prerequisite"):
+            asyncio.run(run_migrations(normal_url, chain="core"))
+        assert _readback(normal_url) == prepared_before
+        with migration_session(admin_url, source_database="butlers") as held:
+            asyncio.run(run_migrations(admin_url, chain="core", connection=held))
+            finalize_authority(held, source_database="butlers", plans=(("core", "public", None),))
         after = _readback(normal_url)
         assert after["versions"] == (get_chain_head("core"),)
         assert after["row"] == before["row"]
-        check_bootstrap_database(normal_url)  # consumed installer grants accepted
-        asyncio.run(run_migrations(normal_url, chain="core"))
+        check_bootstrap_database(normal_url)  # no serving memberships are required
+        with migration_session(admin_url, source_database="butlers") as held:
+            asyncio.run(run_migrations(admin_url, chain="core", connection=held))
+            finalize_authority(held, source_database="butlers", plans=(("core", "public", None),))
         # Genuine second-schema replay uses every canonical predecessor and all
         # revision locations, retaining the first database-global protected state.
-        asyncio.run(run_migrations(normal_url, chain="core", schema="bootstrap_probe"))
+        with migration_session(admin_url, source_database="butlers") as held:
+            asyncio.run(run_migrations(admin_url, chain="core", schema="general", connection=held))
+            finalize_authority(held, source_database="butlers", plans=(("core", "general", None),))
         with normal.connect() as connection:
             assert connection.execute(
-                text("SELECT version_num FROM bootstrap_probe.alembic_version")
+                text("SELECT version_num FROM general.alembic_version")
             ).scalar_one() == get_chain_head("core")
             assert (
                 connection.execute(

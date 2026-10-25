@@ -57,8 +57,8 @@ from butlers.core.definer_search_path import (
     log_unpinned_definers,
 )
 from butlers.core.stored_function_drift import (
-    compute_stored_function_drift,
-    log_stored_function_drift,
+    compute_database_authority,
+    log_database_authority,
 )
 from butlers.credential_store import CredentialStore
 from butlers.db import (
@@ -392,20 +392,14 @@ async def lifespan(app: FastAPI):
         # body change reaches an installed database only when an operator runs
         # it by hand -- and before this probe, nothing anywhere said so.
         #
-        # Reported, never fatal: a mismatch is one WARNING line, because
-        # refusing to boot the dashboard over a cosmetic body difference would
-        # be strictly worse than the drift it complains about. One-shot rather
-        # than a loop: the committed side only changes on deploy, and the
-        # deployed side only changes when an operator acts, so a periodic
-        # re-check would repeat the same answer. GET /api/system/stored-functions
-        # serves the live view.
+        # Advisory catalog observation is separate from mandatory pool admission.
+        # Missing/unreadable authority cannot become a clean diagnostic state.
         try:
-            report = await compute_stored_function_drift(get_db_manager().pool("switchboard"))
-            log_stored_function_drift(report)
+            report = await compute_database_authority(get_db_manager().pool("switchboard"))
+            log_database_authority(report)
         except Exception:
             logger.warning(
-                "Stored-function body drift check failed; deployed function bodies were "
-                "NOT compared against the configured stored-function source",
+                "Database authority catalog observation is unavailable",
                 exc_info=True,
             )
 

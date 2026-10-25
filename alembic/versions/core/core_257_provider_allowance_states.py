@@ -34,7 +34,6 @@ _LOCK = "core_257_provider_allowance_states"
 _TABLE = "public.provider_allowance_states"
 
 _RUNTIME_ROLES = (
-    "butler_calendar_rw",
     "butler_chronicler_rw",
     "butler_education_rw",
     "butler_finance_rw",

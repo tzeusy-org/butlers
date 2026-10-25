@@ -5,18 +5,16 @@ Covers:
 - All four test-state columns added to public.butler_secrets
 - Idempotent DDL (CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS)
 - Downgrade drops all four columns with IF EXISTS
-- ensure_secrets_schema DDL parity: fresh databases get the same columns
-  without running the alembic chain
+- Executed migration creates the fresh shared table before adding all four columns
 """
 
 from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
-
-from butlers.credential_store import _SECRETS_TABLE_DDL
 
 pytestmark = pytest.mark.unit
 
@@ -63,6 +61,16 @@ def test_migration_column_set_matches_core_106():
 
 
 def test_fresh_schema_ddl_includes_test_state_columns():
-    """Fresh DBs receive the same columns that core_117 adds to existing tables."""
+    """The actual migration producer owns fresh tables and all old columns."""
+    migration = _load_migration()
+    statements = []
+    with patch.object(migration.op, "execute", side_effect=statements.append):
+        migration.upgrade()
+    emitted = [" ".join(str(statement).split()) for statement in statements]
+    assert len(emitted) == 2
+    assert emitted[0].startswith("CREATE TABLE IF NOT EXISTS public.butler_secrets (")
+    assert emitted[1].startswith("ALTER TABLE public.butler_secrets ")
     for col in _TEST_STATE_COLUMNS:
-        assert col in _SECRETS_TABLE_DDL, f"'{col}' missing from _SECRETS_TABLE_DDL"
+        assert f"ADD COLUMN IF NOT EXISTS {col} " in emitted[1], (
+            f"'{col}' missing from actual core_117 ALTER DDL"
+        )

@@ -6,7 +6,7 @@
 
 ## Overview
 
-Butlers uses Alembic for schema migrations with a **multi-chain branching model**. Instead of a single linear migration history, each migration domain (core infrastructure, individual modules, individual butlers) maintains its own independent revision chain. The daemon runs all applicable chains at startup via a programmatic API -- no CLI invocation required.
+Butlers uses Alembic for schema migrations with a **multi-chain branching model**. Instead of a single linear migration history, each migration domain (core infrastructure, individual modules, individual butlers) maintains its own independent revision chain. The explicit migration CLI runs all declared chains on one held maintenance connection before serving. Daemon and dashboard startup only verify the installed source-derived authority and required revisions; they never apply migrations or privileged repair.
 
 ## Chain Types
 
@@ -80,7 +80,10 @@ The `_resolve_chain_dir()` function maps a chain name to its filesystem path:
 When running migrations, the target schema can be specified. This is critical for the multi-schema topology:
 
 ```python
-await run_migrations(db_url, chain="all", schema="general")
+with migration_session(maintenance_url) as held:
+    await run_migrations(db_url, chain="core", schema="general", connection=held)
+    # Run the remaining declared domain/module plans on this same session.
+    finalize_authority(held, plans=declared_plans)
 ```
 
 When a schema is specified:
@@ -93,15 +96,15 @@ The `run_migrations()` function iterates through resolved chains and calls `comm
 
 Alembic's `version_locations` setting is always configured with ALL known chain directories, regardless of which chain is being upgraded. This ensures Alembic can resolve every revision in `alembic_version` even when upgrading a single branch. Without this, cross-chain references would fail resolution.
 
-## Migration Ordering at Startup
+## Explicit Migration Ordering
 
-The butler daemon startup sequence runs migrations in this order:
+`butlers db migrate` resolves the configured deployment and runs these plans before serving:
 
 1. Core migrations (`chain="core"`)
 2. Butler-specific migrations (if `has_butler_chain(butler_name)` returns True)
 3. Declared module migration directories, in dependency order, excluding the already-run butler chain
 
-Each chain is upgraded to its head independently. Alembic tracks which revisions have been applied per-chain in the `alembic_version` table within the target schema.
+Alembic tracks each chain in the selected schema's `alembic_version` table. The same owned maintenance session and advisory lock cover all selected chains, the source final-state installer, exact ACL convergence and final verification. Ordinary DDL uses the independently observed normal database owner; protected operations use only the explicit administrative maintenance prerequisite. `BUTLERS_MIGRATOR_DATABASE_URL` selects that prerequisite for the CLI. A normal migrator lacking it refuses before effects. Serving credentials cannot select it implicitly.
 
 ## Writing New Migrations
 
@@ -129,13 +132,7 @@ the finalized catalog shape before it no-ops. Do not add an accidental
 dependency on a specialist schema merely because a Switchboard consumer will
 arrive later.
 
-When the object needs a constrained `SECURITY DEFINER` interface, keep the
-ordinary migration login out of its ownership. Stage a fixed, privileged
-bootstrap installer in `scripts/init-db.sql`, transfer ownership to a
-membership-free NOLOGIN definer role, pin the function search path, revoke
-`PUBLIC` before specific grants, and verify the final catalog in the migration.
-The bootstrap must also run a post-baseline ACL finalizer on each init-db rerun:
-the repository's legacy broad public-table/default grants otherwise reappear.
+When an object needs a constrained `SECURITY DEFINER` interface, declare its exact signature, body, settings, owner and EXECUTE set in the source-owned authority compiler. The explicit held maintenance operation installs and converges the final state, transfers purpose ownership only under the reviewed operator prerequisites, revokes PUBLIC/unlisted access and verifies the catalog. Fixed protected owners are membership-free NOLOGIN roles. `scripts/init-db.sql` prepares only the selected source roles, schemas and extensions; it does not recreate the retired administrative installer namespaces or widen public-table/default grants. An unclassified object or missing prerequisite refuses instead of deriving a grant from discovery.
 
 ### SECURITY DEFINER search path
 
@@ -144,7 +141,7 @@ exactly. Any other value is a hijack surface:
 
 - A schema on the path that a less-privileged role can `CREATE` in lets that
   role plant a better-matching overload. `public` is `CREATE`-able by the
-  migration login, and a butler schema is `CREATE`-able by its runtime role. An
+  migration login. Runtime capability roles receive no schema `CREATE`. An
   exact `format(text, text)` beats the catalog's variadic `format`, and it then
   runs as the definer's owner.
 - Leaving `pg_temp` implicit, as in `pg_catalog` alone, is no better. An
@@ -172,10 +169,7 @@ A string literal inside a stored function body is not reachable the way a schema
 object is. `ALTER ... RENAME` is expressible against an existing object, so a
 rename converges through a finalizer that re-runs; a literal baked into the text
 a one-shot upgrader emits does not, and editing that upgrader reaches fresh
-bootstraps only. Define such a body once, in a bootstrap-owned installer both the
-one-shot upgrader and the re-runnable finalizer call — see
-`runtime_attention_admin.install_legacy_debounce_marker()` — so the two paths
-cannot drift. `CREATE OR REPLACE FUNCTION` preserves the OID, owner, and ACL, so
+bootstraps only. Define a current body once in the source-owned final interface compiler and reapply it through the controlled migrator finalizer, so fresh and existing catalogs converge through the same exact source. Historical predecessor bodies are pinned only for explicit preserving rollback; they are not accepted serving variants. `CREATE OR REPLACE FUNCTION` preserves the OID, owner, and ACL, so
 triggers stay bound across the rewrite. Adopt the body *after* the finalizer's
 rename step has proven the object exists; adopting it first would let a missing
 rename create a second function under the new name while the trigger still points
@@ -196,14 +190,14 @@ To confirm the migration chain structure described here matches the running syst
 # 1. Core migration chain is at head in each butler's schema
 psql -h localhost -U butlers -d butlers -c \
   "SELECT version_num FROM general.alembic_version;"
-# Expected: the latest core_NNN revision (check alembic/versions/core/ for the highest number)
+# Expected: the actual source chain head (follow down_revision; numeric order is not graph order)
 
 # 2. Module migration chains are tracked separately
 psql -h localhost -U butlers -d butlers -c \
   "SELECT version_num FROM general.alembic_version;"
 # Expected: multiple rows if module chains are active (one per chain at head)
 
-# 3. Migration runner applies all chains at startup without error
+# 3. Explicit held migrator applies declared chains before read-only startup
 butlers db migrate --only general 2>&1
 # Expected: output for each chain (core, memory, etc.) showing "Already at head" or migration steps
 
@@ -435,7 +429,7 @@ their separate authority contract or equate the trusted migration owner with run
   repeats first-create contention, removes only the serializer as a negative
   control, and checks lifecycle ordering, rollback, bounded refusal and cleanup.
 - CLI migration entrypoints (`butlers db migrate`, compose's `migrations` service) apply the same
-  module schema override as daemon startup: memory chains honour `[modules.memory].memory_schema`
+  module schema override that read-only daemon admission verifies: memory chains honour `[modules.memory].memory_schema`
   (e.g. chronicler's `chronicler_mem`), not the owning butler schema.
 - A migration that rewrites enum-like `TEXT` values under a `CHECK` must drop or replace the
   constraint before writing; fresh-schema tests pass either way, live upgrades do not.
@@ -453,9 +447,11 @@ Moved verbatim from `AGENTS.md` (Database and migrations).
   Unresolved dynamic relation slots require explicit justification, and the Chronicler router
   retains its stricter zero-foreign-relation rule.
 
-- Public-table GRANTs are not an authority boundary: `scripts/init-db.sql` deliberately re-widens
-  them. Tables such as `public.cost_claims` rely on enabled and forced RLS keyed to the runtime role,
-  so migration tests must replay bootstrap and write under real `SET ROLE` identities.
+- Exact public-table ACLs and enabled/forced RLS are independent boundaries.
+  The current `scripts/init-db.sql` does not re-widen table/default grants.
+  Migration tests must replay the real source bootstrap/finalizer, exercise
+  positive and refusal operations under actual `SET ROLE` identities, and
+  independently verify committed rows and unchanged protected state.
 - In partitioned-index migrations a blocking `pg_advisory_lock()` waiter can hold a snapshot that
   `CREATE INDEX CONCURRENTLY` waits on. Poll `pg_try_advisory_lock()` in autocommit with the waits
   outside PostgreSQL (see `core_231`).
@@ -513,11 +509,23 @@ policy and constraint. No backup exclusion or new privileged owner is needed.
 Downgrade refuses durable goals/admission history. `core_273` likewise refuses
 to discard configured admission limits. These migrations do not activate callers.
 
-## Proposed authority-rebuild migration execution
+## Authority-rebuild migration execution
 
-This section describes the ROOT3745-authorized db-authority-rebuild target, not a change already present in the runner. Existing migration instructions above remain descriptions of current code until the complete reviewed cutover is implemented. See [the cutover procedure](../identity_and_secrets/database-authority-cutover.md).
+This source implements the adopted explicit-maintenance runner and read-only
+serving admission. Earlier migration-specific receipts above remain dated
+evidence for their recorded source; they do not prove the rebuilt catalog.
+Complete genuine-role, concurrency, preserving-rollback and deployment proof
+is still required. See [the cutover procedure](../identity_and_secrets/database-authority-cutover.md).
 
-Only the CLI migrator receives migration credentials. One physical advisory-lock session spans all declared core/domain/module chains, final-state purpose installers, exact ACL convergence and catalog verification. Required private schema/chain targets are actual metadata, not guessed schema names. Serving daemon startup verifies revisions and authority read-only; it cannot provision or repair a missing catalog. Historical revision identifiers/edges and protected data remain, and no slot is reserved by this document.
+Only explicit bootstrap/migration commands receive their selected maintenance
+credentials. One physical advisory-lock session spans all declared
+core/domain/module chains, final-state purpose installers, exact ACL convergence
+and catalog verification. Required private schema/chain targets are actual
+metadata, not guessed schema names. Serving daemon startup verifies revisions
+and authority read-only; it cannot provision or repair a missing catalog.
+Historical revision identifiers/edges and protected data remain. The source's
+final core edge is `core_281` after delivered `core_280`; a test that requires an
+earlier bounded edge must state its real purpose and preserve the complete graph.
 
 Purpose functions keep exact pg_catalog, pg_temp search_path and qualified non-catalog references, NOLOGIN/nonprivileged owner and explicit EXECUTE. Final installers replace the three old admin bunkers and attention version ladder only with genuine fresh/old-state catalog and behavior survivors. Independent later dashboard purpose interfaces stay protected. Protected downgrade validation must occur before any newer autocommit side effect, and advanced DND generation or receipts cannot be discarded to make rollback pass.
 

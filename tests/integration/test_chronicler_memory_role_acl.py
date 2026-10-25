@@ -19,11 +19,12 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.runtime.environment import EnvironmentContext
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 
 from alembic import command
 from butlers.db import register_jsonb_codec
-from butlers.migrations import _build_alembic_config, run_migrations
+from butlers.migrations import _build_alembic_config, migration_session, run_migrations
 from butlers.modules.memory.storage import run_decay_sweep
 from butlers.testing.migration import (
     create_migrated_test_db,
@@ -35,13 +36,15 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")
 
 
 def _before_private_grant(postgres_container):
-    return create_migrated_test_db(
+    url = create_migrated_test_db(
         postgres_container,
         migration_db_name(),
         ["core", "chronicler", "memory"],
         {"core": "chronicler", "chronicler": "chronicler", "memory": "chronicler_mem"},
         revisions={"memory": "mem_014"},
     )
+    database = unquote(urlparse(url).path[1:])
+    return url, migration_bootstrap_db_url(postgres_container, database)
 
 
 @pytest.fixture
@@ -52,9 +55,28 @@ def before_private_grant(postgres_container):
 
 @pytest.fixture(scope="module")
 def private_grant_database(postgres_container):
-    url = _before_private_grant(postgres_container)
-    asyncio.run(run_migrations(url, chain="memory", schema="chronicler_mem"))
-    return url
+    url, control_url = _before_private_grant(postgres_container)
+    asyncio.run(_upgrade_private(url, control_url))
+    return url, control_url
+
+
+async def _upgrade_private(url, control_url):
+    """Exercise mem_015 on the actual held maintenance/ordinary-owner path.
+
+    These are bounded revision controls, including preservation of unrelated
+    preexisting grants. They deliberately do not run final source-wide ACL
+    convergence or claim that this partial fixture is a serving deployment.
+    """
+    with migration_session(control_url, source_database="butlers") as connection:
+        await run_migrations(url, chain="memory", schema="chronicler_mem", connection=connection)
+
+
+def _downgrade_private(url, control_url):
+    """Reach the real selected revision refusal without a session-authority bypass."""
+    config = _build_alembic_config(url, ["memory"], target_schema="chronicler_mem")
+    with migration_session(control_url, source_database="butlers") as connection:
+        config.attributes["connection"] = connection
+        command.downgrade(config, "mem_014")
 
 
 @asynccontextmanager
@@ -68,8 +90,11 @@ async def _runtime_pool(url, role="butler_chronicler_rw", schema="chronicler_mem
         await connection.execute(f'SET search_path TO "{schema}", public')
         assert await connection.fetchval("SELECT current_user") == role
 
+    # The administrative testcontainers URL may carry a SQLAlchemy driver.
+    # Normalize only that scheme; preserve every connection option/credential.
+    native_url = make_url(url).set(drivername="postgresql").render_as_string(hide_password=False)
     pool = await asyncpg.create_pool(
-        url, min_size=1, max_size=2, init=register_jsonb_codec, setup=setup
+        native_url, min_size=1, max_size=2, init=register_jsonb_codec, setup=setup
     )
     try:
         yield pool
@@ -139,14 +164,14 @@ def _reapply(url, schema="chronicler_mem"):
 async def test_actual_revision_omission_then_restore_private_crud_maintenance_and_provenance(
     before_private_grant,
 ):
-    url = before_private_grant
+    url, control_url = before_private_grant
     baseline = await _catalog(url)
-    async with _runtime_pool(url) as pool:
+    async with _runtime_pool(control_url) as pool:
         assert not await pool.fetchval("SELECT has_schema_privilege('chronicler_mem','USAGE')")
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             await pool.fetch("SELECT id FROM chronicler_mem.episodes")
-    # Actual normal-login Alembic execution, not a fixture GRANT or SQL mirror.
-    await run_migrations(url, chain="memory", schema="chronicler_mem")
+    # Actual held maintenance session selects normal-owner Alembic DDL; no fixture GRANT.
+    await _upgrade_private(url, control_url)
     after = await _catalog(url)
     assert after["functions"] == baseline["functions"]
     assert after["triggers"] == baseline["triggers"]
@@ -157,7 +182,7 @@ async def test_actual_revision_omission_then_restore_private_crud_maintenance_an
         r for r in baseline["schemas"] if r["nspname"] != "chronicler_mem"
     ]
     episode, fact, rule = (uuid.uuid4() for _ in range(3))
-    async with _runtime_pool(url) as pool:
+    async with _runtime_pool(control_url) as pool:
         async with pool.acquire() as connection, connection.transaction():
             assert await connection.fetchval("SELECT current_user") == "butler_chronicler_rw"
             await connection.execute(
@@ -204,7 +229,7 @@ async def test_actual_revision_omission_then_restore_private_crud_maintenance_an
 
 
 async def test_fixed_surface_foreign_denial_missing_acl_and_idempotence(private_grant_database):
-    url = private_grant_database
+    url, control_url = private_grant_database
     engine = create_engine(url)
     try:
         with engine.begin() as connection:
@@ -212,7 +237,7 @@ async def test_fixed_surface_foreign_denial_missing_acl_and_idempotence(private_
         before = await _catalog(url)
         await asyncio.to_thread(_reapply, url)
         assert await _catalog(url) == before
-        async with _runtime_pool(url) as pool:
+        async with _runtime_pool(control_url) as pool:
             assert not await pool.fetchval("SELECT has_schema_privilege('chronicler_mem','CREATE')")
             for relation in ["synthetic_unrelated", "alembic_version"]:
                 assert not await pool.fetchval(
@@ -222,7 +247,7 @@ async def test_fixed_surface_foreign_denial_missing_acl_and_idempotence(private_
                     await pool.fetch(f'SELECT * FROM chronicler_mem."{relation}"')
             with pytest.raises(asyncpg.InsufficientPrivilegeError):
                 await pool.execute("DELETE FROM memory_policies")
-        async with _runtime_pool(url, "butler_general_rw") as pool:
+        async with _runtime_pool(control_url, "butler_general_rw") as pool:
             assert not await pool.fetchval("SELECT has_schema_privilege('chronicler_mem','USAGE')")
             with pytest.raises(asyncpg.InsufficientPrivilegeError):
                 await pool.fetch("SELECT id FROM chronicler_mem.episodes")
@@ -231,16 +256,16 @@ async def test_fixed_surface_foreign_denial_missing_acl_and_idempotence(private_
             connection.execute(
                 text("REVOKE SELECT ON chronicler_mem.facts FROM butler_chronicler_rw")
             )
-        async with _runtime_pool(url) as pool:
+        async with _runtime_pool(control_url) as pool:
             with pytest.raises(asyncpg.InsufficientPrivilegeError):
                 await pool.fetch("SELECT id FROM facts")
         await asyncio.to_thread(_reapply, url)
-        async with _runtime_pool(url) as pool:
+        async with _runtime_pool(control_url) as pool:
             assert isinstance(await pool.fetch("SELECT id FROM facts"), list)
         # Objects created later gain no implicit/default privilege.
         with engine.begin() as connection:
             connection.execute(text("CREATE TABLE chronicler_mem.synthetic_future(id UUID)"))
-        async with _runtime_pool(url) as pool:
+        async with _runtime_pool(control_url) as pool:
             assert not await pool.fetchval(
                 "SELECT has_table_privilege('chronicler_mem.synthetic_future','SELECT')"
             )
@@ -252,7 +277,7 @@ async def test_wrong_target_is_noop_and_untrusted_objects_or_missing_role_refuse
     before_private_grant,
     postgres_container,
 ):
-    url = before_private_grant
+    url, control_url = before_private_grant
     before = await _catalog(url)
     await asyncio.to_thread(_reapply, url, "general")
     assert await _catalog(url) == before
@@ -331,12 +356,12 @@ async def test_wrong_target_is_noop_and_untrusted_objects_or_missing_role_refuse
 
     await asyncio.to_thread(faults)
     assert await _catalog(url) == before
-    async with _runtime_pool(url) as pool:
+    async with _runtime_pool(control_url) as pool:
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             await pool.fetch("SELECT id FROM chronicler_mem.episodes")
-    # First establish the legitimate private grants through the normal
+    # First establish the legitimate private grants through the selected
     # production revision, then prove a runtime role cannot act as its owner.
-    await run_migrations(url, chain="memory", schema="chronicler_mem")
+    await _upgrade_private(url, control_url)
     before = await _catalog(url)
     # An actual runtime role cannot supply migration ownership/grant authority.
     engine = create_engine(url)
@@ -353,7 +378,7 @@ async def test_wrong_target_is_noop_and_untrusted_objects_or_missing_role_refuse
 async def test_downgrade_refuses_lossy_revoke_and_preserves_preexisting_grants(
     before_private_grant,
 ):
-    url = before_private_grant
+    url, control_url = before_private_grant
     engine = create_engine(url)
     retained_fact = uuid.uuid4()
     try:
@@ -370,14 +395,13 @@ async def test_downgrade_refuses_lossy_revoke_and_preserves_preexisting_grants(
             connection.execute(
                 text("GRANT SELECT, REFERENCES ON chronicler_mem.facts TO butler_chronicler_rw")
             )
-        await run_migrations(url, chain="memory", schema="chronicler_mem")
+        await _upgrade_private(url, control_url)
         before = await _catalog(url)
-        config = _build_alembic_config(url, ["memory"], target_schema="chronicler_mem")
         with pytest.raises(DBAPIError) as error:
-            await asyncio.to_thread(command.downgrade, config, "mem_014")
+            await asyncio.to_thread(_downgrade_private, url, control_url)
         assert getattr(error.value.orig, "pgcode", None) == "55000"
         assert await _catalog(url) == before
-        async with _runtime_pool(url) as pool:
+        async with _runtime_pool(control_url) as pool:
             assert await pool.fetchval("SELECT has_table_privilege('facts','SELECT, REFERENCES')")
             assert (
                 await pool.fetchval("SELECT content FROM facts WHERE id=$1", retained_fact)
@@ -400,10 +424,10 @@ async def test_downgrade_refuses_lossy_revoke_and_preserves_preexisting_grants(
 
 async def test_actual_auxiliary_writes_keep_append_only_and_policy_bounds(private_grant_database):
     """Exercise the fixed non-CRUD relations through the real runtime role."""
-    url = private_grant_database
+    url, control_url = private_grant_database
     gap, conversation, origin, event, source, target = (uuid.uuid4() for _ in range(6))
     predicate = "synthetic_" + uuid.uuid4().hex
-    async with _runtime_pool(url) as pool:
+    async with _runtime_pool(control_url) as pool:
         async with pool.acquire() as connection, connection.transaction():
             await connection.execute(
                 "INSERT INTO memory_links(source_type,source_id,target_type,target_id,relation) "

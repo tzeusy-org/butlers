@@ -328,7 +328,9 @@ class TestListCommandStatus:
         assert "stopped" in result3.output.lower()
 
 
-async def test_actual_migrate_cli_holds_one_selected_session_through_finalization(monkeypatch, tmp_path):
+async def test_actual_migrate_cli_holds_one_selected_session_through_finalization(
+    monkeypatch, tmp_path
+):
     from contextlib import contextmanager
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, Mock
@@ -354,17 +356,129 @@ async def test_actual_migrate_cli_holds_one_selected_session_through_finalizatio
         assert connection is held
         events.append("finalized")
 
-    monkeypatch.setenv("BUTLERS_MIGRATOR_DATABASE_URL", "postgresql://selected:synthetic@localhost/butlers")
-    monkeypatch.setattr(cli_module, "load_config", lambda path: SimpleNamespace(
-        db_name="butlers", db_schema=path.name, modules={}
-    ))
-    monkeypatch.setattr("butlers.modules.registry.default_registry", lambda: SimpleNamespace(
-        load_from_config=lambda modules: []
-    ))
+    monkeypatch.setenv(
+        "BUTLERS_MIGRATOR_DATABASE_URL", "postgresql://selected:synthetic@localhost/butlers"
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "load_config",
+        lambda path: SimpleNamespace(db_name="butlers", db_schema=path.name, modules={}),
+    )
+    monkeypatch.setattr(
+        "butlers.modules.registry.default_registry",
+        lambda: SimpleNamespace(load_from_config=lambda modules: []),
+    )
     monkeypatch.setattr(migrations, "migration_session", selected, raising=False)
     monkeypatch.setattr(migrations, "finalize_authority", finalize, raising=False)
     monkeypatch.setattr(migrations, "run_migrations", AsyncMock(side_effect=run))
     monkeypatch.setattr(migrations, "has_butler_chain", lambda name: False)
-    monkeypatch.setattr("butlers.db.db_params_from_env", Mock(side_effect=AssertionError("No runtime credential fallback")))
+    monkeypatch.setattr(
+        "butlers.db.db_params_from_env",
+        Mock(side_effect=AssertionError("No runtime credential fallback")),
+    )
     await _migrate_all({"general": tmp_path / "general", "health": tmp_path / "health"})
     assert events == ["locked", ("core", "general"), ("core", "health"), "finalized", "released"]
+
+
+def test_actual_bootstrap_cli_uses_only_explicit_admin_source_and_owned_lifetime(monkeypatch):
+    """Operator bootstrap is explicit; no serving DSN is a credential fallback."""
+    import json
+    from unittest.mock import MagicMock
+
+    calls = []
+    raw = MagicMock()
+    cursor = MagicMock()
+    raw.cursor.return_value.__enter__.return_value = cursor
+    cursor.execute.side_effect = lambda sql, *args: calls.append((sql, args))
+    engine = MagicMock()
+    engine.raw_connection.return_value = raw
+    factory = MagicMock(return_value=engine)
+    monkeypatch.setattr("sqlalchemy.create_engine", factory)
+    monkeypatch.delenv("BUTLERS_BOOTSTRAP_DATABASE_URL", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://serving:synthetic@localhost/butlers")
+    runner = CliRunner()
+    result = runner.invoke(cli, ["db", "bootstrap", "--migration-role", "migration_selected"])
+    assert result.exit_code != 0
+    factory.assert_not_called()
+    monkeypatch.setenv(
+        "BUTLERS_BOOTSTRAP_DATABASE_URL", "postgresql://admin:synthetic@localhost/unlisted"
+    )
+    result = runner.invoke(cli, ["db", "bootstrap", "--migration-role", "migration_selected"])
+    assert result.exit_code != 0
+    factory.assert_not_called()
+    monkeypatch.setenv(
+        "BUTLERS_BOOTSTRAP_DATABASE_URL", "postgresql://admin:synthetic@localhost/butlers"
+    )
+    result = runner.invoke(cli, ["db", "bootstrap", "--migration-role", "migration_selected"])
+    assert result.exit_code == 0, result.output
+    assert factory.call_args.kwargs["connect_args"]["connect_timeout"] == 5
+    assert "butlers.source_manifest" in calls[0][0]
+    manifest = json.loads(calls[0][1][0][0])
+    assert manifest["migration_role"] == "migration_selected"
+    assert manifest["database"] == "butlers"
+    assert "butler_chronicler_rw" in manifest["roles"]
+    assert "explicit privileged bootstrap identity required" in calls[1][0]
+    assert "CREATE TABLE" not in calls[1][0]
+    raw.close.assert_called_once()
+    engine.dispose.assert_called_once()
+
+
+@pytest.mark.parametrize("fault", [None, "digest", "mode", "symlink"])
+def test_operator_rollback_reads_only_exact_owned_external_capsule(tmp_path, fault):
+    import hashlib
+    import json
+
+    import click
+
+    from butlers.cli import _load_rollback_capsule
+
+    actual = tmp_path / "capsule.json"
+    data = json.dumps({"format": "nonsecret-synthetic-catalog"}).encode()
+    actual.write_bytes(data)
+    actual.chmod(0o600)
+    selected = actual
+    digest = hashlib.sha256(data).hexdigest()
+    if fault == "digest":
+        digest = "0" * 64
+    elif fault == "mode":
+        actual.chmod(0o640)
+    elif fault == "symlink":
+        selected = tmp_path / "alias.json"
+        selected.symlink_to(actual)
+    if fault is None:
+        assert _load_rollback_capsule(selected, digest) == json.loads(data)
+    else:
+        with pytest.raises(click.ClickException):
+            _load_rollback_capsule(selected, digest)
+
+
+def test_operator_rollback_refuses_checkout_output_and_absent_admin_before_effects(
+    runner, monkeypatch
+):
+    from pathlib import Path
+    from unittest.mock import patch
+
+    import click
+
+    from butlers.cli import _rollback_capsule_path
+
+    with pytest.raises(click.ClickException):
+        _rollback_capsule_path(Path(__file__).resolve().parents[2] / ".tmp" / "capsule.json")
+    monkeypatch.delenv("BUTLERS_BOOTSTRAP_DATABASE_URL", raising=False)
+    with patch("butlers.migrations.run_preserving_rollback") as execute:
+        result = runner.invoke(
+            cli,
+            [
+                "db",
+                "rollback-catalog",
+                "--transition",
+                "R1",
+                "--capsule",
+                "/home/orca/.tmp/nonexistent-synthetic-capsule.json",
+                "--sha256",
+                "0" * 64,
+            ],
+        )
+    assert result.exit_code != 0
+    assert "Explicit administrative database configuration is required" in result.output
+    execute.assert_not_called()

@@ -18,7 +18,7 @@ from butlers.db import (
     schema_search_path,
     should_retry_with_ssl_disable,
 )
-from butlers.db_authority.catalog import create_purpose_pool
+from butlers.db_authority.catalog import close_after_catalog_diagnostics, create_purpose_pool
 from butlers.db_authority.roles import purpose_profile
 
 logger = logging.getLogger(__name__)
@@ -176,8 +176,13 @@ class DatabaseManager:
     async def set_credential_shared_pool(self, db_name: str, db_schema: str | None = None) -> None:
         """Set the dedicated shared credential DB pool."""
         if self._shared_pool is not None:
-            await self._shared_pool.close()
-            self._shared_pool = None
+            pool = self._shared_pool
+
+            def closed() -> None:
+                if self._shared_pool is pool:
+                    self._shared_pool = None
+
+            await close_after_catalog_diagnostics(pool, on_closed=closed)
         self._shared_pool = await self._create_pool(
             database=db_name,
             log_name="shared credentials",
@@ -437,22 +442,30 @@ class DatabaseManager:
         return dict(results), failed
 
     async def close(self) -> None:
-        """Close all connection pools."""
+        """Close settled pools; retain every incomplete pool for retry/late close."""
+        targets = list(self._pools.items())
         if self._shared_pool is not None:
-            try:
-                await self._shared_pool.close()
-                logger.info("Closed shared credential pool")
-            except Exception:
-                logger.warning("Error closing shared credential pool", exc_info=True)
-            self._shared_pool = None
+            targets.append((None, self._shared_pool))
 
-        for name, p in self._pools.items():
-            try:
-                await p.close()
-                logger.info("Closed pool for butler: %s", name)
-            except Exception:
-                logger.warning("Error closing pool for butler: %s", name, exc_info=True)
-        self._pools.clear()
-        self._butler_schemas.clear()
-        self._butler_memory_schema_overrides.clear()
-        self._relation_presence_at_start.clear()
+        async def close_one(name, pool):
+            def closed() -> None:
+                if name is None:
+                    if self._shared_pool is pool:
+                        self._shared_pool = None
+                elif self._pools.get(name) is pool:
+                    del self._pools[name]
+                    self._butler_schemas.pop(name, None)
+                    self._butler_memory_schema_overrides.pop(name, None)
+                    self._relation_presence_at_start.pop(name, None)
+
+            await close_after_catalog_diagnostics(pool, on_closed=closed)
+
+        # Start every healthy sibling cleanup before waiting for a pending
+        # release. Each physical close remains owned if this caller is canceled.
+        results = await asyncio.gather(
+            *(close_one(name, pool) for name, pool in targets), return_exceptions=True
+        )
+        errors = [result for result in results if isinstance(result, BaseException)]
+        if errors:
+            logger.warning("Database pool cleanup is incomplete")
+            raise errors[0]

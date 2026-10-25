@@ -10,9 +10,8 @@ Surfaces seven ownership-fact domains:
     GET /api/system/butlers/heartbeat -- per-butler liveness registry snapshot
     GET /api/system/deployments    -- current + recent deployment ledger entries
     GET /api/system/drift          -- migration-drift sentinel (bu-9r3hd.1)
-    GET /api/system/stored-functions -- deployed stored-function bodies vs
-                                       the configured bootstrap source (bu-bi5an),
-                                       plus unpinned definer search paths (bu-hefzis)
+    GET /api/system/database-authority -- actual source/catalog conformance
+                                       plus independent unpinned definer facts
     GET /api/system/conditions     -- standing condition ledger: infra (bu-27dxl.6.2) or
                                        owner-facing (bu-ep4ks.6), selected via ?ledger=
 
@@ -33,16 +32,10 @@ Deployment card (bu-hmdqz.1) -- the baked image has no .git checkout, so this
 cannot be computed from local state. Never raises; a failed/unreachable
 comparison surfaces as commits_behind_available=False, never a fabricated
 "0 behind".
-/api/system/stored-functions is likewise read-only and computed live: it parses
-the configured bootstrap source (``scripts/init-db.sql`` by default) and
-compares each committed function body against the body deployed in pg_proc.
-Bodies can carry operator-supplied literals, so the envelope carries function
-names and short digests only -- never a body. The same response also reports
-every SECURITY DEFINER whose search_path is not exactly ``pg_catalog, pg_temp``
-(``unpinned_definers``: signature, owner, deployed path, remedy), read from
-pg_proc via butlers.core.definer_search_path. That check is independent of the
-body comparison: ``definer_check_available=False`` with an empty list means the
-catalog read failed, never an all-clear.
+/api/system/database-authority reads the actual catalog against the fixed source
+manifest. It returns typed conformance and digests, never function bodies,
+credential values or dynamic errors. The separate unpinned-definer observation
+remains independent; an unavailable observation cannot report clean authority.
 /api/system/drift is also read-only from this router's perspective: it computes
 the comparison live on each request (butlers.jobs.deploy_drift.compute_drift_report)
 and reads (never writes) the first-detected/escalated debounce markers the
@@ -182,62 +175,31 @@ class DriftFacts(BaseModel):
     drift_check_available: bool
 
 
-class StoredFunctionEntry(BaseModel):
-    """One stored function whose deployed body left the committed definition.
-
-    Digests only: a stored body can hold operator-supplied literals, so the
-    envelope proves *that* two bodies disagree without carrying either one.
-    """
-
+class FunctionAuthorityEntry(BaseModel):
     function: str
-    committed_lines: list[int]
-    committed_digests: list[str]
-    deployed_digests: list[str]
+    status: str
+    expected_digest: str
+    actual_digest: str | None
+    owner_ok: bool
+    settings_ok: bool
+    acl_ok: bool
 
 
 class UnpinnedDefinerEntry(BaseModel):
-    """One SECURITY DEFINER whose search_path is not exactly ``pg_catalog, pg_temp``.
-
-    ``remedy`` is ``migrations`` when the connecting (migration) login owns the
-    function, otherwise ``init_db`` (re-run ``scripts/init-db.sql`` as a
-    cluster superuser). ``search_path`` is ``None`` when none is set.
-    """
-
     function: str
     owner: str
     search_path: str | None
     remedy: str
 
 
-class StoredFunctionFacts(BaseModel):
-    """Deployed stored-function bodies vs the configured bootstrap source (bu-bi5an).
-
-    ``scripts/init-db.sql`` is the default committed authority for every managed
-    stored function body; ``STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH`` can select
-    the source mounted in another installation. Nothing in ``deploy/`` re-runs
-    it -- so an installed database can keep executing an older body
-    indefinitely. This is the report that makes that state visible; converging
-    it is still the operator action of re-running that source.
-
-    ``not_deployed`` is a legitimate state, not drift: a function only exists
-    once the migration chain has invoked its bootstrap installer, so it is
-    named separately rather than escalated as a mismatch.
-
-    ``stored_function_check_available=False`` means the comparison itself
-    failed. Per the fleet-wide degraded-envelope convention that is never
-    rendered as a truthful all-clear.
-
-    ``unpinned_definers`` (bu-hefzis) is a separate check: ``is_drifted`` keeps
-    meaning body drift only. ``definer_check_available=False`` means the
-    catalog read failed, independently of ``stored_function_check_available``.
-    """
+class DatabaseAuthorityFacts(BaseModel):
+    """Read-only catalog facts. Unknown is never admitted or conforming."""
 
     checked_at: str
-    is_drifted: bool
-    drifted: list[StoredFunctionEntry]
-    not_deployed: list[str]
-    matched_count: int
-    stored_function_check_available: bool
+    status: str
+    catalog_check_available: bool
+    objects_ok: bool | None
+    functions: list[FunctionAuthorityEntry]
     unpinned_definers: list[UnpinnedDefinerEntry] = []
     definer_check_available: bool = False
 
@@ -659,84 +621,45 @@ async def get_drift_facts(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/stored-functions", response_model=ApiResponse[StoredFunctionFacts])
-async def get_stored_function_facts(
-    *,
-    db: Db,
-) -> ApiResponse[StoredFunctionFacts]:
-    """Return the stored-function body comparison (bu-bi5an).
+@router.get("/database-authority", response_model=ApiResponse[DatabaseAuthorityFacts])
+async def get_database_authority_facts(*, db: Db) -> ApiResponse[DatabaseAuthorityFacts]:
+    """Observe actual fixed source authority, without issuing DDL or credentials."""
+    from dataclasses import asdict
 
-    Computed live per request: the configured bootstrap source (default
-    ``scripts/init-db.sql``) is parsed for every committed function body and
-    compared against ``pg_proc.prosrc``. Reporting is the whole contract --
-    nothing here rewrites a body.
-
-    Always returns HTTP 200, per the fleet-wide degraded-envelope convention:
-    a failed comparison sets stored_function_check_available=False with every
-    other field zeroed, rather than a fabricated all-clear or a 503.
-    """
     from butlers.core.definer_search_path import compute_unpinned_definers
-    from butlers.core.stored_function_drift import compute_stored_function_drift
+    from butlers.core.stored_function_drift import compute_database_authority
 
     try:
-        report = await compute_stored_function_drift(db.pool("switchboard"))
+        report = await compute_database_authority(db.pool("switchboard"))
     except Exception:
-        logger.warning("stored-function facts: comparison failed", exc_info=True)
         report = None
-
     try:
-        definer_report = await compute_unpinned_definers(db.pool("switchboard"))
+        definers = await compute_unpinned_definers(db.pool("switchboard"))
     except Exception:
-        logger.warning("stored-function facts: definer search-path check failed", exc_info=True)
-        definer_report = None
-    definer_available = definer_report is not None and definer_report.is_available
-    definer_fields = {
-        "unpinned_definers": [
-            UnpinnedDefinerEntry(
-                function=entry.signature,
-                owner=entry.owner,
-                search_path=entry.search_path,
-                remedy=entry.remedy,
-            )
-            for entry in (definer_report.entries if definer_available else ())
-        ],
-        "definer_check_available": definer_available,
-    }
-
-    if report is None or not report.is_available:
-        return ApiResponse(
-            data=StoredFunctionFacts(
-                checked_at=(
-                    report.checked_at.isoformat()
-                    if report is not None
-                    else datetime.now(UTC).isoformat()
-                ),
-                is_drifted=False,
-                drifted=[],
-                not_deployed=[],
-                matched_count=0,
-                stored_function_check_available=False,
-                **definer_fields,
-            )
-        )
-
+        definers = None
+    available = report is not None and report.is_available
+    definer_available = definers is not None and definers.is_available
     return ApiResponse(
-        data=StoredFunctionFacts(
-            checked_at=report.checked_at.isoformat(),
-            is_drifted=report.is_drifted,
-            drifted=[
-                StoredFunctionEntry(
-                    function=entry.function,
-                    committed_lines=list(entry.committed_lines),
-                    committed_digests=list(entry.committed_digests),
-                    deployed_digests=list(entry.deployed_digests),
+        data=DatabaseAuthorityFacts(
+            checked_at=report.checked_at.isoformat() if report else datetime.now(UTC).isoformat(),
+            status=report.status if available else "unavailable",
+            catalog_check_available=available,
+            objects_ok=report.objects_ok if available else None,
+            functions=[FunctionAuthorityEntry(**asdict(row)) for row in report.functions]
+            if available
+            else [],
+            unpinned_definers=[
+                UnpinnedDefinerEntry(
+                    function=row.signature,
+                    owner=row.owner,
+                    search_path=row.search_path,
+                    remedy=row.remedy,
                 )
-                for entry in report.drifted
-            ],
-            not_deployed=[entry.function for entry in report.not_deployed],
-            matched_count=len(report.matched),
-            stored_function_check_available=True,
-            **definer_fields,
+                for row in definers.entries
+            ]
+            if definer_available
+            else [],
+            definer_check_available=definer_available,
         )
     )
 

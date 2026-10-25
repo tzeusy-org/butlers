@@ -1,22 +1,39 @@
 # Database authority rebuild: controlled cutover
 
-Status: ROOT3745-authorized governing source for bu-dss7he.6 at 0cf196b56833602894f56bb0caad87d09ee374b1. No runtime implementation, migration slot, live catalog result, login/secret action or deployment is delivered by this document. The canonical database-security/core-daemon/dashboard-api specifications and the dated db-authority-rebuild archive contain the exact target contract. DIFFERENT applied-source review remains pending. Existing operational procedures remain current until the complete implementation and reviewed transition are delivered.
+Status: governing source and in-progress implementation for bu-dss7he.6. This branch contains source-owned catalog/admission, explicit held migration and preserving-rollback paths; their source/software checkpoints do not establish delivery, actual PostgreSQL acceptance, live operator prerequisites or deployment. Full original nine acceptance outcomes, complete-source DIFFERENT review, genuine catalog/race/R0/R1/RB proof and exact hosted gates remain required. No login/secret/privilege action is authorized by this document.
 
 ## Profiles and scope
 
 | Profile | Where it is usable | Required boundary |
 | --- | --- | --- |
-| Migrator | Explicit CLI/init migration action only | Own ordinary objects, maintain controlled purpose installers, serialize and verify the whole migration; never injected into serving processes |
-| Runtime | Actual daemon, control, connector and scheduled-job processes | Exact derived cooperative roster capabilities; connector capability only for its actual process; no reachable object/database/purpose-owner ownership |
+| Runtime and owned private Memory | Actual daemon, control and scheduled-job processes | Exact derived primary/private roster capability; no reachable object/database/purpose-owner ownership |
 | Dashboard | API per-butler/shared selected credential pools and observer | Fixed exact dashboard capability; no generic cross-domain/migration authority |
 | Owner auth | Existing independent owner-auth service | Keep its current dedicated login/profile and authentication ceremony |
-| Purpose owner | Catalog-owned NOLOGIN/nonprivileged roles | Exact fenced state/definers, unreachable from runtime/dashboard; never credentials to deploy |
+| Connector | Actual connector cursor/control/ingestion consumers | Dedicated selected login and fixed connector_writer capability; no credential-writer or roster-owner fallback |
+| Global credential writer | Standalone Codex rotation/health authority | Explicit BUTLERS_CREDENTIAL_DATABASE_URL and credential_store_writer; connector cursor pools cannot persist this authority |
+| Restore executor | Fixed scratch-database lifecycle service | Independent selected restore_drill_executor login, exact purpose admission and existing command/target firewall |
+| Migration/control/bootstrap | Explicit CLI/bootstrap action only | Normal owner for ordinary DDL; explicit privileged maintenance prerequisite for protected installation, one retained session/lock and full verification; never injected into serving processes |
+| Operator deployment ledger | Existing deployment CLI/one-shot Compose migration tooling | Explicit selected operator profile and deployment ledger operation; no automatic serving credential elevation |
+| Catalog measurement and isolated test administration | Existing operator measurement CLI and disposable migration helpers | Explicit short-lived administrative operation with finite owned cleanup; administrative SET ROLE probes are distinct from native serving-login proof |
+
+Fixed purpose owners are isolated NOLOGIN/nonprivileged catalog identities for
+fenced state/definers, unreachable from serving profiles. They are not another
+credential to deploy. The normal migration owner is independently observed from
+the selected database, not inferred from the privileged maintenance session.
 
 Secret names/references are source configuration; secret values are never report material. Source deployment must bind each profile explicitly in Helm dev/prod, Compose, CLI and real cron/control/connector consumers. Preserve current Google deployment topology. No missing-key fallback to a shared owner or migration secret is supported. Do not revive the retired Decision Desk export/apply deployment or grant an absent object.
 
 ## Before any live action
 
-Ready3743 independently found the corrected full12 normative packet conforming. ROOT3745 authorized its exact baseline/RFC0006/vision/QA-risk successors within the original release; this source step applies them without performing runtime or operator work. Continue the runtime implementation on this same branch after DIFFERENT applied-source review; no governing-only merge is a prerequisite. The runtime implementation must cover the full retained 105-path plan and all original acceptance rows; .2 enforcement alone is insufficient. Reserve a migration slot from actual then-current heads, not from this document's earlier suggested number. Current foreign/pending audit, QA, COPY and public evolution are integrated through their actual reviewed objects, never WIP copies.
+The corrected normative packet and applied governing source have independent
+conformance review. This branch's runtime implementation must still satisfy all
+original acceptance rows and every retained outcome in the original 105-path
+plan plus its necessary coupled consumers; role enforcement alone is
+insufficient. The final source revision is core_281 after actually delivered
+core_280. Independently reviewed subsystem snapshots remain dated to their
+exact bytes. Current foreign/public changes are integrated through their
+reviewed Git objects, never unreviewed live source. There is no separate
+governing-only merge prerequisite or partial-kernel completion claim.
 
 Read-only preflight must identify the database/profile, current chain stamps, every managed object/signature, owner, effective role membership/privileges, PUBLIC/default ACL, forced RLS, definer search_path/ACL and exact manifest comparison. Emit closed identifiers, counts/categories and digests only. Unavailable catalog evidence is unknown, not a clean report. No preflight marker or historical script hash confers authority.
 
@@ -48,14 +65,14 @@ Each removed test assertion, case or fixture must map to an executing survivor b
 
 ## Rollback and recovery
 
-This is a required operator procedure and future proof plan, not an executable reverse migration already shipped. The current source at 0cf196b56833602894f56bb0caad87d09ee374b1 establishes the existing init/Helm/protected-boundary semantics; it is not an observed deployment identity. Before cutover, capture the actual running code/image digest, chart revision and rendered profile references, exact init bytes/digest, every chain stamp, and a closed catalog/owner/ACL/interface report. Retain the old shared-login secret in its existing secret manager for one release; record key names/references only. Dedicated owner-auth and the held runtime-probe signing key are not part of that credential change.
+The source now contains explicit operator capture/replay/reverse entry points, but their genuine PostgreSQL and deployment acceptance proof remains pending. They are not a delivered or exercised operator capability. The supported predecessor source is immutable 30b376895e1108977bf1b80bf54fcbdaaa3d64ad, including its exact init bytes; this source identity is not an observed deployment identity. Before cutover, capture the actual running code/image digest, chart revision and rendered profile references, exact init bytes/digest, every chain stamp, and a closed catalog/owner/ACL/interface report. Retain the old shared-login secret in its existing secret manager for one release; record key names/references only. Dedicated owner-auth and the held runtime-probe signing key are not part of that credential change.
 
 ### Supported combinations
 
 | State | Code, catalog and credentials | Required result |
 | --- | --- | --- |
 | R0, no authority transition applied | Captured predecessor artifact/chart/init + independently unchanged predecessor catalog/stamp vector + retained old shared-login reference | Positive original rollback: operator replays the captured init to restore its grants and restores predecessor Helm env references/image; independent checks precede traffic. |
-| R1, authority transition applied and reversibly compatible | Exact rebuild artifact/revision vector + a reviewed, actually tested reverse transition to the captured predecessor catalog/interfaces/stamps + retained old reference | Execute that reverse transition while quiesced, verify it, then perform the same old-init and Helm restoration. No new reverse revision or compatible image is identified by this draft; implementation must supply real artifacts and proof before advertising R1 as supported. |
+| R1, authority transition applied and reversibly compatible | Exact rebuild artifact/revision vector + a reviewed, actually tested reverse transition to the captured predecessor catalog/interfaces/stamps + retained old reference | Execute that reverse transition while quiesced, verify it, then perform the same old-init and Helm restoration. The source-owned reverse is core_281 → core_280 on the same held migration session, followed by exact catalog/stamp readback. Its actual PostgreSQL and predecessor-profile proof must pass before R1 is advertised as supported; no compatible image or credential is invented. |
 | P, incompatible or unproven | Requested old artifact/init needs a protected boundary/data removed, owner shape differs from old-init admission, reverse effects/stamps are unknown, or evidence is unavailable | Refuse before init/reverse effects. Preserve current data, receipts, generations and stamps. Use only an independently verified compatible rebuilt artifact with split profiles for code recovery, or remain stopped for forward repair. This is not successful predecessor restoration. |
 
 R0/R1 preserve the explicit original retained-old-secret/revert-Helm/old-init grant-restoration result. An explicit operator return to the recorded predecessor release is distinct from a rebuilt serving process falling back to a shared owner on missing keys. The latter remains forbidden. A protected receipt does not itself ban every R1 path: a path that retains the same boundary and data must still prove actual predecessor code/init compatibility. No rule permits destroying receipts or resetting generation to make a path eligible.
@@ -77,6 +94,20 @@ An unimplemented or unproven reverse path is unfinished preserving-rollback work
 
 If original acceptance requires old-init/old-Helm restoration for a P state and no preserving reverse path is possible, that exact original outcome remains unmet. Record the incompatible requested predecessor, protected boundary, disallowed effect and required preserving alternative/disposition under the existing exact-text adoption process. Do not call P a successful rollback, invent an executable compatibility release, silently narrow original acceptance or add a blanket new permission gate for the rest of the engineering implementation. No such additional disposition is recorded by this draft.
 
+### Source entry points and bounded failure
+
+`butlers db rollback-capture` uses only the explicitly supplied administrative `BUTLERS_BOOTSTRAP_DATABASE_URL`. Before the transition it captures nonsecret catalog metadata and the selected predecessor chart/image/secret-key references into a new, owner-only external file. It refuses repository paths, links, existing files, unknown actors and active serving sessions. Preserve the emitted SHA and the file; a retained old secret value belongs only in its existing secret manager.
+
+`butlers db rollback-catalog --transition R0|R1 --capsule <external-file> --sha256 <capture-sha>` reads that exact owned file. R0 replays the pinned predecessor initializer on a physically held maintenance session and verifies its grants, catalog, data digests and stamps. R1 first verifies the current source-defined interfaces and retained relation shapes, restores only the captured source-bound owners/privileges/role state, replays the same pinned initializer, and executes the real core_281 downgrade edge in each captured core schema. Neither route edits an Alembic stamp by hand or accepts executable SQL from the capture file. New login reach can be revoked; unknown principals are never granted, altered or dropped. A new source capability may remain only as an isolated, unprivileged NOLOGIN role without object, membership or default authority.
+
+Capture and both reverse paths require the complete selected primary/private revision profile compiled from the pinned predecessor's migration graph and roster. Unknown, stale, mixed, extra-head or missing-chain vectors refuse before initializer or reverse effects; an optional administrative public/core vector cannot replace a selected runtime schema. A current roster layout that differs from that pinned deployment is not silently adopted as a predecessor.
+
+The rebuild retires one exact legacy debounce-marker trigger. R1 may explain that one relation-shape transition only by temporarily recreating its captured source-pinned callable and exact trigger inside a native savepoint, using the same catalog-only deparse path, and matching the **entire** predecessor relation hash. The preview always rolls back. After predecessor callable/owner/ACL restoration, R1 reinstalls that exact trigger and still requires complete catalog/data readback. Other triggers, policies, indexes and relation shape remain part of the unchanged oracle; no producer-upgrade activation or reset is used. Genuine savepoint/catalog execution remains required proof.
+
+The session uses a 5-second connection cap, a finite 60-second migration-lock acquisition, and 5-second lock/300-second statement limits. It retains its transaction and physical connection through catalog verification, real revision changes, commit and unlock. Cancellation/errors still attempt rollback, unlock, physical close and engine disposal; incomplete cleanup cannot produce a success receipt. An unknown commit requires independent reconciliation while serving stays stopped.
+
+These commands report catalog restoration only. The operator must still restore the **captured** old chart/image and retained key reference through the ordinary deployment path, verify actual old-profile positive behavior and protected refusals, and only then restore traffic. A source/software receipt does not discharge RB-01, RB-02, RB-05 or RB-06.
+
 ### Required genuine rollback proof
 
 These are named future acceptance controls, not existing passing tests. Use real managed bootstrap/migrations and actual runtime/observer roles; fixtures may not manufacture the grants or change the protected production policy.
@@ -94,4 +125,4 @@ These are named future acceptance controls, not existing passing tests. Use real
 
 Required implementation proof includes actual positive/refusal runtime and dashboard identities, recursive role/ownership reach, every manifest object/operation including Concierge, PUBLIC/default/column/sequence/function ACL, actual purpose operations/shadow refusal, DND concurrent rollback, fresh and old stamps, repeated bootstrap, two migrators, finite native cancellation/release, real startup/CLI/dashboard/observer and rendered credential wiring. Use genuine migrated PostgreSQL roles and independent committed readback, not setup GRANTs or privileged test callers. Follow the dirty planner, affected API/roster scopes, full topology, inventory/budgets, static/import/SQL/frontend gates and exact-head hosted/protected CI.
 
-This text increment earns authoring/preservation checks only: Tests: +0 ~0 -0; no feature software tests, PG bodies, live secrets or cutover. Completion of the original task requires every original slice with executing security survivors or an explicit owner-approved disposition, not another generic runner/live-deployment gate.
+The earlier governing-only text increment earned authoring/preservation checks only (Tests: +0 ~0 -0). The subsequent source increment has focused software controls; genuine PostgreSQL, old-profile deployment, live secrets and cutover remain unexecuted. Completion of the original task requires every original slice with executing security survivors or an explicit owner-approved disposition, not another generic runner/live-deployment gate.

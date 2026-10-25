@@ -18,7 +18,7 @@ drill; it never launches a restore itself.
 |---|---|
 | Backup producer | `backup-cron` / `deploy/backup/pg_dump.sh` |
 | Restore-drill executor | Protected `restore-drill-executor` Compose service |
-| Executor bootstrap contract | `scripts/init-db.sql` and `scripts/provision_restore_drill_executor.sh` |
+| Executor preparation and final catalog | Explicit operator profile, `scripts/init-db.sql`, held source-owned migration/finalizer and `scripts/provision_restore_drill_executor.sh` |
 | Backup volume | `butlers_backups` |
 | Default backup schedule | 02:00 UTC daily (`BACKUP_CRON`) |
 | Default backup retention | 14 days (`BACKUP_RETAIN_DAYS`) |
@@ -89,7 +89,7 @@ plane by name:
 | Excluded | What it holds |
 |---|---|
 | `restore_drill_executor` schema | The restore-drill result ledger and its three constrained functions |
-| `restore_drill_executor_admin`, `dnd_generation_admin`, `runtime_attention_admin` schemas | Bootstrap configuration rows and the fixed installer/finalizer functions |
+| Retired `restore_drill_executor_admin`, `dnd_generation_admin`, `runtime_attention_admin` schema exclusions | Historical dump compatibility only; the rebuilt catalog does not install these namespaces |
 | `public.dnd_generation_mutations` | DND generation mutation audit |
 | `public.user_context` | Context-bus signals; every row carries a hard `expires_at` |
 | `public.runtime_attention_outbox`, `public.runtime_attention_delivery_lease`, `public.runtime_attention_producer_control` | Runtime-attention delivery state and its producer control row |
@@ -97,8 +97,7 @@ plane by name:
 
 This is a deliberate completeness decision, not a workaround for a failing
 command. These objects are not recovered from a dump in the first place: the
-cluster-superuser bootstrap (`scripts/init-db.sql`) is the only supported way to
-reconstruct them, and restoring a dumped copy would be worse than omitting it —
+explicit source-owned migration/finalizer under reviewed operator prerequisites is the supported way to reconstruct their catalog, and restoring a dumped copy would be worse than omitting it —
 every one is owned by a fenced role the restoring login is not a member of, so
 the dump's `ALTER ... OWNER TO` statements would fail and leave the object owned
 by whoever ran the restore, dissolving the fence.
@@ -246,10 +245,11 @@ rejects any command line an operator could copy out of this file, and records
 exactly which invocation shapes it does and does not catch.)
 
 If the audit fails, the restored database is **not** safe to promote or expose
-to application roles. Recover by restoring onto a target a cluster superuser has
-already bootstrapped with `scripts/init-db.sql`, as a login that can assume
-those owners; or re-run `scripts/init-db.sql` against the restored database as a
-cluster superuser to rebuild the fences.
+to application roles. Stop and reconcile the recorded owner/profile set through
+the explicit reviewed maintenance transfer and held migration/finalization
+procedure. Current bootstrap prepares source roles/extensions; rerunning it
+alone does not repair function ownership, install protected interfaces or grant
+serving access. Do not substitute the restoring superuser for a serving login.
 
 `tests/scripts/test_pg_restore_definer_ownership.py` pins all of this against
 real dumps and real clusters, including both rejected alternatives, so neither
@@ -310,13 +310,7 @@ The file is a Tier-0 deployment secret. It is created and retained outside the
 repository, is never copied into `.env` as a value, and is mounted by Compose
 only at `/run/secrets/restore_drill_executor_password` in the executor
 container. Its content is UTF-8 with at most one terminal LF; embedded/multiple
-LF, CR, and NUL are rejected. The bootstrap procedure creates or repairs the distinct login with
-`LOGIN CREATEDB NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS` and
-maintains the normal-role `NOCREATEDB` boundary. Every normal role it normalizes
-(the migration login, `butler_*_rw`, `connector_writer`, the optional calendar role
-and the restore-drill roles) also ends bootstrap `NOBYPASSRLS`, so forced
-row-level security binds them; online migration admission refuses with a bounded "missing or untrusted" error
-if any of them still has `BYPASSRLS`. Rerun `scripts/init-db.sql` to repair.
+LF, CR, and NUL are rejected. Explicit operator provisioning prepares the distinct executor login with `LOGIN CREATEDB NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS`; ordinary serving/migration identities retain their NOCREATEDB boundary. The source-owned installer verifies exact role attributes and membership rather than silently granting stronger authority or repairing an unexpected identity. Missing operator prerequisites refuse before catalog effects. Running the provisioner is a privileged operator action, not an application-startup fallback.
 
 When the executor uses `RESTORE_DRILL_EXECUTOR_SSLMODE=verify-ca` or
 `verify-full`, configure a separate, noncredential CA-root source file as
@@ -338,29 +332,11 @@ The ownership handoff is also deliberate: the private
 functions live in the `restore_drill_executor` schema and are owned by a
 separate `restore_drill_executor_owner` `NOLOGIN` role. The executor receives
 only `is_due()` and `record_result()` execution; it has no direct ledger table
-access. The shared dashboard/migration login receives only schema usage plus
-the fixed `latest_result()` reader; it has no writer execution, direct ledger
-access, or owner membership. Butler and connector roles receive none of those
-privileges. The public audit projection is never a due-check or API authority.
-The cluster-superuser bootstrap is the only role boundary allowed to set up
-that handoff. Before it exposes the fixed installer, `init-db.sql` verifies
-that `restore_drill_executor_admin`, its configuration, and the exact
-zero-argument installer/finalizer are owned by trusted bootstrap provenance.
-A shared-owned precreated schema or no-op is rejected before `CREATE OR
-REPLACE`, ownership transfer, or executor/reader grants; do not attempt to
-repair it through the shared login. `core_196` repeats the owner/definer check
-before calling the installer. The shared login gets neither protected-schema
-`CREATE` nor ownership-finalizer execution. A clean first install or retry, and
-a privileged rerun retaining that trusted admin owner, complete normally.
+access. The dedicated dashboard capability receives only schema usage and the fixed `latest_result()` reader; it has no writer execution, direct ledger access or purpose-owner membership. Butler and connector roles receive none of those privileges. The public audit projection is never a due-check or API authority.
 
-`is_due()` and `record_result()` run with `search_path = pg_catalog, pg_temp`.
-The shared login can `CREATE` in `public`, and an unqualified catalog call
-such as `make_interval(secs => ...)` resolves to a better-matching `public`
-overload whenever `public` is on the definer's path. Today the owner's missing
-`public` USAGE also hides such a decoy, but the pin must not depend on that
-ACL. The finalizer re-applies the pin on every privileged rerun, so a database
-bootstrapped before this rule keeps `public` on the path until
-`scripts/init-db.sql` runs again.
+The controlled held maintenance session installs the exact source-bound interface and purpose ownership only after verifying the explicit operator/ordinary-owner prerequisites. A shared-owned precreated object, wrong body/signature/settings or unexpected ownership refuses before replacement or transfer; the retired `restore_drill_executor_admin` namespace and its installer are not a repair route. `core_196` and final core281 convergence use the same source-owned protected definitions. Startup only verifies the result and cannot perform this handoff.
+
+`is_due()` and `record_result()` use exactly `search_path = pg_catalog, pg_temp`, qualified catalog calls and exact EXECUTE ACLs. The controlled finalizer re-adopts these source definitions; neither a bootstrap-file hash nor absence of a known public decoy establishes safety. Fresh independent observations and real role calls must verify the final catalog.
 
 The fixed public audit projection uses a separate
 `restore_drill_executor_audit_writer` `NOLOGIN` security-definer rather than
@@ -580,9 +556,13 @@ into the live application database or manually erase recovery evidence.
   `deploy/backup/pg_dump.sh` with `busybox ash -n` locally and execute it only in the
   `postgres:17-alpine` image (`tests/scripts/test_pg_dump_backup.py`).
 
-## Proposed authority-rebuild restore compatibility
+## Authority-rebuild restore compatibility
 
-The ROOT3745-authorized db-authority-rebuild contract is prepared source for a future runtime transition. Current restore commands and executor containment above are not replaced by a draft. See [the cutover procedure](../identity_and_secrets/database-authority-cutover.md) before an eventual reviewed deployment.
+This source implements the adopted migration-owned final restore interface and
+explicit preserving rollback. Genuine migrated-role, executor, native cleanup,
+rendered profile and R0/R1/RB acceptance remain unexecuted requirements; source
+checks do not establish a deployed capability. Existing scratch-command
+containment and evidence retention remain. See [the cutover procedure](../identity_and_secrets/database-authority-cutover.md).
 
 The original restore admin bunker may be removed only after the migration-owned final restore interface proves its exact role, object, ACL, pinned search_path and actual executor restrictions under real roles. Evidence retention, bounded executor behavior, restore target restrictions, independent write/readback and rollback outcomes survive installer deletion. A broad migrator grant to serving identities is not a restore compatibility mechanism.
 

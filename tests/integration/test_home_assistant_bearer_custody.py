@@ -8,17 +8,33 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import os
 import shutil
+import uuid
 from datetime import UTC, datetime
+from urllib.parse import quote, urlparse
 
 import asyncpg
 import pytest
+from sqlalchemy import create_engine, text
 
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.home_assistant import persist_ha_history
 from butlers.connectors.home_assistant_filter import HAFilterPersistence, ha_full_payload
 from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.db_authority.grants import deployment_function_plans
+from butlers.db_authority.roles import purpose_profile, runtime_profiles
+from butlers.migrations import (
+    finalize_authority,
+    get_all_chains,
+    migration_session,
+    run_migrations,
+)
+from butlers.testing.migration import (
+    _upgrade_chain_to_revision,
+    create_migration_db,
+    migration_bootstrap_db_url,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -28,13 +44,103 @@ pytestmark = [
 
 
 @pytest.fixture(scope="module")
-def ha_custody_db_url(postgres_container):
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard", "relationship"],
-        schemas={"switchboard": "switchboard", "relationship": "relationship"},
+def postgres_container():
+    """Own the isolated server for the actual physical source identity butlers."""
+    from testcontainers.postgres import PostgresContainer
+
+    from conftest import _configure_postgres_container
+
+    container = _configure_postgres_container(
+        PostgresContainer("pgvector/pgvector:pg17"), os.environ
     )
+    with container as postgres:
+        yield postgres
+
+
+@pytest.fixture(scope="module")
+def ha_custody_db_url(postgres_container):
+    """Real deployment plus one operator-created dedicated connector login.
+
+    Final object privileges come only from the production compiler/installer.
+    Synthetic operator setup creates a LOGIN with one existing capability
+    membership; it never grants table/function authority or substitutes a
+    source profile. The normal migration owner is not a serving identity.
+    """
+    migration_url = create_migration_db(postgres_container, "butlers")
+    control_url = migration_bootstrap_db_url(postgres_container, "butlers")
+    profiles = runtime_profiles("butlers")
+    available = frozenset(get_all_chains())
+    plans = tuple(row for row in deployment_function_plans(profiles) if row[0] in available)
+    core = tuple(row for row in plans if row[0] == "core")
+    others = tuple(row for row in plans if row[0] != "core")
+    with migration_session(control_url, source_database="butlers") as connection:
+        # Stage every real primary schema before the source contact cutover.
+        # pinned-revision: core_114 is the actual shared-contact staging edge.
+        for _, schema, _ in core:
+            _upgrade_chain_to_revision(
+                migration_url,
+                chain="core",
+                schema=schema,
+                revision="core_114",
+                connection=connection,
+            )
+        for chain, schema, _ in (*core, *others):
+            asyncio.run(
+                run_migrations(migration_url, chain=chain, schema=schema, connection=connection)
+            )
+        finalize_authority(connection, source_database="butlers", plans=plans)
+
+    role = purpose_profile("butlers", "connector").role
+    login = f"ha_custody_{uuid.uuid4().hex}"
+    password = uuid.uuid4().hex  # test-owned synthetic operator credential
+    engine = create_engine(control_url, isolation_level="AUTOCOMMIT")
+    created = False
+    primary = None
+    try:
+        with engine.connect() as connection:
+            assert not connection.execute(
+                text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=:login)"),
+                {"login": login},
+            ).scalar_one()
+            assert connection.execute(
+                text(
+                    "SELECT rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,"
+                    "rolreplication,rolbypassrls FROM pg_roles WHERE rolname=:role"
+                ),
+                {"role": role},
+            ).one() == (False, False, False, False, False, False)
+            connection.execute(
+                text(
+                    f'CREATE ROLE "{login}" LOGIN NOINHERIT NOSUPERUSER '
+                    "NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD :password"
+                ),
+                {"password": password},
+            )
+            created = True  # only an acknowledged creation owns later DROP
+            connection.execute(text(f'GRANT "{role}" TO "{login}" WITH SET TRUE'))
+        parsed = urlparse(migration_url)
+        host = parsed.hostname or "localhost"
+        if ":" in host:
+            host = f"[{host}]"
+        selected = parsed._replace(
+            scheme="postgresql",
+            netloc=f"{quote(login, safe='')}:{quote(password, safe='')}@{host}:{parsed.port}",
+        ).geturl()
+        yield selected
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        try:
+            if created:
+                with engine.connect() as connection:
+                    connection.execute(text(f'DROP ROLE "{login}"'))
+        except BaseException:
+            if primary is None:
+                raise
+            primary.add_note("Owned synthetic connector login cleanup was incomplete")
+        finally:
+            engine.dispose()
 
 
 @pytest.mark.pg_clock

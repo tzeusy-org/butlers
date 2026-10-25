@@ -21,11 +21,6 @@ down_revision = "core_223"
 branch_labels = None
 depends_on = None
 
-_PROTECTED_ROLLBACK_ERROR = (
-    "core_232 cannot enter non-transactional downgrade work because the protected "
-    "core_198 rollback preflight failed"
-)
-
 
 def _downgrade_crosses_core_198() -> bool:
     """Return whether this Alembic invocation will actually downgrade core_198."""
@@ -46,15 +41,6 @@ def _downgrade_crosses_core_198() -> bool:
             return int(relative.group(1)) > revisions_above_core_198
     revisions = script.iterate_revisions(revision, destination)
     return any(step.revision == "core_198" for step in revisions)
-
-
-def _protected_rollback_preflight_passes(bind) -> bool:
-    """Delegate to core_198's complete, canonical role/catalog/ACL proof."""
-    script = op.get_context().script
-    if script is None:
-        return False
-    protected_revision = script.get_revision("core_198")
-    return protected_revision.module.protected_rollback_preflight_passes(bind)
 
 
 def upgrade() -> None:
@@ -94,8 +80,10 @@ def downgrade() -> None:
     # will continue through core_198 needs this preflight; a bounded core_232
     # -> core_231 rollback must remain independently reversible. If the deep
     # rollback is unsafe, fail before core_232's DDL or stamp can be committed.
-    if _downgrade_crosses_core_198() and not _protected_rollback_preflight_passes(op.get_bind()):
-        raise RuntimeError(_PROTECTED_ROLLBACK_ERROR)
+    if _downgrade_crosses_core_198():
+        from butlers.db_authority.interfaces import require_boundary_absence
+
+        require_boundary_absence(op.get_bind(), "attention")
     op.execute(
         """
         DROP INDEX IF EXISTS public.uq_audit_core_groups_reconciled_toml_digest

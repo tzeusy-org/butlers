@@ -1090,23 +1090,43 @@ async def create_system_global_credential_store_from_env() -> CredentialStore:
     writes. It is distinct from the connector cursor capability and is proved
     on every acquired connection before credential data becomes available.
     """
+    from urllib.parse import unquote, urlparse
+
     from butlers.db import (
-        db_params_from_env,
+        _db_params_from_database_url,
         register_jsonb_codec,
         schema_search_path,
         should_retry_with_ssl_disable,
     )
     from butlers.db_authority.catalog import create_purpose_pool
-    from butlers.db_authority.roles import purpose_profile
+    from butlers.db_authority.roles import AuthorityError, purpose_profile
 
-    db_params = db_params_from_env()
+    configured_url = os.environ.get("BUTLERS_CREDENTIAL_DATABASE_URL")
+    if not configured_url:
+        raise AuthorityError("Explicit credential-writer configuration is required")
+    try:
+        selected = urlparse(configured_url)
+        database = unquote(selected.path.removeprefix("/"))
+        if (
+            selected.scheme not in ("postgresql", "postgres")
+            or not selected.username
+            or not database
+        ):
+            raise ValueError("Incomplete credential purpose configuration")
+        profile = purpose_profile(database, "credential")
+        db_params = _db_params_from_database_url(configured_url)
+        # URL components are percent-encoded transport, never literal credentials.
+        db_params["user"] = unquote(selected.username)
+        db_params["password"] = unquote(selected.password or "")
+    except (TypeError, ValueError) as exc:
+        raise AuthorityError("Credential-writer configuration is invalid") from exc
     shared_schema = os.environ.get("BUTLER_SHARED_DB_SCHEMA", "public")
     pool_kwargs: dict[str, Any] = {
         "host": str(db_params.get("host") or "localhost"),
         "port": int(db_params.get("port") or 5432),
         "user": str(db_params.get("user") or "butlers"),
         "password": str(db_params.get("password") or "butlers"),
-        "database": shared_db_name_from_env(),
+        "database": database,
         "min_size": 1,
         "max_size": 2,
         "command_timeout": 5,
@@ -1119,17 +1139,13 @@ async def create_system_global_credential_store_from_env() -> CredentialStore:
         pool_kwargs["ssl"] = configured_ssl
 
     try:
-        pool = await create_purpose_pool(
-            purpose_profile(str(pool_kwargs["database"]), "credential"), **pool_kwargs
-        )
+        pool = await create_purpose_pool(profile, **pool_kwargs)
     except Exception as exc:
         ssl_value = configured_ssl if isinstance(configured_ssl, str) else None
         if not should_retry_with_ssl_disable(exc, ssl_value):
             raise
         pool_kwargs["ssl"] = "disable"
-        pool = await create_purpose_pool(
-            purpose_profile(str(pool_kwargs["database"]), "credential"), **pool_kwargs
-        )
+        pool = await create_purpose_pool(profile, **pool_kwargs)
     return CredentialStore(pool, system_global_pool=pool)
 
 

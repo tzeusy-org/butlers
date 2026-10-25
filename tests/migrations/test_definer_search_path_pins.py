@@ -24,8 +24,15 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from butlers.core.definer_search_path import DEFINERS_SQL, DefinerConfig, unpinned
-from butlers.migrations import _resolve_chain_dir, get_all_chains, run_migrations
+from butlers.migrations import (
+    _resolve_chain_dir,
+    finalize_authority,
+    get_all_chains,
+    migration_session,
+    run_migrations,
+)
 from butlers.testing.migration import (
+    _upgrade_chain_to_revision,
     create_migration_db,
     migration_bootstrap_db_url,
     migration_db_name,
@@ -68,9 +75,20 @@ def _definer_chains() -> set[str]:
 def bootstrapped_db(postgres_container) -> tuple[str, str]:
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    for chain, schema in _CHAIN_RUNS:
-        asyncio.run(run_migrations(db_url, chain=chain, schema=schema))
-    return db_url, migration_bootstrap_db_url(postgres_container, db_name)
+    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
+    plans = tuple((chain, schema, None) for chain, schema in _CHAIN_RUNS)
+    with migration_session(bootstrap_url, source_database="butlers") as connection:
+        # Establish every selected primary before shared current chains inspect
+        # domain relations. Ordinary DDL still uses the real normal owner.
+        for chain, schema in _CHAIN_RUNS:
+            if chain == "core":
+                _upgrade_chain_to_revision(
+                    db_url, chain=chain, schema=schema, revision="core_114", connection=connection
+                )
+        for chain, schema in _CHAIN_RUNS:
+            asyncio.run(run_migrations(db_url, chain=chain, schema=schema, connection=connection))
+        finalize_authority(connection, source_database="butlers", plans=plans)
+    return db_url, bootstrap_url
 
 
 def _definers(db_url: str) -> list[DefinerConfig]:

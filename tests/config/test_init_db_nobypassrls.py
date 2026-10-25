@@ -10,10 +10,11 @@ disposable PostgreSQL (Docker) and runs in CI only.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 from pathlib import Path
-from unittest.mock import MagicMock
+from types import SimpleNamespace
 from urllib.parse import unquote, urlparse
 
 import pytest
@@ -44,8 +45,8 @@ def needs_postgres(func):
     return func
 
 
-# Roles a bypassing grant could hide behind: runtime, connector and the optional calendar
-# role the bootstrap already normalizes.
+# Managed runtime/connector roles; the separately selected ordinary migration
+# identity is a refusal precondition rather than an automatic repair target.
 _NORMAL_ROLES = ("butler_health_rw", "butler_general_rw", "connector_writer")
 
 
@@ -56,57 +57,63 @@ _NORMAL_ROLES = ("butler_health_rw", "butler_general_rw", "connector_writer")
 
 def test_every_normal_role_normalization_in_init_db_strips_bypassrls():
     source = _INIT_DB.read_text(encoding="utf-8")
+    # PostgreSQL concatenates quoted literals separated by a newline. Preserve
+    # that actual source grammar instead of truncating the format() statement.
+    source = re.sub(r"'\s*\n\s*'", "", source)
     normalizations = re.findall(r"'(ALTER ROLE %I [^']*NOSUPERUSER[^']*)'", source)
-    # migration user, runtime roles, optional calendar, executor, its owner, audit writer.
-    assert len(normalizations) >= 6
+    # One source-owned loop covers the exact compiled roles. Counting repeated
+    # old SQL spellings would require the retired bootstrap producer to survive.
+    from butlers.db_authority.roles import bootstrap_role_manifest
+
+    manifest = bootstrap_role_manifest("butlers", "normal_migration", source_database="butlers")
+    assert len(manifest["roles"]) >= 6
+    assert len(normalizations) == 1
     missing = [statement for statement in normalizations if "NOBYPASSRLS" not in statement]
     assert missing == []
 
 
-def _identity_connection() -> MagicMock:
-    connection = MagicMock()
+def _identity_connection(base_profile_result=True):
+    """Driver protocol only; execute the actual source compiler/admission query."""
+    calls = []
 
     def execute(statement, params=None):
-        result = MagicMock()
-        if "rolsuper FROM" in str(statement):
-            result.one.return_value = ("butlers", False)
-        return result
+        calls.append((str(statement), params))
+        return SimpleNamespace(one=lambda: (base_profile_result, True, True, True, True))
 
-    connection.execute.side_effect = execute
-    return connection
+    def exec_driver_sql(statement):
+        if statement != "SELECT current_database(), session_user":
+            raise AssertionError("Unexpected admission statement")
+        return SimpleNamespace(one=lambda: ("butlers", "normal_migration"))
+
+    return SimpleNamespace(execute=execute, exec_driver_sql=exec_driver_sql, calls=calls, info={})
 
 
 def _recording_true(monkeypatch, base_profile_result: bool) -> list[tuple[str, dict]]:
-    calls: list[tuple[str, dict]] = []
-
-    def fake_true(_connection, sql, params=None):
-        calls.append((sql, params or {}))
-        return base_profile_result if sql is prereq._BASE_PROFILE else True
-
-    monkeypatch.setattr(prereq, "_true", fake_true)
-    return calls
+    # Kept as a named helper successor, without patching a production validator
+    # or reintroducing the removed _true/_BASE_PROFILE compatibility surface.
+    connection = _identity_connection(base_profile_result)
+    prereq.check_bootstrap_connection(connection)
+    return connection.calls
 
 
 def test_base_profile_covers_bypassrls_for_the_migration_login_and_normal_roles(monkeypatch):
     calls = _recording_true(monkeypatch, True)
-    prereq.check_bootstrap_connection(_identity_connection())
-    (base,) = [(sql, params) for sql, params in calls if sql is prereq._BASE_PROFILE]
+    (base,) = [(sql, params) for sql, params in calls if sql == prereq._BOOTSTRAP_PROFILE_SQL]
     sql, params = base
-    assert "bypassing.rolbypassrls" in sql
-    assert params["migration_role"] == "butlers"
+    assert "rolbypassrls" in sql
+    assert "rolname=session_user" in sql
     assert {
         "butler_health_rw",
         "connector_writer",
-        "butler_calendar_rw",
+        "butler_chronicler_rw",
         "dashboard_auth_api",
-        "restore_drill_executor",
-    } <= set(params["normal_roles"])
+        "credential_store_writer",
+    } <= set(json.loads(params["roles"]))
 
 
 def test_prerequisite_refuses_when_the_base_profile_finds_a_bypassing_role(monkeypatch):
-    _recording_true(monkeypatch, False)
-    with pytest.raises(BootstrapPrerequisiteError, match="missing or untrusted"):
-        prereq.check_bootstrap_connection(_identity_connection())
+    with pytest.raises(BootstrapPrerequisiteError, match="missing, unsafe or untrusted"):
+        _recording_true(monkeypatch, False)
 
 
 # --------------------------------------------------------------------------- #
@@ -127,7 +134,7 @@ def bootstrapped_db(postgres_container):
     finally:
         # Cluster roles outlive the database; never leave BYPASSRLS on a shared role.
         with admin.connect() as conn:
-            for role in _NORMAL_ROLES:
+            for role in (*_NORMAL_ROLES, migration_user):
                 conn.execute(text(f'ALTER ROLE "{role}" NOBYPASSRLS'))
         admin.dispose()
 
@@ -176,11 +183,26 @@ def test_bootstrap_rerun_strips_bypassrls_from_existing_normal_roles(bootstrappe
     _set_bypass(bootstrap_url, roles)
     assert _bypassing(bootstrap_url, roles) == set(roles)
 
+    # A source-selected migration login is an explicit ordinary-owner
+    # prerequisite. The new bootstrap never repairs a privileged migration
+    # identity behind a success marker; refusal must precede runtime changes.
+    from sqlalchemy.exc import DBAPIError
+
+    with pytest.raises(DBAPIError, match="distinct provisioned migration login required"):
+        _bootstrap_migration_prerequisites(bootstrap_url, migration_user)
+    assert _bypassing(bootstrap_url, roles) == set(roles)
+    admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as conn:
+            conn.execute(text(f'ALTER ROLE "{migration_user}" NOBYPASSRLS'))
+    finally:
+        admin.dispose()
+    # The real operator restores the declared prerequisite; only then may the
+    # actual bootstrap normalize the managed runtime roles.
     _bootstrap_migration_prerequisites(bootstrap_url, migration_user)
 
     assert _bypassing(bootstrap_url, roles) == set()
-    # The amendment-owner preflight tolerates the bypassing login because the same run
-    # strips it; ownership still ends with the (now ordinary) migration login.
+    # Ownership still ends with the independently ordinary migration login.
     assert _insight_amendments_owner(bootstrap_url) == migration_user
     # Idempotent: a second run is a no-op.
     _bootstrap_migration_prerequisites(bootstrap_url, migration_user)
@@ -193,7 +215,7 @@ def test_prerequisite_refuses_a_bypassing_role_until_bootstrap_is_rerun(bootstra
     check_bootstrap_database(db_url)
 
     _set_bypass(bootstrap_url, ("butler_health_rw",))
-    with pytest.raises(BootstrapPrerequisiteError, match="missing or untrusted"):
+    with pytest.raises(BootstrapPrerequisiteError, match="missing, unsafe or untrusted"):
         check_bootstrap_database(db_url)
 
     _bootstrap_migration_prerequisites(bootstrap_url, migration_user)

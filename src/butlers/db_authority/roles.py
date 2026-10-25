@@ -155,3 +155,42 @@ def purpose_profile(database: str, purpose: str) -> PurposeProfile:
         raise AuthorityError("Database purpose is not declared")
     role, direct = fixed[purpose]
     return PurposeProfile(database, purpose, role, (role,), direct)
+
+
+PURPOSE_OWNERS = (
+    "dnd_generation_owner",
+    "runtime_attention_outbox_owner",
+    "restore_drill_executor_owner",
+    "restore_drill_executor_audit_writer",
+    "dashboard_attention_owner",
+    "dashboard_stepup_owner",
+)
+
+
+def bootstrap_role_manifest(database: str, migration_role: str, *, source_database: str) -> dict:
+    """Nonsecret privileged preparation input compiled from the actual deployment.
+
+    No login/password is manufactured here. Existing operator-created migration
+    and serving logins remain separate from these NOLOGIN capability roles.
+    The SQL bootstrap consumes this input only after proving its administrative
+    caller; serving profile selection never consults a writable manifest.
+    """
+    profiles = compile_deployment_profiles(database, source_database=source_database)
+    _identifier(migration_role)
+    roles = sorted(
+        {p.role for p in profiles}
+        | set(PURPOSE_OWNERS)
+        | {"dashboard_api", "dashboard_auth_api", "connector_writer", "credential_store_writer"}
+    )
+    if migration_role in roles or migration_role == "restore_drill_executor":
+        raise AuthorityError("Migration identity is not distinct")
+    return {
+        "database": database,
+        "migration_role": migration_role,
+        "roles": roles,
+        "schemas": sorted(
+            {"public", "connectors", "calendar"}
+            | {schema for p in profiles for schema in (p.primary_schema, *p.private_schemas)}
+        ),
+        "restore_executor": "restore_drill_executor",
+    }

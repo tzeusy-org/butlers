@@ -142,16 +142,16 @@ Scope: v1-mandatory
 
 ### Requirement: Connector Role Enforcement
 
-Connectors SHALL establish connector_writer on every pool acquisition and pass the exact connecting-login reach and no-ownership profile before serving. Missing, unreadable or unassumable roles SHALL refuse without a usable pool; the old warning-and-continue behavior is removed. Connector access SHALL be its own declared connectors-schema and exact public manifest operations, not every runtime privilege.
+Connectors SHALL establish connector_writer on every pool acquisition and pass the exact connecting-login reach and no-ownership profile before serving. Missing, unreadable or unassumable roles SHALL refuse without a usable pool; the old warning-and-continue behavior is removed. Connector access SHALL be its own declared connectors-schema and exact public manifest operations plus SELECT, INSERT and UPDATE on the named switchboard.connector_registry checkpoint/settings surface, not every runtime privilege. That named exception SHALL NOT include DELETE, access to another Switchboard table, or a future-object default grant.
 
 ID: REQ-database-security-018
-Source: bu-dss7he.6 owner release 2026-10-20; RFC 0006 proposed authority successor; about/heart-and-soul/security.md
+Source: bu-dss7he.6 owner release 2026-10-20; RFC 0006 proposed authority successor; about/heart-and-soul/security.md; [Observed] connector-base-spec persisted operational role/checkpoint/settings requirements and src/butlers/connectors/cursor_store.py; proposed least-privilege DELETE successor in amendment3980
 Scope: v1-mandatory
 
 #### Scenario: Connector SET ROLE
 - **WHEN** a connector acquires a connection
 - **THEN** the setup callback establishes connector_writer before any connector query
-- **AND** only declared connectors-table operations and exact public rows are effective; no automatic public SELECT/CRUD or migration membership is inherited
+- **AND** only declared connectors-table operations, exact public rows and the named connector_registry SELECT/INSERT/UPDATE exception are effective; no automatic public SELECT/CRUD or migration membership is inherited
 
 #### Scenario: Connector role verification
 - **WHEN** startup cannot prove the role, login reach profile or role assumption
@@ -162,6 +162,23 @@ Scope: v1-mandatory
 - **WHEN** a connector needs database-role admission
 - **THEN** the existing connector role utility enforces the same fixed role and current catalog profile for every real connector consumer
 - **AND** failed reacquire after revoked membership does not reuse a cached success
+
+#### Scenario: Named checkpoint and settings writes survive convergence
+- **WHEN** a connector uses its production cursor store under connector_writer after current-schema authority convergence
+- **THEN** it SHALL read and upsert its checkpoint and settings through switchboard.connector_registry
+- **AND** a committed write SHALL be readable through an independent role-bound acquisition
+- **AND** applying the same manifest again SHALL preserve those operations without granting another Switchboard table
+
+#### Scenario: Checkpoint authority does not authorize registry deletion
+- **WHEN** connector_writer attempts to delete a connector_registry row
+- **THEN** the operation SHALL fail for insufficient privilege
+- **AND** an independent committed read SHALL show the row and checkpoint/settings unchanged
+- **AND** SELECT, INSERT and UPDATE on that same named surface SHALL remain usable
+
+#### Scenario: An unrelated Switchboard object does not inherit checkpoint access
+- **WHEN** a new or existing Switchboard table has no declared connector operation
+- **THEN** connector_writer SHALL receive no access to it from the checkpoint exception
+- **AND** catalog convergence SHALL refuse an unclassified object rather than extend the connector grant
 
 ### Requirement: Fail-Closed Runtime Role Policy
 
@@ -360,10 +377,10 @@ Scope: v1-mandatory
 
 ### Requirement: Approved Cross-Schema Exceptions Remain Narrow
 
-The manifest SHALL preserve only the exact adopted RFC 0010 briefing views and QA fixed no-argument scheduler-policy projection, RFC 0030 Concierge telemetry views, and the released named message_inbox readers. A schema/default grant SHALL NOT generalize any exception or grant domain authority.
+The manifest SHALL preserve only the exact adopted RFC 0010 briefing views and QA fixed no-argument scheduler-policy projection, RFC 0030 Concierge telemetry views, the released named message_inbox readers, and the approved RFC 0014 read-only education.sessions and General calendar evidence surfaces named below. A schema/default grant SHALL NOT generalize any exception or grant domain authority.
 
 ID: REQ-database-security-024
-Source: bu-dss7he.6 owner release 2026-10-20; RFC 0006 proposed authority successor; about/heart-and-soul/security.md
+Source: bu-dss7he.6 owner release 2026-10-20; RFC 0006 proposed authority successor; about/heart-and-soul/security.md; RFC 0014 D1/D2; REQ-butler-chronicler-007; [Observed] Chronicler migrations003/026 and registered sessions/calendar adapters
 Scope: v1-mandatory
 
 #### Scenario: Named Switchboard readers stay narrowed
@@ -385,6 +402,23 @@ Scope: v1-mandatory
 - **WHEN** General collects scheduled briefing contributions or a stale Decision Desk inventory row is encountered
 - **THEN** only the adopted filtered briefing view succeeds and nonexistent retired applier objects receive no grant or new deployment
 - **AND** the retired bridge remains absent even with legacy chart values
+
+#### Scenario: Existing Chronicler sessions and calendar reads remain available
+- **WHEN** the selected deployment contains Chronicler, education.sessions and the General calendar module tables
+- **THEN** butler_chronicler_rw SHALL retain SELECT on education.sessions and general.calendar_event_instances, general.calendar_events, general.calendar_sources and general.calendar_event_entities
+- **AND** the registered sessions and calendar projection consumers SHALL read those named source surfaces using their Chronicler role
+- **AND** the exception SHALL grant only the schema USAGE needed to reach those relations and SHALL NOT grant source-table writes
+
+#### Scenario: Other domain state remains private to its owner
+- **WHEN** butler_chronicler_rw attempts to read education.state_store or write a named sessions/calendar source table
+- **THEN** the operation SHALL fail for insufficient privilege
+- **AND** no all-tables or future-table grant SHALL arise from its evidence-read exception
+
+#### Scenario: An absent optional evidence surface creates no authority
+- **WHEN** a selected deployment omits Chronicler or an optional General calendar evidence table
+- **THEN** convergence SHALL NOT create the absent role or table merely to grant this exception
+- **AND** the existing adapter's optional-source behavior SHALL remain intact rather than reading an unrelated table
+- **AND** later creation of a declared evidence surface SHALL receive only its exact source-owned read permission after normal convergence
 
 ### Requirement: Retire Mechanisms Only With Executing Security Survivors
 

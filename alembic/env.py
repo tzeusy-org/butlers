@@ -13,7 +13,7 @@ import os
 import re
 from pathlib import Path
 
-from sqlalchemy import create_engine, pool
+from alembic.script import ScriptDirectory
 
 from alembic import context
 from butlers.bootstrap_prerequisite import check_bootstrap_connection
@@ -156,10 +156,82 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _require_preserving_direction(connection) -> None:
+    """Refuse a core281 reverse before ordinary schema setup can commit.
+
+    Alembic invokes revision downgrade hooks only after its environment has
+    run. Read the actual selected version table first; neither a privileged
+    identity nor possession of the migration lock authorizes an unprepared
+    reverse. Older administrative targets retain their historical behavior.
+    """
+    from alembic.util import CommandError
+    from sqlalchemy import text
+
+    from butlers.db_authority.apply import require_preserving_reverse
+    from butlers.db_authority.roles import AuthorityError
+
+    destination = context.get_revision_argument()
+    if destination is not None and not isinstance(destination, (str, tuple)):
+        raise AuthorityError("Migration destination is not source-owned")
+    schema = _get_config_schema_option(_VERSION_TABLE_SCHEMA_OPTION) or "public"
+    relation = _quote_ident(schema) + ".alembic_version"
+    if (
+        connection.execute(
+            text("SELECT pg_catalog.to_regclass(:relation)"), {"relation": relation}
+        ).scalar_one()
+        is None
+    ):
+        return
+    revisions = connection.exec_driver_sql("SELECT version_num FROM " + relation).scalars().all()
+    if "core_281" not in revisions:
+        return
+    script = ScriptDirectory.from_config(context.config)
+    try:
+        # Use the same pinned Alembic graph resolver as command.downgrade.
+        # as_revision_number leaves relative targets such as -1 unresolved;
+        # comparing destination strings would therefore miss a real reverse.
+        steps = script._downgrade_revs(destination, tuple(revisions))
+    except CommandError:
+        # A legitimate forward operation on a sibling branch is not a reverse.
+        # Invalid/ambiguous destinations still raise before ordinary setup.
+        script._upgrade_revs(destination, tuple(revisions))
+        return
+    if any(step.revision.revision == "core_281" for step in steps):
+        if connection.info.get("butlers.preserving_reverse") is None:
+            raise AuthorityError("Explicit preserving operator reverse is required")
+        require_preserving_reverse(connection)
+
+
 def _run_on_connection(connection) -> None:
     """Run on the actual caller-owned session, including schema/version setup."""
+    from butlers.migrations import ordinary_migration_identity
+
+    _require_preserving_direction(connection)
+    if connection.info.get("butlers.preserving_reverse") is not None:
+        from butlers.db_authority.apply import quote_identifier, require_preserving_reverse
+
+        require_preserving_reverse(connection)
+        schema = _get_config_schema_option(_TARGET_SCHEMA_OPTION)
+        if schema is None:
+            raise RuntimeError("Preserving reverse requires its captured core schema")
+        connection.exec_driver_sql(f"SET LOCAL search_path TO {quote_identifier(schema)},public")
+        context.configure(
+            connection=connection,
+            target_metadata=None,
+            version_locations=get_version_locations(),
+            version_table_schema=schema,
+        )
+        with context.begin_transaction():
+            context.run_migrations()
+        return
     check_bootstrap_connection(connection)
     connection.rollback()
+    with ordinary_migration_identity(connection):
+        _run_admitted_chain(connection)
+
+
+def _run_admitted_chain(connection) -> None:
+    """Every ordinary object and version table is created as its normal owner."""
     target_schema = _get_config_schema_option(_TARGET_SCHEMA_OPTION)
     version_table_schema = _get_config_schema_option(_VERSION_TABLE_SCHEMA_OPTION)
     if target_schema is not None:
@@ -185,12 +257,52 @@ def run_migrations_online() -> None:
     if held is not None:
         _run_on_connection(held)
         return
-    connectable = create_engine(get_url(), poolclass=pool.NullPool)
-    try:
-        with connectable.connect() as connection:
-            _run_on_connection(connection)
-    finally:
-        connectable.dispose()
+    from butlers.db_authority.interfaces import stage_dashboard_interfaces
+    from butlers.db_authority.roles import AuthorityError
+    from butlers.migrations import (
+        _bootstrap_extensions,
+        finalize_authority,
+        get_all_chains,
+        get_chain_head,
+        get_chain_revision_ids,
+        get_chain_revision_path,
+        migration_session,
+    )
+
+    # Resolve the actual requested graph before opening a connection. An empty
+    # or ambiguous target is not permission to replay every deployment chain.
+    script = ScriptDirectory.from_config(context.config)
+    revisions = script.get_revisions(context.get_revision_argument())
+    plans = []
+    target_schema = _get_config_schema_option(_TARGET_SCHEMA_OPTION)
+    for revision in revisions:
+        chains = [
+            chain
+            for chain in get_all_chains()
+            if revision.revision in get_chain_revision_ids(chain)
+        ]
+        if len(chains) != 1:
+            raise AuthorityError("Selected migration target is not source-owned")
+        chain = chains[0]
+        selected = None if revision.revision == get_chain_head(chain) else revision.revision
+        plans.append((chain, target_schema, selected))
+    if not plans:
+        raise AuthorityError("Destructive migration requires the explicit rollback procedure")
+    with migration_session(get_url()) as connection:
+        _require_preserving_direction(connection)
+        if any(chain == "core" for chain, _, _ in plans):
+            # A bounded administrative replay cannot install a later purpose
+            # boundary. Follow the actual chain graph, as the ordinary selected
+            # producer does, rather than treating every core target as head.
+            if any(
+                chain == "core"
+                and {"core_277", "core_278"} & get_chain_revision_path(chain, revision)
+                for chain, _, revision in plans
+            ):
+                stage_dashboard_interfaces(connection)
+            _bootstrap_extensions(get_url(), connection=connection)
+        _run_on_connection(connection)
+        finalize_authority(connection, plans=tuple(plans))
 
 
 if context.is_offline_mode():

@@ -62,7 +62,6 @@ _ENQUEUE_ROLES = (
     "butler_relationship_rw",
     "butler_switchboard_rw",
     "butler_travel_rw",
-    "butler_calendar_rw",
 )
 _BILL_STATUS_SIG = "public.resolve_finance_bill_status(uuid)"
 _ENQUEUE_SIG = "public.enqueue_premise_amendments(text, text, timestamptz, text)"
