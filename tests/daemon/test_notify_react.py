@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -95,14 +96,23 @@ def _patch_infra() -> dict[str, Any]:
     """Patch infrastructure dependencies for daemon tests."""
     mock_conn = AsyncMock()
     mock_conn.execute = AsyncMock(return_value=None)
+    # Git defaults and the runtime row agree: no conditional update or audit append.
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
 
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock()
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    mock_conn.transaction = MagicMock(return_value=transaction)
+
+    @asynccontextmanager
+    async def mock_acquire():
+        yield mock_conn
+
     mock_pool = AsyncMock()
     # Support `async with pool.acquire() as conn:` for _ensure_owner_entity
-    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_pool.acquire = mock_acquire
     mock_pool.fetchval = AsyncMock(return_value=None)
     mock_pool.execute = AsyncMock(return_value=None)
     mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
