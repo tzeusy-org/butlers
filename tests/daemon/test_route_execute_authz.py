@@ -11,6 +11,8 @@ Verifies that:
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 import uuid
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,47 @@ from butlers.daemon import ButlerDaemon
 from butlers.modules.telegram import TelegramProviderResponseError
 
 pytestmark = pytest.mark.unit
+
+
+def test_finance_first_import_preserves_registered_switchboard_and_publisher_binding():
+    """Fresh real roster discovery must finish before finance patches its publisher."""
+    consumer = """
+import importlib
+import logging
+import sys
+from unittest.mock import AsyncMock
+
+from pytest import MonkeyPatch
+
+logging.disable(logging.CRITICAL)
+from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+publisher = AsyncMock()
+with MonkeyPatch.context() as patcher:
+    patcher.setattr("butlers.core_tools._domain_events.publish_domain_event_once", publisher)
+    assert sys.modules["butlers.core_tools._domain_events"].publish_domain_event_once is publisher
+    switchboard = sys.modules["butlers.tools.switchboard"]
+    assert callable(switchboard.route)
+    assert callable(switchboard.deliver)
+    assert switchboard.route is importlib.import_module(
+        "butlers.tools.switchboard.routing.route"
+    ).route
+    assert switchboard.deliver is importlib.import_module(
+        "butlers.tools.switchboard.notification.deliver"
+    ).deliver
+    assert callable(run_insight_scan)
+print("finance-first registration and publisher binding verified")
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", consumer],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, "fresh finance-first registry/publisher consumer failed"
+    assert completed.stdout.strip() == "finance-first registration and publisher binding verified"
 
 
 @pytest.mark.parametrize(

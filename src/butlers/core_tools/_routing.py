@@ -63,7 +63,6 @@ from butlers.identity import resolve_owner_channel_via_definer
 from butlers.tools.switchboard.contracts import (
     OWNER_CONTROL_INTENTS,
 )
-from butlers.tools.switchboard.notification.self_links import parse_delivered_notify_request
 from butlers.tools.switchboard.routing.contracts import parse_route_envelope
 from butlers.tools.switchboard.transport import (
     POLICY_DENIED,
@@ -164,6 +163,9 @@ def _preauthenticate_messenger_recovery(
     raw_notify_request = input_context.get("notify_request")
     if not isinstance(raw_notify_request, dict):
         raise RecoveryAuthorityError("recovery notify request is missing")
+    # Defer the notification package until roster tool discovery has completed.
+    from butlers.tools.switchboard.notification.self_links import parse_delivered_notify_request
+
     notify_request = parse_delivered_notify_request(raw_notify_request)
     recovery = notify_request.recovery
     if recovery is None:
@@ -1593,6 +1595,8 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     message=message,
                 ),
             )
+
+        from butlers.tools.switchboard.notification.self_links import parse_delivered_notify_request
 
         try:
             notify_request = parse_delivered_notify_request(raw_notify_request)
