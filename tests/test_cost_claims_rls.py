@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import inspect
+import json
 import shutil
 import uuid
 from decimal import Decimal
@@ -17,6 +19,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ProgrammingError
 
 from alembic import command
+from butlers.core import cost_claims
 from butlers.core.cost_claims import assert_claim, resolve_claim
 from butlers.db import register_jsonb_codec
 from butlers.migrations import _build_alembic_config
@@ -507,6 +510,76 @@ async def test_resolve_match_refs_round_trips_with_production_jsonb_codec(db_url
                 claim_id,
             )
             == 3
+        )
+
+        # A successful baseline alone cannot prove sensitivity to the old SQL defect.
+        checks = await observer.fetch(
+            "SELECT conname, convalidated FROM pg_constraint "
+            "WHERE conrelid = 'public.cost_claim_resolutions'::regclass "
+            "AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%jsonb_typeof(match_refs)%'"
+        )
+        assert len(checks) == 1
+        assert checks[0]["convalidated"] is True
+
+        async def committed_snapshot() -> tuple:
+            resolution = await observer.fetchrow(
+                "SELECT * FROM public.cost_claim_resolutions WHERE claim_id = $1", claim_id
+            )
+            events = await observer.fetch(
+                "SELECT * FROM public.cost_claim_events WHERE claim_id = $1 ORDER BY id", claim_id
+            )
+            return dict(resolution), [dict(event) for event in events]
+
+        before_mutation = await committed_snapshot()
+        original_resolver = cost_claims.resolve_claim
+        assert original_resolver is resolve_claim
+        source = inspect.getsource(original_resolver)
+        native_bind = "        match_refs or [],"
+        assert source.count(native_bind) == 1
+        namespace = dict(vars(cost_claims), json=json)
+        exec(
+            compile(
+                source.replace(native_bind, "        json.dumps(match_refs or []),"),
+                "<cost-claim-serialization-mutant>",
+                "exec",
+            ),
+            namespace,
+        )
+        # Only the original serialization expression changes, not SQL, roles or codec.
+        with patch.object(cost_claims, "resolve_claim", namespace["resolve_claim"]):
+            with pytest.raises(asyncpg.CheckViolationError) as failure:
+                await cost_claims.resolve_claim(finance, claim_id, state="matched", match_refs=refs)
+        assert failure.value.sqlstate == "23514"
+        assert failure.value.constraint_name == checks[0]["conname"]
+        assert cost_claims.resolve_claim is original_resolver
+        # Actual implicit statement/trigger rollback is observed on another connection.
+        assert await committed_snapshot() == before_mutation
+
+        restored = await cost_claims.resolve_claim(
+            finance, claim_id, state="matched", match_refs=refs
+        )
+        assert restored["match_refs"] == refs
+        restored_row = await observer.fetchrow(
+            "SELECT jsonb_typeof(match_refs) AS kind, match_refs, decided_by "
+            "FROM public.cost_claim_resolutions WHERE claim_id = $1",
+            claim_id,
+        )
+        assert restored_row["kind"] == "array"
+        assert restored_row["match_refs"] == refs
+        assert restored_row["decided_by"] == "butler_finance_rw"
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM public.cost_claim_resolutions WHERE claim_id = $1", claim_id
+            )
+            == 1
+        )
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM public.cost_claim_events "
+                "WHERE claim_id = $1 AND action = 'resolved'",
+                claim_id,
+            )
+            == 4
         )
     finally:
         try:
