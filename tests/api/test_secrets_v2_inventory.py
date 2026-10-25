@@ -944,7 +944,7 @@ async def test_inventory_request_budget_does_not_wait_for_noncooperative_source(
 
         assert response.data.system == []
         assert response.meta.sources_degraded == ["slow"]
-        await asyncio.wait_for(cancellation_observed.wait(), timeout=5.0)
+        await asyncio.wait_for(cancellation_observed.wait(), timeout=0.1)
     finally:
         release.set()
         tasks = list(owned_sources)
