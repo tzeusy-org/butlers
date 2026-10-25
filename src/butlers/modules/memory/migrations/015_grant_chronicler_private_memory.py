@@ -40,7 +40,28 @@ _TABLE_PRIVILEGES = (
 )
 
 
+def _targets_private_schema() -> bool:
+    # current_schema() is the first *accessible* search-path entry. Losing
+    # access to the selected private schema must not turn a refusal into a
+    # successful no-op on public. Use the runner's explicit Alembic target.
+    config = op.get_context().config
+    target = config.get_main_option("butlers.target_schema") if config is not None else None
+    if target is None or not target.strip():
+        op.execute(
+            """
+            DO $$ BEGIN
+                RAISE EXCEPTION 'mem_015 requires an explicit migration target'
+                    USING ERRCODE = '55000';
+            END $$;
+            """
+        )
+        return False
+    return target.strip() == "chronicler_mem"
+
+
 def upgrade() -> None:
+    if not _targets_private_schema():
+        return
     # Both values below come only from this fixed source tuple, never from a
     # database row, caller declaration, discovered table or configurable role.
     values = ",\n".join(f"('{table}', '{privileges}')" for table, privileges in _TABLE_PRIVILEGES)
@@ -48,18 +69,14 @@ def upgrade() -> None:
         f"""
         DO $$
         DECLARE
-            target_schema TEXT := current_schema();
             owner_oid OID;
             runtime_oid OID;
             relation_name TEXT;
             privileges TEXT;
         BEGIN
-            IF target_schema IS NULL THEN
-                RAISE EXCEPTION 'mem_015 requires an explicit migration target'
+            IF current_schema() IS DISTINCT FROM 'chronicler_mem' THEN
+                RAISE EXCEPTION 'mem_015 requires access to the selected private target'
                     USING ERRCODE = '55000';
-            END IF;
-            IF target_schema <> 'chronicler_mem' THEN
-                RETURN;
             END IF;
 
             SELECT oid INTO owner_oid FROM pg_catalog.pg_roles
@@ -115,14 +132,14 @@ def upgrade() -> None:
 def downgrade() -> None:
     # A failed DO statement leaves ACLs, rows and the Alembic version unchanged
     # within the existing migration transaction. Non-private chains are no-ops.
+    if not _targets_private_schema():
+        return
     op.execute(
         """
         DO $$
         BEGIN
-            IF current_schema() = 'chronicler_mem' THEN
-                RAISE EXCEPTION 'mem_015 has no lossless automatic private ACL downgrade'
-                    USING ERRCODE = '55000';
-            END IF;
+            RAISE EXCEPTION 'mem_015 has no lossless automatic private ACL downgrade'
+                USING ERRCODE = '55000';
         END
         $$;
         """

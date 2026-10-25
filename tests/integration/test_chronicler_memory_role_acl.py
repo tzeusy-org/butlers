@@ -17,6 +17,7 @@ import asyncpg
 import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
+from alembic.runtime.environment import EnvironmentContext
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError
 
@@ -107,12 +108,21 @@ async def _catalog(url):
         await connection.close()
 
 
-def _revision_on_connection(connection, direction="upgrade"):
+def _revision_on_connection(connection, direction="upgrade", *, target_schema="chronicler_mem"):
     module = importlib.import_module(
         "butlers.modules.memory.migrations.015_grant_chronicler_private_memory"
     )
-    with Operations.context(MigrationContext.configure(connection)):
-        getattr(module, direction)()
+    config = _build_alembic_config(
+        connection.engine.url.render_as_string(hide_password=False),
+        ["memory"],
+        target_schema=target_schema,
+    )
+    # The production runner supplies this exact selected-target option through
+    # Alembic's environment, independently of the effective search_path.
+    with EnvironmentContext(config, None) as environment:
+        context = MigrationContext.configure(connection, environment_context=environment)
+        with Operations.context(context):
+            getattr(module, direction)()
 
 
 def _reapply(url, schema="chronicler_mem"):
@@ -121,7 +131,7 @@ def _reapply(url, schema="chronicler_mem"):
         with engine.begin() as connection:
             assert schema in {"chronicler_mem", "general"}
             connection.execute(text(f'SET LOCAL search_path TO "{schema}", public'))
-            _revision_on_connection(connection)
+            _revision_on_connection(connection, target_schema=schema)
     finally:
         engine.dispose()
 
@@ -273,9 +283,26 @@ async def test_wrong_target_is_noop_and_untrusted_objects_or_missing_role_refuse
                 connection.execute(text("SET LOCAL search_path TO pg_temp"))
                 _revision_on_connection(connection)
             assert getattr(error.value.orig, "pgcode", None) == "55000"
+            # A reachable public/general fallback is not the selected private
+            # target, and an absent runner target cannot borrow search_path.
+            for search_path, selected_target in [
+                ("general,public", "chronicler_mem"),
+                ("chronicler_mem,public", None),
+            ]:
+                with pytest.raises(DBAPIError) as error, engine.begin() as connection:
+                    quoted = name.replace('"', '""')
+                    connection.execute(text(f'SET LOCAL ROLE "{quoted}"'))
+                    connection.execute(text(f"SET LOCAL search_path TO {search_path}"))
+                    _revision_on_connection(connection, target_schema=selected_target)
+                assert getattr(error.value.orig, "pgcode", None) == "55000"
             with engine.begin() as connection:
                 connection.execute(text("SET LOCAL search_path TO general,public"))
-                _revision_on_connection(connection, "downgrade")
+                _revision_on_connection(connection, "downgrade", target_schema="general")
+            # An explicitly different legitimate target never grants private
+            # access, even if search_path happens to name the private schema.
+            with engine.begin() as connection:
+                connection.execute(text("SET LOCAL search_path TO chronicler_mem,public"))
+                _revision_on_connection(connection, target_schema="general")
         finally:
             engine.dispose()
 
