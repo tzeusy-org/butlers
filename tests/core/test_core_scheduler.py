@@ -1370,7 +1370,7 @@ def qa_policy_db_url(postgres_container) -> str:
         postgres_container,
         migration_db_name(),
         chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
+        schemas={"core": "qa", "switchboard": "switchboard"},
     )
 
 
@@ -1383,10 +1383,19 @@ async def qa_pools(qa_policy_db_url: str):
         await conn.execute('SET ROLE "butler_qa_rw"')
 
     owner = await asyncpg.create_pool(
-        qa_policy_db_url, min_size=1, max_size=2, init=register_jsonb_codec
+        qa_policy_db_url,
+        min_size=1,
+        max_size=2,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "qa,public"},
     )
     qa = await asyncpg.create_pool(
-        qa_policy_db_url, min_size=1, max_size=2, init=register_jsonb_codec, setup=as_qa_role
+        qa_policy_db_url,
+        min_size=1,
+        max_size=2,
+        init=register_jsonb_codec,
+        setup=as_qa_role,
+        server_settings={"search_path": "qa,public"},
     )
     await owner.execute("TRUNCATE TABLE scheduled_tasks CASCADE")
     await owner.execute(

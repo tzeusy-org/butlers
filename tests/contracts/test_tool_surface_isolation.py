@@ -96,7 +96,7 @@ class TestEphemeralMcpConfig:
         # This is derived from decorator calls in the dispatcher, rather than
         # duplicating its production catalog.  Keep the total as a regression
         # guard for accidental registration loss.
-        assert len(inventory) == 87
+        assert len(inventory) == 89
         assert sum(group is not None for group in inventory.values()) == 79
         assert inventory["schedule_toggle"] == "scheduling"
         assert {
@@ -119,6 +119,8 @@ class TestEphemeralMcpConfig:
         } == {group for group in inventory.values() if group is not None}
         assert {
             "cancel_session",
+            "report_error",
+            "get_healing_status",
             "route.execute",
             "delivery_preferences_set",
             "delivery_preferences_get",
@@ -586,4 +588,6 @@ class TestToolBudgetDiscipline:
 
         # route.execute is a direct infrastructure registration, so an empty
         # group allowlist does not suppress it.
-        assert {"route.execute", "cancel_session"} == {name for name, _ in registrations}
+        assert {"route.execute", "cancel_session", "report_error", "get_healing_status"} == {
+            name for name, _ in registrations
+        }
