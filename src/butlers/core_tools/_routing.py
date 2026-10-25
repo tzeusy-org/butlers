@@ -62,7 +62,6 @@ from butlers.core_tools._base import ToolContext
 from butlers.identity import resolve_owner_channel_via_definer
 from butlers.tools.switchboard.contracts import (
     OWNER_CONTROL_INTENTS,
-    parse_notify_request,
 )
 from butlers.tools.switchboard.routing.contracts import parse_route_envelope
 from butlers.tools.switchboard.transport import (
@@ -164,7 +163,10 @@ def _preauthenticate_messenger_recovery(
     raw_notify_request = input_context.get("notify_request")
     if not isinstance(raw_notify_request, dict):
         raise RecoveryAuthorityError("recovery notify request is missing")
-    notify_request = parse_notify_request(raw_notify_request)
+    # Defer the notification package until roster tool discovery has completed.
+    from butlers.tools.switchboard.notification.self_links import parse_delivered_notify_request
+
+    notify_request = parse_delivered_notify_request(raw_notify_request)
     recovery = notify_request.recovery
     if recovery is None:
         raise RecoveryAuthorityError("recovery correlation is missing")
@@ -770,13 +772,15 @@ def _approval_request_reply_markup(actions: Any) -> dict[str, Any]:
         decision_buttons.append({"text": "Reject", "callback_data": reject.callback_token})
 
     open_dashboard = by_verb.get("open_dashboard")
-    if open_dashboard is None:
-        raise ValueError("approval_request actions are missing open_dashboard.")
+    open_link = by_verb.get("open_link")
+    if open_dashboard is None and open_link is None:
+        raise ValueError("approval_request actions are missing a self route.")
 
     keyboard: list[list[dict[str, str]]] = []
     if decision_buttons:
         keyboard.append(decision_buttons)
-    keyboard.append([{"text": "Open dashboard", "url": open_dashboard.dashboard_url}])
+    if open_link is not None:
+        keyboard.append([{"text": open_link.label, "url": open_link.url}])
     return {"inline_keyboard": keyboard}
 
 
@@ -1592,8 +1596,10 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 ),
             )
 
+        from butlers.tools.switchboard.notification.self_links import parse_delivered_notify_request
+
         try:
-            notify_request = parse_notify_request(raw_notify_request)
+            notify_request = parse_delivered_notify_request(raw_notify_request)
         except ValidationError as exc:
             message = (
                 "Invalid approval recovery request."

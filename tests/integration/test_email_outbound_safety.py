@@ -40,7 +40,8 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture(autouse=True)
 def _available_permission_for_owner_resolution(request, monkeypatch):
-    """This identity-only test assumes a grant; availability has its own real-read tests."""
+    """Identity controls use a grant and configured self-route origin; availability is separate."""
+    monkeypatch.setenv("DASHBOARD_URL", "https://dashboard.example.test")
     if request.node.name == "test_send_to_secondary_owner_email_is_allowed_cross_schema":
         monkeypatch.setattr(
             "butlers.modules.email.require_permission", AsyncMock(return_value=None)
@@ -2050,21 +2051,21 @@ class TestRouteExecuteWhatsAppApprovalGate:
 # ---------------------------------------------------------------------------
 
 
-def _approval_request_actions() -> list[dict[str, str]]:
+def _approval_request_actions() -> list[dict[str, Any]]:
     """Return typed affordances representative of a parked action push."""
-    dashboard_url = "https://dashboard.example.test/approvals/aaaaaaaa-aaaa-aaaaa-aaaa-aaaaaaaaaaaa"
     return [
         {
             "verb": "approve",
             "callback_token": "apr1:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:a:0123456789abcdef",
-            "dashboard_url": dashboard_url,
         },
         {
             "verb": "reject",
             "callback_token": "apr1:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:r:0123456789abcdef",
-            "dashboard_url": dashboard_url,
         },
-        {"verb": "open_dashboard", "dashboard_url": dashboard_url},
+        {
+            "verb": "open_dashboard",
+            "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+        },
     ]
 
 
@@ -2114,8 +2115,8 @@ class TestApprovalRequestDelivery:
                 ],
                 [
                     {
-                        "text": "Open dashboard",
-                        "url": "https://dashboard.example.test/approvals/aaaaaaaa-aaaa-aaaaa-aaaa-aaaaaaaaaaaa",
+                        "text": "Open dashboard.example.test (dashboard)",
+                        "url": "https://dashboard.example.test/approvals",
                     }
                 ],
             ]

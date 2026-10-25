@@ -168,6 +168,7 @@ async def _assert_internal_delivery_rendering_mark_is_monotonic(monkeypatch):
 async def test_registered_recovery_derives_private_rendering_facts_after_authentication(
     monkeypatch,
 ):
+    monkeypatch.setenv("DASHBOARD_URL", "https://dashboard.example.test")
     import copy
     from contextlib import nullcontext
 
@@ -192,7 +193,12 @@ async def test_registered_recovery_derives_private_rendering_facts_after_authent
             "message": "Read https://example.test",
             "recipient": "owner-synthetic",
         },
-        "actions": [{"verb": "open_dashboard", "dashboard_url": "https://dashboard.example.test"}],
+        "actions": [
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+            }
+        ],
         "recovery": {
             key: value
             for key, value in trusted.as_internal_dict().items()

@@ -114,15 +114,6 @@ def _dossier_value(value: Any) -> str:
     return normalized or "unspecified"
 
 
-def approval_dashboard_url(
-    action_id: uuid.UUID | str,
-    *,
-    dashboard_base_url: str | None = None,
-) -> str:
-    """Return the canonical action-detail deep link."""
-    return f"{_dashboard_base_url(dashboard_base_url)}/approvals/{action_id}"
-
-
 # Telegram caps a message at 4,096 UTF-16 code units; the card keeps headroom for the
 # "[butler]" prefix the Messenger adds and for HTML escaping of the whole text.
 CARD_FIT_BUDGET = 3500
@@ -170,9 +161,8 @@ def render_approval_card(
     under "Assistant says".  When the whole call cannot be shown, the card says
     so and offers Open only (``offer_decision`` is False).
     """
-    action_id = _action_id(action)
+    _action_id(action)
     expires_at = _as_aware_datetime(action.get("expires_at"), field_name="expires_at")
-    action_url = approval_dashboard_url(action_id, dashboard_base_url=dashboard_base_url)
     tool_name = _dossier_value(action.get("tool_name"))
     preview = resolve_call_preview(tool_name, action.get("tool_args"))
 
@@ -187,7 +177,7 @@ def render_approval_card(
         f"  Blast radius: {_claim_span(action.get('blast_radius'))}",
         f"  Reversibility: {_claim_span(action.get('reversibility'))}",
         f"Expires: {expires_at.astimezone(UTC).isoformat()}",
-        f"Review: {action_url}",
+        "Review: use the dashboard button.",
     )
 
     if preview is not None and any(
@@ -246,7 +236,6 @@ def build_approval_request_envelope(
     """
     action_id = _action_id(action)
     requested_at = _as_aware_datetime(action.get("requested_at"), field_name="requested_at")
-    action_url = approval_dashboard_url(action_id, dashboard_base_url=dashboard_base_url)
     card = render_approval_card(
         action, dashboard_base_url=dashboard_base_url, origin_butler=origin_butler
     )
@@ -262,10 +251,18 @@ def build_approval_request_envelope(
                         requested_at=requested_at,
                         secret=callback_secret,
                     ),
-                    "dashboard_url": action_url,
                 }
             )
-    actions.append({"verb": "open_dashboard", "dashboard_url": action_url})
+    actions.append(
+        {
+            "verb": "open_dashboard",
+            "reference": {
+                "kind": "self",
+                "route_key": "approval_detail",
+                "params": {"action_id": str(action_id)},
+            },
+        }
+    )
     return {
         "schema_version": "notify.v1",
         "origin_butler": origin_butler,
@@ -287,17 +284,23 @@ def build_approval_digest_envelope(
     dashboard_base_url: str | None = None,
 ) -> dict[str, Any]:
     """Build the one non-interactive digest used after a park burst starts."""
-    dashboard_url = _dashboard_base_url(dashboard_base_url) + "/approvals"
     return {
         "schema_version": "notify.v1",
         "origin_butler": origin_butler,
         "delivery": {
             "intent": "approval_request",
             "channel": "telegram",
-            "message": f"{pending_count} actions awaiting review.\nReview: {dashboard_url}",
+            "message": (
+                f"{pending_count} actions awaiting review.\nReview: use the dashboard button."
+            ),
             "recipient": owner_recipient,
         },
-        "actions": [{"verb": "open_dashboard", "dashboard_url": dashboard_url}],
+        "actions": [
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+            }
+        ],
     }
 
 
@@ -560,7 +563,6 @@ __all__ = [
     "ApprovalPushOutcome",
     "ApprovalPushReservation",
     "ApprovalPushRuntime",
-    "approval_dashboard_url",
     "build_approval_digest_envelope",
     "build_approval_request_envelope",
     "emit_approval_push",

@@ -11,6 +11,8 @@ Verifies that:
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 import uuid
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,195 @@ from butlers.daemon import ButlerDaemon
 from butlers.modules.telegram import TelegramProviderResponseError
 
 pytestmark = pytest.mark.unit
+
+
+def test_finance_first_import_preserves_registered_switchboard_and_publisher_binding():
+    """Fresh real roster discovery must finish before finance patches its publisher."""
+    consumer = """
+import importlib
+import logging
+import sys
+from unittest.mock import AsyncMock
+
+from pytest import MonkeyPatch
+
+logging.disable(logging.CRITICAL)
+from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+publisher = AsyncMock()
+with MonkeyPatch.context() as patcher:
+    patcher.setattr("butlers.core_tools._domain_events.publish_domain_event_once", publisher)
+    assert sys.modules["butlers.core_tools._domain_events"].publish_domain_event_once is publisher
+    switchboard = sys.modules["butlers.tools.switchboard"]
+    assert callable(switchboard.route)
+    assert callable(switchboard.deliver)
+    assert switchboard.route is importlib.import_module(
+        "butlers.tools.switchboard.routing.route"
+    ).route
+    assert switchboard.deliver is importlib.import_module(
+        "butlers.tools.switchboard.notification.deliver"
+    ).deliver
+    assert callable(run_insight_scan)
+print("finance-first registration and publisher binding verified")
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", consumer],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, "fresh finance-first registry/publisher consumer failed"
+    assert completed.stdout.strip() == "finance-first registration and publisher binding verified"
+
+
+@pytest.mark.parametrize(
+    "origin,reference,verified",
+    [
+        ("https://dashboard.example.test", None, True),
+        (
+            "https://dashboard.example.test",
+            {"kind": "self", "route_key": "unknown", "params": {}},
+            False,
+        ),
+        (
+            "https://dashboard.example.test",
+            {"kind": "self", "route_key": "approval_detail", "params": {"action_id": "invalid"}},
+            False,
+        ),
+        ("http://dashboard.example.test", None, False),
+        (
+            "https://" + "a" * 63 + "." + "b" * 63 + "." + "c" * 63 + "." + "d" * 63 + ".test",
+            None,
+            False,
+        ),
+    ],
+)
+async def test_registered_approval_self_link_resolves_or_delivers_inert(
+    tmp_path, monkeypatch, origin, reference, verified
+):
+    """Real approval producer -> deliver -> registered Messenger -> Telegram adapter."""
+    import copy
+    import importlib
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    from fastmcp import FastMCP
+
+    from butlers.modules.approvals.notifications import build_approval_request_envelope
+
+    monkeypatch.setenv("DASHBOARD_URL", origin)
+    daemon, route_execute = await _start_daemon_with_route_execute(
+        _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}}),
+        _patch_infra(),
+    )
+    telegram = next(module for module in daemon._modules if module.name == "telegram")
+    monkeypatch.setattr(
+        "butlers.core_tools._routing.resolve_owner_channel_via_definer",
+        AsyncMock(return_value="12345"),
+    )
+    monkeypatch.setattr("butlers.modules.telegram.require_permission", AsyncMock())
+    monkeypatch.setattr("butlers.modules.telegram.write_audit_entry", AsyncMock())
+    post = AsyncMock(
+        return_value=httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 991}},
+            request=httpx.Request("POST", "https://telegram.example.test/sendMessage"),
+        )
+    )
+    monkeypatch.setattr(telegram, "_get_client", lambda: SimpleNamespace(post=post))
+    monkeypatch.setattr(telegram, "_base_url", lambda: "https://telegram.example.test")
+    mcp = FastMCP("self-link-owner-delivery")
+    mcp.tool(name="route.execute")(route_execute)
+    registered = await mcp.get_tool("route.execute")
+    delivery = importlib.import_module("butlers.tools.switchboard.notification.deliver")
+    routed = []
+
+    async def dispatch(_pool, **kwargs):
+        routed.append(copy.deepcopy(kwargs["args"]))
+        dispatched = copy.deepcopy(kwargs["args"])
+        for action in dispatched["input"]["context"]["notify_request"].get("actions", []):
+            if action["verb"] == "open_link":
+                action.update(
+                    url="https://attacker.example.test/unsafe",
+                    host="attacker.example.test",
+                    label="Untrusted label",
+                )
+        result = await registered.fn(**dispatched)
+        return {
+            "result": result,
+            "transport": result.get("transport", {}),
+            **({"error": result["error"]} if "error" in result else {}),
+        }
+
+    monkeypatch.setattr(delivery, "route", dispatch)
+    monkeypatch.setattr(
+        delivery, "_log_notification_best_effort", AsyncMock(return_value=uuid.uuid4())
+    )
+    now = datetime.now(UTC)
+    action_id = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    request = build_approval_request_envelope(
+        action={
+            "id": action_id,
+            "requested_at": now,
+            "expires_at": now + timedelta(hours=1),
+            "tool_name": "email_send_message",
+            "tool_args": {
+                "to": "owner@example.test",
+                "subject": "Review",
+                "body": "Synthetic call",
+            },
+        },
+        origin_butler="relationship",
+        owner_recipient="12345",
+        callback_secret="synthetic-secret",
+        dashboard_base_url=origin,
+    )
+    if reference is not None:
+        request["actions"][-1] = {"verb": "open_dashboard", "reference": reference}
+    if verified:
+        forged = copy.deepcopy(request)
+        forged["actions"][-1] = {
+            "verb": "open_link",
+            "reference": forged["actions"][-1]["reference"],
+            "label": "Open dashboard",
+            "url": "https://attacker.example.test/unsafe",
+            "host": "attacker.example.test",
+            "provenance": "dashboard",
+        }
+        refusal = await delivery.deliver(
+            daemon.db.pool, source_butler="relationship", notify_request=forged
+        )
+        assert refusal["status"] == "failed"
+        assert routed == []
+        post.assert_not_awaited()
+    result = await delivery.deliver(
+        daemon.db.pool,
+        source_butler="relationship",
+        notify_request=request,
+        content_requires_inert_links=True,
+    )
+    assert result["status"] == "sent", (result, routed)
+    post.assert_awaited_once()
+    payload = post.await_args.kwargs["json"]
+    wire = routed[0]["input"]["context"]["notify_request"]
+    if verified:
+        assert wire["actions"][-1]["verb"] == "open_link"
+        button = payload["reply_markup"]["inline_keyboard"][-1][0]
+        assert button["url"] == f"{origin}/approvals/{action_id}"
+        assert "dashboard.example.test" in button["text"]
+        assert "dashboard" in button["text"]
+    else:
+        assert "[link not verified]" in payload["text"]
+        assert all(
+            "url" not in button
+            for row in payload["reply_markup"]["inline_keyboard"]
+            for button in row
+        )
+    assert payload["link_preview_options"] == {"is_disabled": True}
+    assert "parse_mode" not in payload
+    assert "callback_data" in payload["reply_markup"]["inline_keyboard"][0][0]
 
 
 @pytest.fixture
@@ -336,6 +527,7 @@ async def test_registered_recovery_enforces_inert_provider_contract(
     from butlers.core.approval_delivery_worker import HandoffResult
     from butlers.modules.whatsapp import WhatsAppModule
 
+    monkeypatch.setenv("DASHBOARD_URL", "https://dashboard.example.test")
     daemon, route_execute = await _start_daemon_with_route_execute(
         _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}),
         _patch_infra(),
@@ -418,6 +610,20 @@ async def test_registered_recovery_enforces_inert_provider_contract(
     registered_mcp = FastMCP("registered-recovery-provider")
     registered_mcp.tool(name="route.execute")(route_execute)
     registered = await registered_mcp.get_tool("route.execute")
+    from butlers.tools.switchboard.contracts import parse_notify_request
+    from butlers.tools.switchboard.notification.self_links import resolve_self_links
+
+    output = resolve_self_links(parse_notify_request(request)).model_dump(
+        mode="json", exclude_none=True
+    )
+    for action in output.get("actions", []):
+        if action["verb"] == "open_link":
+            action.update(
+                url="https://attacker.example.test/unsafe",
+                host="attacker.example.test",
+                label="Untrusted label",
+            )
+    args["input"]["context"]["notify_request"] = output
     result = await registered.fn(**args)
     handoff = result["result"]["notify_response"]["handoff"]
     if inert and not supported:
@@ -437,8 +643,8 @@ async def test_registered_recovery_enforces_inert_provider_contract(
             "inline_keyboard": [
                 [
                     {
-                        "text": "Open dashboard",
-                        "url": "https://dashboard.example.test",
+                        "text": "Open dashboard.example.test (dashboard)",
+                        "url": "https://dashboard.example.test/approvals",
                     }
                 ]
             ]
@@ -640,7 +846,12 @@ def _recovery_notify_request() -> dict[str, Any]:
             "message": "Synthetic approval.",
             "recipient": "owner-synthetic",
         },
-        "actions": [{"verb": "open_dashboard", "dashboard_url": "https://dashboard.example.test"}],
+        "actions": [
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+            }
+        ],
         "recovery": {
             "operation": "handoff",
             "subject_kind": "action",

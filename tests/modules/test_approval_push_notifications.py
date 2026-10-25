@@ -58,7 +58,11 @@ def test_build_approval_request_is_templated_and_carries_signed_actions() -> Non
     assert envelope["actions"][1]["verb"] == "reject"
     assert envelope["actions"][2] == {
         "verb": "open_dashboard",
-        "dashboard_url": "https://dashboard.example.test/approvals/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "reference": {
+            "kind": "self",
+            "route_key": "approval_detail",
+            "params": {"action_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
+        },
     }
 
 
@@ -70,6 +74,21 @@ def test_burst_modes_hold_the_first_three_then_emit_one_digest() -> None:
     assert select_approval_push_mode(park_count=3, digest_already_emitted=False) == "single"
     assert select_approval_push_mode(park_count=4, digest_already_emitted=False) == "burst_digest"
     assert select_approval_push_mode(park_count=5, digest_already_emitted=True) == "collapsed"
+    from butlers.modules.approvals.notifications import build_approval_digest_envelope
+
+    digest = build_approval_digest_envelope(
+        pending_count=4,
+        origin_butler="relationship",
+        owner_recipient="100200300",
+        dashboard_base_url="https://attacker.example.test",
+    )
+    assert digest["actions"] == [
+        {
+            "verb": "open_dashboard",
+            "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+        }
+    ]
+    assert "https://" not in digest["delivery"]["message"]
 
 
 def test_choose_and_labels_are_refused_on_approval_requests() -> None:
@@ -77,7 +96,6 @@ def test_choose_and_labels_are_refused_on_approval_requests() -> None:
 
     from butlers.tools.switchboard.contracts import parse_notify_request
 
-    approval_url = "https://dashboard.example.test/approvals/x"
     base = {
         "schema_version": "notify.v1",
         "origin_butler": "relationship",
@@ -88,8 +106,8 @@ def test_choose_and_labels_are_refused_on_approval_requests() -> None:
             "recipient": "100200300",
         },
     }
-    approve = {"verb": "approve", "callback_token": "apr1:x", "dashboard_url": approval_url}
-    reject = {"verb": "reject", "callback_token": "apr1:y", "dashboard_url": approval_url}
+    approve = {"verb": "approve", "callback_token": "apr1:x"}
+    reject = {"verb": "reject", "callback_token": "apr1:y"}
     with pytest.raises(ValidationError):
         parse_notify_request(
             {
@@ -101,9 +119,11 @@ def test_choose_and_labels_are_refused_on_approval_requests() -> None:
                         "verb": "choose",
                         "label": "Ship",
                         "callback_token": "dsk1:retired",
-                        "dashboard_url": approval_url,
                     },
-                    {"verb": "open_dashboard", "dashboard_url": approval_url},
+                    {
+                        "verb": "open_dashboard",
+                        "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+                    },
                 ],
             }
         )
@@ -114,7 +134,10 @@ def test_choose_and_labels_are_refused_on_approval_requests() -> None:
                 "actions": [
                     {**approve, "label": "Yes"},
                     reject,
-                    {"verb": "open_dashboard", "dashboard_url": approval_url},
+                    {
+                        "verb": "open_dashboard",
+                        "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+                    },
                 ],
             }
         )

@@ -375,6 +375,7 @@ _CASES = [
 # REQ-butler-messenger-001, REQ-butler-messenger-002.
 @pytest.mark.parametrize("case", _CASES)
 async def test_registered_source_authority_transport(authority_pools, case, caplog, monkeypatch):
+    monkeypatch.setenv("DASHBOARD_URL", "https://dashboard.example.test")
     caplog.set_level(logging.INFO, logger="butlers.mcp_wrappers")
     from butlers import mcp_wrappers
 
@@ -397,11 +398,19 @@ async def test_registered_source_authority_transport(authority_pools, case, capl
     source = SourceApprovalAdmission(
         ApprovalDeliveryRepository(pools["relationship"]), owning_schema="relationship"
     )
+    # The source authority signs references; output resolution is not part of
+    # caller authority and must not restore raw action URLs.
     minted_proofs = []
     callback_tokens = []
     actual_mint = source.mint
 
     async def observed_mint(*args, **kwargs):
+        envelope = args[1]
+        for action in envelope.get("actions", []):
+            assert "dashboard_url" not in action
+            if action["verb"] == "open_dashboard":
+                assert action["reference"]["kind"] == "self"
+                assert action["reference"]["route_key"] in {"approval_detail", "approvals_queue"}
         proof = await actual_mint(*args, **kwargs)
         minted_proofs.append(proof)
         callback_tokens.extend(
@@ -435,6 +444,12 @@ async def test_registered_source_authority_transport(authority_pools, case, capl
             assert (await runtime.handoff(control, envelope)).classification == "confirmed"
             assert (await runtime.handoff(control, envelope)).classification == "confirmed"
             assert len(providers["telegram"].calls) == 1
+            dashboard_button = providers["telegram"].calls[0][1]["reply_markup"]["inline_keyboard"][
+                -1
+            ][0]
+            assert dashboard_button["url"].startswith("https://dashboard.example.test/approvals/")
+            assert dashboard_button["text"] == "Open dashboard.example.test (dashboard)"
+
             assert await repo.complete_handoff(control, HandoffResult("confirmed"))
             repo, claim, payload = await _claimed_presentation(
                 pools["relationship"], ordinal=1, cohort=case == "cohort"
