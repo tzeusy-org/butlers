@@ -27,6 +27,7 @@ import asyncpg
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from butlers.config import RuntimeSeedConfig
+from butlers.core import audit
 
 logger = logging.getLogger(__name__)
 
@@ -302,60 +303,64 @@ class RuntimeConfigAccessor:
         toml_digest = hashlib.sha256(
             json.dumps(digest_payload, separators=(",", ":")).encode()
         ).hexdigest()
-        audit_metadata = json.dumps(
-            {
-                "toml_digest": toml_digest,
-                "toml_core_groups": digest_payload,
-                "runtime_core_groups": (
-                    None if runtime.core_groups is None else list(runtime.core_groups)
-                ),
-                "effective_core_groups": digest_payload,
-                "runtime_narrowing_reason": runtime.core_groups_narrowing_reason,
-            },
-            separators=(",", ":"),
-        )
-        audited = await self._pool.fetchrow(
-            f"""
-            WITH candidate AS MATERIALIZED (
-                SELECT core_groups AS previous_core_groups
-                FROM {self._schema}.runtime_config
-                WHERE butler_name = $1
-                  AND core_groups IS DISTINCT FROM $2::text[]
-                  AND $3::boolean
-                  AND NOT (
-                      core_groups IS NOT NULL
-                      AND COALESCE(btrim(core_groups_narrowing_reason), '') <> ''
-                      AND (
-                          $2::text[] IS NULL
-                          OR (
-                              core_groups <@ $2::text[]
-                              AND NOT ($2::text[] <@ core_groups)
+        audit_metadata = {
+            "toml_digest": toml_digest,
+            "toml_core_groups": digest_payload,
+            "runtime_core_groups": (
+                None if runtime.core_groups is None else list(runtime.core_groups)
+            ),
+            "effective_core_groups": digest_payload,
+            "runtime_narrowing_reason": runtime.core_groups_narrowing_reason,
+        }
+        # Retain the conditional row lock through the canonical append and commit.
+        # A failed audit cannot leave a reconciled configuration without its receipt.
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                audited = await connection.fetchrow(
+                    f"""
+                    WITH candidate AS MATERIALIZED (
+                        SELECT core_groups AS previous_core_groups
+                        FROM {self._schema}.runtime_config
+                        WHERE butler_name = $1
+                          AND core_groups IS DISTINCT FROM $2::text[]
+                          AND $3::boolean
+                          AND NOT (
+                              core_groups IS NOT NULL
+                              AND COALESCE(btrim(core_groups_narrowing_reason), '') <> ''
+                              AND (
+                                  $2::text[] IS NULL
+                                  OR (
+                                      core_groups <@ $2::text[]
+                                      AND NOT ($2::text[] <@ core_groups)
+                                  )
+                              )
                           )
-                      )
-                  )
-                FOR UPDATE
-            ), reconciled AS (
-                UPDATE {self._schema}.runtime_config AS runtime_config
-                SET core_groups = $2::text[],
-                    core_groups_narrowing_reason = NULL,
-                    updated_at = now()
-                FROM candidate
-                WHERE runtime_config.butler_name = $1
-                  AND runtime_config.core_groups IS DISTINCT FROM $2::text[]
-                RETURNING candidate.previous_core_groups
-            )
-            INSERT INTO public.audit_log (actor, action, target, note, metadata, result)
-            SELECT $1, 'core_groups_reconciled', $1,
-                   'Runtime core groups reconciled to Git authority', $4::jsonb, 'success'
-            FROM reconciled
-            ON CONFLICT DO NOTHING
-            RETURNING 1 AS audited
-            """,
-            butler_name,
-            core_groups_val,
-            resolution.requires_reconciliation,
-            audit_metadata,
-        )
+                        FOR UPDATE
+                    )
+                        UPDATE {self._schema}.runtime_config AS runtime_config
+                        SET core_groups = $2::text[],
+                            core_groups_narrowing_reason = NULL,
+                            updated_at = now()
+                        FROM candidate
+                        WHERE runtime_config.butler_name = $1
+                          AND runtime_config.core_groups IS DISTINCT FROM $2::text[]
+                        RETURNING candidate.previous_core_groups
+                    """,
+                    butler_name,
+                    core_groups_val,
+                    resolution.requires_reconciliation,
+                )
+                if audited is not None:
+                    audit_metadata["runtime_core_groups"] = audited["previous_core_groups"]
+                    await audit.append(
+                        connection,
+                        butler_name,
+                        "core_groups_reconciled",
+                        target=butler_name,
+                        note="Runtime core groups reconciled to Git authority",
+                        metadata=audit_metadata,
+                        result="success",
+                    )
         if audited is not None:
             logger.warning(
                 "Reconciled runtime core_groups to Git authority for butler=%s toml_digest=%s",

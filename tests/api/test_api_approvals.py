@@ -2887,7 +2887,7 @@ def _mcp_result(text: str | None, *, is_error: bool = False) -> MagicMock:
 
 async def test_abandon_requires_reason_and_returns_terminal_action(app):
     action = _make_action(status="approved")
-    _app_with_mock_db(app, fetchrow_return=action)
+    _app_with_mock_db(app, fetchrow_return=action, fetchval_return=1)
 
     with patch(
         "butlers.api.routers.approvals.approvals_ops.abandon_approved_action",

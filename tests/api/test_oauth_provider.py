@@ -115,7 +115,11 @@ def _make_app(app, *, client_id="test-client-id", client_secret="test-secret"):
 
     pool = MagicMock()
     pool.acquire = _acquire
-    pool.fetchval = AsyncMock(return_value=None)
+    pool.fetchval = AsyncMock(
+        side_effect=lambda sql, *args: (
+            1 if sql.startswith("INSERT INTO public.audit_log ") else None
+        )
+    )
     db_manager = MagicMock()
     db_manager.credential_shared_pool.return_value = pool
     app.dependency_overrides[get_db_optional] = lambda: db_manager
