@@ -44,19 +44,11 @@ def _targets_private_schema() -> bool:
     # current_schema() is the first *accessible* search-path entry. Losing
     # access to the selected private schema must not turn a refusal into a
     # successful no-op on public. Use the runner's explicit Alembic target.
+    # An absent option is the supported unscoped/default-public runner mode;
+    # it must never infer private grant authority from an effective search_path.
     config = op.get_context().config
     target = config.get_main_option("butlers.target_schema") if config is not None else None
-    if target is None or not target.strip():
-        op.execute(
-            """
-            DO $$ BEGIN
-                RAISE EXCEPTION 'mem_015 requires an explicit migration target'
-                    USING ERRCODE = '55000';
-            END $$;
-            """
-        )
-        return False
-    return target.strip() == "chronicler_mem"
+    return target is not None and target.strip() == "chronicler_mem"
 
 
 def upgrade() -> None:

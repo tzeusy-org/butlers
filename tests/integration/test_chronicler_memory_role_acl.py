@@ -283,18 +283,41 @@ async def test_wrong_target_is_noop_and_untrusted_objects_or_missing_role_refuse
                 connection.execute(text("SET LOCAL search_path TO pg_temp"))
                 _revision_on_connection(connection)
             assert getattr(error.value.orig, "pgcode", None) == "55000"
-            # A reachable public/general fallback is not the selected private
-            # target, and an absent runner target cannot borrow search_path.
-            for search_path, selected_target in [
-                ("general,public", "chronicler_mem"),
-                ("chronicler_mem,public", None),
-            ]:
-                with pytest.raises(DBAPIError) as error, engine.begin() as connection:
+            # Effective fallback never satisfies an explicitly selected private target.
+            with pytest.raises(DBAPIError) as error, engine.begin() as connection:
+                quoted = name.replace('"', '""')
+                connection.execute(text(f'SET LOCAL ROLE "{quoted}"'))
+                connection.execute(text("SET LOCAL search_path TO general,public"))
+                _revision_on_connection(connection, target_schema="chronicler_mem")
+            assert getattr(error.value.orig, "pgcode", None) == "55000"
+            # The production runner also supports default-public/no target.
+            # It must emit no private grant even when search_path is private.
+            # USAGE is actually absent here, so an accidental grant cannot hide
+            # behind idempotent catalog equality on an already-granted fixture.
+            for selected_target in (None, "public"):
+                with engine.begin() as connection:
                     quoted = name.replace('"', '""')
                     connection.execute(text(f'SET LOCAL ROLE "{quoted}"'))
-                    connection.execute(text(f"SET LOCAL search_path TO {search_path}"))
+                    connection.execute(text("SET LOCAL search_path TO chronicler_mem,public"))
+                    assert (
+                        connection.execute(
+                            text(
+                                "SELECT has_schema_privilege('butler_chronicler_rw', "
+                                "'chronicler_mem', 'USAGE')"
+                            )
+                        ).scalar_one()
+                        is False
+                    )
                     _revision_on_connection(connection, target_schema=selected_target)
-                assert getattr(error.value.orig, "pgcode", None) == "55000"
+                    assert (
+                        connection.execute(
+                            text(
+                                "SELECT has_schema_privilege('butler_chronicler_rw', "
+                                "'chronicler_mem', 'USAGE')"
+                            )
+                        ).scalar_one()
+                        is False
+                    )
             with engine.begin() as connection:
                 connection.execute(text("SET LOCAL search_path TO general,public"))
                 _revision_on_connection(connection, "downgrade", target_schema="general")
@@ -308,6 +331,9 @@ async def test_wrong_target_is_noop_and_untrusted_objects_or_missing_role_refuse
 
     await asyncio.to_thread(faults)
     assert await _catalog(url) == before
+    async with _runtime_pool(url) as pool:
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await pool.fetch("SELECT id FROM chronicler_mem.episodes")
     # First establish the legitimate private grants through the normal
     # production revision, then prove a runtime role cannot act as its owner.
     await run_migrations(url, chain="memory", schema="chronicler_mem")
