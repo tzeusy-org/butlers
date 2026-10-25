@@ -95,7 +95,18 @@ class DayCloseContinuation:
 
     async def _discover(self) -> list[date]:
         key = "day_close:cursor:" + self.timezone
-        cursor = (await self._state(key)).get("date", "0001-01-01")
+        row = await self.pool.fetchrow("SELECT value FROM state WHERE key=$1", key)
+        cursor = date.min
+        if row is not None:
+            state = row["value"]
+            if not isinstance(state, dict) or not isinstance(state.get("date"), str):
+                raise ValueError("Invalid day-close discovery cursor")
+            try:
+                # JSON retains the ISO string; asyncpg's date codec needs a
+                # native date. A malformed checkpoint cannot advance work.
+                cursor = date.fromisoformat(state["date"])
+            except ValueError:
+                raise ValueError("Invalid day-close discovery cursor") from None
         today = datetime.now(UTC).astimezone(ZoneInfo(self.timezone)).date()
         # Durable local tuples survive missed hooks, tombstones, window moves
         # and process restarts. There is no new age cutoff or completeness flag.

@@ -23,6 +23,7 @@ class StatePool:
 
     def __init__(self):
         self.state = {}
+        self.discovery_cursors = []
         self.days = [DAY]
         self.cache = None
         self.witness = None
@@ -70,11 +71,17 @@ class StatePool:
 
     async def fetch(self, sql, *args):
         if "WITH days" in sql:
+            # The installed asyncpg date encoder calls toordinal(), rather
+            # than parsing ISO strings passed to a PostgreSQL date argument.
+            args[2].toordinal()
+            self.discovery_cursors.append(args[2])
             return [{"local_date": day} for day in self.days]
         assert "v_episodes_corrected" in sql or "v_point_events_corrected" in sql
         return self.rows if "v_episodes_corrected" in sql else []
 
     async def fetchrow(self, sql, *args):
+        if "SELECT value FROM state" in sql:
+            return {"value": self.state[args[0]]} if args[0] in self.state else None
         if "tier2_cache" in sql:
             return self.cache
         if "covered_local_days" in sql:
@@ -108,6 +115,8 @@ async def test_actual_service_durable_revision_restart_and_shared_budget():
     continuation, pool, daemon = owner()
     result = await continuation.resume_once()
     assert result["status"] == "success"
+    assert pool.discovery_cursors == [date.min]
+    assert pool.state["day_close:cursor:UTC"] == {"date": DAY.isoformat()}
     assert daemon._dispatch_scheduled_task.await_count == 1
     assert daemon._dispatch_scheduled_task.call_args.kwargs["max_token_budget"] == 1200
     assert (
@@ -119,9 +128,37 @@ async def test_actual_service_durable_revision_restart_and_shared_budget():
     assert set(saved) == {"date", "timezone", "revision", "processed", "outcome"}
     restarted = DayCloseContinuation(continuation.service, "UTC")
     assert await restarted.resume_once() == {"status": "unchanged"}
+    assert pool.discovery_cursors == [date.min, DAY]
     assert daemon._dispatch_scheduled_task.await_count == 1
     restarted.day_close_ran = True
     assert await restarted.resume_once() == {"status": "skipped"}
+
+
+@pytest.mark.parametrize(
+    "cursor_state",
+    [None, {}, [], {"date": None}, {"date": ""}, {"date": 42}, {"date": "2026-02-30"}],
+)
+async def test_malformed_discovery_cursor_preserves_pending_work(cursor_state):
+    from copy import deepcopy
+
+    continuation, pool, daemon = owner()
+    pool.state["day_close:cursor:UTC"] = cursor_state
+    pool.state["day_close:pending:day_close:2026-05-01:tz:UTC"] = {
+        "date": DAY.isoformat(),
+        "timezone": "UTC",
+        "revision": "synthetic-pending-revision",
+        "processed": None,
+    }
+    before = deepcopy(pool.state)
+    try:
+        with pytest.raises(ValueError, match="Invalid day-close discovery cursor"):
+            await continuation.resume_once()
+        assert pool.state == before
+        assert pool.discovery_cursors == []
+        daemon._dispatch_scheduled_task.assert_not_awaited()
+    finally:
+        await continuation.service.settle()
+    assert not continuation.service.has_pending
 
 
 async def test_rate_deferral_and_invalid_result_never_process_revision():
