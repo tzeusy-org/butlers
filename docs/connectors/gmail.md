@@ -298,12 +298,12 @@ curl -s "http://localhost:9090/api/v1/query?query=butlers_connector_gmail_priori
 
 ## Implementation Notes
 
-- `run_gmail_connector` is DB-only for Google OAuth credentials: it reads `butler_secrets` and never
-  falls back to credential env vars; `GmailConnectorConfig.from_env(...)` takes the DB credentials
-  as arguments and reads only non-secret env. The DB lookup
-  (`src/butlers/connectors/gmail.py::_resolve_gmail_credentials_from_db`) tries the
-  local schema, then the shared schema (`BUTLER_SHARED_DB_SCHEMA`, default `public`), each pool with
-  a schema-scoped `search_path`; without it `butler_secrets` does not resolve in the one-DB topology.
+- `run_gmail_connector` discovers accounts from `public.google_accounts` and resolves each account's
+  Google OAuth credentials through `GmailConnectorManager._resolve_credentials_for_account` and
+  `load_google_credentials`. App credentials come from `butler_secrets` through `CredentialStore`;
+  the refresh token comes from the account's companion entity in `public.entity_info`. OAuth
+  credentials never fall back to environment variables. `_create_shared_db_pool` keeps the
+  schema-scoped `search_path` needed to resolve the credential store in the one-DB topology.
 - `src/butlers/connectors/gmail.py::_format_google_error` is the connector's one parser for Google
   API and OAuth error payloads. Log its compact
   `code/status/reason/message` for `history.list` 404 cursor resets, other non-2xx `history.list`
