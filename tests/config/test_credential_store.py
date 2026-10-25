@@ -562,3 +562,16 @@ def test_entity_info_row_columns_and_repr_no_leak() -> None:
         created_at=_NOW,
     )
     assert nullable.is_primary is None
+
+
+async def test_serving_secrets_admission_never_repairs_missing_schema():
+    from butlers.credential_store import ensure_secrets_schema
+
+    pool = _make_pool()
+    pool._conn.fetchval.return_value = False
+    with pytest.raises(RuntimeError):
+        await ensure_secrets_schema(pool)
+    pool._conn.execute.assert_not_awaited()
+    pool._conn.fetchval.return_value = True
+    await ensure_secrets_schema(pool)
+    pool._conn.execute.assert_not_awaited()

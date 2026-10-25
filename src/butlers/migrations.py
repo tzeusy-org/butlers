@@ -10,7 +10,9 @@ import inspect
 import logging
 import os
 import re
+import time
 from collections.abc import Callable, Iterable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,14 +20,79 @@ from typing import TYPE_CHECKING
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
+from sqlalchemy.pool import NullPool
 
 from alembic import command
-from butlers.bootstrap_prerequisite import check_bootstrap_database
+from butlers.bootstrap_prerequisite import check_bootstrap_connection, check_bootstrap_database
 
 if TYPE_CHECKING:
     from butlers.modules.base import Module
 
 logger = logging.getLogger(__name__)
+
+_MIGRATION_LOCK = (1112888402, 6)
+
+
+@contextmanager
+def migration_session(db_url: str):
+    """Own one physical session/lock through all chains and final verification."""
+    engine = create_engine(db_url, poolclass=NullPool, connect_args={"connect_timeout": 5})
+    connection = None
+    locked = False
+    primary = None
+    try:
+        connection = engine.connect()
+        check_bootstrap_connection(connection)
+        connection.commit()
+        deadline = time.monotonic() + 60
+        while True:
+            locked = (
+                connection.execute(
+                    text("SELECT pg_catalog.pg_try_advisory_lock(:family, :operation)"),
+                    {"family": _MIGRATION_LOCK[0], "operation": _MIGRATION_LOCK[1]},
+                ).scalar_one()
+                is True
+            )
+            connection.commit()
+            if locked:
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Selected database migration lock is unavailable")
+            time.sleep(0.1)
+        yield connection
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        try:
+            if connection is not None:
+                connection.rollback()
+                if locked:
+                    released = connection.execute(
+                        text("SELECT pg_catalog.pg_advisory_unlock(:family, :operation)"),
+                        {"family": _MIGRATION_LOCK[0], "operation": _MIGRATION_LOCK[1]},
+                    ).scalar_one()
+                    if released is not True:
+                        raise RuntimeError("Selected database migration lock release failed")
+                    connection.commit()
+        except BaseException:
+            if primary is None:
+                raise
+            primary.add_note("Selected migration session cleanup was incomplete")
+        finally:
+            try:
+                if connection is not None:
+                    connection.close()
+            finally:
+                engine.dispose()
+
+
+def finalize_authority(connection) -> None:
+    """Converge and verify final authority before releasing the migration lock."""
+    from butlers.db_authority.apply import converge_authority
+
+    converge_authority(connection)
+
 
 # Root of the alembic directory (sibling to src/)
 ALEMBIC_DIR = Path(__file__).resolve().parent.parent.parent / "alembic"
@@ -312,6 +379,19 @@ def get_chain_head(chain: str) -> str:
     return heads[0]
 
 
+async def require_installed_chain(pool, *, chain: str, schema: str | None) -> None:
+    """Read-only serving admission; only the selected migrator may install heads."""
+    target = _normalize_schema(schema) or "public"
+    expected = get_chain_head(chain)
+    async with pool.acquire() as connection:
+        present = await connection.fetchval(
+            f'SELECT EXISTS (SELECT FROM "{target}".alembic_version WHERE version_num = $1)',
+            expected,
+        )
+    if present is not True:
+        raise RuntimeError("Required database revision is unavailable")
+
+
 def get_chain_revision_ids(chain: str) -> frozenset[str]:
     """Return every revision id that belongs to one migration chain.
 
@@ -333,7 +413,7 @@ def _upgrade_chain(config: Config, chain: str, schema: str | None) -> None:
     command.upgrade(config, f"{chain}@head")
 
 
-def _bootstrap_extensions(db_url: str) -> None:
+def _bootstrap_extensions(db_url: str, *, connection=None) -> None:
     """Install required PostgreSQL extensions before running migrations.
 
     Uses ``CREATE EXTENSION IF NOT EXISTS`` so the call is idempotent and safe
@@ -341,6 +421,11 @@ def _bootstrap_extensions(db_url: str) -> None:
     database exists and **before** any Alembic ``upgrade`` that references
     extension-provided types (e.g. ``vector``, ``tsvector``).
     """
+    if connection is not None:
+        for ext in ("vector", "pgcrypto", "uuid-ossp", "pg_trgm"):
+            connection.execute(text(f'CREATE EXTENSION IF NOT EXISTS "{ext}"'))
+        connection.commit()
+        return
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
@@ -350,7 +435,9 @@ def _bootstrap_extensions(db_url: str) -> None:
         engine.dispose()
 
 
-async def run_migrations(db_url: str, chain: str = "core", schema: str | None = None) -> None:
+async def run_migrations(
+    db_url: str, chain: str = "core", schema: str | None = None, *, connection=None
+) -> None:
     """Run Alembic migrations programmatically for a specific chain.
 
     This is the primary entry point for running migrations from the butler
@@ -370,13 +457,21 @@ async def run_migrations(db_url: str, chain: str = "core", schema: str | None = 
     for resolved_chain in chains:
         if _resolve_chain_dir(resolved_chain) is None:
             raise ValueError(f"Unknown migration chain: {resolved_chain!r}")
-    check_bootstrap_database(db_url)
+    if connection is None:
+        check_bootstrap_database(db_url)
+    else:
+        check_bootstrap_connection(connection)
 
     # Extensions must exist before any migration that uses extension-provided
     # types (e.g. pgvector's ``vector``).  The call is idempotent.
     if "core" in chains or chain == "core":
-        _bootstrap_extensions(db_url)
+        if connection is None:
+            _bootstrap_extensions(db_url)
+        else:
+            _bootstrap_extensions(db_url, connection=connection)
 
     config = _build_alembic_config(db_url, chains, target_schema=normalized_schema)
+    if connection is not None:
+        config.attributes["connection"] = connection
     for resolved_chain in chains:
         _upgrade_chain(config, resolved_chain, normalized_schema)

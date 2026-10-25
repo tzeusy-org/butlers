@@ -326,3 +326,45 @@ class TestListCommandStatus:
         assert result3.exit_code == 0
         assert "running" in result3.output.lower()
         assert "stopped" in result3.output.lower()
+
+
+async def test_actual_migrate_cli_holds_one_selected_session_through_finalization(monkeypatch, tmp_path):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    import butlers.cli as cli_module
+    import butlers.migrations as migrations
+
+    held = object()
+    events = []
+
+    @contextmanager
+    def selected(url):
+        assert url == "postgresql://selected:synthetic@localhost/butlers"
+        events.append("locked")
+        yield held
+        events.append("released")
+
+    async def run(url, chain="core", schema=None, *, connection=None):
+        assert connection is held
+        events.append((chain, schema))
+
+    def finalize(connection):
+        assert connection is held
+        events.append("finalized")
+
+    monkeypatch.setenv("BUTLERS_MIGRATOR_DATABASE_URL", "postgresql://selected:synthetic@localhost/butlers")
+    monkeypatch.setattr(cli_module, "load_config", lambda path: SimpleNamespace(
+        db_name="butlers", db_schema=path.name, modules={}
+    ))
+    monkeypatch.setattr("butlers.modules.registry.default_registry", lambda: SimpleNamespace(
+        load_from_config=lambda modules: []
+    ))
+    monkeypatch.setattr(migrations, "migration_session", selected, raising=False)
+    monkeypatch.setattr(migrations, "finalize_authority", finalize, raising=False)
+    monkeypatch.setattr(migrations, "run_migrations", AsyncMock(side_effect=run))
+    monkeypatch.setattr(migrations, "has_butler_chain", lambda name: False)
+    monkeypatch.setattr("butlers.db.db_params_from_env", Mock(side_effect=AssertionError("No runtime credential fallback")))
+    await _migrate_all({"general": tmp_path / "general", "health": tmp_path / "health"})
+    assert events == ["locked", ("core", "general"), ("core", "health"), "finalized", "released"]

@@ -18,6 +18,8 @@ from butlers.db import (
     schema_search_path,
     should_retry_with_ssl_disable,
 )
+from butlers.db_authority.catalog import create_purpose_pool
+from butlers.db_authority.roles import purpose_profile
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +75,6 @@ class DatabaseManager:
         # Optional-schema readers use this lifecycle marker to distinguish a
         # deliberately uninstalled table from one that disappears later.
         self._relation_presence_at_start: dict[str, dict[str, bool]] = {}
-        # role_enforcement_disabled: True when SET ROLE schema-isolation is NOT
-        # active for any butler database managed by this instance.  Starts True
-        # (conservative default — enforcement not yet confirmed) and may be
-        # updated via set_role_enforcement_disabled() during startup.
-        self._role_enforcement_disabled: bool = True
 
     async def _create_pool(
         self,
@@ -103,7 +100,7 @@ class DatabaseManager:
         if self._ssl is not None:
             pool_kwargs["ssl"] = self._ssl
         try:
-            return await asyncpg.create_pool(**pool_kwargs)
+            return await create_purpose_pool(purpose_profile(database, "dashboard"), **pool_kwargs)
         except Exception as exc:
             if not should_retry_with_ssl_disable(exc, self._ssl):
                 raise
@@ -113,7 +110,7 @@ class DatabaseManager:
                 "Retrying DB pool creation with ssl=disable for %s after SSL upgrade loss",
                 log_name,
             )
-            return await asyncpg.create_pool(**retry_kwargs)
+            return await create_purpose_pool(purpose_profile(database, "dashboard"), **retry_kwargs)
 
     async def add_butler(
         self,
@@ -379,26 +376,25 @@ class DatabaseManager:
             return None
         return sorted(name for name, mods in self._butler_modules.items() if module_name in mods)
 
-    @property
-    def role_enforcement_disabled(self) -> bool:
-        """Return True when SET ROLE schema-isolation is NOT active.
+    async def authority_status(self) -> str:
+        """Fresh dashboard-purpose admission of the complete configured pool set.
 
-        True when no DB role has been verified for any butler managed by this
-        instance.  Starts True (conservative — enforcement not yet confirmed)
-        and is updated by ``set_role_enforcement_disabled()`` during startup
-        after role-existence verification.
-
-        Intended for the dashboard health surface.
+        A connected subset cannot certify an unavailable configured domain.
+        No credential, row payload or underlying driver message is returned.
         """
-        return self._role_enforcement_disabled
-
-    def set_role_enforcement_disabled(self, disabled: bool) -> None:
-        """Set the role-enforcement-disabled flag.
-
-        Called during ``init_db_manager()`` after role verification to record
-        whether SET ROLE enforcement is active across the managed databases.
-        """
-        self._role_enforcement_disabled = disabled
+        configured = set(self._configured_butler_modules)
+        if not configured or set(self._pools) != configured or self._shared_pool is None:
+            return "unavailable"
+        try:
+            async with asyncio.timeout(5):
+                for pool in (*self._pools.values(), self._shared_pool):
+                    # Each real pool's setup callback freshly proves the fixed
+                    # purpose before this handoff. Release remains pool-owned.
+                    async with pool.acquire():
+                        pass
+        except Exception:
+            return "unavailable"
+        return "admitted"
 
     async def fan_out_with_status(
         self,

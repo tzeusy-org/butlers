@@ -547,7 +547,6 @@ async def init_db_manager(
         try:
             db = Database.from_env(cfg.db_name or "butlers")
             db.set_schema(cfg.db_schema)
-            await db.provision()
             await mgr.add_butler(
                 cfg.name,
                 db_name=db.db_name,
@@ -571,16 +570,10 @@ async def init_db_manager(
                 cfg.db_schema or "default",
                 exc_info=True,
             )
-    # The API layer never calls Database.from_env() with a role parameter —
-    # schema isolation is enforced at the butler-daemon layer, not here.
-    # SET ROLE is therefore always disabled for API-managed pools; report that
-    # honest state on the health endpoint so operators can see it.
-    mgr.set_role_enforcement_disabled(True)
 
     try:
         shared_db = Database.from_env(shared_db_name)
         shared_db.set_schema(shared_db_schema)
-        await shared_db.provision()
         await mgr.set_credential_shared_pool(shared_db.db_name, db_schema=shared_db_schema)
         await ensure_secrets_schema(mgr.credential_shared_pool())
         await mgr.snapshot_relation_presence(

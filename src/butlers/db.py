@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import asyncpg
 
-from butlers.db_authority.catalog import assert_runtime_authority
+from butlers.db_authority.catalog import assert_runtime_authority, create_owned_pool
 from butlers.db_authority.roles import RuntimeProfile, load_runtime_profile
 
 logger = logging.getLogger(__name__)
@@ -618,31 +618,17 @@ class Database:
                 raise
             pool_kwargs["setup"] = self._setup_connection
 
-        candidate = None
         try:
             try:
-                candidate = asyncpg.create_pool(**pool_kwargs)
-                pool = await candidate
+                pool = await create_owned_pool(**pool_kwargs)
             except Exception as exc:
-                if isinstance(candidate, asyncpg.Pool):
-                    try:
-                        candidate.terminate()
-                    except Exception:
-                        logger.error("Runtime pool initialization cleanup was incomplete")
-                    candidate = None
                 if not should_retry_with_ssl_disable(exc, self.ssl):
                     raise
                 retry_kwargs = dict(pool_kwargs)
                 retry_kwargs["ssl"] = "disable"
                 logger.info("Retrying PostgreSQL pool creation after SSL upgrade loss")
-                candidate = asyncpg.create_pool(**retry_kwargs)
-                pool = await candidate
+                pool = await create_owned_pool(**retry_kwargs)
         except BaseException as exc:
-            if isinstance(candidate, asyncpg.Pool):
-                try:
-                    candidate.terminate()
-                except Exception:
-                    logger.error("Runtime pool initialization cleanup was incomplete")
             self._role_verified = False
             self._verified_role = None
             if self._runtime_role_required() and isinstance(exc, Exception):

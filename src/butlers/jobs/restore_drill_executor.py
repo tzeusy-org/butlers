@@ -542,7 +542,12 @@ async def run_restore_drill_executor_loop(config: RestoreDrillExecutorConfig) ->
     ssl_context = _asyncpg_ssl_context(config)
     if ssl_context is not None:
         pool_kwargs["ssl"] = ssl_context
-    pool = await asyncpg.create_pool(**pool_kwargs)
+    from butlers.db_authority.catalog import create_purpose_pool
+    from butlers.db_authority.roles import purpose_profile
+
+    pool = await create_purpose_pool(
+        purpose_profile(config.application_db, "restore_executor"), **pool_kwargs
+    )
     persistence = PostgresRestoreDrillPersistence(pool)
     try:
         while True:

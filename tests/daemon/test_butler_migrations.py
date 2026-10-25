@@ -685,3 +685,61 @@ def test_direct_online_environment_admits_before_ddl_and_offline_never_attests()
     ):
         runpy.run_path(str(env))
     admission.assert_not_called()
+
+
+async def test_explicit_migrator_connection_is_handed_to_every_chain(monkeypatch):
+    """An admitted CLI session cannot be replaced by a per-chain connection."""
+    from unittest.mock import Mock
+
+    import butlers.migrations as migrations
+
+    connection = Mock()
+    configs = []
+    monkeypatch.setattr(migrations, "check_bootstrap_connection", Mock(), raising=False)
+    monkeypatch.setattr(migrations, "_bootstrap_extensions", Mock())
+    monkeypatch.setattr(migrations, "_resolve_target_chains", lambda chain: ["core", "memory"])
+    monkeypatch.setattr(migrations, "_resolve_chain_dir", lambda chain: Path("present"))
+    monkeypatch.setattr(
+        migrations,
+        "_upgrade_chain",
+        lambda config, chain, schema: configs.append((config, chain, schema)),
+    )
+    await migrations.run_migrations(
+        "postgresql://synthetic", chain="all", schema="chronicler_mem", connection=connection
+    )
+    assert [row[1] for row in configs] == ["core", "memory"]
+    assert all(row[0].attributes["connection"] is connection for row in configs)
+    assert all(row[2] == "chronicler_mem" for row in configs)
+    connection.close.assert_not_called()
+    connection.commit.assert_not_called()
+
+
+async def test_serving_startup_verifies_installed_head_without_running_migration(monkeypatch):
+    from types import SimpleNamespace
+
+    from butlers import lifecycle
+
+    conn = AsyncMock()
+    conn.fetchval.return_value = True
+
+    @asynccontextmanager
+    async def acquire():
+        yield conn
+
+    pool = SimpleNamespace(acquire=acquire)
+    daemon = SimpleNamespace(
+        config=SimpleNamespace(name="general", db_schema="general"),
+        _build_db_url=lambda: "postgresql://unused",
+    )
+    state = lifecycle.StartupState(pool=pool)
+    migrate = AsyncMock(side_effect=AssertionError("Serving must not migrate"))
+    monkeypatch.setattr(lifecycle, "run_migrations", migrate, raising=False)
+    monkeypatch.setattr(lifecycle, "has_butler_chain", lambda name: False)
+    await lifecycle._startup_core_migrations(daemon, state)
+    assert conn.fetchval.await_args.args[1] == __import__(
+        "butlers.migrations", fromlist=["get_chain_head"]
+    ).get_chain_head("core")
+    migrate.assert_not_awaited()
+    conn.fetchval.return_value = False
+    with pytest.raises(RuntimeError):
+        await lifecycle._startup_core_migrations(daemon, state)

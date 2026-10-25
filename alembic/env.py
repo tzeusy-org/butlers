@@ -156,39 +156,41 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
-def run_migrations_online() -> None:
-    """Run migrations in 'online' mode (with a live database connection)."""
-    url = get_url()
-    connectable = create_engine(url, poolclass=pool.NullPool)
+def _run_on_connection(connection) -> None:
+    """Run on the actual caller-owned session, including schema/version setup."""
+    check_bootstrap_connection(connection)
+    connection.rollback()
     target_schema = _get_config_schema_option(_TARGET_SCHEMA_OPTION)
     version_table_schema = _get_config_schema_option(_VERSION_TABLE_SCHEMA_OPTION)
+    if target_schema is not None:
+        own_schema = _quote_ident(target_schema)
+        connection.exec_driver_sql(f"CREATE SCHEMA IF NOT EXISTS {own_schema}")
+        connection.exec_driver_sql(f"SET search_path TO {own_schema}, public")
+        connection.commit()
+    configure_kwargs = {
+        "connection": connection,
+        "target_metadata": None,
+        "version_locations": get_version_locations(),
+    }
+    if version_table_schema is not None:
+        configure_kwargs["version_table_schema"] = version_table_schema
+    context.configure(**configure_kwargs)
+    with context.begin_transaction():
+        context.run_migrations()
 
-    with connectable.connect() as connection:
-        check_bootstrap_connection(connection)
-        # Close only this fresh connection's inspection transaction. Alembic
-        # must own the revision transaction even without a target schema.
-        connection.rollback()
-        if target_schema is not None:
-            own_schema = _quote_ident(target_schema)
-            # Alembic ensures version_table before running revisions, so create
-            # the target schema first when running schema-scoped migrations.
-            connection.exec_driver_sql(f"CREATE SCHEMA IF NOT EXISTS {own_schema}")
-            connection.exec_driver_sql(f"SET search_path TO {own_schema}, public")
-            # SQLAlchemy opens an implicit transaction for the preflight DDL/SET
-            # above; commit it so Alembic controls the migration transaction.
-            connection.commit()
 
-        configure_kwargs = {
-            "connection": connection,
-            "target_metadata": None,
-            "version_locations": get_version_locations(),
-        }
-        if version_table_schema is not None:
-            configure_kwargs["version_table_schema"] = version_table_schema
-        context.configure(**configure_kwargs)
-
-        with context.begin_transaction():
-            context.run_migrations()
+def run_migrations_online() -> None:
+    """Use the CLI's lock-owning session rather than reconnecting per chain."""
+    held = context.config.attributes.get("connection")
+    if held is not None:
+        _run_on_connection(held)
+        return
+    connectable = create_engine(get_url(), poolclass=pool.NullPool)
+    try:
+        with connectable.connect() as connection:
+            _run_on_connection(connection)
+    finally:
+        connectable.dispose()
 
 
 if context.is_offline_mode():

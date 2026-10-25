@@ -144,29 +144,6 @@ _DEFAULT_SHARED_DB_NAME = "butlers"
 _ENV_SHARED_DB_NAME = "BUTLER_SHARED_DB_NAME"
 _SECRETS_CATEGORY_INDEX = "ix_butler_secrets_category"
 
-_SECRETS_TABLE_DDL = f"""
-CREATE TABLE IF NOT EXISTS {_TABLE} (
-    secret_key   TEXT PRIMARY KEY,
-    secret_value TEXT NOT NULL,
-    category     TEXT NOT NULL DEFAULT 'general',
-    description  TEXT,
-    is_sensitive BOOLEAN NOT NULL DEFAULT true,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at   TIMESTAMPTZ,
-    last_verified     TIMESTAMPTZ,
-    last_test_ok      BOOLEAN,
-    last_test_code    INTEGER,
-    last_test_message TEXT
-)
-"""
-
-_SECRETS_CATEGORY_INDEX_DDL = f"""
-CREATE INDEX IF NOT EXISTS {_SECRETS_CATEGORY_INDEX}
-ON {_TABLE} (category)
-"""
-
-
 # ---------------------------------------------------------------------------
 # SecretMetadata dataclass
 # ---------------------------------------------------------------------------
@@ -1109,19 +1086,18 @@ async def create_system_global_credential_store_from_env() -> CredentialStore:
     shared credential database.  Callers own and close the returned pool via
     ``store.require_system_global_pool().close()``.
 
-    This intentionally retains the configured database principal rather than
-    applying a connector-local ``connector_writer`` role: the global Codex
-    authority must perform its fenced rotation and health-state writes, while
-    connector-local roles are read-only for shared credentials.
+    The fixed credential-writer purpose retains fenced rotation and health
+    writes. It is distinct from the connector cursor capability and is proved
+    on every acquired connection before credential data becomes available.
     """
-    import asyncpg as _asyncpg
-
     from butlers.db import (
         db_params_from_env,
         register_jsonb_codec,
         schema_search_path,
         should_retry_with_ssl_disable,
     )
+    from butlers.db_authority.catalog import create_purpose_pool
+    from butlers.db_authority.roles import purpose_profile
 
     db_params = db_params_from_env()
     shared_schema = os.environ.get("BUTLER_SHARED_DB_SCHEMA", "public")
@@ -1143,34 +1119,59 @@ async def create_system_global_credential_store_from_env() -> CredentialStore:
         pool_kwargs["ssl"] = configured_ssl
 
     try:
-        pool = await _asyncpg.create_pool(**pool_kwargs)
+        pool = await create_purpose_pool(
+            purpose_profile(str(pool_kwargs["database"]), "credential"), **pool_kwargs
+        )
     except Exception as exc:
         ssl_value = configured_ssl if isinstance(configured_ssl, str) else None
         if not should_retry_with_ssl_disable(exc, ssl_value):
             raise
         pool_kwargs["ssl"] = "disable"
-        pool = await _asyncpg.create_pool(**pool_kwargs)
+        pool = await create_purpose_pool(
+            purpose_profile(str(pool_kwargs["database"]), "credential"), **pool_kwargs
+        )
     return CredentialStore(pool, system_global_pool=pool)
 
 
 async def ensure_secrets_schema(pool: asyncpg.Pool) -> None:
-    """Provision ``butler_secrets`` only when the target schema lacks it.
+    """Read-only admission of the migrator-installed credential relation.
 
-    The table DDL contains the complete current shape for a fresh database.
-    Alembic owns convergence for pre-existing tables: reissuing ``ALTER TABLE``
-    during every daemon or dashboard startup can block behind a plain
-    ``pg_dump`` relation lock and make readiness wait for the backup.
+    A serving credential reader/writer has no schema repair capability. Exact
+    True is required; NULL, unavailable catalog and partial installation refuse.
+    The query observes catalog shape only and never selects a credential value.
     """
     async with _acquire_conn(pool) as conn:
-        table_exists = await conn.fetchval("SELECT to_regclass($1::text) IS NOT NULL", _TABLE)
-        if not table_exists:
-            await conn.execute(_SECRETS_TABLE_DDL)
-
-        index_exists = await conn.fetchval(
-            "SELECT to_regclass($1::text) IS NOT NULL", _SECRETS_CATEGORY_INDEX
+        ready = await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT FROM pg_catalog.pg_class c
+                JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+                WHERE c.oid=pg_catalog.to_regclass($1::text) AND c.relkind='r'
+                  AND NOT EXISTS (
+                    SELECT FROM (VALUES
+                        ('secret_key','text'), ('secret_value','text'), ('category','text'),
+                        ('description','text'), ('is_sensitive','boolean'),
+                        ('created_at','timestamp with time zone'),
+                        ('updated_at','timestamp with time zone'),
+                        ('expires_at','timestamp with time zone'),
+                        ('last_verified','timestamp with time zone'), ('last_test_ok','boolean'),
+                        ('last_test_code','integer'), ('last_test_message','text')
+                    ) required(name, type)
+                    WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_attribute a
+                        WHERE a.attrelid=c.oid AND a.attname=required.name
+                          AND a.attnum>0 AND NOT a.attisdropped
+                          AND pg_catalog.format_type(a.atttypid,a.atttypmod)=required.type))
+                  AND EXISTS (SELECT FROM pg_catalog.pg_index i
+                      JOIN pg_catalog.pg_attribute key ON key.attrelid=c.oid
+                          AND key.attname='secret_key'
+                      WHERE i.indrelid=c.oid AND i.indisprimary AND i.indisvalid
+                          AND i.indnkeyatts=1 AND i.indkey[0]=key.attnum)
+            )
+            """,
+            _TABLE,
         )
-        if not index_exists:
-            await conn.execute(_SECRETS_CATEGORY_INDEX_DDL)
+        if ready is not True:
+            raise RuntimeError("Installed credential schema is unavailable")
 
 
 async def resolve_owner_entity_info(pool: asyncpg.Pool, info_type: str) -> str | None:

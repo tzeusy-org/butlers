@@ -51,7 +51,11 @@ from butlers.credentials import (
 from butlers.daemon_utils import _flatten_config_for_secret_scan
 from butlers.db import Database
 from butlers.exceptions import RuntimeBinaryNotFoundError
-from butlers.migrations import get_module_migration_chains, has_butler_chain, run_migrations
+from butlers.migrations import (
+    get_module_migration_chains,
+    has_butler_chain,
+    require_installed_chain,
+)
 from butlers.module_state import ModuleStartupStatus
 from butlers.owner_bootstrap import _ensure_owner_entity
 from butlers.storage import BlobStorageStartupError, S3BlobStore
@@ -187,14 +191,13 @@ async def _startup_credentials(daemon: Any, state: StartupState) -> None:
 
 async def _startup_database(daemon: Any, state: StartupState) -> None:
     """Acquire the database pool, establish owner identity and attach logging."""
-    # 6. Provision database
-    # If db was injected (e.g., for testing), skip provisioning
+    # Serving uses only an already provisioned database. The selected migrator
+    # owns database/schema creation and every version transition.
     if daemon.db is None:
         daemon.db = Database.from_env(daemon.config.db_name)
         daemon.db.set_schema(daemon.config.db_schema)
         if daemon.config.db_schema:
             daemon.db.role = f"butler_{daemon.config.db_schema}_rw"
-        await daemon.db.provision()
         state.pool = await daemon.db.connect()
     else:
         # Database already provisioned and connected externally
@@ -225,20 +228,19 @@ async def _startup_database(daemon: Any, state: StartupState) -> None:
 
 
 async def _startup_core_migrations(daemon: Any, state: StartupState) -> None:
-    """Set migration inputs and run the core and butler-specific chains."""
-    # 7. Run core Alembic migrations
-    state.db_url = daemon._build_db_url()
+    """Require installed core/domain revisions without serving DDL authority."""
     state.migration_schema = daemon.config.db_schema or None
-    await run_migrations(state.db_url, chain="core", schema=state.migration_schema)
+    await require_installed_chain(state.pool, chain="core", schema=state.migration_schema)
 
     # 7b. Run butler-specific Alembic migrations (if chain exists)
     if has_butler_chain(daemon.config.name):
-        logger.info("Running butler-specific migrations for: %s", daemon.config.name)
-        await run_migrations(state.db_url, chain=daemon.config.name, schema=state.migration_schema)
+        await require_installed_chain(
+            state.pool, chain=daemon.config.name, schema=state.migration_schema
+        )
 
 
 async def _startup_module_migrations(daemon: Any, state: StartupState) -> None:
-    """Run module migrations and cascade isolated migration failures."""
+    """Require installed module revisions and cascade isolated admission failures."""
     # 8. Run module Alembic migrations (non-fatal per-module)
     chains = get_module_migration_chains(daemon._modules, daemon.config.name)
     for mod in daemon._modules:
@@ -247,21 +249,21 @@ async def _startup_module_migrations(daemon: Any, state: StartupState) -> None:
         rev = chains.get(mod.name)
         if rev:
             # A module MAY declare a private schema (validated config field
-            # ``memory_schema`` on the memory module) so its chain migrates into
+            # ``memory_schema`` on the memory module) so its chain is installed in
             # a dedicated schema instead of the butler's own — e.g. chronicler
             # routes memory to ``chronicler_mem`` so the memory ``episodes``
             # table does not collide with the domain ``chronicler.episodes``
-            # (bu-93y4rt / bu-w6jca). ``env.py`` auto-creates the target schema,
-            # so no extra provisioning is needed. Falls back to the butler
-            # schema for every other module.
+            # (bu-93y4rt / bu-w6jca). Only the controlled migrator creates it.
+            # Serving checks its declared revision through the primary role;
+            # every other module uses the butler schema.
             mod_cfg = daemon._module_configs.get(mod.name)
             module_migration_schema = (
                 getattr(mod_cfg, "memory_schema", None) or state.migration_schema
             )
             try:
-                await run_migrations(state.db_url, chain=rev, schema=module_migration_schema)
-            except Exception as exc:
-                error_msg = str(exc)
+                await require_installed_chain(state.pool, chain=rev, schema=module_migration_schema)
+            except Exception:
+                error_msg = "Required module database revision is unavailable"
                 daemon._module_statuses[mod.name] = ModuleStartupStatus(
                     status="failed", phase="migration", error=error_msg
                 )
@@ -749,6 +751,7 @@ async def run_shutdown(daemon: Any) -> None:
         if (
             getattr(daemon, "_catalog_publication", None) is None
             and vars(daemon).get("_chronicler_refresh_service") is None
+            and vars(daemon).get("_finance_warning_control_owner") is None
         ):
             await _run_shutdown(daemon)
             return
@@ -789,6 +792,9 @@ async def _run_shutdown(daemon: Any) -> None:
         daemon.config.name if daemon.config else "unknown",
     )
 
+    finance_owner = vars(daemon).get("_finance_warning_control_owner")
+    if finance_owner is not None:
+        finance_owner.stop_admission()
     daemon._shutting_down = True
     daemon._accepting_connections = False
     if daemon._boot_registration_task is not None:
@@ -819,6 +825,7 @@ async def _shutdown_resources(daemon: Any) -> None:
     """Existing resource teardown, also reached after catalog close refusal."""
 
     refresh_owner = vars(daemon).get("_chronicler_refresh_service")
+    finance_owner = vars(daemon).get("_finance_warning_control_owner")
     deadline = asyncio.get_running_loop().time() + (
         daemon.config.shutdown_timeout_s if daemon.config else 30.0
     )
@@ -906,19 +913,26 @@ async def _shutdown_resources(daemon: Any) -> None:
             pass
         daemon._liveness_reporter_task = None
 
-    if refresh_owner is not None:
-        settled = await refresh_owner.close(max(0, deadline - asyncio.get_running_loop().time()))
-        if not settled:
-            # Preserve every remaining resource while the exact physical pool
-            # still owns work or a shielded native holder reset. No second close.
-            async def finish():
-                await refresh_owner.settle()
-                await _shutdown_chronicler_dependents(daemon)
+    owners = [owner for owner in (refresh_owner, finance_owner) if owner is not None]
 
-            task = asyncio.create_task(finish(), name="chronicler-retained-resource-release")
+    async def close_owned(owner):
+        return await owner.close(max(0, deadline - asyncio.get_running_loop().time()))
+
+    settled = await asyncio.gather(
+        *(close_owned(owner) for owner in owners), return_exceptions=True
+    )
+    if any(result is not True for result in settled):
+        # One retained tail fences ALL physical-pool owners, not two independent closers.
+        async def finish():
+            await asyncio.gather(*(owner.settle() for owner in owners))
+            await _shutdown_chronicler_dependents(daemon)
+
+        existing = vars(daemon).get("_chronicler_cleanup_task")
+        if existing is None:
+            task = asyncio.create_task(finish(), name="retained-owned-resource-release")
             daemon._chronicler_cleanup_task = task
             task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
-            raise TimeoutError("Chronicler refresh cleanup incomplete; resources retained")
+        raise TimeoutError("Owned request cleanup incomplete; resources retained")
     await _shutdown_chronicler_dependents(daemon)
 
 

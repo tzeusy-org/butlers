@@ -5,7 +5,7 @@
 // Data source: useHealthPosture -> GET /api/health
 // Fields used: auth.owner_auth_enabled, auth.owner_auth_available, auth.export_secret_insecure_default
 //              security.insecure_infra_defaults
-//              security.role_enforcement_disabled
+//              security.database_authority
 //
 // Displays boolean posture indicators only.  No secret values are ever
 // shown or transmitted; the backend enforces this at the source.
@@ -138,10 +138,10 @@ function SecurityPostureContent({ response }: {
             testId="posture-infra-defaults"
           />
           <PostureRow
-            label="DB role enforcement"
-            secure={!(security?.role_enforcement_disabled ?? true)}
-            secureLabel="Active"
-            insecureLabel="Disabled (dev posture)"
+            label="Database authority"
+            secure={security?.database_authority === "admitted"}
+            secureLabel="Admitted"
+            insecureLabel={security?.database_authority === "unavailable" ? "Unavailable" : "Unknown"}
             testId="posture-role-enforcement"
           />
         </dl>

@@ -671,23 +671,14 @@ def create_app(
         #   Clears only when all infra creds are overridden AND anon access is
         #   disabled. This is a configuration diagnostic, not fleet attestation.
         #
-        # security.role_enforcement_disabled: True when SET ROLE schema-isolation
-        #   is NOT active for the managed database connections. The API
-        #   has its own authority boundary (no DB role configured
-        #   on the API pools); this clears only when all managed pools have an
-        #   active, verified DB role.  Read from the DatabaseManager singleton
-        #   so it reflects real connection state established at startup.
+        # This is current dashboard-purpose availability, not fleet attestation
+        # or an environment posture exemption. Missing diagnostics stay unknown.
         try:
-            db_mgr = get_db_manager()
-            # Use bool() to guard against non-bool values (e.g. a MagicMock
-            # leaked from a test's module-level singleton patch) reaching the
-            # JSON response, which would cause a RecursionError in FastAPI's
-            # jsonable_encoder.
-            role_enforcement_disabled: bool = bool(db_mgr.role_enforcement_disabled)
+            authority = await get_db_manager().authority_status()
+            if authority not in ("unknown", "unavailable", "admitted"):
+                authority = "unknown"
         except RuntimeError:
-            # DatabaseManager not yet initialized (startup path / tests that
-            # don't wire a DB).  Conservative default: report as disabled.
-            role_enforcement_disabled = True
+            authority = "unknown"
         return {
             "status": "ok",
             "auth": {
@@ -705,7 +696,7 @@ def create_app(
             "security": {
                 "insecure_infra_defaults": has_insecure_infra_defaults()
                 or is_grafana_anonymous_enabled(),
-                "role_enforcement_disabled": role_enforcement_disabled,
+                "database_authority": authority,
             },
         }
 

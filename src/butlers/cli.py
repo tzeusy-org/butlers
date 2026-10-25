@@ -474,82 +474,59 @@ def provision(only: tuple[str, ...], butlers_dir: Path) -> None:
 
 
 async def _migrate_all(configs: dict[str, Path], *, dry_run: bool = False) -> None:
-    """Run Alembic migrations for each butler config in dependency order.
+    """Run declared chains and authority finalization under one selected session.
 
-    Mirrors exactly what each daemon does on startup:
-      1. core chain (schema-scoped)
-      2. butler-specific chain (if it exists)
-      3. enabled module chains (if they have migrations)
+    Serving credentials are never a migrator fallback. The explicit URL selects
+    one database; every requested roster configuration must belong to it before
+    any connection or DDL is attempted.
     """
-    from urllib.parse import quote, quote_plus
+    from urllib.parse import unquote, urlparse
 
-    from butlers.db import db_params_from_env, schema_search_path
     from butlers.migrations import (
+        finalize_authority,
         get_module_migration_chains,
         has_butler_chain,
+        migration_session,
         run_migrations,
     )
     from butlers.modules.registry import default_registry
 
     registry = default_registry()
-    params = db_params_from_env()
-    failed: list[str] = []
-
+    plan = []
     for name, config_dir in sorted(configs.items()):
-        try:
-            config = load_config(config_dir)
-            db_name = config.db_name or "butlers"
-            schema = config.db_schema
-
-            user = quote(str(params["user"]), safe="")
-            password = quote(str(params["password"]), safe="")
-            host = params["host"]
-            port = params["port"]
-            db_name_enc = quote(db_name, safe="")
-            base_url = f"postgresql://{user}:{password}@{host}:{port}/{db_name_enc}"
-            search_path = schema_search_path(schema)
-            if search_path:
-                db_url = f"{base_url}?options={quote_plus(f'-csearch_path={search_path}')}"
-            else:
-                db_url = base_url
-
-            modules = registry.load_from_config(config.modules)
-            module_chains = get_module_migration_chains(modules, name)
-
-            if dry_run:
-                chains = ["core"]
-                if has_butler_chain(name):
-                    chains.append(name)
-                chains += module_chains.values()
-                click.echo(f"  {name} (schema={schema}): would run chains: {', '.join(chains)}")
-                continue
-
-            click.echo(f"  {name}: core (schema={schema})...", nl=False)
-            await run_migrations(db_url, chain="core", schema=schema)
-            click.echo(" done")
-
-            if has_butler_chain(name):
-                click.echo(f"  {name}: butler chain...", nl=False)
-                await run_migrations(db_url, chain=name, schema=schema)
-                click.echo(" done")
-
-            for module_name, chain in module_chains.items():
-                module_cfg = config.modules.get(module_name) or {}
-                module_migration_schema = module_cfg.get("memory_schema") or schema
-                click.echo(f"  {name}/{chain}: module chain...", nl=False)
-                await run_migrations(db_url, chain=chain, schema=module_migration_schema)
-                click.echo(" done")
-
-        except Exception as exc:
-            click.echo(f"  {name}: FAILED — {exc}")
-            failed.append(name)
-
-    if failed:
-        click.echo(f"\nMigration failed for: {', '.join(failed)}", err=True)
-        sys.exit(1)
-
-    if not dry_run:
-        click.echo("All migrations complete.")
+        config = load_config(config_dir)
+        schema = config.db_schema
+        modules = registry.load_from_config(config.modules)
+        chains = [("core", schema)]
+        if has_butler_chain(name):
+            chains.append((name, schema))
+        for module_name, chain in get_module_migration_chains(modules, name).items():
+            module_cfg = config.modules.get(module_name) or {}
+            chains.append((chain, module_cfg.get("memory_schema") or schema))
+        plan.append((name, config.db_name or "butlers", chains))
+    if dry_run:
+        for name, _, chains in plan:
+            click.echo(f"  {name}: would run chains: {', '.join(chain for chain, _ in chains)}")
+        return
+    db_url = os.environ.get("BUTLERS_MIGRATOR_DATABASE_URL")
+    if not db_url:
+        raise click.ClickException("Explicit migrator database configuration is required")
+    selected = unquote(urlparse(db_url).path.lstrip("/"))
+    if not selected or any(database != selected for _, database, _ in plan):
+        raise click.ClickException("Migration plan does not match the selected database")
+    if not plan:
+        return
+    try:
+        with migration_session(db_url) as connection:
+            for name, _, chains in plan:
+                for chain, schema in chains:
+                    click.echo(f"  {name}: {chain} (schema={schema})...", nl=False)
+                    await run_migrations(db_url, chain=chain, schema=schema, connection=connection)
+                    click.echo(" done")
+            finalize_authority(connection)
+    except Exception as exc:
+        raise click.ClickException("Selected database migration did not complete") from exc
+    click.echo("All migrations and authority verification complete.")
 
 
 async def _provision_databases(configs: dict[str, Path]) -> None:
