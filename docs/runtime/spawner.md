@@ -24,7 +24,7 @@ signature and docstring there are authoritative. The semantics that matter to ca
 - **`max_token_budget` / `max_tool_calls`** raise guardrail terminations that the failover
   classifier always suppresses.
 - **`env_override`, `timeout_override`, `cwd`, `bypass_butler_semaphore`** exist for the
-  self-healing and QA dispatchers, which own their own sandbox, watchdog, and concurrency cap.
+  centralized QA dispatcher, which owns their own sandbox, watchdog, and concurrency cap.
 - **`conversation_id`** lets a `route` turn resume the conversation's provider-native session when
   the adapter supports it. **`dashboard_turn_id`** requires the durable Stop-protocol claim to
   succeed before `runtime.invoke`.
@@ -201,9 +201,9 @@ curl -s http://localhost:41101/metrics 2>/dev/null | grep butlers_spawner
 # Temporarily rename the claude binary and trigger a session.
 # Expected: session record with success=false, error containing "RuntimeBinaryNotFoundError"
 
-# 6. Self-healing wiring: check if healing module is configured
-curl -s http://localhost:41200/api/butlers/general/status | python3 -m json.tool | grep healing
-# Expected: healing module present with status "active" if configured
+# 6. Core QA relay: inspect the daemon MCP tool list.
+# Expected: report_error and get_healing_status, independently of modules/core_groups.
+# No local healer is registered; QA reception is not investigation/publication.
 ```
 
 ## Implementation Notes
@@ -211,7 +211,7 @@ curl -s http://localhost:41200/api/butlers/general/status | python3 -m json.tool
 - `Spawner._run()` forwards the effective `session_timeout_s` into `runtime.invoke(timeout=...)`,
   not only an outer `asyncio.wait_for(...)`; otherwise adapter inner timeouts drift from session
   records.
-- `session_timeout_s` bounds one spawned session; healing/QA workflows own any broader deadline.
+- `session_timeout_s` bounds one spawned session; QA workflows own any broader deadline.
 - Empty-response failover: merge adapter-reported and daemon-captured tool calls before accepting a
   normal return with no result text. No text and no confirmed non-command MCP action is an
   empty-response failure even with token usage; same-tier retry is safe only when the merged
@@ -226,7 +226,7 @@ curl -s http://localhost:41200/api/butlers/general/status | python3 -m json.tool
 - The deterministic `memory_consolidation` handler takes the daemon's live `Spawner` but resolves
   its pool and embedding engine through the active MemoryModule hook (private memory schemas such
   as Chronicler's `chronicler_mem`); missing wiring fails closed.
-- Self-healing/QA: pre-launch gate rejects (cooldown, concurrency cap, circuit breaker, no model)
+- QA: pre-launch gate rejects (cooldown, concurrency cap, circuit breaker, no model)
   are dispatch decisions, never failed `healing_attempts` rows. The QA circuit breaker counts rows
   with `healing_session_id IS NOT NULL` plus the `status = 'manual_reset'` sentinel, identically in
   the dashboard summary, `/api/qa/circuit-breaker[/reset]`, and
@@ -234,7 +234,7 @@ curl -s http://localhost:41200/api/butlers/general/status | python3 -m json.tool
 - Adding a QA discovery source is a persisted vocabulary change: align `QaConfig.enabled_sources`,
   `src/butlers/modules/qa/__init__.py::_KNOWN_SOURCES`, `QaFinding.source_type`, and
   `ck_qa_findings_source_type` in one change, with a migrated-DB test inserting the new value.
-- QA and self-healing dispatch add GitHub labels `self-healing` and `automated`
+- QA dispatch adds GitHub labels `self-healing` and `automated`
   (`_DEFAULT_PR_LABELS`, `src/butlers/core/qa/dispatch.py`). If the repo lacks them, PR creation
   fails with `gh_pr_create_failed: could not add label` and the attempt records `failed` despite a
   valid commit.

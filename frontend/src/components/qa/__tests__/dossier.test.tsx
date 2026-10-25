@@ -45,10 +45,6 @@ vi.mock("@/hooks/use-qa", () => ({
     mutate: vi.fn(),
     isPending: false,
   }),
-  useRetryHealingAttempt: () => ({
-    mutate: vi.fn(),
-    isPending: false,
-  }),
 }));
 
 afterEach(() => {

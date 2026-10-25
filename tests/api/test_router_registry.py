@@ -55,10 +55,14 @@ def test_complete_route_and_openapi_snapshot(tmp_path, monkeypatch):
     }
     encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "21036ee4be5cce73c7ec953a7995b77a65a4c558a92c8fe1061dd2aeff4c957e"
+        "62cba10ae371b7ea12ad103350e21754621011d76efae8c8d8c17549580df8a0"
     )
-    assert len(snapshot["routes"]) == 615
-    assert len(snapshot["openapi"]["paths"]) == 524
+    assert len(snapshot["routes"]) == 614
+    assert len(snapshot["openapi"]["paths"]) == 523
+    assert not any(
+        row["path"] == "/api/healing/attempts/{attempt_id}/retry" for row in snapshot["routes"]
+    )
+    assert "RetryResponse" not in snapshot["openapi"]["components"]["schemas"]
     assert snapshot["routes"][-1] == {"path": "", "name": "frontend", "type": "Mount"}
     assert any(row.get("include_in_schema") is False for row in snapshot["routes"])
 

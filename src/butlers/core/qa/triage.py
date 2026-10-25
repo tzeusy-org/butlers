@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-#: Default cooldown window in minutes — matches HealingConfig default.
+#: Default cooldown window in minutes — owned by QA investigation policy.
 DEFAULT_COOLDOWN_MINUTES = 60
 
 

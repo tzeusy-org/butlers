@@ -773,7 +773,7 @@ class TestSpawnerUndeliveredReplyAccounting:
 
         with (
             patch(
-                "butlers.core.healing.dispatch_healing", new_callable=AsyncMock
+                "butlers.core.qa.dispatch.dispatch_qa_investigation", new_callable=AsyncMock
             ) as local_dispatch,
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_sc,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,

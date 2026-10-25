@@ -806,7 +806,7 @@ class TestSpawnerInvocation:
         adapter = MockAdapter(error="adapter connection failed")
         spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
         with patch(
-            "butlers.core.healing.dispatch_healing", new_callable=AsyncMock
+            "butlers.core.qa.dispatch.dispatch_qa_investigation", new_callable=AsyncMock
         ) as local_dispatch:
             result = await spawner.trigger("fail", "tick")
             local_dispatch.assert_not_awaited()

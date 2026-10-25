@@ -583,7 +583,9 @@ async def test_all_core_tools_registered(butler_dir: Path) -> None:
     # A domain butler receives its actual group-gated surface, not a parallel
     # hand-maintained catalog.  The dispatcher inventory test owns exhaustive
     # coverage; this startup test protects the daemon integration seam.
-    assert len(set(registered_tools)) == 72
+    assert len(set(registered_tools)) == 74
+    assert {"report_error", "get_healing_status"} <= set(registered_tools)
+    assert "retry_healing" not in registered_tools
     assert {
         "cost_claim_assert",
         "cost_claim_amend",

@@ -244,14 +244,11 @@ The system SHALL expose API endpoints for healing attempt visibility.
 - **WHEN** `GET /api/healing/attempts/{attempt_id}` is called
 - **THEN** it returns the full healing attempt record including linked session IDs
 
-#### Scenario: Retry a failed attempt
-- **WHEN** `POST /api/healing/attempts/{attempt_id}/retry` is called for an attempt with terminal status
-- **THEN** a new healing attempt is created for the same fingerprint, bypassing cooldown
-- **AND** the original attempt's status is unchanged
-
-#### Scenario: Retry a non-terminal attempt is rejected
-- **WHEN** `POST /api/healing/attempts/{attempt_id}/retry` is called for an attempt with status `investigating`
-- **THEN** the request is rejected with HTTP 409 Conflict
+#### Scenario: Retired Retry route has no effects
+- **WHEN** an authenticated stale client posts to `/api/healing/attempts/{attempt_id}/retry`, for terminal, active, missing or publication-held history, including concurrent or replayed requests
+- **THEN** the ordinary absent-route response is HTTP 404
+- **AND** no attempt is inserted or changed, no dispatch/background task is scheduled and no daemon MCP call is made
+- **AND** list/detail history, fingerprints, breaker/reset audit and current QA admission/publication holds remain intact
 
 #### Scenario: Reset circuit breaker
 - **WHEN** `POST /api/healing/circuit-breaker/reset` is called
