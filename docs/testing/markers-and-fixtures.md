@@ -109,6 +109,34 @@ def test_something(mock_spawner):
     ...
 ```
 
+## Explicit test-kit helpers
+
+Import DB-free helpers directly from `butlers.testing`; these are not root
+fixtures and do not provide SQL, JSONB, transaction, role or RLS evidence.
+Use a real migrated database when the behavior depends on those boundaries.
+
+- `records.row(**columns)` and `records.records(iterable_of_mappings)` return
+  fresh `Record` snapshots. Key/index lookup and `dict(record)` work; iteration
+  yields **values**, as asyncpg does. Missing keys and attribute access refuse.
+- `fake_pool.fake_pool(fetch=[...], execute="UPDATE 1")` configures only those
+  async calls. Unconfigured methods raise `AssertionError`; explicit `None`
+  is a configured result. Pass `AsyncMock(side_effect=...)` for queues or
+  failures. Pool and acquired connection share call assertions; `acquire()`
+  and connection `transaction()` create fresh `AsyncCtx` objects. Context
+  exits release once, including body exceptions and cancellation. Callable
+  SQL dispatch is refused.
+- `migration.load_migration(path, name=None)` imports a fresh module from an
+  explicit file without calling `upgrade` or `downgrade`. The default name is
+  `_migration_<file stem>`; use the existing caller's explicit name when its
+  identity matters. Opt-in `register=True` temporarily registers the module
+  for import-time consumers such as dataclasses and restores the prior
+  `sys.modules` entry even on failure. It does not provision a database.
+- `clock.FakeClock(aware_instant, monotonic=0)` exposes `now()` and
+  `monotonic()`. `advance(seconds_or_timedelta)` advances both; negative or
+  nonfinite advances refuse without changing either. The default origin is
+  fixed UTC. Inject these methods at existing seams, retaining purpose-specific
+  datetime adapters when needed; never patch event-loop, timeout or SQL clocks.
+
 ## Testcontainer Resilience
 
 ### Hosted image acquisition
