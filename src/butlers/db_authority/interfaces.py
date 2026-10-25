@@ -20538,8 +20538,118 @@ _PREDECESSOR_ROLLBACK_SOURCES = (
 )
 
 
+def _ordinary_policy_sql(policy, target, migration_owner):
+    from .apply import quote_identifier
+
+    command = {"*": "ALL", "r": "SELECT", "a": "INSERT", "w": "UPDATE", "d": "DELETE"}[
+        policy["command"]
+    ]
+    roles = ",".join(
+        "PUBLIC" if role == "PUBLIC" else quote_identifier(role) for role in policy["roles"]
+    )
+    sql = f"CREATE POLICY {quote_identifier(policy['name'])} ON {target} FOR {command} TO {roles}"
+    for field, clause in (("using", " USING "), ("check", " WITH CHECK ")):
+        tokens = policy[field]
+        if tokens is not None:
+            tokens = [
+                "'" + migration_owner.replace("'", "''") + "'"
+                if token == "'__NORMAL_OWNER__'"
+                else token
+                for token in tokens
+            ]
+            sql += clause + "(" + " ".join(tokens) + ")"
+    return sql
+
+
+def ordinary_security_policy_changes(manifest):
+    from .grants import compiled_security_contract
+
+    def indexed(previous):
+        return {
+            (row["schema"], row["table"], row["name"]): row
+            for row in compiled_security_contract(manifest, ordinary_purposes=not previous)[
+                "policies"
+            ]
+        }
+
+    before, after = indexed(True), indexed(False)
+    return {
+        key: (before.get(key), after.get(key))
+        for key in before.keys() | after.keys()
+        if before.get(key) != after.get(key)
+    }
+
+
+def converge_ordinary_security_policies(connection, manifest, *, predecessor=False, only=None):
+    """Install only the enumerated purpose policies after exact shape preflight.
+
+    Unknown policies never enter this plan. The held migration transaction has
+    already proved every old/new policy and trigger before the first mutation.
+    """
+    from .apply import quote_identifier
+
+    changes = ordinary_security_policy_changes(manifest)
+    if changes:
+        require_maintenance(connection)
+    for (schema, table, name), (before, after) in sorted(changes.items()):
+        if only is not None and (schema, table) not in only:
+            continue
+        target = quote_identifier(schema) + "." + quote_identifier(table)
+        connection.exec_driver_sql(f"DROP POLICY IF EXISTS {quote_identifier(name)} ON {target}")
+        row = before if predecessor else after
+        if row is not None:
+            connection.exec_driver_sql(_ordinary_policy_sql(row, target, manifest.migration_owner))
+
+
 def verify_declared_security_shapes(
-    connection, manifest, observed, *, exclude_protected=False, retired_marker_verified=False
+    connection,
+    manifest,
+    observed,
+    *,
+    exclude_protected=False,
+    retired_marker_verified=False,
+    allow_previous_ordinary=False,
+):
+    """Accept only a complete source-current or exact pre-owner-transition shape."""
+    from .roles import AuthorityError
+
+    try:
+        _verify_declared_security_shapes(
+            connection,
+            manifest,
+            observed,
+            exclude_protected=exclude_protected,
+            retired_marker_verified=retired_marker_verified,
+        )
+    except AuthorityError as exc:
+        if (
+            not allow_previous_ordinary
+            or str(exc)
+            not in {
+                "Database policy definition differs from source",
+                "Database security definition is not declared",
+            }
+            or getattr(exc, "__notes__", ())
+        ):
+            raise
+        _verify_declared_security_shapes(
+            connection,
+            manifest,
+            observed,
+            exclude_protected=exclude_protected,
+            retired_marker_verified=retired_marker_verified,
+            ordinary_purposes=False,
+        )
+
+
+def _verify_declared_security_shapes(
+    connection,
+    manifest,
+    observed,
+    *,
+    exclude_protected=False,
+    retired_marker_verified=False,
+    ordinary_purposes=True,
 ):
     """Parse fixed ordinary policies/triggers on owned scratch relations.
 
@@ -20555,7 +20665,7 @@ def verify_declared_security_shapes(
     from .roles import AuthorityError
 
     require_maintenance(connection)
-    expected = compiled_security_contract(manifest)
+    expected = compiled_security_contract(manifest, ordinary_purposes=ordinary_purposes)
     protected = {(schema, name) for _, schema, name, _, _ in _PROTECTED_TABLE_SHAPES}
     for row in observed:
         key = row["schema"], row["name"]

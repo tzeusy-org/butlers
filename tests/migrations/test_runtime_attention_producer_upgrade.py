@@ -690,7 +690,8 @@ def test_core_251_upgrade_requires_the_bootstrap_upgrader_and_then_revokes_it(
                     WHERE producer.oid='public.append_runtime_attention_condition(uuid)'::regprocedure
                       AND acl.grantee<>producer.proowner
                       AND acl.grantee<>'butler_switchboard_rw'::regrole),
-                  has_function_privilege(:login,'public.observe_runtime_attention_conditions()','EXECUTE'),
+                  has_function_privilege('dashboard_api','public.observe_runtime_attention_conditions()','EXECUTE'),
+                  NOT has_function_privilege(:login,'public.observe_runtime_attention_conditions()','EXECUTE'),
                   (SELECT producer_enabled FROM public.runtime_attention_condition_control WHERE singleton)
             """),
                 {"login": migration_login},

@@ -157,6 +157,21 @@ def purpose_profile(database: str, purpose: str) -> PurposeProfile:
     return PurposeProfile(database, purpose, role, (role,), direct)
 
 
+ORDINARY_PURPOSE_OWNERS = (
+    "connector_partition_owner",
+    "switchboard_partition_owner",
+    "identity_lookup_owner",
+    "dashboard_turn_owner",
+    "model_probe_owner",
+    "relationship_status_owner",
+    "cost_claim_restore_owner",
+    "dashboard_auth_owner",
+    "finance_bill_status_owner",
+    "premise_amendment_owner",
+    "health_refill_status_owner",
+    "registry_control_owner",
+)
+
 PURPOSE_OWNERS = (
     "dnd_generation_owner",
     "runtime_attention_outbox_owner",
@@ -164,6 +179,7 @@ PURPOSE_OWNERS = (
     "restore_drill_executor_audit_writer",
     "dashboard_attention_owner",
     "dashboard_stepup_owner",
+    *ORDINARY_PURPOSE_OWNERS,
 )
 
 

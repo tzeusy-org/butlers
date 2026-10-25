@@ -184,16 +184,19 @@ not merely untested. The runtime-attention boundary is the worked example; see t
 
 ## Verification
 
-To confirm the migration chain structure described here matches the running system:
+To inspect migration-chain state, select the explicitly configured administrative
+or normal-migration connection first. The examples use that connection through
+standard `psql` connection settings; they do not select a serving or shared-owner
+login. Actual operator provisioning and maintenance prerequisites remain required.
 
 ```bash
 # 1. Core migration chain is at head in each butler's schema
-psql -h localhost -U butlers -d butlers -c \
+psql -X -v ON_ERROR_STOP=1 -c \
   "SELECT version_num FROM general.alembic_version;"
 # Expected: the actual source chain head (follow down_revision; numeric order is not graph order)
 
 # 2. Module migration chains are tracked separately
-psql -h localhost -U butlers -d butlers -c \
+psql -X -v ON_ERROR_STOP=1 -c \
   "SELECT version_num FROM general.alembic_version;"
 # Expected: multiple rows if module chains are active (one per chain at head)
 
@@ -214,15 +217,15 @@ grep -r "branch_labels" src/butlers/modules/memory/migrations/ | head -5
 # Expected: only the FIRST (root) migration file contains branch_labels = ("memory",);
 # subsequent files have no branch_labels
 
-# 6. New migration does not break existing butler on upgrade
-uv run pytest tests/test_migrations.py -q --tb=short 2>&1 | tail -20
-# Expected: all migration integrity tests pass
+# 6. Source-chain integrity (filesystem only; not a real upgrade/rollback proof)
+uv run --no-sync pytest tests/config/test_migration_chain_head.py -q --tb=short -n 0
+# Expected: source-chain tests pass; genuine PostgreSQL upgrade/rollback remains separate
 ```
 
 ## Metadata visibility and evidence-preserving rollback
 
-The core smoke comparison reads `information_schema.columns` through the ordinary
-migration login. `Tables only in fresh DB` is a privilege-filtered inventory
+The historical core smoke comparison read `information_schema.columns` through
+the ordinary migration login. `Tables only in fresh DB` is a privilege-filtered inventory
 observation. A missing entry can mean that the object exists under another creator
 without effective table privileges; it does not establish that downgrade failed to
 recreate the table. Diagnose this in a disposable database with a positive qualified
@@ -239,11 +242,13 @@ Both a grant-only control and a keep-only control must therefore accompany the
 initial-source reproduction. Retention can mask the inventory failure by preserving
 ownership and ACLs. That does not make retention the cause of correct grants.
 
-The documented decision is to keep the current core_255 migration unchanged. Its
-narrow grant already exposes bootstrap-created amendment metadata through the
-ordinary login's configured inherited Switchboard membership. Actual runtime
-`SET ROLE` identities still face the Switchboard row policy, including after two
-production `init-db.sql` replays re-widen public DML. Metadata equality, row visibility,
+The earlier documented decision kept that core_255 correction unchanged. Its
+narrow grant exposed bootstrap-created amendment metadata through the ordinary
+login's then-configured inherited Switchboard membership. In that predecessor
+fixture, actual runtime `SET ROLE` identities still faced the Switchboard row
+policy after two old `init-db.sql` replays re-widened public DML. The current
+authority rebuild instead verifies exact source permissions after finalization;
+current bootstrap does not restore those historical broad grants. Metadata equality, row visibility,
 DDL ownership and SECURITY DEFINER execution are four separate checks. Runtime table
 grants do not confer ownership needed to ALTER a bootstrap-created table. DROP has
 an additional schema-owner authority: in the fresh PostgreSQL 17 fixture, the

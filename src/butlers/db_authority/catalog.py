@@ -410,14 +410,31 @@ SELECT NOT EXISTS(
    SELECT FROM pg_catalog.jsonb_array_elements_text(expected.value->'owners') owner_name
    WHERE pg_catalog.pg_get_userbyid(n.nspowner)=COALESCE(owner_name,
        (SELECT pg_catalog.pg_get_userbyid(datdba) FROM normal_owner)))
- OR EXISTS(SELECT FROM pg_catalog.aclexplode(COALESCE(n.nspacl,
-      pg_catalog.acldefault('n',n.nspowner))) acl
+ OR EXISTS(
+   SELECT FROM pg_catalog.aclexplode(COALESCE(n.nspacl,
+       pg_catalog.acldefault('n',n.nspowner))) acl
    LEFT JOIN pg_catalog.pg_roles role ON role.oid=acl.grantee
-   WHERE acl.grantee<>n.nspowner AND (acl.privilege_type<>'USAGE' OR acl.is_grantable
-      OR NOT EXISTS(SELECT FROM pg_catalog.jsonb_array_elements_text(
-        expected.value->'users') user_name
-        WHERE role.rolname=COALESCE(user_name,
-           (SELECT pg_catalog.pg_get_userbyid(datdba) FROM normal_owner)))))
+   WHERE acl.grantee<>n.nspowner AND (
+     acl.is_grantable OR NOT (
+       (acl.privilege_type='USAGE' AND EXISTS(
+         SELECT FROM pg_catalog.jsonb_array_elements_text(expected.value->'users') user_name
+         WHERE role.rolname=COALESCE(user_name,
+           (SELECT pg_catalog.pg_get_userbyid(datdba) FROM normal_owner))))
+       OR (acl.privilege_type='CREATE' AND EXISTS(
+         SELECT FROM pg_catalog.jsonb_array_elements_text(expected.value->'creators') creator
+         WHERE role.rolname=creator))
+     )
+   )
+ )
+ OR EXISTS(
+   SELECT FROM pg_catalog.jsonb_array_elements_text(expected.value->'creators') creator
+   WHERE NOT EXISTS(
+     SELECT FROM pg_catalog.aclexplode(COALESCE(n.nspacl,
+       pg_catalog.acldefault('n',n.nspowner))) acl
+     JOIN pg_catalog.pg_roles role ON role.oid=acl.grantee
+     WHERE role.rolname=creator AND acl.privilege_type='CREATE' AND NOT acl.is_grantable
+   )
+ )
  OR EXISTS(SELECT FROM pg_catalog.jsonb_array_elements_text(
       expected.value->'users') user_name
     WHERE COALESCE(user_name,(SELECT pg_catalog.pg_get_userbyid(datdba) FROM normal_owner))
@@ -509,6 +526,15 @@ SELECT NOT EXISTS(
  OR p.owner_name IS DISTINCT FROM COALESCE(p.expected->>'owner',
     (SELECT rolname FROM pg_catalog.pg_roles WHERE oid=(SELECT datdba FROM normal_owner)))
  OR p.prosecdef IS DISTINCT FROM (p.expected->>'definer')::boolean
+ OR (p.prosecdef AND (
+    p.expected->>'owner' IS NULL
+    OR p.proowner=(SELECT datdba FROM normal_owner)
+    OR NOT EXISTS(SELECT FROM pg_catalog.pg_roles owner WHERE owner.oid=p.proowner
+      AND NOT owner.rolcanlogin AND NOT owner.rolinherit AND NOT owner.rolsuper
+      AND NOT owner.rolcreatedb AND NOT owner.rolcreaterole
+      AND NOT owner.rolreplication AND NOT owner.rolbypassrls)
+    OR EXISTS(SELECT FROM pg_catalog.pg_auth_members membership
+       WHERE membership.roleid=p.proowner OR membership.member=p.proowner)))
  OR COALESCE(p.proconfig,ARRAY[]::text[]) IS DISTINCT FROM
      ARRAY(SELECT pg_catalog.jsonb_array_elements_text(p.expected->'settings'))
  OR pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(p.prosrc,'UTF8')),'hex')

@@ -74,8 +74,27 @@ def _relation_kind(value: str) -> ObjectKind:
     raise AuthorityError("Managed database object is not declared")
 
 
+def _partition_owner_transition(row):
+    from .grants import ORDINARY_PARTITION_OWNERS
+
+    if ORDINARY_PARTITION_OWNERS.get((row.schema, row.name)) == row.owner:
+        return True
+    if row.sequence_parent is not None:
+        return ORDINARY_PARTITION_OWNERS.get(row.sequence_parent[:2]) == row.owner
+    return any(
+        row.schema == schema
+        and row.owner == owner
+        and row.producer == "fixed partition parent: " + schema + "." + name
+        for (schema, name), owner in ORDINARY_PARTITION_OWNERS.items()
+    )
+
+
 def validate_relations(
-    observed, declared: tuple[ObjectAuthority, ...], *, administrative_history=False
+    observed,
+    declared: tuple[ObjectAuthority, ...],
+    *,
+    administrative_history=False,
+    transition_owner=None,
 ):
     """Check source identities/owners before effects; serving always requires RLS.
 
@@ -99,7 +118,11 @@ def validate_relations(
         row = expected.get(identity)
         if row is None:
             raise AuthorityError("Managed database object is not declared")
-        if actual["owner"] != row.owner:
+        if actual["owner"] != row.owner and not (
+            transition_owner is not None
+            and actual["owner"] == transition_owner
+            and _partition_owner_transition(row)
+        ):
             # Ownership transfer is an explicit operator prerequisite, never an
             # automatic adoption of a compatible-looking or hostile object.
             raise AuthorityError("Managed database object ownership is unavailable")
@@ -150,7 +173,7 @@ WHERE seq.oid=ANY(:oids) AND seq.relkind='S'
 """
 
 
-def bind_partition_relations(observed, declared, links):
+def bind_partition_relations(observed, declared, links, *, transition_owner=None):
     """Admit only actual children of fixed source parents, with no direct grants."""
     expected = {(row.schema, row.name): row for row in declared}
     by_oid = {}
@@ -170,7 +193,7 @@ def bind_partition_relations(observed, declared, links):
             or parent is None
             or parent.kind != ObjectKind.TABLE
             or actual["schema"] != parent.schema
-            or actual["owner"] != parent.owner
+            or actual["owner"] not in {parent.owner, transition_owner}
         ):
             raise AuthorityError("Managed partition does not match its source producer")
         result.append(
@@ -187,7 +210,7 @@ def bind_partition_relations(observed, declared, links):
     return tuple(result)
 
 
-def validate_sequence_bindings(bound, links) -> None:
+def validate_sequence_bindings(bound, links, *, transition_owner=None) -> None:
     """An identically named sequence is insufficient without its source dependency."""
     by_oid = {}
     for link in links:
@@ -203,7 +226,7 @@ def validate_sequence_bindings(bound, links) -> None:
             parent["parent_schema"],
             parent["parent_name"],
             parent["parent_column"],
-        ) != row.sequence_parent or parent["parent_owner"] != row.owner:
+        ) != row.sequence_parent or parent["parent_owner"] not in {row.owner, transition_owner}:
             raise AuthorityError("Managed sequence dependency differs from source")
 
 
@@ -331,14 +354,21 @@ def converge_authority(
         function_population,
         (*known_ordinary, *definitions),
         {row.identity for row in current_ordinary},
+        migration_owner=migration_owner,
     )
     observed = _rows(connection, _RELATIONS, schemas=list(schemas))
     declared = bind_partition_relations(
         observed,
         manifest.relations,
         _rows(connection, _PARTITION_LINKS, oids=[row["oid"] for row in observed]),
+        transition_owner=migration_owner if not historical else None,
     )
-    bound = validate_relations(observed, declared, administrative_history=historical)
+    bound = validate_relations(
+        observed,
+        declared,
+        administrative_history=historical,
+        transition_owner=migration_owner if not historical else None,
+    )
     validate_sequence_bindings(
         bound,
         _rows(
@@ -346,6 +376,7 @@ def converge_authority(
             _SEQUENCE_LINKS,
             oids=[actual["oid"] for actual, row in bound if row.kind == ObjectKind.SEQUENCE],
         ),
+        transition_owner=migration_owner if not historical else None,
     )
     namespace_owners = {schema: frozenset({migration_owner}) for schema in schemas}
     namespace_owners.update(
@@ -365,16 +396,23 @@ def converge_authority(
         _rows(connection, _NAMESPACE_CATALOG, schemas=list(schemas)), namespace_owners
     )
     if any(revision is None for _, _, revision in plans):
-        verify_declared_security_shapes(connection, manifest, observed, exclude_protected=True)
+        validate_ordinary_purpose_owners(connection, known_ordinary)
+        verify_declared_security_shapes(
+            connection, manifest, observed, exclude_protected=True, allow_previous_ordinary=True
+        )
     # Every current object/dependency/namespace/revision above is checked before
     # the first installer or ACL effect. The installer checks complete fixed
     # protected shapes and owners before changing any managed definition.
     if current_core:
         install_protected_state(connection, manifest.profiles, migration_owner)
         retire_predecessor_interfaces(connection, retired)
-        verify_declared_security_shapes(connection, manifest, observed)
+        verify_declared_security_shapes(
+            connection, manifest, observed, allow_previous_ordinary=True
+        )
     ordinary_bound = tuple(
-        (actual, row) for actual, row in function_bound if row.owner == migration_owner
+        (actual, row)
+        for actual, row in function_bound
+        if row.identity in {definition.identity for definition in known_ordinary}
     )
     if any(revision is None for _, _, revision in plans):
         current_identities = {row.identity for row in current_ordinary}
@@ -386,6 +424,17 @@ def converge_authority(
                 if not historical or row.identity in current_identities
             ),
         )
+        if not historical:
+            from .interfaces import converge_ordinary_security_policies
+
+            converge_ordinary_security_policies(connection, manifest)
+            for actual, row in bound:
+                if actual["owner"] != row.owner:
+                    kind = "SEQUENCE" if row.kind == ObjectKind.SEQUENCE else "TABLE"
+                    connection.exec_driver_sql(
+                        f"ALTER {kind} {_qualified(row)} OWNER TO {quote_identifier(row.owner)}"
+                    )
+            verify_declared_security_shapes(connection, manifest, observed)
     if historical:
         # A bounded administrative catalog cannot confer serving authority. Do
         # not rewrite historical ordinary bodies to a later revision merely to
@@ -405,9 +454,22 @@ def converge_authority(
         if schema in schemas:
             permissions.setdefault(schema, set()).update(("dashboard_auth_api", migration_owner))
             permissions[schema].update(profile.role for profile in manifest.profiles)
-    owners = tuple(sorted({row.owner for row in declared} | {migration_owner, maintenance_owner}))
+    owners = tuple(
+        sorted(
+            {row.owner for row in declared}
+            | {row.owner for row in (*definitions, *known_ordinary)}
+            | {migration_owner, maintenance_owner}
+        )
+    )
     converge_default_privileges(connection, schemas, owners)
-    converge_namespaces(connection, namespaces, permissions)
+    from .grants import ordinary_schema_creators
+
+    converge_namespaces(
+        connection,
+        namespaces,
+        permissions,
+        creators=ordinary_schema_creators(declared) if not historical else {},
+    )
     for actual, row in bound:
         _revoke_relation(connection, actual, row)
         _grant_relation(connection, row)
@@ -479,8 +541,11 @@ def validate_namespaces(observed, expected_owners: dict[str, frozenset[str]]):
     return tuple(bound)
 
 
-def converge_namespaces(connection, bound, permissions: dict[str, frozenset[str]]) -> None:
+def converge_namespaces(
+    connection, bound, permissions: dict[str, frozenset[str]], *, creators=None
+) -> None:
     """Remove observed excess authority; grant only the separately compiled USAGE set."""
+    creators = creators or {}
     for actual in bound:
         target = quote_identifier(actual["name"])
         for acl in _rows(connection, _NAMESPACE_ACL, oid=actual["oid"]):
@@ -492,12 +557,17 @@ def converge_namespaces(connection, bound, permissions: dict[str, frozenset[str]
             connection.exec_driver_sql(
                 f"GRANT USAGE ON SCHEMA {target} TO {quote_identifier(role)}"
             )
+        for role in sorted(creators.get(actual["name"], ())):
+            connection.exec_driver_sql(
+                f"GRANT CREATE ON SCHEMA {target} TO {quote_identifier(role)}"
+            )
     for actual in bound:
         expected = {
             (role, "USAGE")
             for role in permissions.get(actual["name"], ())
             if role != actual["owner"]
         }
+        expected.update((role, "CREATE") for role in creators.get(actual["name"], ()))
         rows = _rows(connection, _NAMESPACE_ACL, oid=actual["oid"])
         if (
             any(row["grantable"] is not False for row in rows)
@@ -571,7 +641,7 @@ ORDER BY n.nspname,p.proname,p.oid
 """
 
 
-def validate_function_population(observed, definitions, required):
+def validate_function_population(observed, definitions, required, *, migration_owner=None):
     """Overloads and owners are preconditions; discovery cannot authorize EXECUTE."""
     indexed = {definition.identity: definition for definition in definitions}
     if len(indexed) != len(definitions):
@@ -584,7 +654,14 @@ def validate_function_population(observed, definitions, required):
         if definition is None or identity in seen:
             raise AuthorityError("Managed function is not declared")
         seen.add(identity)
-        if row["owner"] != definition.owner:
+        from .roles import ORDINARY_PURPOSE_OWNERS
+
+        if row["owner"] != definition.owner and not (
+            migration_owner is not None
+            and row["owner"] == migration_owner
+            and definition.security_definer
+            and definition.owner in ORDINARY_PURPOSE_OWNERS
+        ):
             raise AuthorityError("Managed function ownership prerequisite is unavailable")
         result.append((row, definition))
     if not set(required) <= seen:
@@ -605,6 +682,30 @@ def close_administrative_function_privileges(connection, bound) -> None:
             raise AuthorityError("Historical database function privilege remains available")
 
 
+def validate_ordinary_purpose_owners(connection, definitions) -> None:
+    """Check actual owner profiles independently of compiler/catalog equality."""
+    from .roles import ORDINARY_PURPOSE_OWNERS
+
+    owners = sorted({row.owner for row in definitions if row.security_definer})
+    if any(owner not in ORDINARY_PURPOSE_OWNERS for owner in owners):
+        raise AuthorityError("Ordinary definer purpose is not declared")
+    if not owners:
+        return
+    valid = connection.execute(
+        text("""
+        WITH owners AS (SELECT * FROM pg_catalog.pg_roles WHERE rolname=ANY(:owners))
+        SELECT (SELECT count(*)=:count AND bool_and(NOT rolcanlogin AND NOT rolinherit
+          AND NOT rolsuper AND NOT rolcreaterole AND NOT rolcreatedb
+          AND NOT rolreplication AND NOT rolbypassrls) FROM owners)
+          AND NOT EXISTS(SELECT FROM pg_catalog.pg_auth_members
+            WHERE roleid IN (SELECT oid FROM owners) OR member IN (SELECT oid FROM owners))
+    """),
+        {"owners": owners, "count": len(owners)},
+    ).scalar_one()
+    if valid is not True:
+        raise AuthorityError("Ordinary definer owner profile is unavailable")
+
+
 def converge_ordinary_functions(connection, bound) -> None:
     """Apply only fixed current bodies/ACLs under explicit maintenance authority."""
     from .interfaces import (
@@ -615,10 +716,11 @@ def converge_ordinary_functions(connection, bound) -> None:
         require_maintenance,
     )
 
+    validate_ordinary_purpose_owners(connection, tuple(definition for _, definition in bound))
     changes = []
     for row, definition in bound:
         actual = inspect_function(connection, definition)
-        if actual is None or actual["oid"] != row["oid"]:
+        if actual is None or actual["oid"] != row["oid"] or actual["owner"] != row["owner"]:
             raise AuthorityError("Managed function population changed during convergence")
         if not function_matches(connection, definition, actual):
             changes.append((row, definition))
@@ -627,8 +729,11 @@ def converge_ordinary_functions(connection, bound) -> None:
     for row, definition in changes:
         connection.exec_driver_sql(definition.sql)
         target = _signature(definition)
-        # CREATE OR REPLACE retains the already-validated normal owner. Never
-        # adopt a hostile same-named function by transferring its ownership.
+        # The complete preflight admits only an exact fixed purpose owner or
+        # the independently proved normal migration owner at this transition.
+        connection.exec_driver_sql(
+            f"ALTER FUNCTION {target} OWNER TO {quote_identifier(definition.owner)}"
+        )
         for acl in _rows(connection, _FUNCTION_ACL, oid=row["oid"]):
             role = "PUBLIC" if acl["role"] == "PUBLIC" else quote_identifier(acl["role"])
             connection.exec_driver_sql(f"REVOKE ALL ON FUNCTION {target} FROM {role}")
@@ -1288,7 +1393,12 @@ def validate_rollback_capsule(capsule, manifest, actor: str):
                 parent in _PARTITION_PARENTS
                 and definition is not None
                 and row["schema"] == definition.schema
-                and row["owner"] == definition.owner
+                and row["owner"]
+                == (
+                    manifest.migration_owner
+                    if _partition_owner_transition(definition)
+                    else definition.owner
+                )
             )
         if (
             (row["schema"], row["name"]) not in declared
@@ -1878,6 +1988,36 @@ def _preview_predecessor_marker_shape(connection, manifest, expected, before):
             del cleanup
 
 
+def _preview_predecessor_purpose_policy_shape(connection, manifest, before):
+    """Prove the exact policy transition without weakening full relation hashes."""
+    from .interfaces import converge_ordinary_security_policies
+
+    preview = connection.begin_nested()
+    primary = None
+    try:
+        connection.exec_driver_sql("SET LOCAL search_path=pg_catalog")
+        converge_ordinary_security_policies(
+            connection, manifest, predecessor=True, only={(before["schema"], before["name"])}
+        )
+        oid = connection.execute(
+            text("SELECT pg_catalog.to_regclass(:target)::oid"),
+            {"target": quote_identifier(before["schema"]) + "." + quote_identifier(before["name"])},
+        ).scalar_one()
+        shape = connection.execute(text(_ROLLBACK_RELATION_SHAPE), {"oid": oid}).scalar_one()
+        if shape != before["shape"]:
+            raise AuthorityError("R1 predecessor purpose policy does not explain full shape")
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        try:
+            preview.rollback()
+        except BaseException:
+            if primary is None:
+                raise
+            primary.add_note("Rollback purpose policy savepoint cleanup was incomplete")
+
+
 def _verify_r1_relation_shapes(connection, manifest, current, expected):
     from .interfaces import _PROTECTED_GROUPS, _RETIRED_ADMIN_SCHEMAS
 
@@ -1889,6 +2029,9 @@ def _verify_r1_relation_shapes(connection, manifest, current, expected):
     if {(r["schema"], r["name"]) for r in current["relations"]} != set(old_relations):
         raise AuthorityError("R1 relation population differs from the predecessor")
     protected = {(s, n) for group in _PROTECTED_GROUPS.values() for s, n, _ in group}
+    from .interfaces import ordinary_security_policy_changes
+
+    policy_targets = {key[:2] for key in ordinary_security_policy_changes(manifest)}
     restore_marker = False
     for row in current["relations"]:
         identity = row["schema"], row["name"]
@@ -1896,6 +2039,9 @@ def _verify_r1_relation_shapes(connection, manifest, current, expected):
         if any(row[k] != before[k] for k in ("kind", "rls", "forced_rls", "partition", "parents")):
             raise AuthorityError("R1 retained relation security/shape differs")
         if identity not in protected and row["shape"] != before["shape"]:
+            if identity in policy_targets:
+                _preview_predecessor_purpose_policy_shape(connection, manifest, before)
+                continue
             if identity != ("public", "model_dispatch_attempts"):
                 raise AuthorityError("R1 retained relation security/shape differs")
             _preview_predecessor_marker_shape(connection, manifest, expected, before)
@@ -1945,6 +2091,9 @@ def restore_predecessor_r1(connection, capsule):
         if not function_matches(connection, definition, inspect_function(connection, definition)):
             raise AuthorityError("R1 final protected interface differs from source")
     _verify_r1_callable_sources(manifest, current, expected)
+    from .interfaces import converge_ordinary_security_policies, verify_declared_security_shapes
+
+    verify_declared_security_shapes(connection, manifest, current["relations"])
     # Match every retained relation before any owner or privilege change. Only
     # source-retired administrative metadata is allowed to be absent in R1.
     restore_marker = _verify_r1_relation_shapes(connection, manifest, current, expected)
@@ -1969,6 +2118,7 @@ def restore_predecessor_r1(connection, capsule):
         connection.exec_driver_sql(
             f"ALTER {kind} {target} OWNER TO {quote_identifier(row['owner'])}"
         )
+    converge_ordinary_security_policies(connection, manifest, predecessor=True)
     _replay_predecessor_initializer(connection, manifest.migration_owner, source)
     _restore_predecessor_privileges(connection, expected, manifest)
     if restore_marker:

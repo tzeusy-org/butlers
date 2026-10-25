@@ -109,9 +109,9 @@ The `Database` class exposes `fetch()`, `fetchrow()`, `fetchval()`, and `execute
 
 ## Schema Isolation Guarantees
 
-- Each butler can only see its own schema plus `public`.
-- Inter-butler communication is MCP-only through the Switchboard -- no direct cross-schema SQL.
-- The `public` schema is read-accessible by all butlers but write patterns are controlled by the core migration chain and identity resolution code.
+- Each butler's runtime has its declared primary/private schemas plus only the exact additional reads and operations named by the adopted source manifest. Named Chronicler evidence readers and other adopted cross-schema projections are explicit exceptions; discovery cannot extend them.
+- Inter-butler actions go through MCP and the Switchboard. Direct cross-schema SQL is limited to the exact adopted readers/projections in the source manifest; it is not a general action or ownership channel.
+- `public` access is defined per object, operation and role, with the required RLS policies retained. An unlisted public object has no ambient runtime read or write grant.
 
 ## Verification
 

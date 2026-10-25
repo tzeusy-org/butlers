@@ -969,9 +969,22 @@ def test_function_manifest_binds_fixed_overloads_to_actual_consumers_and_selecte
             "dashboard_auth_api",
             "connector_writer",
             "credential_store_writer",
+            "migration_selected",
         }
     )
     assert all(set(row.executors) <= allowed for row in rows)
+    assert all(
+        row.owner in PURPOSE_OWNERS and row.owner != "migration_selected"
+        for row in rows
+        if row.security_definer
+    )
+    assert {row.name for row in rows if "migration_selected" in row.executors} == {
+        "host",
+        "cost_claim_restore_row",
+        "ensure_registry_control",
+        "switchboard_connector_heartbeat_log_drop_expired_partitions",
+        "switchboard_message_inbox_drop_expired_partitions",
+    }
     assert all(
         row.settings
         in {
@@ -1020,8 +1033,9 @@ def test_function_population_and_convergence_refuse_ambiguous_catalog_before_eff
             validate_function_population(population, (definition,), required)
 
     class CatalogConnection:
-        def __init__(self, maintenance):
+        def __init__(self, maintenance, owner_profile=True):
             self.maintenance = maintenance
+            self.owner_profile = owner_profile
             self.row = dict(
                 oid=71,
                 owner=definition.owner,
@@ -1033,6 +1047,9 @@ def test_function_population_and_convergence_refuse_ambiguous_catalog_before_eff
             self.effects = []
 
         def execute(self, statement, parameters):
+            if "WITH owners AS" in str(statement):
+                assert parameters == {"owners": ["relationship_status_owner"], "count": 1}
+                return SimpleNamespace(scalar_one=lambda: self.owner_profile)
             if str(statement) == _FUNCTION_CATALOG:
                 return SimpleNamespace(
                     mappings=lambda: SimpleNamespace(one_or_none=lambda: self.row)
@@ -1047,6 +1064,9 @@ def test_function_population_and_convergence_refuse_ambiguous_catalog_before_eff
             self.effects.append(statement)
             if statement == definition.sql:
                 self.row.update(body=definition.body, config=list(definition.settings))
+            elif statement.startswith("ALTER FUNCTION"):
+                assert statement.endswith('OWNER TO "relationship_status_owner"')
+                self.row["owner"] = definition.owner
             elif statement.startswith("REVOKE ALL ON FUNCTION"):
                 self.acl.clear()
             elif statement.startswith("GRANT EXECUTE ON FUNCTION"):
@@ -1063,13 +1083,34 @@ def test_function_population_and_convergence_refuse_ambiguous_catalog_before_eff
     connection = CatalogConnection(True)
     converge_ordinary_functions(connection, bound)
     assert connection.effects[0] == definition.sql
-    assert len(connection.effects) == 3
+    assert len(connection.effects) == 4  # Fixed owner transfer is an explicit effect.
     assert connection.acl == [
         dict(role="butler_switchboard_rw", privilege="EXECUTE", grantable=False)
     ]
     connection.effects.clear()
     converge_ordinary_functions(connection, bound)
     assert connection.effects == []
+    unsafe_owner = CatalogConnection(True, owner_profile=False)
+    with pytest.raises(AuthorityError, match="owner profile"):
+        converge_ordinary_functions(unsafe_owner, bound)
+    assert unsafe_owner.effects == []
+    predecessor = observed | {"owner": "migration_selected"}
+    assert validate_function_population(
+        (predecessor,), (definition,), {definition.identity}, migration_owner="migration_selected"
+    )
+    with pytest.raises(AuthorityError):
+        validate_function_population((predecessor,), (definition,), {definition.identity})
+    previous_owner = CatalogConnection(True)
+    previous_owner.row["owner"] = "migration_selected"
+    previous_bound = validate_function_population(
+        (predecessor,), (definition,), {definition.identity}, migration_owner="migration_selected"
+    )
+    converge_ordinary_functions(previous_owner, previous_bound)
+    assert previous_owner.row["owner"] == "relationship_status_owner"
+    assert any(
+        statement.endswith('OWNER TO "relationship_status_owner"')
+        for statement in previous_owner.effects
+    )
     connection.row["oid"] = 72
     with pytest.raises(AuthorityError):
         converge_ordinary_functions(connection, bound)
@@ -1401,7 +1442,7 @@ def test_actual_selected_core_schemas_keep_source_wrappers_without_extra_serving
     local = [r for r in rows if r.name == "connectors_filtered_events_ensure_partition"]
     assert {r.schema for r in local} == {"general", "qa", "connectors"}
     assert all(r.executors == () for r in local if r.schema in {"general", "qa"})
-    assert all(r.owner == "normal_owner" for r in local)
+    assert all(r.owner == "connector_partition_owner" for r in local)
     old = predecessor_function_sources(profiles)
     general = [
         sql
@@ -2905,7 +2946,7 @@ def test_finance_boot_witness_manifest_preserves_landed_selected_producer(select
     assert len(matches) == 1
     row = matches[0]
     assert row.identity == ("public", "finance_warning_boot_current", "uuid,bigint")
-    assert row.owner == "ordinary_migration_owner"
+    assert row.owner == "registry_control_owner"  # REQ021 fixed pure-reader purpose.
     assert row.executors == ("butler_finance_rw",)
     assert row.security_definer is True
     assert row.settings == ("search_path=pg_catalog, pg_temp",)
@@ -2931,3 +2972,117 @@ def test_finance_boot_witness_manifest_preserves_landed_selected_producer(select
         if item.name == row.name
     )
     assert no_finance_row.executors == ()
+
+
+def test_actual_serving_catalog_requires_isolated_owners_for_every_managed_definer():
+    """Exercise the real source-to-admission compiler, not a diagnostic manifest."""
+    from butlers.db_authority.grants import serving_catalog_contract
+    from butlers.db_authority.roles import PURPOSE_OWNERS, bootstrap_role_manifest
+
+    contract = serving_catalog_contract("butlers")
+    definers = [row for row in contract["functions"] if row["definer"]]
+    assert definers
+    assert all(row["owner"] in PURPOSE_OWNERS for row in definers)
+    bootstrap = bootstrap_role_manifest(
+        "butlers", "ordinary_migration_owner", source_database="butlers"
+    )
+    assert all(row["owner"] in bootstrap["roles"] for row in definers)
+    assert all(row["owner"] not in row["executors"] for row in definers)
+    relations = {(row["schema"], row["name"]): row for row in contract["relations"]}
+    assert relations["connectors", "filtered_events"]["owner"] == "connector_partition_owner"
+    assert relations["switchboard", "message_inbox"]["owner"] == "switchboard_partition_owner"
+    schemas = {row["name"]: row for row in contract["schemas"]}
+    assert schemas["connectors"]["creators"] == ["connector_partition_owner"]
+    assert schemas["switchboard"]["creators"] == ["switchboard_partition_owner"]
+    assert all(
+        not row["creators"]
+        for row in contract["schemas"]
+        if row["name"] not in {"connectors", "switchboard"}
+    )
+    probe = [
+        p
+        for p in relations["public", "model_catalog"]["permissions"]
+        if p["role"] == "model_probe_owner"
+    ]
+    assert {(p["verb"], tuple(p["columns"])) for p in probe} == {
+        ("SELECT", ("id",)),
+        (
+            "UPDATE",
+            (
+                "last_verified_at",
+                "last_verified_latency_ms",
+                "last_verified_ok",
+                "last_verified_error",
+                "updated_at",
+            ),
+        ),
+    }
+    restore_sequence = [
+        p
+        for p in relations["public", "cost_claim_events_id_seq"]["permissions"]
+        if p["role"] == "cost_claim_restore_owner"
+    ]
+    assert restore_sequence == [
+        {"role": "cost_claim_restore_owner", "verb": "UPDATE", "columns": []}
+    ]
+
+
+def test_ordinary_purpose_policy_reverse_preserves_full_shape_and_savepoint_cleanup():
+    """Execute the source reverse planner; native PostgreSQL hashes are separate proof."""
+    from types import SimpleNamespace
+
+    from butlers.db_authority import apply, grants, interfaces
+
+    manifest = grants.compile_relation_manifest(
+        "butlers", "normal_owner", "maintenance", source_database="butlers"
+    )
+    changes = interfaces.ordinary_security_policy_changes(manifest)
+    assert {key[:2] for key in changes} == {
+        ("public", "cost_claims"),
+        ("public", "cost_claim_events"),
+        ("public", "cost_claim_resolutions"),
+        ("public", "insight_amendments"),
+        ("switchboard", "butler_registry_control_plane"),
+        ("switchboard", "butler_boot_registrations"),
+    }
+    before = dict(schema="public", name="cost_claims", shape="complete-captured-shape")
+
+    class Connection:
+        def __init__(self, wrong_shape=False):
+            self.events = []
+            self.wrong_shape = wrong_shape
+
+        def begin_nested(self):
+            self.events.append("SAVEPOINT")
+            return SimpleNamespace(rollback=lambda: self.events.append("ROLLBACK SAVEPOINT"))
+
+        def exec_driver_sql(self, sql):
+            self.events.append(sql)
+            if sql.startswith("SELECT current_user=session_user AND rolsuper"):
+                return SimpleNamespace(scalar_one=lambda: True)
+
+        def execute(self, sql, params):
+            if str(sql) == "SELECT pg_catalog.to_regclass(:target)::oid":
+                assert params == {"target": '"public"."cost_claims"'}
+                return SimpleNamespace(scalar_one=lambda: 81)
+            assert str(sql) == apply._ROLLBACK_RELATION_SHAPE and params == {"oid": 81}
+            restored = any(
+                s.startswith('CREATE POLICY "cost_claims_restore_owner"')
+                and "cost_claim_restore_owner" not in s
+                for s in self.events
+            )
+            return SimpleNamespace(
+                scalar_one=lambda: (
+                    before["shape"] if restored and not self.wrong_shape else "wrong-full-shape"
+                )
+            )
+
+    successful = Connection()
+    apply._preview_predecessor_purpose_policy_shape(successful, manifest, before)
+    assert successful.events[0] == "SAVEPOINT"
+    assert successful.events[-1] == "ROLLBACK SAVEPOINT"
+    assert not any("INSERT INTO" in sql or "UPDATE " in sql for sql in successful.events)
+    rejected = Connection(wrong_shape=True)
+    with pytest.raises(AuthorityError, match="full shape"):
+        apply._preview_predecessor_purpose_policy_shape(rejected, manifest, before)
+    assert rejected.events[-1] == "ROLLBACK SAVEPOINT"

@@ -751,8 +751,12 @@ def declared_sequences(relations: tuple[ObjectAuthority, ...]) -> tuple[ObjectAu
             permissions = tuple(
                 Permission(permission.role, ("USAGE",))
                 for permission in row.permissions
-                if "INSERT" in permission.verbs and not permission.columns
+                if "INSERT" in permission.verbs
+                and not permission.columns
+                and permission.role != "cost_claim_restore_owner"
             )
+            if (row.schema, name) == ("public", "cost_claim_events_id_seq"):
+                permissions += (Permission("cost_claim_restore_owner", ("UPDATE",)),)
             result.append(
                 ObjectAuthority(
                     row.schema,
@@ -987,6 +991,7 @@ def compile_relation_manifest(
         *auxiliary_objects(migration_owner, maintenance_owner),
         *shared_reader_objects(migration_owner),
     )
+    relations = ordinary_purpose_relations(relations)
     relations += declared_sequences(relations)
     # A fixed cross-runtime exception cannot manufacture an absent daemon
     # principal in a selected deployment. Protected/purpose owners remain fixed.
@@ -1009,6 +1014,166 @@ def compile_relation_manifest(
         raise AuthorityError("Compiled object authority is ambiguous")
     return RelationManifest(
         database, migration_owner, maintenance_owner, profiles, relations, source_database
+    )
+
+
+# DDL functions need ownership of these fixed parents and their independently
+# validated partition children. No other observed relation acquires an owner.
+ORDINARY_PARTITION_OWNERS = {
+    ("connectors", "filtered_events"): "connector_partition_owner",
+    ("switchboard", "connector_heartbeat_log"): "switchboard_partition_owner",
+    ("switchboard", "message_inbox"): "switchboard_partition_owner",
+}
+
+
+def ordinary_schema_creators(relations):
+    """CREATE is required only for fixed partition DDL purpose owners."""
+    result = {}
+    for row in relations:
+        if ORDINARY_PARTITION_OWNERS.get((row.schema, row.name)) == row.owner:
+            result.setdefault(row.schema, set()).add(row.owner)
+    return {schema: frozenset(owners) for schema, owners in result.items()}
+
+
+def ordinary_purpose_relations(relations):
+    """Minimum underlying capabilities of the fixed ordinary definer bodies."""
+    from dataclasses import replace
+
+    rights = {}
+
+    def grant(schema, name, owner, verbs, columns=()):
+        rights.setdefault((schema, name), []).append(Permission(owner, verbs, columns))
+
+    for name in ("dashboard_conversation_turns", "dashboard_conversation_turn_sessions"):
+        grant("public", name, "dashboard_turn_owner", _WRITE)
+    grant("public", "dashboard_messages", "dashboard_turn_owner", _READ)
+    grant(
+        "relationship",
+        "entity_facts",
+        "identity_lookup_owner",
+        _READ,
+        ("subject", "primary", "validity", "object_kind", "predicate", "object"),
+    )
+    grant("public", "entities", "identity_lookup_owner", _READ, ("id", "roles", "metadata"))
+    grant("public", "model_catalog", "model_probe_owner", _READ, ("id",))
+    grant(
+        "public",
+        "model_catalog",
+        "model_probe_owner",
+        ("UPDATE",),
+        (
+            "last_verified_at",
+            "last_verified_latency_ms",
+            "last_verified_ok",
+            "last_verified_error",
+            "updated_at",
+        ),
+    )
+    grant(
+        "relationship",
+        "pending_actions",
+        "relationship_status_owner",
+        _READ,
+        ("id", "status", "origin"),
+    )
+    for name in ("cost_claims", "cost_claim_resolutions", "cost_claim_events"):
+        grant("public", name, "cost_claim_restore_owner", _APPEND)
+    for name, verbs in {
+        "instance": ("SELECT", "UPDATE"),
+        "contexts": _CRUD,
+        "intents": _CRUD,
+        "ceremonies": _CRUD,
+        "credentials": _WRITE,
+        "sessions": _CRUD,
+        "csrf": ("SELECT", "INSERT", "DELETE"),
+        "rate_buckets": _WRITE,
+        "audit": ("SELECT", "INSERT", "DELETE"),
+    }.items():
+        grant("dashboard_auth", name, "dashboard_auth_owner", verbs)
+    grant("finance", "bills", "finance_bill_status_owner", _READ, ("id", "status"))
+    grant(
+        "public",
+        "insight_candidates",
+        "premise_amendment_owner",
+        _READ,
+        ("id", "status", "delivered_at", "premise"),
+    )
+    grant(
+        "public",
+        "insight_amendments",
+        "premise_amendment_owner",
+        ("INSERT",),
+        ("candidate_id", "episode_key", "reason", "summary"),
+    )
+    grant(
+        "health",
+        "facts",
+        "health_refill_status_owner",
+        _READ,
+        ("id", "validity", "metadata", "predicate", "scope", "subject", "created_at", "valid_at"),
+    )
+    grant("switchboard", "butler_registry", "registry_control_owner", _READ, ("name",))
+    grant(
+        "switchboard",
+        "butler_registry",
+        "registry_control_owner",
+        ("UPDATE",),
+        ("eligibility_state", "eligibility_updated_at", "quarantined_at", "quarantine_reason"),
+    )
+    grant("switchboard", "butler_registry_control_plane", "registry_control_owner", _READ)
+    grant(
+        "switchboard",
+        "butler_registry_control_plane",
+        "registry_control_owner",
+        ("INSERT",),
+        ("name",),
+    )
+    grant(
+        "switchboard",
+        "butler_registry_control_plane",
+        "registry_control_owner",
+        ("UPDATE",),
+        (
+            "boot_epoch",
+            "boot_instance_id",
+            "observed_state",
+            "observed_boot_epoch",
+            "route_compatible",
+            "accepting_routes",
+            "probe_failure_class",
+            "updated_at",
+            "probe_sequence",
+            "recorded_probe_sequence",
+            "last_probe_at",
+            "healthy_observed_at",
+            "policy_state",
+            "policy_actor",
+            "policy_reason",
+            "policy_changed_at",
+            "policy_provenance",
+        ),
+    )
+    grant(
+        "switchboard",
+        "butler_boot_registrations",
+        "registry_control_owner",
+        _READ,
+        ("name", "boot_instance_id", "boot_epoch"),
+    )
+    grant(
+        "switchboard",
+        "butler_boot_registrations",
+        "registry_control_owner",
+        ("INSERT",),
+        ("name", "boot_instance_id", "boot_epoch"),
+    )
+    return tuple(
+        replace(
+            row,
+            owner=ORDINARY_PARTITION_OWNERS.get((row.schema, row.name), row.owner),
+            permissions=(*row.permissions, *rights.get((row.schema, row.name), ())),
+        )
+        for row in relations
     )
 
 
@@ -1194,6 +1359,9 @@ def select_migration_manifest(manifest: RelationManifest, plans: tuple | None) -
                 row,
                 required=False if historical else required,
                 permissions=() if historical else row.permissions,
+                owner=manifest.migration_owner
+                if historical and (row.schema, row.name) in ORDINARY_PARTITION_OWNERS
+                else row.owner,
             )
         )
     # Serial/identity dependencies follow only actual selected parent rows.
@@ -4486,6 +4654,71 @@ _ORDINARY_FUNCTION_SOURCES = (
 )
 
 
+_TURN_PURPOSE_FUNCTIONS = (
+    "dashboard_turn_require_role",
+    "dashboard_turn_open",
+    "dashboard_turn_claim_ingress",
+    "dashboard_turn_bind_ingress",
+    "dashboard_turn_record_ingress_failure",
+    "dashboard_turn_claim_target",
+    "dashboard_turn_mark_route_enqueued",
+    "dashboard_turn_register_session",
+    "dashboard_turn_reconcile_route_recovery",
+    "dashboard_turn_claim_invoke",
+    "dashboard_turn_release_invoke",
+    "dashboard_turn_complete_session",
+    "dashboard_turn_claim_external_action",
+    "dashboard_turn_mark_terminal",
+    "dashboard_turn_request_cancel",
+    "dashboard_turn_acknowledge_cancel",
+    "dashboard_turn_confirm_cancel",
+    "dashboard_turn_live_sessions",
+    "dashboard_turn_dispatch_status",
+)
+
+# These identities come from the fixed producers above. Neither a catalog name
+# nor a caller-supplied function can select a privileged owner. Each owner's
+# underlying permissions are separately enumerated in the relation manifest.
+_ORDINARY_DEFINER_OWNERS = {
+    ("connectors", "connectors_filtered_events_ensure_partition"): "connector_partition_owner",
+    (
+        "__SELECTED_SCHEMA__",
+        "connectors_filtered_events_ensure_partition",
+    ): "connector_partition_owner",
+    ("public", "resolve_owner_triple"): "identity_lookup_owner",
+    **{("public", name): "dashboard_turn_owner" for name in _TURN_PURPOSE_FUNCTIONS},
+    ("public", "record_runtime_probe_verification"): "model_probe_owner",
+    ("public", "resolve_relationship_prepared_action_status"): "relationship_status_owner",
+    ("public", "cost_claim_restore_row"): "cost_claim_restore_owner",
+    ("dashboard_auth", "api"): "dashboard_auth_owner",
+    ("dashboard_auth", "host"): "dashboard_auth_owner",
+    ("dashboard_auth", "cleanup"): "dashboard_auth_owner",
+    ("public", "resolve_finance_bill_status"): "finance_bill_status_owner",
+    ("public", "enqueue_premise_amendments"): "premise_amendment_owner",
+    ("public", "resolve_health_medication_refill"): "health_refill_status_owner",
+    (
+        "switchboard",
+        "switchboard_connector_heartbeat_log_ensure_partition",
+    ): "switchboard_partition_owner",
+    (
+        "switchboard",
+        "switchboard_connector_heartbeat_log_drop_expired_partitions",
+    ): "switchboard_partition_owner",
+    ("switchboard", "switchboard_message_inbox_ensure_partition"): "switchboard_partition_owner",
+    (
+        "switchboard",
+        "switchboard_message_inbox_drop_expired_partitions",
+    ): "switchboard_partition_owner",
+    ("switchboard", "ensure_registry_control"): "registry_control_owner",
+    ("public", "register_butler_boot"): "registry_control_owner",
+    ("public", "reserve_butler_probe"): "registry_control_owner",
+    ("public", "record_butler_probe"): "registry_control_owner",
+    ("public", "set_butler_registry_policy"): "registry_control_owner",
+    ("public", "qa_local_schedule_policy"): "registry_control_owner",
+    ("public", "finance_warning_boot_current"): "registry_control_owner",
+}
+
+
 def _declared_function_executors(name, schema, profiles, trigger):
     """Fixed actual consumers; no PUBLIC, observed role or wildcard grants."""
     if trigger:
@@ -4644,16 +4877,47 @@ def compile_function_manifest(
             if context is not None:
                 _identifier(context)
                 actual_body = actual_body.replace("__CHAIN_SCHEMA__", '"' + context + '"')
+            if name in {"cost_claim_audit_claim", "cost_claim_audit_resolution"}:
+                # A fixed restore purpose replaces the old implicit table-owner
+                # execution path. Only that unreachable role and the original
+                # owner can suppress duplicate audit under the restore GUC.
+                old = "IF current_user = ("
+                actual_body = actual_body.replace(
+                    old,
+                    "IF (current_user = 'cost_claim_restore_owner'::name OR current_user = (",
+                    1,
+                ).replace(
+                    ")\n               AND current_setting('butlers.cost_claim_restore'",
+                    "))\n               AND current_setting('butlers.cost_claim_restore'",
+                    1,
+                )
             trigger = "RETURNS trigger" in header or "RETURNS TRIGGER" in header
             settings = ("search_path=pg_catalog, pg_temp",)
             if "SET row_security = on" in header:
                 settings = ("row_security=on", *settings)
+            owner = migration_owner
+            if definer:
+                owner = _ORDINARY_DEFINER_OWNERS.get((schema, name))
+                if owner is None:
+                    raise AuthorityError("Managed definer purpose is not declared")
+            executors = _function_executors(name, target, profiles, trigger)
+            if (schema, name) in {
+                ("dashboard_auth", "host"),
+                ("public", "cost_claim_restore_row"),
+                ("switchboard", "ensure_registry_control"),
+                ("switchboard", "switchboard_connector_heartbeat_log_drop_expired_partitions"),
+                ("switchboard", "switchboard_message_inbox_drop_expired_partitions"),
+            }:
+                # These existing administrative operations formerly relied on
+                # implicit normal-owner EXECUTE. The serving auth API never
+                # receives host authority or migration-role membership.
+                executors = (*executors, migration_owner)
             row = FunctionAuthority(
                 target,
                 name,
                 signature,
-                migration_owner,
-                _function_executors(name, target, profiles, trigger),
+                owner,
+                executors,
                 definer,
                 actual_header,
                 actual_body,
@@ -4726,6 +4990,7 @@ def serving_catalog_contract(database: str) -> dict:
                     None if role == normal else role for role in fixed_owners.get(name, (normal,))
                 ],
                 users=[None if role == normal else role for role in sorted(users)],
+                creators=sorted(ordinary_schema_creators(manifest.relations).get(name, ())),
             )
             for name, users in sorted(namespace_access.items())
             if name not in {"dashboard_attention", "dashboard_stepup"}
@@ -4802,7 +5067,7 @@ def security_expression_tokens(expression: str | None):
     return result
 
 
-def compiled_security_contract(manifest: RelationManifest) -> dict:
+def compiled_security_contract(manifest: RelationManifest, *, ordinary_purposes=True) -> dict:
     """Fixed policies/triggers; observed catalog rows never extend this set.
 
     The normal-owner placeholder is bound to the independently selected database
@@ -4852,6 +5117,15 @@ def compiled_security_contract(manifest: RelationManifest) -> dict:
     for table in ("runtime_probe_control_receipts", "insight_feedback", "insight_amendments"):
         predicate = equal("butler_switchboard_rw")
         policy("public", table, table + "_switchboard", "*", predicate, predicate)
+    if ordinary_purposes:
+        policy(
+            "public",
+            "insight_amendments",
+            "premise_amendment_insert",
+            "a",
+            check="true",
+            roles=("premise_amendment_owner",),
+        )
     predicate = "((signal_type <> 'dnd'::text) OR (CURRENT_USER = 'dnd_generation_owner'::name))"
     policy("public", "user_context", "dnd_user_context_select", "r", "true")
     policy("public", "user_context", "dnd_user_context_insert", "a", check=predicate)
@@ -4887,7 +5161,10 @@ def compiled_security_contract(manifest: RelationManifest) -> dict:
     )
     for table in ("cost_claims", "cost_claim_resolutions", "cost_claim_events"):
         policy("public", table, table + "_read", "r", "true")
-        policy("public", table, table + "_restore_owner", "a", check=equal("__NORMAL_OWNER__"))
+        predicate = equal("__NORMAL_OWNER__")
+        if ordinary_purposes:
+            predicate = f"({predicate} OR {equal('cost_claim_restore_owner')})"
+        policy("public", table, table + "_restore_owner", "a", check=predicate)
     predicate = "(asserted_by_role = CURRENT_USER)"
     policy(
         "public",
@@ -4999,6 +5276,21 @@ def compiled_security_contract(manifest: RelationManifest) -> dict:
         "true",
         roles=("butler_switchboard_rw",),
     )
+    if ordinary_purposes:
+        for table, commands in (
+            ("butler_registry_control_plane", (("r", "read"), ("a", "insert"), ("w", "update"))),
+            ("butler_boot_registrations", (("r", "read"), ("a", "insert"))),
+        ):
+            for command, label in commands:
+                policy(
+                    "switchboard",
+                    table,
+                    "registry_purpose_" + label,
+                    command,
+                    None if command == "a" else "true",
+                    "true" if command in {"a", "w"} else None,
+                    roles=("registry_control_owner",),
+                )
     for table in (
         "goals",
         "invocations",
