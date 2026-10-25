@@ -126,3 +126,56 @@ runtime settings, providers, tables or notification behavior.
 
 - [Switchboard Butler](switchboard.md) -- routes financial email and messages here
 - [Travel Butler](travel.md) -- stores travel receipts as documents; Finance owns the ledger
+
+### Subscription field claims and current warnings
+
+The Finance 019 migration preserves the stored renewal and complete amount/currency
+pair as a baseline. Extracted disagreements become deduplicated, unresolved field
+claims with the available server-attested producer binding. They do not replace a
+baseline or become owner confirmation through metadata or a message identifier.
+Legacy origins default to `extracted`. The existing status and cancellation-door
+protections still apply. The subscription read API exposes origins, epochs and
+claims alongside the unchanged raw values; it adds no confirmation endpoint.
+
+The existing registered `track_subscription` tool requires an explicit date and
+complete amount/currency pair. An authenticated owner invocation commits those
+supplied values and advances confirmation epochs, resolving older pending claims
+without erasing their values. Attestation, logical-identity serialization, row
+locking and writes share one transaction. Concurrent first inserts cannot create
+two logical subscriptions. Ambiguous legacy identities stop the migration before
+mutation. Downgrade locks both subscriptions and bills and refuses any surviving
+row; an actually empty boundary can return to its predecessor without losing
+history. The current writer fails closed against that predecessor's missing field
+columns. No deployment, duplicate repair or migration execution is implied by source.
+
+Annual renewal scans filter each baseline and unresolved date into the existing
+owner-local today-through-14-days window before choosing the earliest date. The
+selected date drives the obligation period, priority, stable key and expiry at the
+following owner-local midnight. Elapsed claims cannot hide an actionable claim.
+Reports and differing complete prices remain explicitly unverified; a currency
+mismatch never causes conversion or a percentage comparison. The existing posted
+transaction price detector retains its greater-than-five-percent, 60-day behavior.
+Metadata-only next-price hints are presented as unverified reports.
+
+Daily and urgent Switchboard jobs use one daemon-held, fixed-purpose currentness
+reader. The private exchange binds the exact subscription UUID, selected native
+date, confirmation epoch and current published boot/catalog to the real registered
+Finance handler. MCP initialize and discovery carry a pending bearer only. They
+cannot consume it or query Finance. The handler consumes the one-use claim before
+its fixed owning read. There is no generic RPC, owner/fact impersonation, dashboard
+key, cross-domain SQL exception or new grant. Missing publication, unsupported
+routing, changed identity, replay, malformed input or outage produces UNKNOWN.
+The normal broker preserves its as-of qualification; a known current supersession
+withdraws the warning, including a confirmation committed during a hold or synthesis.
+
+Each participating daemon owns the whole operation, including client exit,
+acquisition, transaction, query and native pool release. One original five-second
+absolute deadline bounds the caller. Incomplete cleanup stays retained and
+quarantined across repeated cancellation; it cannot return a late success or allow
+another read. A failed release/close is not healthy readmission. Shutdown revokes
+admission first, joins both the existing Chronicler and Finance owners against the
+same resource deadline, and defers the dependent module/pool tail once if necessary.
+An unresponsive dependency remains reported incomplete with ownership retained.
+Genuine PostgreSQL, deployment and combined-head hosted proof are separate from
+software controls. Name-bearing output/edit handling remains the dependent .17
+work; this substrate does not claim that delivery.

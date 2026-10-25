@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import shutil
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
@@ -94,6 +96,10 @@ CREATE TABLE IF NOT EXISTS finance.subscriptions (
                             CHECK (cancellation_url_source IN ('owner', 'extracted')),
     status_source       TEXT NOT NULL DEFAULT 'extracted'
                             CHECK (status_source IN ('owner', 'extracted')),
+    field_claims JSONB NOT NULL DEFAULT '[]'::jsonb,
+    date_epoch BIGINT NOT NULL DEFAULT 0,
+    renewal_source TEXT NOT NULL DEFAULT 'extracted',
+    price_source TEXT NOT NULL DEFAULT 'extracted',
     metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -2651,3 +2657,901 @@ async def test_monthly_finance_digest_degrades_gracefully_on_trend_failure(
         assert len(digest_cands) == 1
         message = digest_cands[0]["message"]
         assert "Month-over-month" not in message
+
+
+@pytest.fixture
+def field_scan_db(postgres_container):
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
+
+    # Full real core/Finance shape before this test enters an async loop.
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "finance"],
+        schemas={"finance": "finance"},
+    )
+
+
+@pytest.mark.parametrize(
+    "baseline_days,claim_days,selected_days",
+    [(40, [3], 3), (8, [3], 3), (3, [8], 3), (40, [-1, 4], 4)],
+)
+async def test_scan_filters_each_claim_before_selecting_date_and_binds_ledger_premise_expiry(
+    field_scan_db, baseline_days, claim_days, selected_days
+):
+    import asyncpg
+
+    from butlers.db import register_jsonb_codec
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with asyncpg.create_pool(
+        field_scan_db,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "finance,public"},
+    ) as pool:
+        await pool.execute(
+            "INSERT INTO insight_settings(id,verbosity) VALUES(1,'normal') "
+            "ON CONFLICT(id) DO UPDATE SET verbosity='normal'"
+        )
+        await _insert_subscription(
+            pool,
+            service="Synthetic claims",
+            frequency="yearly",
+            next_renewal=_today() + timedelta(days=baseline_days),
+        )
+        row = await pool.fetchrow(
+            "SELECT id FROM finance.subscriptions WHERE service='Synthetic claims'"
+        )
+        await pool.execute(
+            "UPDATE finance.subscriptions SET field_claims=$2::jsonb WHERE id=$1",
+            row["id"],
+            [
+                {
+                    "field": "renewal",
+                    "value": (_today() + timedelta(days=d)).isoformat(),
+                    "resolved": False,
+                    "epoch": 0,
+                }
+                for d in claim_days
+            ],
+        )
+        await run_insight_scan(pool)
+        candidates = [
+            c
+            for c in await pool.fetch("SELECT * FROM insight_candidates")
+            if c["category"] == "subscription-renewal"
+        ]
+        assert len(candidates) == 1
+        selected = _today() + timedelta(days=selected_days)
+        candidate = candidates[0]
+        assert candidate["dedup_key"].endswith(selected.isoformat())
+        metadata = candidate["metadata"]
+        assert metadata["event_date"] == selected.isoformat()
+        assert candidate["expires_at"] == datetime.combine(
+            selected + timedelta(days=1), datetime.min.time(), tzinfo=UTC
+        )
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM finance.obligation_ledger WHERE subscription_id=$1 AND period=$2",
+                row["id"],
+                selected,
+            )
+            == 1
+        )
+        premise = candidate["premise"]
+        if isinstance(premise, str):
+            premise = json.loads(premise)
+        assert premise["args"] == {
+            "subject": str(row["id"]),
+            "selected_date": selected.isoformat(),
+            "epoch": 0,
+        }
+
+
+@pytest.fixture
+def registered_field_pipeline_db(postgres_container):
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
+
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "finance", "switchboard"],
+        schemas={"core": "finance", "finance": "finance", "switchboard": "switchboard"},
+    )
+
+
+async def _settle_pipeline_sse_watchers(baseline_tasks):
+    """Join only this fixture's idle native SSE process-lifetime watcher.
+
+    The in-process server has no Uvicorn shutdown signal. Native SSE starts
+    a per-loop watcher outside its session task group, so the fixture must
+    settle that exact new task after its clients and server have exited.
+    """
+    import asyncio
+
+    import sse_starlette.sse as sse
+
+    watchers = [
+        task
+        for task in asyncio.all_tasks() - baseline_tasks
+        if not task.done()
+        and getattr(task.get_coro(), "cr_code", None) is sse._shutdown_watcher.__code__
+    ]
+    if not watchers:
+        return
+    state = sse._get_shutdown_state()
+    assert not state.events, "SSE streams remain active after pipeline server settlement"
+    assert len(watchers) == 1, "Expected the native per-loop SSE shutdown watcher"
+    watcher = watchers[0]
+    watcher.cancel()
+    async with asyncio.timeout(5):
+        await asyncio.gather(watcher, return_exceptions=True)
+    assert watcher.done()
+    assert not state.watcher_started
+
+
+@pytest.mark.parametrize("after_scan", ["current", "owner-confirmed", "unknown"])
+async def test_registered_routed_fields_scan_and_durable_broker_pipeline(
+    registered_field_pipeline_db, monkeypatch, after_scan
+):
+    """Real registered write + roles + migrated scan + stored broker/currentness consumer.
+
+    Only the external HTTP carrier is in-process and notify is a no-send sink.
+    No provenance attestor, owning writer, scan SQL, proposal or broker is patched.
+    Unrelated fleet publications use the existing closed catalog fixture; the
+    Finance publication is the actual registered Finance module catalog.
+    """
+    import asyncio
+    import importlib
+    from contextlib import AsyncExitStack
+    from types import SimpleNamespace
+    from uuid import UUID, uuid4
+
+    import asyncpg
+    import httpx
+    from fastmcp import Client, FastMCP
+    from fastmcp.client.transports import StreamableHttpTransport
+    from starlette.applications import Starlette
+
+    from butlers.config import load_config
+    from butlers.core import fact_authority
+    from butlers.core import finance_warning_control as control
+    from butlers.core import tool_call_capture as capture
+    from butlers.core.catalog_publication import CatalogPublisher
+    from butlers.core.catalog_reader import DOMAINS
+    from butlers.core.mcp_urls import runtime_mcp_url
+    from butlers.daemon import ButlerDaemon
+    from butlers.db import register_jsonb_codec
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+    from butlers.modules.registry import default_registry
+    from butlers.tools.switchboard.insight import broker
+    from butlers.tools.switchboard.registry.registry import (
+        expected_route_target,
+        record_probe,
+        register_boot,
+        register_butler,
+        reserve_probe,
+    )
+    from tests.contracts.test_catalog_publication import registered_catalog
+
+    route = importlib.import_module("butlers.tools.switchboard.routing.route")
+    from pathlib import Path
+
+    root = Path(__file__).parents[3]
+    url = registered_field_pipeline_db
+    baseline_tasks = set(asyncio.all_tasks())
+    owner = receiver = None
+    actual_http = httpx.AsyncClient
+    # live-clock: the actual fixed MCP reader derives its calendar internally without a now input.
+    now = datetime.now(UTC)
+    today = now.date()
+    selected = today + timedelta(days=3)
+    baseline_date = today + timedelta(days=40)
+    async with AsyncExitStack() as stack:
+        # Registered first, settled last: no client/session or native pool may
+        # still depend on the watcher when the fixture joins it.
+        stack.push_async_callback(_settle_pipeline_sse_watchers, baseline_tasks)
+        admin = await stack.enter_async_context(
+            asyncpg.create_pool(
+                url,
+                min_size=1,
+                max_size=3,
+                init=register_jsonb_codec,
+                server_settings={"search_path": "finance,public"},
+            )
+        )
+
+        boot_fence_state = {"armed": False, "owning_reads": 0, "rotated": False}
+
+        async def runtime(domain):
+            async def initialize(conn):
+                await register_jsonb_codec(conn)
+                if domain == "finance":
+
+                    def record(query):
+                        if boot_fence_state["armed"] and query.query.startswith(
+                            "SELECT next_renewal, date_epoch, field_claims, status, status_source "
+                            "FROM subscriptions WHERE id = $1"
+                        ):
+                            boot_fence_state["owning_reads"] += 1
+
+                    conn.add_query_logger(record)
+
+            async def role(conn):
+                await conn.execute(f'SET ROLE "butler_{domain}_rw"')
+
+            return await stack.enter_async_context(
+                asyncpg.create_pool(
+                    url,
+                    min_size=1,
+                    max_size=3,
+                    init=initialize,
+                    setup=role,
+                    server_settings={"search_path": f"{domain},public"},
+                )
+            )
+
+        finance_pool, switchboard_pool = await runtime("finance"), await runtime("switchboard")
+        async with finance_pool.acquire() as conn:
+            assert await conn.fetchval("SELECT current_user") == "butler_finance_rw"
+        # Explicit privileged fixture configuration; no runtime grant or authority bypass.
+        await admin.execute(
+            "ALTER TABLE public.capability_catalog_control DISABLE ROW LEVEL SECURITY"
+        )
+        try:
+            await admin.execute("UPDATE public.capability_catalog_control SET enabled=true")
+        finally:
+            await admin.execute(
+                "ALTER TABLE public.capability_catalog_control ENABLE ROW LEVEL SECURITY"
+            )
+        await admin.execute(
+            "UPDATE public.approvals_policy SET quiet_start_hour=NULL, quiet_end_hour=NULL, "
+            "timezone='UTC' WHERE id=1"
+        )
+        await admin.execute(
+            "INSERT INTO public.insight_settings(id,verbosity) VALUES(1,'normal') "
+            "ON CONFLICT(id) DO UPDATE SET verbosity='normal'"
+        )
+        entity = await admin.fetchval(
+            "INSERT INTO public.entities(canonical_name,entity_type,roles) "
+            "VALUES('Synthetic pipeline owner','person',ARRAY['owner']) RETURNING id"
+        )
+        finance = ButlerDaemon(root / "roster/finance", db=SimpleNamespace(pool=finance_pool))
+        finance.config = load_config(finance.config_dir)
+        finance.mcp = FastMCP("registered-finance-pipeline")
+        finance._modules = [default_registry()._modules["finance"]()]
+        finance._module_configs = finance._validate_module_configs()
+        await finance._register_module_tools()
+        await finance._finalize_tool_catalog()
+        publishers = {}
+        catalogs = {}
+        for domain in DOMAINS:
+            runtime_pool = (
+                finance_pool
+                if domain == "finance"
+                else (switchboard_pool if domain == "switchboard" else await runtime(domain))
+            )
+            catalog = (
+                finance._tool_catalog
+                if domain == "finance"
+                else (await registered_catalog(domain))[1]
+            )
+            publisher = CatalogPublisher(runtime_pool, domain)
+            await publisher.publish(catalog)
+            publishers[domain], catalogs[domain] = publisher, catalog
+        finance._catalog_publication = publishers["finance"]
+        source = ButlerDaemon(
+            root / "roster/switchboard", db=SimpleNamespace(pool=switchboard_pool)
+        )
+        source.config = load_config(source.config_dir)
+        source._tool_catalog = catalogs["switchboard"]
+        source._catalog_publication = publishers["switchboard"]
+        expected = expected_route_target("finance")
+        assert expected is not None
+        # The real registry row must exist before the role-bound boot registration.
+        await register_butler(
+            switchboard_pool, "finance", runtime_mcp_url(expected.port), modules=["finance"]
+        )
+        switchboard_target = expected_route_target("switchboard")
+        assert switchboard_target is not None
+        await register_butler(
+            switchboard_pool,
+            "switchboard",
+            runtime_mcp_url(switchboard_target.port),
+            modules=["switchboard"],
+        )
+        finance._boot_epoch = await register_boot(
+            finance_pool, "finance", finance._boot_instance_id
+        )
+        assert finance._boot_epoch == 1
+        source._boot_epoch = await register_boot(
+            switchboard_pool, "switchboard", source._boot_instance_id
+        )
+        assert finance._boot_instance_id.version == source._boot_instance_id.version == 7
+        assert finance._boot_instance_id != publishers["finance"].instance
+        assert source._boot_instance_id != publishers["switchboard"].instance
+        owner = control.FinanceWarningControlOwner(source, route_call=route.route)
+        source._finance_warning_control_owner = owner
+        receiver = control.FinanceWarningControlOwner(
+            finance, verifier_url="http://controlled.invalid" + control.VERIFY_PATH
+        )
+        finance._finance_warning_control_owner = receiver
+        epoch, sequence = await reserve_probe(switchboard_pool, "finance")
+        assert epoch == finance._boot_epoch
+        assert await record_probe(
+            switchboard_pool,
+            "finance",
+            boot_epoch=epoch,
+            probe_sequence=sequence,
+            healthy=True,
+            compatible=True,
+            accepting=True,
+        )
+        app = ButlerDaemon._build_mcp_http_app(
+            finance.mcp, butler_name="finance", finance_warning_control_owner=receiver
+        )
+        raw = app._app._app
+        await stack.enter_async_context(raw.router.lifespan_context(raw))
+
+        def http_client(**kw):
+            return actual_http(transport=httpx.ASGITransport(app=app), **kw)
+
+        def routing_client(transport, **kw):
+            headers = getattr(transport, "headers", {})
+            return Client(
+                StreamableHttpTransport(
+                    runtime_mcp_url(expected.port),
+                    headers=headers,
+                    httpx_client_factory=http_client,
+                ),
+                **kw,
+            )
+
+        monkeypatch.setattr(route, "MCPClient", routing_client)
+        verifier_app = Starlette(routes=[owner.route()])
+        monkeypatch.setattr(
+            control.httpx,
+            "AsyncClient",
+            lambda **kw: actual_http(transport=httpx.ASGITransport(app=verifier_app), **kw),
+        )
+
+        async def routed_write(*, explicit_owner, renewal, amount, currency):
+            session = str(uuid4())
+            context = (
+                {"source_entity_id": str(entity), "request_context": {}}
+                if explicit_owner
+                else {
+                    "request_context": {
+                        "source_channel": "email",
+                        "source_endpoint_identity": "gmail:synthetic",
+                    }
+                }
+            )
+            capture.set_runtime_session_routing_context(session, context)
+            invocation = await fact_authority.register_invocation(
+                "finance", session, source_endpoint=None, routed=True
+            )
+            try:
+                # The actual HTTP middleware resolves this server-issued binding;
+                # a query/session locator or caller metadata is never substituted.
+                async def wire(endpoint, name, args):
+                    async with Client(
+                        StreamableHttpTransport(
+                            endpoint,
+                            headers={fact_authority.INVOCATION_HEADER: invocation},
+                            httpx_client_factory=http_client,
+                        )
+                    ) as peer:
+                        return (await peer.call_tool(name, args)).data
+
+                result = await route.route(
+                    switchboard_pool,
+                    "finance",
+                    "track_subscription",
+                    {
+                        "service": "Synthetic wire subscription",
+                        "amount": amount,
+                        "currency": currency,
+                        "frequency": "yearly",
+                        "next_renewal": renewal.isoformat(),
+                    },
+                    call_fn=wire,
+                )
+                assert "error" not in result
+                return result["result"]
+            finally:
+                fact_authority.settle_invocation(invocation)
+                capture.clear_runtime_session_routing_context(session)
+
+        try:
+            initial = await routed_write(
+                explicit_owner=True, renewal=baseline_date, amount=10, currency="USD"
+            )
+            # A real earlier expired extraction must not mask a later in-window date.
+            await routed_write(
+                explicit_owner=False, renewal=today - timedelta(days=1), amount=99, currency="EUR"
+            )
+            extracted = await routed_write(
+                explicit_owner=False, renewal=selected, amount=99, currency="EUR"
+            )
+            await routed_write(explicit_owner=False, renewal=selected, amount=99, currency="EUR")
+            assert extracted["id"] == initial["id"]
+            subject = UUID(extracted["id"])
+            # Independent acquisition observes committed owning fields, never a return DTO oracle.
+            async with admin.acquire() as observer:
+                row = await observer.fetchrow(
+                    "SELECT * FROM finance.subscriptions WHERE id=$1", subject
+                )
+                assert row["value_revision"] >= 3 and len(row["field_claims"]) == 3
+                try:
+                    assert row["next_renewal"] == baseline_date
+                    assert str(row["amount"]) == "10.00" and row["currency"] == "USD"
+                except AssertionError as exc:
+                    if _pipeline_mutation.get() == "field-protection":
+                        raise _FieldProtectionViolation from exc
+                    raise
+                assert row["renewal_source"] == row["price_source"] == "owner"
+                assert {
+                    claim["field"] for claim in row["field_claims"] if not claim["resolved"]
+                } == {"renewal", "price"}
+                assert (
+                    len(row["field_claims"]) == 3
+                )  # two dates + one complete price; replay dedups
+            scan = await run_insight_scan(finance_pool, now=now)
+            assert scan["errors"] == 0
+            async with admin.acquire() as observer:
+                candidate = await observer.fetchrow(
+                    "SELECT * FROM public.insight_candidates WHERE category='subscription-renewal'"
+                )
+                try:
+                    assert candidate is not None and candidate["status"] == "pending"
+                except AssertionError as exc:
+                    if _pipeline_mutation.get() == "prefilter-before-min":
+                        raise _RenewalSelectionViolation from exc
+                    raise
+                assert candidate["dedup_key"].endswith(selected.isoformat())
+                assert candidate["metadata"]["event_date"] == selected.isoformat()
+                assert candidate["expires_at"] == datetime.combine(
+                    selected + timedelta(days=1), datetime.min.time(), tzinfo=UTC
+                )
+                assert (
+                    await observer.fetchval(
+                        "SELECT count(*) FROM finance.obligation_ledger WHERE subscription_id=$1 AND period=$2",
+                        subject,
+                        selected,
+                    )
+                    == 1
+                )
+                premise = candidate["premise"]
+                assert premise["args"] == {
+                    "subject": str(subject),
+                    "selected_date": selected.isoformat(),
+                    "epoch": 0,
+                }
+            assert await owner.read(premise["args"]) is True
+            if after_scan == "owner-confirmed":
+                await routed_write(explicit_owner=True, renewal=selected, amount=99, currency="EUR")
+                async with admin.acquire() as observer:
+                    confirmed = await observer.fetchrow(
+                        "SELECT * FROM finance.subscriptions WHERE id=$1", subject
+                    )
+                    assert confirmed["next_renewal"] == selected and confirmed["date_epoch"] == 1
+                    assert all(claim["resolved"] for claim in confirmed["field_claims"])
+                assert await owner.read(premise["args"]) is False
+            elif after_scan == "unknown":
+                receiver.stop_admission()  # real closed receiver, not a fabricated false/SQL response
+                assert await owner.read(premise["args"]) is None
+            if _pipeline_boot_race.get():
+                from butlers.core.utils import generate_uuid7_string
+
+                original_verify = owner.verify_consume
+                old_local = receiver.identity()
+                old_publication = publishers["finance"].revision
+
+                async def rotate_after_callback(body):
+                    proof = await original_verify(body)
+                    if proof is not None and not boot_fence_state["rotated"]:
+                        successor = UUID(generate_uuid7_string())
+                        successor_epoch = await register_boot(finance_pool, "finance", successor)
+                        assert successor_epoch == finance._boot_epoch + 1
+                        async with admin.acquire() as observer:
+                            observed = await observer.fetchrow(
+                                "SELECT boot_instance_id,boot_epoch FROM "
+                                "switchboard.butler_registry_control_plane WHERE name='finance'"
+                            )
+                            assert tuple(observed) == (successor, successor_epoch)
+                        assert receiver.identity() == old_local
+                        assert publishers["finance"].revision == old_publication
+                        boot_fence_state["rotated"] = boot_fence_state["armed"] = True
+                    return proof
+
+                monkeypatch.setattr(owner, "verify_consume", rotate_after_callback)
+            notify = AsyncMock(return_value={"status": "sent"})
+            result = await broker.delivery_cycle(
+                switchboard_pool, notify_fn=notify, now=now, finance_warning_reader=owner.read
+            )
+            if _pipeline_boot_race.get():
+                await asyncio.sleep(0)  # deliver native query-logger callbacks before the oracle
+                assert boot_fence_state["rotated"]
+                try:
+                    assert boot_fence_state["owning_reads"] == 0
+                    assert "unverified" in notify.call_args.args[0].lower()
+                    assert "as of" in notify.call_args.args[0].lower()
+                except AssertionError as exc:
+                    raise _BootAdmissionViolation from exc
+            async with admin.acquire() as observer:
+                stored = await observer.fetchrow(
+                    "SELECT status FROM public.insight_candidates WHERE id=$1", candidate["id"]
+                )
+                if after_scan == "owner-confirmed":
+                    assert result["withdrawn"] == 1 and stored["status"] == "withdrawn"
+                    notify.assert_not_awaited()
+                else:
+                    assert stored["status"] == "delivered"
+                    assert result["delivered"] == [str(candidate["id"])]
+                    notify.assert_awaited_once()
+                    if after_scan == "unknown":
+                        assert "as of" in notify.call_args.args[0].lower()
+                        assert "unverified" in notify.call_args.args[0].lower()
+            # The already consumed/withdrawn durable row cannot send again on restart/replay.
+            await broker.delivery_cycle(
+                switchboard_pool, notify_fn=notify, now=now, finance_warning_reader=owner.read
+            )
+            assert notify.await_count == (0 if after_scan == "owner-confirmed" else 1)
+        finally:
+            await route._reset_router_client_cache_for_tests()
+            await owner.close(5)
+            await receiver.close(5)
+            await owner.settle()
+            await receiver.settle()
+    await asyncio.sleep(0)
+    assert not [task for task in asyncio.all_tasks() - baseline_tasks if not task.done()]
+
+
+class _FieldProtectionViolation(AssertionError):
+    pass
+
+
+class _RenewalSelectionViolation(AssertionError):
+    pass
+
+
+_pipeline_mutation = ContextVar("finance_pipeline_product_mutation", default=None)
+
+
+@pytest.fixture
+def registered_field_mutation_dbs(postgres_container):
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
+
+    return [
+        create_migrated_test_db(
+            postgres_container,
+            migration_db_name(),
+            chains=["core", "finance", "switchboard"],
+            schemas={"core": "finance", "finance": "finance", "switchboard": "switchboard"},
+        )
+        for _ in range(3)
+    ]
+
+
+def _pipeline_product_mutant(module, name, mutation):
+    """Compile an exact production AST mutant; no SQL/pool/authority oracle replacement."""
+    import ast
+    import inspect
+
+    original = getattr(module, name)
+    tree = ast.parse(inspect.getsource(original))
+    changed = 0
+    if mutation == "field-protection":
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Subscript)
+                and isinstance(node.targets[0].value, ast.Name)
+                and node.targets[0].value.id == "state"
+                and isinstance(node.targets[0].slice, ast.Constant)
+                and node.targets[0].slice.value in {"next_renewal", "amount", "currency"}
+                and isinstance(node.value, ast.IfExp)
+                and isinstance(node.value.test, ast.Name)
+                and node.value.test.id == "owner"
+            ):
+                node.value = node.value.body
+                changed += 1
+        assert changed == 3
+    else:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                old = ") dates WHERE day >= $1 AND day <= $2"
+                if old in node.value:
+                    assert node.value.count(old) == 1
+                    assert node.value.count("AND selected.warning_date IS NOT NULL") == 1
+                    node.value = node.value.replace(old, ") dates").replace(
+                        "AND selected.warning_date IS NOT NULL",
+                        "AND selected.warning_date BETWEEN $1 AND $2",
+                    )
+                    changed += 1
+        assert changed == 1
+    namespace = dict(module.__dict__)
+    exec(
+        compile(ast.fix_missing_locations(tree), inspect.getsourcefile(original), "exec"), namespace
+    )
+    mutant = namespace[name]
+    assert (
+        mutant.__code__.co_code != original.__code__.co_code
+        or mutant.__code__.co_consts != original.__code__.co_consts
+    )
+    return original, mutant
+
+
+def _pipeline_diagnostic(mutation, phase, status, exception="NONE"):
+    """Emit only closed technical labels, never exception values or task/row identities."""
+    if mutation not in {"field-protection", "prefilter-before-min", "boot-currentness"}:
+        raise ValueError("unsupported pipeline mutation label")
+    if phase not in {
+        "baseline",
+        "mutant_compile",
+        "counterfactual",
+        "module_restore",
+        "restored",
+        "cleanup",
+    }:
+        raise ValueError("unsupported pipeline phase label")
+    if status not in {"BEGIN", "END", "ERROR", "EXPECTED_VIOLATION"}:
+        raise ValueError("unsupported pipeline status label")
+    allowed_exceptions = {
+        "NONE",
+        "UNKNOWN",
+        "AssertionError",
+        "TypeError",
+        "RuntimeError",
+        "ValueError",
+        "TimeoutError",
+        "CancelledError",
+        "UniqueViolationError",
+        "UndefinedTableError",
+        "UndefinedColumnError",
+        "InsufficientPrivilegeError",
+        "ConnectionDoesNotExistError",
+        "_FieldProtectionViolation",
+        "_RenewalSelectionViolation",
+        "_BootAdmissionViolation",
+    }
+    if exception not in allowed_exceptions:
+        exception = "UNKNOWN"
+    print(
+        f"FINANCE_PIPELINE_DIAGNOSTIC mutation={mutation} phase={phase} "
+        f"status={status} exception={exception}",
+        flush=True,
+    )
+
+
+@contextmanager
+def _pipeline_phase(mutation, phase):
+    _pipeline_diagnostic(mutation, phase, "BEGIN")
+    try:
+        yield
+    except BaseException as exc:
+        _pipeline_diagnostic(mutation, phase, "ERROR", type(exc).__name__)
+        raise
+    else:
+        _pipeline_diagnostic(mutation, phase, "END")
+
+
+@contextmanager
+def _expect_dedicated_invariant(expected):
+    """Accept only the dedicated violation from a completed counterfactual exit."""
+
+    def only_expected(error):
+        if isinstance(error, BaseExceptionGroup):
+            return bool(error.exceptions) and all(
+                only_expected(child) for child in error.exceptions
+            )
+        return type(error) is expected
+
+    try:
+        yield
+    except BaseException as exc:
+        if not only_expected(exc):
+            raise
+    else:
+        pytest.fail("Counterfactual completed without the dedicated invariant")
+
+
+@pytest.mark.parametrize("mutation", ["field-protection", "prefilter-before-min"])
+async def test_registered_pipeline_real_sql_mutants_are_killed(
+    registered_field_mutation_dbs, monkeypatch, mutation
+):
+    """Hosted real SQL causal carrier; arbitrary setup/transport/SQL exceptions fail this test."""
+    import butlers.jobs._roster.finance_jobs as jobs
+    from butlers.tools.finance import subscriptions
+
+    baseline, counterfactual, restored = registered_field_mutation_dbs
+    with _pipeline_phase(mutation, "baseline"):
+        with monkeypatch.context() as baseline_patch:
+            await test_registered_routed_fields_scan_and_durable_broker_pipeline(
+                baseline, baseline_patch, "current"
+            )
+    module, name, expected = (
+        (subscriptions, "merge_field_claims", _FieldProtectionViolation)
+        if mutation == "field-protection"
+        else (jobs, "run_insight_scan", _RenewalSelectionViolation)
+    )
+    with _pipeline_phase(mutation, "mutant_compile"):
+        original, mutant = _pipeline_product_mutant(module, name, mutation)
+    token = _pipeline_mutation.set(mutation)
+    try:
+        with _pipeline_phase(mutation, "counterfactual"):
+            with monkeypatch.context() as patcher:
+                patcher.setattr(module, name, mutant)
+                with _expect_dedicated_invariant(expected):
+                    await test_registered_routed_fields_scan_and_durable_broker_pipeline(
+                        counterfactual, patcher, "current"
+                    )
+            _pipeline_diagnostic(mutation, "counterfactual", "EXPECTED_VIOLATION")
+    finally:
+        with _pipeline_phase(mutation, "cleanup"):
+            _pipeline_mutation.reset(token)
+    with _pipeline_phase(mutation, "module_restore"):
+        assert getattr(module, name) is original
+    with _pipeline_phase(mutation, "restored"):
+        with monkeypatch.context() as restored_patch:
+            await test_registered_routed_fields_scan_and_durable_broker_pipeline(
+                restored, restored_patch, "current"
+            )
+
+
+class _BootAdmissionViolation(AssertionError):
+    pass
+
+
+_pipeline_boot_race = ContextVar("finance_pipeline_boot_race", default=False)
+
+
+async def test_registered_pipeline_committed_boot_rotation_causal_carrier(
+    registered_field_mutation_dbs, monkeypatch
+):
+    """Real callback->successor commit->owning SQL refusal; not an arbitrary error kill."""
+    import ast
+    import inspect
+    import textwrap
+
+    from butlers.core import finance_warning_control as control
+
+    with _pipeline_phase("boot-currentness", "mutant_compile"):
+        original = control.FinanceWarningControlOwner._receiver_publication_current
+        tree = ast.parse(textwrap.dedent(inspect.getsource(original)))
+        replaced = 0
+        for node in ast.walk(tree):
+            if isinstance(node, ast.BoolOp):
+                for index, value in enumerate(node.values):
+                    if (
+                        isinstance(value, ast.Compare)
+                        and isinstance(value.left, ast.Subscript)
+                        and isinstance(value.left.value, ast.Name)
+                        and value.left.value.id == "row"
+                        and isinstance(value.left.slice, ast.Constant)
+                        and value.left.slice.value == "boot_current"
+                    ):
+                        node.values[index] = ast.Constant(value=True)
+                        replaced += 1
+        assert replaced == 1
+        namespace = dict(control.__dict__)
+        exec(
+            compile(ast.fix_missing_locations(tree), inspect.getsourcefile(original), "exec"),
+            namespace,
+        )
+        mutant = namespace[original.__name__]
+    baseline, counterfactual, restored = registered_field_mutation_dbs
+    token = _pipeline_boot_race.set(True)
+    try:
+        with _pipeline_phase("boot-currentness", "baseline"):
+            with monkeypatch.context() as baseline_patch:
+                await test_registered_routed_fields_scan_and_durable_broker_pipeline(
+                    baseline, baseline_patch, "current"
+                )
+        with _pipeline_phase("boot-currentness", "counterfactual"):
+            with monkeypatch.context() as mutant_patch:
+                mutant_patch.setattr(control.FinanceWarningControlOwner, original.__name__, mutant)
+                with _expect_dedicated_invariant(_BootAdmissionViolation):
+                    await test_registered_routed_fields_scan_and_durable_broker_pipeline(
+                        counterfactual, mutant_patch, "current"
+                    )
+            _pipeline_diagnostic("boot-currentness", "counterfactual", "EXPECTED_VIOLATION")
+        with _pipeline_phase("boot-currentness", "module_restore"):
+            assert control.FinanceWarningControlOwner._receiver_publication_current is original
+        with _pipeline_phase("boot-currentness", "restored"):
+            with monkeypatch.context() as restored_patch:
+                await test_registered_routed_fields_scan_and_durable_broker_pipeline(
+                    restored, restored_patch, "current"
+                )
+    finally:
+        with _pipeline_phase("boot-currentness", "cleanup"):
+            _pipeline_boot_race.reset(token)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "field-direct",
+        "field-grouped",
+        "field-nested",
+        "renewal-direct",
+        "renewal-grouped",
+        "renewal-nested",
+        "boot-direct",
+        "boot-grouped",
+        "boot-nested",
+        "normal",
+        "distinct",
+        "mixed",
+        "wrong-family",
+        "timeout",
+        "cancel",
+        "setup",
+        "teardown",
+        "assertion",
+        "subclass",
+    ],
+)
+def test_dedicated_invariant_gate_rejects_unrelated_or_incomplete_failures(case):
+    """Software exception-shape controls; these never exercise or credit SQL mutations."""
+    import asyncio
+
+    family = case.split("-", 1)[0]
+    expected = {
+        "field": _FieldProtectionViolation,
+        "renewal": _RenewalSelectionViolation,
+        "boot": _BootAdmissionViolation,
+    }.get(family, _FieldProtectionViolation)
+    accepted = family in {"field", "renewal", "boot"}
+    error = None
+    if accepted:
+        error = expected()
+        if case.endswith("grouped"):
+            error = ExceptionGroup("controlled", [error, expected()])
+        elif case.endswith("nested"):
+            error = ExceptionGroup("controlled", [ExceptionGroup("controlled", [error])])
+    elif case == "distinct":
+        error = ValueError()
+    elif case == "mixed":
+        error = ExceptionGroup("controlled", [expected(), ValueError()])
+    elif case == "wrong-family":
+        error = _RenewalSelectionViolation()
+    elif case == "timeout":
+        error = TimeoutError()
+    elif case == "cancel":
+        error = asyncio.CancelledError()
+    elif case in {"setup", "teardown"}:
+        error = RuntimeError()
+    elif case == "assertion":
+        error = AssertionError()
+    elif case == "subclass":
+
+        class OtherViolation(expected):
+            pass
+
+        error = OtherViolation()
+    caught = None
+    try:
+        with _expect_dedicated_invariant(expected):
+            try:
+                if case == "setup":
+                    raise error
+                if case == "teardown":
+                    raise expected()
+                if error is not None:
+                    raise error
+            finally:
+                if case == "teardown":
+                    raise error
+    except BaseException as exc:
+        caught = exc
+    if accepted:
+        assert caught is None
+    elif case == "normal":
+        assert isinstance(caught, pytest.fail.Exception)
+    else:
+        assert caught is error

@@ -28,6 +28,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from butlers.testing.records import row as make_record
+
 pytestmark = pytest.mark.unit
 
 
@@ -73,16 +75,6 @@ class _FakeFanoutDB:
         return self._fan_out_result, []
 
 
-class _FakeRow(dict):
-    """asyncpg.Record-like dict with attribute access."""
-
-    def __getattr__(self, name: str):
-        try:
-            return self[name]
-        except KeyError as exc:
-            raise AttributeError(name) from exc
-
-
 # ---------------------------------------------------------------------------
 # Tests: DB fallback is used when Prometheus is absent
 # ---------------------------------------------------------------------------
@@ -118,7 +110,7 @@ async def test_db_fallback_single_butler_single_connector():
 
     fan_out_result = {
         "health": [
-            _FakeRow(
+            make_record(
                 connector_type="gmail",
                 endpoint_identity="user@example.com",
                 message_count=5,
@@ -144,19 +136,19 @@ async def test_db_fallback_multiple_butlers():
 
     fan_out_result = {
         "health": [
-            _FakeRow(
+            make_record(
                 connector_type="gmail",
                 endpoint_identity="user@example.com",
                 message_count=3,
             ),
         ],
         "relationship": [
-            _FakeRow(
+            make_record(
                 connector_type="telegram_bot",
                 endpoint_identity="bot_123",
                 message_count=10,
             ),
-            _FakeRow(
+            make_record(
                 connector_type="gmail",
                 endpoint_identity="user@example.com",
                 message_count=7,
@@ -187,19 +179,19 @@ async def test_db_fallback_sorted_by_connector_then_count_desc():
 
     fan_out_result = {
         "butler_b": [
-            _FakeRow(
+            make_record(
                 connector_type="telegram_bot",
                 endpoint_identity="bot_a",
                 message_count=5,
             ),
         ],
         "butler_a": [
-            _FakeRow(
+            make_record(
                 connector_type="gmail",
                 endpoint_identity="user@example.com",
                 message_count=20,
             ),
-            _FakeRow(
+            make_record(
                 connector_type="telegram_bot",
                 endpoint_identity="bot_a",
                 message_count=15,
@@ -232,7 +224,7 @@ async def test_db_fallback_prometheus_error_triggers_db():
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
             fan_out_result = {
                 "atlas": [
-                    _FakeRow(
+                    make_record(
                         connector_type="gmail",
                         endpoint_identity="inbox@org.com",
                         message_count=8,
@@ -291,14 +283,14 @@ async def test_db_fallback_skips_zero_count_rows():
 
     fan_out_result = {
         "health": [
-            _FakeRow(
+            make_record(
                 connector_type="gmail",
                 endpoint_identity="user@example.com",
                 message_count=0,
             ),
         ],
         "relationship": [
-            _FakeRow(
+            make_record(
                 connector_type="telegram_bot",
                 endpoint_identity="bot_x",
                 message_count=3,
