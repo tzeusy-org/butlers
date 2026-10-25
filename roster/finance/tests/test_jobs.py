@@ -2877,7 +2877,7 @@ async def test_registered_routed_fields_scan_and_durable_broker_pipeline(
             "timezone='UTC' WHERE id=1"
         )
         await admin.execute(
-            "INSERT INTO finance.insight_settings(id,verbosity) VALUES(1,'normal') "
+            "INSERT INTO public.insight_settings(id,verbosity) VALUES(1,'normal') "
             "ON CONFLICT(id) DO UPDATE SET verbosity='normal'"
         )
         entity = await admin.fetchval(
@@ -3069,7 +3069,7 @@ async def test_registered_routed_fields_scan_and_durable_broker_pipeline(
             assert scan["errors"] == 0
             async with admin.acquire() as observer:
                 candidate = await observer.fetchrow(
-                    "SELECT * FROM finance.insight_candidates WHERE category='subscription-renewal'"
+                    "SELECT * FROM public.insight_candidates WHERE category='subscription-renewal'"
                 )
                 try:
                     assert candidate is not None and candidate["status"] == "pending"
@@ -3136,7 +3136,7 @@ async def test_registered_routed_fields_scan_and_durable_broker_pipeline(
                 monkeypatch.setattr(owner, "verify_consume", rotate_after_callback)
             notify = AsyncMock(return_value={"status": "sent"})
             result = await broker.delivery_cycle(
-                finance_pool, notify_fn=notify, now=now, finance_warning_reader=owner.read
+                switchboard_pool, notify_fn=notify, now=now, finance_warning_reader=owner.read
             )
             if _pipeline_boot_race.get():
                 await asyncio.sleep(0)  # deliver native query-logger callbacks before the oracle
@@ -3149,7 +3149,7 @@ async def test_registered_routed_fields_scan_and_durable_broker_pipeline(
                     raise _BootAdmissionViolation from exc
             async with admin.acquire() as observer:
                 stored = await observer.fetchrow(
-                    "SELECT status FROM finance.insight_candidates WHERE id=$1", candidate["id"]
+                    "SELECT status FROM public.insight_candidates WHERE id=$1", candidate["id"]
                 )
                 if after_scan == "owner-confirmed":
                     assert result["withdrawn"] == 1 and stored["status"] == "withdrawn"
@@ -3163,7 +3163,7 @@ async def test_registered_routed_fields_scan_and_durable_broker_pipeline(
                         assert "unverified" in notify.call_args.args[0].lower()
             # The already consumed/withdrawn durable row cannot send again on restart/replay.
             await broker.delivery_cycle(
-                finance_pool, notify_fn=notify, now=now, finance_warning_reader=owner.read
+                switchboard_pool, notify_fn=notify, now=now, finance_warning_reader=owner.read
             )
             assert notify.await_count == (0 if after_scan == "owner-confirmed" else 1)
         finally:

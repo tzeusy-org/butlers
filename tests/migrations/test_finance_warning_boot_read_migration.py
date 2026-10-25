@@ -121,7 +121,8 @@ async def test_ordinary_migrator_installs_pure_role_bound_reader_and_reapplies(b
             assert await finance.fetchval(_READ, None, epoch) is None
         assert await _facts(admin, schema) == before
         catalog = await admin.fetchrow(
-            "SELECT p.proowner=current_user::regrole AS owned,p.prosecdef,p.provolatile,p.proconfig,"
+            "SELECT p.proowner=current_user::regrole AS owned,p.prosecdef,"
+            "p.provolatile::text AS provolatile,p.proconfig,"
             "pg_get_functiondef(p.oid) AS body FROM pg_proc p WHERE p.oid=to_regprocedure($1)",
             _SIGNATURE,
         )

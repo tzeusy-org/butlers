@@ -74,10 +74,14 @@ async def _registered_subscription_write(pool, *, source_context=None, owner=Fal
     from butlers.modules.registry import default_registry
 
     if owner:
-        entity = await pool.fetchval(
-            "INSERT INTO public.entities(canonical_name,entity_type,roles) "
-            "VALUES('Synthetic subscription owner','person',ARRAY['owner']) RETURNING id"
-        )
+        # The module's migrated DB retains the unique owner across test cases.
+        # Reuse that real entity instead of attempting another singleton insert.
+        entity = await pool.fetchval("SELECT id FROM public.entities WHERE 'owner'=ANY(roles)")
+        if entity is None:
+            entity = await pool.fetchval(
+                "INSERT INTO public.entities(canonical_name,entity_type,roles) "
+                "VALUES('Synthetic subscription owner','person',ARRAY['owner']) RETURNING id"
+            )
         source_context = {"source_entity_id": str(entity), "request_context": {}}
     daemon = ButlerDaemon(
         Path(__file__).parents[3] / "roster/finance", db=SimpleNamespace(pool=pool)
