@@ -3,18 +3,11 @@
 Provides deterministic error fingerprinting, severity scoring, dual-input
 support (raw exception objects or structured string fields), the CRUD and gate
 query layer for public.healing_attempts, git worktree lifecycle management,
-and the 10-gate dispatch engine.
+and retained historical attempt APIs. Investigation dispatch is owned by QA.
 """
 
 from __future__ import annotations
 
-from butlers.core.healing.dispatch import (
-    DispatchResult,
-    HealingConfig,
-    dispatch_healing,
-    redispatch_attempt_by_id,
-    redispatch_pending_attempt,
-)
 from butlers.core.healing.fingerprint import (
     FingerprintResult,
     compute_fingerprint,
@@ -55,12 +48,6 @@ __all__ = [
     "FingerprintResult",
     "compute_fingerprint",
     "compute_fingerprint_from_report",
-    # dispatch
-    "DispatchResult",
-    "HealingConfig",
-    "dispatch_healing",
-    "redispatch_attempt_by_id",
-    "redispatch_pending_attempt",
     # tracking
     "ACTIVE_STATUSES",
     "PHASE_SESSION_STATUSES",

@@ -989,8 +989,6 @@ export {
   getQaPatrols,
   getQaSummary,
   removeQaDismissal,
-  retryHealingAttempt,
-  type RetryHealingAttemptResponse,
   getQaCircuitBreaker,
   resetQaCircuitBreaker,
   getQaRepoConfig,

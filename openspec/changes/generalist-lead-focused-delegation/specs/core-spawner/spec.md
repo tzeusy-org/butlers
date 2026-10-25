@@ -206,6 +206,10 @@ Scope: v1-mandatory
 ### Requirement: Trigger Source Tracking
 The Spawner's valid trigger sources SHALL be the engineering-executor sources `qa` and `healing`, and the trigger source SHALL be passed through to session creation for audit. The sources `tick`, `external`, `trigger`, `route` and `schedule:<task-name>` SHALL NOT start a Spawner session: the work they named is admitted as a goal, whose origin, cause and invocation lineage (`goal_id`, `invocation_id`, `depth`, `epoch`) take the place of a trigger source.
 
+Until the RFC 0038 goal-runtime cutover, the existing ordinary dispatch paths retain the following source-audit contract; it does not authorize a goal invocation or re-enable the retired local healing dispatcher:
+
+Valid trigger sources include `tick`, `external`, `trigger`, `route`, `qa`, and `schedule:<task-name>`. Historical `healing` provenance SHALL remain readable and its existing isolation/recursion safeguards SHALL remain intact; it SHALL NOT enable the retired local dispatcher. The trigger source SHALL be passed through to session creation for audit.
+
 ID: REQ-core-spawner-006
 Source: RFC 0038 D5, D17 and D18; core-spawner trigger audit; RFC 0015 centralized QA; bu-lsxqb0.6 and bu-1fe7xv rounds 3-4
 Scope: v1-mandatory
@@ -220,9 +224,10 @@ Scope: v1-mandatory
 - **THEN** the session's `trigger_source` is `"qa"`
 
 #### Scenario: Healing trigger source
-- **WHEN** an existing shared legacy healing dispatcher explicitly spawns an investigation session
-- **THEN** the session's `trigger_source` is `"healing"`
-- **AND** this does not enable direct investigation dispatch by the relay module or Spawner crash handler
+- **WHEN** an existing session carries historical `trigger_source="healing"` provenance
+- **THEN** its original trigger source remains unchanged
+- **AND** neither the core QA relay nor the Spawner crash handler starts a local investigation
+- **AND** new centralized QA investigations retain `trigger_source="qa"`
 
 #### Scenario: Healing sessions skip fallback dispatcher
 - **WHEN** a session with `trigger_source = "healing"` fails

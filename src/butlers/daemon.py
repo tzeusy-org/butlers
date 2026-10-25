@@ -1473,11 +1473,32 @@ class ButlerDaemon:
         for tool_name in mcp._registered_tool_names:
             self._tool_module_map[tool_name] = "core"
 
+    def _qa_switchboard_client(self) -> Any:
+        """Resolve the current transport; own Switchboard uses its local MCP server."""
+        if self.switchboard_client is not None:
+            return self.switchboard_client
+        if self.config.name != "switchboard":
+            return None
+        local = getattr(self, "_qa_local_switchboard_client", None)
+        if local is None or getattr(self, "_qa_local_mcp", None) is not self.mcp:
+            local = LocalSwitchboardClient(self.mcp)
+            self._qa_local_switchboard_client = local
+            self._qa_local_mcp = self.mcp
+        return local
+
     def _collect_tool_metadata(self) -> dict[str, ToolMeta]:
         """Merge module sensitivities with the central presentation inventory."""
         from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_BY_NAME
 
-        sensitivities: dict[str, ToolMeta] = {}
+        sensitivities: dict[str, ToolMeta] = {
+            "report_error": ToolMeta(
+                arg_sensitivities={
+                    "error_message": True,
+                    "traceback": True,
+                    "context": True,
+                }
+            ),
+        }
         for mod in self._active_modules:
             try:
                 declared = mod.tool_metadata()
@@ -2122,8 +2143,8 @@ class ButlerDaemon:
             logger.debug("_wire_module_runtime: spawner not yet set — skipping")
             return
 
-        # Register the daemon's spawner in the core hook so modules (QaModule,
-        # SelfHealingModule) can retrieve it at dispatch time without holding a
+        # Register the daemon's spawner in the core hook so QaModule can
+        # retrieve it at dispatch time without holding a
         # direct reference on their __init__ (Vision Rule 2).
         from butlers.core.spawn_hooks import register_spawner
 
@@ -2143,13 +2164,6 @@ class ButlerDaemon:
                 continue
             try:
                 client = self.switchboard_client
-                if (
-                    mod.name == "self_healing"
-                    and self.config is not None
-                    and self.config.name == "switchboard"
-                    and client is None
-                ):
-                    client = LocalSwitchboardClient(self.mcp)
                 wire_kwargs: dict[str, Any] = {"switchboard_client": client}
                 if "switchboard_client_getter" in inspect.signature(wire_fn).parameters:
                     # Late-bound: the heartbeat loop replaces the attribute on reconnect.

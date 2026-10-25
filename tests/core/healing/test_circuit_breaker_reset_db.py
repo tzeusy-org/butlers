@@ -30,12 +30,17 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db, get_mcp_manager
-from butlers.core.healing.dispatch import _is_circuit_breaker_tripped
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.integration
 
 _BASE_URL = "http://testserver"
+
+
+async def _is_circuit_breaker_tripped(pool, threshold):
+    from butlers.api.routers.healing import _compute_breaker_state
+
+    return (await _compute_breaker_state(pool, threshold))[0]
 
 
 async def _make_schema(pool: asyncpg.Pool) -> None:
