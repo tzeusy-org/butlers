@@ -1,7 +1,7 @@
 import { OwnerSessionMenu } from "@/components/auth/OwnerSessionMenu"
 import { useLocation, Link } from 'react-router'
 import { Search } from 'lucide-react'
-import { SiblingButlerNav } from '@/components/butler-detail/SiblingButlerNav'
+import { SiblingButlerNav } from '@/components/layout/SiblingButlerNav'
 import { Button } from '../ui/button'
 import { Kbd } from '../ui/shortcut-hints'
 import { useBreadcrumbsControl } from '../ui/breadcrumbs-control'

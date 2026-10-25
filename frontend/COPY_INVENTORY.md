@@ -1877,10 +1877,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Eager filtered
 - Automatic verified discovery
 
-## `frontend/src/components/butler-detail/SiblingButlerNav.tsx`
-
-- Navigate to butler
-
 ## `frontend/src/components/butlers/BoardFooter.tsx`
 
 - Active
@@ -3323,6 +3319,10 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Navigation
 - Open navigation menu
 - Chat
+
+## `frontend/src/components/layout/SiblingButlerNav.tsx`
+
+- Navigate to butler
 
 ## `frontend/src/components/layout/Sidebar.tsx`
 
