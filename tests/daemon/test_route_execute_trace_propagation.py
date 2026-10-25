@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -99,6 +100,42 @@ def _make_butler_toml(
 
 def _patch_infra():
     mock_pool = AsyncMock()
+
+    async def _runtime_row(query, *args):
+        if query.lstrip().startswith("SELECT *") and "runtime_config" in query:
+            return {
+                "butler_name": args[0],
+                "core_groups": None,
+                "core_groups_narrowing_reason": None,
+                "catalog_read_sensitivity": "normal",
+                "max_concurrent": 3,
+                "max_queued": 10,
+                "tool_exposure_policy": "eager_filtered",
+                "blind_spot_preamble_enabled": True,
+                "seeded_at": None,
+                "updated_at": None,
+            }
+        return None
+
+    mock_pool.fetchrow = AsyncMock(side_effect=_runtime_row)
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetchval = AsyncMock(return_value=None)
+    mock_conn.fetch = AsyncMock(return_value=[])
+    mock_conn.execute = AsyncMock(return_value=None)
+
+    @asynccontextmanager
+    async def _transaction():
+        yield
+
+    mock_conn.transaction = MagicMock(side_effect=_transaction)
+
+    @asynccontextmanager
+    async def _acquire():
+        yield mock_conn
+
+    mock_pool.acquire = MagicMock(side_effect=_acquire)
     mock_pool.fetchval.return_value = None
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()

@@ -144,6 +144,24 @@ def _make_mock_pool(state_store: dict | None = None) -> AsyncMock:
     versions: dict[str, int] = {}
     pool = AsyncMock()
 
+    async def _runtime_row(query, *args):
+        if query.lstrip().startswith("SELECT *") and "runtime_config" in query:
+            return {
+                "butler_name": args[0],
+                "core_groups": None,
+                "core_groups_narrowing_reason": None,
+                "catalog_read_sensitivity": "normal",
+                "max_concurrent": 3,
+                "max_queued": 10,
+                "tool_exposure_policy": "eager_filtered",
+                "blind_spot_preamble_enabled": True,
+                "seeded_at": None,
+                "updated_at": None,
+            }
+        return None
+
+    pool.fetchrow = AsyncMock(side_effect=_runtime_row)
+
     async def _fetchval(sql, *fargs):
         key = fargs[0] if fargs else None
         if "SELECT value FROM state" in sql:
@@ -178,6 +196,10 @@ def _make_mock_pool(state_store: dict | None = None) -> AsyncMock:
     from contextlib import asynccontextmanager
 
     mock_conn = AsyncMock()
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=None)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    mock_conn.transaction = MagicMock(return_value=transaction)
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
