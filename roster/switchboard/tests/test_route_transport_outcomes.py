@@ -607,7 +607,12 @@ def _recovery_envelope() -> dict[str, Any]:
             "recipient": "owner-synthetic",
             "message": "Synthetic approval.",
         },
-        "actions": [{"verb": "open_dashboard", "dashboard_url": "https://dashboard.example.test"}],
+        "actions": [
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+            }
+        ],
         "recovery": {
             "operation": "handoff",
             "subject_kind": "action",
@@ -1214,3 +1219,50 @@ class TestNoEventLoopStarvation:
         with _resolves_target():
             with pytest.raises(asyncio.CancelledError):
                 await route(pool, "messenger", "route.execute", {}, call_fn=call_fn)
+
+
+def test_public_notify_refuses_link_claims_and_raw_urls():
+    from copy import deepcopy
+
+    from pydantic import ValidationError
+
+    from butlers.tools.switchboard.contracts import parse_notify_request
+
+    base = {
+        "schema_version": "notify.v1",
+        "origin_butler": "relationship",
+        "delivery": {
+            "intent": "approval_request",
+            "channel": "telegram",
+            "recipient": "12345",
+            "message": "Review",
+        },
+        "actions": [
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+            }
+        ],
+    }
+    for field, value in (
+        ("dashboard_url", "https://attacker.example.test"),
+        ("url", "https://attacker.example.test"),
+        ("host", "dashboard.example.test"),
+        ("provenance", "dashboard"),
+        ("server_built", True),
+    ):
+        forged = deepcopy(base)
+        forged["actions"][0][field] = value
+        with pytest.raises(ValidationError):
+            parse_notify_request(forged)
+    forged = deepcopy(base)
+    forged["actions"][0] = {
+        "verb": "open_link",
+        "reference": base["actions"][0]["reference"],
+        "label": "Open dashboard",
+        "url": "https://dashboard.example.test/approvals",
+        "host": "dashboard.example.test",
+        "provenance": "dashboard",
+    }
+    with pytest.raises(ValidationError, match="server delivery output"):
+        parse_notify_request(forged)
