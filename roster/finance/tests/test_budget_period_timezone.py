@@ -352,6 +352,11 @@ async def _setup_scan(pool, *, timezone: str = OWNER_TZ) -> None:
     from butlers.core.owner_conditions import create_owner_conditions_table
 
     # Domain tables come from real migrations; only deterministic test state is seeded here.
+    await pool.execute(
+        "INSERT INTO finance.categories (name, display_name) VALUES "
+        "('coffee', 'Coffee'), ('rent', 'Rent'), ('other-category', 'Other category') "
+        "ON CONFLICT (name) DO NOTHING"
+    )
     await save_general_settings(
         pool,
         timezone=timezone,
