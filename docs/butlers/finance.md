@@ -98,20 +98,20 @@ multi-label suffixes), so it is a display label, not an authorization input. Onl
 
 The current cancellation-door protection above is delivered. It does not protect `next_renewal`,
 amount/currency or free-text service/payee contributions through later insight delivery. The active
-[Finance extracted-field safety proposal](../../openspec/changes/finance-extracted-field-safety/proposal.md)
-records the proposed successor; it has **not** been adopted or implemented.
+[Finance extracted-field safety contract](../../openspec/changes/archive/2026-10-25-finance-extracted-field-safety/proposal.md)
+records the security-maintenance successor authorized under existing authority by ROOT decision 3736. Its canonical specifications and archive are prepared in this PR; actual merge, post-merge implementation handoff and .16/.17 delivery remain pending. No runtime fix is claimed.
 
-The proposed model keeps raw stored values, server-derived origins, a baseline date and price pair,
+The governing model keeps raw stored values, server-derived origins, a baseline date and price pair,
 and unresolved extracted claims. A later extracted date cannot suppress an earlier still-actionable
 renewal warning before the SQL filter. An authenticated owner confirms exact supplied values through
 the existing registered `track_subscription` tool; the GET-only Finance dashboard is not a new edit
 or approval surface. Legacy origins stay extracted, and unsafe rollback must preserve authority and
 claims or refuse atomically.
 
-The proposed rendering rule reuses the delivered canonical Messenger renderer. Owner-only,
+The governing rendering rule reuses the delivered canonical Messenger renderer. Owner-only,
 independently unexposed output keeps ordinary rendering. A mixed-origin or independently exposed
 message makes **all** final links inert, including an owner-set cancellation URL, while retaining
-its raw stored value and `door_verified: true`. This is the explicit proposed qualification to the
+its raw stored value and `door_verified: true`. This is the explicit governing qualification to the
 existing owner-door scenario, not a claim that current Finance direct notification already enforces
 it. The actual broker delay/digest/retry and production notification bridge need implementation.
 Successful in-place Telegram amendments are a distinct consumer: preserve the complete replacement

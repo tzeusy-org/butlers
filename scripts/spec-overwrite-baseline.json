@@ -5212,13 +5212,5 @@
       "kind": "clause",
       "scenario": "Send email"
     }
-  ],
-  "finance-extracted-field-safety/finance-alerts/Renewal warnings treat email-derived cancellation fields as unverified": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "9413bcab371a",
-      "excerpt": "ID: REQ-finance-alerts-002 Source: bu-svqpzo.10; RFC 0038 D6; about/heart-and-soul/security.md Scope: classify-and-ro..."
-    }
   ]
 }

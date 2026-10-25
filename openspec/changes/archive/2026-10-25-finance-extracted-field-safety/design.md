@@ -2,9 +2,9 @@
 
 ## Status, baseline and adoption
 
-**Proposed, not adopted or implemented.** Source baseline:
+**Governing source preparation authorized; not merged or implemented.** Source baseline:
 `3e07dfec26de9544d9e3bbb30e2186df83e1a127`. This design makes the new behavior reviewable;
-it does not claim owner approval of its exact choices. RFC 0038 D4/D6 and the delivered Messenger
+ROOT recorded the existing security-maintenance authority and selected the owning MCP mechanism on 2026-10-25 (decision 3736). The exact resulting canonical/archive source still requires DIFFERENT conformance before publication. RFC 0038 D4/D6 and the delivered Messenger
 renderer constrain the design. REQ-finance-alerts-001, existing .10 cancellation/status guarantees
 and the separate RFC 0029 expected-signal authority remain intact.
 
@@ -12,7 +12,7 @@ The amendment changes one old scenario only by an explicit additional qualificat
 REQ-finance-alerts-002, “Owner-set cancellation link is unchanged” retains its old THEN verbatim.
 Its added AND distinguishes stored owner authority from message rendering: ordinary live rendering
 requires an owner-only independently unexposed envelope; mixed or exposed output makes every link
-inert. This is a proposed observable successor, not an implied exemption or a claim already adopted.
+inert. ROOT authorized this exact security-maintenance qualification under the original .19 scope. It is not a selective-span exemption, runtime delivery, or claim of merged governing state.
 
 ## Observed current path and counterexamples
 
@@ -89,21 +89,7 @@ A final delivery-time currentness check withdraws a pending warning only when it
 describe a superseded date/epoch. Delivered rows, deduplication history and cooldowns remain.
 An unavailable read is unknown under the existing as-of policy, not a fabricated supersession.
 
-**New interface, proposed:** a fixed owning lookup
-`public.resolve_finance_subscription_warning(subject UUID, selected DATE, confirmation_epoch BIGINT)`
-returns nullable BOOLEAN for the narrow currentness answer used by a fixed
-`("finance", "subscription_warning_still_relevant")` premise registration. The epoch is a nonnegative signed 64-bit integer, starting at zero and advancing only on the
-corresponding explicit owner set; overflow refuses the write atomically. The probe validates the
-subject UUID, parses the stored ISO selected date into a native date before asyncpg binding, and
-rejects Boolean or negative epochs. True means the same-epoch selected warning remains relevant;
-False means known owner supersession or known expiry, and NULL, malformed input or an unavailable
-read means UNKNOWN under the existing probe contract.
-There is no such subscription probe today. The existing bill premise in
-`roster/switchboard/tools/insight/premises.py` and its narrow Finance definer are the architectural
-precedent, not evidence this new lookup is delivered. Execution uses reviewed owner, fixed
-search_path, object and EXECUTE ACL; no broad cross-schema SELECT, caller-selected SQL, callback or
-private JSON parameter is allowed. Exact same-transaction and independent committed readback proof
-must cover owner changes racing final selection.
+**Owning currentness interface:** Finance owns a fixed read-only `subscription_warning_still_relevant(subject, selected_date, confirmation_epoch)` operation. The Switchboard's fixed Finance premise entry invokes that registered operation through the existing control-plane MCP route to Finance; it never imports Finance implementation, shares its pool, grants cross-schema SELECT/EXECUTE, or accepts caller-selected target/tool/SQL. The exact UUID, canonical ISO date and nonnegative signed 64-bit epoch are validated at both ends; Finance decodes the date to a native date before its own SQL. It returns only nullable BOOLEAN: true for the same-epoch relevant warning, false for known owner supersession/expiry, null for missing/unreadable/unregistered/unavailable evidence. Route/permission/validation/transport failures remain UNKNOWN with existing as-of honesty and cannot confirm claims, erase protection or certify fresh evidence. Registration, current catalog/role authorization, authenticated routing, original finite cancellation/deadline ownership and independent owner-commit readback must be exercised by .16. No new session or model invocation is needed. The earlier proposed `public.resolve_finance_subscription_warning` SQL function is not authorized by this application and is not installed.
 
 ## Atomic amount and currency behavior
 
@@ -189,12 +175,11 @@ new boundary. Existing roles/grants are not widened to make tests pass.
 
 ## Review and handoff
 
-All 31 cases and exact source/test seams are in the linked Finance safety document. The frozen
-proposed canonical .16/.17 packets are external review artifacts; only ROOT may apply them to Beads
-after exact adoption. .17 waits for delivered .16 shared provenance. Delivered .10 and canonical
+All 31 cases and exact source/test seams are in the linked Finance safety document. The exact .16/.17 implementation packets are bound in the Finance safety document; only ROOT may apply them to Beads
+after the governing canonical/archive source actually merges. .17 waits for delivered .16 shared provenance. Delivered .10 and canonical
 Messenger .1 are reused; no duplicate renderer owner, active .1 assignee or reverse dependency is
 invented. Current work adds zero tests and no runtime authority. A reviewed draft is not .19
-completion: four canonical spec applications and dated archive need their own bound adoption step.
+completion: this bound source application prepares four canonical specs and the dated archive; actual merge and post-merge canonical packet application remain mandatory.
 
 ## Source references and format compatibility
 

@@ -9,12 +9,13 @@ Finance path, not a request for a new financial adviser or a second message rend
 
 ## Status and authority
 
-This is a **proposed**, unadopted observable-behavior amendment for bu-svqpzo.19 at source
-`3e07dfec26de9544d9e3bbb30e2186df83e1a127`. Draft-authoring authority does not adopt the new
-date-selection, price-pair, confirmation, storage, lookup or rendering qualification. Independent
-full-five-criterion review and exact-text adoption precede baseline application and implementation.
-The RFC 0038 frozen classify-and-route path remains security-maintenance scope; no future goal
-cutover behavior is claimed. The canonical Messenger renderer is already delivered by bu-vbdug9.1.
+This is the governing security-maintenance source preparation for bu-svqpzo.19, based on
+`3e07dfec26de9544d9e3bbb30e2186df83e1a127`. ROOT recorded existing-authority acceptance and
+selected the owning Finance MCP currentness mechanism on 2026-10-25 (decision 3736), following
+DIFFERENT review of the exact behavior matrix. The resulting canonical/archive source still
+requires DIFFERENT conformance and actual merge before .19 can complete. No new SQL exception,
+role or grant is authorized. The currentness operation is future .16 implementation, not a
+claimed delivered endpoint. No runtime security fix is delivered by this source-only change.
 
 ## What changes
 
@@ -45,12 +46,12 @@ No generic deferred queue is added to the broker's existing durable delay/retry 
 
 ## Impact and completion
 
-The proposed requirements are REQ-finance-alerts-003, REQ-finance-supporting-tables-002,
+The governing requirements are REQ-finance-alerts-003, REQ-finance-supporting-tables-002,
 REQ-proactive-insight-engine-035 and REQ-insight-delivery-001, plus the complete modified
 REQ-finance-alerts-002. ID 034 already belongs to Bounded Explicit Insight Feedback and is retained.
 The source trace and all 31 proposed behavior/proof rows are in
 `docs/concepts/finance-extracted-field-safety.md`.
 
 This draft changes no runtime behavior and adds no tests: Tests: +0 ~0 -0. Completion of .19 requires
-review, exact adoption, merged canonical spec application/archive, and coordinator application of
-the approved .16/.17 packets. Pending draft text is not evidence that either security fix works.
+DIFFERENT final conformance, merged canonical spec application/archive, and coordinator application of
+the approved .16/.17 packets. Prepared governing text is not evidence that either security fix works.

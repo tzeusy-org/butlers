@@ -2,12 +2,22 @@
 
 ## Status and scope
 
-This document describes the **proposed**, unadopted full bu-svqpzo.19 contract at
-`3e07dfec26de9544d9e3bbb30e2186df83e1a127`. It does not deliver .16 or .17. The
-[proposal](../../openspec/changes/finance-extracted-field-safety/proposal.md),
-[design](../../openspec/changes/finance-extracted-field-safety/design.md) and four delta specs
-are one review unit. New dates, price pairs, confirmation epochs, storage and lookup rules need
-exact adoption before implementation. Tests: +0 ~0 -0 for this text-only change.
+This document records the governing security-maintenance contract authorized under the original
+bu-svqpzo.19 intent by ROOT decision 3736 on 2026-10-25. Source baseline:
+`3e07dfec26de9544d9e3bbb30e2186df83e1a127`. The
+[proposal](../../openspec/changes/archive/2026-10-25-finance-extracted-field-safety/proposal.md),
+[design](../../openspec/changes/archive/2026-10-25-finance-extracted-field-safety/design.md) and four
+canonical specifications are one governing application unit:
+[Finance alerts](../../openspec/specs/finance-alerts/spec.md),
+[Finance storage](../../openspec/specs/finance-supporting-tables/spec.md),
+[durable insight processing](../../openspec/specs/proactive-insight-engine/spec.md), and
+[final delivery](../../openspec/specs/insight-delivery/spec.md).
+The resulting source requires DIFFERENT final conformance and actual merge; it does not implement
+.16 or .17. ROOT applies their canonical handoffs only after that merge. The selected currentness
+mechanism is an owning Finance MCP read, not the previously proposed cross-schema SQL definer.
+No new SQL authority, role, grant, endpoint activation or notification policy is adopted.
+Tests: +0 ~0 -0. Source metadata retaining the word “proposed” identifies the reviewed predecessor;
+this status and the explicit ROOT decision distinguish authority from implementation delivery.
 
 ## Actual source trace
 
@@ -25,7 +35,7 @@ exact adoption before implementation. Tests: +0 ~0 -0 for this text-only change.
 | In-place amendment | `roster/switchboard/tools/insight/broker.py::apply_pending_amendments`, `src/butlers/scheduled_jobs.py::_build_switchboard_insight_amend_fn`, `roster/switchboard/tools/notification/deliver.py::amend_delivery`, `src/butlers/modules/telegram.py::_edit_message_text` | Successful replacement precedes normal notify; canonical protection or truthful pre-provider refusal→safe fold is required |
 | Canonical renderer | `src/butlers/core_tools/_routing.py`, `src/butlers/core/delivery_rendering.py`, `src/butlers/modules/telegram.py`, `src/butlers/modules/email.py` | Reuse delivered Messenger neutralization, permissions and recovery; no second URL parser |
 | Candidate readback | `roster/switchboard/api/router.py::list_insight_candidates` | Message and metadata must use safe projection; aggregate counts do not prove it |
-| Currentness | `roster/switchboard/tools/insight/premises.py`, `src/butlers/core/insight_premise.py` | Existing fixed bill probe is precedent; subscription probe/owning narrow lookup are new proposed interfaces |
+| Currentness | `roster/switchboard/tools/insight/premises.py`, `src/butlers/core/insight_premise.py` | Existing bill probe defines tri-state behavior; the fixed subscription operation is future owning MCP registration, not authority for a new SQL exception |
 
 The current GET-only Finance subscriptions API is not a mutation interface. The subscription
 property-fact writer is not a hidden renewal input. Current Finance reads the dedicated table.
@@ -34,7 +44,7 @@ this protection. The smallest proposed .17 bridge retains broker-owned pending/r
 
 ## Complete behavior and proof matrix
 
-Every row is a **proposed, not executed** implementation proof obligation. W01–W16 appear as named
+Every row is a **required, not executed** implementation proof obligation. W01–W16 appear as named
 scenarios in finance-alerts or finance-supporting-tables. R01–R15 appear in
 proactive-insight-engine or insight-delivery. Existing four REQ-finance-alerts-002 scenarios retain
 their names; only the owner-door scenario gains the explicit whole-envelope qualification.
@@ -73,11 +83,11 @@ their names; only the owner-door scenario gains the explicit whole-envelope qual
 | R14 | Any explicitly used generic temporal path | Stored envelope/restored trusted protection/coalescer OR verified at real background consumer; otherwise document it is not used by Finance bridge, never grant credit from storage alone | conditional exact scheduler/background software+PG boundary |
 | R15 | Successful in-place amendment or protected edit unavailable/rejected | Complete replacement inherits original/new contributor union; canonical whole-replacement inert links/previews or pre-provider refusal→safe fold; owner-only rendering, CAS/retry/unknown preserved | actual production amend closure→registered Telegram edit→fake provider capture; independent edit-boundary removal/restoration |
 
-## Exact proposed canonical implementation packets
+## Exact canonical implementation handoff packets
 
-These are proposed replacements for the operative implementation packet fields. They are not
-canonical Beads writes; ROOT applies them only after merged governing adoption. References to .19
-mean that full gate, not this pending draft. No source revision number or new role/grant is reserved.
+These are exact replacements prepared for the operative implementation packet fields. They are not
+canonical Beads writes; ROOT applies them only after the governing canonical/archive source merges. References to .19
+mean that full gate, not this unmerged source preparation. No source revision number or new role/grant is reserved.
 
 ### bu-svqpzo.16: Stop extracted subscription updates postponing actionable warnings, with atomic pending price claims
 
@@ -97,15 +107,16 @@ Source allocation to bind at implementation dispatch:
 | --- | --- |
 | `roster/finance/tools/subscriptions.py` | Server-reserved field provenance + atomic logical identity/claim transaction + owner explicit set |
 | `roster/finance/tools/expected_signals.py` | Reuse real attestation; add no caller authority; reserved metadata sanitization only if current helper needs exact new reserved keys |
-| `roster/finance/modules/tools.py` | Existing registered explicit owner input/result state; no new tool/confirmation form |
+| `roster/finance/modules/tools.py` | Existing registered explicit owner input/result state; no new confirmation form. Future .16 adds the fixed read-only subscription_warning_still_relevant operation using the actual Finance pool, normal current catalog and authenticated MCP route. |
 | `roster/finance/tools/alerts.py` | Same effective date in obligation ledger and pending pair pre-charge presentation; current thresholds remain |
 | `roster/finance/jobs/finance_jobs.py` | Real SQL selection over baseline and unresolved dates; fixed warning/key/expiry; current pending discrepancy wording |
 | `roster/finance/api/models.py` | Add read-only field origins/pending confirmation DTO |
 | `roster/finance/api/router.py` | Existing GET projection only; no mutation endpoint |
 | `roster/finance/migrations/<next actual revision>` | Add claims/revision/origins/constraints/atomic identity and non-destructive rollback; number unallocated |
-| `roster/switchboard/tools/insight/premises.py` | Existing actual PREMISE_PROBES registry contains finance.bill_still_pending and Health refill only. Proposed fixed entry finance.subscription_warning_still_relevant uses a narrow owning read, no client-selected reader or dynamic callback. True=relevant, False=owner-superseded/expired; None=UNKNOWN with existing as-of honesty, never an owner change. |
-| `roster/finance/migrations/<next actual revision>` | Install exact narrow public.resolve_finance_subscription_warning(subject UUID, selected DATE, confirmation epoch) lookup with reviewed definer owner/search_path/execute ACL modeled on actual core255 Finance bill lookup, exposing only tri-state currentness, not raw tables or write authority. The new name/interface is explicitly PROPOSED, not existing; no cross-schema broad SELECT grant. |
+| `roster/switchboard/tools/insight/premises.py` | Existing actual PREMISE_PROBES registry contains finance.bill_still_pending and Health refill only. Future fixed finance.subscription_warning_still_relevant uses the actual owning Finance MCP read held by trusted daily/urgent assembly; no direct Finance SQL or caller-selected reader/callback from metadata. True=relevant, False=known owner-superseded/expired; None=UNKNOWN/as-of. |
 | `src/butlers/core/insight_premise.py` | REUSE probe_premise/normalize_premise; no new generic premise kind is required. |
+| `src/butlers/scheduled_jobs.py`, `roster/switchboard/tools/insight/broker.py` | Future .16 binds the fixed owning reader into actual daily and urgent delivery assembly and existing late premise checks; existing bill/Health probes, budgets and UNKNOWN remain |
+| `roster/switchboard/tools/routing/route.py` | Reuse actual route to fixed Finance registered read through current registry/permissions; no new permissive helper, direct SQL, callback from JSON or extra model session |
 
 Existing test owners:
 
@@ -169,9 +180,8 @@ Existing test owners:
 
 Causal evidence: Remove Finance producer provenance then the actual bridge/protection OR independently, each must re-expose synthetic link at the captured final payload and fail; exact restoration passes. Test the registered production closure, not an injected notify_fn that itself supplies safe rendering. Reuse canonical adapter suite rather than copying sanitizer cases. Separately execute real apply_pending_amendments→production _build_switchboard_insight_amend_fn→amend_delivery→registered Telegram edit→fake provider payload. Cover successful owner-only edit, protected success if supported, pre-provider refusal→safe fold, original/new contributor union, mixed origins, restart/retry, UNKNOWN and current edit permission. Remove edit-protection/refusal independently, require active synthetic replacement/provider-call FAIL, then exact restore PASS. No live provider operation.
 
-The .16 allocation includes the new narrow owning subscription-warning lookup and fixed premise
-entry described in the design; the design fixes UUID/DATE/nonnegative BIGINT inputs and nullable BOOLEAN output, while its
-actual owning migration, ACL and same-transaction readback must be source-leased before edits. It cannot borrow authority from a returned DTO. The .17
+The .16 allocation includes the fixed owning subscription-warning MCP read and fixed premise
+entry described in the design. UUID/canonical ISO date/nonnegative BIGINT inputs and nullable BOOLEAN output are fixed; Finance decodes its native SQL date. The actual Finance registration, authenticated Switchboard route and trusted daily/urgent composition must be source-leased and proved before delivery. There is no new cross-schema SQL definer/grant, direct Finance pool access or authority from a returned DTO. The .17
 metadata/storage migration is conditional on the actual representation selected at implementation;
 there is no permission here to allocate a speculative extra migration or generic deferred queue.
 
@@ -223,15 +233,20 @@ injected safe callbacks are insufficient.
 For text authoring, run named strict validation and complete-file authoring, actual overwrite,
 requirement-trace, countable-task and cited-requirement checks. Preserve any successor or inherited
 non-pass; do not pad a contrary old clause, relabel MODIFIED as ADDED, change guard logic or ratchet
-metadata to hide it. Full baseline application/archive follows exact adoption in a separate bounded
-source allocation, preserving unrelated requirements and scenarios. No pending draft completes .19.
+metadata to hide it. ROOT decision 3736 authorizes this bounded canonical application/archive in
+the same PR, preserving unrelated requirements and scenarios. Governing source preparation does not
+complete .19 until actual merge and ROOT canonical handoff; no implementation result is implied.
 
 ## Full five acceptance-criterion disposition
 
-| Original criterion | Concrete contract output | Remaining gate |
+| Original criterion | Governing output in this PR | Remaining before .19 completion |
 | --- | --- | --- |
-| Stored-field to delayed-render trace | Actual source table and design counterexamples | Independent source/conformance review |
-| Date/pair/provenance/confirmation and races | W01–W16, explicit transition table and new narrow lookup | Exact normative adoption; .16 implementation and genuine migrated proof |
-| Inert fields and canonical envelope semantics | R01–R15 and precise REQ002 qualification | Exact normative adoption; .17 actual bridge/renderer proof |
-| Merged governing contract, migration/rollback and matrix | Four full delta specs, design, tasks and this matrix | Approved canonical application/archive and merged exact-head checks |
-| Executable .16/.17 packets and real edges | Both complete proposed packets above | ROOT canonical application after adoption; no duplicate renderer owner |
+| Stored-field to delayed-render trace | Actual registered write, persisted producer/broker/readback/notify and separate successful-edit source trace | DIFFERENT resulting conformance and actual governing merge |
+| Date/pair/provenance/confirmation and races | W01–W16, explicit transition table and fixed owning MCP currentness; ROOT maintenance/mechanism decision 3736 | DIFFERENT resulting conformance and actual governing merge; .16 runtime proof remains its separate implementation obligation |
+| Inert fields and canonical envelope semantics | R01–R15 and precise REQ002 qualification, sole canonical Messenger renderer | DIFFERENT resulting conformance and actual governing merge; .17 runtime proof remains its separate implementation obligation |
+| Merged governing delta/docs, migration/rollback/full matrix | Four canonical specifications and dated archive prepared coherently in this PR | DIFFERENT final conformance, required gates and actual merge; no premature closure |
+| Executable .16/.17 packets and real producer edges | Exact canonical packet fields and proof allocations above, .17 waits for delivered .16 provenance | ROOT applies these canonical fields/dependencies after governing merge and verifies them before closing .19 |
+
+Runtime tests, PostgreSQL races and provider captures specified here are mandatory for .16/.17,
+not claimed executed by this authoring task and not an invented feature-delivery prerequisite to
+finishing .19's governing-source and canonical-handoff outcome.
