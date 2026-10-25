@@ -162,9 +162,7 @@ butler's schema even though all schemas live in one database.
 - The migration role and any superuser connection retain full access to all
   schemas, consistent with the trust model (the owner and whoever holds the
   database credentials are trusted).
-- Role enforcement degrades to a warning if the per-butler role cannot be
-  verified, unless `strict_role_enforcement` is set, in which case startup fails
-  closed.
+- A butler runtime pool must have its designated runtime role before serving queries. Missing or unverifiable roles, inability to assume the role, and a missing role configuration for a butler schema cause startup or connection acquisition to fail closed in every environment. No development or deployment-posture setting permits shared-user runtime continuation.
 
 ## Approval Gates
 
@@ -383,7 +381,8 @@ The principle: **services get the minimum network access they need and
 nothing more.** The network, firewall, and port-binding contract lives in
 [RFC 0008](../legends-and-lore/rfcs/0008-deployment-network-security.md).
 Containers receive only the environment they declare, and goal invocations run
-in the session sandbox with only `PATH` and their model credential.
+in the session sandbox with only `PATH`, their model credential, their MCP config
+and adapter-owned pointers to files staged inside the sandbox.
 
 ### Principles
 

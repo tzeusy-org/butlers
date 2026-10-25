@@ -18,7 +18,7 @@ from `BUTLERS_OTLP_ENDPOINT`; the checked-in `http://otel.invalid:4318` is a
 placeholder, not a usable collector.
 
 Use the site's existing Grafana endpoint and access policy. Compose's
-`--observability` and `BUTLERS_POSTURE` flags do not configure the cluster LGTM
+The Compose `--observability` flag and its local Grafana settings do not configure the cluster LGTM
 stack. See [Kubernetes Deployment](kubernetes-deployment.md#deploy) for the
 committed-image workflow and site configuration. This source description does
 not attest live collector reachability or dashboard provisioning.
