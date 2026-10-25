@@ -21,6 +21,7 @@ from butlers.credential_store import (
     create_system_global_credential_store_from_env,
     shared_db_name_from_env,
 )
+from butlers.testing.records import row as _make_row
 
 pytestmark = pytest.mark.unit
 
@@ -44,12 +45,6 @@ def _make_pool(
     pool.acquire.return_value = cm
     pool._conn = conn
     return pool
-
-
-def _make_row(**kwargs) -> MagicMock:
-    row = MagicMock()
-    row.__getitem__ = lambda self, key: kwargs[key]
-    return row
 
 
 # ---------------------------------------------------------------------------
