@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from contextvars import ContextVar
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
@@ -2812,6 +2813,7 @@ async def test_registered_routed_fields_scan_and_durable_broker_pipeline(
     baseline_tasks = set(asyncio.all_tasks())
     owner = receiver = None
     actual_http = httpx.AsyncClient
+    # live-clock: the actual fixed MCP reader derives its calendar internally without a now input.
     now = datetime.now(UTC)
     today = now.date()
     selected = today + timedelta(days=3)
@@ -2827,7 +2829,22 @@ async def test_registered_routed_fields_scan_and_durable_broker_pipeline(
             )
         )
 
+        boot_fence_state = {"armed": False, "owning_reads": 0, "rotated": False}
+
         async def runtime(domain):
+            async def initialize(conn):
+                await register_jsonb_codec(conn)
+                if domain == "finance":
+
+                    def record(query):
+                        if boot_fence_state["armed"] and query.query.startswith(
+                            "SELECT next_renewal, date_epoch, field_claims, status, status_source "
+                            "FROM subscriptions WHERE id = $1"
+                        ):
+                            boot_fence_state["owning_reads"] += 1
+
+                    conn.add_query_logger(record)
+
             async def role(conn):
                 await conn.execute(f'SET ROLE "butler_{domain}_rw"')
 
@@ -2836,7 +2853,7 @@ async def test_registered_routed_fields_scan_and_durable_broker_pipeline(
                     url,
                     min_size=1,
                     max_size=3,
-                    init=register_jsonb_codec,
+                    init=initialize,
                     setup=role,
                     server_settings={"search_path": f"{domain},public"},
                 )
@@ -2890,29 +2907,43 @@ async def test_registered_routed_fields_scan_and_durable_broker_pipeline(
             publisher = CatalogPublisher(runtime_pool, domain)
             await publisher.publish(catalog)
             publishers[domain], catalogs[domain] = publisher, catalog
-        finance._boot_instance_id = publishers["finance"].instance
+        finance._catalog_publication = publishers["finance"]
+        source = ButlerDaemon(
+            root / "roster/switchboard", db=SimpleNamespace(pool=switchboard_pool)
+        )
+        source.config = load_config(source.config_dir)
+        source._tool_catalog = catalogs["switchboard"]
+        source._catalog_publication = publishers["switchboard"]
+        expected = expected_route_target("finance")
+        assert expected is not None
+        # The real registry row must exist before the role-bound boot registration.
+        await register_butler(
+            switchboard_pool, "finance", runtime_mcp_url(expected.port), modules=["finance"]
+        )
+        switchboard_target = expected_route_target("switchboard")
+        assert switchboard_target is not None
+        await register_butler(
+            switchboard_pool,
+            "switchboard",
+            runtime_mcp_url(switchboard_target.port),
+            modules=["switchboard"],
+        )
         finance._boot_epoch = await register_boot(
             finance_pool, "finance", finance._boot_instance_id
         )
         assert finance._boot_epoch == 1
-        source = SimpleNamespace(
-            db=SimpleNamespace(pool=switchboard_pool),
-            config=SimpleNamespace(name="switchboard"),
-            _tool_catalog=catalogs["switchboard"],
-            _boot_instance_id=publishers["switchboard"].instance,
-            _boot_epoch=1,
+        source._boot_epoch = await register_boot(
+            switchboard_pool, "switchboard", source._boot_instance_id
         )
+        assert finance._boot_instance_id.version == source._boot_instance_id.version == 7
+        assert finance._boot_instance_id != publishers["finance"].instance
+        assert source._boot_instance_id != publishers["switchboard"].instance
         owner = control.FinanceWarningControlOwner(source, route_call=route.route)
         source._finance_warning_control_owner = owner
         receiver = control.FinanceWarningControlOwner(
             finance, verifier_url="http://controlled.invalid" + control.VERIFY_PATH
         )
         finance._finance_warning_control_owner = receiver
-        expected = expected_route_target("finance")
-        assert expected is not None
-        await register_butler(
-            switchboard_pool, "finance", runtime_mcp_url(expected.port), modules=["finance"]
-        )
         epoch, sequence = await reserve_probe(switchboard_pool, "finance")
         assert epoch == finance._boot_epoch
         assert await record_probe(
@@ -3019,8 +3050,14 @@ async def test_registered_routed_fields_scan_and_durable_broker_pipeline(
                 row = await observer.fetchrow(
                     "SELECT * FROM finance.subscriptions WHERE id=$1", subject
                 )
-                assert row["next_renewal"] == baseline_date
-                assert str(row["amount"]) == "10.00" and row["currency"] == "USD"
+                assert row["value_revision"] >= 3 and len(row["field_claims"]) == 3
+                try:
+                    assert row["next_renewal"] == baseline_date
+                    assert str(row["amount"]) == "10.00" and row["currency"] == "USD"
+                except AssertionError as exc:
+                    if _pipeline_mutation.get() == "field-protection":
+                        raise _FieldProtectionViolation from exc
+                    raise
                 assert row["renewal_source"] == row["price_source"] == "owner"
                 assert {
                     claim["field"] for claim in row["field_claims"] if not claim["resolved"]
@@ -3034,7 +3071,12 @@ async def test_registered_routed_fields_scan_and_durable_broker_pipeline(
                 candidate = await observer.fetchrow(
                     "SELECT * FROM finance.insight_candidates WHERE category='subscription-renewal'"
                 )
-                assert candidate is not None and candidate["status"] == "pending"
+                try:
+                    assert candidate is not None and candidate["status"] == "pending"
+                except AssertionError as exc:
+                    if _pipeline_mutation.get() == "prefilter-before-min":
+                        raise _RenewalSelectionViolation from exc
+                    raise
                 assert candidate["dedup_key"].endswith(selected.isoformat())
                 assert candidate["metadata"]["event_date"] == selected.isoformat()
                 assert candidate["expires_at"] == datetime.combine(
@@ -3067,10 +3109,44 @@ async def test_registered_routed_fields_scan_and_durable_broker_pipeline(
             elif after_scan == "unknown":
                 receiver.stop_admission()  # real closed receiver, not a fabricated false/SQL response
                 assert await owner.read(premise["args"]) is None
+            if _pipeline_boot_race.get():
+                from butlers.core.utils import generate_uuid7_string
+
+                original_verify = owner.verify_consume
+                old_local = receiver.identity()
+                old_publication = publishers["finance"].revision
+
+                async def rotate_after_callback(body):
+                    proof = await original_verify(body)
+                    if proof is not None and not boot_fence_state["rotated"]:
+                        successor = UUID(generate_uuid7_string())
+                        successor_epoch = await register_boot(finance_pool, "finance", successor)
+                        assert successor_epoch == finance._boot_epoch + 1
+                        async with admin.acquire() as observer:
+                            observed = await observer.fetchrow(
+                                "SELECT boot_instance_id,boot_epoch FROM "
+                                "switchboard.butler_registry_control_plane WHERE name='finance'"
+                            )
+                            assert tuple(observed) == (successor, successor_epoch)
+                        assert receiver.identity() == old_local
+                        assert publishers["finance"].revision == old_publication
+                        boot_fence_state["rotated"] = boot_fence_state["armed"] = True
+                    return proof
+
+                monkeypatch.setattr(owner, "verify_consume", rotate_after_callback)
             notify = AsyncMock(return_value={"status": "sent"})
             result = await broker.delivery_cycle(
                 finance_pool, notify_fn=notify, now=now, finance_warning_reader=owner.read
             )
+            if _pipeline_boot_race.get():
+                await asyncio.sleep(0)  # deliver native query-logger callbacks before the oracle
+                assert boot_fence_state["rotated"]
+                try:
+                    assert boot_fence_state["owning_reads"] == 0
+                    assert "unverified" in notify.call_args.args[0].lower()
+                    assert "as of" in notify.call_args.args[0].lower()
+                except AssertionError as exc:
+                    raise _BootAdmissionViolation from exc
             async with admin.acquire() as observer:
                 stored = await observer.fetchrow(
                     "SELECT status FROM finance.insight_candidates WHERE id=$1", candidate["id"]
@@ -3098,3 +3174,176 @@ async def test_registered_routed_fields_scan_and_durable_broker_pipeline(
             await receiver.settle()
     await asyncio.sleep(0)
     assert not [task for task in asyncio.all_tasks() - baseline_tasks if not task.done()]
+
+
+class _FieldProtectionViolation(AssertionError):
+    pass
+
+
+class _RenewalSelectionViolation(AssertionError):
+    pass
+
+
+_pipeline_mutation = ContextVar("finance_pipeline_product_mutation", default=None)
+
+
+@pytest.fixture
+def registered_field_mutation_dbs(postgres_container):
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
+
+    return [
+        create_migrated_test_db(
+            postgres_container,
+            migration_db_name(),
+            chains=["core", "finance", "switchboard"],
+            schemas={"core": "finance", "finance": "finance", "switchboard": "switchboard"},
+        )
+        for _ in range(3)
+    ]
+
+
+def _pipeline_product_mutant(module, name, mutation):
+    """Compile an exact production AST mutant; no SQL/pool/authority oracle replacement."""
+    import ast
+    import inspect
+
+    original = getattr(module, name)
+    tree = ast.parse(inspect.getsource(original))
+    changed = 0
+    if mutation == "field-protection":
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Subscript)
+                and isinstance(node.targets[0].value, ast.Name)
+                and node.targets[0].value.id == "state"
+                and isinstance(node.targets[0].slice, ast.Constant)
+                and node.targets[0].slice.value in {"next_renewal", "amount", "currency"}
+                and isinstance(node.value, ast.IfExp)
+                and isinstance(node.value.test, ast.Name)
+                and node.value.test.id == "owner"
+            ):
+                node.value = node.value.body
+                changed += 1
+        assert changed == 3
+    else:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                old = ") dates WHERE day >= $1 AND day <= $2"
+                if old in node.value:
+                    assert node.value.count(old) == 1
+                    assert node.value.count("AND selected.warning_date IS NOT NULL") == 1
+                    node.value = node.value.replace(old, ") dates").replace(
+                        "AND selected.warning_date IS NOT NULL",
+                        "AND selected.warning_date BETWEEN $1 AND $2",
+                    )
+                    changed += 1
+        assert changed == 1
+    namespace = dict(module.__dict__)
+    exec(
+        compile(ast.fix_missing_locations(tree), inspect.getsourcefile(original), "exec"), namespace
+    )
+    mutant = namespace[name]
+    assert (
+        mutant.__code__.co_code != original.__code__.co_code
+        or mutant.__code__.co_consts != original.__code__.co_consts
+    )
+    return original, mutant
+
+
+@pytest.mark.parametrize("mutation", ["field-protection", "prefilter-before-min"])
+async def test_registered_pipeline_real_sql_mutants_are_killed(
+    registered_field_mutation_dbs, monkeypatch, mutation
+):
+    """Hosted real SQL causal carrier; arbitrary setup/transport/SQL exceptions fail this test."""
+    import butlers.jobs._roster.finance_jobs as jobs
+    from butlers.tools.finance import subscriptions
+
+    baseline, counterfactual, restored = registered_field_mutation_dbs
+    with monkeypatch.context() as baseline_patch:
+        await test_registered_routed_fields_scan_and_durable_broker_pipeline(
+            baseline, baseline_patch, "current"
+        )
+    module, name, expected = (
+        (subscriptions, "merge_field_claims", _FieldProtectionViolation)
+        if mutation == "field-protection"
+        else (jobs, "run_insight_scan", _RenewalSelectionViolation)
+    )
+    original, mutant = _pipeline_product_mutant(module, name, mutation)
+    token = _pipeline_mutation.set(mutation)
+    try:
+        with monkeypatch.context() as patcher:
+            patcher.setattr(module, name, mutant)
+            with pytest.raises(expected):
+                await test_registered_routed_fields_scan_and_durable_broker_pipeline(
+                    counterfactual, patcher, "current"
+                )
+    finally:
+        _pipeline_mutation.reset(token)
+    assert getattr(module, name) is original
+    with monkeypatch.context() as restored_patch:
+        await test_registered_routed_fields_scan_and_durable_broker_pipeline(
+            restored, restored_patch, "current"
+        )
+
+
+class _BootAdmissionViolation(AssertionError):
+    pass
+
+
+_pipeline_boot_race = ContextVar("finance_pipeline_boot_race", default=False)
+
+
+async def test_registered_pipeline_committed_boot_rotation_causal_carrier(
+    registered_field_mutation_dbs, monkeypatch
+):
+    """Real callback->successor commit->owning SQL refusal; not an arbitrary error kill."""
+    import ast
+    import inspect
+    import textwrap
+
+    from butlers.core import finance_warning_control as control
+
+    original = control.FinanceWarningControlOwner._receiver_publication_current
+    tree = ast.parse(textwrap.dedent(inspect.getsource(original)))
+    replaced = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.BoolOp):
+            for index, value in enumerate(node.values):
+                if (
+                    isinstance(value, ast.Compare)
+                    and isinstance(value.left, ast.Subscript)
+                    and isinstance(value.left.value, ast.Name)
+                    and value.left.value.id == "row"
+                    and isinstance(value.left.slice, ast.Constant)
+                    and value.left.slice.value == "boot_current"
+                ):
+                    node.values[index] = ast.Constant(value=True)
+                    replaced += 1
+    assert replaced == 1
+    namespace = dict(control.__dict__)
+    exec(
+        compile(ast.fix_missing_locations(tree), inspect.getsourcefile(original), "exec"), namespace
+    )
+    mutant = namespace[original.__name__]
+    baseline, counterfactual, restored = registered_field_mutation_dbs
+    token = _pipeline_boot_race.set(True)
+    try:
+        with monkeypatch.context() as baseline_patch:
+            await test_registered_routed_fields_scan_and_durable_broker_pipeline(
+                baseline, baseline_patch, "current"
+            )
+        with monkeypatch.context() as mutant_patch:
+            mutant_patch.setattr(control.FinanceWarningControlOwner, original.__name__, mutant)
+            with pytest.raises(_BootAdmissionViolation):
+                await test_registered_routed_fields_scan_and_durable_broker_pipeline(
+                    counterfactual, mutant_patch, "current"
+                )
+        assert control.FinanceWarningControlOwner._receiver_publication_current is original
+        with monkeypatch.context() as restored_patch:
+            await test_registered_routed_fields_scan_and_durable_broker_pipeline(
+                restored, restored_patch, "current"
+            )
+    finally:
+        _pipeline_boot_race.reset(token)

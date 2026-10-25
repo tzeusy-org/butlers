@@ -2,11 +2,53 @@
 
 from datetime import date
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
 _ROOT = Path(__file__).resolve().parents[2]
+
+
+def _boot_id():
+    from butlers.core.utils import generate_uuid7_string
+
+    return UUID(generate_uuid7_string())
+
+
+def _install_publication(daemon):
+    from butlers.core.catalog_publication import CatalogPublisher
+
+    publisher = CatalogPublisher(daemon.db.pool, daemon.config.name)
+    from unittest.mock import AsyncMock
+
+    publisher.retire = AsyncMock()  # publication teardown is outside this controlled SQL owner
+    publisher.revision = uuid4()
+    publisher.generation_digest = daemon._tool_catalog.generation_digest
+    daemon._catalog_publication = publisher
+    return publisher
+
+
+def _registration(daemon):
+    from types import SimpleNamespace
+
+    publisher = daemon._catalog_publication
+    return SimpleNamespace(
+        instance_id=publisher.instance,
+        revision_id=publisher.revision,
+        epoch=11,
+        catalog=daemon._tool_catalog,
+        body_digest="controlled-body",
+        authorization_digest="controlled-auth",
+    )
+
+
+def _snapshot(registrations, **daemons):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        registration=registrations.__getitem__,
+        boot=lambda name: (daemons[name]._boot_instance_id, daemons[name]._boot_epoch),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -54,7 +96,8 @@ async def _registered_finance(pool):
     daemon._module_configs = daemon._validate_module_configs()
     await daemon._register_module_tools()
     await daemon._finalize_tool_catalog()
-    daemon._boot_instance_id, daemon._boot_epoch = UUID(int=2), 1
+    daemon._boot_epoch = 1
+    _install_publication(daemon)
     return daemon
 
 
@@ -100,23 +143,22 @@ async def test_actual_registered_read_requires_pending_current_one_use_claim(mon
         db=SimpleNamespace(pool=object()),
         config=SimpleNamespace(name="switchboard"),
         _tool_catalog=finance._tool_catalog,
-        _boot_instance_id=UUID(int=3),
+        _boot_instance_id=_boot_id(),
         _boot_epoch=1,
     )
+    _install_publication(source)
     issuer = control.FinanceWarningControlOwner(source)
     source._finance_warning_control_owner = issuer
     owner = control.FinanceWarningControlOwner(
         finance, verifier_url="http://fixed/internal/finance-warning/verify"
     )
+    owner._receiver_publication_current = AsyncMock(return_value=True)
     finance._finance_warning_control_owner = owner
     registrations = {
-        name: SimpleNamespace(
-            instance_id=d._boot_instance_id, epoch=d._boot_epoch, catalog=d._tool_catalog
-        )
-        for name, d in [("switchboard", source), ("finance", finance)]
+        name: _registration(d) for name, d in [("switchboard", source), ("finance", finance)]
     }
     issuer.registrations = AsyncMock(
-        return_value=SimpleNamespace(registration=registrations.__getitem__)
+        return_value=_snapshot(registrations, finance=finance, switchboard=source)
     )
     real_client = httpx.AsyncClient
     monkeypatch.setattr(
@@ -158,8 +200,8 @@ async def test_actual_registered_read_requires_pending_current_one_use_claim(mon
                 assert unissued.data is None and pool.acquired == 0
                 issuer.claims["pending-opaque"] = (
                     args,
-                    issuer.identity(),
-                    owner.identity(),
+                    control._registration_binding(await issuer.registrations(), "switchboard"),
+                    control._registration_binding(await issuer.registrations(), "finance"),
                     asyncio.get_running_loop().time() + 5,
                 )
                 bad = await client.call_tool(
@@ -175,8 +217,8 @@ async def test_actual_registered_read_requires_pending_current_one_use_claim(mon
                 assert replay.data is None and pool.acquired == 1
                 issuer.claims["pending-opaque"] = (
                     args,
-                    issuer.identity(),
-                    owner.identity(),
+                    control._registration_binding(await issuer.registrations(), "switchboard"),
+                    control._registration_binding(await issuer.registrations(), "finance"),
                     asyncio.get_running_loop().time() + 5,
                 )
                 finance._boot_epoch += 1
@@ -438,23 +480,22 @@ async def test_actual_route_forces_current_receiver_even_cutover_off_and_binds_h
         db=SimpleNamespace(pool=pool),
         config=SimpleNamespace(name="switchboard"),
         _tool_catalog=finance._tool_catalog,
-        _boot_instance_id=UUID(int=7),
+        _boot_instance_id=_boot_id(),
         _boot_epoch=1,
     )
+    _install_publication(source)
     owner = control.FinanceWarningControlOwner(source, route_call=route_mod.route)
     source._finance_warning_control_owner = owner
     receiver = control.FinanceWarningControlOwner(
         finance, verifier_url="http://fixed" + control.VERIFY_PATH
     )
+    receiver._receiver_publication_current = AsyncMock(return_value=True)
     finance._finance_warning_control_owner = receiver
     registrations = {
-        name: SimpleNamespace(
-            instance_id=d._boot_instance_id, epoch=d._boot_epoch, catalog=d._tool_catalog
-        )
-        for name, d in [("finance", finance), ("switchboard", source)]
+        name: _registration(d) for name, d in [("finance", finance), ("switchboard", source)]
     }
     owner.registrations = AsyncMock(
-        return_value=SimpleNamespace(registration=registrations.__getitem__)
+        return_value=_snapshot(registrations, finance=finance, switchboard=source)
     )
     actual_http = httpx.AsyncClient
     monkeypatch.setattr(
@@ -649,26 +690,31 @@ async def test_issuer_exact_wire_expiry_catalog_and_revocation_cannot_consume(mo
         db=SimpleNamespace(pool=object()),
         config=SimpleNamespace(name="switchboard"),
         _tool_catalog=finance._tool_catalog,
-        _boot_instance_id=UUID(int=3),
+        _boot_instance_id=_boot_id(),
         _boot_epoch=1,
     )
+    _install_publication(source)
     owner = control.FinanceWarningControlOwner(source)
     source._finance_warning_control_owner = owner
-    identity = owner.identity()
-    receiver = (str(finance._boot_instance_id), 1, finance._tool_catalog.generation_digest)
-    source_reg = SimpleNamespace(
-        instance_id=source._boot_instance_id, epoch=1, catalog=source._tool_catalog
-    )
-    receiver_reg = SimpleNamespace(
-        instance_id=finance._boot_instance_id, epoch=1, catalog=finance._tool_catalog
-    )
+    source_reg = _registration(source)
+    receiver_reg = _registration(finance)
     owner.registrations = AsyncMock(
-        return_value=SimpleNamespace(
-            registration={"finance": receiver_reg, "switchboard": source_reg}.__getitem__
+        return_value=_snapshot(
+            {"finance": receiver_reg, "switchboard": source_reg},
+            finance=finance,
+            switchboard=source,
         )
     )
+    snapshot = await owner.registrations()
+    identity = control._registration_binding(snapshot, "switchboard")
+    receiver = control._registration_binding(snapshot, "finance")
     args = {"subject": str(UUID(int=1)), "selected_date": "2026-10-27", "epoch": 0}
-    body = {"token": "opaque", "args": args, "receiver": list(receiver), "nonce": "n" * 43}
+    body = {
+        "token": "opaque",
+        "args": args,
+        "receiver": list(control._local_identity(receiver)),
+        "nonce": "n" * 43,
+    }
 
     def renew():
         owner.claims["opaque"] = (args, identity, receiver, asyncio.get_running_loop().time() + 5)
@@ -912,21 +958,27 @@ async def test_actual_route_native_release_stays_owned_until_shutdown_settlement
 
     catalog = Catalog({control.TOOL: SimpleNamespace(effect_class="read", owner_authority=False)})
     daemon._tool_catalog = catalog
-    daemon._boot_instance_id, daemon._boot_epoch = UUID(int=7), 1
+    daemon._boot_epoch = 1
+    _install_publication(daemon)
     owner = control.FinanceWarningControlOwner(daemon, route_call=route.route)
     daemon._finance_warning_control_owner = owner
-    registrations = {
-        "switchboard": SimpleNamespace(instance_id=UUID(int=7), epoch=1, catalog=catalog),
-        "finance": SimpleNamespace(instance_id=UUID(int=8), epoch=1, catalog=catalog),
-    }
+    finance = SimpleNamespace(
+        db=SimpleNamespace(pool=object()),
+        config=SimpleNamespace(name="finance"),
+        _tool_catalog=catalog,
+        _boot_instance_id=_boot_id(),
+        _boot_epoch=2,
+    )
+    _install_publication(finance)
+    registrations = {"switchboard": _registration(daemon), "finance": _registration(finance)}
     owner.registrations = AsyncMock(
-        return_value=SimpleNamespace(registration=registrations.__getitem__)
+        return_value=_snapshot(registrations, switchboard=daemon, finance=finance)
     )
     decision = SimpleNamespace(
         state="ready",
         endpoint_url="http://controlled.invalid/mcp",
-        boot_instance_id=UUID(int=8),
-        boot_epoch=1,
+        boot_instance_id=finance._boot_instance_id,
+        boot_epoch=finance._boot_epoch,
     )
     if phase == "resolver":
         # Real receiver resolver, real native fetch/release; only policy row decoding is controlled.
@@ -1019,3 +1071,553 @@ async def test_actual_route_native_release_stays_owned_until_shutdown_settlement
         await pool.close()
         await asyncio.sleep(0)
     assert not [task for task in asyncio.all_tasks() - baseline_tasks if not task.done()]
+
+
+@pytest.mark.asyncio
+async def test_boot_and_publication_rotations_cannot_consume_a_captured_claim():
+    import asyncio
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from butlers.core import finance_warning_control as control
+
+    finance = await _registered_finance(object())
+    source = SimpleNamespace(
+        db=SimpleNamespace(pool=object()),
+        config=SimpleNamespace(name="switchboard"),
+        _tool_catalog=finance._tool_catalog,
+        _boot_instance_id=_boot_id(),
+        _boot_epoch=3,
+    )
+    _install_publication(source)
+    owner = control.FinanceWarningControlOwner(source)
+    source._finance_warning_control_owner = owner
+    registrations = {"switchboard": _registration(source), "finance": _registration(finance)}
+    snapshot = _snapshot(registrations, switchboard=source, finance=finance)
+    owner.registrations = AsyncMock(return_value=snapshot)
+    args = {"subject": str(uuid4()), "selected_date": "2026-10-27", "epoch": 0}
+    source_binding = control._registration_binding(snapshot, "switchboard")
+    receiver_binding = control._registration_binding(snapshot, "finance")
+    assert source_binding[0] != source_binding[2] and source_binding[1] != source_binding[3]
+    assert receiver_binding[0] != receiver_binding[2] and receiver_binding[1] != receiver_binding[3]
+    body = {
+        "token": "held",
+        "args": args,
+        "receiver": list(control._local_identity(receiver_binding)),
+        "nonce": "n" * 43,
+    }
+
+    def issue():
+        owner.claims["held"] = (
+            args,
+            source_binding,
+            receiver_binding,
+            asyncio.get_running_loop().time() + 5,
+        )
+
+    try:
+        for domain, daemon in (("switchboard", source), ("finance", finance)):
+            registration = registrations[domain]
+            for name, changed in (("_boot_instance_id", _boot_id()), ("_boot_epoch", 8)):
+                original = getattr(daemon, name)
+                issue()
+                setattr(daemon, name, changed)
+                assert await owner.verify_consume(body) is None
+                assert "held" in owner.claims
+                setattr(daemon, name, original)
+            for name, changed in (
+                ("instance_id", uuid4()),
+                ("revision_id", uuid4()),
+                ("epoch", 12),
+                ("body_digest", "rotated-body"),
+                ("authorization_digest", "rotated-auth"),
+                ("catalog", replace(registration.catalog, generation_digest="rotated-generation")),
+            ):
+                original = getattr(registration, name)
+                issue()
+                setattr(registration, name, changed)
+                assert await owner.verify_consume(body) is None
+                assert "held" in owner.claims
+                setattr(registration, name, original)
+        for target, attribute in (
+            (source._catalog_publication, "_publication_pending"),
+            (source, "_catalog_publication_failed"),
+        ):
+            issue()
+            setattr(target, attribute, True)
+            with pytest.raises(PermissionError):
+                await owner.verify_consume(body)
+            assert "held" in owner.claims
+            setattr(target, attribute, False)
+        issue()
+        proof = await owner.verify_consume(body)
+        assert proof["binding"] == list(receiver_binding)
+        assert "held" not in owner.claims
+        assert await owner.verify_consume(body) is None
+    finally:
+        await owner.close(1)
+        assert not owner.tasks and not owner.children
+
+
+@pytest.mark.asyncio
+async def test_receiver_current_publication_checks_real_query_and_local_pending_state():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from butlers.core import finance_warning_control as control
+
+    finance = await _registered_finance(object())
+    owner = control.FinanceWarningControlOwner(finance)
+    finance._finance_warning_control_owner = owner
+    registration = _registration(finance)
+    binding = control._registration_binding(
+        _snapshot({"finance": registration}, finance=finance), "finance"
+    )
+    row = {
+        "instance_id": registration.instance_id,
+        "revision_id": registration.revision_id,
+        "epoch": registration.epoch,
+        "live": True,
+        "boot_current": True,
+        "body_digest": registration.body_digest,
+        "authorization_digest": registration.authorization_digest,
+    }
+    conn = SimpleNamespace(fetchrow=AsyncMock(return_value=row))
+    try:
+        assert await owner._receiver_publication_current(conn, binding) is True
+        assert conn.fetchrow.call_args.args[1:] == (
+            "finance",
+            finance._boot_instance_id,
+            finance._boot_epoch,
+        )
+        for field, changed in (
+            ("instance_id", uuid4()),
+            ("revision_id", uuid4()),
+            ("epoch", 12),
+            ("live", False),
+            ("body_digest", "new-body"),
+            ("authorization_digest", "new-auth"),
+        ):
+            conn.fetchrow.return_value = {**row, field: changed}
+            assert await owner._receiver_publication_current(conn, binding) is False
+        conn.fetchrow.return_value = row
+        finance._catalog_publication._publication_pending = True
+        with pytest.raises(PermissionError):
+            await owner._receiver_publication_current(conn, binding)
+        finance._catalog_publication._publication_pending = False
+        finance._catalog_publication_failed = True
+        with pytest.raises(PermissionError):
+            await owner._receiver_publication_current(conn, binding)
+        finance._catalog_publication_failed = False
+        assert await owner._receiver_publication_current(conn, binding) is True
+    finally:
+        await owner.close(1)
+        assert not owner.children
+
+
+@pytest.mark.asyncio
+async def test_boot_and_catalog_reads_use_one_repeatable_read_snapshot(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from butlers.core import finance_warning_control as control
+    from butlers.core.catalog_reader import PublishedCatalogProvider
+
+    boots = {name: (_boot_id(), i) for i, name in enumerate(("switchboard", "finance"), 1)}
+    transaction = SimpleNamespace(start=AsyncMock(), commit=AsyncMock(), rollback=AsyncMock())
+    conn = SimpleNamespace(
+        transaction=Mock(return_value=transaction),
+        fetch=AsyncMock(
+            return_value=[
+                {"name": name, "boot_instance_id": boot, "boot_epoch": epoch}
+                for name, (boot, epoch) in boots.items()
+            ]
+        ),
+    )
+    pool = SimpleNamespace(acquire=AsyncMock(return_value=conn), release=AsyncMock())
+    daemon = SimpleNamespace(
+        db=SimpleNamespace(pool=pool), config=SimpleNamespace(name="switchboard")
+    )
+    owner = control.FinanceWarningControlOwner(daemon)
+    daemon._finance_warning_control_owner = owner
+    publication = object()
+    capture = AsyncMock(return_value=publication)
+    monkeypatch.setattr(PublishedCatalogProvider, "snapshot", capture)
+    try:
+        result = await owner.registrations()
+        conn.transaction.assert_called_once_with(isolation="repeatable_read")
+        capture.assert_awaited_once_with(conn)
+        assert result.catalogs is publication and result.boots == boots
+        transaction.commit.assert_awaited_once()
+        transaction.rollback.assert_not_awaited()
+        pool.release.assert_awaited_once_with(conn)
+    finally:
+        await owner.close(1)
+        assert not owner.children
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["before-read", "after-read", "local-pending", "local-failed"])
+async def test_registered_receiver_rechecks_publication_around_owning_query(monkeypatch, phase):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import httpx
+    from fastmcp import Client
+    from starlette.applications import Starlette
+
+    from butlers.core import finance_warning_control as control
+
+    class Pool:
+        def __init__(self):
+            self.acquire = AsyncMock(return_value=SimpleNamespace(fetchrow=self.fetchrow))
+            self.release = AsyncMock()
+            self.publication_reads = self.data_reads = 0
+
+        async def fetchrow(self, sql, *args):
+            if "capability_catalog_current" in sql:
+                self.publication_reads += 1
+                changed = phase == "before-read" or (
+                    phase == "after-read" and self.publication_reads == 2
+                )
+                return {
+                    "instance_id": registration.instance_id,
+                    "revision_id": uuid4() if changed else registration.revision_id,
+                    "epoch": registration.epoch,
+                    "live": True,
+                    "boot_current": True,
+                    "body_digest": registration.body_digest,
+                    "authorization_digest": registration.authorization_digest,
+                }
+            assert "FROM subscriptions" in sql
+            self.data_reads += 1
+            return {
+                "next_renewal": date(2026, 10, 27),
+                "date_epoch": 0,
+                "field_claims": [],
+                "status": "active",
+                "status_source": "extracted",
+            }
+
+    pool = Pool()
+    finance = await _registered_finance(pool)
+    registration = _registration(finance)
+    source = SimpleNamespace(
+        db=SimpleNamespace(pool=object()),
+        config=SimpleNamespace(name="switchboard"),
+        _tool_catalog=finance._tool_catalog,
+        _boot_instance_id=_boot_id(),
+        _boot_epoch=2,
+    )
+    _install_publication(source)
+    issuer = control.FinanceWarningControlOwner(source)
+    source._finance_warning_control_owner = issuer
+    receiver = control.FinanceWarningControlOwner(
+        finance, verifier_url="http://fixed" + control.VERIFY_PATH
+    )
+    finance._finance_warning_control_owner = receiver
+    issuer.registrations = AsyncMock(
+        return_value=_snapshot(
+            {"switchboard": _registration(source), "finance": registration},
+            switchboard=source,
+            finance=finance,
+        )
+    )
+    args = {"subject": str(uuid4()), "selected_date": "2026-10-27", "epoch": 0}
+    original_client = httpx.AsyncClient
+    verifier = Starlette(routes=[issuer.route()])
+    monkeypatch.setattr(
+        control.httpx,
+        "AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.ASGITransport(app=verifier), **kwargs),
+    )
+    captured = issuer.registrations.return_value
+    import asyncio
+
+    issuer.claims["pending"] = (
+        args,
+        control._registration_binding(captured, "switchboard"),
+        control._registration_binding(captured, "finance"),
+        asyncio.get_running_loop().time() + 5,
+    )
+    token = control._pending.set("pending")
+    try:
+        if phase == "local-pending":
+            finance._catalog_publication._publication_pending = True
+        elif phase == "local-failed":
+            finance._catalog_publication_failed = True
+        async with Client(finance.mcp) as client:
+            result = await client.call_tool(control.TOOL, args)
+        assert result.data is None
+        assert pool.data_reads == (1 if phase == "after-read" else 0)
+        assert pool.publication_reads == ({"before-read": 1, "after-read": 2}.get(phase, 0))
+        assert pool.acquire.await_count == pool.release.await_count
+        if phase in {"local-pending", "local-failed"}:
+            assert "pending" in issuer.claims  # failed local state cannot consume the bearer
+        else:
+            assert "pending" not in issuer.claims
+    finally:
+        control._pending.reset(token)
+        await receiver.close(1)
+        await issuer.close(1)
+        assert not receiver.tasks and not receiver.children
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("admission", ["expired", "healthy"])
+async def test_registered_receiver_never_starts_sql_after_awaited_admission_cutoff(
+    monkeypatch, admission
+):
+    """Issuer expiry bounds new SQL, even while the handler's original 5s remains."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import httpx
+    from fastmcp import Client
+    from starlette.applications import Starlette
+
+    from butlers.core import finance_warning_control as control
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    observed_remaining = []
+
+    class Pool:
+        def __init__(self):
+            self.acquire = AsyncMock(return_value=SimpleNamespace(fetchrow=self.fetchrow))
+            self.release = AsyncMock()
+            self.publication_reads = self.data_reads = 0
+
+        async def fetchrow(self, sql, *args):
+            if "capability_catalog_current" in sql:
+                self.publication_reads += 1
+                if self.publication_reads == 1:
+                    entered.set()
+                    await asyncio.wait_for(release.wait(), 2)
+                return {
+                    "instance_id": registration.instance_id,
+                    "revision_id": registration.revision_id,
+                    "epoch": registration.epoch,
+                    "live": True,
+                    "boot_current": True,
+                    "body_digest": registration.body_digest,
+                    "authorization_digest": registration.authorization_digest,
+                }
+            assert "FROM subscriptions" in sql
+            self.data_reads += 1
+            return {
+                "next_renewal": date(2026, 10, 27),
+                "date_epoch": 0,
+                "field_claims": [],
+                "status": "active",
+                "status_source": "extracted",
+            }
+
+    pool = Pool()
+    finance = await _registered_finance(pool)
+    registration = _registration(finance)
+    source = SimpleNamespace(
+        db=SimpleNamespace(pool=object()),
+        config=SimpleNamespace(name="switchboard"),
+        _tool_catalog=finance._tool_catalog,
+        _boot_instance_id=_boot_id(),
+        _boot_epoch=2,
+    )
+    _install_publication(source)
+    issuer = control.FinanceWarningControlOwner(source)
+    source._finance_warning_control_owner = issuer
+    receiver = control.FinanceWarningControlOwner(
+        finance, verifier_url="http://fixed" + control.VERIFY_PATH
+    )
+    finance._finance_warning_control_owner = receiver
+    captured = _snapshot(
+        {"switchboard": _registration(source), "finance": registration},
+        switchboard=source,
+        finance=finance,
+    )
+    issuer.registrations = AsyncMock(return_value=captured)
+    verify = issuer.verify_consume
+
+    async def short_authority(*args, **kwargs):
+        proof = await verify(*args, **kwargs)
+        assert proof is not None
+        # A legitimate shorter issuer lifetime, not a replacement handler deadline.
+        proof["remaining"] = min(proof["remaining"], 0.1 if admission == "expired" else 2)
+        observed_remaining.append(proof["remaining"])
+        return proof
+
+    monkeypatch.setattr(issuer, "verify_consume", short_authority)
+    original_client = httpx.AsyncClient
+    verifier = Starlette(routes=[issuer.route()])
+    monkeypatch.setattr(
+        control.httpx,
+        "AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.ASGITransport(app=verifier), **kwargs),
+    )
+    args = {"subject": str(uuid4()), "selected_date": "2026-10-27", "epoch": 0}
+    caller = None
+    token = control._pending.set("pending")
+    try:
+        # Cold tool discovery precedes the authority probe; no product deadline is changed.
+        async with Client(finance.mcp) as client:
+            issuer.claims["pending"] = (
+                args,
+                control._registration_binding(captured, "switchboard"),
+                control._registration_binding(captured, "finance"),
+                asyncio.get_running_loop().time() + 5,
+            )
+            started = asyncio.get_running_loop().time()
+            caller = asyncio.create_task(client.call_tool(control.TOOL, args))
+            await asyncio.wait_for(entered.wait(), 2)
+            assert not caller.done() and pool.data_reads == 0
+            assert observed_remaining
+            if admission == "expired":
+                await asyncio.sleep(observed_remaining[0] + 0.025)
+            release.set()
+            result = await asyncio.wait_for(caller, 2)
+        assert asyncio.get_running_loop().time() - started < control.DEADLINE_SECONDS
+        assert result.data is (None if admission == "expired" else True)
+        assert pool.data_reads == (0 if admission == "expired" else 1)
+        assert pool.publication_reads == (1 if admission == "expired" else 2)
+        assert pool.acquire.await_count == pool.release.await_count == 1
+        assert "pending" not in issuer.claims
+        assert not receiver.tasks and not receiver.children
+    finally:
+        release.set()
+        control._pending.reset(token)
+        if caller is not None and not caller.done():
+            caller.cancel()
+        if caller is not None:
+            await asyncio.gather(caller, return_exceptions=True)
+        await receiver.close(1)
+        await issuer.close(1)
+        await receiver.settle()
+        await issuer.settle()
+        assert not receiver.tasks and not receiver.children
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "boot_state", ["current", "rotated", "missing-control", "missing-receipt", "outage"]
+)
+async def test_registered_receiver_fences_authoritative_boot_after_callback(
+    monkeypatch, boot_state
+):
+    """A committed successor may leave old local fields and publication unchanged."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import httpx
+    from fastmcp import Client
+    from starlette.applications import Starlette
+
+    from butlers.core import finance_warning_control as control
+
+    authoritative = "current"
+
+    class Pool:
+        def __init__(self):
+            self.acquire = AsyncMock(return_value=SimpleNamespace(fetchrow=self.fetchrow))
+            self.release = AsyncMock()
+            self.reads = self.fences = 0
+
+        async def fetchrow(self, sql, *args):
+            if "capability_catalog_current" in sql:
+                self.fences += 1
+                row = {
+                    "instance_id": registration.instance_id,
+                    "revision_id": registration.revision_id,
+                    "epoch": registration.epoch,
+                    "live": True,
+                    "body_digest": registration.body_digest,
+                    "authorization_digest": registration.authorization_digest,
+                }
+                if "finance_warning_boot_current" in sql:
+                    assert args[1:] == (finance._boot_instance_id, finance._boot_epoch)
+                    if authoritative == "outage":
+                        raise PermissionError("controlled_boot_read_outage")
+                    row["boot_current"] = {
+                        "current": True,
+                        "rotated": False,
+                        "missing-control": None,
+                        "missing-receipt": None,
+                    }[authoritative]
+                return row
+            assert "FROM subscriptions" in sql
+            self.reads += 1
+            return {
+                "next_renewal": date(2026, 10, 27),
+                "date_epoch": 0,
+                "field_claims": [],
+                "status": "active",
+                "status_source": "extracted",
+            }
+
+    pool = Pool()
+    finance = await _registered_finance(pool)
+    registration = _registration(finance)
+    source = SimpleNamespace(
+        db=SimpleNamespace(pool=object()),
+        config=SimpleNamespace(name="switchboard"),
+        _tool_catalog=finance._tool_catalog,
+        _boot_instance_id=_boot_id(),
+        _boot_epoch=2,
+    )
+    _install_publication(source)
+    issuer = control.FinanceWarningControlOwner(source)
+    source._finance_warning_control_owner = issuer
+    receiver = control.FinanceWarningControlOwner(
+        finance, verifier_url="http://fixed" + control.VERIFY_PATH
+    )
+    finance._finance_warning_control_owner = receiver
+    captured = _snapshot(
+        {"switchboard": _registration(source), "finance": registration},
+        switchboard=source,
+        finance=finance,
+    )
+    issuer.registrations = AsyncMock(return_value=captured)
+    verify = issuer.verify_consume
+
+    async def rotate_after_atomic_consume(body):
+        nonlocal authoritative
+        proof = await verify(body)
+        assert proof is not None and "pending" not in issuer.claims
+        authoritative = boot_state
+        return proof
+
+    monkeypatch.setattr(issuer, "verify_consume", rotate_after_atomic_consume)
+    original_client = httpx.AsyncClient
+    app = Starlette(routes=[issuer.route()])
+    monkeypatch.setattr(
+        control.httpx,
+        "AsyncClient",
+        lambda **kw: original_client(transport=httpx.ASGITransport(app=app), **kw),
+    )
+    args = {"subject": str(uuid4()), "selected_date": "2026-10-27", "epoch": 0}
+    issuer.claims["pending"] = (
+        args,
+        control._registration_binding(captured, "switchboard"),
+        control._registration_binding(captured, "finance"),
+        asyncio.get_running_loop().time() + 5,
+    )
+    token = control._pending.set("pending")
+    try:
+        identity = receiver.identity()
+        async with Client(finance.mcp) as client:
+            result = await client.call_tool(control.TOOL, args)
+        assert receiver.identity() == identity
+        assert registration.revision_id == finance._catalog_publication.revision
+        assert result.data is (True if boot_state == "current" else None)
+        assert pool.reads == (1 if boot_state == "current" else 0)
+        assert pool.fences == (2 if boot_state == "current" else 1)
+        assert pool.acquire.await_count == pool.release.await_count == 1
+        assert "pending" not in issuer.claims
+    finally:
+        control._pending.reset(token)
+        await receiver.close(1)
+        await issuer.close(1)
+        await receiver.settle()
+        await issuer.settle()
+        assert not receiver.children and not receiver.tasks

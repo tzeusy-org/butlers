@@ -50,6 +50,50 @@ def canonical_args(args):
     return dict(args)
 
 
+def _local_identity(binding):
+    """Boot and publication epochs belong to different counters."""
+    boot, epoch, publisher, _publication_epoch, revision, generation, *_material = binding
+    return boot, epoch, publisher, revision, generation
+
+
+def _registration_binding(snapshot, domain):
+    registration = snapshot.registration(domain)
+    boot = snapshot.boot(domain)
+    if (
+        not isinstance(boot[0], UUID)
+        or boot[0].version != 7
+        or type(boot[1]) is not int
+        or boot[1] <= 0
+        or not isinstance(registration.instance_id, UUID)
+        or not isinstance(registration.revision_id, UUID)
+        or type(registration.epoch) is not int
+        or registration.epoch <= 0
+    ):
+        raise PermissionError("finance_warning_identity_refused")
+    return (
+        str(boot[0]),
+        boot[1],
+        str(registration.instance_id),
+        registration.epoch,
+        str(registration.revision_id),
+        registration.catalog.generation_digest,
+        registration.body_digest,
+        registration.authorization_digest,
+    )
+
+
+@dataclass(frozen=True)
+class _CurrentRegistrations:
+    catalogs: Any
+    boots: dict
+
+    def registration(self, domain):
+        return self.catalogs.registration(domain)
+
+    def boot(self, domain):
+        return self.boots[domain]
+
+
 def lookup_owner(pool):
     owner = _owners.get(id(pool))
     if owner is None or owner.pool is not pool or not owner.installed():
@@ -160,12 +204,22 @@ class FinanceWarningControlOwner:
         catalog = vars(self.daemon).get("_tool_catalog")
         epoch = vars(self.daemon).get("_boot_epoch")
         instance = vars(self.daemon).get("_boot_instance_id")
+        publisher = vars(self.daemon).get("_catalog_publication")
         if (
             catalog is None
             or not catalog.classification_complete
             or type(epoch) is not int
             or epoch <= 0
             or not isinstance(instance, UUID)
+            or instance.version != 7
+            or publisher is None
+            or publisher.pool is not self.pool
+            or publisher.domain != self.name
+            or not isinstance(publisher.instance, UUID)
+            or not isinstance(publisher.revision, UUID)
+            or publisher._publication_pending
+            or vars(self.daemon).get("_catalog_publication_failed", False)
+            or publisher.generation_digest != catalog.generation_digest
             or (callable(getattr(self.pool, "is_closing", None)) and self.pool.is_closing())
         ):
             raise PermissionError("finance_warning_unavailable")
@@ -178,7 +232,13 @@ class FinanceWarningControlOwner:
                 or descriptor.owner_authority is not False
             ):
                 raise PermissionError("finance_warning_catalog_refused")
-        return str(instance), epoch, catalog.generation_digest
+        return (
+            str(instance),
+            epoch,
+            str(publisher.instance),
+            str(publisher.revision),
+            catalog.generation_digest,
+        )
 
     async def _child(self, awaitable, *, cancel=False, defer_cancel=False):
         async def run():
@@ -244,7 +304,7 @@ class FinanceWarningControlOwner:
         from butlers.core.catalog_reader import PublishedCatalogProvider
 
         async with self.connection() as conn:
-            tx = conn.transaction()
+            tx = conn.transaction(isolation="repeatable_read")
             await self._child(tx.start())
             try:
                 snapshot = await self._child(PublishedCatalogProvider().snapshot(conn), cancel=True)
@@ -252,8 +312,26 @@ class FinanceWarningControlOwner:
                 await self._child(tx.rollback())
                 raise
             else:
+                try:
+                    rows = await self._child(
+                        conn.fetch(
+                            "SELECT name,boot_instance_id,boot_epoch "
+                            "FROM switchboard.butler_registry_control_plane "
+                            "WHERE name=ANY($1::text[])",
+                            ["switchboard", "finance"],
+                        ),
+                        cancel=True,
+                    )
+                    boots = {
+                        row["name"]: (row["boot_instance_id"], row["boot_epoch"]) for row in rows
+                    }
+                    if set(boots) != {"switchboard", "finance"}:
+                        raise PermissionError("finance_warning_boot_unavailable")
+                except BaseException:
+                    await self._child(tx.rollback())
+                    raise
                 await self._child(tx.commit())
-        return snapshot
+        return _CurrentRegistrations(snapshot, boots)
 
     def stop_admission(self):
         self.closed = True
@@ -325,22 +403,16 @@ class FinanceWarningControlOwner:
 
         async def operation():
             snapshot = await self.registrations()
-            source, receiver = (
-                snapshot.registration("switchboard"),
-                snapshot.registration("finance"),
-            )
-            if (
-                str(source.instance_id),
-                source.epoch,
-                source.catalog.generation_digest,
-            ) != identity:
+            receiver = snapshot.registration("finance")
+            source_binding = _registration_binding(snapshot, "switchboard")
+            if _local_identity(source_binding) != identity:
                 raise PermissionError("finance_warning_source_changed")
             descriptor = receiver.catalog[TOOL]
             if descriptor.effect_class != "read" or descriptor.owner_authority is not False:
                 raise PermissionError("finance_warning_receiver_refused")
             token = secrets.token_urlsafe(32)
-            remote = (str(receiver.instance_id), receiver.epoch, receiver.catalog.generation_digest)
-            self.claims[token] = (args, identity, remote, deadline)
+            remote = _registration_binding(snapshot, "finance")
+            self.claims[token] = (args, source_binding, remote, deadline)
             call = _HeldCall(self, token, args, remote)
             self.call = call
             try:
@@ -370,7 +442,7 @@ class FinanceWarningControlOwner:
             supplied_args = canonical_args(body["args"])
         except (ValueError, TypeError, KeyError):
             return None
-        if supplied_args != args or body["receiver"] != list(receiver):
+        if supplied_args != args or body["receiver"] != list(_local_identity(receiver)):
             return None
         # The callback shares the issuer's original absolute deadline, never a
         # fresh query allowance. Native release after cancellation stays owned.
@@ -378,12 +450,10 @@ class FinanceWarningControlOwner:
             return None
         async with asyncio.timeout_at(deadline):
             snapshot = await self.registrations()
-        current = snapshot.registration("finance")
-        source = snapshot.registration("switchboard")
         if (
-            (str(current.instance_id), current.epoch, current.catalog.generation_digest) != receiver
-            or (str(source.instance_id), source.epoch, source.catalog.generation_digest) != identity
-            or self.identity() != identity
+            _registration_binding(snapshot, "finance") != receiver
+            or _registration_binding(snapshot, "switchboard") != identity
+            or self.identity() != _local_identity(identity)
             or self.closed
             or self.quarantined
         ):
@@ -393,7 +463,12 @@ class FinanceWarningControlOwner:
         if remaining <= 0 or self.claims.get(token) is not claim:
             return None
         del self.claims[token]
-        return {"nonce": body["nonce"], "receiver": list(receiver), "remaining": remaining}
+        return {
+            "nonce": body["nonce"],
+            "receiver": list(_local_identity(receiver)),
+            "binding": list(receiver),
+            "remaining": remaining,
+        }
 
     def route(self):
         from starlette.responses import JSONResponse
@@ -444,6 +519,38 @@ class FinanceWarningControlOwner:
 
         return Route(VERIFY_PATH, endpoint, methods=["POST"])
 
+    async def _receiver_publication_current(self, connection, binding):
+        row = await self._child(
+            connection.fetchrow(
+                "SELECT c.instance_id,c.revision_id,c.epoch,"
+                "public.finance_warning_boot_current($2::uuid,$3::bigint) AS boot_current,"
+                "c.active AND c.expires_at>clock_timestamp() AS live,"
+                "h.body_digest,h.authorization_digest "
+                "FROM public.capability_catalog_current c "
+                "JOIN public.capability_catalog_history h ON "
+                "(h.domain,h.epoch,h.revision_id,h.instance_id)="
+                "(c.domain,c.epoch,c.revision_id,c.instance_id) WHERE c.domain=$1",
+                "finance",
+                UUID(binding[0]),
+                binding[1],
+            ),
+            cancel=True,
+        )
+        return (
+            row is not None
+            and row["boot_current"] is True
+            and row["live"] is True
+            and _local_identity(binding) == self.identity()
+            and (
+                str(row["instance_id"]),
+                row["epoch"],
+                str(row["revision_id"]),
+                row["body_digest"],
+                row["authorization_digest"],
+            )
+            == (binding[2], binding[3], binding[4], binding[6], binding[7])
+        )
+
     async def consume_and_read(self, args, read_on_connection):
         """Called only by the actual compiled Finance closure, after argument validation."""
         token = _pending.get()
@@ -471,24 +578,40 @@ class FinanceWarningControlOwner:
                     return None
                 proof = response.json()
             remaining = proof.get("remaining") if type(proof) is dict else None
+            binding = proof.get("binding") if type(proof) is dict else None
             if (
                 type(remaining) not in (int, float)
                 or not 0 < remaining <= DEADLINE_SECONDS
                 or proof.get("nonce") != nonce
                 or proof.get("receiver") != list(identity)
                 or self.identity() != identity
+                or type(binding) is not list
+                or len(binding) != 8
+                or _local_identity(binding) != identity
+                or type(binding[3]) is not int
+                or binding[3] <= 0
             ):
                 return None
             cutoff = min(deadline, verification_start + remaining)
             if asyncio.get_running_loop().time() >= cutoff:
                 return None
             async with self.connection() as conn:
-                if self.identity() != identity or asyncio.get_running_loop().time() >= cutoff:
+                if (
+                    self.identity() != identity
+                    or asyncio.get_running_loop().time() >= cutoff
+                    or not await self._receiver_publication_current(conn, binding)
+                ):
+                    return None
+                # The awaited admission query can consume the shorter issuer
+                # lifetime. Expired authority permits cleanup, never a new read.
+                if asyncio.get_running_loop().time() >= cutoff or self.identity() != identity:
                     return None
                 result = await self._child(
                     read_on_connection(conn, *warning_tuple(**args)), cancel=True
                 )
-            if asyncio.get_running_loop().time() >= cutoff:
+                if not await self._receiver_publication_current(conn, binding):
+                    return None
+            if asyncio.get_running_loop().time() >= cutoff or self.identity() != identity:
                 return None
             return result if type(result) is bool else None
 
