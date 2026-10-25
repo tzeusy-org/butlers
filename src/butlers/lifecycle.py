@@ -544,7 +544,10 @@ async def _startup_spawner(daemon: Any, state: StartupState) -> None:
 async def _startup_core_tools(daemon: Any, state: StartupState) -> None:
     """Create FastMCP and register core tools."""
     # 13. Create FastMCP and register core tools
+    from butlers.core.owner_creation import OwnerCreationMiddleware
+
     daemon.mcp = FastMCP(daemon.config.name)
+    daemon.mcp.add_middleware(OwnerCreationMiddleware(daemon.config.name))
     daemon._register_core_tools()
 
 
@@ -743,7 +746,10 @@ async def run_shutdown(daemon: Any) -> None:
     """
     task = getattr(daemon, "_catalog_shutdown_task", None)
     if task is None:
-        if getattr(daemon, "_catalog_publication", None) is None:
+        if (
+            getattr(daemon, "_catalog_publication", None) is None
+            and vars(daemon).get("_chronicler_refresh_service") is None
+        ):
             await _run_shutdown(daemon)
             return
         task = asyncio.create_task(_run_shutdown(daemon), name="catalog-owned-shutdown")
@@ -811,6 +817,13 @@ async def _run_shutdown(daemon: Any) -> None:
 
 async def _shutdown_resources(daemon: Any) -> None:
     """Existing resource teardown, also reached after catalog close refusal."""
+
+    refresh_owner = vars(daemon).get("_chronicler_refresh_service")
+    deadline = asyncio.get_running_loop().time() + (
+        daemon.config.shutdown_timeout_s if daemon.config else 30.0
+    )
+    if refresh_owner is not None:
+        refresh_owner.closed = True
 
     # 1. Stop MCP server
     if daemon._server is not None:
@@ -893,6 +906,24 @@ async def _shutdown_resources(daemon: Any) -> None:
             pass
         daemon._liveness_reporter_task = None
 
+    if refresh_owner is not None:
+        settled = await refresh_owner.close(max(0, deadline - asyncio.get_running_loop().time()))
+        if not settled:
+            # Preserve every remaining resource while the exact physical pool
+            # still owns work or a shielded native holder reset. No second close.
+            async def finish():
+                await refresh_owner.settle()
+                await _shutdown_chronicler_dependents(daemon)
+
+            task = asyncio.create_task(finish(), name="chronicler-retained-resource-release")
+            daemon._chronicler_cleanup_task = task
+            task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            raise TimeoutError("Chronicler refresh cleanup incomplete; resources retained")
+    await _shutdown_chronicler_dependents(daemon)
+
+
+async def _shutdown_chronicler_dependents(daemon: Any) -> None:
+    """Original dependent teardown, reached once after owned work settles."""
     # 6. Module shutdown in reverse topological order (active modules only)
     from butlers.core.approval_delivery_worker import stop_approval_delivery_worker
 

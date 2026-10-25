@@ -156,6 +156,8 @@ async def _register_replay(pool, connector_type, endpoint):
             )
 
 
+# Requires SQLSTATE 55P03 from the lock timeout before the holder rolls back.
+@pytest.mark.faketime_fragile
 @pytest.mark.pg_clock
 async def test_record_and_flush_round_trips_full_payload_as_object(
     pool: asyncpg.Pool, postgres_container

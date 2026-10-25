@@ -9,7 +9,8 @@ overwrite each other. This ledger records how each one is settled.
 A change intersects when its `specs/` directory has a delta for one of the 79 existing capabilities
 this change modifies or removes. On main at 2026-10-22, 51 active changes intersect.
 `define-dashboard-fast-answer-runtime` is also listed: it touches none of those capabilities, but
-it adds a model path that D18 forbids. `education-mind-map-lifecycle-integrity` is listed because
+it adds a model path outside goals, which owner decision `bu-u5euwb.21` = C names as the D18
+dashboard fast-answer kind. `education-mind-map-lifecycle-integrity` is listed because
 it has already been archived.
 
 ## Dispositions
@@ -31,7 +32,7 @@ the change, the owner is the M6 epic `bu-u5euwb`.
 
 | Change | Shared capabilities | Disposition | Reason | Owner |
 | --- | --- | --- | --- | --- |
-| `define-dashboard-fast-answer-runtime` | none | hold | Adds a dashboard model path outside goals, which D18 forbids. Recommended: withdraw, since its implementation PR #4485 was never merged and the owner-latency need moves to the goal runtime. | owner decision ([HOLD]); successor need `bu-dhloi1.12` |
+| `define-dashboard-fast-answer-runtime` | none | re-scope | Owner decision `bu-u5euwb.21` = C (2026-10-24): RFC 0038 D18 is amended to name dashboard fast answers as a model-use kind, and the change is re-scoped to that kind's contract, neither withdrawn nor rewritten as a goal. Owner latency on the goal path continues in `bu-dhloi1.12`. | `bu-u5euwb.28` (re-scope); D18 amendment `bu-u5euwb.27` |
 | `account-security-perception` | domain-event-bus, ingestion-policy | re-scope | Deterministic alert extraction still publishes the security event. Model judgment becomes an admitted goal, and a security label never authenticates a sender. | `bu-u5euwb` |
 | `add-connector-oauth-scope-surface` | connector-base-spec | archive-first | Scope and auth fields are deterministic connector observations. | `bu-u5euwb` |
 | `add-health-workout-last` | butler-health | archive-first | A read-only Health tool that becomes a grant-scoped read capability. | `bu-u5euwb` |
@@ -120,7 +121,7 @@ surviving scenarios unless this change removes the requirement.
 
 | Conflict | Disposition | Owner |
 | --- | --- | --- |
-| REQ-core-spawner-010 and RFC 0038 D3 allow a goal invocation's environment to hold only `PATH`, the staged credential and the MCP config. The Gemini adapter also sets non-secret file pointers (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`, `GEMINI_SYSTEM_MD`). | Owner decision: admit adapter-owned, non-secret file pointers, or keep Gemini out of the goal runtime until it can run without them. Until that decision, the current text stands. | owner decision ([HOLD]) |
+| REQ-core-spawner-010 and RFC 0038 D3 allow a goal invocation's environment to hold only `PATH`, the staged credential and the MCP config. The Gemini adapter also sets non-secret file pointers (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`, `GEMINI_SYSTEM_MD`). | Amended. The owner admitted adapter-owned, non-secret pointers to files staged inside the invocation's sandbox (`bu-u5euwb.22` = A, 2026-10-24T14:30Z). D3 and REQ-core-spawner-010 now admit them, and secrets stay limited to the staged model credential and the invocation's own MCP config. Each adapter still proves D3 eligibility at the switch (`bu-enbrs2`). | `bu-u5euwb.26` |
 | `tool_exposure_policy` in runtime config has no consumer, and RFC 0038 does not name it. | Keep it or delete it at the switch. Either way, the runtime-config card's copy changes to match. | `bu-ondtw.8` |
 
 ## Frozen-path beads
@@ -128,6 +129,6 @@ surviving scenarios unless this change removes the requirement.
 | Bead | Disposition |
 | --- | --- |
 | `bu-p6v8k` (Telegram sticky routing) | Obsolete at the switch. Owner replies join goals through admission, and `specify-telegram-continuity-routed-context-contract` retires sticky affinity. |
-| `bu-0ynlk.6` (in-process dashboard answers) | Superseded by D18 and D19. PR #4485 stays unmerged, `define-dashboard-fast-answer-runtime` is on hold pending the owner decision (recommended: withdraw), and owner latency moves to `bu-dhloi1.12`. |
+| `bu-0ynlk.6` (in-process dashboard answers) | Superseded by D18 and D19. PR #4485 stays unmerged, `define-dashboard-fast-answer-runtime` is re-scoped to the D18 dashboard fast-answer kind (owner decision `bu-u5euwb.21` = C; `bu-u5euwb.27`, `bu-u5euwb.28`), and owner latency on the goal path stays with `bu-dhloi1.12`. |
 | `bu-2jtfw.9.4` (General capture admission and routing) | Capture classification becomes goal admission through the `compose-general-capture-with-private-custody` fold-in. The capture ledger and receipts remain. |
 | `bu-60pwv6.6` (split oversized dashboard specs) | Superseded by `bu-lsxqb0.20`. The dashboard capabilities belong to the D19 change, not this one. |

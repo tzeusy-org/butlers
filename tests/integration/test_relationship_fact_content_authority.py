@@ -11,7 +11,7 @@ REQ-dashboard-relationship-004.
 from __future__ import annotations
 
 import asyncio
-import importlib.util
+import importlib
 import inspect
 import socket
 import sys
@@ -96,6 +96,18 @@ async def _tcp(app):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         listener.close()
+
+
+@pytest.fixture(autouse=True)
+def admitted_standing_rule_boundary(monkeypatch):
+    """Retain this owner's non-auth invariants after explicit D13 admission.
+
+    No factor/nonce/role evidence is claimed here; the dedicated migrated
+    dashboard-stepup owner executes that authority with real signed assertions.
+    """
+    from tests.approval_stepup_helpers import admit_rule_boundary_for_non_auth_owner
+
+    admit_rule_boundary_for_non_auth_owner(monkeypatch)
 
 
 @pytest.fixture(scope="module")
@@ -364,11 +376,8 @@ async def _router():
     name = "relationship_api_router"
     if name in sys.modules:
         return sys.modules[name]
-    path = _THIS_FILE.parents[2] / "roster/relationship/api/router.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
+    _THIS_FILE.parents[2] / "roster/relationship/api/router.py"
+    module = importlib.import_module("butlers.api._roster.relationship.router")
     return module
 
 

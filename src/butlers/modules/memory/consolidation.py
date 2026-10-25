@@ -53,6 +53,7 @@ import socket
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from butlers.core.queue_claim import ClaimFailure, ClaimQueue, claim_batch, fail_claimed
 from butlers.modules.memory.consolidation_executor import execute_consolidation
 from butlers.modules.memory.consolidation_parser import parse_consolidation_output
 from butlers.modules.memory.prompt_template import build_consolidation_prompt
@@ -72,6 +73,44 @@ MAX_CONSOLIDATION_ATTEMPTS: int = 5
 LEASE_DURATION_SECONDS: int = 300  # 5 minutes
 BASE_RETRY_SECONDS: int = 60  # 1 minute base for exponential backoff
 DEFAULT_BATCH_SIZE: int = 100
+
+_EPISODE_CLAIMS = ClaimQueue(
+    table="episodes",
+    key="id",
+    eligible="q.consolidation_status='pending' OR ("
+    "{arg0}::boolean AND q.consolidation_status='failed' "
+    "AND q.next_consolidation_retry_at IS NOT NULL "
+    "AND q.next_consolidation_retry_at<=now())",
+    order_by="q.tenant_id, q.butler, q.created_at, q.id",
+    claim_set=(),
+    returning=(
+        "id",
+        "butler",
+        "content",
+        "importance",
+        "metadata",
+        "created_at",
+        "tenant_id",
+        "consolidation_attempts",
+        "content_authority",
+        "authority_entity_id",
+        "consolidation_status",
+    ),
+    reclaim_expired=True,
+    lease_until="leased_until",
+    lease_owner="leased_by",
+    failure=ClaimFailure(
+        attempts="consolidation_attempts",
+        status="consolidation_status",
+        last_error="last_consolidation_error",
+        dead_reason="dead_letter_reason",
+        next_retry="next_consolidation_retry_at",
+        max_attempts=MAX_CONSOLIDATION_ATTEMPTS,
+        backoff_seconds=BASE_RETRY_SECONDS,
+    ),
+    failure_set=(("consolidated", "false"),),
+)
+
 
 # Episode-cleanup safety knobs.
 #
@@ -213,46 +252,14 @@ async def run_consolidation(
     # -------------------------------------------------------------------------
     async with pool.acquire() as conn:
         async with conn.transaction():
-            rows = await conn.fetch(
-                """
-                SELECT id, butler, content, importance, metadata, created_at,
-                       tenant_id, consolidation_attempts,
-                       content_authority, authority_entity_id
-                FROM episodes
-                WHERE (
-                    consolidation_status = 'pending'
-                    OR (
-                        $1::boolean
-                        AND consolidation_status = 'failed'
-                        AND consolidation_attempts < $2
-                        AND next_consolidation_retry_at IS NOT NULL
-                        AND next_consolidation_retry_at <= now()
-                    )
-                )
-                  AND (leased_until IS NULL OR leased_until <= now())
-                ORDER BY tenant_id, butler, created_at, id
-                FOR UPDATE SKIP LOCKED
-                LIMIT $3
-                """,
-                claim_retry_failed,
-                MAX_CONSOLIDATION_ATTEMPTS,
-                batch_size,
+            rows = await claim_batch(
+                conn,
+                _EPISODE_CLAIMS,
+                limit=batch_size,
+                owner=worker,
+                lease_seconds=LEASE_DURATION_SECONDS,
+                args=(claim_retry_failed,),
             )
-
-            if rows:
-                episode_ids_to_lease = [row["id"] for row in rows]
-                # Set lease: prevent other workers from claiming the same episodes
-                await conn.execute(
-                    """
-                    UPDATE episodes
-                    SET leased_until = now() + ($1 * interval '1 second'),
-                        leased_by    = $2
-                    WHERE id = ANY($3)
-                    """,
-                    LEASE_DURATION_SECONDS,
-                    worker,
-                    episode_ids_to_lease,
-                )
 
     # Group episodes by (tenant_id, butler_name) to prevent cross-tenant mixing
     groups: dict[tuple[str, str], list[dict]] = {}
@@ -480,67 +487,32 @@ async def _mark_group_failed(
 
     safe_error_message = _safe_failure_message(failure_category)
 
-    # The update and event insert share one CTE statement, so an absent event
-    # table or failed event insert rolls back the lifecycle transition rather
-    # than silently losing the terminal audit. The lease-owner/expiry predicate
-    # makes a stale invocation a no-op after a replacement worker claims it.
-    await pool.execute(
-        """
-        WITH transitioned AS (
-            UPDATE episodes
-            SET consolidation_attempts    = consolidation_attempts + 1,
-                last_consolidation_error  = $1,
-                consolidated              = false,
-                leased_until              = NULL,
-                leased_by                 = NULL,
-                consolidation_status      = CASE
-                    WHEN consolidation_attempts + 1 >= $2 THEN 'dead_letter'
-                    ELSE 'failed'
-                END,
-                dead_letter_reason        = CASE
-                    WHEN consolidation_attempts + 1 >= $2 THEN $1
-                    ELSE NULL
-                END,
-                next_consolidation_retry_at = CASE
-                    WHEN consolidation_attempts + 1 >= $2 THEN NULL
-                    ELSE now() + (power(2, consolidation_attempts + 1) * $3
-                                  * interval '1 second')
-                END
-            WHERE id = ANY($4::uuid[])
-              AND leased_by = $5
-              AND leased_until > now()
-              AND consolidation_status IN ('pending', 'failed')
-              AND consolidation_attempts < $2
-            RETURNING id, butler, tenant_id, consolidation_attempts, consolidation_status
+    # The helper and immutable lifecycle events enlist in one transaction.
+    # A failed event insert rolls back the lifecycle transition and lease release.
+    async with pool.acquire() as conn, conn.transaction():
+        transitioned = await fail_claimed(
+            conn,
+            _EPISODE_CLAIMS,
+            episode_ids,
+            owner=claim_token,
+            reason=safe_error_message,
         )
-        INSERT INTO memory_events (event_type, actor, tenant_id, actor_butler,
-                                   memory_type, memory_id, payload)
-        SELECT
-            CASE consolidation_status
-                WHEN 'dead_letter' THEN 'episode_consolidation_dead_letter'
-                ELSE 'episode_consolidation_failed'
-            END,
-            'consolidation_worker',
-            COALESCE($6, tenant_id),
-            butler,
-            'episode',
-            id,
-            jsonb_build_object(
-                'attempts', consolidation_attempts,
-                'outcome', CASE consolidation_status
-                    WHEN 'dead_letter' THEN 'dead_letter'
-                    ELSE 'retry_scheduled'
-                END
+        for row in transitioned:
+            terminal = row["consolidation_status"] == "dead_letter"
+            await conn.execute(
+                """
+                INSERT INTO memory_events (event_type, actor, tenant_id, actor_butler,
+                                           memory_type, memory_id, payload)
+                VALUES ($1, 'consolidation_worker', $2, $3, 'episode', $4,
+                        jsonb_build_object('attempts', $5::integer, 'outcome', $6::text))
+                """,
+                "episode_consolidation_dead_letter" if terminal else "episode_consolidation_failed",
+                tenant_id if tenant_id is not None else row["tenant_id"],
+                row["butler"],
+                row["id"],
+                row["consolidation_attempts"],
+                "dead_letter" if terminal else "retry_scheduled",
             )
-        FROM transitioned
-        """,
-        safe_error_message,
-        MAX_CONSOLIDATION_ATTEMPTS,
-        BASE_RETRY_SECONDS,
-        episode_ids,
-        claim_token,
-        tenant_id,
-    )
 
 
 async def _record_consolidation_run(

@@ -13,7 +13,6 @@ import functools
 import logging
 import sys
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -50,23 +49,10 @@ _CHRONICLER_INTERNAL_SCHEMAS = frozenset(
 def _load_switchboard_eligibility_sweep_job() -> Callable[
     [asyncpg.Pool], Awaitable[dict[str, Any]]
 ]:
-    """Load the switchboard eligibility sweep job from roster/ by file path."""
-    import importlib.util as _ilu
+    """Resolve the canonical Switchboard eligibility sweep job on first use."""
+    from butlers.roster_imports import roster_module
 
-    module_path = (
-        Path(__file__).resolve().parents[2]
-        / "roster"
-        / "switchboard"
-        / "jobs"
-        / "eligibility_sweep.py"
-    )
-    module_name = "roster_switchboard_eligibility_sweep_job"
-    spec = _ilu.spec_from_file_location(module_name, module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load switchboard eligibility sweep job from {module_path}")
-    module = _ilu.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.run_eligibility_sweep_job
+    return roster_module("switchboard", "jobs/eligibility_sweep").run_eligibility_sweep_job
 
 
 async def _run_switchboard_eligibility_sweep_job(
@@ -83,25 +69,12 @@ async def _run_switchboard_eligibility_sweep_job(
 def _load_switchboard_rule_promotion_trigger_job() -> Callable[
     [asyncpg.Pool, dict[str, Any] | None], Awaitable[dict[str, Any]]
 ]:
-    """Load the switchboard rule-promotion trigger job from roster/ by file path."""
-    import importlib.util as _ilu
+    """Resolve the canonical Switchboard rule promotion trigger job on first use."""
+    from butlers.roster_imports import roster_module
 
-    module_path = (
-        Path(__file__).resolve().parents[2]
-        / "roster"
-        / "switchboard"
-        / "jobs"
-        / "rule_promotion_trigger.py"
-    )
-    module_name = "roster_switchboard_rule_promotion_trigger_job"
-    spec = _ilu.spec_from_file_location(module_name, module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(
-            f"Unable to load switchboard rule promotion trigger job from {module_path}"
-        )
-    module = _ilu.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.run_rule_promotion_trigger_job
+    return roster_module(
+        "switchboard", "jobs/rule_promotion_trigger"
+    ).run_rule_promotion_trigger_job
 
 
 async def _run_switchboard_rule_promotion_trigger_job(
@@ -117,23 +90,10 @@ async def _run_switchboard_rule_promotion_trigger_job(
 def _load_switchboard_dropped_known_watch_job() -> Callable[
     [asyncpg.Pool, dict[str, Any] | None], Awaitable[dict[str, Any]]
 ]:
-    """Load the switchboard dropped-known watch job from roster/ by file path."""
-    import importlib.util as _ilu
+    """Resolve the canonical Switchboard dropped known watch job on first use."""
+    from butlers.roster_imports import roster_module
 
-    module_path = (
-        Path(__file__).resolve().parents[2]
-        / "roster"
-        / "switchboard"
-        / "jobs"
-        / "dropped_known_watch.py"
-    )
-    module_name = "roster_switchboard_dropped_known_watch_job"
-    spec = _ilu.spec_from_file_location(module_name, module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load switchboard dropped-known watch job from {module_path}")
-    module = _ilu.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.run_dropped_known_watch_job
+    return roster_module("switchboard", "jobs/dropped_known_watch").run_dropped_known_watch_job
 
 
 async def _run_switchboard_dropped_known_watch_job(
@@ -1733,8 +1693,11 @@ async def _run_chronicler_gap_interview_job(
 ) -> dict[str, Any]:
     """Ask Chronicler's day-close gap interview for yesterday (bu-idc5mx.4; zero LLM)."""
     from butlers.chronicler.gap_interview_job import run_gap_interview_job
+    from butlers.core.tool_call_capture import get_current_credential_store
 
-    return await run_gap_interview_job(pool, job_args)
+    store = get_current_credential_store()
+    store_kwargs = {"credential_store": store} if store is not None else {}
+    return await run_gap_interview_job(pool, job_args, **store_kwargs)
 
 
 async def _run_chronicler_project_sessions_job(

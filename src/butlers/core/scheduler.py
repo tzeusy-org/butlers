@@ -28,6 +28,7 @@ from butlers.config import ScheduleSpec
 from butlers.core.approvals_policy import is_policy_quiet_now
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity, allowance_deferral, coerce_complexity_tier
+from butlers.core.owner_creation import owner_creation_transaction
 
 logger = logging.getLogger(__name__)
 
@@ -2471,8 +2472,10 @@ async def tick(
                     """
                     UPDATE scheduled_tasks
                     SET enabled = false, next_run_at = NULL, updated_at = now()
-                    WHERE id = $1 AND next_run_at IS NOT DISTINCT FROM $2
-                    RETURNING id
+                    WHERE id = $1 AND enabled AND next_run_at IS NOT DISTINCT FROM $2
+                    RETURNING id, dashboard_attention.final_claim(
+                        current_schema(), id, $2
+                    ) AS attention_claim
                     """,
                     task_id,
                     original_next_run_at,
@@ -2502,6 +2505,15 @@ async def tick(
                     "Scheduled task %s has passed until_at (%s); auto-disabling", name, until_at
                 )
 
+            from butlers.core.attention_urgency import AttentionOrigin, _current_origin
+
+            attention_token = _current_origin.set(
+                AttentionOrigin(
+                    namespace=butler_name or stagger_key,
+                    task_id=task_id,
+                    original_next_run_at=original_next_run_at,
+                )
+            )
             result_json: str | None = None
             dispatch_result: Any = None
             try:
@@ -2564,6 +2576,9 @@ async def tick(
                         task_name=name,
                         outcome="failure",
                     )
+
+            finally:
+                _current_origin.reset(attention_token)
 
             # Fire completion hook for prompt-mode tasks (after success or failure).
             # Hooks are butler-specific post-processing (e.g. cache writes).
@@ -2637,6 +2652,7 @@ async def schedule_list(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     return tasks
 
 
+@owner_creation_transaction
 async def schedule_create(
     pool: asyncpg.Pool,
     name: str,
@@ -3020,7 +3036,10 @@ async def schedule_update(
     set_clauses.append("updated_at = now()")
 
     # Single atomic UPDATE statement
-    query = f"UPDATE scheduled_tasks SET {', '.join(set_clauses)} WHERE id = $1"
+    query = (
+        f"UPDATE scheduled_tasks SET {', '.join(set_clauses)} WHERE id = $1 "
+        "RETURNING dashboard_attention.final_claim(current_schema(), id, NULL)"
+    )
     await pool.execute(query, *params)
 
     logger.info("Updated schedule %s: %s", task_id, list(normalized_fields.keys()))
@@ -3107,6 +3126,11 @@ async def schedule_toggle(
             current_enabled = bool(row["enabled"])
             requested_enabled = enabled
             if current_enabled == requested_enabled:
+                if not requested_enabled:
+                    await conn.fetchval(
+                        "SELECT dashboard_attention.final_claim(current_schema(), $1, NULL)",
+                        task_id,
+                    )
                 observed_next_run_at = row["next_run_at"]
                 changed = False
             else:
@@ -3125,7 +3149,9 @@ async def schedule_toggle(
                     UPDATE scheduled_tasks
                     SET enabled = $2, next_run_at = $3, updated_at = now()
                     WHERE id = $1
-                    RETURNING next_run_at
+                    RETURNING next_run_at, dashboard_attention.final_claim(
+                        current_schema(), id, NULL
+                    ) AS attention_claim
                     """,
                     task_id,
                     requested_enabled,

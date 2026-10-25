@@ -277,7 +277,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
     # notify is non-STAFFER only
     if butler_type != ButlerType.STAFFER:
 
-        @_core_tool("notifications")
+        @_core_tool("notifications", exclude_args=["priority"])
         @tool_span("notify", butler_name=butler_name)
         async def notify(
             channel: Annotated[
@@ -601,6 +601,28 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 }
 
             _notify_pool = daemon.db.pool if daemon.db is not None else None
+            from butlers.core.attention_urgency import evaluate_interruption
+
+            _quiet_cause = await evaluate_interruption(_notify_pool, gate="quiet_hours")
+            _context_cause = await evaluate_interruption(_notify_pool, gate="context")
+            # The hidden legacy Python argument is accepted only for source
+            # compatibility/validation. Neither it nor owner content authority
+            # can establish an interruption. It is absent from the MCP schema.
+            from butlers.core.attention_urgency import _model_urgency_requested
+
+            _untrusted_high = priority == "high" or _model_urgency_requested.get()
+
+            async def _record_cause_event(*args: Any, **kwargs: Any) -> Any:
+                cause = _context_cause if _context_cause.interrupts else _quiet_cause
+                evidence = {"attention_cause": cause.cause}
+                if cause.ref:
+                    evidence["cause_ref"] = cause.ref
+                if _untrusted_high and not cause.interrupts:
+                    evidence["downgrade"] = "unverified_urgency"
+                kwargs["metadata"] = {**(kwargs.get("metadata") or {}), **evidence}
+                return await record_attention_event(*args, **kwargs)
+
+            priority = "high" if _quiet_cause.interrupts else "medium"
             client = daemon.switchboard_client
 
             # Resolution priority:
@@ -808,6 +830,11 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     "error": _NO_TELEGRAM_CHAT_CONFIGURED_ERROR,
                 }
 
+            # An explicit owner address/entity is still owner-directed. A model
+            # cannot avoid owner attention policy by spelling out the recipient.
+            # Independent non-owner approval decisions remain unchanged.
+            _attention_owner_target = entity_id is None and recipient is None
+
             # Validate email recipients against known contacts.
             # This prevents LLM-hallucinated addresses from reaching delivery.
             # NOTE: runs regardless of whether entity_id was used for resolution.
@@ -846,6 +873,9 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         enforce_dossier=True,
                         butler_name=butler_name,
                         approval_push_runtime=daemon._approval_push_runtime,
+                    )
+                    _attention_owner_target = _attention_owner_target or (
+                        _decision.allowed and _decision.reason == "owner"
                     )
                     if _decision.dossier_error is not None:
                         return _decision.dossier_error
@@ -914,6 +944,9 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         reversibility=_reversibility,
                         enforce_dossier=True,
                         approval_push_runtime=daemon._approval_push_runtime,
+                    )
+                    _attention_owner_target = _attention_owner_target or (
+                        _decision.allowed and _decision.reason == "owner"
                     )
                     if _decision.dossier_error is not None:
                         return _decision.dossier_error
@@ -1028,7 +1061,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                                 priority,
                                 _deliver_at.isoformat(),
                             )
-                            await record_attention_event(
+                            await _record_cause_event(
                                 _notify_pool,
                                 origin_butler=butler_name,
                                 source="notify",
@@ -1053,11 +1086,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                                 "notify() failed to defer notification; delivering immediately"
                             )
 
-            # Approval-policy and context-bus gates apply only to routine,
-            # implicit-owner notifications.  They intentionally remain after
-            # delivery-preference deferral so the latter retains its existing
-            # per-butler behaviour unchanged.
-            if entity_id is None and recipient is None and intent in {"send", "insight"}:
+            # Every owner-directed routine send uses the same quiet/sleep
+            # gate, including explicit owner recipients and resolved entities.
+            # Reply/react targeting and non-owner approval retain their rules.
+            if _attention_owner_target and intent in {"send", "insight"}:
                 from datetime import UTC as _PUTC
                 from datetime import datetime as _pdatetime
 
@@ -1080,7 +1112,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     }
 
                 _policy_deliver_at = None
-                if _policy is not None:
+                if _policy is not None and not _quiet_cause.interrupts:
                     try:
                         _policy_deliver_at = policy_quiet_hours_deliver_at(
                             _policy, now=_deferred_at
@@ -1093,7 +1125,11 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         }
 
                 try:
-                    _context_suppression = await get_suppressing_context(_notify_pool)
+                    _context_suppression = (
+                        None
+                        if _context_cause.interrupts
+                        else await get_suppressing_context(_notify_pool)
+                    )
                 except Exception:
                     # No finite anchor was confirmed for this attempt. Refuse
                     # without sending, inventing a wake time, or dropping work.
@@ -1147,7 +1183,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             butler_name,
                         )
                         try:
-                            await record_attention_event(
+                            await _record_cause_event(
                                 _notify_pool,
                                 origin_butler=butler_name,
                                 source="notify",
@@ -1186,7 +1222,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         butler_name,
                     )
                     try:
-                        await record_attention_event(
+                        await _record_cause_event(
                             _notify_pool,
                             origin_butler=butler_name,
                             source="notify",
@@ -1239,6 +1275,29 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     "retryable": True,
                 }
 
+            # Revocation/definition changes after an awaited recipient or gate
+            # lookup cannot survive as a cached bypass at provider dispatch.
+            for gate, cause in (("quiet_hours", _quiet_cause), ("context", _context_cause)):
+                if (
+                    cause.interrupts
+                    and not (await evaluate_interruption(_notify_pool, gate=gate)).interrupts
+                ):
+                    await _record_cause_event(
+                        _notify_pool,
+                        origin_butler=butler_name,
+                        source="notify",
+                        outcome="failed",
+                        channel=channel,
+                        intent=intent,
+                        priority="medium",
+                        reason="attention_cause_changed",
+                        session_id=_ledger_session_id,
+                    )
+                    return {
+                        "status": "error",
+                        "error": {"code": "attention_cause_changed", "retryable": True},
+                        "retryable": True,
+                    }
             deliver_args: dict[str, Any] = {
                 "source_butler": butler_name,
                 "notify_request": notify_request,
@@ -1295,7 +1354,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 no-ops when the pool is absent, so a ledger-write hiccup can never
                 mask the original notify() error being returned.
                 """
-                await record_attention_event(
+                await _record_cause_event(
                     _notify_pool,
                     origin_butler=butler_name,
                     source="notify",
@@ -1342,7 +1401,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             "error": result.get("error", "Delivery failed"),
                         }
                     await _emit_notification_event()
-                    await record_attention_event(
+                    await _record_cause_event(
                         pool,
                         origin_butler=butler_name,
                         source="notify",
@@ -1394,7 +1453,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         "notification_id": data.get("notification_id"),
                     }
                 await _emit_notification_event()
-                await record_attention_event(
+                await _record_cause_event(
                     daemon.db.pool if daemon.db is not None else None,
                     origin_butler=butler_name,
                     source="notify",

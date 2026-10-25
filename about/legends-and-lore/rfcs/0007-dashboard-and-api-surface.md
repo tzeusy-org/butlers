@@ -28,7 +28,7 @@ A personal AI agent system with multiple specialist butlers, connectors, schedul
 Butler-specific API routes are auto-discovered by `src/butlers/api/router_discovery.py`:
 
 1. Scan `roster/*/api/router.py` for Python files.
-2. Load each module via `importlib.util.spec_from_file_location`.
+2. Load each module through `butlers.roster_imports`, preserving its existing execution name, one module object per file, source-path checks and failed-load cleanup. The `butlers.api._roster` namespace aliases those actual router and model objects.
 3. Validate that the module exports a `router` variable of type `APIRouter`.
 4. Register discovered routers with the FastAPI application, prefixed with `/api/<butler_name>`.
 
@@ -36,7 +36,10 @@ Conventions:
 
 - Each `router.py` MUST export a module-level `router` variable (APIRouter instance).
 - No `__init__.py` needed in the `api/` directory.
-- DB dependencies are auto-wired via `wire_db_dependencies()`.
+- Core and discovered routers import the public `Db` dependency (or
+  `Depends(get_db)`) from `src/butlers/api/deps.py`. The `src/butlers/api/app.py`
+  lifespan initializes and shuts down its shared DatabaseManager singleton;
+  existing optional reads use `OptionalDb`/`get_db_optional()`.
 - Pydantic models SHOULD be co-located in `models.py` alongside `router.py`.
 - Butlers without `api/` directories are silently skipped.
 - Invalid router exports (missing `router` variable, wrong type) are logged as warnings and skipped.

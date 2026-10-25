@@ -75,6 +75,7 @@ class DayCloseCacheWriteOutcome:
 
     invalid_reason: str | None = None
     quiet: bool = False
+    coverage_recorded: bool = False
 
 
 @dataclass(frozen=True)
@@ -101,8 +102,10 @@ def _notify_signature() -> inspect.Signature | None:
 
     handlers = {}
 
-    def decorate(_group):
+    def decorate(_group, **tool_kwargs):
         def record(fn):
+            if fn.__name__ == "notify" and tool_kwargs != {"exclude_args": ["priority"]}:
+                raise ValueError("unsupported notify registration policy")
             handlers[fn.__name__] = fn
             return fn
 
@@ -668,9 +671,11 @@ async def write_day_close_cache(
         target_timezone=tz_name,
     )
 
+    coverage_recorded = False
     if validated_capture is not None and _has_list_shaped_bundle_evidence(validated_capture):
         try:
             await record_coverage_witness(pool, day_date, tz_name)
+            coverage_recorded = True
         except Exception:
             logger.exception(
                 "day_close_writer: failed to record coverage witness for %s", day_date.isoformat()
@@ -695,7 +700,7 @@ async def write_day_close_cache(
     if not selection.invalid and (not output or not output.strip()):
         if validated_capture is not None and _is_empty_bundle_result(validated_capture):
             logger.debug("day_close_writer: validated empty bundle closed a quiet day")
-            return DayCloseCacheWriteOutcome(quiet=True)
+            return DayCloseCacheWriteOutcome(quiet=True, coverage_recorded=coverage_recorded)
         logger.debug("day_close_writer: output is empty without a valid quiet bundle")
         return
 
@@ -752,7 +757,9 @@ async def write_day_close_cache(
                             cache_key,
                             invalid_reason,
                         )
-                        return DayCloseCacheWriteOutcome(invalid_reason=invalid_reason)
+                        return DayCloseCacheWriteOutcome(
+                            invalid_reason=invalid_reason, coverage_recorded=coverage_recorded
+                        )
                     # No existing admissible row: persist the invalid candidate
                     # for audit/recovery. The reader never returns its prose.
                     await upsert_tier2_cache(
@@ -770,7 +777,9 @@ async def write_day_close_cache(
                         cache_key,
                         invalid_reason,
                     )
-                    return DayCloseCacheWriteOutcome(invalid_reason=invalid_reason)
+                    return DayCloseCacheWriteOutcome(
+                        invalid_reason=invalid_reason, coverage_recorded=coverage_recorded
+                    )
 
                 await upsert_tier2_cache(
                     conn,
@@ -787,7 +796,7 @@ async def write_day_close_cache(
             cache_key,
             len(provenance_refs),
         )
-        return DayCloseCacheWriteOutcome()
+        return DayCloseCacheWriteOutcome(coverage_recorded=coverage_recorded)
     except Exception:
         logger.exception(
             "day_close_writer: failed to write tier2_cache[%s] — cache miss will occur",

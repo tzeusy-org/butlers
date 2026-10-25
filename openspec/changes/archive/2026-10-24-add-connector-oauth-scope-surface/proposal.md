@@ -2,13 +2,13 @@
 
 The dashboard's connector-detail page exposes a `ReauthCallout` for OAuth-bound
 connectors (Spotify, Gmail, Google Calendar, Google Drive, Google Health,
-Discord, etc.) and a `ScopeList` that renders per-scope status with serif notes
+etc.) and a `ScopeList` that renders per-scope status with serif notes
 explaining drift. The existing ingestion connector surface exposes
 `POST /api/ingestion/connectors/:type/:identity/reauth`, but that endpoint is
-**deliberately bricked with HTTP 503 and no `Retry-After`** because the
-underlying contract — what scopes a connector requires, what scopes are
-currently granted, how drift is detected, how reauth is initiated, what audit
-trail it leaves — does not yet exist as a spec.
+**deliberately bricked with HTTP 503 and no `Retry-After`**. The original
+reason was the missing contract for required/granted scopes, drift, reauth
+and audit. This carrier supplies that contract; the accepted stub still needs
+the separately owned implementation described below.
 
 See:
 
@@ -27,13 +27,47 @@ See:
   `scopes` array shape that the `GET /api/ingestion/connectors/{type}/{identity}`
   response must populate.
 
-Today the live dashboard has nowhere to land scope drift signals, no contract
-for what "needs reauth" actually means across connectors, no defined behavior
-when a connector adopts new required scopes, and no audit trail for scope
-rotation events. The 503 brick will sit there until this capability ships.
+The original dashboard gap was a shared meaning for scope drift, new required
+scopes, reauth and rotation audit. The accepted read surface now exposes scope
+blocks, while the generic lifecycle remains incomplete. Ratifying this carrier
+does not itself replace the 503 handler or certify that runtime behavior.
 
-This change authors the missing contract. It does not implement it. Implementation
-is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
+This change authors the contract. It does not implement it. The original
+`bu-1f91v.11` handoff is accepted historical stub work, not an open blocker to
+recreate or evidence that the future lifecycle has shipped. Remaining work is
+recorded idempotently against real existing programme custody in task 5.4.
+
+## Delivery evidence and remaining implementation handoff
+
+This is a spec-only conformance amendment. Historical checked tasks record
+prior work, not fresh validation or implementation of every requirement.
+The coordinator acknowledged programme/discovery custody on 2026-10-24 at
+15:22:43Z: the remaining runtime duties are `OUTSTANDING_UNALLOCATED`, with
+no implementation assignee. This carrier does not create a duplicate bead,
+reopen a closed implementation owner, or authorize runtime changes. Task 5.4
+maps each requirement to its existing accepted receipt and retains unfulfilled
+duties explicitly. Exact source review and adoption on 2026-10-24 authorize handoff
+credit; runtime completion is not a prerequisite to this spec-only archive.
+
+The accepted receipts are immutable merged PR identities:
+
+| Existing owner | Accepted receipt | Actual delivered scope |
+|----------------|------------------|------------------------|
+| `bu-1f91v.11` | [PR 1799](https://github.com/tzeusy-org/butlers/pull/1799), merge `b1498d066c9a153ce77cd3a7ed6a3deb9c085345` | Deliberate HTTP 503 reauth stub, without `Retry-After`, approval or DB work; not the future generic reauth lifecycle. |
+| `bu-wn3n3` | [PR 2065](https://github.com/tzeusy-org/butlers/pull/2065), merge `aab4ed0caeb3b4933aa1e272562b2d3e5b49a819` | Central manifest/read surface, additive core 114 columns and dashboard scope blocks; not generic observation cadence or reauth completion. |
+| `bu-fj7lx` | [PR 3743](https://github.com/tzeusy-org/butlers/pull/3743), merge `d8e9549dd8f753d573c62f3f8ebd348b727f4cdb` | Connector-owned Spotify lifecycle, Tier 2 custody, content-blind Passport and server-side fences. |
+| `bu-3ifcj` | [PR 4146](https://github.com/tzeusy-org/butlers/pull/4146), merge `7b3b56004279ad2b94d2d2be6c91c38a0824c039` | Subsequent Google-only generic registry/route cleanup, indistinguishable Spotify refusal and synthetic provider fixtures. |
+
+These receipts record accepted historical scope, not ancestry or fresh runtime
+proof for the current checkout. The current source still has the generic 503
+stub in `src/butlers/api/routers/ingestion_connectors.py`. Its detail projection
+computes auth on read and normalizes the actionable stored causes explicitly
+for Spotify; that does not discharge this contract's computed-on-write or
+generic convergence obligations. Generic refresh/fallback-cadence observation,
+connector-bound state/callback replay and audit duties remain unfulfilled
+implementation obligations. Existing columns and Spotify metadata writes do
+not establish generic lifecycle completion. No task is credited by a closed
+bead name or by this source inspection.
 
 ## What Changes
 
@@ -45,14 +79,14 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
   - Versioning rule: required scope sets evolve forward-only; older granted
     sets are detected as drift, never silently re-baselined.
   - Granted-scope observation: for OAuth providers that support
-    introspection (Google `tokeninfo`, Spotify `scope` echoed on refresh,
-    Discord identify endpoint), connectors record observed scopes on
+    introspection (Google `tokeninfo`, Spotify `scope` echoed on refresh),
+    connectors record observed scopes on
     `connector_registry.observed_scopes` (TEXT[]) with
     `observed_scopes_fetched_at` freshness timestamp; for providers that do
     not (Telegram bot/user-client, OwnTracks, Home Assistant token auth), the
     spec defines the alternative surface (session-validity / token-validity).
   - Drift taxonomy: `ok` (granted ⊇ required), `extra` (granted has scopes
-    beyond required — audit only, not drift), `drift` (granted ⊋ required, at
+    beyond required — audit only, not drift), `drift` (required ⊈ granted, at
     least one required scope missing), `expired` (provider rejected the token
     entirely), `unsupported` (non-OAuth connector).
   - Stored `connector_registry.auth_status` enum: `ok | degraded | expired |
@@ -175,11 +209,11 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
     scope or connection metadata where this capability requires it.
   - `src/butlers/api/routers/ingestion_connectors.py` — replace the HTTP 503
     stub in the reauth handler with the contract defined here.
-  - `src/butlers/migrations/versions/` — Alembic migration adding
+  - `alembic/versions/core/` — Alembic migration adding
     `observed_scopes TEXT[]`, `observed_scopes_fetched_at TIMESTAMPTZ`,
     `required_scopes_version SMALLINT`, `auth_status VARCHAR` columns to
     `public.connector_registry`.
-  - `src/butlers/connectors/spotify/` — periodic re-introspection task;
+  - `src/butlers/connectors/spotify.py` — periodic re-introspection task;
     connector-owned Passport projection data remains content-blind.
   - `frontend/src/components/ingestion/connectors/ConnectorDetailView.tsx` — wire `scopes[]`
     block; render `ReauthCallout` from `auth.status`; render `ScopeList` from
@@ -232,9 +266,9 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
     authority. This change's dashboard-ingestion delta targets the existing
     canonical spec, so its authority survives this change's own archive with
     no second-change ordering or no-op fallback.
-  - Once this change ratifies, the reauth bead `bu-1f91v.11` has a durable
-    contract to implement; this planning change does not change its tracker
-    state or authorize source changes.
+  - Ratification supplies a durable contract for the remaining implementation
+    duties in task 5.4. `bu-1f91v.11` remains a closed accepted stub receipt;
+    this change neither reopens it nor creates a duplicate implementation bead.
   - The owner-approved Spotify reconciliation is serialized and does not
     authorize source changes in this spec-only amendment: merge this carrier's
     canonical reconciliation first; then `bu-fj7lx` implements the
@@ -289,7 +323,7 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
   `openspec/changes/archive/2026-05-19-redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:4,17,36-40`
 - Durable dashboard lifecycle target —
   `openspec/specs/dashboard-ingestion-dispatch-console/spec.md:331-454`
-- Tracked implementation bead — `bu-1f91v.11`
+- Historical accepted reauth stub owner — `bu-1f91v.11`
   (`openspec/changes/archive/2026-05-19-redesign-ingestion-dispatch-console/tasks.md:45`)
 - UI ground truth: `ReauthCallout` —
   `docs/redesigns/ingestion-connector-detail.jsx:70-101`

@@ -1,8 +1,13 @@
 # Tasks
 
 This change is **spec-only**. The tasks below are spec-authoring tasks. The
-implementation work is captured as a bead-creation handoff in §5 (to be run
-by the operator AFTER this change ratifies).
+implementation work is recorded as an idempotent existing-owner/accepted-
+receipt handoff in §5. Historical checked tasks record prior authoring and
+serialized delivery; they do not certify current runtime completion. No task
+is credited as runtime implementation. The coordinator adopted the exact
+reviewed amendment and authorized spec-authoring/handoff credit on 2026-10-24;
+remaining generic runtime duties stay `OUTSTANDING_UNALLOCATED`. Archive/sync
+credit is recorded only after the actual CLI operation succeeds.
 
 ## 0. Spotify authority reconciliation amendment (owner-approved; spec-only)
 
@@ -143,9 +148,12 @@ by the operator AFTER this change ratifies).
     Spotify route, registry, credential mirror, or second secret authority
     remains normative.
 
-- [ ] 4.4 Confirm the per-connector applicability matrix (Decision 6) covers
-      every connector type currently in `openspec/specs/connector-*/`:
-  - `connector-discord` — OAuth (planned)
+- [x] 4.4 Confirm the per-connector applicability matrix (Decision 6) covers
+      the actual current connector inventory. Identify its canonical spec in
+      `openspec/specs/connector-*/` where present, and label source/docs plus
+      accepted archived lineage separately where no canonical spec exists:
+  - `connector-activitywatch` — local/self-hosted configuration (non-OAuth)
+  - Discord — retired; no current connector spec or accepted channel, ingest refused
   - `connector-filtered-events` — internal, no auth surface
   - `connector-gmail` — OAuth (Google)
   - `connector-google-calendar` — OAuth (Google)
@@ -158,6 +166,13 @@ by the operator AFTER this change ratifies).
   - `connector-steam` — API key (non-OAuth)
   - `connector-telegram-bot` — bot token (non-OAuth)
   - `connector-telegram-user-client` — TDLib session (non-OAuth)
+  - WhatsApp `whatsapp_user_client` — actual
+    `src/butlers/connectors/whatsapp_user_client.py` and
+    `docs/connectors/whatsapp.md`, QR/session pairing. Accepted historical
+    lineage: `openspec/changes/archive/2026-04-25-whatsapp-connector/specs/connector-whatsapp-user-client/spec.md`.
+    No current canonical `connector-whatsapp` or `connector-whatsapp-user-client`
+    spec exists; this checklist does not create one or restore archived routing
+    behavior as current authority.
   Every entry must be classified in the spec.
 
 - [x] 4.5 Add a static archive-survival regression that proves the active
@@ -166,10 +181,10 @@ by the operator AFTER this change ratifies).
 
 ## 5. Documentation + cleanup
 
-- [ ] 5.1 No `roster/*/AGENTS.md` updates are required by this change (no
+- [x] 5.1 No `roster/*/AGENTS.md` updates are required by this change (no
       butler behavior change).
 
-- [ ] 5.2 No `CLAUDE.md` update is required (no new agent-facing conventions).
+- [x] 5.2 No `CLAUDE.md` update is required (no new agent-facing conventions).
 
 - [x] 5.3 **Serialized Spotify implementation handoff (NO Beads mutation in
       this change):** after this reconciliation merges, implement the two
@@ -210,60 +225,86 @@ by the operator AFTER this change ratifies).
   prerequisite. This spec-only change records the post-ratification tracker
   action and does not execute it.
 
-- [ ] 5.4 **Bead-creation handoff (MANUAL — run AFTER this change is ratified
-      and archived):** the operator runs the following `bd create` command to
-      file the implementation bead that unblocks
-      `bu-1f91v.11`:
+- [x] 5.4 **Idempotent existing-owner and accepted-receipt handoff:**
+      reconcile each requirement below against its real existing owner and
+      immutable accepted receipt. Reuse that record; do not create another
+      implementation bead, reopen a closed stub owner, or replay the historical
+      tracker commands in §5.3. Repeated reconciliation must not duplicate work
+      or credit unfulfilled duties. The coordinator acknowledged actual
+      programme custody on 2026-10-24 at 15:22:43Z: all 19 requirement keys
+      retain the seven duty groups OBSERVATION, STORED_AUTH, GENERIC_REAUTH,
+      NON_OAUTH_REFUSAL, STATE_CALLBACK, AUDIT and TESTS as
+      `OUTSTANDING_UNALLOCATED`, with no implementation assignee or new bead.
+      This acknowledgment does not complete runtime work. Runtime completion
+      is not a prerequisite to this spec-only archive. Exact source review and adoption on 2026-10-24 authorize this
+      handoff credit; no runtime implementation is credited.
 
-      ```bash
-      bd create "Implement connector-oauth-scope-surface spec + unblock bu-1f91v.11 (reauth endpoint)" \
-        --description "Spec ratified in openspec/changes/archive/<archive-id>-add-connector-oauth-scope-surface/. Implements the connector-oauth-scope-surface capability: additive connector_registry columns, per-connector scope manifest registration, OAuth introspection on token refresh + 6h cadence task, reauth endpoint contract (replacing the HTTP 503 stub from bu-1f91v.11), audit emissions, per-connector applicability matrix, ScopeList and ReauthCallout API surface. See spec for full requirement list." \
-        -t feature \
-        -p 1 \
-        --labels redesign-ingestion-dispatch-console \
-        --deps blocks:bu-1f91v.11,discovered-from:bu-1f91v.11 \
-        --json
-      ```
+      Accepted receipts and their exact merge identities are recorded in
+      proposal/design §Delivery evidence and remaining implementation handoff.
+      `bu-wn3n3`/PR2065 is the read-surface/schema owner;
+      `bu-1f91v.11`/PR1799 accepted the 503 stub only; Spotify
+      `bu-fj7lx`/PR3743 preceded `bu-3ifcj`/PR4146. Closed names do not
+      establish missing lifecycle implementation or fresh test execution.
 
-      Why this is manual: the bead's `--deps blocks:bu-1f91v.11` makes it
-      meaningful only once this spec is ratified (otherwise the bead would
-      be created with a forward reference to spec work that is itself
-      blocking). File it once the change archives, not before.
+      | Requirement | Existing delivery / exact remaining duty |
+      |-------------|------------------------------------------|
+      | Connector module scope manifest | PR2065 central registry exists; retain module declaration, versioning and complete registration duties. |
+      | Observed-scope storage on connector_registry | PR2065/core 114 source columns and PR3743 Spotify metadata writes; applied DB and generic observation are separate evidence. |
+      | Re-introspection cadence and triggers | Generic first-refresh/refresh/6h fallback, omitted-scope and failure behavior remain implementation duties. |
+      | Drift taxonomy and per-scope status | PR2065 helpers/read surface; retain all five classes, optional/sensitive distinctions, opaque-value omission and ordering. |
+      | Auth status computation | Current detail recomputes on read and normalizes Spotify; retain computed-on-write, stored-six/public-five and generic cause-preserving convergence. |
+      | Dashboard API response shape for auth and scopes blocks | PR2065 read blocks; retain all masking, nullability, status and per-scope response rules. |
+      | Spotify connector authority and Passport projection | PR3743 then PR4146; preserve callback/refresh/disconnect Tier 2 authority, content-blind projection, generic server fences and no compatibility alias. |
+      | Reauth endpoint contract for generic OAuth connectors | PR1799/current 503 is not completion; retain approval, URL/union/state, conflict and force-consent duties. |
+      | Reauth callback contract | Retain connector/operator binding, observations, error handling and generic completion/failure audit; existing OAuth transport is not the full capability. |
+      | Reauth endpoint contract for non-OAuth connectors | Retain structured 200 unsupported response before approval/audit; current shared 503 is not that behavior. |
+      | Per-connector applicability matrix | This amendment updates normative classification; explicit runtime namespace mappings/completeness remain an implementation duty. |
+      | Audit trail | Retain exact action namespace, indefinite retention, sensitive-grant and required-version transition/idempotency duties; no generic emitter completion inferred. |
+      | State token security | Retain exact tuple binding, 600s expiry, atomic one-use consumption and revoke-on-reissue/replay refusals. |
+      | Test obligations | Existing API/Spotify owners cover delivered fragments; every remaining matrix/drift/state/audit/masking behavior still needs its specified executing owner. |
+      | Non-OAuth connectors: alt-auth surface | Existing safe fallback is partial delivery; retain exact applicability, empty scopes, safe alternative route and refusal duties. |
+      | Auth-state columns on connector_registry | PR2065/core 114 source; retain additive/null/old-column compatibility, without claiming migrated runtime. |
+      | ConnectorDetailEntry Pydantic auth and scopes blocks | PR2065 detail surface; retain normalization/cause and unchanged list/detail boundaries. |
+      | OAuth connector observation responsibility | Retain connector-owned observation and persisted status; no dashboard provider probing or heartbeat rewrite. |
+      | OAuth reauth lifecycle authority | This delta targets the live canonical dashboard spec; retain generic approval/audit versus Spotify/nonOAuth split after archive. |
 
 - [x] 5.5 Run `openspec validate add-connector-oauth-scope-surface` one
       final time before submitting for review.
 
-- [ ] 5.6 Run `openspec archive add-connector-oauth-scope-surface` after the
+- [x] 5.6 Run `openspec archive add-connector-oauth-scope-surface` after the
       change is ratified (moves the change directory to
       `openspec/changes/archive/`).
 
 ## 6. Acceptance criteria (must pass before archive)
 
-- [ ] 6.1 The spec is implementable cold by someone who has not been in this
+- [x] 6.1 The spec is implementable cold by someone who has not been in this
       conversation. (Self-test: re-read the spec and check that every
       requirement has a scenario and every scenario references concrete file
       paths or capability names rather than handwaved concepts.)
 
-- [ ] 6.2 No requirement contradicts an existing spec in
+- [x] 6.2 No requirement contradicts an existing spec in
       `openspec/specs/`. (Cross-reference list in §4.3 has been walked.)
 
-- [ ] 6.3 Every connector type currently in the project has a defined
+- [x] 6.3 Every connector type currently in the project has a defined
       `auth.status` resolver in the per-connector applicability matrix.
       (Verified against §4.4 list.)
 
-- [ ] 6.4 No credential, token, or refresh-token value appears in any
+- [x] 6.4 No credential, token, or refresh-token value appears in any
       response shape defined by the spec. Spot-check all JSON shapes in
       requirement scenarios.
 
-- [ ] 6.5 The `## Source References` footer is present and lists doctrine
+- [x] 6.5 The `## Source References` footer is present and lists doctrine
       principles by rule number plus all cited specs.
 
 - [x] 6.6 `openspec validate add-connector-oauth-scope-surface --strict`
       returns clean.
 
-- [ ] 6.7 Bead-creation command in §5.4 has been tested for shell-quoting
-      sanity (the `--description` is one line; the `--deps` are
-      comma-separated without spaces).
+- [x] 6.7 Verify the §5.4 handoff is idempotent: every requirement has its
+      actual existing owner/outcome and immutable accepted receipt or an
+      explicitly retained unresolved duty under coordinator custody. No
+      duplicate creation command, false closed-owner completion or missing
+      runtime obligation remains. The actual 2026-10-24 15:22:43Z custody
+      record and exact source adoption authorize this handoff credit.
 
 - [x] 6.8 The active carrier and canonical specs agree that Spotify is
       connector-owned PKCE with RFC 0006 Tier 2 owner `entity_info` access and

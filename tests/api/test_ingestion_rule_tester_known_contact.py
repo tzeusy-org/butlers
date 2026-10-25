@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import sys
 import time
 from pathlib import Path
@@ -39,10 +39,7 @@ _RULE = {
 
 def _db_dependency():
     if _MODULE_NAME not in sys.modules:
-        spec = importlib.util.spec_from_file_location(_MODULE_NAME, _router_path)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[_MODULE_NAME] = module
-        spec.loader.exec_module(module)
+        importlib.import_module("butlers.api._roster.switchboard.router")
     return get_db
 
 

@@ -1103,6 +1103,8 @@ class ButlerDaemon:
             max_token_budget=max_token_budget,
             switchboard_client=self.switchboard_client,
             approval_push_runtime=self._approval_push_runtime,
+            credential_store=self._credential_store,
+            chronicler_continuation=vars(self).get("_chronicler_continuation"),
         )
 
     async def _build_scheduler_runtime_context(self) -> _SchedulerRuntimeContext:
@@ -1162,6 +1164,14 @@ class ButlerDaemon:
 
                     store_fact_fn = build_chronicler_fact_writer(memory_pool, memory_engine)
 
+            from butlers.chronicler.day_close_continuation import DayCloseContinuation
+            from butlers.chronicler.day_close_refresh import held_refresh_service
+
+            if vars(self).get("_chronicler_continuation") is None:
+                self._chronicler_continuation = DayCloseContinuation(
+                    held_refresh_service(self, self.db.pool), default_timezone
+                )
+
             prompt_hooks = build_day_close_prompt_hooks(timezone=default_timezone)
             completion_hooks = build_day_close_completion_hooks(
                 self.db.pool,
@@ -1206,6 +1216,7 @@ class ButlerDaemon:
             completion_hooks=runtime_context.completion_hooks,
             get_eligibility_pool=lambda: daemon._audit_pool,
             default_timezone=runtime_context.default_timezone,
+            chronicler_continuation=vars(self).get("_chronicler_continuation"),
         )
 
     def _resolve_memory_module(self) -> Any | None:

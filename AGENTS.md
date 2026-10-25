@@ -141,6 +141,13 @@ traps for that subsystem. Read it before changing the subsystem.
 - OpenSpec validate/archive traps: the `doctrine` skill's spec-and-spine
   `references/openspec-gotchas.md`.
 
+### Durable queue claims
+
+- Claim through `butlers.core.queue_claim` inside the adapter's transaction. Queue SQL
+  fragments are reviewed code constants and values are bound. No-reclaim queues must
+  never reclaim expired sending work; runtime attention retains its at-most-once
+  transport and existing uncertain-outcome recovery.
+
 ### Cross-cutting test rules
 
 The rest of the test traps are in [test traps](docs/testing/test-traps.md). These three apply to every
@@ -154,6 +161,15 @@ check you write or read:
 - A forced-quiet or fail-open green, and an absence assertion, need a control run that goes red:
   neutralise the fix, confirm the suite goes red, restore, and give every absence test a positive
   companion.
+
+### Roster import identity
+
+- Use the canonical roster namespace or `butlers.roster_imports.roster_module()`;
+  never add a roster by-path loader. `tests/contracts/test_roster_module_identity.py`
+  guards production loading and canonical test names. Deliberately isolated test
+  copies use private `_`-prefixed names and never evict canonical models/routers.
+  Test-only `roster.<butler>.*` dotted imports still fork identity; their separate
+  migration is not a fallback or alias supported by the production loader.
 
 ### PRs, merge route and CI guards
 

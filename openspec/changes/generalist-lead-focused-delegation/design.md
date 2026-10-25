@@ -30,8 +30,8 @@ trace the change.
    epoch-fenced recovery are goal-level (D10 to D14).
 9. Model choice is per invocation by role and tier with a finite escalation
    ladder that never creates a new goal (D16).
-10. Engineering executors and tool-less model functions are the only model use
-    outside goals (D18).
+10. Engineering executors, tool-less model functions and dashboard fast answers
+    are the only model use outside goals (D18, owner decision `bu-u5euwb.21`).
 11. Two owner rules bind every goal regardless of origin or exposure:
     communication with anyone other than the owner needs per-event approval or
     an owner-created standing rule, and `transact` is disabled (D4, owner
@@ -67,7 +67,9 @@ Other active changes edit capabilities that this change modifies or removes.
 Each one is archived first, re-scoped to the goal runtime, folded into this
 change, or withdrawn by owner decision before task 4.2 applies the deltas.
 `define-dashboard-fast-answer-runtime` is settled first, because it adds a
-model path outside goals that D18 forbids. The census, the disposition and
+model path outside goals; owner decision `bu-u5euwb.21` names it as the D18
+dashboard fast-answer kind, and the change is re-scoped to that kind
+(`bu-u5euwb.28`). The census, the disposition and
 owner for each change, and the requirement blocks both deltas edit are listed
 in [collision-dispositions.md](collision-dispositions.md).
 

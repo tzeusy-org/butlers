@@ -427,10 +427,10 @@ class TestQuietHoursLedgerRecording:
         assert outcome == "deferred"
         assert reason == "policy_quiet_hours"
 
-    async def test_explicit_recipient_skips_owner_default_quiet_hours_parking(
+    async def test_explicit_recipient_obeys_owner_quiet_hours_parking(
         self, butler_dir: Path
     ) -> None:
-        """An explicit owner recipient must deliver despite an active owner quiet window."""
+        """An explicit owner recipient follows the same owner quiet window."""
         mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
@@ -457,17 +457,15 @@ class TestQuietHoursLedgerRecording:
                 _evidence=[],
             )
 
-        assert result["status"] == "ok"
+        assert result["status"] == "deferred"
         owner_resolver.assert_awaited_once_with(mock_pool, "telegram", "explicit-owner-chat")
-        assert _deferred_notification_insert_calls(mock_pool) == []
-        daemon.switchboard_client.call_tool.assert_awaited_once()
-        notify_request = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"]
+        assert len(_deferred_notification_insert_calls(mock_pool)) == 1
+        daemon.switchboard_client.call_tool.assert_not_awaited()
+        notify_request = _deferred_notification_insert_calls(mock_pool)[0][5]
         assert notify_request["delivery"]["recipient"] == "explicit-owner-chat"
 
-    async def test_entity_target_skips_owner_default_quiet_hours_parking(
-        self, butler_dir: Path
-    ) -> None:
-        """An explicit entity target must not be treated as an implicit owner default."""
+    async def test_entity_target_obeys_owner_quiet_hours_parking(self, butler_dir: Path) -> None:
+        """An explicit entity target cannot escape the owner quiet window."""
         mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
@@ -501,16 +499,16 @@ class TestQuietHoursLedgerRecording:
                 _evidence=[],
             )
 
-        assert result["status"] == "ok"
+        assert result["status"] == "deferred"
         entity_resolver.assert_awaited_once_with(
             entity_id=entity_id,
             channel="telegram",
             msg_context=None,
         )
         owner_resolver.assert_awaited_once_with(mock_pool, "telegram", "entity-owner-chat")
-        assert _deferred_notification_insert_calls(mock_pool) == []
-        daemon.switchboard_client.call_tool.assert_awaited_once()
-        notify_request = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"]
+        assert len(_deferred_notification_insert_calls(mock_pool)) == 1
+        daemon.switchboard_client.call_tool.assert_not_awaited()
+        notify_request = _deferred_notification_insert_calls(mock_pool)[0][5]
         assert notify_request["delivery"]["recipient"] == "entity-owner-chat"
 
     async def test_reply_intent_skips_owner_default_quiet_hours_parking(
@@ -741,8 +739,9 @@ class TestQuietHoursLedgerRecording:
         assert result["error"]["code"] == "attention_context_unavailable"
         daemon.switchboard_client.call_tool.assert_not_awaited()
 
+    @pytest.mark.parametrize("owner_started", [False, True])
     async def test_model_priority_label_cannot_bypass_quiet_hours_and_context_bus(
-        self, butler_dir: Path
+        self, butler_dir: Path, owner_started: bool
     ) -> None:
         mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
@@ -757,13 +756,22 @@ class TestQuietHoursLedgerRecording:
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             confidence=1.0,
         )
+        from butlers.core.attention_urgency import AttentionOrigin, _current_origin
+
+        # Owner content authority is not a creation flag or persisted clause.
+        origin_token = _current_origin.set(
+            AttentionOrigin(entity_id=uuid.uuid4()) if owner_started else None
+        )
         with (
             _configured_owner_default_recipient(daemon),
             patch(
                 "butlers.context_bus.get_active_context", new=AsyncMock(return_value=[dnd_signal])
             ),
         ):
-            result = await notify_fn(channel="telegram", message="Urgent!", priority="high")
+            try:
+                result = await notify_fn(channel="telegram", message="Urgent!", priority="high")
+            finally:
+                _current_origin.reset(origin_token)
 
         assert result["status"] == "deferred"
         daemon.switchboard_client.call_tool.assert_not_awaited()
@@ -772,6 +780,11 @@ class TestQuietHoursLedgerRecording:
         outcomes = [c[8] for c in ledger_calls]
         assert "suppressed" not in outcomes
         assert "deferred" in outcomes
+
+        event = json.loads(_ledger_row_of(mock_pool, "deferred")[11])
+        assert event["attention_cause"] == "routine"
+        assert event["downgrade"] == "unverified_urgency"
+        assert "Urgent!" not in json.dumps(event)
 
     # Spec: REQ-core-fleet-events-007, REQ-core-fleet-events-008
     @pytest.mark.parametrize("publish_failure", [False, True])
@@ -1085,3 +1098,49 @@ class TestRuntimeSessionCorrelation:
         metadata_json = ledger_calls[0][11]
         metadata = json.loads(metadata_json) if metadata_json else {}
         assert ATTENTION_LEDGER_SESSION_KEY not in metadata
+
+
+@pytest.mark.parametrize("revoked", [False, True])
+async def test_verified_cause_is_rechecked_before_actual_notify_dispatch(butler_dir, revoked):
+    """Consumer proof only: real current SQL/provenance is owned by PG cases."""
+    from butlers.core.attention_urgency import AttentionOrigin, _current_origin
+
+    pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
+    daemon, notify_fn = await _start_daemon_with_notify(butler_dir, _patch_infra(pool))
+    daemon.switchboard_client = _make_mock_client()
+    cause_ref = str(uuid.uuid4())
+    reads = 0
+
+    async def fetchval(sql, *args):
+        nonlocal reads
+        if "dashboard_attention.evaluate" in sql:
+            reads += 1
+            return (
+                {"cause": "routine"}
+                if revoked and reads > 2
+                else {
+                    "cause": "owner_clause",
+                    "ref": cause_ref,
+                }
+            )
+        return str(uuid.uuid4())
+
+    pool.fetchval.side_effect = fetchval
+    token = _current_origin.set(AttentionOrigin(entity_id=uuid.uuid4()))
+    try:
+        with _configured_owner_default_recipient(daemon):
+            result = await notify_fn(channel="telegram", message="PRIVATE_CAUSE_BODY_CANARY")
+    finally:
+        _current_origin.reset(token)
+    if revoked:
+        assert result["error"]["code"] == "attention_cause_changed"
+        daemon.switchboard_client.call_tool.assert_not_awaited()
+        event = _ledger_row_of(pool, "failed")
+    else:
+        assert result["status"] == "ok"
+        daemon.switchboard_client.call_tool.assert_awaited_once()
+        event = _ledger_row_of(pool, "delivered")
+    assert reads >= 3
+    metadata = json.loads(event[11])
+    assert metadata["attention_cause"] == "owner_clause" and metadata["cause_ref"] == cause_ref
+    assert "PRIVATE_CAUSE_BODY_CANARY" not in json.dumps(metadata)

@@ -307,6 +307,10 @@ _DYNAMIC_RELATION_RE = re.compile(
 # Dynamic entries are exact normalized relation slots, not whole-file waivers.
 SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
+        "src/butlers/core/queue_claim.py",
+        "<dynamic:{queue.table}>",
+    ): "dynamic-local: bu-m0vjeb.6 reviewed module-scope ClaimQueue constants for local episodes and public.runtime_attention_outbox; validated identifiers, bound request/row values, existing caller transaction/role and per-adapter authority retained; no new foreign-schema access",
+    (
         "roster/chronicler/tests/_inline_ddl.py",
         '<dynamic:"{schema_name}".sessions>',
     ): "sanctioned:RFC-0014: schema-isolation/session projection fixtures with explicit quoted synthetic schemas",

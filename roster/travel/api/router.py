@@ -7,43 +7,36 @@ butler's PostgreSQL database via asyncpg.
 
 from __future__ import annotations
 
-import importlib.util
 import logging
-import sys
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db
 from butlers.api.models import PaginatedResponse, PaginationMeta
+from butlers.roster_imports import roster_module
 from butlers.tools.travel._helpers import _row_to_dict
 from butlers.tools.travel.connections import connection_reason
 
 # Dynamically load models module from the same directory
-_models_path = Path(__file__).parent / "models.py"
-_spec = importlib.util.spec_from_file_location("travel_api_models", _models_path)
-if _spec is not None and _spec.loader is not None:
-    _models = importlib.util.module_from_spec(_spec)
-    sys.modules["travel_api_models"] = _models
-    _spec.loader.exec_module(_models)
+_models = roster_module("travel", "api/models", api_source=__file__)
 
-    AccommodationModel = _models.AccommodationModel
-    AlertModel = _models.AlertModel
-    ConnectionModel = _models.ConnectionModel
-    DocumentModel = _models.DocumentModel
-    ExpiringDocumentModel = _models.ExpiringDocumentModel
-    ExpiringDocumentsResponse = _models.ExpiringDocumentsResponse
-    LegModel = _models.LegModel
-    PreTripActionModel = _models.PreTripActionModel
-    ReservationModel = _models.ReservationModel
-    TimelineEntryModel = _models.TimelineEntryModel
-    TripModel = _models.TripModel
-    TripSummaryModel = _models.TripSummaryModel
-    TravellerModel = _models.TravellerModel
-    UpcomingTravelModel = _models.UpcomingTravelModel
-    UpcomingTripModel = _models.UpcomingTripModel
+AccommodationModel = _models.AccommodationModel
+AlertModel = _models.AlertModel
+ConnectionModel = _models.ConnectionModel
+DocumentModel = _models.DocumentModel
+ExpiringDocumentModel = _models.ExpiringDocumentModel
+ExpiringDocumentsResponse = _models.ExpiringDocumentsResponse
+LegModel = _models.LegModel
+PreTripActionModel = _models.PreTripActionModel
+ReservationModel = _models.ReservationModel
+TimelineEntryModel = _models.TimelineEntryModel
+TripModel = _models.TripModel
+TripSummaryModel = _models.TripSummaryModel
+TravellerModel = _models.TravellerModel
+UpcomingTravelModel = _models.UpcomingTravelModel
+UpcomingTripModel = _models.UpcomingTripModel
 
 logger = logging.getLogger(__name__)
 

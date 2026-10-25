@@ -33,7 +33,7 @@ def _load_travel_router():
     import importlib.util
     import sys
 
-    module_name = "travel_api_router_test"
+    module_name = "_travel_api_router_test"
     if module_name in sys.modules:
         return sys.modules[module_name]
 

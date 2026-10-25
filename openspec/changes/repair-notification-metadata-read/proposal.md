@@ -3,8 +3,9 @@
 The merged Switchboard writer correction in #3458 prevents new JSONB metadata
 from being double-encoded, but it deliberately leaves historical
 `switchboard.notifications.metadata` string scalars in place. The notification
-API currently turns those rows into `null`, which hides recoverable provenance
-from an object-or-null response contract. A read-compatible response is needed
+API previously turned those rows into `null`, hiding recoverable provenance
+from an object-or-null response contract; the read-side compatibility implementation is now
+present, while serving evidence and historical repair remain pending. A read-compatible response is needed
 before historical data can be repaired, and a repair is unsafe until the writer
 actually serving every active notification path is proven to include #3458 or a
 descendant.
@@ -46,10 +47,20 @@ None.
 ## Impact
 
 - Affected future implementation areas: `src/butlers/api/routers/notifications.py`,
-  `docs/frontend/backend-api-contract.md`, the Switchboard migration chain, the
+  `docs/api_and_protocols/response-conventions.md`, the Switchboard migration chain, the
   production writer regression, and focused API/migration/operations tests.
 - The completed `fix-notification-jsonb-metadata-write` change remains
   unchanged; this change neither amends it nor reopens its write-side scope.
 - No delivery, retry, status, timeline, session/trace propagation, frontend
   metadata display, runtime restart, manual SQL, or live data repair is in
   scope.
+
+## Source-preparation status
+
+The precise API matrix belongs in `docs/api_and_protocols/response-conventions.md`. The read-only
+Section 2 evidence interface is `docs/operations/notification-metadata-repair.md`, linked from
+Kubernetes deployment guidance. JSONB normalization/`None`/empty writer behavior is owned by
+`roster/switchboard/tests/test_tools.py`; the search-path integration test remains distinct.
+These source pointers and procedure do not establish that every actual serving writer is #3458
+or a descendant, complete a bounded observation, authorize Section 3.1, or satisfy the whole
+implementation/archive outcome. No task state or normative requirement is changed by preparation.
