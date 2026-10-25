@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.testing.fake_pool import AsyncCtx
 from butlers.tools.switchboard.runtime_attention.outbox import OutboxEpisode
 from butlers.tools.switchboard.runtime_attention.worker import build_messenger_transport
 from butlers.tools.switchboard.transport import TransportOutcome
@@ -126,11 +127,7 @@ async def test_repository_claim_uses_shared_fence_inside_committed_role_transact
     connection.fetch = AsyncMock(side_effect=fetch)
     connection.fetchrow = AsyncMock(return_value=row if pending else None)
 
-    @asynccontextmanager
-    async def acquire():
-        yield connection
-
-    pool = MagicMock(acquire=acquire)
+    pool = MagicMock(acquire=lambda: AsyncCtx(connection))
     repository = RuntimeAttentionOutbox(pool, instance_id="worker")
     with patch("butlers.tools.switchboard.runtime_attention.outbox.uuid.uuid4", return_value=token):
         episode = await repository.claim_next_pending(lease)

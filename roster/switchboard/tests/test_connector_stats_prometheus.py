@@ -26,6 +26,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from butlers.api.routers import ingestion_connectors
+from butlers.testing.records import Record
 
 _THIS_FILE = Path(__file__).resolve()
 
@@ -143,15 +144,11 @@ async def test_get_connector_stats_websocket_connector_db_sourced():
     bucket1 = datetime(2024, 1, 15, 10, 0, 0, tzinfo=UTC)
     bucket2 = datetime(2024, 1, 15, 11, 0, 0, tzinfo=UTC)
 
-    # asyncpg returns Record objects; use dicts with dict-like access via mapping
-    class _FakeRecord(dict):
-        pass
-
     # bu-c48im: the DB series is now skip-aware — the UNION query returns a
     # messages_filtered column (connectors.filtered_events volume) alongside
     # ingested/failed.
     fake_rows = [
-        _FakeRecord(
+        Record(
             {
                 "bucket": bucket1,
                 "messages_ingested": 120,
@@ -159,7 +156,7 @@ async def test_get_connector_stats_websocket_connector_db_sourced():
                 "messages_filtered": 9,
             }
         ),
-        _FakeRecord(
+        Record(
             {
                 "bucket": bucket2,
                 "messages_ingested": 87,
@@ -205,12 +202,9 @@ async def test_get_connector_stats_7d_returns_daily_rows():
     DISTINCT messages_filtered series preserved per bucket."""
     from datetime import UTC, datetime
 
-    class _FakeRecord(dict):
-        pass
-
     day1 = datetime(2024, 1, 15, 0, 0, 0, tzinfo=UTC)
     fake_rows = [
-        _FakeRecord(
+        Record(
             {
                 "bucket": day1,
                 "messages_ingested": 100,
