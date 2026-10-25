@@ -133,7 +133,7 @@ class TestButlerTomlSteamConfig:
 
         cfg = load_config(_GENERAL_ROSTER_DIR)
         assert "steam" not in cfg.modules
-        assert {"general", "calendar", "contacts", "memory", "self_healing"} == set(cfg.modules)
+        assert {"general", "calendar", "contacts", "memory"} == set(cfg.modules)
 
     def test_lifestyle_steam_config_is_empty_dict(self) -> None:
         """Steam module config in lifestyle butler.toml is an empty dict (no required fields)."""

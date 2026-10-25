@@ -1049,13 +1049,13 @@ class TestConcurrencyModel:
 
 
 # ---------------------------------------------------------------------------
-# AC 6 (bu-i0geq): SelfHealingModule.report_error → Switchboard route() →
+# AC 6 (bu-i0geq): Core QaRelay.report_error → Switchboard route() →
 #                   QaModule.report_finding end-to-end relay integration
 # ---------------------------------------------------------------------------
 #
-# Scenario: a butler's SelfHealingModule has been wired with a real
+# Scenario: a butler's Core QaRelay has been wired with a real
 # switchboard_client (as daemon._wire_module_runtime() now does). When
-# report_error is called, the finding travels from SelfHealingModule through
+# report_error is called, the finding travels from Core QaRelay through
 # Switchboard's route() tool to QaModule's report_finding handler, where it
 # is enqueued in the ButlerReportsSource buffer.
 
@@ -1064,15 +1064,15 @@ class TestSelfHealingToQaRelayIntegration:
     """Integration: report_error → Switchboard route() → QA report_finding (AC 6)."""
 
     async def test_report_error_relays_finding_to_qa_module(self):
-        """Full relay: SelfHealingModule.report_error calls route(), which lands in QaModule.
+        """Full relay: Core QaRelay.report_error calls route(), which lands in QaModule.
 
         Simulates the Switchboard forwarding mechanism: when the Switchboard
         receives a route() call for target_butler="qa" and tool_name="report_finding",
         it invokes QaModule's _handle_report_finding() directly.
         """
+        from butlers.core.qa.relay import QaRelay
         from butlers.core.qa.sources.butler_reports import ButlerReportsSource
         from butlers.modules.qa import QaModule
-        from butlers.modules.self_healing import SelfHealingModule
 
         # Set up QA module with a real ButlerReportsSource buffer
         qa_mod = QaModule()
@@ -1097,11 +1097,8 @@ class TestSelfHealingToQaRelayIntegration:
         client = MagicMock()
         client.call_tool = mock_call_tool
 
-        # Wire the SelfHealingModule with the mock client (as daemon does after bu-i0geq fix)
-        sh_mod = SelfHealingModule()
-        # Identity flows through register_tools per spec; use it here too.
-        await sh_mod.register_tools(MagicMock(), None, None, butler_name="general")
-        sh_mod.wire_runtime(MagicMock(), "/repo", switchboard_client=client)
+        # Bind the core relay to the current Switchboard transport
+        sh_mod = QaRelay("general", None, lambda: client)
         sh_mod._pool = None  # No DB required for this relay path
 
         # Invoke report_error — triggers the full relay chain
@@ -1136,7 +1133,7 @@ class TestSelfHealingToQaRelayIntegration:
         Confirms graceful degradation: missing QA registration → explicit unconfirmed
         reception, never a local dispatcher.
         """
-        from butlers.modules.self_healing import SelfHealingModule
+        from butlers.core.qa.relay import QaRelay
 
         async def mock_call_tool(tool_name: str, args: dict | None = None) -> object:
             if tool_name == "list_butlers":
@@ -1147,8 +1144,7 @@ class TestSelfHealingToQaRelayIntegration:
         client = MagicMock()
         client.call_tool = mock_call_tool
 
-        sh_mod = SelfHealingModule()
-        sh_mod.wire_runtime(MagicMock(), "/repo", switchboard_client=client)
+        sh_mod = QaRelay("general", None, lambda: client)
         sh_mod._pool = None
 
         result = await sh_mod._handle_report_error(

@@ -16,7 +16,6 @@ Issue: bu-ih0f.4
 from __future__ import annotations
 
 import json
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -29,6 +28,7 @@ from butlers.modules.spotify import (
     _RECOMMENDATIONS_UNAVAILABLE_ERROR,
     SpotifyModule,
 )
+from butlers.testing.fake_pool import AsyncCtx
 
 _THIS_FILE = Path(__file__).resolve()
 
@@ -138,19 +138,11 @@ def _make_credential_store(
         value = values.get(str(args[0]))
         return None if value is None else {"value": value}
 
-    @asynccontextmanager
-    async def _transaction():
-        yield
-
-    @asynccontextmanager
-    async def _acquire():
-        yield conn
-
     conn.fetchrow = AsyncMock(side_effect=_fetchrow)
     conn.execute = AsyncMock(return_value="INSERT 0 1")
-    conn.transaction = MagicMock(side_effect=_transaction)
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     pool = MagicMock()
-    pool.acquire = _acquire
+    pool.acquire = lambda: AsyncCtx(conn)
     store.pool = pool
 
     async def _resolve(key: str) -> str | None:

@@ -165,6 +165,8 @@ async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
             {
                 "route.execute",
                 "cancel_session",
+                "report_error",
+                "get_healing_status",
                 "state_get",
                 "state_set",
                 "state_delete",
@@ -175,7 +177,7 @@ async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
         (
             "general",
             ("switchboard_routing",),
-            {"route.execute", "cancel_session"},
+            {"route.execute", "cancel_session", "report_error", "get_healing_status"},
             {"ingest", "connector.heartbeat", "route_to_butler"},
         ),
         (
@@ -184,6 +186,8 @@ async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
             {
                 "route.execute",
                 "cancel_session",
+                "report_error",
+                "get_healing_status",
                 "answer_question",
                 "cannot_answer",
                 "connector.heartbeat",
@@ -196,7 +200,7 @@ async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
         (
             "switchboard",
             ("delegation",),
-            {"route.execute", "cancel_session"},
+            {"route.execute", "cancel_session", "report_error", "get_healing_status"},
             {"delegate_ask", "delegate_receive", "delegate_answer", "delegate_wake"},
         ),
     ),

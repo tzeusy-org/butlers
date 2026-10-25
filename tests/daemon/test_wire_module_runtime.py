@@ -1,8 +1,7 @@
 """Tests for ButlerDaemon._wire_module_runtime() — AC coverage for bu-i0geq.
 
 Covers:
-- SelfHealingModule._switchboard_client is not None after startup when
-  switchboard is configured (AC 1)
+- Core QA relay resolves the current daemon Switchboard client (AC 1)
 - QaModule._switchboard_client is not None after startup when switchboard
   is configured (AC 2)
 - _try_qa_relay() reaches Switchboard route() call (AC 3)
@@ -383,12 +382,11 @@ async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> No
     # Daemon must pass self.config.name ("test-butler" from the toml) as butler_name
     assert stub_mod.received_butler_name == "test-butler"
     # Whole-roster production discovery/selection/lifecycle. External provider
-    # hooks are synthetic; SelfHealingModule hooks and registration execute.
+    # hooks are synthetic; core QA registration executes.
     from fastmcp import FastMCP
 
     from butlers.config import load_config
     from butlers.modules.registry import default_registry
-    from butlers.modules.self_healing import SelfHealingModule
 
     class RegisteredBoundary(Exception):
         pass
@@ -398,7 +396,7 @@ async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> No
     assert len(rosters) == 13
     for toml_path in rosters:
         config = load_config(toml_path.parent)
-        assert "self_healing" in config.modules
+        assert "self_healing" not in config.modules
         registry = default_registry()
         discovered = registry.load_from_config(config.modules)
         started, registered = [], []
@@ -411,7 +409,6 @@ async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> No
             stack.enter_context(patch("butlers.cli_auth.persistence.restore_tokens", AsyncMock()))
             stack.enter_context(patch("butlers.lifecycle._ensure_owner_entity", AsyncMock()))
             stack.enter_context(patch.object(ButlerDaemon, "_connect_switchboard", AsyncMock()))
-            stack.enter_context(patch.object(ButlerDaemon, "_register_core_tools"))
             # Provider tool bodies are synthetic; their egress approval config is not this assertion seam.
             stack.enter_context(
                 patch.object(ButlerDaemon, "_apply_approval_gates", AsyncMock(return_value={}))
@@ -429,20 +426,15 @@ async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> No
                     self, *args, _original=original_start, started=started, **kwargs
                 ):
                     started.append(self.name)
-                    if isinstance(self, SelfHealingModule):
-                        await _original(self, *args, **kwargs)
 
                 async def registration(
                     self, *args, _original=original_register, registered=registered, **kwargs
                 ):
                     registered.append(self.name)
-                    if isinstance(self, SelfHealingModule):
-                        await _original(self, *args, **kwargs)
 
                 stack.enter_context(patch.object(type(module), "on_startup", start_hook))
                 stack.enter_context(patch.object(type(module), "register_tools", registration))
-                if not isinstance(module, SelfHealingModule):
-                    stack.enter_context(patch.object(type(module), "on_shutdown", AsyncMock()))
+                stack.enter_context(patch.object(type(module), "on_shutdown", AsyncMock()))
             daemon = ButlerDaemon(tmp_path / config.name, registry=registry)
             daemon.config = config
             with pytest.raises(RegisteredBoundary):
@@ -450,13 +442,12 @@ async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> No
             expected = [m.name for m in discovered if m.name in config.modules]
             assert started == expected, (config.name, daemon._module_statuses)
             assert registered == expected, (config.name, daemon._module_statuses)
-            assert {t.name for t in (await daemon.mcp.list_tools())} == {
+            assert {t.name for t in (await daemon.mcp.list_tools())} >= {
                 "report_error",
                 "get_healing_status",
             }
-            healing = next(m for m in daemon._modules if m.name == "self_healing")
-            assert healing._butler_name == config.name
-            assert healing._pool is patches["mock_pool"]
+            assert daemon._tool_module_map["report_error"] == "core"
+            assert daemon.db.pool is patches["mock_pool"]
 
 
 # ---------------------------------------------------------------------------
@@ -603,14 +594,13 @@ async def test_wire_runtime_failure_is_non_fatal(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tests: SelfHealingModule wiring (AC 1)
+# Tests: Core QA relay wiring (AC 1)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "module_import, module_key",
     [
-        ("butlers.modules.self_healing:SelfHealingModule", "self_healing"),  # AC 1
         ("butlers.modules.qa:QaModule", "qa"),  # AC 2
     ],
 )
@@ -665,11 +655,11 @@ async def test_concrete_module_switchboard_client_wired_on_startup(
 async def test_try_qa_relay_reaches_switchboard_route() -> None:
     """_try_qa_relay() reaches Switchboard route() when client is wired (AC 3).
 
-    This test exercises the SelfHealingModule relay path end-to-end, confirming
+    This test exercises the core QA relay path end-to-end, confirming
     that with a real switchboard_client the route() tool is actually invoked
     (not short-circuited by an early None return).
     """
-    from butlers.modules.self_healing import SelfHealingModule
+    from butlers.core.qa.relay import QaRelay
 
     route_calls: list[dict] = []
 
@@ -684,8 +674,7 @@ async def test_try_qa_relay_reaches_switchboard_route() -> None:
     client = MagicMock()
     client.call_tool = mock_call_tool
 
-    mod = SelfHealingModule()
-    mod.wire_runtime(MagicMock(), "/repo", switchboard_client=client)
+    mod = QaRelay("test-butler", None, lambda: client)
     mod._pool = None  # No DB in this unit test
 
     result = await mod._handle_report_error(

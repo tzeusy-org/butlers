@@ -43,6 +43,18 @@ from regaining authority after re-enable. The fixed domain-role function derives
 the witness from the actual same-transaction row and current creation stamp;
 callers cannot supply a final flag or definition digest.
 
+## Migrated storage and historical triggers
+
+The scheduler requires the current migrated schema. It does not probe
+`information_schema` or hide missing task/deadline/event-chain/deferred storage
+behind legacy projections. Storage faults remain visible. Existing optimistic
+claims, NULL-safe CAS, continuity, policy decisions, deferred retry/coalescing
+and expiry keep their current semantics.
+
+`calendar_event_end` is no longer writable or detected. Create and explicit
+trigger updates refuse before database access; historical rows remain
+readable/listable/deletable and inert. No data rewrite, remap or replay occurs.
+
 ## TOML-to-DB Sync
 
 On startup, `sync_schedules()` reconciles `[[butler.schedule]]` entries from the butler's TOML config with the `scheduled_tasks` table:
