@@ -815,7 +815,7 @@ async def test_core_only_migration_replay_rollback_and_hostile_catalogue_refusal
 ):
     from urllib.parse import urlparse
 
-    from sqlalchemy.exc import DBAPIError
+    from psycopg2.errors import RaiseException
 
     from alembic import command
     from butlers.migrations import _build_alembic_config
@@ -953,9 +953,11 @@ async def test_core_only_migration_replay_rollback_and_hostile_catalogue_refusal
         await admin.execute(
             f'ALTER FUNCTION dashboard_attention.evaluate(jsonb) OWNER TO "{migration_role}"'
         )
-        with pytest.raises(DBAPIError, match="untrusted attention"):
+        with pytest.raises(RaiseException, match="untrusted attention function catalog") as refused:
             await asyncio.to_thread(
                 _bootstrap_migration_prerequisites, bootstrap_url, migration_role
             )
+        assert refused.value.pgcode == "P0001"
+        assert refused.value.diag.message_primary == "untrusted attention function catalog"
     finally:
         await admin.close()

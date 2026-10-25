@@ -186,10 +186,16 @@ async def test_ordinary_dump_privileged_restore_and_catalogue_loss_refuse(
         assert claim.nonce not in str(after) and env.session.token not in str(after)
         script = (ROOT / "scripts/pg_restore.sh").read_text()
         match = re.search(
-            r"(\nSELECT CASE WHEN to_regnamespace\('dashboard_attention'.*?END)\"\)", script, re.S
+            r"(CREATE FUNCTION pg_temp\.owner_attention_intact.*?"
+            r"\\\$attention_catalog\\\$;)\n"
+            r"(SELECT pg_temp\.owner_attention_intact\(\$ATTENTION_EXPECTED\))",
+            script,
+            re.S,
         )
         assert match is not None
-        predicate = match.group(1).replace("$ATTENTION_EXPECTED", "true")
+        await connection.execute(match.group(1).replace("\\$", "$"))
+        predicate = match.group(2).replace("$ATTENTION_EXPECTED", "true")
+        legacy_predicate = match.group(2).replace("$ATTENTION_EXPECTED", "false")
         start = script.index("DO \\$attention_stage\\$")
         end = script.index("END \\$attention_stage\\$;", start) + len("END \\$attention_stage\\$;")
         stage = script[start:end].replace("\\$", "$").replace("$ATTENTION_EXPECTED", "true")
@@ -202,8 +208,8 @@ async def test_ordinary_dump_privileged_restore_and_catalogue_loss_refuse(
         ):
             stage = stage.replace("$" + copy, "1").replace("$" + row, str(len(before[table])))
         assert await connection.fetchval(predicate) is True
-        # Missing rows, column grants, hostile definer ownership and a missing
-        # modern schema each refuse the ACTUAL script predicate/stage.
+        # Missing rows/configuration, column grants, hostile definer ownership
+        # and a missing modern schema refuse the ACTUAL script predicate/stage.
         for mutation in (
             "DELETE FROM dashboard_attention.candidate_causes",
             "DELETE FROM dashboard_attention.final_claims",
@@ -211,6 +217,7 @@ async def test_ordinary_dump_privileged_restore_and_catalogue_loss_refuse(
             "ALTER TABLE dashboard_attention.final_claims RENAME COLUMN definition_digest TO wrong_digest",
             f'GRANT SELECT(nonce_digest) ON dashboard_attention.tickets TO "{source.username}"',
             f'ALTER FUNCTION dashboard_attention.consume(text,text,text,text,text,text,uuid) OWNER TO "{source.username}"',
+            "DROP TABLE dashboard_attention.bootstrap_configuration",
             "DROP SCHEMA dashboard_attention CASCADE",
         ):
             control = connection.transaction()
@@ -234,10 +241,7 @@ async def test_ordinary_dump_privileged_restore_and_catalogue_loss_refuse(
                         "UPDATE general.alembic_version SET version_num='core_277' WHERE version_num LIKE 'core_%'"
                     )
                     await connection.execute(stage.replace("IF true THEN", "IF false THEN"))
-                    assert (
-                        await connection.fetchval(predicate.replace("NOT true", "NOT false"))
-                        is True
-                    )
+                    assert await connection.fetchval(legacy_predicate) is True
             finally:
                 await control.rollback()
     finally:

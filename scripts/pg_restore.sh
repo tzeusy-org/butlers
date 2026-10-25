@@ -422,7 +422,17 @@ BEGIN
   END LOOP;
  END IF;
 END \$attention_stage\$;
-SELECT CASE WHEN to_regnamespace('dashboard_attention') IS NULL THEN NOT $ATTENTION_EXPECTED ELSE
+CREATE FUNCTION pg_temp.owner_attention_intact(expected boolean)
+RETURNS boolean LANGUAGE plpgsql SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS \$attention_catalog\$
+BEGIN
+ IF to_regnamespace('dashboard_attention') IS NULL THEN
+  RETURN NOT expected;
+ END IF;
+ IF to_regclass('dashboard_attention.bootstrap_configuration') IS NULL THEN
+  RETURN false;
+ END IF;
+ RETURN
  EXISTS(SELECT FROM pg_namespace n JOIN pg_roles boot ON boot.oid=n.nspowner
   WHERE n.nspname='dashboard_attention' AND boot.rolsuper
    AND obj_description(n.oid,'pg_namespace')='butlers:dashboard-attention:core_278'
@@ -457,7 +467,10 @@ SELECT CASE WHEN to_regnamespace('dashboard_attention') IS NULL THEN NOT $ATTENT
      AND NOT EXISTS(SELECT FROM pg_attribute att CROSS JOIN LATERAL aclexplode(att.attacl) a
       WHERE att.attrelid=c.oid AND att.attnum>0 AND a.grantee<>own.oid))
    AND NOT EXISTS(SELECT FROM pg_proc p CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a
-    WHERE p.pronamespace=n.oid AND a.grantee=0)) END")
+    WHERE p.pronamespace=n.oid AND a.grantee=0));
+END
+\$attention_catalog\$;
+SELECT pg_temp.owner_attention_intact($ATTENTION_EXPECTED)")
 if [[ "$ATTENTION_INTACT" != "t" ]]; then
  echo "[restore] SECURITY FAILURE: owner attention interface is incomplete; do NOT promote." >&2
  exit 1
