@@ -120,8 +120,9 @@ existing module (for example `src/butlers/modules/pipeline.py`) rather than a te
 - `default_registry()` imports and registers classes without constructors. All implementations
   expose a stable class-level `name`; registering a property or an empty/non-string name fails.
   `load_from_config()` is the daemon admission boundary. `enabled` cannot admit an undeclared
-  module. All current rosters declare the RFC 0015 `self_healing` relay; it exposes error reception
-  and read-only history, with no local investigation cleanup.
+  module. QA error reception and read-only attempt history are unconditional core tools,
+  `report_error` and `get_healing_status`, not a `self_healing` module or skill. They do not
+  install local investigation cleanup, recovery or publication.
 - Home Assistant keeps its mandatory `contacts` and `approvals` dependencies. Health declares
   both even though its Home Assistant tools remain read-only.
 - `credentials_env` describes daemon-side requirements. Module declarations do not add secrets

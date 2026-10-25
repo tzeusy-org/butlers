@@ -45,7 +45,7 @@ sits in a 320 px left rail; selecting a case opens the full dossier body.
   isolated investigation agents, and monitor their outcomes via watchdog tasks.
 - **PR pipeline:** Produce anonymized PRs with `self-healing` and `automated`
   labels. Humans remain in the merge seat.
-- **Relay reception:** Accept findings from butler self-healing modules via
+- **Relay reception:** Accept findings from every butler's core QA relay via
   Switchboard `route()` → `report_finding` tool. This is direct
   butler-to-staffer tool routing, not user-message classification.
 - **Status reporting:** Expose `get_qa_status` and `force_patrol` MCP tools.

@@ -682,28 +682,19 @@ async def sync_schedules(
     firing in the next week falls inside the owner quiet window (the lint never rejects,
     and uncertain cases do not warn).
     """
-    # Determine whether the DB schema includes temporal intelligence columns.
-    _has_task_type = await _has_column(pool, "scheduled_tasks", "task_type")
+    # The current migrated schema is required.
 
     toml_names = {spec.name for spec in schedules}
 
-    # When the schema includes temporal intelligence columns, fetch them so the
+    # Fetch temporal columns so the
     # needs_update check can detect changes to deadline-specific fields.
-    _temporal_select = (
-        ", task_type, target_date, lead_time_days, alert_thresholds" if _has_task_type else ""
-    )
+    _temporal_select = ", task_type, target_date, lead_time_days, alert_thresholds"
 
-    # Detect whether the max_token_budget column exists (added in core_050).
-    _has_budget = await _has_column(pool, "scheduled_tasks", "max_token_budget")
-    _budget_select = ", max_token_budget" if _has_budget else ""
+    _budget_select = ", max_token_budget"
 
-    # Detect whether the continuity column exists (added in core_229).
-    _has_continuity = await _has_column(pool, "scheduled_tasks", "continuity")
-    _continuity_select = ", continuity" if _has_continuity else ""
+    _continuity_select = ", continuity"
 
-    # Detect whether the per-row timezone column exists (added in core_112).
-    _has_timezone = await _has_column(pool, "scheduled_tasks", "timezone")
-    _trailing_select = _continuity_select + (", timezone" if _has_timezone else "")
+    _trailing_select = _continuity_select + (", timezone")
 
     # Fetch existing tasks whose names match any TOML schedule (regardless of source).
     # A runtime-created task (source='db') may share a name with a TOML schedule;
@@ -798,19 +789,19 @@ async def sync_schedules(
                 or existing_complexity != complexity
                 or not existing["enabled"]
             )
-            # Also detect changes to max_token_budget when schema supports it.
-            if not needs_update and _has_budget:
+            # Also detect changes to max_token_budget in the migrated schema.
+            if not needs_update:
                 needs_update = existing.get("max_token_budget") != max_token_budget
-            # Also detect changes to continuity when schema supports it.
-            if not needs_update and _has_continuity:
+            # Also detect changes to continuity in the migrated schema.
+            if not needs_update:
                 needs_update = bool(existing.get("continuity")) != continuity
-            # Also detect a changed per-schedule timezone when the column exists.
-            if not needs_update and _has_timezone:
+            # Also detect a changed per-schedule timezone in the migrated schema.
+            if not needs_update:
                 needs_update = (existing.get("timezone") or "UTC") != stored_timezone
-            # Also detect changes to deadline-specific fields when schema supports them.
+            # Also detect changes to deadline-specific fields in the migrated schema.
             # Restrict to deadline tasks to avoid spurious updates on cron tasks that
             # may carry stale deadline-column values from a prior task_type migration.
-            if not needs_update and _has_task_type and task_type == "deadline":
+            if not needs_update and task_type == "deadline":
                 existing_alert_thresholds = existing.get("alert_thresholds")
                 if isinstance(existing_alert_thresholds, str):
                     existing_alert_thresholds = json.loads(existing_alert_thresholds)
@@ -820,8 +811,8 @@ async def sync_schedules(
                     or existing_alert_thresholds != alert_thresholds
                 )
             if needs_update:
-                _budget_set = ", max_token_budget = $13" if _has_budget else ""
-                if _has_task_type and task_type == "deadline":
+                _budget_set = ", max_token_budget = $13"
+                if task_type == "deadline":
                     base_args = [
                         existing["id"],
                         cron,
@@ -836,8 +827,7 @@ async def sync_schedules(
                         lead_time_days,
                         alert_thresholds,
                     ]
-                    if _has_budget:
-                        base_args.append(max_token_budget)
+                    base_args.append(max_token_budget)
                     await pool.execute(
                         f"""
                         UPDATE scheduled_tasks
@@ -859,14 +849,13 @@ async def sync_schedules(
                         """,
                         *base_args,
                     )
-                    if _has_continuity:
-                        await pool.execute(
-                            "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
-                            existing["id"],
-                            continuity,
-                        )
+                    await pool.execute(
+                        "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
+                        existing["id"],
+                        continuity,
+                    )
                 else:
-                    _budget_set_cron = ", max_token_budget = $9" if _has_budget else ""
+                    _budget_set_cron = ", max_token_budget = $9"
                     base_args = [
                         existing["id"],
                         cron,
@@ -877,8 +866,7 @@ async def sync_schedules(
                         complexity,
                         next_run_at,
                     ]
-                    if _has_budget:
-                        base_args.append(max_token_budget)
+                    base_args.append(max_token_budget)
                     await pool.execute(
                         f"""
                         UPDATE scheduled_tasks
@@ -896,24 +884,22 @@ async def sync_schedules(
                         """,
                         *base_args,
                     )
-                    if _has_continuity:
-                        await pool.execute(
-                            "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
-                            existing["id"],
-                            continuity,
-                        )
-                if _has_timezone:
                     await pool.execute(
-                        "UPDATE scheduled_tasks SET timezone = $2 WHERE id = $1",
+                        "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
                         existing["id"],
-                        stored_timezone,
+                        continuity,
                     )
+                await pool.execute(
+                    "UPDATE scheduled_tasks SET timezone = $2 WHERE id = $1",
+                    existing["id"],
+                    stored_timezone,
+                )
                 logger.info("Updated TOML schedule: %s", name)
         else:
             # Insert new TOML task
-            _budget_col = ", max_token_budget" if _has_budget else ""
-            if _has_task_type and task_type == "deadline":
-                _budget_val = ", $13" if _has_budget else ""
+            _budget_col = ", max_token_budget"
+            if task_type == "deadline":
+                _budget_val = ", $13"
                 base_args = [
                     name,
                     cron,
@@ -928,8 +914,7 @@ async def sync_schedules(
                     lead_time_days,
                     alert_thresholds,
                 ]
-                if _has_budget:
-                    base_args.append(max_token_budget)
+                base_args.append(max_token_budget)
                 new_id = await pool.fetchval(
                     f"""
                     INSERT INTO scheduled_tasks (
@@ -954,14 +939,13 @@ async def sync_schedules(
                     """,
                     *base_args,
                 )
-                if _has_continuity:
-                    await pool.execute(
-                        "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
-                        new_id,
-                        continuity,
-                    )
+                await pool.execute(
+                    "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
+                    new_id,
+                    continuity,
+                )
             else:
-                _budget_val_cron = ", $9" if _has_budget else ""
+                _budget_val_cron = ", $9"
                 base_args = [
                     name,
                     cron,
@@ -972,8 +956,7 @@ async def sync_schedules(
                     complexity,
                     next_run_at,
                 ]
-                if _has_budget:
-                    base_args.append(max_token_budget)
+                base_args.append(max_token_budget)
                 new_id = await pool.fetchval(
                     f"""
                     INSERT INTO scheduled_tasks (
@@ -993,18 +976,16 @@ async def sync_schedules(
                     """,
                     *base_args,
                 )
-                if _has_continuity:
-                    await pool.execute(
-                        "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
-                        new_id,
-                        continuity,
-                    )
-            if _has_timezone:
                 await pool.execute(
-                    "UPDATE scheduled_tasks SET timezone = $2 WHERE id = $1",
+                    "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
                     new_id,
-                    stored_timezone,
+                    continuity,
                 )
+            await pool.execute(
+                "UPDATE scheduled_tasks SET timezone = $2 WHERE id = $1",
+                new_id,
+                stored_timezone,
+            )
             logger.info("Inserted TOML schedule: %s", name)
 
     # Disable TOML tasks no longer present in config
@@ -1129,69 +1110,6 @@ async def ensure_module_default_schedule(
             )
 
 
-async def _has_column(pool: asyncpg.Pool, table: str, column: str) -> bool:
-    """Return True if *column* exists in *table* within the pool's current schema.
-
-    Filtering by ``current_schema()`` is critical: butler pools share the
-    Postgres database and only differ by their ``search_path``.  Without the
-    schema filter, a check against (e.g.) ``chronicler.scheduled_tasks``
-    spuriously returns True because another butler's schema has the column,
-    and the subsequent query then fails with "column does not exist".
-    """
-    result = await pool.fetchval(
-        """
-        SELECT EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema = current_schema()
-              AND table_name = $1
-              AND column_name = $2
-        )
-        """,
-        table,
-        column,
-    )
-    return bool(result)
-
-
-async def _has_table(pool: asyncpg.Pool, table: str) -> bool:
-    """Return True if *table* exists in the pool's current schema."""
-    result = await pool.fetchval(
-        """
-        SELECT EXISTS (
-            SELECT 1 FROM information_schema.tables
-            WHERE table_schema = current_schema()
-              AND table_name = $1
-        )
-        """,
-        table,
-    )
-    return bool(result)
-
-
-async def _has_columns(pool: asyncpg.Pool, table: str, columns: set[str]) -> bool:
-    """Return True if *table* has every named column in the pool's current schema."""
-    found = await _existing_columns(pool, table, columns)
-    return columns.issubset(found)
-
-
-async def _existing_columns(pool: asyncpg.Pool, table: str, columns: set[str]) -> set[str]:
-    """Return the requested columns that exist in *table* within the current schema."""
-    if not columns:
-        return set()
-    rows = await pool.fetch(
-        """
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_schema = current_schema()
-          AND table_name = $1
-          AND column_name = ANY($2::text[])
-        """,
-        table,
-        sorted(columns),
-    )
-    return {row["column_name"] for row in rows}
-
-
 async def _defer_cron_for_allowance(
     pool: asyncpg.Pool,
     *,
@@ -1241,7 +1159,6 @@ async def _tick_deadline_pass(
     dispatch_fn,
     *,
     now: datetime,
-    has_task_type_col: bool | None = None,
     stagger_key: str | None = None,
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
     metrics: ButlerMetrics | None = None,
@@ -1257,8 +1174,6 @@ async def _tick_deadline_pass(
          dispatch a prompt if a threshold fires, record it.
 
     Args:
-        has_task_type_col: Optional pre-computed result from _has_column() check.
-            Pass this from tick() to avoid redundant schema round-trips.
         admission_refusal: Optional fresh policy check awaited immediately
             before each dispatch; a refusal stops the pass with the threshold
             left unfired.
@@ -1274,25 +1189,6 @@ async def _tick_deadline_pass(
         find_unfired_threshold,
         is_deadline_blocked,
     )
-
-    # Skip the deadline pass if the schema hasn't been fully migrated yet.
-    # Long-lived databases can briefly hold a partial temporal schema after a
-    # failed or interrupted migration; tick() must keep cron dispatch alive.
-    required_deadline_columns = {
-        "task_type",
-        "target_date",
-        "lead_time_days",
-        "alert_thresholds",
-        "deadline_status",
-        "fired_thresholds",
-        "depends_on",
-    }
-    if has_task_type_col is None:
-        has_task_type_col = await _has_column(pool, "scheduled_tasks", "task_type")
-    if not has_task_type_col or not await _has_columns(
-        pool, "scheduled_tasks", required_deadline_columns
-    ):
-        return 0, 0
 
     deadline_rows = await pool.fetch(
         """
@@ -1523,7 +1419,6 @@ async def _tick_event_chain_pass(
     """Detect event chain triggers and materialize actions.
 
     Handles:
-    - calendar_event_end: calendar_projection events that ended before now
     - deadline_passed: deadline tasks that transitioned to 'expired' or 'completed'
     - deadline_threshold: deadline tasks where a matching severity threshold has fired
 
@@ -1535,235 +1430,154 @@ async def _tick_event_chain_pass(
 
     chains_fired = 0
 
-    # event_chains is a prerequisite for every trigger in this pass.  Bail out
-    # early so we avoid unnecessary schema probes for calendar_projection and
-    # scheduled_tasks when the core table is missing.
-    has_event_chains_table = await _has_table(pool, "event_chains")
-    if not has_event_chains_table:
-        return 0
-
-    # --- Trigger: calendar_event_end ---
-    # Only evaluated when the optional calendar_projection table exists with
-    # the legacy projection columns this pass reads.
-    calendar_projection_ready = await _has_columns(
-        pool,
-        "calendar_projection",
-        {"event_id", "butler_name", "end_at", "chain_triggered"},
-    )
-
-    if calendar_projection_ready:
-        # Find calendar events that ended before now and haven't triggered chains yet
-        ended_events = await pool.fetch(
-            """
-            SELECT event_id, butler_name
-            FROM calendar_projection
-            WHERE end_at <= $1 AND chain_triggered = false
-            """,
-            now,
-        )
-
-        for event_row in ended_events:
-            event_id = event_row["event_id"]
-            butler_name = event_row["butler_name"]
-
-            chains = await pool.fetch(
-                """
-                SELECT id, name, actions
-                FROM event_chains
-                WHERE trigger_type = 'calendar_event_end'
-                  AND trigger_reference = $1
-                  AND status = 'active'
-                  AND butler_name = $2
-                """,
-                event_id,
-                butler_name,
-            )
-
-            for chain_row in chains:
-                chain_id = chain_row["id"]
-                chain_name = chain_row["name"]
-                actions = chain_row["actions"]
-                if isinstance(actions, str):
-                    actions = _json.loads(actions)
-
-                if not should_fire_chain(chain_depth=0, chain_name=chain_name):
-                    continue
-
-                await _fire_chain(
-                    pool,
-                    chain_id=chain_id,
-                    chain_name=chain_name,
-                    actions=actions,
-                    now=now,
-                    trigger_label=f"calendar event {event_id!r}",
-                )
-                chains_fired += 1
-
-            # Mark calendar event as chain_triggered regardless of whether chains fired
-            await pool.execute(
-                """
-                UPDATE calendar_projection SET chain_triggered = true
-                WHERE event_id = $1 AND butler_name = $2
-                """,
-                event_id,
-                butler_name,
-            )
-
     # --- Trigger: deadline_passed ---
     # Detect active chains whose referenced deadline has reached a terminal status
     # (expired or completed).  The deadline_status was already updated in Pass 1
     # (_tick_deadline_pass) earlier in the same tick() call.
     #
-    # Guard: skip if scheduled_tasks lacks deadline columns (pre-migration schema).
-    has_deadline_status_col = await _has_column(pool, "scheduled_tasks", "deadline_status")
-    if has_deadline_status_col:
-        # Fetch deadline chains without casting trigger_reference in SQL.
-        # trigger_reference is user-authored text, and malformed rows must not
-        # abort the entire scheduler tick.
-        deadline_passed_chains = await pool.fetch(
+    # Migrated schema is required; storage faults remain visible.
+    deadline_passed_chains = await pool.fetch(
+        """
+        SELECT id AS chain_id, name AS chain_name, actions, trigger_reference
+        FROM event_chains
+        WHERE trigger_type = 'deadline_passed'
+          AND status = 'active'
+        """
+    )
+
+    deadline_passed_refs: dict[Any, tuple[uuid.UUID, str, Any]] = {}
+    for row in deadline_passed_chains:
+        chain_id = row["chain_id"]
+        chain_name = row["chain_name"]
+        trigger_ref = row["trigger_reference"]
+        deadline_id = _parse_uuid_reference(trigger_ref)
+        if deadline_id is None:
+            if trigger_ref is not None:
+                logger.warning(
+                    "Event chain %r has invalid deadline_passed trigger_reference %r "
+                    "(expected '<deadline-uuid>'); skipping",
+                    chain_name,
+                    trigger_ref,
+                )
+            continue
+        deadline_passed_refs[chain_id] = (deadline_id, chain_name, row["actions"])
+
+    deadline_passed_statuses: dict[uuid.UUID, str] = {}
+    if deadline_passed_refs:
+        status_rows = await pool.fetch(
             """
-            SELECT id AS chain_id, name AS chain_name, actions, trigger_reference
-            FROM event_chains
-            WHERE trigger_type = 'deadline_passed'
-              AND status = 'active'
-            """
+            SELECT id, deadline_status
+            FROM scheduled_tasks
+            WHERE id = ANY($1::uuid[])
+              AND task_type = 'deadline'
+              AND deadline_status IN ('expired', 'completed')
+            """,
+            list({deadline_id for deadline_id, _, _ in deadline_passed_refs.values()}),
         )
+        deadline_passed_statuses = {row["id"]: row["deadline_status"] for row in status_rows}
 
-        deadline_passed_refs: dict[Any, tuple[uuid.UUID, str, Any]] = {}
-        for row in deadline_passed_chains:
-            chain_id = row["chain_id"]
-            chain_name = row["chain_name"]
-            trigger_ref = row["trigger_reference"]
-            deadline_id = _parse_uuid_reference(trigger_ref)
-            if deadline_id is None:
-                if trigger_ref is not None:
-                    logger.warning(
-                        "Event chain %r has invalid deadline_passed trigger_reference %r "
-                        "(expected '<deadline-uuid>'); skipping",
-                        chain_name,
-                        trigger_ref,
-                    )
-                continue
-            deadline_passed_refs[chain_id] = (deadline_id, chain_name, row["actions"])
+    for chain_id, (deadline_id, chain_name, actions) in deadline_passed_refs.items():
+        dl_status = deadline_passed_statuses.get(deadline_id)
+        if dl_status is None:
+            continue
+        if isinstance(actions, str):
+            actions = _json.loads(actions)
 
-        deadline_passed_statuses: dict[uuid.UUID, str] = {}
-        if deadline_passed_refs:
-            status_rows = await pool.fetch(
-                """
-                SELECT id, deadline_status
-                FROM scheduled_tasks
-                WHERE id = ANY($1::uuid[])
-                  AND task_type = 'deadline'
-                  AND deadline_status IN ('expired', 'completed')
-                """,
-                list({deadline_id for deadline_id, _, _ in deadline_passed_refs.values()}),
-            )
-            deadline_passed_statuses = {row["id"]: row["deadline_status"] for row in status_rows}
+        if not should_fire_chain(chain_depth=0, chain_name=chain_name):
+            continue
 
-        for chain_id, (deadline_id, chain_name, actions) in deadline_passed_refs.items():
-            dl_status = deadline_passed_statuses.get(deadline_id)
-            if dl_status is None:
-                continue
-            if isinstance(actions, str):
-                actions = _json.loads(actions)
-
-            if not should_fire_chain(chain_depth=0, chain_name=chain_name):
-                continue
-
-            await _fire_chain(
-                pool,
-                chain_id=chain_id,
-                chain_name=chain_name,
-                actions=actions,
-                now=now,
-                trigger_label=f"deadline_passed (status={dl_status!r})",
-            )
-            chains_fired += 1
-
-        # --- Trigger: deadline_threshold ---
-        # Detect active chains whose referenced deadline has fired the severity in
-        # trigger_reference.  Format: "<deadline-uuid>:<severity>" (e.g. "abc-123:critical").
-        # The chain fires when that severity appears in the deadline's fired_thresholds.
-        deadline_threshold_chains = await pool.fetch(
-            """
-            SELECT id AS chain_id, name AS chain_name, actions, trigger_reference
-            FROM event_chains
-            WHERE trigger_type = 'deadline_threshold'
-              AND status = 'active'
-            """
+        await _fire_chain(
+            pool,
+            chain_id=chain_id,
+            chain_name=chain_name,
+            actions=actions,
+            now=now,
+            trigger_label=f"deadline_passed (status={dl_status!r})",
         )
+        chains_fired += 1
 
-        deadline_threshold_refs: dict[Any, tuple[uuid.UUID, str, Any, str]] = {}
-        for row in deadline_threshold_chains:
-            chain_id = row["chain_id"]
-            chain_name = row["chain_name"]
-            trigger_ref = row["trigger_reference"]
-            parsed_ref = _parse_deadline_threshold_reference(trigger_ref)
-            if parsed_ref is None:
-                if trigger_ref is not None:
-                    logger.warning(
-                        "Event chain %r has invalid deadline_threshold trigger_reference %r "
-                        "(expected '<deadline-uuid>:<severity>'); skipping",
-                        chain_name,
-                        trigger_ref,
-                    )
-                continue
-            deadline_id, expected_severity = parsed_ref
-            deadline_threshold_refs[chain_id] = (
-                deadline_id,
-                expected_severity,
-                row["actions"],
-                chain_name,
-            )
+    # --- Trigger: deadline_threshold ---
+    # Detect active chains whose referenced deadline has fired the severity in
+    # trigger_reference.  Format: "<deadline-uuid>:<severity>" (e.g. "abc-123:critical").
+    # The chain fires when that severity appears in the deadline's fired_thresholds.
+    deadline_threshold_chains = await pool.fetch(
+        """
+        SELECT id AS chain_id, name AS chain_name, actions, trigger_reference
+        FROM event_chains
+        WHERE trigger_type = 'deadline_threshold'
+          AND status = 'active'
+        """
+    )
 
-        deadline_fired_thresholds: dict[uuid.UUID, Any] = {}
-        if deadline_threshold_refs:
-            threshold_rows = await pool.fetch(
-                """
-                SELECT id, fired_thresholds
-                FROM scheduled_tasks
-                WHERE id = ANY($1::uuid[])
-                  AND task_type = 'deadline'
-                  AND fired_thresholds IS NOT NULL
-                  AND fired_thresholds != '[]'::jsonb
-                """,
-                list({deadline_id for deadline_id, _, _, _ in deadline_threshold_refs.values()}),
-            )
-            deadline_fired_thresholds = {
-                row["id"]: row["fired_thresholds"] for row in threshold_rows
-            }
-
-        for chain_id, (
+    deadline_threshold_refs: dict[Any, tuple[uuid.UUID, str, Any, str]] = {}
+    for row in deadline_threshold_chains:
+        chain_id = row["chain_id"]
+        chain_name = row["chain_name"]
+        trigger_ref = row["trigger_reference"]
+        parsed_ref = _parse_deadline_threshold_reference(trigger_ref)
+        if parsed_ref is None:
+            if trigger_ref is not None:
+                logger.warning(
+                    "Event chain %r has invalid deadline_threshold trigger_reference %r "
+                    "(expected '<deadline-uuid>:<severity>'); skipping",
+                    chain_name,
+                    trigger_ref,
+                )
+            continue
+        deadline_id, expected_severity = parsed_ref
+        deadline_threshold_refs[chain_id] = (
             deadline_id,
             expected_severity,
-            actions,
+            row["actions"],
             chain_name,
-        ) in deadline_threshold_refs.items():
-            raw_fired = deadline_fired_thresholds.get(deadline_id)
-            if raw_fired is None:
-                continue
-            if isinstance(actions, str):
-                actions = _json.loads(actions)
+        )
 
-            fired_thresholds: list[dict] = (
-                raw_fired if isinstance(raw_fired, list) else _json.loads(raw_fired or "[]")
-            )
-            severity_fired = any(t.get("severity") == expected_severity for t in fired_thresholds)
-            if not severity_fired:
-                continue
+    deadline_fired_thresholds: dict[uuid.UUID, Any] = {}
+    if deadline_threshold_refs:
+        threshold_rows = await pool.fetch(
+            """
+            SELECT id, fired_thresholds
+            FROM scheduled_tasks
+            WHERE id = ANY($1::uuid[])
+              AND task_type = 'deadline'
+              AND fired_thresholds IS NOT NULL
+              AND fired_thresholds != '[]'::jsonb
+            """,
+            list({deadline_id for deadline_id, _, _, _ in deadline_threshold_refs.values()}),
+        )
+        deadline_fired_thresholds = {row["id"]: row["fired_thresholds"] for row in threshold_rows}
 
-            if not should_fire_chain(chain_depth=0, chain_name=chain_name):
-                continue
+    for chain_id, (
+        deadline_id,
+        expected_severity,
+        actions,
+        chain_name,
+    ) in deadline_threshold_refs.items():
+        raw_fired = deadline_fired_thresholds.get(deadline_id)
+        if raw_fired is None:
+            continue
+        if isinstance(actions, str):
+            actions = _json.loads(actions)
 
-            await _fire_chain(
-                pool,
-                chain_id=chain_id,
-                chain_name=chain_name,
-                actions=actions,
-                now=now,
-                trigger_label=f"deadline_threshold (severity={expected_severity!r})",
-            )
-            chains_fired += 1
+        fired_thresholds: list[dict] = (
+            raw_fired if isinstance(raw_fired, list) else _json.loads(raw_fired or "[]")
+        )
+        severity_fired = any(t.get("severity") == expected_severity for t in fired_thresholds)
+        if not severity_fired:
+            continue
+
+        if not should_fire_chain(chain_depth=0, chain_name=chain_name):
+            continue
+
+        await _fire_chain(
+            pool,
+            chain_id=chain_id,
+            chain_name=chain_name,
+            actions=actions,
+            now=now,
+            trigger_label=f"deadline_threshold (severity={expected_severity!r})",
+        )
+        chains_fired += 1
 
     return chains_fired
 
@@ -1899,19 +1713,6 @@ async def _tick_deferred_notification_pass(
     digest of N rows counts as N, not 1 — it reflects candidates consumed,
     not ``notify_fn`` calls made).
     """
-    # Check if deferred_notifications table exists
-    table_exists = await pool.fetchval(
-        """
-        SELECT EXISTS (
-            SELECT 1 FROM information_schema.tables
-            WHERE table_schema = current_schema()
-              AND table_name = 'deferred_notifications'
-        )
-        """
-    )
-    if not table_exists:
-        return 0
-
     import json as _json
 
     # Expire stale pending notifications (> 24h past deliver_at)
@@ -2286,22 +2087,6 @@ async def tick(
     with tracer.start_as_current_span("butler.tick") as span:
         now = datetime.now(UTC)
 
-        # Hoist schema probes: deadline and cron dispatch share these results.
-        scheduled_task_columns = await _existing_columns(
-            pool,
-            "scheduled_tasks",
-            {"task_type", "max_token_budget", "until_at", "continuity"},
-        )
-        _has_task_type_col = "task_type" in scheduled_task_columns
-        _has_budget_col = "max_token_budget" in scheduled_task_columns
-        _has_until_at_col = "until_at" in scheduled_task_columns
-        _has_continuity_col = "continuity" in scheduled_task_columns
-        if not _has_until_at_col:
-            logger.warning(
-                "scheduled_tasks.until_at column missing in current schema; "
-                "using NULL projection until core migrations are applied"
-            )
-
         # ------------------------------------------------------------------
         # Seasonal context — queried once per tick, injected into ALL dispatches
         # (both deadline pass and cron pass).  Must be queried before Pass 1 so
@@ -2359,7 +2144,6 @@ async def tick(
                 pool,
                 dispatch_fn,
                 now=now,
-                has_task_type_col=_has_task_type_col,
                 stagger_key=stagger_key,
                 max_stagger_seconds=max_stagger_seconds,
                 metrics=metrics,
@@ -2371,21 +2155,15 @@ async def tick(
             span.set_attribute("deadline_dispatched", deadline_dispatched)
 
         # --- Pass 2: Cron dispatch ---
-        # If task_type column doesn't exist (legacy schema), treat all rows as cron.
-        # If it does exist, skip deadline tasks (handled in pass 1).
+        # Deadline tasks were handled in pass 1; select only cron tasks.
         # When the butler is gated (paused/quarantined/stale), skip the cron
         # fetch entirely so no rows are dispatched and next_run_at is preserved.
         rows: list[asyncpg.Record] = []
         if dispatch_gate_reason is None:
-            if _has_task_type_col:
-                cron_filter = "AND COALESCE(task_type, 'cron') = 'cron'"
-            else:
-                cron_filter = ""
-            _budget_col_select = ", max_token_budget" if _has_budget_col else ""
-            _until_at_select = (
-                ", until_at" if _has_until_at_col else ", NULL::timestamptz AS until_at"
-            )
-            _continuity_col_select = ", continuity" if _has_continuity_col else ""
+            cron_filter = "AND COALESCE(task_type, 'cron') = 'cron'"
+            _budget_col_select = ", max_token_budget"
+            _until_at_select = ", until_at"
+            _continuity_col_select = ", continuity"
             rows = await pool.fetch(
                 f"""
                 SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args,
@@ -2414,12 +2192,12 @@ async def tick(
             job_name = row["job_name"]
             job_args = _jsonb_to_dict(row["job_args"], context=f"scheduled_tasks[{name}]")
             task_complexity = _parse_complexity_from_db_row(row)
-            max_token_budget: int | None = row["max_token_budget"] if _has_budget_col else None
-            continuity_enabled: bool = bool(row["continuity"]) if _has_continuity_col else False
+            max_token_budget: int | None = row["max_token_budget"]
+            continuity_enabled: bool = bool(row["continuity"])
 
             # Effective cron timezone: a non-UTC per-row value overrides; the
             # default 'UTC'/NULL sentinel follows the owner's general timezone.
-            # row.get keeps legacy/pre-core_112 rows (no column) tolerant.
+            # A NULL/UTC value retains the owner-timezone sentinel behavior.
             task_timezone = _effective_schedule_timezone(row.get("timezone"), default_timezone)
 
             until_at = row["until_at"]

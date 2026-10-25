@@ -1165,7 +1165,7 @@ async def test_tick_skips_disabled_continues_on_failure_and_timestamps(pool):
 
 @_asyncio_session
 async def test_tick_tolerates_legacy_schema_without_until_at(pool):
-    """tick() does not crash on long-lived scheduled_tasks tables missing until_at."""
+    """An incompatible migrated schema is visible; no legacy projection hides it."""
     from butlers.core.scheduler import tick
 
     async with pool.acquire() as conn:
@@ -1178,9 +1178,8 @@ async def test_tick_tolerates_legacy_schema_without_until_at(pool):
             )
             await conn.execute("ALTER TABLE scheduled_tasks DROP COLUMN IF EXISTS until_at")
 
-            count = await tick(conn, _Dispatch())
-
-            assert count == 0
+            with pytest.raises(asyncpg.UndefinedColumnError):
+                await tick(conn, _Dispatch())
         finally:
             await tx.rollback()
 

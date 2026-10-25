@@ -1,6 +1,6 @@
 import type { QaActiveDismissal, QaCaseSummary } from "@/api/types";
 import { Button } from "@/components/ui/button";
-import { useDismissQaIssue, useRemoveDismissal, useRetryHealingAttempt } from "@/hooks/use-qa";
+import { useDismissQaIssue, useRemoveDismissal } from "@/hooks/use-qa";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useTimezone } from "@/components/ui/timezone-context";
@@ -9,10 +9,7 @@ import { formatInTimeZone } from "date-fns-tz";
 import { StateTrack, type QaStateTrackStage } from "./StateTrack";
 import { formatQaDetectedTime, qaSeverityClassName } from "./utils";
 
-// 'failed' is terminal too: the retry gate the backend already accepted
-// (healing.py TERMINAL_STATUSES) is now offered at exactly this stage, and
-// dismiss (a false-positive-triage action) doesn't apply to a dead investigation
-// any more than it does to a landed or escalated one (bu-hmdqz.9).
+// Terminal cases retain their history and cannot be dismissed as false positives.
 const TERMINAL_STAGES: QaStateTrackStage[] = ["landed", "escalated", "failed"];
 
 interface CaseDossierHeaderProps {
@@ -42,12 +39,10 @@ export function CaseDossierHeader({
 }: CaseDossierHeaderProps) {
   const removeDismissal = useRemoveDismissal();
   const dismissIssue = useDismissQaIssue();
-  const retryAttempt = useRetryHealingAttempt();
   const ownerTimezone = useTimezone();
 
   const isTerminal = TERMINAL_STAGES.includes(stage);
   const canDismiss = fingerprint !== null && dismissal === null && !isTerminal;
-  const canRetry = isTerminal;
 
   return (
     <header className={cn("space-y-2", className)}>
@@ -81,34 +76,6 @@ export function CaseDossierHeader({
               }
             >
               dismiss
-            </Button>
-          ) : null}
-          {canRetry ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="xs"
-              className="h-6 rounded-full px-2 font-mono text-[10px] uppercase tracking-[0.10em]"
-              aria-label="Retry investigation"
-              disabled={retryAttempt.isPending}
-              onClick={() =>
-                retryAttempt.mutate(
-                  String(qaCase.id),
-                  {
-                    onSuccess: (data) =>
-                      data.dispatched
-                        ? toast.success("Investigation re-dispatched.")
-                        : toast.message("Retry queued.", {
-                            description:
-                              "Awaiting daemon dispatch. No investigation agent was spawned yet.",
-                          }),
-                    onError: (err) =>
-                      toast.error(`Retry failed: ${err instanceof Error ? err.message : "Unknown error"}`),
-                  },
-                )
-              }
-            >
-              retry
             </Button>
           ) : null}
           {dismissal ? (

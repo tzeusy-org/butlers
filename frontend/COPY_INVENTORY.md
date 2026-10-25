@@ -3560,15 +3560,10 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - remove dismissal
 - {} severity
 - Dismiss case
-- Retry investigation
 - Remove dismissal
-- Awaiting daemon dispatch. No investigation agent was spawned yet.
 - Case dismissed.
 - Dismiss failed: {}
 - Unknown error
-- Investigation re-dispatched.
-- Retry queued.
-- Retry failed: {}
 
 ## `frontend/src/components/qa/CaseList.tsx`
 

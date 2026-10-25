@@ -34,7 +34,6 @@ from butlers.api.deps import (
 )
 from butlers.api.deps import get_db as _healing_get_db
 from butlers.api.deps import get_db_optional as _spotify_get_db
-from butlers.api.routers.healing import _get_dispatch_fn
 from butlers.api.routers.spotify import (
     _clear_state_store as _spotify_clear_states,
 )
@@ -99,7 +98,6 @@ class TestHealingAPI:
         db = _mock_db_shared(pool)
         app = create_app(api_key="")
         app.dependency_overrides[_healing_get_db] = lambda: db
-        app.dependency_overrides[_get_dispatch_fn] = lambda: None
         return app, pool
 
     @pytest.mark.parametrize(

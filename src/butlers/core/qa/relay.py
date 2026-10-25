@@ -1,8 +1,7 @@
-"""Declared error relay to the centralized RFC 0015 QA pipeline.
+"""Daemon-owned QA error relay and read-only attempt history.
 
-Reception is volatile QA buffering, not investigation or publication. Reporting
-butlers never dispatch or recover investigations; shared QA utilities remain
-owned by the central pipeline.
+Reception is volatile central buffering, never local investigation or publication.
+The daemon supplies the identity, pool and late-bound Switchboard transport.
 """
 
 from __future__ import annotations
@@ -12,127 +11,31 @@ import json
 import logging
 import time
 import uuid
-from pathlib import Path
+from collections.abc import Callable
 from typing import Any
-
-from pydantic import BaseModel, ConfigDict
 
 from butlers.core.healing import get_active_attempt, get_recent_attempt, list_attempts
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
-from butlers.modules.base import Module, ToolMeta
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-#: TTL in seconds for caching the result of list_butlers() (QA availability).
 _QA_AVAILABILITY_CACHE_TTL = 60.0
-
-#: Name of the QA staffer as registered with the Switchboard.
 _QA_BUTLER_NAME = "qa"
-
-#: Tool name on the QA staffer that accepts relayed findings.
 _QA_REPORT_FINDING_TOOL = "report_finding"
 
 
-# ---------------------------------------------------------------------------
-# Config schema
-# ---------------------------------------------------------------------------
+class QaRelay:
+    """One daemon's trusted relay, with availability cached for its actual client."""
 
-
-class SelfHealingConfig(BaseModel):
-    """Relay configuration with backwards-compatible dispatch keys.
-
-    ``enabled`` controls report admission. The other five keys retain their
-    existing defaults and accepted shape, but are inert: QA owns investigation
-    severity, concurrency, cooldown, breaker and timeout policy.
-    """
-
-    enabled: bool = True
-    severity_threshold: int = 2
-    max_concurrent: int = 2
-    cooldown_minutes: int = 60
-    circuit_breaker_threshold: int = 5
-    timeout_minutes: int = 30
-    model_config = ConfigDict(extra="forbid")
-
-
-# ---------------------------------------------------------------------------
-# Module implementation
-# ---------------------------------------------------------------------------
-
-
-class SelfHealingModule(Module):
-    """Register report_error and read-only get_healing_status; never dispatch."""
-
-    def __init__(self) -> None:
-        self._config = SelfHealingConfig()
-        # Canonical emitter identity comes only from daemon registration.
-        self._butler_name: str = "<unknown>"
-        self._pool: Any = None
-
-        # Switchboard client for QA relay (injected via wire_runtime)
-        self._switchboard_client: Any = None
-
-        # QA availability cache: (is_available: bool, cached_at: float)
+    def __init__(self, butler_name: str, pool: Any, switchboard_client_getter: Callable[[], Any]):
+        self._butler_name = butler_name
+        self._pool = pool
+        self._switchboard_client_getter = switchboard_client_getter
         self._qa_available_cache: tuple[bool, float] | None = None
+        self._qa_cache_client: Any = None
 
-    # ------------------------------------------------------------------
-    # Module ABC
-    # ------------------------------------------------------------------
-
-    name = "self_healing"
-
-    @property
-    def config_schema(self) -> type[BaseModel]:
-        return SelfHealingConfig
-
-    # ------------------------------------------------------------------
-    # Sensitivity metadata
-    # ------------------------------------------------------------------
-
-    def tool_metadata(self) -> dict[str, ToolMeta]:
-        """Mark error_message, traceback, and context as sensitive.
-
-        These fields may contain PII from error context or agent reasoning
-        about user-related errors.
-        """
-        return {
-            "report_error": ToolMeta(
-                arg_sensitivities={
-                    "error_message": True,
-                    "traceback": True,
-                    "context": True,
-                }
-            ),
-        }
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    async def on_startup(
-        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
-    ) -> None:
-        """Initialize relay state without touching shared investigation history."""
-        self._config = (
-            config if isinstance(config, SelfHealingConfig) else SelfHealingConfig(**(config or {}))
-        )
-        self._pool = getattr(db, "pool", None) if db is not None else None
-
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
+    def register_tools(self, mcp: Any) -> None:
         """Register report_error and get_healing_status tools on the MCP server."""
-        self._config = (
-            config if isinstance(config, SelfHealingConfig) else SelfHealingConfig(**(config or {}))
-        )
-        if butler_name:
-            self._butler_name = butler_name
-        self._pool = getattr(db, "pool", None) if db is not None else None
-
-        # Capture self reference for tool handler closures
-        module = self
+        relay = self
 
         @mcp.tool()
         async def report_error(
@@ -172,7 +75,7 @@ class SelfHealingModule(Module):
                 Your assessment of impact: ``critical``, ``high``, ``medium``,
                 or ``low``.
             """
-            return await module._handle_report_error(
+            return await relay._handle_report_error(
                 error_type=error_type,
                 error_message=error_message,
                 traceback_str=traceback,
@@ -193,7 +96,7 @@ class SelfHealingModule(Module):
                 the most recent attempt for that fingerprint.  When omitted,
                 returns the 5 most recent attempts for this butler.
             """
-            return await module._handle_get_healing_status(fingerprint=fingerprint)
+            return await relay._handle_get_healing_status(fingerprint=fingerprint)
 
     async def _handle_report_error(
         self,
@@ -213,8 +116,6 @@ class SelfHealingModule(Module):
             traceback_str=traceback_str,
             severity_hint=severity_hint,
         )
-        if not self._config.enabled:
-            return self._refused(fp.fingerprint, "disabled")
         try:
             async with asyncio.timeout(2.0):
                 return await self._try_qa_relay(
@@ -230,7 +131,6 @@ class SelfHealingModule(Module):
 
     def _refused(self, fingerprint: str, reason: str) -> dict:
         messages = {
-            "disabled": "Error relay is disabled for this butler",
             "qa_unavailable": "QA reception unavailable through Switchboard",
             "relay_failed": "QA reception was not confirmed",
             "relay_timeout": "QA reception was not confirmed before the relay deadline",
@@ -254,7 +154,7 @@ class SelfHealingModule(Module):
         context: str | None,
     ) -> dict:
         """Use Switchboard MCP; target acceptance alone confirms reception."""
-        client = self._switchboard_client
+        client = self._switchboard_client_getter()
         if client is None or not await self._is_qa_available(client):
             return self._refused(fingerprint, "qa_unavailable")
         try:
@@ -293,7 +193,7 @@ class SelfHealingModule(Module):
     async def _is_qa_available(self, client: Any) -> bool:
         """Normalize the registry result, preserving its sixty-second TTL."""
         now = time.monotonic()
-        if self._qa_available_cache is not None:
+        if self._qa_cache_client is client and self._qa_available_cache is not None:
             available, cached_at = self._qa_available_cache
             if now - cached_at < _QA_AVAILABILITY_CACHE_TTL:
                 return available
@@ -316,6 +216,7 @@ class SelfHealingModule(Module):
             )
         except Exception:
             available = False
+        self._qa_cache_client = client
         self._qa_available_cache = (available, now)
         return available
 
@@ -327,7 +228,7 @@ class SelfHealingModule(Module):
         if self._pool is None:
             return {
                 "attempts": [],
-                "message": "Self-healing module not configured (no DB pool)",
+                "message": "QA attempt history unavailable (no DB pool)",
             }
 
         if fingerprint:
@@ -363,23 +264,6 @@ class SelfHealingModule(Module):
             "attempts": [_serialize_attempt(a) for a in butler_attempts],
             "message": f"Found {len(butler_attempts)} healing attempt(s)",
         }
-
-    def wire_runtime(
-        self,
-        spawner: Any,
-        repo_root: Path | str,
-        switchboard_client: Any = None,
-    ) -> None:
-        """Keep the public runtime signature; only MCP transport is consumed.
-
-        Spawner/repo_root are compatibility inputs, never dispatch authority.
-        """
-        self._switchboard_client = switchboard_client
-
-
-# ---------------------------------------------------------------------------
-# Serialisation helper
-# ---------------------------------------------------------------------------
 
 
 def _serialize_attempt(row: dict) -> dict:
