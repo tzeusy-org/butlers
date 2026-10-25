@@ -29,14 +29,22 @@ import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry
 const DEFAULT_COMPLEXITY = "workhorse";
 
 export function GlobalActionsRegistrar() {
-  const { data: butlersResponse } = useButlers();
+  const { data: butlersResponse, isError, refetch } = useButlers();
   const navigate = useNavigate();
 
   const commands = useMemo<PaletteCommand[]>(() => {
     const butlers = butlersResponse?.data ?? [];
-    return butlers.map((b) => ({
+    const discovery: PaletteCommand[] = isError ? [{
+      id: "retry:butler-discovery",
+      label: butlersResponse
+        ? "Butler discovery failed; cached actions are stale. Retry discovery"
+        : "Butler actions unavailable. Retry discovery",
+      keywords: ["retry", "butler", "discovery"],
+      perform: () => { void refetch(); },
+    }] : [];
+    return [...discovery, ...butlers.map((b) => ({
       id: `trigger:${b.name}`,
-      label: `Run ${b.name}`,
+      label: `Run ${b.name}${isError ? " (stale)" : ""}`,
       keywords: ["trigger", "run", "force run", b.name],
       perform: async () => {
         try {
@@ -51,10 +59,15 @@ export function GlobalActionsRegistrar() {
           toast.error(`Failed to run ${b.name}`);
         }
       },
-    }));
-  }, [butlersResponse, navigate]);
+    }))];
+  }, [butlersResponse, isError, navigate, refetch]);
 
   useRegisterCommands(commands);
 
-  return null;
+  return isError ? (
+    <span role="alert" className="sr-only">
+      {butlersResponse ? "Butler discovery failed; cached actions are stale." : "Butler actions unavailable."}
+      {" Open the command menu to retry discovery."}
+    </span>
+  ) : null;
 }
