@@ -58,7 +58,6 @@ def test_every_step_runs_and_a_failure_does_not_hide_the_others(
 ) -> None:
     (tmp_path / "node_modules").mkdir()
     monkeypatch.setattr(guards, "changed_paths", lambda base: ["frontend/src/a.tsx"])
-    monkeypatch.setattr(guards, "inventory_stale", lambda: False)
     calls = _record(monkeypatch, guards, failing={"lint:query-coercion"})
     assert guards.run("origin/main") == 1
     assert [c[-1] for c in calls] == [script for _, script in guards.STEPS]
@@ -66,43 +65,29 @@ def test_every_step_runs_and_a_failure_does_not_hide_the_others(
 
 
 @pytest.mark.unit
-def test_stale_inventory_fails_and_skip_flag_bypasses_it(monkeypatch, guards, tmp_path) -> None:
+def test_frontend_guards_ignore_absent_or_stale_inventory(monkeypatch, guards, tmp_path) -> None:
     (tmp_path / "node_modules").mkdir()
     monkeypatch.setattr(guards, "changed_paths", lambda base: ["frontend/src/a.tsx"])
-    monkeypatch.setattr(guards, "inventory_stale", lambda: True)
-    _record(monkeypatch, guards)
-    assert guards.run("origin/main") == 1
-    assert guards.run("origin/main", skip_inventory=True) == 0
+    inventory = tmp_path / "COPY_INVENTORY.md"
+    for contents in (None, "stale\n"):
+        if contents is not None:
+            inventory.write_text(contents)
+        calls = _record(monkeypatch, guards)
+        assert guards.run("origin/main") == 0
+        assert [c[-1] for c in calls] == [script for _, script in guards.STEPS]
+        if contents is None:
+            assert not inventory.exists()
+        else:
+            assert inventory.read_text() == contents
 
 
 @pytest.mark.unit
 def test_assume_changed_skips_the_diff(monkeypatch, guards, tmp_path) -> None:
     (tmp_path / "node_modules").mkdir()
     monkeypatch.setattr(guards, "changed_paths", lambda base: pytest.fail("diffed"))
-    monkeypatch.setattr(guards, "inventory_stale", lambda: False)
     calls = _record(monkeypatch, guards)
     assert guards.run("origin/main", assume_changed=True) == 0
     assert len(calls) == len(guards.STEPS)
-
-
-@pytest.mark.unit
-def test_stale_inventory_is_detected_without_writing(guards, tmp_path) -> None:
-    real = ROOT / "frontend/COPY_INVENTORY.md"
-    before = real.stat().st_mtime_ns
-    spec = importlib.util.spec_from_file_location(
-        "copy_producer", ROOT / "scripts/extract-frontend-copy.py"
-    )
-    assert spec is not None and spec.loader is not None
-    producer = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(producer)
-    report, _ = producer.generate_report(producer.collect_tsx_files(producer.SCAN_DIRS))
-    stale = tmp_path / "COPY_INVENTORY.md"
-    stale.write_text(report, encoding="utf-8")
-    assert guards.inventory_stale() is False
-    stale.write_text("stale\n", encoding="utf-8")
-    assert guards.inventory_stale() is True
-    assert stale.read_text(encoding="utf-8") == "stale\n"
-    assert real.stat().st_mtime_ns == before
 
 
 @pytest.mark.unit

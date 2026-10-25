@@ -254,8 +254,21 @@ guidance. The required twenty-natural-push p95 below 30 seconds remains unearned
 
 ```bash
 make check-test-budget        # fresh collect-only count per lane against scripts/test-budget-baseline.json
-make check-guards             # every `guards` CI step (dashes, spec, names, frontend-copy inventory, ...)
+make check-guards             # every `guards` CI step (dashes, spec, names, frontend lint, ...)
 ```
+
+Frontend copy extraction is an on-demand report, not a committed artifact or freshness
+gate. Run `python3 scripts/extract-frontend-copy.py` for Markdown on stdout and diagnostics
+on stderr, or redirect it to an existing ignored destination:
+
+```bash
+mkdir -p .tmp
+python3 scripts/extract-frontend-copy.py > .tmp/frontend-copy.md
+```
+
+The extractor's bounded scope is described in its report. Frontend lint (including owner-time
+and draft eligibility), em-dash copy, query coercion, import-graph, build and type checks retain
+their existing gates and failure behavior.
 
 
 ## CI fixed-overhead interfaces

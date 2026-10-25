@@ -197,8 +197,9 @@ check you write or read:
   when their tree SHAs differ.
 - During `git merge --no-commit`, check generated-artefact drift with `git diff`, not
   `git status --porcelain`: merged files are already staged. A change to a generator invalidates
-  every queued PR carrying its output (e.g. `frontend/COPY_INVENTORY.md`): resolve by re-running the
-  current generator, not by taking a side.
+  every queued PR carrying its tracked output: resolve by re-running the current generator,
+  not by taking a side. Frontend copy extraction is on demand, emits stdout, and has no
+  committed output or freshness gate.
 - A pre-merge union gate must prove the merge applied: hard-fail on fetch failure or on a merge
   that changes nothing, and print the SHAs merged.
 - Reading PR state:
