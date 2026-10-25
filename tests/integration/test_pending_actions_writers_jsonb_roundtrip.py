@@ -43,12 +43,14 @@ workarounds in approvals.py/pipeline.py are therefore kept (see bead notes).
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import shutil
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -75,6 +77,26 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
+
+
+_AUDIT_WRITER_MIGRATION = (
+    Path(__file__).resolve().parents[2] / "alembic/versions/core/core_279_audit_writer_integrity.py"
+)
+
+
+async def _install_audit_writer_integrity(pool: Any) -> None:
+    """Apply the real audit writer migration above this fixture's minimal table."""
+    spec = importlib.util.spec_from_file_location("core_279_fixture", _AUDIT_WRITER_MIGRATION)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    statements: list[str] = []
+    mock_op = MagicMock()
+    mock_op.execute.side_effect = statements.append
+    with patch.object(migration, "op", mock_op):
+        migration.upgrade()
+    for statement in statements:
+        await pool.execute(statement)
 
 
 @pytest.fixture
@@ -135,6 +157,7 @@ async def pending_actions_pool(provisioned_postgres_pool):
                 )
             )
         """)
+        await _install_audit_writer_integrity(pool)
         yield pool
 
 

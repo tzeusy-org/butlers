@@ -131,6 +131,7 @@ async def _provision_tables(pool: asyncpg.Pool) -> None:
         "core_092_audit_log",
         "core_122_audit_log_metadata_result_error",
         "core_202_audit_log_failure_category",
+        "core_279_audit_writer_integrity",
     ):
         await _run_upgrade_sqls(pool, _load_migration(name))
 
