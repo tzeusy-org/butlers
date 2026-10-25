@@ -229,3 +229,11 @@ non-FORCE RLS for the exact Switchboard runtime, preserving migration-owner full
 backup while denying other runtimes after bootstrap regrants. See
 [goal ledger and admission](../architecture/goal-ledger-and-admission.md) for
 source keys, lock order, policy snapshots and actual verification obligations.
+
+## Proposed DB authority rebuild (not active at this source)
+
+The ROOT3745-authorized db-authority-rebuild contract specifies the successor to the shared ownership/grant model described above. Its governing source is prepared on the same .6 branch at 0cf196b5; the current code still uses its existing provisioning path. See [the cutover procedure](../identity_and_secrets/database-authority-cutover.md) for the status and transition. Do not operate a mixed model by following only this section.
+
+The target has three connecting profiles: CLI-only migrator, cooperative runtime with exactly derived roster capabilities, and a constrained dashboard capability. Dedicated owner-auth remains independent. The migrator owns ordinary objects; unreachable NOLOGIN purpose owners retain fenced state and definers. Recursive reachable ownership, not only current_user after SET ROLE, is admission evidence. Actual private Memory schemas and current same-database JSONB/search_path/SSL behavior remain.
+
+One exact manifest records every managed public object/signature, owner, role operation/column, PUBLIC/default ACL, RLS, producer and selected pool. Unknown objects get no default SELECT or DML. Runtime own-schema access does not imply access to another schema. General briefing, QA policy projection, Concierge telemetry and named message_inbox reads retain only their adopted scopes. The current per-butler schema layout does not change, and retired table names do not become new shared objects.

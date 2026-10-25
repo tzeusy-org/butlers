@@ -7,8 +7,52 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from butlers.db import Database, schema_search_path
+from butlers.db_authority.roles import RuntimeProfile
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _authority_driver_context(monkeypatch):
+    """SSL tests hold a known roster profile; catalog and SET ROLE remain real.
+
+    Existing synthetic database names describe driver wiring, not the deployment
+    roster. New test_db_authority owns actual fixed-source projection and refusal.
+    Only physical driver response facts and that held source profile are doubled.
+    """
+    original_init = Database.__init__
+    original_mock = AsyncMock
+
+    def held_profile(database, schema, role):
+        return RuntimeProfile(
+            database, schema or "general", "butler_general_rw", ("butler_general_rw",)
+        )
+
+    def initialize(database, *args, **kwargs):
+        original_init(database, *args, **kwargs)
+        if database._runtime_role_required():
+            database._runtime_profile = held_profile(
+                database.db_name, database.schema, database.role
+            )
+
+    def driver_mock(*args, **kwargs):
+        value = original_mock(*args, **kwargs)
+        value.fetchrow.return_value = dict.fromkeys(
+            (
+                "identity_ok",
+                "role_set_ok",
+                "attributes_ok",
+                "ownership_ok",
+                "create_ok",
+                "target_member",
+            ),
+            True,
+        )
+        return value
+
+    monkeypatch.setattr(Database, "__init__", initialize)
+    monkeypatch.setattr("butlers.db.load_runtime_profile", held_profile)
+    monkeypatch.setitem(globals(), "AsyncMock", driver_mock)
 
 
 def test_ssl_env_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -231,8 +275,12 @@ async def test_setup_connection_quotes_role_with_double_quotes() -> None:
     db._role_verified = True
     db._verified_role = db.role
 
-    await db._setup_connection(conn)
-    conn.execute.assert_awaited_once_with('SET ROLE "role""with""quotes"')
+    # A quoted, unlisted role cannot become source authority. The unchanged
+    # SET ROLE identifier escaping remains used for valid declared identities;
+    # the stronger successor refuses this identity before any executable SQL.
+    with pytest.raises(RuntimeError):
+        await db._setup_connection(conn)
+    conn.execute.assert_not_awaited()
 
 
 async def test_verify_role_exists_returns_false_when_role_none() -> None:

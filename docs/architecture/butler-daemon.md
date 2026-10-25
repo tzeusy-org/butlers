@@ -225,3 +225,11 @@ kill -TERM $(pgrep -f "butlers run --config roster/general")
 - [Observability](observability.md) — telemetry initialization details
 - [Spawner](../runtime/spawner.md) — the runtime invocation component
 - [Scheduler Execution](../runtime/scheduler-execution.md) — cron-driven task dispatch behavior
+
+## Proposed read-only migration admission
+
+The ROOT3745-authorized db-authority-rebuild target replaces only the daemon's migration-writing startup responsibility. At source 0cf196b5 the existing lifecycle still executes migrations; this section is not an assertion that the target is delivered. See [the cutover procedure](../identity_and_secrets/database-authority-cutover.md).
+
+After connecting under its exact runtime role/reach profile, the daemon verifies required core/domain/declared-module revisions and final interfaces read-only. The CLI migrator handles upgrades before serving. Missing core admission stops consumers; module admission preserves current failure/dependency cascades, private Memory target selection, actual config seed and schedule CAS ordering. It does not manufacture an empty source or install schema from runtime credentials.
+
+Current native-pool acquisition, setup after reset, JSONB/search_path/SSL, partial-startup cleanup and original finite shutdown owners remain. Work/transaction/actual release stays owned through cancellation; no usable unverified pool or committed reference escapes before its required release, and shared pools cannot close under unresolved owners. This is not a new generic worker framework or an excuse to detach best-effort cleanup.

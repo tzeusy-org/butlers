@@ -110,8 +110,8 @@ does not ship.
    exceptions.
 
 4. **The daemon is deterministic infrastructure; intelligence is in ephemeral LLM
-   sessions.** The daemon manages state, runs migrations, enforces schedules, and
-   registers tools. It must be testable, debuggable, and predictable. The goal
+   sessions.** The daemon manages state, verifies required migrations read-only, enforces schedules, and
+   registers tools. A separate CLI migrator applies schema changes before serving. It must be testable, debuggable, and predictable. The goal
    invocations the control plane launches are where reasoning and judgment
    happen. Mixing LLM logic into the daemon is a defect.
 

@@ -11,6 +11,9 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import asyncpg
 
+from butlers.db_authority.catalog import assert_runtime_authority
+from butlers.db_authority.roles import RuntimeProfile, load_runtime_profile
+
 logger = logging.getLogger(__name__)
 
 
@@ -338,6 +341,8 @@ class Database:
         self._role_verified: bool = False
         self._verified_role: str | None = None
         self._owner_database: Database | None = None
+        self._owner_pool: asyncpg.Pool | None = None
+        self._runtime_profile: RuntimeProfile | None = None
 
     @property
     def role_enforcement_disabled(self) -> bool:
@@ -401,6 +406,11 @@ class Database:
         target = _normalize_schema_name(schema)
         if target != self.schema and (self.schema, target) != ("chronicler", "chronicler_mem"):
             raise RuntimeError("Runtime database cannot access an unowned schema")
+        profile = self._runtime_profile
+        if profile is None or (
+            target != profile.primary_schema and target not in profile.private_schemas
+        ):
+            raise RuntimeError("Runtime database private schema is not declared")
         child = Database(
             db_name=self.db_name,
             schema=target,
@@ -414,6 +424,8 @@ class Database:
             max_pool_size=self.max_pool_size,
         )
         child._owner_database = self
+        child._owner_pool = self.pool
+        child._runtime_profile = self._runtime_profile
         return child
 
     def _validate_runtime_role(self) -> None:
@@ -431,9 +443,12 @@ class Database:
             if (
                 owner.schema is None
                 or owner.pool is None
+                or owner.pool is not self._owner_pool
+                or (isinstance(owner.pool, asyncpg.Pool) and owner.pool.is_closing())
                 or owner._role_verified is not True
                 or owner._verified_role != owner.role
                 or self.role != owner.role
+                or self._runtime_profile is not owner._runtime_profile
                 or (
                     self.schema != owner.schema
                     and (owner.schema, self.schema) != ("chronicler", "chronicler_mem")
@@ -452,7 +467,16 @@ class Database:
             raise RuntimeError("Runtime database role has not been established")
         quoted_role = '"' + self.role.replace('"', '""') + '"'
         try:
+            profile = self._runtime_profile
+            if (
+                profile is None
+                or self.role != profile.role
+                or self.role not in profile.runtime_roles
+                or self.db_name != profile.database
+            ):
+                raise RuntimeError("Runtime database authority profile is unavailable")
             await conn.execute(f"SET ROLE {quoted_role}")
+            await assert_runtime_authority(conn, profile)
             if self._owner_database is not None and self.schema != self._owner_database.schema:
                 allowed = await conn.fetchval(
                     "SELECT has_schema_privilege($1, 'USAGE')", self.schema
@@ -546,6 +570,10 @@ class Database:
         self._verified_role = None
         self._validate_runtime_role()
         if self._runtime_role_required():
+            if self._owner_database is None:
+                self._runtime_profile = load_runtime_profile(self.db_name, self.schema, self.role)
+            elif self._runtime_profile is None:
+                raise RuntimeError("Runtime database primary authority is unavailable")
             check_conn = None
             try:
                 connect_kwargs = {

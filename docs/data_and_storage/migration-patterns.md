@@ -512,3 +512,13 @@ the existing complete backup and restore scripts retain every ledger row, owner,
 policy and constraint. No backup exclusion or new privileged owner is needed.
 Downgrade refuses durable goals/admission history. `core_273` likewise refuses
 to discard configured admission limits. These migrations do not activate callers.
+
+## Proposed authority-rebuild migration execution
+
+This section describes the ROOT3745-authorized db-authority-rebuild target, not a change already present in the runner. Existing migration instructions above remain descriptions of current code until the complete reviewed cutover is implemented. See [the cutover procedure](../identity_and_secrets/database-authority-cutover.md).
+
+Only the CLI migrator receives migration credentials. One physical advisory-lock session spans all declared core/domain/module chains, final-state purpose installers, exact ACL convergence and catalog verification. Required private schema/chain targets are actual metadata, not guessed schema names. Serving daemon startup verifies revisions and authority read-only; it cannot provision or repair a missing catalog. Historical revision identifiers/edges and protected data remain, and no slot is reserved by this document.
+
+Purpose functions keep exact pg_catalog, pg_temp search_path and qualified non-catalog references, NOLOGIN/nonprivileged owner and explicit EXECUTE. Final installers replace the three old admin bunkers and attention version ladder only with genuine fresh/old-state catalog and behavior survivors. Independent later dashboard purpose interfaces stay protected. Protected downgrade validation must occur before any newer autocommit side effect, and advanced DND generation or receipts cannot be discarded to make rollback pass.
+
+Real proof uses an administrative setup connection only for setup, then actual non-owner runtime/dashboard roles for positive and refusal operations, plus independent acquisitions for committed/rollback readback. Reapplying bootstrap cannot restore broad PUBLIC/default grants. A missing/unclassified object is a finalization failure, not a reason for a generic GRANT or missing-table fallback.

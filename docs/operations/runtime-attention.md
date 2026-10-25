@@ -199,3 +199,11 @@ marker, so an active condition whose marker remains is never re-armed.
 Downgrading below `core_198` is not supported on any database that has reached `core_199`. The
 `core_198` downgrade fails with `core_198 downgrade requires trusted bootstrap rollback interface`
 because the retained objects are present, and nothing restores the pre-outbox schema.
+
+## Proposed database-authority installer successor
+
+The ROOT3745-authorized db-authority-rebuild target moves the bootstrap-owned attention installer into controlled final-state migrations. It does not activate a new attention delivery path or change the current producer/worker protocol. See [the cutover procedure](../identity_and_secrets/database-authority-cutover.md).
+
+The model-breaker, fleet-halt, operator and condition episode/marker interfaces retain fixed server-derived inputs, exact purpose ownership/EXECUTE/search_path, append-only evidence, idempotent outbox representation and independent database-time/currentness fences. Existing Switchboard lifecycle/claim columns and delivery lease, at-most-once attempt/unknown outcome, owner stop, cancel and ACK behavior remain exact. Removing v2-v5/interface_version/legacy-debounce branches cannot remove these outcomes or authorize raw producer DML. No historical incident backfill or second transport is introduced.
+
+The dashboard observer uses its constrained dashboard pool and exact reserve/record functions. Removing DashboardProbeRoleView and ambient role-none acceptance must retain actual epoch/sequence/nonce/CAS and owner-policy checks. The runtime-probe signing-key plane is held unchanged, and the owner rehome question occurs only at actual completed rebuild closure. Catalog diagnostics distinguish unavailable, absent and mismatch without exposing stored bodies or row contents.

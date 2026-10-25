@@ -567,3 +567,11 @@ into the live application database or manually erase recovery evidence.
 - Host BusyBox differs from Alpine's (Ubuntu `busybox find` has no `-delete`): parse-check
   `deploy/backup/pg_dump.sh` with `busybox ash -n` locally and execute it only in the
   `postgres:17-alpine` image (`tests/scripts/test_pg_dump_backup.py`).
+
+## Proposed authority-rebuild restore compatibility
+
+The ROOT3745-authorized db-authority-rebuild contract is prepared source for a future runtime transition. Current restore commands and executor containment above are not replaced by a draft. See [the cutover procedure](../identity_and_secrets/database-authority-cutover.md) before an eventual reviewed deployment.
+
+The original restore admin bunker may be removed only after the migration-owned final restore interface proves its exact role, object, ACL, pinned search_path and actual executor restrictions under real roles. Evidence retention, bounded executor behavior, restore target restrictions, independent write/readback and rollback outcomes survive installer deletion. A broad migrator grant to serving identities is not a restore compatibility mechanism.
+
+Recovery must match code, catalog and credential profiles explicitly. Preserve old secret recovery material for one release without automatically using it or printing values. A failed/newer deployment does not authorize old init-db.sql to re-widen grants or an ordinary downgrade to erase protected receipts. A disposable authorized rollback has separate real data/stamp/catalog proof; live ownership/login/secret operations remain operator acts.
