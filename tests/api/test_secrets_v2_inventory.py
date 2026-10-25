@@ -900,13 +900,21 @@ async def test_inventory_request_budget_does_not_wait_for_noncooperative_source(
     never = asyncio.Event()
     cancellation_observed = asyncio.Event()
     release = asyncio.Event()
+    owned_sources = []
+    request_task = None
 
     async def _noncooperative_fetch(_pool, _butler_name, **_kwargs):
+        owned_sources.append(asyncio.current_task())
         try:
             await never.wait()
         except asyncio.CancelledError:
             cancellation_observed.set()
-            await release.wait()
+            # Cleanup stays held even if the source watchdog cancels it again.
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    continue
             raise
 
     monkeypatch.setattr(
@@ -928,13 +936,28 @@ async def test_inventory_request_budget_does_not_wait_for_noncooperative_source(
 
     try:
         with patch("butlers.api.routers.secrets_v2._fetch_system_secrets", _noncooperative_fetch):
-            response = await asyncio.wait_for(get_inventory(identity=None, db=mock_db), timeout=0.5)
+            request_task = asyncio.create_task(get_inventory(identity=None, db=mock_db))
+            # These finite hang guards are independent of the 10ms/1s semantic budgets.
+            done, _pending = await asyncio.wait({request_task}, timeout=5.0)
+            assert request_task in done, "inventory response waited for source cleanup"
+            response = request_task.result()
 
         assert response.data.system == []
         assert response.meta.sources_degraded == ["slow"]
-        await asyncio.wait_for(cancellation_observed.wait(), timeout=0.1)
+        await asyncio.wait_for(cancellation_observed.wait(), timeout=5.0)
     finally:
         release.set()
+        tasks = list(owned_sources)
+        if request_task is not None:
+            tasks.append(request_task)
+        if tasks:
+            done, pending = await asyncio.wait(tasks, timeout=5.0)
+            for task in done:
+                if not task.cancelled():
+                    task.exception()
+            for task in pending:
+                task.cancel()
+            assert not pending, "inventory tasks did not finish after cleanup release"
         await asyncio.sleep(0)
 
 
