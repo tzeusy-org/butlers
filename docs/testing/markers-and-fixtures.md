@@ -55,7 +55,9 @@ def postgres_container() -> Iterator[PostgresContainer]:
 
 ### `provisioned_postgres_pool` (function scope)
 
-Creates a fresh database and asyncpg pool for a single test. Each invocation creates a database with a random name (`test_{uuid_hex[:12]}`), ensuring no table or schema leakage between tests.
+Creates a fresh database and an **administrative** asyncpg pool for a single test. Each invocation creates a database with a random name (`test_{uuid_hex[:12]}`), ensuring no table or schema leakage between tests. The container login owns this pool; it intentionally supports partial, legacy, and absent-table setup. It does not establish a runtime role and is not evidence of runtime authorization or isolation. Use migrated databases and real `SET ROLE` identities for that proof.
+
+Optional `schema=` validates and sets the administrative search path before provisioning; it neither creates that schema nor grants access. The pool retains the normal JSONB codec, finite SSL fallback, and context-owned cleanup on failure or cancellation. Runtime `Database` role refusals remain unchanged.
 
 ```python
 async with provisioned_postgres_pool() as pool:

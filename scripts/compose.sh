@@ -11,12 +11,9 @@
 #   ./scripts/compose.sh --skip-tailscale-check    # skip tailscale serve setup
 #   ./scripts/compose.sh --audio                   # include live-listener (needs /dev/snd)
 #   ./scripts/compose.sh --observability           # include collector, Tempo, Prometheus, Grafana (local Compose)
-#   ./scripts/compose.sh --hardened                # opt into hardened posture (disables Grafana anon viewer)
 #
-# DEPLOYMENT POSTURE:
-#   Default posture is "dev" (anonymous Grafana viewer enabled when --observability is set).
-#   To opt into hardened posture, pass --hardened or set BUTLERS_POSTURE=hardened in the environment.
-#   See docs/operations/deployment-posture.md for the full posture reference.
+# Grafana anonymous access defaults false and can be explicitly configured via
+# GF_AUTH_ANONYMOUS_ENABLED. This never changes runtime database role enforcement.
 #
 # Dev defaults to hotreload because the baked image only re-bakes when this
 # script rebuilds it -- editing src/ on the host has no effect on a baked
@@ -43,16 +40,10 @@ RESTORE_DRILL_ENABLED=false
 # Tri-state: empty = use mode default; true/false = user opted in/out.
 HOTRELOAD_OPT=""
 
-# Deployment posture: "dev" (default when unset) or "hardened" (explicit opt-in).
-# Governs security-gated toggles such as Grafana anonymous viewer access.
-# Inherits from the environment; can also be set via --hardened flag.
-BUTLERS_POSTURE="${BUTLERS_POSTURE:-dev}"
-
 for arg in "$@"; do
   case "$arg" in
     --prod)                 BUTLERS_MODE=prod ;;
     --with-restore-drill)   RESTORE_DRILL_ENABLED=true ;;
-    --hardened)             BUTLERS_POSTURE=hardened ;;
     --hotreload)            HOTRELOAD_OPT=true ;;
     --no-hotreload)         HOTRELOAD_OPT=false ;;
     --audio)                PROFILES+=(audio) ;;
@@ -476,16 +467,10 @@ if [ "$OBSERVABILITY" = "true" ]; then
   PROFILES+=(observability)
   export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 
-  # Gate Grafana anonymous viewer on deployment posture.
-  # dev (default when unset): anon viewer on — convenient for local iteration.
-  # hardened: anon viewer off — login required (admin/admin or overridden creds).
-  if [ "$BUTLERS_POSTURE" = "hardened" ]; then
-    export GF_AUTH_ANONYMOUS_ENABLED=false
-    echo "Observability stack enabled: Grafana at http://localhost:3000 (posture=hardened, login required)"
-  else
-    export GF_AUTH_ANONYMOUS_ENABLED=true
-    echo "Observability stack enabled: Grafana at http://localhost:3000 (posture=dev, anonymous viewer on)"
-  fi
+  # Anonymous access is an explicit independent service configuration.
+  # The retained Compose service default is false; no profile bypass exists.
+  export GF_AUTH_ANONYMOUS_ENABLED="${GF_AUTH_ANONYMOUS_ENABLED:-false}"
+  echo "Observability stack enabled: Grafana at http://localhost:3000"
   echo ""
 fi
 

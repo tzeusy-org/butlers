@@ -613,7 +613,14 @@ def provisioned_postgres_pool(
     explicit prefix, or "public" to reproduce a caller whose search_path
     lacks the schema entirely).
     """
-    from butlers.db import Database
+    import asyncpg
+
+    from butlers.db import (
+        Database,
+        register_jsonb_codec,
+        schema_search_path,
+        should_retry_with_ssl_disable,
+    )
 
     @asynccontextmanager
     async def _provision(
@@ -622,9 +629,11 @@ def provisioned_postgres_pool(
         max_pool_size: int = 3,
         schema: str | None = None,
     ) -> AsyncIterator[Pool]:
+        # Validate before provisioning: this scopes administrative test queries,
+        # and does not establish or bypass a runtime role.
+        search_path = schema_search_path(schema)
         db = Database(
             db_name=_unique_test_db_name(),
-            schema=schema,
             host=postgres_container.get_container_host_ip(),
             port=int(postgres_container.get_exposed_port(5432)),
             user=postgres_container.username,
@@ -633,10 +642,45 @@ def provisioned_postgres_pool(
             max_pool_size=max_pool_size,
         )
         await db.provision()
-        pool = await db.connect()
+        pool_kwargs = {
+            "host": db.host,
+            "port": db.port,
+            "user": db.user,
+            "password": db.password,
+            "database": db.db_name,
+            "min_size": min_pool_size,
+            "max_size": max_pool_size,
+            "init": register_jsonb_codec,
+        }
+        if search_path is not None:
+            pool_kwargs["server_settings"] = {"search_path": search_path}
+        if db.ssl is not None:
+            pool_kwargs["ssl"] = db.ssl
+
+        async def _open_pool():
+            # Keep the native pool while initialization is awaited so a failed
+            # or cancelled initialization cannot orphan its owned connections.
+            candidate = asyncpg.create_pool(**pool_kwargs)
+            try:
+                return await candidate
+            except BaseException:
+                candidate.terminate()
+                raise
+
+        try:
+            pool = await _open_pool()
+        except Exception as exc:
+            if not should_retry_with_ssl_disable(exc, db.ssl):
+                raise
+            pool_kwargs["ssl"] = "disable"
+            pool = await _open_pool()
         try:
             yield pool
         finally:
-            await db.close()
+            try:
+                await pool.close()
+            except BaseException:
+                pool.terminate()
+                raise
 
     return _provision
