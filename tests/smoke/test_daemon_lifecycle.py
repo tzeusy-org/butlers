@@ -111,12 +111,17 @@ def _make_stub_module(
 def _make_mock_pool(*, boot_receipt: object = 1) -> tuple[Any, Any]:
     """Build a minimal asyncpg pool mock (no real DB)."""
     conn = AsyncMock()
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=None)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    conn.transaction = MagicMock(return_value=transaction)
     conn.execute = AsyncMock(return_value=None)
     conn.fetchrow = AsyncMock(return_value=None)
     conn.fetchval = AsyncMock(return_value=None)
     conn.fetch = AsyncMock(return_value=[])
 
     pool = AsyncMock()
+    pool.acquire = MagicMock()
     pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
     pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
     pool.execute = AsyncMock(return_value=None)

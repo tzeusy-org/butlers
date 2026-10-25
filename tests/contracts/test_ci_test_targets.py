@@ -1488,8 +1488,6 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
         "archived_requirements",
         "countable_tasks",
         "cited_requirements",
-        "frontend_copy_regenerate",
-        "frontend_copy",
         "duplicate_names",
     ):
         guard_step = next(step for step in guards["steps"] if step.get("id") == guard_id)

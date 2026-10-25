@@ -13,7 +13,7 @@ Covers:
 
 from __future__ import annotations
 
-from contextlib import ExitStack
+from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -65,6 +65,41 @@ def _patch_infra():
     """Return patches dict for all infrastructure dependencies."""
     mock_pool = AsyncMock()
     mock_pool.fetchval = AsyncMock(return_value=None)
+
+    async def runtime_row(query, *args):
+        if query.lstrip().startswith("SELECT *") and "runtime_config" in query:
+            return {
+                "butler_name": args[0],
+                "core_groups": None,
+                "core_groups_narrowing_reason": None,
+                "catalog_read_sensitivity": "normal",
+                "max_concurrent": 3,
+                "max_queued": 10,
+                "tool_exposure_policy": "eager_filtered",
+                "blind_spot_preamble_enabled": True,
+                "seeded_at": None,
+                "updated_at": None,
+            }
+        return None
+
+    mock_pool.fetchrow = AsyncMock(side_effect=runtime_row)
+    mock_connection = AsyncMock()
+    mock_connection.fetchrow = AsyncMock(return_value=None)
+    mock_connection.fetchval = AsyncMock(return_value=None)
+    mock_connection.fetch = AsyncMock(return_value=[])
+    mock_connection.execute = AsyncMock(return_value=None)
+
+    @asynccontextmanager
+    async def transaction():
+        yield
+
+    mock_connection.transaction = MagicMock(side_effect=transaction)
+
+    @asynccontextmanager
+    async def acquire():
+        yield mock_connection
+
+    mock_pool.acquire = MagicMock(side_effect=acquire)
 
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()

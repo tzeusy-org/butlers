@@ -85,19 +85,40 @@ def _make_fetchrow_side_effect(butler_name: str = "test-butler"):
     return _fetchrow
 
 
+def _make_transactional_connection(entity_connection: Any = None) -> AsyncMock:
+    """Keep startup transactions separate from the entity-query assertions."""
+    connection = AsyncMock()
+    connection.execute = AsyncMock(return_value=None)
+    connection.fetchval = AsyncMock(return_value=None)
+    connection.fetch = AsyncMock(return_value=[])
+
+    async def fetchrow(query: str, *args: Any, **kwargs: Any) -> Any:
+        if entity_connection is not None and "FROM relationship.entity_facts ef" in query:
+            return await entity_connection.fetchrow(query, *args, **kwargs)
+        # The fixture's current core groups already equal the TOML seed. The
+        # conditional reconciliation therefore returns no changed row.
+        return None
+
+    connection.fetchrow = AsyncMock(side_effect=fetchrow)
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock()
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    connection.transaction = MagicMock(return_value=transaction)
+    return connection
+
+
 def _patch_infra(mock_pool: Any = None) -> dict[str, Any]:
     """Patch infrastructure dependencies for daemon tests."""
     if mock_pool is None:
-        mock_conn = AsyncMock()
-        mock_conn.execute = AsyncMock(return_value=None)
-        mock_conn.fetchrow = AsyncMock(return_value=None)
-        mock_conn.fetchval = AsyncMock(return_value=None)
-        mock_conn.fetch = AsyncMock(return_value=[])
+        mock_conn = _make_transactional_connection()
+
+        @asynccontextmanager
+        async def mock_acquire():
+            yield mock_conn
 
         mock_pool = AsyncMock()
         # Support `async with pool.acquire() as conn:` for _ensure_owner_entity
-        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_pool.acquire = mock_acquire
         mock_pool.fetchval = AsyncMock(return_value=None)
         mock_pool.execute = AsyncMock(return_value=None)
         mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
@@ -300,10 +321,11 @@ def _make_pool_with_entity_facts_conn(
     # pool-level fetchrow must return runtime_config rows so seed_if_empty works
     mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
     mock_pool.fetch = AsyncMock(return_value=[])
+    acquisition_connection = _make_transactional_connection(mock_conn)
 
     @asynccontextmanager
     async def mock_acquire():
-        yield mock_conn
+        yield acquisition_connection
 
     mock_pool.acquire = mock_acquire
     return mock_pool, mock_conn
@@ -507,15 +529,14 @@ class TestNotifyEntityIdResolution:
 
 def _make_missing_id_patches(butler_dir: Path) -> tuple[dict, Any, Any]:
     """Return patches + daemon startup for missing-identifier tests."""
-    mock_conn_inner = AsyncMock()
-    mock_conn_inner.execute = AsyncMock(return_value=None)
-    mock_conn_inner.fetchrow = AsyncMock(return_value=None)
-    mock_conn_inner.fetchval = AsyncMock(return_value=None)
-    mock_conn_inner.fetch = AsyncMock(return_value=[])
+    mock_conn_inner = _make_transactional_connection()
+
+    @asynccontextmanager
+    async def mock_acquire():
+        yield mock_conn_inner
 
     mock_pool = AsyncMock()
-    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn_inner)
-    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_pool.acquire = mock_acquire
     mock_pool.execute = AsyncMock(return_value=None)
     mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
     mock_pool.fetchval = AsyncMock(return_value=None)

@@ -29,6 +29,7 @@ import asyncpg
 import pytest
 
 from butlers.db import register_jsonb_codec
+from butlers.testing.clock import FakeClock
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 _docker_available = shutil.which("docker") is not None
@@ -96,11 +97,12 @@ class TestInsightExpiryHelpers:
     async def test_expiry_helpers_ignore_far_wall_clock(self, monkeypatch, helper, expected):
         """Expiry fixtures must remain relative to the delivery-cycle instant."""
         real_datetime = datetime
+        far_clock = FakeClock(real_datetime(2040, 1, 1, tzinfo=UTC))
 
         class FarWallClockDatetime(real_datetime):
             @classmethod
             def now(cls, tz=None):
-                return real_datetime(2040, 1, 1, tzinfo=tz or UTC)
+                return far_clock.now().replace(tzinfo=tz or UTC)
 
         monkeypatch.setattr(sys.modules[__name__], "datetime", FarWallClockDatetime)
 

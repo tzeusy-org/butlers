@@ -1,7 +1,7 @@
 """Converge event chains in the actual current core schema.
 
 Revision ID: core_280
-Revises: core_278
+Revises: core_279
 
 core_013 and core_044 used a fixed roster which omitted QA and later schemas.
 The scheduler now reads its actual schema directly. Install the same table,
@@ -18,7 +18,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "core_280"
-down_revision = "core_278"
+down_revision = "core_279"
 branch_labels = None
 depends_on = None
 

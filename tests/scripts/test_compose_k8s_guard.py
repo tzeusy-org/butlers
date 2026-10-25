@@ -29,6 +29,7 @@ def _run_launcher(
     cluster_context: str = "configured",
     override: bool = False,
     complete_launch: bool = False,
+    grafana_anonymous: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     repo = tmp_path / "repo"
     (repo / "scripts").mkdir(parents=True)
@@ -135,6 +136,8 @@ def _run_launcher(
         "TEST_PROBE_FAILURE": probe_failure[1] if probe_failure else "",
         "TEST_CLUSTER_CONTEXT": cluster_context,
     }
+    if grafana_anonymous is not None:
+        environment["GF_AUTH_ANONYMOUS_ENABLED"] = grafana_anonymous
     if cluster_context == "not-installed":
         (fake_bin / "kubectl").unlink()
         # A hermetic executable search path proves command absence even on CI
@@ -272,9 +275,9 @@ def test_override_skips_the_cluster_check(tmp_path):
         ("--audio",),
         ("--with-restore-drill",),
         ("--prod",),
-        ("--prod", "--hotreload", "--hardened"),
+        ("--prod", "--hotreload"),
     ],
-    ids=["dev", "baked-dev", "audio", "restore-drill", "prod", "prod-hotreload-hardened"],
+    ids=["dev", "baked-dev", "audio", "restore-drill", "prod", "prod-hotreload"],
 )
 def test_observability_command_and_offline_service_model(tmp_path, args, observability):
     docker = shutil.which("docker")
@@ -364,7 +367,7 @@ def test_observability_command_and_offline_service_model(tmp_path, args, observa
     assert endpoint == ("http://localhost:4318" if observability else "")
     if observability:
         anonymous = services["grafana"]["environment"]["GF_AUTH_ANONYMOUS_ENABLED"]
-        assert anonymous == ("false" if "--hardened" in args else "true")
+        assert anonymous == "false"
     actions = [record["argv"][len(prefix) :] for record in compose]
     assert all(record["argv"][: len(prefix)] == prefix for record in compose)
     assert actions == [
@@ -393,3 +396,21 @@ def test_observability_command_and_offline_service_model(tmp_path, args, observa
         assert prepare < create < fence < up
     else:
         assert not any("executor-capability-v1" in call for call in call_lines)
+
+
+@pytest.mark.parametrize("configured,expected", [(None, "false"), ("true", "true")])
+def test_observability_uses_explicit_grafana_configuration(tmp_path, configured, expected):
+    result, calls = _run_launcher(
+        tmp_path,
+        args=("--observability",),
+        replicas="0",
+        complete_launch=True,
+        grafana_anonymous=configured,
+    )
+    assert result.returncode == 0, result.stderr
+    records = [
+        json.loads(line) for line in (tmp_path / "docker-argv.jsonl").read_text().splitlines()
+    ]
+    assert records
+    assert all(r["env"]["GF_AUTH_ANONYMOUS_ENABLED"] == expected for r in records)
+    assert "docker" in calls  # every command goes to the owned fake executable

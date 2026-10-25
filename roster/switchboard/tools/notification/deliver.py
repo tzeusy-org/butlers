@@ -28,6 +28,7 @@ from butlers.tools.switchboard.notification.log import (
     _log_notification_with_review,
     log_notification,
 )
+from butlers.tools.switchboard.notification.self_links import resolve_self_links
 from butlers.tools.switchboard.registry.registry import (
     expected_route_target,
     receiver_route_cutover_enabled,
@@ -744,7 +745,7 @@ async def deliver(
             span.set_attribute("target_butler", MESSENGER_BUTLER_NAME)
             return await _deliver_recovery_via_notify_request(
                 pool,
-                notify_request=parsed_notify,
+                notify_request=resolve_self_links(parsed_notify),
                 request_context=request_context,
                 trusted=trusted,
                 call_fn=call_fn,
@@ -804,7 +805,7 @@ async def deliver(
 
             return await _deliver_via_notify_request(
                 pool,
-                notify_request=parsed_notify,
+                notify_request=resolve_self_links(parsed_notify),
                 request_context=request_context,
                 source_butler=source_butler,
                 metadata=metadata,

@@ -48,3 +48,29 @@ specified in [`messenger-tracking-retirement`](../../openspec/specs/messenger-tr
   error text, failed parking, and legacy rows cannot create a review door. Logging failure leaves
   the committed park intact and does not retry delivery. The feed opens the adopted approval
   dossier only after complete unique-source admission, and the destination repeats that check.
+
+
+### Fixed dashboard controls
+
+Approval cards carry typed self references, not raw dashboard URLs. The fixed
+server registry maps `approval_detail` (canonical UUID `action_id`) to
+`/approvals/<action_id>` and `approvals_queue` (no parameters) to `/approvals`.
+Switchboard resolves these references using the configured HTTPS `DASHBOARD_URL`
+origin. Messenger independently resolves them again; a wire URL, host, label,
+provenance string or claimed server flag is never link authority. Valid controls
+show the actual host and dashboard provenance. Self references do not expire.
+
+The public notify contract rejects server-only `open_link` output and raw
+`dashboard_url` actions. Missing or unsafe origin configuration, unknown routes,
+invalid parameters and URLs over 300 characters produce `[link not verified]`
+without a URL button, while preserving delivery and valid signed callbacks.
+Origins cannot supply paths, queries, fragments, user information, IP or IDN
+hosts, or non-default ports. The builder's legacy `dashboard_base_url` argument
+remains accepted for call compatibility but does not authorize or mint a URL.
+
+Normal and authenticated recovery delivery use the same resolver. Existing
+owner recipient checks, callback signatures, recovery transport authority,
+exact stored replay, inert message text and disabled previews remain in force.
+The fixed dashboard control does not turn message-body URLs into live links,
+change unsupported transport policy, or authorize general links or login flows.
+A source guard binds every Python self route to the existing phone entry routes.

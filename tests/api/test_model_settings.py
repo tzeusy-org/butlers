@@ -105,6 +105,11 @@ def _app_with_pool(
         )
     )
     mock_conn.fetchrow = mock_pool.fetchrow
+    mock_conn.fetchval = AsyncMock(
+        side_effect=lambda sql, *args: (
+            1 if sql.startswith("INSERT INTO public.audit_log ") else None
+        )
+    )
     mock_pool.acquire = MagicMock(
         return_value=AsyncMock(
             __aenter__=AsyncMock(return_value=mock_conn), __aexit__=AsyncMock(return_value=None)

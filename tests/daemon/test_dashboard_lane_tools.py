@@ -83,6 +83,10 @@ def _patch_infra():
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock()
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    mock_conn.transaction = MagicMock(return_value=transaction)
 
     # MagicMock, not AsyncMock: `.acquire` must be a plain sync call returning
     # an async-context-manager double (see TestDeadLetterDashboardUnroutable

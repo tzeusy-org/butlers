@@ -23,6 +23,7 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -34,22 +35,16 @@ _PERSON_ID = uuid4()
 _PERSON_2_ID = uuid4()
 
 
-def _row(data: dict) -> MagicMock:
-    row = MagicMock()
-    row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
-    return row
+def _owner_row() -> Record:
+    return Record({"id": _OWNER_ENTITY_ID, "roles": ["owner"]})
 
 
-def _owner_row() -> MagicMock:
-    return _row({"id": _OWNER_ENTITY_ID, "roles": ["owner"]})
+def _total_row(entity_type: str, n: int) -> Record:
+    return Record({"entity_type": entity_type, "n": n})
 
 
-def _total_row(entity_type: str, n: int) -> MagicMock:
-    return _row({"entity_type": entity_type, "n": n})
-
-
-def _sat_row(sat_id: UUID, name: str, entity_type: str, last_seen=None) -> MagicMock:
-    return _row(
+def _sat_row(sat_id: UUID, name: str, entity_type: str, last_seen=None) -> Record:
+    return Record(
         {
             "id": sat_id,
             "canonical_name": name,
@@ -59,12 +54,12 @@ def _sat_row(sat_id: UUID, name: str, entity_type: str, last_seen=None) -> Magic
     )
 
 
-def _edge_row(subject: UUID, obj: str, predicate: str) -> MagicMock:
-    return _row({"subject": subject, "object": obj, "predicate": predicate})
+def _edge_row(subject: UUID, obj: str, predicate: str) -> Record:
+    return Record({"subject": subject, "object": obj, "predicate": predicate})
 
 
-def _person_row(person_id: UUID) -> MagicMock:
-    return _row({"id": person_id})
+def _person_row(person_id: UUID) -> Record:
+    return Record({"id": person_id})
 
 
 def _app_with_pool(

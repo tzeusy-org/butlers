@@ -1330,16 +1330,14 @@ async def test_recovery_path_persists_no_generic_or_history_content(
             {
                 "verb": "approve",
                 "callback_token": callback_sentinel,
-                "dashboard_url": "https://dashboard.example.test/approvals/synthetic",
             },
             {
                 "verb": "reject",
                 "callback_token": callback_sentinel,
-                "dashboard_url": "https://dashboard.example.test/approvals/synthetic",
             },
             {
                 "verb": "open_dashboard",
-                "dashboard_url": "https://dashboard.example.test/approvals/synthetic",
+                "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
             },
         ],
         "recovery": {
@@ -1745,7 +1743,7 @@ async def test_real_database_burst_reservation_emits_one_digest_then_collapses(
     assert fourth_envelope["actions"] == [
         {
             "verb": "open_dashboard",
-            "dashboard_url": "https://dashboard.example.test/approvals",
+            "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
         }
     ]
 

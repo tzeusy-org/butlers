@@ -89,7 +89,7 @@ from butlers.api.read_models.calendar_workspace import (
     CalendarSourceRow,
     query_calendar_sources,
 )
-from butlers.api.routers import audit as audit_router
+from butlers.core import audit as audit_router
 from butlers.core.healing.tracking import create_or_join_attempt, update_attempt_status
 from butlers.core.infra_conditions import (
     ConditionTransition,

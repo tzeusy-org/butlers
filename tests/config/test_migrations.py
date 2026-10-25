@@ -1409,7 +1409,7 @@ def test_current_schema_event_chains_converge_and_preserve_history(postgres_cont
         migration_db_name(),
         chains=["core"],
         schemas={"core": schema} if schema else None,
-        revisions={"core": "core_278"},
+        revisions={"core": "core_279"},
     )
     # This is a genuine predecessor counterfactual, not a hand-built relation.
     assert _table_exists_in_schema(db_url, target, "event_chains") is (target == "general")
@@ -1507,7 +1507,7 @@ def test_current_schema_event_chains_converge_and_preserve_history(postgres_cont
                 )
         _apply_current_event_chains_revision(db_url, target, "upgrade")
         assert _event_chains_history(db_url, target) == history
-        command.downgrade(config, "core_278")
+        command.downgrade(config, "core_279")
         assert _event_chains_history(db_url, target) == history
         command.upgrade(config, "core_280")
         assert _event_chains_history(db_url, target) == history

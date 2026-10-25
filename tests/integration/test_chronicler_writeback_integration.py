@@ -154,7 +154,10 @@ async def test_run_day_close_writeback_end_to_end(pool):
             episode_count=1,
             timezone="UTC",
         )
-    # Closed day 07-09: sleep present, work absent (→ 0s work vs 8h usual = skew).
+    # Closed day 07-09: supported explicit zero work, not absent material.
+    await upsert_daily_rollup(
+        pool, local_date=_DAY, lane="work", seconds=0, episode_count=1, timezone="UTC"
+    )
     await upsert_daily_rollup(
         pool, local_date=_DAY, lane="sleep", seconds=7 * 3600, episode_count=1, timezone="UTC"
     )
@@ -192,3 +195,28 @@ async def test_run_day_close_writeback_end_to_end(pool):
     assert result.proposals_sent == 1
     assert propose.proposals[0].entity_id == str(companion)
     assert PREDICATE_RECURRING_COMPANION not in [c["predicate"] for c in store.calls]
+
+
+async def test_real_absent_and_zero_filled_target_do_not_persist_skew(pool):
+    for prior in range(1, 9):
+        await upsert_daily_rollup(
+            pool,
+            local_date=date(2026, 7, prior),
+            lane="work",
+            seconds=8 * 3600,
+            episode_count=1,
+            timezone="UTC",
+        )
+    store = _StoreSpy()
+    await run_day_close_writeback(pool, day_date=_DAY, timezone="UTC", store_fact_fn=store)
+    assert store.calls == []
+    await upsert_daily_rollup(
+        pool, local_date=_DAY, lane="work", seconds=0, episode_count=0, timezone="UTC"
+    )
+    await run_day_close_writeback(pool, day_date=_DAY, timezone="UTC", store_fact_fn=store)
+    assert store.calls == []
+    await upsert_daily_rollup(
+        pool, local_date=_DAY, lane="work", seconds=0, episode_count=1, timezone="UTC"
+    )
+    await run_day_close_writeback(pool, day_date=_DAY, timezone="UTC", store_fact_fn=store)
+    assert store.calls
