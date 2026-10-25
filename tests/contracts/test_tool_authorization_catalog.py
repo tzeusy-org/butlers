@@ -197,12 +197,85 @@ async def _provider_catalogs():
     assert not errors, errors
 
 
+def _catalog_runtime_databases(monkeypatch: pytest.MonkeyPatch):
+    """Establish actual owner Databases while keeping driver I/O in memory.
+
+    Runtime role validation, verification, codec setup and private derivation
+    stay real. Only asyncpg connection/pool creation is replaced; these fake
+    driver results are software setup, never PostgreSQL authorization evidence.
+    """
+    from butlers.db import Database
+
+    databases = []
+
+    def connection():
+        conn = AsyncMock()
+        conn.terminate = MagicMock()
+        conn.fetchval.return_value = True
+        return conn
+
+    async def connect(**kwargs):
+        return connection()
+
+    async def create_pool(**kwargs):
+        conn = connection()
+        await kwargs["init"](conn)
+        setup = kwargs.get("setup")
+        if setup is not None:
+            await setup(conn)
+        pool = AsyncMock()
+        pool.fetchval.return_value = None
+
+        class Acquisition:
+            async def get(self):
+                if setup is not None:
+                    await setup(conn)
+                return conn
+
+            def __await__(self):
+                return self.get().__await__()
+
+            async def __aenter__(self):
+                return await self.get()
+
+            async def __aexit__(self, *exc):
+                await pool.release(conn)
+
+        pool.acquire = MagicMock(side_effect=Acquisition)
+        databases.append(kwargs["init"].__self__)
+        return pool
+
+    monkeypatch.setattr("butlers.db.asyncpg.connect", AsyncMock(side_effect=connect))
+    monkeypatch.setattr("butlers.db.asyncpg.create_pool", AsyncMock(side_effect=create_pool))
+
+    def primary_database(schema):
+        db = Database(
+            db_name="butlers",
+            schema=schema,
+            role=f"butler_{schema}_rw",
+            host="localhost",
+            port=5432,
+            user="catalog-fixture",
+            password=None,
+            ssl=None,
+            min_pool_size=1,
+            max_pool_size=1,
+        )
+        return db
+
+    async def close_databases():
+        for db in reversed(databases):
+            await db.close()
+        databases.clear()
+
+    return primary_database, close_databases
+
+
 async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Execute native registration and wrapping, never provider or handler bodies."""
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import MagicMock
 
     from butlers.config import load_config
     from butlers.core.tool_catalog import validate_authorization_catalog
@@ -216,27 +289,15 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
     for variant in ("general", "switchboard", "messenger", "relationship", "chronicler"):
         synthetic = await _complete_core_catalog(variant)
         validate_authorization_catalog(synthetic, store_writers=STORE_WRITERS)
-    # Native private-memory pool construction is part of registration; opening
-    # a database is outside this definition gate. Keep its actual config intact.
-    monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
+    # Keep real owner/private-memory establishment, with no driver network I/O.
+    new_runtime_database, close_runtime_databases = _catalog_runtime_databases(monkeypatch)
     catalogs = {}
     for directory in sorted(roster.iterdir()):
         if not (directory / "butler.toml").exists():
             continue
         daemon = ButlerDaemon(
             directory,
-            db=SimpleNamespace(
-                pool=AsyncMock(),
-                schema=directory.name,
-                db_name="butlers",
-                host="localhost",
-                port=5432,
-                user="catalog-fixture",
-                password=None,
-                ssl=None,
-                min_pool_size=1,
-                max_pool_size=1,
-            ),
+            db=new_runtime_database(directory.name),
         )
         daemon.config = load_config(directory)
         daemon.mcp = FastMCP(f"authorization-{directory.name}")
@@ -245,6 +306,7 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
         daemon._module_configs = daemon._validate_module_configs()
         before_tasks = asyncio.all_tasks()
         try:
+            await daemon.db.connect()
             daemon._register_core_tools()
             await daemon._register_module_tools()
             await daemon._apply_approval_gates()
@@ -263,6 +325,7 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
                 task.cancel()
             if registration_tasks:
                 await asyncio.gather(*registration_tasks, return_exceptions=True)
+            await close_runtime_databases()
     assert set(catalogs) == {p.name for p in roster.glob("*/butler.toml") for p in [p.parent]}
     for owner in ("messenger", "relationship"):
         response = catalogs[owner]["calendar_respond"]
