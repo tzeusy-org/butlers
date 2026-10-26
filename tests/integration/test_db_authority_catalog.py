@@ -11,6 +11,7 @@ profile. Locally these genuine PostgreSQL bodies remain NOTRUN.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import os
@@ -113,6 +114,130 @@ else:
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
+@contextmanager
+def _catalog_failure_diagnostics(monkeypatch):
+    """Project failed real relation admission without replacing its decision.
+
+    Only the unchanged validators decide success or failure. A failure-only
+    identity SELECT observes their held connection; its failure or output
+    failure cannot replace the original AuthorityError. Raw identifiers and
+    owner names never leave memory. No observer query runs on success.
+    """
+    from butlers.db_authority import apply
+
+    original_converge = apply.converge_authority
+    original_bind = apply.bind_partition_relations
+    original_validate = apply.validate_relations
+
+    def emit(connection, phase, observed, declared, transition_owner):
+        actors_available = False
+        migration_owner = transition_owner
+        maintenance_owner = None
+        try:
+            current, maintenance_owner = connection.exec_driver_sql(
+                "SELECT current_user, session_user"
+            ).one()
+            if migration_owner is None:
+                migration_owner = current
+            actors_available = True
+        except Exception:
+            # The real validator has already failed; no new error is primary.
+            pass
+        expected = {row.identity: row for row in declared}
+        kinds = {
+            "r": ("table", "table"),
+            "p": ("partitioned_table", "table"),
+            "v": ("view", "view"),
+            "m": ("materialized_view", "other"),
+            "S": ("sequence", "sequence"),
+            "f": ("foreign_table", "other"),
+        }
+        rows = []
+        for actual in observed:
+            schema, name = actual["schema"], actual["name"]
+            kind, identity_kind = kinds.get(actual["kind"], ("other", "other"))
+            row = expected.get((schema, name, identity_kind, ""))
+            expected_enabled, expected_forced = (
+                apply.relation_security_flags(row) if row is not None else (False, False)
+            )
+            identity = json.dumps([schema, name], ensure_ascii=True, separators=(",", ":"))
+            rows.append(
+                {
+                    "identity_sha256": hashlib.sha256(identity.encode("utf-8")).hexdigest(),
+                    "schema_sha256": hashlib.sha256(schema.encode("utf-8")).hexdigest(),
+                    "name_sha256": hashlib.sha256(name.encode("utf-8")).hexdigest(),
+                    "kind": kind,
+                    "declared_identity": row is not None,
+                    "owner_is_expected": row is not None and actual["owner"] == row.owner,
+                    "owner_is_migration": migration_owner is not None
+                    and actual["owner"] == migration_owner,
+                    "owner_is_maintenance": actors_available
+                    and actual["owner"] == maintenance_owner,
+                    "actor_observation_available": actors_available,
+                    "actual_enabled_is_bool": type(actual["rls"]) is bool,
+                    "actual_enabled": actual["rls"] is True,
+                    "actual_forced_is_bool": type(actual["forced_rls"]) is bool,
+                    "actual_forced": actual["forced_rls"] is True,
+                    "expected_flags_available": row is not None,
+                    "expected_enabled": expected_enabled is True,
+                    "expected_forced": expected_forced is True,
+                }
+            )
+        # One complete failed invocation, not an inferred offending-row claim.
+        projection = {
+            "version": 1,
+            "phase": phase,
+            "exception": "AuthorityError",
+            "observed_count": len(rows),
+            "declared_count": len(declared),
+            "rows": sorted(rows, key=lambda item: (item["identity_sha256"], item["kind"])),
+        }
+        sys.stderr.write("DB_AUTHORITY_RELATION_DIAGNOSTIC " + json.dumps(projection) + "\n")
+
+    def converge(connection, *args, **kwargs):
+        def bind(observed, declared, links, **options):
+            try:
+                return original_bind(observed, declared, links, **options)
+            except roles.AuthorityError:
+                try:
+                    emit(
+                        connection,
+                        "bind_partitions",
+                        observed,
+                        declared,
+                        options.get("transition_owner"),
+                    )
+                except Exception:
+                    # Projection failure must never mask the real refusal.
+                    pass
+                raise
+
+        def validate(observed, declared, **options):
+            try:
+                return original_validate(observed, declared, **options)
+            except roles.AuthorityError:
+                try:
+                    emit(
+                        connection,
+                        "validate_relations",
+                        observed,
+                        declared,
+                        options.get("transition_owner"),
+                    )
+                except Exception:
+                    pass
+                raise
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(apply, "bind_partition_relations", bind)
+            scoped.setattr(apply, "validate_relations", validate)
+            return original_converge(connection, *args, **kwargs)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(apply, "converge_authority", converge)
+        yield
+
+
 @pytest.fixture
 def authority_database(postgres_container, tmp_path, monkeypatch):
     name = migration_db_name()
@@ -128,12 +253,13 @@ def authority_database(postgres_container, tmp_path, monkeypatch):
     )
     (entry / "butler.toml").write_text(source)
     monkeypatch.setattr(roles, "_ROSTER_ROOT", root)
-    url = create_migrated_test_db(
-        postgres_container,
-        name,
-        ["core", "chronicler", "memory"],
-        {"core": "chronicler", "chronicler": "chronicler", "memory": "chronicler_mem"},
-    )
+    with _catalog_failure_diagnostics(monkeypatch):
+        url = create_migrated_test_db(
+            postgres_container,
+            name,
+            ["core", "chronicler", "memory"],
+            {"core": "chronicler", "chronicler": "chronicler", "memory": "chronicler_mem"},
+        )
     # Serving admission observes that same deployment's actual database identity,
     # never an administrative source_database alias supplied by a runtime caller.
     (entry / "butler.toml").write_text(source.replace('name="butlers"', f'name="{name}"'))

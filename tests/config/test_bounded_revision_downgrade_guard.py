@@ -20,12 +20,14 @@ Everything here is a filesystem scan — no database, no Docker.
 How the boundary is derived
 ---------------------------
 Nothing in this module names a boundary revision. :func:`boundary_revisions`
-parses every migration in every chain and classifies a revision as a boundary
-when its ``downgrade()`` contains a refusal — a Python ``raise`` or a SQL
-``RAISE EXCEPTION`` — whose message names both a rollback direction
-(``downgrade``/``rollback``/``teardown``) and a privileged authority
-(``bootstrap``/``privileged``/``superuser``/``rolsuper``). The next boundary
-revision is picked up the day it lands, with no edit here. Chain position comes
+parses every migration in every chain. It recognizes inline Python/SQL refusals
+whose messages name both a rollback direction and privileged bootstrap authority.
+It also recognizes calls imported from the two source-owned protected-boundary
+interfaces: complete protected-group absence and explicit preserving reverse.
+These calls retain their real authority checks in production; this scanner only
+classifies migration source. Unrelated same-name helpers and shadowed bindings
+are not authority. The next revision using either recognized form is picked up
+without adding its revision id here. Chain position comes
 from Alembic's own ``walk_revisions()`` (via
 :func:`butlers.migrations.get_chain_revision_ids`'s script directory), so
 "below" means "earlier in the real revision graph", not "smaller number".
@@ -47,9 +49,15 @@ What the detector cannot see
   resolved within one file, including pytest fixture parameters that name a
   same-module fixture. A ``conftest.py`` fixture that migrates to head is not
   followed.
-- **Refusals worded outside the house style.** A future boundary whose
-  exception message omits the authority vocabulary above is not classified as
-  a boundary, and downgrades past it are not flagged.
+- **Other delegated interfaces or indirect calls.** Only direct function imports
+  from the two declared source-owned interfaces are recognized, including aliases
+  and imports local to ``downgrade``. Attribute dispatch, wrappers and other
+  helpers require an explicit classifier successor; their names alone do not
+  establish a boundary. Nested function bodies and literal-false branches are
+  not executed by the enclosing ``downgrade`` and do not count as calls.
+- **Other inline refusal wording.** A future inline refusal omitting the
+  direction/authority vocabulary is not classified without a source-bound
+  detector successor.
 - **Non-reversible revisions that are not authority boundaries** (e.g.
   ``memory_010``'s ``NotImplementedError``, ``approvals_012``'s data-conditional
   refusal) are a related failure mode this guard deliberately does not cover.
@@ -147,13 +155,89 @@ def _refusal_messages(downgrade: ast.FunctionDef | ast.AsyncFunctionDef) -> list
     return messages
 
 
+_SOURCE_BOUNDARY_INTERFACES = frozenset(
+    {
+        "butlers.db_authority.interfaces.require_boundary_absence",
+        "butlers.db_authority.apply.require_preserving_reverse",
+    }
+)
+
+
+def _boundary_scope_nodes(scope: ast.AST, *, calls: bool = False) -> list[ast.AST]:
+    """Inspect one lexical scope, not nested definitions or dead literal branches."""
+    nodes: list[ast.AST] = []
+    stack = list(ast.iter_child_nodes(scope))
+    while stack:
+        node = stack.pop()
+        nodes.append(node)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda):
+            continue
+        if calls and isinstance(node, ast.If) and isinstance(node.test, ast.Constant):
+            if node.test.value is False or node.test.value is True:
+                stack.extend(node.body if node.test.value is True else node.orelse)
+                continue
+        stack.extend(ast.iter_child_nodes(node))
+    return nodes
+
+
+def _boundary_import_bindings(scope: ast.AST) -> dict[str, str | None]:
+    """Resolve direct imports only when every binding of that name agrees.
+
+    Local assignments, arguments and unrelated imports shadow a module import.
+    Inspect all branches for bindings: even an unexecuted local assignment makes
+    that name local in Python. An import in a dead branch still shadows a
+    module binding, but cannot supply source authority to a later live call.
+    """
+    candidates: dict[str, set[str | None]] = {}
+    live_nodes = {id(node) for node in _boundary_scope_nodes(scope, calls=True)}
+    for node in _boundary_scope_nodes(scope):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                qualified = (
+                    f"{node.module}.{alias.name}"
+                    if node.level == 0 and id(node) in live_nodes
+                    else None
+                )
+                candidates.setdefault(alias.asname or alias.name, set()).add(qualified)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                candidates.setdefault(alias.asname or alias.name.split(".")[0], set()).add(None)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store | ast.Del):
+            candidates.setdefault(node.id, set()).add(None)
+        elif isinstance(node, ast.arg):
+            candidates.setdefault(node.arg, set()).add(None)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            candidates.setdefault(node.name, set()).add(None)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            candidates.setdefault(node.name, set()).add(None)
+    return {
+        name: next(iter(values)) if len(values) == 1 else None
+        for name, values in candidates.items()
+    }
+
+
+def _calls_source_boundary(module: ast.Module, downgrade: ast.AST) -> bool:
+    """A direct call must resolve to an unchanged source-owned guard import."""
+    bindings = _boundary_import_bindings(module)
+    bindings.update(_boundary_import_bindings(downgrade))
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and bindings.get(node.func.id) in _SOURCE_BOUNDARY_INTERFACES
+        for node in _boundary_scope_nodes(downgrade, calls=True)
+    )
+
+
 def _refuses_without_trusted_bootstrap(source: str) -> bool:
-    """True when a migration's ``downgrade()`` refuses an unprivileged caller."""
-    for node in ast.parse(source).body:
+    """Recognize inline refusals and source-owned protected reverse guards."""
+    module = ast.parse(source)
+    for node in module.body:
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
         if node.name != "downgrade":
             continue
+        if _calls_source_boundary(module, node):
+            return True
         for message in _refusal_messages(node):
             lowered = message.lower()
             if any(term in lowered for term in _ROLLBACK_DIRECTION_TERMS) and any(
@@ -168,8 +252,8 @@ def boundary_revisions() -> dict[str, tuple[str, ...]]:
     """Chain → its trusted-bootstrap boundary revisions, in applied order.
 
     Derived from the migration sources themselves, never from a literal written
-    here: a revision is a boundary when its ``downgrade()`` refuses a caller
-    that lacks privileged bootstrap authority.
+    here: a revision is a boundary when its ``downgrade()`` has a recognized
+    inline refusal or invokes the source-owned absence/preserving-reverse guard.
     """
     boundaries: dict[str, tuple[str, ...]] = {}
     for chain, revisions in chain_revision_order().items():
@@ -729,7 +813,9 @@ def test_guard_fires_when_the_head_upgrade_arrives_through_a_fixture(tmp_path):
 
 def test_guard_accepts_the_bounded_revision_pattern(tmp_path):
     """``revisions={"core": ...}`` is the documented remedy and must stay clean."""
-    bounded = _revision_well_below_the_boundary()
+    order = chain_revision_order()["core"]
+    first_boundary = min(order.index(revision) for revision in boundary_revisions()["core"])
+    previous, bounded = order[first_boundary - 2 : first_boundary]
     source = textwrap.dedent(
         f"""
         def test_old_migration_round_trips(postgres_container):
@@ -739,7 +825,7 @@ def test_guard_accepts_the_bounded_revision_pattern(tmp_path):
                 chains=["core"],
                 revisions={{"core": {bounded!r}}},
             )
-            command.downgrade(_build_alembic_config(db_url, chains=["core"]), "core_100")
+            command.downgrade(_build_alembic_config(db_url, chains=["core"]), {previous!r})
         """
     )
 
@@ -809,3 +895,148 @@ def test_guard_ignores_a_chain_that_carries_no_boundary(tmp_path):
     )
 
     assert bounded_revision_findings(tmp_path / "test_clean_chain.py", source) == []
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "def downgrade():\n    raise RuntimeError('downgrade requires trusted bootstrap')",
+            True,
+        ),
+        (
+            "def downgrade():\n"
+            "    op.execute(\"DO $$ BEGIN RAISE EXCEPTION 'rollback requires "
+            "privileged authority'; END $$\")",
+            True,
+        ),
+        (
+            "from butlers.db_authority.interfaces import require_boundary_absence\n"
+            "def downgrade():\n"
+            "    require_boundary_absence(connection, 'attention')",
+            True,
+        ),
+        (
+            "from butlers.db_authority.apply import require_preserving_reverse as reverse\n"
+            "def downgrade():\n"
+            "    reverse(connection)",
+            True,
+        ),
+        (
+            "def downgrade():\n"
+            "    if crosses_boundary():\n"
+            "        from butlers.db_authority.interfaces import "
+            "require_boundary_absence as guard\n"
+            "        guard(connection, 'dnd')",
+            True,
+        ),
+        (
+            "from unrelated import require_boundary_absence\n"
+            "def downgrade():\n"
+            "    require_boundary_absence(connection, 'attention')",
+            False,
+        ),
+        (
+            "def require_boundary_absence(*args):\n"
+            "    pass\n"
+            "def downgrade():\n"
+            "    require_boundary_absence(connection, 'attention')",
+            False,
+        ),
+        (
+            "from butlers.db_authority.interfaces import require_boundary_absence\n"
+            "def upgrade():\n"
+            "    require_boundary_absence(connection, 'attention')\n"
+            "def downgrade():\n"
+            "    pass",
+            False,
+        ),
+        (
+            "from butlers.db_authority.apply import require_preserving_reverse\n"
+            "def downgrade():\n"
+            "    'require_preserving_reverse(connection)'",
+            False,
+        ),
+        (
+            "from butlers.db_authority.apply import require_preserving_reverse\n"
+            "def downgrade():\n"
+            "    def unused():\n"
+            "        require_preserving_reverse(connection)\n"
+            "    pass",
+            False,
+        ),
+        (
+            "from butlers.db_authority.apply import require_preserving_reverse as guard\n"
+            "def downgrade():\n"
+            "    guard = lambda *args: None\n"
+            "    guard(connection)",
+            False,
+        ),
+        (
+            "from butlers.db_authority.apply import require_preserving_reverse as guard\n"
+            "def downgrade(guard):\n"
+            "    guard(connection)",
+            False,
+        ),
+        (
+            "from butlers.db_authority.apply import require_preserving_reverse\n"
+            "def downgrade():\n"
+            "    if False:\n"
+            "        require_preserving_reverse(connection)",
+            False,
+        ),
+        (
+            "def downgrade():\n"
+            "    if False:\n"
+            "        from butlers.db_authority.apply import "
+            "require_preserving_reverse as guard\n"
+            "    guard(connection)",
+            False,
+        ),
+    ],
+    ids=[
+        "inline-python",
+        "inline-sql",
+        "absence-import",
+        "reverse-alias",
+        "local-conditional",
+        "unrelated-import",
+        "same-name-noop",
+        "upgrade-only",
+        "string-only",
+        "nested-unused",
+        "shadowed-alias",
+        "shadowed-argument",
+        "dead-call",
+        "dead-import-live-call",
+    ],
+)
+def test_boundary_classifier_resolves_only_source_owned_reverse_calls(source, expected):
+    assert _refuses_without_trusted_bootstrap(source) is expected
+
+
+def test_current_delegated_boundary_sources_remain_nonvacuous():
+    """Read actual revision sources; do not manufacture revision authority by id."""
+    found: set[str] = set()
+    for chain in chain_revision_order():
+        directory = _resolve_chain_dir(chain)
+        assert directory is not None
+        for path in directory.glob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            module = ast.parse(source)
+            for node in module.body:
+                if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                if node.name != "downgrade":
+                    continue
+                imports = {
+                    f"{item.module}.{alias.name}"
+                    for item in [*module.body, *_boundary_scope_nodes(node)]
+                    if isinstance(item, ast.ImportFrom) and item.level == 0
+                    for alias in item.names
+                }
+                guards = imports & _SOURCE_BOUNDARY_INTERFACES
+                if guards:
+                    assert _refuses_without_trusted_bootstrap(source), path
+                    found.update(guards)
+    assert found == _SOURCE_BOUNDARY_INTERFACES
