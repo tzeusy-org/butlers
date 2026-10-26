@@ -11,6 +11,7 @@ profile. Locally these genuine PostgreSQL bodies remain NOTRUN.
 from __future__ import annotations
 
 import asyncio
+import gzip
 import hashlib
 import io
 import json
@@ -701,32 +702,35 @@ async def test_native_handoff_rejects_changed_policy_or_trigger(authority_databa
 
 
 def _extract_pinned_predecessor(destination):
-    """Extract only regular source files from an already-present immutable object."""
-    archive = subprocess.run(
-        [
-            "git",
-            "archive",
-            "--format=tar",
-            _PREDECESSOR,
-            "src",
-            "alembic",
-            "roster",
-            "scripts",
-            "deploy",
-            "docker-compose.yml",
-        ],
-        cwd=_REPOSITORY,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        timeout=30,
-        check=False,
-    )
-    if archive.returncode:
-        raise RuntimeError("Pinned predecessor Git object is unavailable")
-    with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as source:
+    """Extract the exact released source closure, without hosted Git history or IO."""
+    archived_source = _REPOSITORY / "tests/integration/data/db_authority_predecessor_30b376.tar.gz"
+    # SHA pins the complete git-archive stream for _PREDECESSOR, including
+    # the original initializer/package/roster/Helm/Compose source closure.
+    with archived_source.open("rb") as stream:
+        packed = stream.read(16 * 1024 * 1024 + 1)
+    if (
+        len(packed) != 6262636
+        or hashlib.sha256(packed).hexdigest()
+        != "4e80f07d9451eec57ddfefbd4d59319d75cd0978730996c212c2197c801ec3f9"
+    ):
+        raise RuntimeError("Pinned predecessor source archive is unavailable or invalid")
+    with gzip.GzipFile(fileobj=io.BytesIO(packed)) as stream:
+        released = stream.read(40 * 1024 * 1024 + 1)
+    if (
+        len(released) != 29204480
+        or hashlib.sha256(released).hexdigest()
+        != "a9e6f22879a598ffe3ebfcf02464d3af1d055e3837505cb82d50f9eeaa37c7fa"
+    ):
+        raise RuntimeError("Pinned predecessor source archive is incomplete")
+    helm_payloads = []
+    with tarfile.open(fileobj=io.BytesIO(released)) as source:
         for member in source:
             path = destination / member.name
-            if not path.resolve().is_relative_to(destination.resolve()):
+            if (
+                Path(member.name).is_absolute()
+                or ".." in Path(member.name).parts
+                or not path.resolve().is_relative_to(destination.resolve())
+            ):
                 raise RuntimeError("Pinned predecessor archive path is invalid")
             if member.isdir():
                 path.mkdir(parents=True, exist_ok=True)
@@ -736,7 +740,15 @@ def _extract_pinned_predecessor(destination):
                     raise RuntimeError("Pinned predecessor source is incomplete")
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(stream.read())
-            elif member.issym() and any(part.startswith(".") for part in path.parts):
+            elif (
+                member.issym()
+                and member.name == "deploy/helm/butlers/files/pg_dump.sh"
+                and member.linkname == "../../../backup/pg_dump.sh"
+            ):
+                # The released Helm Files.Get payload is a contained source
+                # link. Materialize only this exact pinned target, never a link.
+                helm_payloads.append(path)
+            elif member.issym() and any(part.startswith(".") for part in Path(member.name).parts):
                 # Released roster agent-skill links are not package/migration
                 # inputs. Do not follow them out of the extracted tree.
                 continue
@@ -744,6 +756,18 @@ def _extract_pinned_predecessor(destination):
                 # A source link cannot redirect package loading outside this
                 # immutable extraction. All required package inputs are files.
                 raise RuntimeError("Pinned predecessor source link is unsupported")
+    for path in helm_payloads:
+        target = destination / "deploy/backup/pg_dump.sh"
+        if not target.resolve().is_relative_to(destination.resolve()) or target.is_symlink():
+            raise RuntimeError("Pinned predecessor Helm payload target is invalid")
+        payload = target.read_bytes()
+        if (
+            hashlib.sha256(payload).hexdigest()
+            != "d5b63ac75560332292309931e53946168cc2565e92741358fe7060cbca074d01"
+        ):
+            raise RuntimeError("Pinned predecessor Helm payload target is incomplete")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
 
 
 def _run_pinned_predecessor(root, payload):

@@ -5132,3 +5132,186 @@ def test_actual_outbox_selected_upgrade_stages_history_then_finalizes_complete_h
 
     for failure in (None, "bounded", "head", "finalize", "exit", "cancel"):
         run_case(failure)
+
+
+def test_pinned_predecessor_archive_is_offline_complete_and_refuses_before_pg(
+    tmp_path, monkeypatch
+):
+    """Actual extractor/fixture; no historical Git, network or PostgreSQL execution."""
+    import gzip
+    import hashlib
+    import io
+    import runpy
+    import socket
+    import subprocess
+    import tarfile
+    from pathlib import Path
+
+    import testcontainers.postgres
+
+    namespace = runpy.run_path(
+        str(Path(__file__).parents[1] / "integration" / "test_db_authority_catalog.py")
+    )
+    extract = namespace["_extract_pinned_predecessor"]
+    fixture = namespace["rollback_database"].__wrapped__
+    bound = extract.__globals__
+    archive = (
+        Path(__file__).parents[1] / "integration/data/db_authority_predecessor_30b376.tar.gz"
+    ).read_bytes()
+    expected = {}
+    with tarfile.open(fileobj=io.BytesIO(gzip.decompress(archive))) as source:
+        for member in source:
+            if member.isfile():
+                expected[member.name] = hashlib.sha256(
+                    source.extractfile(member).read()
+                ).hexdigest()
+    expected["deploy/helm/butlers/files/pg_dump.sh"] = expected["deploy/backup/pg_dump.sh"]
+    refused = []
+
+    def no_io(*args, **kwargs):
+        refused.append("unexpected IO")
+        raise AssertionError("predecessor extraction attempted external IO")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(subprocess, "run", no_io)
+        patch.setattr(socket.socket, "connect", no_io)
+        for name in ("ordinary", ".tmp/hidden"):
+            destination = tmp_path / name
+            destination.mkdir(parents=True)
+            extract(destination)
+            actual = {
+                path.relative_to(destination).as_posix(): hashlib.sha256(
+                    path.read_bytes()
+                ).hexdigest()
+                for path in destination.rglob("*")
+                if path.is_file()
+            }
+            assert actual == expected
+            assert not any(path.is_symlink() for path in destination.rglob("*"))
+        assert refused == []
+
+    # Exercise the real fixture ordering too: every damaged source refuses
+    # before even constructing its disposable PostgreSQL container.
+    created = []
+
+    def no_container(*args, **kwargs):
+        created.append("constructed")
+        raise AssertionError("damaged archive reached PostgreSQL setup")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(testcontainers.postgres, "PostgresContainer", no_container)
+        patch.setattr(subprocess, "run", no_io)
+        patch.setattr(socket.socket, "connect", no_io)
+        for index, payload in enumerate(
+            (
+                None,
+                archive[:-1],
+                b"X" + archive[1:],
+                archive + b"\0",
+                gzip.compress(b"wrong predecessor"),
+            )
+        ):
+            root = tmp_path / f"damaged-{index}"
+            data = root / "tests/integration/data/db_authority_predecessor_30b376.tar.gz"
+            data.parent.mkdir(parents=True)
+            if payload is not None:
+                data.write_bytes(payload)
+            patch.setitem(bound, "_REPOSITORY", root)
+            attempt = root / "fixture"
+            attempt.mkdir()
+            with pytest.raises((FileNotFoundError, RuntimeError)):
+                next(fixture(attempt, monkeypatch))
+        assert created == []
+        assert refused == []
+
+
+def test_pinned_predecessor_extractor_refuses_unsafe_members_independent_of_destination(
+    tmp_path, monkeypatch
+):
+    """Real extraction guards with source-pin literals rebound to synthetic archives.
+
+    Only the isolated function copy's size/digest fixture literals change. The
+    committed consumer's complete released archive pins remain untouched.
+    """
+    import ast
+    import gzip
+    import hashlib
+    import inspect
+    import io
+    import runpy
+    import tarfile
+    from pathlib import Path
+
+    namespace = runpy.run_path(
+        str(Path(__file__).parents[1] / "integration" / "test_db_authority_catalog.py")
+    )
+    extract = namespace["_extract_pinned_predecessor"]
+    real_source = inspect.getsource(extract)
+    source_root = tmp_path / "source"
+    data = source_root / "tests/integration/data/db_authority_predecessor_30b376.tar.gz"
+    data.parent.mkdir(parents=True)
+    real_packed = (
+        Path(__file__).parents[1] / "integration/data/db_authority_predecessor_30b376.tar.gz"
+    ).read_bytes()
+    real_released = gzip.decompress(real_packed)
+    # These cases pass actual SHA verification with explicit synthetic pins,
+    # then demand the unchanged real path/link/target guard to refuse.
+    for case, name, target in (
+        ("parent", "../escape", None),
+        ("absolute", "/absolute/escape", None),
+        ("foreign", "foreign-link", "../outside"),
+        ("wrong-helm-link", "deploy/helm/butlers/files/pg_dump.sh", "../../../../outside"),
+        (
+            "missing-helm-target",
+            "deploy/helm/butlers/files/pg_dump.sh",
+            "../../../backup/pg_dump.sh",
+        ),
+        (
+            "corrupt-helm-target",
+            "deploy/helm/butlers/files/pg_dump.sh",
+            "../../../backup/pg_dump.sh",
+        ),
+    ):
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w") as archive:
+            member = tarfile.TarInfo(name)
+            if target is None:
+                member.size = 1
+                archive.addfile(member, io.BytesIO(b"x"))
+            else:
+                member.type = tarfile.SYMTYPE
+                member.linkname = target
+                archive.addfile(member)
+            if case == "corrupt-helm-target":
+                member = tarfile.TarInfo("deploy/backup/pg_dump.sh")
+                member.size = 1
+                archive.addfile(member, io.BytesIO(b"x"))
+        released = stream.getvalue()
+        packed = gzip.compress(released, mtime=0)
+        changes = {
+            len(real_packed): len(packed),
+            len(real_released): len(released),
+            hashlib.sha256(real_packed).hexdigest(): hashlib.sha256(packed).hexdigest(),
+            hashlib.sha256(real_released).hexdigest(): hashlib.sha256(released).hexdigest(),
+        }
+
+        class FixturePins(ast.NodeTransformer):
+            def __init__(self, pins):
+                self.pins = pins
+
+            def visit_Constant(self, node):
+                if node.value in self.pins:
+                    return ast.copy_location(ast.Constant(self.pins[node.value]), node)
+                return node
+
+        tree = ast.fix_missing_locations(FixturePins(changes).visit(ast.parse(real_source)))
+        isolated = dict(extract.__globals__, _REPOSITORY=source_root)
+        exec(compile(tree, "<pinned-source-archive-control>", "exec"), isolated)
+        data.write_bytes(packed)
+        for destination_name in ("ordinary", ".tmp/hidden"):
+            destination = tmp_path / case / destination_name
+            destination.mkdir(parents=True)
+            with pytest.raises((RuntimeError, FileNotFoundError)):
+                isolated["_extract_pinned_predecessor"](destination)
+            assert not (tmp_path / case / "escape").exists()
+            assert not any(path.is_symlink() for path in destination.rglob("*"))
