@@ -412,6 +412,103 @@ async def test_real_migrated_private_consumer_and_independent_commit(authority_d
         pool = await primary.connect()
         assert type(pool) is asyncpg.Pool
         assert await pool.fetchval("SELECT current_user") == "butler_chronicler_rw"
+        # Core246 protects the actual connector table with ENABLE, not FORCE.
+        # Observe its physical catalog independently of the compiler response.
+        flags = await admin.fetchrow(
+            "SELECT c.relrowsecurity, c.relforcerowsecurity FROM pg_catalog.pg_class c "
+            "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+            "WHERE n.nspname='connectors' AND c.relname='home_assistant_persons'"
+        )
+        assert tuple(flags) == (True, False)
+        policies = await admin.fetch(
+            "SELECT p.polname,p.polcmd,p.polpermissive,p.polroles, "
+            "pg_catalog.pg_get_expr(p.polqual,p.polrelid,false) AS using_expr, "
+            "pg_catalog.pg_get_expr(p.polwithcheck,p.polrelid,false) AS check_expr "
+            "FROM pg_catalog.pg_policy p "
+            "JOIN pg_catalog.pg_class c ON c.oid=p.polrelid "
+            "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+            "WHERE n.nspname='connectors' AND c.relname='home_assistant_persons'"
+        )
+        from butlers.db_authority.grants import security_expression_tokens
+
+        by_name = {row["polname"]: row for row in policies}
+        assert set(by_name) == {"ha_person_mappings_select", "ha_person_mappings_insert"}
+        read, write = by_name["ha_person_mappings_select"], by_name["ha_person_mappings_insert"]
+        assert (read["polcmd"], read["polpermissive"], list(read["polroles"])) == ("r", True, [0])
+        assert read["check_expr"] is None
+        assert security_expression_tokens(read["using_expr"]) == security_expression_tokens(
+            "(CURRENT_USER = ANY (ARRAY['butler_switchboard_rw'::name, 'butler_chronicler_rw'::name]))"
+        )
+        assert (write["polcmd"], write["polpermissive"], list(write["polroles"])) == (
+            "a",
+            True,
+            [0],
+        )
+        assert write["using_expr"] is None
+        assert security_expression_tokens(write["check_expr"]) == security_expression_tokens(
+            "(CURRENT_USER = 'butler_switchboard_rw'::name)"
+        )
+        mapping_key = "person.authority_" + uuid.uuid4().hex
+        entity_id = None
+        try:
+            # This selected deployment contains Chronicler alone. Its lawful
+            # owner seeds the row; no absent Switchboard grant is invented.
+            async with admin.transaction():
+                connection = admin
+                entity_id = await connection.fetchval(
+                    "INSERT INTO public.entities(canonical_name,entity_type) "
+                    "VALUES($1,'person') RETURNING id",
+                    mapping_key,
+                )
+                await connection.execute(
+                    "INSERT INTO connectors.home_assistant_persons(ha_entity_id,entity_id) "
+                    "VALUES($1,$2)",
+                    mapping_key,
+                    entity_id,
+                )
+                assert (
+                    await connection.fetchval(
+                        "SELECT entity_id FROM connectors.home_assistant_persons WHERE ha_entity_id=$1",
+                        mapping_key,
+                    )
+                    == entity_id
+                )
+            # Independent real native acquisitions observe the committed row.
+            for _ in range(2):
+                async with pool.acquire() as connection:
+                    assert (
+                        await connection.fetchval("SELECT current_user") == "butler_chronicler_rw"
+                    )
+                    assert (
+                        await connection.fetchval(
+                            "SELECT entity_id FROM connectors.home_assistant_persons WHERE ha_entity_id=$1",
+                            mapping_key,
+                        )
+                        == entity_id
+                    )
+            with pytest.raises(asyncpg.InsufficientPrivilegeError) as denied:
+                await pool.execute(
+                    "INSERT INTO connectors.home_assistant_persons(ha_entity_id,entity_id) "
+                    "VALUES($1,$2)",
+                    mapping_key + "_denied",
+                    entity_id,
+                )
+            assert denied.value.sqlstate == "42501"
+            assert (
+                await admin.fetchval(
+                    "SELECT count(*) FROM connectors.home_assistant_persons WHERE ha_entity_id=$1",
+                    mapping_key + "_denied",
+                )
+                == 0
+            )
+        finally:
+            # The exact disposable case owns both synthetic rows. No grants,
+            # memberships or policies are introduced by this observation.
+            await admin.execute(
+                "DELETE FROM connectors.home_assistant_persons WHERE ha_entity_id=$1", mapping_key
+            )
+            if entity_id is not None:
+                await admin.execute("DELETE FROM public.entities WHERE id=$1", entity_id)
         child = primary.for_owned_schema("chronicler_mem")
         try:
             private = await child.connect()  # actual mem_015 ACL; no fixture private grant
@@ -1208,6 +1305,53 @@ def _observe_rebuilt_relation_matrix(result, engine):
                 return connection.execute(text(sql), params or {}).scalar_one()
             finally:
                 transaction.rollback()
+
+    # Switchboard is actually selected in this full thirteen-layout deployment.
+    # Its effective-role INSERT proof is separate from native Chronicler access.
+    mapping_key = "person.authority_" + uuid.uuid4().hex
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            entity_id = connection.execute(
+                text(
+                    "INSERT INTO public.entities(canonical_name,entity_type) "
+                    "VALUES(:name,'person') RETURNING id"
+                ),
+                {"name": mapping_key},
+            ).scalar_one()
+            connection.exec_driver_sql("SET LOCAL ROLE butler_switchboard_rw")
+            assert (
+                connection.execute(text("SELECT current_user")).scalar_one()
+                == "butler_switchboard_rw"
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO connectors.home_assistant_persons(ha_entity_id,entity_id) "
+                    "VALUES(:name,:entity)"
+                ),
+                {"name": mapping_key, "entity": entity_id},
+            )
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT entity_id FROM connectors.home_assistant_persons WHERE ha_entity_id=:name"
+                    ),
+                    {"name": mapping_key},
+                ).scalar_one()
+                == entity_id
+            )
+        finally:
+            transaction.rollback()
+    with engine.connect() as observer:
+        assert (
+            observer.execute(
+                text(
+                    "SELECT count(*) FROM connectors.home_assistant_persons WHERE ha_entity_id=:name"
+                ),
+                {"name": mapping_key},
+            ).scalar_one()
+            == 0
+        )
 
     # Fixed registry purpose: actual row-trigger initialization, boot CAS,
     # control-plane mutation, QA projection and Finance pure READ all execute

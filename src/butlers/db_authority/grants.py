@@ -76,7 +76,6 @@ _ENABLED_ROW_SECURITY = (
             "insight_feedback",
             "insight_amendments",
             "ha_person_mapping_receipts",
-            "ha_person_mappings",
             "capability_catalog_installations",
             "capability_catalog_control",
             "capability_catalog_current",
@@ -84,6 +83,7 @@ _ENABLED_ROW_SECURITY = (
             "capability_catalog_members",
         )
     )
+    | frozenset({("connectors", "home_assistant_persons")})
     | frozenset(
         ("switchboard", name)
         for name in (
@@ -5221,13 +5221,15 @@ def compiled_security_contract(manifest: RelationManifest, *, ordinary_purposes=
         predicate,
     )
     policy(
-        "public",
-        "ha_person_mappings",
+        "connectors",
+        "home_assistant_persons",
         "ha_person_mappings_select",
         "r",
         "(CURRENT_USER = ANY (ARRAY['butler_switchboard_rw'::name, 'butler_chronicler_rw'::name]))",
     )
-    policy("public", "ha_person_mappings", "ha_person_mappings_insert", "a", check=predicate)
+    policy(
+        "connectors", "home_assistant_persons", "ha_person_mappings_insert", "a", check=predicate
+    )
     predicate = equal("butler_qa_rw")
     policy("public", "qa_publication_operations", "qa_publication_operations_read", "r", "true")
     policy(

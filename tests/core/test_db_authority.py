@@ -1496,6 +1496,88 @@ def test_actual_source_manifest_binds_both_row_security_flags(name, enabled, for
             validate_relations([changed], (row,))
 
 
+def test_ha_mapping_manifest_preserves_actual_core246_rls_and_policy_identities(monkeypatch):
+    """Execute the landed producer; catalog declarations preserve its exact boundary."""
+    import runpy
+    from pathlib import Path
+
+    from butlers.db_authority.apply import validate_relations
+    from butlers.db_authority.grants import (
+        relation_security_flags,
+        security_expression_tokens,
+        serving_catalog_contract,
+        shared_reader_objects,
+    )
+
+    producer = runpy.run_path(
+        str(
+            Path(__file__).resolve().parents[2] / "alembic/versions/core/"
+            "core_246_ha_person_mapping_receipts.py"
+        )
+    )
+    emitted = []
+    monkeypatch.setattr(producer["op"], "execute", lambda sql: emitted.append(str(sql)))
+    producer["upgrade"]()
+    normalized = [" ".join(sql.split()) for sql in emitted]
+    identity = ("connectors", "home_assistant_persons")
+    assert producer["_MAPPINGS"] == ".".join(identity)
+    assert f"ALTER TABLE {producer['_MAPPINGS']} ENABLE ROW LEVEL SECURITY" in normalized
+    assert f"ALTER TABLE {producer['_MAPPINGS']} NO FORCE ROW LEVEL SECURITY" in normalized
+    row = next(
+        row for row in shared_reader_objects("normal_owner") if (row.schema, row.name) == identity
+    )
+    assert relation_security_flags(row) == (True, False)
+    actual = dict(
+        schema=identity[0],
+        name=identity[1],
+        kind="r",
+        owner="normal_owner",
+        oid=42,
+        rls=True,
+        forced_rls=False,
+    )
+    assert validate_relations([actual], (row,)) == ((actual, row),)
+    for changed in (actual | {"rls": False}, actual | {"forced_rls": True}):
+        with pytest.raises(AuthorityError):
+            validate_relations([changed], (row,))
+    policies = [
+        policy
+        for policy in serving_catalog_contract("butlers")["policies"]
+        if policy["name"] in {"ha_person_mappings_select", "ha_person_mappings_insert"}
+    ]
+    assert {(policy["schema"], policy["table"]) for policy in policies} == {identity}
+    assert len(policies) == 2
+    by_name = {policy["name"]: policy for policy in policies}
+    read = by_name["ha_person_mappings_select"]
+    write = by_name["ha_person_mappings_insert"]
+    assert (read["command"], read["roles"], read["permissive"], read["check"]) == (
+        "r",
+        ["PUBLIC"],
+        True,
+        None,
+    )
+    assert read["using"] == security_expression_tokens(
+        "(CURRENT_USER = ANY (ARRAY['butler_switchboard_rw'::name, 'butler_chronicler_rw'::name]))"
+    )
+    assert (write["command"], write["roles"], write["permissive"], write["using"]) == (
+        "a",
+        ["PUBLIC"],
+        True,
+        None,
+    )
+    assert write["check"] == security_expression_tokens(
+        "(CURRENT_USER = 'butler_switchboard_rw'::name)"
+    )
+    assert (
+        "CREATE POLICY ha_person_mappings_select ON connectors.home_assistant_persons "
+        "FOR SELECT TO PUBLIC USING (current_user IN ('butler_switchboard_rw', 'butler_chronicler_rw'))"
+    ) in normalized
+    assert (
+        "CREATE POLICY ha_person_mappings_insert ON connectors.home_assistant_persons "
+        "FOR INSERT TO PUBLIC WITH CHECK (current_user = 'butler_switchboard_rw')"
+    ) in normalized
+
+
 def test_pinned_predecessor_retirement_never_adopts_discovered_function_authority():
     from butlers.db_authority.interfaces import (
         _RETIRED_PREDECESSOR_FUNCTIONS,
