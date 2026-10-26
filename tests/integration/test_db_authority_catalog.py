@@ -2559,3 +2559,111 @@ def _prove_current_condition_marker_transition(result, engine, stable):
                         'SELECT "' + field + '" FROM public."' + table + '" WHERE singleton'
                     ).scalar_one() is (state == "enabled")
         assert _rollback_observer(result["admin_url"]) == stable
+
+
+async def test_real_normal_multischema_replay_preserves_protected_user_context(postgres_container):
+    """Actual normal-role core replay sees the ACL-hidden physical destination.
+
+    The held administrative session supplies maintenance transport only. Both
+    chains select the real normal migrator; a separate authenticated normal
+    connection proves catalog visibility differs from information_schema.
+    Locally this genuine PostgreSQL body is authored/collected only.
+    """
+    from butlers.migrations import finalize_authority, migration_session, run_migrations
+    from butlers.testing.migration import create_migration_db
+
+    def run():
+        name = migration_db_name()
+        normal_url = create_migration_db(postgres_container, name)
+        admin_url = migration_bootstrap_db_url(postgres_container, name)
+        normal = create_engine(normal_url, poolclass=NullPool, connect_args={"connect_timeout": 5})
+        observer = create_engine(admin_url, poolclass=NullPool, connect_args={"connect_timeout": 5})
+        catalog = text(
+            "SELECT c.oid,r.rolname,c.relacl::text,c.relrowsecurity,c.relforcerowsecurity,"
+            "(SELECT COALESCE(jsonb_agg(to_jsonb(u) ORDER BY u.id),'[]'::jsonb) "
+            " FROM public.user_context u),"
+            "(SELECT COALESCE(jsonb_agg(jsonb_build_array(p.polname,p.polcmd,p.polpermissive,"
+            "p.polroles::text,pg_get_expr(p.polqual,p.polrelid),"
+            "pg_get_expr(p.polwithcheck,p.polrelid)) ORDER BY p.polname),'[]'::jsonb) "
+            " FROM pg_catalog.pg_policy p WHERE p.polrelid=c.oid) "
+            "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+            "JOIN pg_catalog.pg_roles r ON r.oid=c.relowner "
+            "WHERE n.nspname='public' AND c.relname='user_context' AND c.relkind IN ('r','p')"
+        )
+        try:
+            with migration_session(admin_url, source_database="butlers") as held:
+                asyncio.run(
+                    run_migrations(normal_url, chain="core", schema="relationship", connection=held)
+                )
+                finalize_authority(
+                    held, source_database="butlers", plans=(("core", "relationship", None),)
+                )
+                # Real source writer, not a fixture table GRANT or direct row
+                # insertion, retains a nonempty protected data witness.
+                held.exec_driver_sql("SET ROLE butler_general_rw")
+                held.execute(
+                    text(
+                        "SELECT * FROM public.context_dnd_mutate(CAST(:id AS uuid),"
+                        "'general','set',now()+interval '1 hour','multischema-proof',"
+                        "CAST(1 AS real),CAST('{}' AS jsonb))"
+                    ),
+                    {"id": str(uuid.uuid4())},
+                ).all()
+                held.commit()
+                held.exec_driver_sql("RESET ROLE")
+                held.commit()
+                with observer.connect() as independent:
+                    before = independent.execute(catalog).one()
+                    assert before[1] == "dnd_generation_owner" and before[3:5] == (True, True)
+                    assert before[5]
+                with normal.connect() as authenticated:
+                    login, actor = authenticated.exec_driver_sql(
+                        "SELECT session_user,current_user"
+                    ).one()
+                    assert login == actor == unquote(urlparse(normal_url).username)
+                    assert (
+                        authenticated.exec_driver_sql(
+                            "SELECT count(*) FROM information_schema.tables "
+                            "WHERE table_schema='public' AND table_name='user_context'"
+                        ).scalar_one()
+                        == 0
+                    )
+                    assert (
+                        authenticated.exec_driver_sql(
+                            "SELECT count(*) FROM pg_catalog.pg_class c "
+                            "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+                            "WHERE n.nspname='public' AND c.relname='user_context' AND c.relkind IN ('r','p')"
+                        ).scalar_one()
+                        == 1
+                    )
+                # This genuinely reruns core042/core046 in another schema after
+                # the first schema has transferred the public table's owner.
+                asyncio.run(
+                    run_migrations(normal_url, chain="core", schema="switchboard", connection=held)
+                )
+                finalize_authority(
+                    held,
+                    source_database="butlers",
+                    plans=(
+                        ("core", "relationship", None),
+                        ("core", "switchboard", None),
+                    ),
+                )
+            with observer.connect() as independent:
+                assert independent.execute(catalog).one() == before
+                assert (
+                    independent.exec_driver_sql(
+                        "SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n "
+                        "ON n.oid=c.relnamespace WHERE n.nspname='shared' AND c.relname='user_context'"
+                    ).scalar_one()
+                    == 0
+                )
+                from butlers.testing.migration import assert_at_chain_head
+
+                assert_at_chain_head(independent, "relationship")
+                assert_at_chain_head(independent, "switchboard")
+        finally:
+            normal.dispose()
+            observer.dispose()
+
+    await asyncio.to_thread(run)

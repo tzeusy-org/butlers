@@ -1083,6 +1083,78 @@ def test_source_partition_children_are_closed_and_sequences_bind_the_declared_pa
         with pytest.raises(AuthorityError):
             validate_sequence_bindings(((actual, sequence),), bindings)
 
+    # Bind the sequence emitted by actual core_096, not a sequence invented for
+    # its separate TEXT-keyed retention-policy table.
+    import runpy
+    from pathlib import Path
+
+    from butlers.db_authority.grants import compile_relation_manifest, select_migration_manifest
+
+    emitted = []
+    producer = runpy.run_path(
+        str(
+            Path(__file__).parents[2]
+            / "alembic/versions/core/core_096_memory_retention_policies.py"
+        )
+    )
+    with patch("alembic.op.execute", side_effect=emitted.append):
+        producer["upgrade"]()
+    statements = [" ".join(sql.split()) for sql in emitted]
+    assert any(
+        "CREATE TABLE IF NOT EXISTS public.memory_compaction_log ( id BIGSERIAL PRIMARY KEY," in sql
+        for sql in statements
+    )
+    assert any(
+        "CREATE TABLE IF NOT EXISTS public.memory_retention_policies ( kind TEXT PRIMARY KEY,"
+        in sql
+        for sql in statements
+    )
+    manifest = select_migration_manifest(
+        compile_relation_manifest(
+            "test_selected", "migration_selected", "maintenance_selected", source_database="butlers"
+        ),
+        (("core", None, None),),
+    )
+    rows = {row.identity: row for row in manifest.relations}
+    compaction = rows["public", "memory_compaction_log_id_seq", "sequence", ""]
+    assert compaction.owner == "migration_selected"
+    assert compaction.sequence_parent == ("public", "memory_compaction_log", "id")
+    assert compaction.required is False
+    assert ("public", "memory_retention_policies_id_seq", "sequence", "") not in rows
+    assert set(compaction.permissions) == {
+        Permission(profile.role, ("USAGE",)) for profile in manifest.profiles
+    }
+    observed = dict(
+        schema="public",
+        name="memory_compaction_log_id_seq",
+        kind="S",
+        owner="migration_selected",
+        oid=22,
+        partition=False,
+        rls=False,
+        forced_rls=False,
+    )
+    assert bind_partition_relations((observed,), manifest.relations, ()) == manifest.relations
+    bound = validate_relations((observed,), (compaction,))
+    dependency = binding | dict(oid=22, parent_name="memory_compaction_log")
+    validate_sequence_bindings(bound, (dependency,))
+    for name in ("memory_retention_policies_id_seq", "unlisted_sequence"):
+        with pytest.raises(AuthorityError):
+            bind_partition_relations((observed | dict(name=name),), manifest.relations, ())
+    for changed in (dict(kind="r"), dict(owner="foreign_owner"), dict(schema="foreign_schema")):
+        with pytest.raises(AuthorityError):
+            validate_relations((observed | changed,), (compaction,))
+    for dependencies in (
+        (),
+        (dependency, dependency),
+        (dependency | dict(parent_schema="foreign_schema"),),
+        (dependency | dict(parent_name="memory_retention_policies"),),
+        (dependency | dict(parent_column="kind"),),
+        (dependency | dict(parent_owner="foreign_owner"),),
+    ):
+        with pytest.raises(AuthorityError):
+            validate_sequence_bindings(bound, dependencies)
+
 
 def test_selected_source_manifest_preserves_core_only_private_and_historical_boundaries():
     from butlers.db_authority.grants import compile_relation_manifest, select_migration_manifest
@@ -4768,3 +4840,213 @@ def test_current_environment_preserves_successive_public_and_schema_chain_transa
                     )
     finally:
         engine.dispose()
+
+
+def test_actual_core046_uses_physical_tables_without_acl_filtered_destination(monkeypatch):
+    """Execute the real migration; its SQL/DDL IO alone is doubled."""
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    producer = runpy.run_path(
+        str(Path("alembic/versions/core/core_046_migrate_user_context_to_public.py"))
+    )
+    upgrade = producer["upgrade"]
+
+    def run_case(shared, public, remaining):
+        events = []
+        probes = []
+        destination = object() if public else None
+        state = {"shared": shared, "public": destination}
+
+        def query(statement):
+            sql = str(statement)
+            if "count(*)" in sql:
+                return SimpleNamespace(scalar=lambda: remaining)
+            probes.append(sql)
+            namespace = "shared" if "= 'shared'" in sql else "public"
+            # The protected destination exists but is invisible through the
+            # ordinary migrator's ACL-filtered information_schema view.
+            if "information_schema.tables" in sql:
+                present = shared if namespace == "shared" else False
+            else:
+                assert "pg_catalog.pg_class" in sql and "pg_catalog.pg_namespace" in sql
+                assert "c.relname = 'user_context'" in sql and "c.relkind IN ('r', 'p')" in sql
+                present = shared if namespace == "shared" else public
+            events.append(("probe", namespace))
+            return SimpleNamespace(scalar=lambda: 1 if present else None)
+
+        def ddl(sql):
+            events.append(sql)
+            if sql.startswith("ALTER TABLE"):
+                if state["public"] is not None:
+                    raise RuntimeError("physical destination collision")
+                state["public"], state["shared"] = object(), False
+            elif sql == "DROP TABLE shared.user_context":
+                state["shared"] = False
+            else:
+                assert sql == "DROP SCHEMA IF EXISTS shared"
+                assert not state["shared"] and not remaining
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(
+                upgrade.__globals__["op"], "get_bind", lambda: SimpleNamespace(execute=query)
+            )
+            patcher.setattr(upgrade.__globals__["op"], "execute", ddl)
+            if remaining:
+                with pytest.raises(RuntimeError, match="shared schema still contains"):
+                    upgrade()
+            else:
+                upgrade()
+        assert events[:2] == [("probe", "shared"), ("probe", "public")]
+        assert len(probes) == 2 and all("pg_catalog.pg_class" in sql for sql in probes)
+        assert state["shared"] is False
+        if public:
+            assert state["public"] is destination
+        assert ("ALTER TABLE shared.user_context SET SCHEMA public" in events) is (
+            shared and not public
+        )
+        assert ("DROP TABLE shared.user_context" in events) is (shared and public)
+        assert ("DROP SCHEMA IF EXISTS shared" in events) is (not remaining)
+
+    for case in (
+        (True, False, 0),
+        (True, True, 0),
+        (False, True, 0),
+        (False, False, 0),
+        (True, True, 1),
+    ):
+        run_case(*case)
+
+    primary = OSError("catalog transport refused")
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            upgrade.__globals__["op"],
+            "get_bind",
+            lambda: SimpleNamespace(execute=Mock(side_effect=primary)),
+        )
+        execute = Mock()
+        patcher.setattr(upgrade.__globals__["op"], "execute", execute)
+        with pytest.raises(OSError) as error:
+            upgrade()
+        assert error.value is primary
+        execute.assert_not_called()
+
+
+def test_actual_outbox_selected_upgrade_stages_history_then_finalizes_complete_head(monkeypatch):
+    """Run the existing wrapper and core198 edge, doubling external IO only."""
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    namespace = runpy.run_path(
+        str(Path("tests/migrations/test_runtime_attention_outbox_migration.py"))
+    )
+    selected = namespace["_selected_upgrade"]
+    bound = selected.__globals__
+    edge = runpy.run_path(str(Path("alembic/versions/core/core_198_runtime_attention_outbox.py")))[
+        "upgrade"
+    ]
+    normal = "postgresql://normal:synthetic@invalid/selected"
+    admin = "postgresql://control:synthetic@invalid/selected"
+    connection = object()
+
+    def run_case(failure):
+        events = []
+        plans = {"selected": {"general": None}}
+        primary = (
+            asyncio.CancelledError()
+            if failure == "cancel"
+            else RuntimeError("owned operation refused")
+        )
+
+        @contextmanager
+        def session(url, *, source_database):
+            assert url == admin and source_database == "butlers"
+            events.append("enter")
+            try:
+                yield connection
+                if failure == "exit":
+                    raise primary
+            finally:
+                events.append("exit")
+
+        def bounded(url, *, chain, schema, revision, connection):
+            assert url == normal and chain == "core" and schema == "switchboard"
+            assert connection is held
+            events.append(revision)
+            if failure in {"bounded", "cancel"}:
+                raise primary
+            if revision == "core_198":
+                edge()
+
+        async def head(url, *, chain, schema, connection):
+            assert (url, chain, schema, connection) == (normal, "core", "switchboard", held)
+            events.append("head")
+            if failure == "head":
+                raise primary
+
+        def finalize(connection, *, source_database, plans):
+            assert connection is held and source_database == "butlers"
+            events.append("finalize")
+            assert plans == (("core", "general", None), ("core", "switchboard", None))
+            if failure == "finalize":
+                raise primary
+
+        held = connection
+        config = SimpleNamespace(
+            get_main_option=lambda key: normal if key == "sqlalchemy.url" else "switchboard"
+        )
+        with monkeypatch.context() as patcher:
+            for key, value in {
+                "_NORMAL_URLS": {"selected": normal},
+                "_MAINTENANCE_URLS": {"selected": admin},
+                "_SELECTED_PLANS": plans,
+                "migration_session": session,
+                "_upgrade_chain_to_revision": bounded,
+                "run_migrations": head,
+                "finalize_authority": finalize,
+            }.items():
+                patcher.setitem(bound, key, value)
+            patcher.setattr(edge.__globals__["op"], "get_bind", lambda: held)
+            patcher.setitem(
+                edge.__globals__,
+                "install_revision_group",
+                lambda conn, group: events.append(("installer", conn is held, group)),
+            )
+            if failure in {"bounded", "cancel", "exit"}:
+                with pytest.raises(type(primary)) as error:
+                    selected(config, "core_197")
+                assert error.value is primary
+                assert plans == {"selected": {"general": None}}
+                assert events[-1] == "exit"
+                return
+            selected(config, "core_197")
+            assert events == ["enter", "core_197", "exit"]
+            events.append("seed")
+            selected(config, "core_198")
+            assert events == [
+                "enter",
+                "core_197",
+                "exit",
+                "seed",
+                "enter",
+                "core_198",
+                ("installer", True, "attention"),
+                "exit",
+            ]
+            staged = dict(plans["selected"])
+            assert staged == {"general": None, "switchboard": "core_198"}
+            if failure is None:
+                selected(config, "core@head")
+                assert plans["selected"] == {"general": None, "switchboard": None}
+            else:
+                with pytest.raises(RuntimeError) as error:
+                    selected(config, "core@head")
+                assert error.value is primary
+                assert plans["selected"] == staged
+            assert events[-1] == "exit"
+            assert events.count("finalize") == (0 if failure == "head" else 1)
+
+    for failure in (None, "bounded", "head", "finalize", "exit", "cancel"):
+        run_case(failure)

@@ -111,11 +111,13 @@ def _selected_upgrade(config, target: str) -> None:
             )
         plans = dict(_SELECTED_PLANS[_database(db_url)])
         plans[schema] = revision
-        finalize_authority(
-            held,
-            source_database="butlers",
-            plans=tuple(("core", selected, value) for selected, value in plans.items()),
-        )
+        # Historical stamps stage real source before seeds; current admission follows head.
+        if revision is None:
+            finalize_authority(
+                held,
+                source_database="butlers",
+                plans=tuple(("core", selected, value) for selected, value in plans.items()),
+            )
     _SELECTED_PLANS[_database(db_url)] = plans
 
 

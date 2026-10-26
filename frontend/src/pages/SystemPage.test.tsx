@@ -28,6 +28,7 @@ import {
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
 import { ApiError } from "@/api/index";
+import type { StoredFunctionFacts } from "@/api/types";
 
 // ---------------------------------------------------------------------------
 // Mock all hooks used by SystemPage
@@ -369,7 +370,11 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
     fetchStatus: "idle",
     isPlaceholderData: false,
     refetch: vi.fn(),
-    data: { status: "ok", auth: { api_key_auth_enabled: true, export_secret_insecure_default: false } },
+    data: {
+      status: "ok",
+      auth: { api_key_auth_enabled: true, export_secret_insecure_default: false },
+      security: { database_authority: "admitted" },
+    },
     isPending: false,
     isError: false,
     error: null,
@@ -415,12 +420,21 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
     data: {
       data: {
         checked_at: "2026-06-17T10:00:00Z",
-        is_drifted: false,
-        drifted: [],
-        not_deployed: [],
-        matched_count: 3,
-        stored_function_check_available: true,
-      },
+        status: "conforming",
+        catalog_check_available: true,
+        objects_ok: true,
+        functions: ["public.first()", "public.second()", "public.third()"].map((functionName) => ({
+          function: functionName,
+          status: "conforming" as const,
+          expected_digest: "a".repeat(64),
+          actual_digest: "a".repeat(64),
+          owner_ok: true,
+          settings_ok: true,
+          acl_ok: true,
+        })),
+        unpinned_definers: [],
+        definer_check_available: true,
+      } satisfies StoredFunctionFacts,
       meta: {},
     },
     isPending: false,

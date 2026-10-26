@@ -1226,6 +1226,8 @@ def test_dashboard_stage_uses_actual_normal_owner_and_restores_session_setting(f
             self.setting = "previous_selected_owner"
 
         def exec_driver_sql(self, sql):
+            # Model the unbound DBAPI percent-decoding before SQL dispatch.
+            sql = sql % {}
             if "d.datname, owner.rolname" in sql:
                 return SimpleNamespace(
                     one=lambda: ("butlers", "migration_selected", fault != "profile")
@@ -1363,6 +1365,8 @@ def test_bounded_core_producer_uses_actual_d13_staging_and_normal_owner(
         valid = True
 
         def exec_driver_sql(self, sql):
+            # Model the unbound DBAPI percent-decoding before SQL dispatch.
+            sql = sql % {}
             if "JOIN pg_catalog.pg_roles actor" in sql:
                 return SimpleNamespace(
                     one=lambda: ("test_selected", "migration_selected", self.valid)

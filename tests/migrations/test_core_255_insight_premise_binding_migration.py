@@ -1446,6 +1446,7 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
         engine = create_engine(db_url)
         try:
             with engine.connect() as conn:
+                # pinned-revision: pre-core_281 ownership diagnostic stays at real core_280.
                 assert (
                     conn.execute(
                         text(f'SELECT version_num FROM "{schema}".alembic_version')

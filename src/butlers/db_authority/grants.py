@@ -715,7 +715,7 @@ _PUBLIC_SEQUENCES = {
     "audit_log_id_seq": "audit_log",
     "dispatch_failures_id_seq": "dispatch_failures",
     "system_prompt_history_id_seq": "system_prompt_history",
-    "memory_retention_policies_id_seq": "memory_retention_policies",
+    "memory_compaction_log_id_seq": "memory_compaction_log",
     "delegation_wake_attempts_id_seq": "delegation_wake_attempts",
     "insight_feedback_id_seq": "insight_feedback",
     "provider_feature_catalogue_id_seq": "provider_feature_catalogue",
