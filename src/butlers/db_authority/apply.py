@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from sqlalchemy import text
+from sqlalchemy.exc import ProgrammingError
 
 from .grants import (
     ObjectAuthority,
@@ -837,6 +838,73 @@ def validate_ordinary_purpose_owners(connection, definitions) -> None:
         raise AuthorityError("Ordinary definer owner profile is unavailable")
 
 
+def _add_ordinary_ddl_failure_note(error, definition) -> None:
+    """Add a bounded hashed failure note without changing admission or the error.
+
+    Only source-function identity/body digests and a closed driver category/code
+    cross this diagnostic boundary. SQL, messages, parameters and actors do not.
+    """
+    try:
+        import hashlib
+        import json
+        import re
+
+        identity = definition.identity
+        sql = definition.sql
+        if (
+            not isinstance(identity, tuple)
+            or len(identity) != 3
+            or any(
+                not isinstance(value, str) or len(value.encode("utf-8")) > 4096
+                for value in identity
+            )
+            or not isinstance(sql, str)
+            or len(sql.encode("utf-8")) > 1024 * 1024
+        ):
+            return
+        original = error.orig
+        driver_class = type(original).__name__
+        allowed_classes = {
+            "ProgrammingError",
+            "UndefinedFunction",
+            "UndefinedTable",
+            "UndefinedColumn",
+            "SyntaxError",
+            "InvalidFunctionDefinition",
+            "InvalidSchemaName",
+            "InsufficientPrivilege",
+            "DatatypeMismatch",
+            "DuplicateFunction",
+            "InvalidParameterValue",
+            "DependentObjectsStillExist",
+            "InvalidObjectDefinition",
+        }
+        sqlstate = getattr(original, "sqlstate", None)
+        if not isinstance(sqlstate, str) or re.fullmatch(r"[0-9A-Z]{5}", sqlstate) is None:
+            # psycopg2 is the current migration driver; psycopg uses sqlstate.
+            sqlstate = getattr(original, "pgcode", None)
+        if not isinstance(sqlstate, str) or re.fullmatch(r"[0-9A-Z]{5}", sqlstate) is None:
+            sqlstate = "UNKNOWN"
+        payload = {
+            "version": 1,
+            "phase": "ordinary_ddl",
+            "exception": "ProgrammingError",
+            "identity_sha256": hashlib.sha256(
+                json.dumps(identity, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+            "sql_sha256": hashlib.sha256(sql.encode("utf-8")).hexdigest(),
+            "driver_class": driver_class if driver_class in allowed_classes else "UNKNOWN",
+            "sqlstate": sqlstate,
+        }
+        error.add_note(
+            "DB_AUTHORITY_ORDINARY_DDL_DIAGNOSTIC "
+            + json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        )
+    except Exception:
+        # Failure observation is subordinate to the exact original exception.
+        pass
+
+
 def converge_ordinary_functions(connection, bound) -> None:
     """Apply only fixed current bodies/ACLs under explicit maintenance authority."""
     from .interfaces import (
@@ -858,7 +926,11 @@ def converge_ordinary_functions(connection, bound) -> None:
     if changes:
         require_maintenance(connection)
     for row, definition in changes:
-        connection.exec_driver_sql(definition.sql.replace("%", "%%"))
+        try:
+            connection.exec_driver_sql(definition.sql.replace("%", "%%"))
+        except ProgrammingError as error:
+            _add_ordinary_ddl_failure_note(error, definition)
+            raise
         target = _signature(definition)
         # The complete preflight admits only an exact fixed purpose owner or
         # the independently proved normal migration owner at this transition.

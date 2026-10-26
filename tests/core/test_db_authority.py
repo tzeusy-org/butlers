@@ -5623,3 +5623,341 @@ def test_pinned_predecessor_extractor_refuses_unsafe_members_independent_of_dest
                 isolated["_extract_pinned_predecessor"](destination)
             assert not (tmp_path / case / "escape").exists()
             assert not any(path.is_symlink() for path in destination.rglob("*"))
+
+
+def test_current_relation_manifest_matches_actual_log_and_retirement_producers():
+    import runpy
+    from pathlib import Path
+
+    from butlers.db_authority import apply, grants
+
+    root = Path(__file__).parents[2]
+    emitted = []
+    for path in (
+        "alembic/versions/core/core_089_butler_logs.py",
+        "alembic/versions/core/core_090_butler_logs_chronicler.py",
+    ):
+        producer = runpy.run_path(str(root / path))
+        with patch("alembic.op.execute", side_effect=emitted.append):
+            producer["upgrade"]()
+    import re
+
+    log_schemas = {
+        match[1]
+        for sql in emitted
+        if (match := re.search(r"CREATE TABLE IF NOT EXISTS ([a-z_]+)\.butler_logs", sql))
+    }
+    assert len(log_schemas) == 12
+    assert not {"public", "lifecycle"} & log_schemas
+    full = grants.compile_relation_manifest(
+        "test_selected", "normal_owner", "maintenance", source_database="butlers"
+    )
+    profiles = {profile.primary_schema for profile in full.profiles}
+    assert {row.schema for row in full.relations if row.name == "butler_logs"} == (
+        log_schemas & profiles
+    )
+    assert not any(
+        row.name in {"dashboard_audit_log", "contacts_source_accounts"} for row in full.relations
+    )
+    for schema in ("public", "lifecycle", *sorted(log_schemas)):
+        selected = grants.select_migration_manifest(
+            full, (("core", None if schema == "public" else schema, None),)
+        )
+        logs = [row for row in selected.relations if row.name == "butler_logs"]
+        sequences = [row for row in selected.relations if row.name == "butler_logs_id_seq"]
+        assert bool(logs) is (schema in log_schemas)
+        assert bool(sequences) is (schema in log_schemas)
+        if not logs:
+            continue
+        assert len(logs) == len(sequences) == 1
+        table, sequence = logs[0], sequences[0]
+        assert table.required and sequence.sequence_parent == (schema, "butler_logs", "id")
+        assert sequence.permissions == tuple(
+            grants.Permission(permission.role, ("USAGE",))
+            for permission in table.permissions
+            if "INSERT" in permission.verbs
+        )
+        with pytest.raises(AuthorityError):
+            apply.validate_relations((), (table,))
+        actual = dict(
+            schema=schema,
+            name="butler_logs",
+            kind="r",
+            owner=table.owner,
+            rls=False,
+            forced_rls=False,
+            partition=False,
+        )
+        assert apply.validate_relations((actual,), (table,)) == ((actual, table),)
+        for wrong in (
+            dict(name="unlisted_log"),
+            dict(owner="foreign_owner"),
+            dict(kind="v"),
+            dict(schema="foreign_schema"),
+            dict(rls=True),
+        ):
+            with pytest.raises(AuthorityError):
+                apply.validate_relations((actual | wrong,), (table,))
+
+
+def test_retired_relation_manifests_keep_real_prefixes_and_refuse_current_resurrection():
+    import runpy
+    from pathlib import Path
+
+    from butlers.db_authority import apply, grants
+
+    root = Path(__file__).parents[2]
+    full = grants.compile_relation_manifest(
+        "test_selected", "normal_owner", "maintenance", source_database="butlers"
+    )
+    cases = (
+        (
+            "switchboard",
+            "switchboard",
+            "sw_025",
+            "dashboard_audit_log",
+            "roster/switchboard/migrations/026_drop_legacy_dashboard_audit_log.py",
+        ),
+        (
+            "switchboard",
+            None,
+            "sw_025",
+            "dashboard_audit_log",
+            "roster/switchboard/migrations/026_drop_legacy_dashboard_audit_log.py",
+        ),
+        (
+            "contacts",
+            "relationship",
+            "contacts_001",
+            "contacts_source_accounts",
+            "src/butlers/modules/contacts/migrations/002_drop_contacts_source_accounts.py",
+        ),
+    )
+    for chain, target, prefix, name, path in cases:
+        producer = runpy.run_path(str(root / path))
+        statements = []
+        with patch("alembic.op.execute", side_effect=statements.append):
+            producer["upgrade"]()
+        assert any("DROP TABLE" in sql and name in sql for sql in statements)
+        old = grants.select_migration_manifest(full, ((chain, target, prefix),))
+        current = grants.select_migration_manifest(full, ((chain, target, None),))
+        accumulated = grants.select_migration_manifest(
+            full, ((chain, target, prefix), (chain, target, None))
+        )
+        old_rows = [row for row in old.relations if row.name == name]
+        assert len(old_rows) == 1
+        row = old_rows[0]
+        assert row.required is False and row.permissions == ()
+        assert row.schema == (target or "public") and row.owner == "normal_owner"
+        assert not any(value.name == name for value in (*current.relations, *accumulated.relations))
+        actual = dict(
+            schema=row.schema,
+            name=name,
+            kind="r",
+            owner=row.owner,
+            rls=False,
+            forced_rls=False,
+            partition=False,
+            oid=42,
+        )
+        assert apply.validate_relations((), (row,), administrative_history=True) == ()
+        assert apply.validate_relations((actual,), (row,), administrative_history=True) == (
+            (actual, row),
+        )
+        with pytest.raises(AuthorityError):
+            apply.validate_relations((actual,), current.relations)
+        with pytest.raises(AuthorityError):
+            apply.bind_partition_relations((actual,), current.relations, ())
+        if chain == "contacts":
+            for live in ("contacts_source_links", "contacts_sync_state"):
+                live_row = next(value for value in current.relations if value.name == live)
+                assert live_row.required and live_row.permissions
+                with pytest.raises(AuthorityError):
+                    apply.validate_relations((), (live_row,))
+    assert next(row for row in full.relations if row.schema == "public" and row.name == "audit_log")
+
+
+def test_actual_ordinary_ddl_programming_note_preserves_driver_error_and_convergence(monkeypatch):
+    import hashlib
+    import json
+
+    import psycopg2
+    from sqlalchemy.exc import ProgrammingError
+
+    from butlers.db_authority import apply, interfaces
+    from butlers.db_authority.grants import compile_function_manifest
+    from butlers.db_authority.roles import runtime_profiles
+
+    definition = next(
+        row
+        for row in compile_function_manifest(
+            runtime_profiles("butlers"), "normal_owner", (("core", None, None),)
+        )
+        if "%" in row.sql and row.security_definer
+    )
+    key = interfaces._signature(definition)
+    row = dict(
+        oid=42,
+        schema=definition.schema,
+        name=definition.name,
+        arguments=definition.signature,
+        owner=definition.owner,
+    )
+    bound = apply.validate_function_population((row,), (definition,), {definition.identity})
+
+    class UndefinedFunction(psycopg2.ProgrammingError):
+        @property
+        def pgcode(self):
+            return "42883"
+
+    for primary in (
+        UndefinedFunction("private driver message sentinel"),
+        TypeError("private unexpected message sentinel"),
+        asyncio.CancelledError(),
+        None,
+    ):
+        state = {
+            "body": "old",
+            "installed": 0,
+            "acls": set(definition.executors) - {definition.owner},
+        }
+        captured = []
+
+        def respond(statement, parameters, decoded, *, state=state, primary=primary):
+            if "WITH owners AS" in statement:
+                return ("valid",), [(True,)]
+            if "pg_get_function_identity_arguments" in statement:
+                return ("oid", "owner", "definer", "config", "body"), [
+                    (
+                        42,
+                        definition.owner,
+                        definition.security_definer,
+                        list(definition.settings),
+                        state["body"],
+                    )
+                ]
+            if "pg_catalog.aclexplode" in statement:
+                return ("role", "privilege", "grantable"), [
+                    (role, "EXECUTE", False) for role in sorted(state["acls"])
+                ]
+            if "current_user=session_user AND rolsuper" in statement:
+                return ("valid",), [(True,)]
+            if decoded == definition.sql:
+                if primary is not None:
+                    raise primary
+                state["body"] = definition.body
+                state["installed"] += 1
+                return None, []
+            for role in definition.executors:
+                if role == definition.owner:
+                    continue
+                quoted = apply.quote_identifier(role)
+                if decoded == f"REVOKE ALL ON FUNCTION {key} FROM {quoted}":
+                    state["acls"].discard(role)
+                    return None, []
+                if decoded == f"GRANT EXECUTE ON FUNCTION {key} TO {quoted}":
+                    state["acls"].add(role)
+                    return None, []
+            assert (
+                decoded
+                == f"ALTER FUNCTION {key} OWNER TO {apply.quote_identifier(definition.owner)}"
+            )
+            return None, []
+
+        with _recording_postgresql_connection(respond) as (connection, calls):
+            dispatch = connection.exec_driver_sql
+
+            def observed_dispatch(*args, dispatch=dispatch, captured=captured, **kwargs):
+                try:
+                    return dispatch(*args, **kwargs)
+                except ProgrammingError as driver_error:
+                    captured.append((driver_error, driver_error.__traceback__))
+                    raise
+
+            monkeypatch.setattr(connection, "exec_driver_sql", observed_dispatch)
+            if primary is None:
+                with patch.object(apply, "_add_ordinary_ddl_failure_note") as observer:
+                    apply.converge_ordinary_functions(connection, bound)
+                    apply.converge_ordinary_functions(connection, bound)
+                    observer.assert_not_called()
+                assert state["installed"] == 1
+                continue
+            with pytest.raises(BaseException) as caught:
+                apply.converge_ordinary_functions(connection, bound)
+            error = caught.value
+            assert state["installed"] == 0
+            assert not any(decoded.startswith("ALTER FUNCTION") for _, _, decoded in calls)
+            if not isinstance(primary, psycopg2.ProgrammingError):
+                assert error is primary and not hasattr(error, "__notes__")
+                continue
+            assert error is captured[0][0] and error.orig is primary
+            assert error.__cause__ is primary
+            traceback = error.__traceback__
+            while traceback is not None and traceback is not captured[0][1]:
+                traceback = traceback.tb_next
+            assert traceback is captured[0][1]
+            assert len(error.__notes__) == 1
+            note = error.__notes__[0]
+            assert "sentinel" not in note and definition.sql not in note
+            payload = json.loads(note.split(" ", 1)[1])
+            assert payload == {
+                "version": 1,
+                "phase": "ordinary_ddl",
+                "exception": "ProgrammingError",
+                "identity_sha256": hashlib.sha256(
+                    json.dumps(
+                        definition.identity, ensure_ascii=True, separators=(",", ":")
+                    ).encode()
+                ).hexdigest(),
+                "sql_sha256": hashlib.sha256(definition.sql.encode()).hexdigest(),
+                "driver_class": "UndefinedFunction",
+                "sqlstate": "42883",
+            }
+
+
+def test_ordinary_ddl_note_bounds_and_psycopg_driver_code_precedence(monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from sqlalchemy.exc import ProgrammingError
+
+    from butlers.db_authority import apply
+
+    definition = SimpleNamespace(identity=("fixed", "function", "text"), sql="fixed source SQL")
+    for state, code, expected in (
+        ("42883", "42P01", "42883"),
+        (None, "42P01", "42P01"),
+        ("invalid", "42P01", "42P01"),
+        ("42883", "invalid", "42883"),
+        (None, None, "UNKNOWN"),
+        ("bad", "also bad", "UNKNOWN"),
+        (True, 12345, "UNKNOWN"),
+        ("42P01\n", "bad", "UNKNOWN"),
+    ):
+        original = SimpleNamespace(sqlstate=state, pgcode=code)
+        error = ProgrammingError("private SQL sentinel", {"private": "sentinel"}, original)
+        apply._add_ordinary_ddl_failure_note(error, definition)
+        payload = json.loads(error.__notes__[0].split(" ", 1)[1])
+        assert payload["sqlstate"] == expected and payload["driver_class"] == "UNKNOWN"
+        assert "sentinel" not in error.__notes__[0]
+    for invalid in (
+        SimpleNamespace(identity=("fixed",), sql="fixed source SQL"),
+        SimpleNamespace(identity=("x" * 4097, "function", "text"), sql="fixed source SQL"),
+        SimpleNamespace(identity=definition.identity, sql="x" * (1024 * 1024 + 1)),
+    ):
+        error = ProgrammingError("private", {}, SimpleNamespace())
+        apply._add_ordinary_ddl_failure_note(error, invalid)
+        assert not hasattr(error, "__notes__")
+    error = ProgrammingError("private", {}, SimpleNamespace())
+    with monkeypatch.context() as scoped:
+        scoped.setattr(json, "dumps", Mock(side_effect=ValueError("private observer sentinel")))
+        apply._add_ordinary_ddl_failure_note(error, definition)
+    assert not hasattr(error, "__notes__")
+
+    class NoteFailure(ProgrammingError):
+        def add_note(self, note):
+            raise ValueError("private transport sentinel")
+
+    error = NoteFailure("private", {}, SimpleNamespace())
+    apply._add_ordinary_ddl_failure_note(error, definition)
+    assert not hasattr(error, "__notes__")

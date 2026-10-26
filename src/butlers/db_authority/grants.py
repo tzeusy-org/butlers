@@ -338,7 +338,6 @@ _CORE_TABLES = (
     "sessions",
     "route_inbox",
     "event_chains",
-    "butler_logs",
     "butler_secrets",
     "session_process_logs",
     "corrections",
@@ -357,6 +356,38 @@ _CORE_TABLES = (
     "calendar_sync_cursors",
     "calendar_action_log",
 )
+
+# core_089 creates logs only in its eleven fixed schemas; core_090 adds
+# Chronicler. Neither producer creates a public or arbitrary target-schema log.
+_BUTLER_LOG_SCHEMAS = frozenset(
+    {
+        "education",
+        "finance",
+        "general",
+        "health",
+        "home",
+        "lifestyle",
+        "messenger",
+        "qa",
+        "relationship",
+        "switchboard",
+        "travel",
+        "chronicler",
+    }
+)
+
+
+def _core_tables(schema: str) -> tuple[str, ...]:
+    return _CORE_TABLES + (("butler_logs",) if schema in _BUTLER_LOG_SCHEMAS else ())
+
+
+# These exact old producer windows permit closed administrative inspection.
+# Their dropped tables never enter a current-head serving declaration.
+_RETIRED_CHAIN_TABLES = {
+    "switchboard": (("sw_001", "sw_026", "dashboard_audit_log"),),
+    "contacts": (("contacts_001", "contacts_002", "contacts_source_accounts"),),
+}
+
 _DOMAIN_TABLES = {
     "relationship": (
         "addresses",
@@ -436,7 +467,6 @@ _DOMAIN_TABLES = {
         "butler_registry_eligibility_log",
         "connector_heartbeat_log",
         "connector_registry",
-        "dashboard_audit_log",
         "dead_letter_queue",
         "extraction_log",
         "extraction_queue",
@@ -495,7 +525,7 @@ _DOMAIN_TABLES = {
 }
 _MODULE_TABLES = {
     "whatsapp": ("whatsapp_sessions",),
-    "contacts": ("contacts_source_accounts", "contacts_source_links", "contacts_sync_state"),
+    "contacts": ("contacts_source_links", "contacts_sync_state"),
     "google_drive": ("google_drive_butler_folders",),
     "memory": (
         "episode_tombstones",
@@ -546,7 +576,7 @@ def local_objects(
     result = []
     for profile in profiles:
         schema, runtime = profile.primary_schema, profile.role
-        tables = set(_CORE_TABLES) | set(_DOMAIN_TABLES.get(schema, ()))
+        tables = set(_core_tables(schema)) | set(_DOMAIN_TABLES.get(schema, ()))
         for module in profile.modules:
             if module != "memory" or not profile.private_schemas:
                 tables.update(_MODULE_TABLES.get(module, ()))
@@ -1205,6 +1235,7 @@ def select_migration_manifest(manifest: RelationManifest, plans: tuple | None) -
     }
     selected: dict[str, set[str]] = {}
     core_revisions: set[str] = set()
+    selected_revisions: dict[tuple[str, str], set[str]] = {}
     historical = False
     for plan in plans:
         if not isinstance(plan, tuple) or len(plan) != 3:
@@ -1255,6 +1286,7 @@ def select_migration_manifest(manifest: RelationManifest, plans: tuple | None) -
             source_revisions = get_chain_revision_path(chain, revision)
         except RuntimeError as exc:
             raise AuthorityError("Selected migration revision is not source-owned") from exc
+        selected_revisions.setdefault((target, chain), set()).update(source_revisions)
         if chain == "core":
             core_revisions.update(source_revisions)
         historical |= revision is not None
@@ -1281,7 +1313,7 @@ def select_migration_manifest(manifest: RelationManifest, plans: tuple | None) -
         names = {"alembic_version"}
         for chain in chains:
             names.update(
-                _CORE_TABLES
+                _core_tables(target)
                 if chain == "core"
                 else _MODULE_TABLES.get(chain, _DOMAIN_TABLES.get(chain, ()))
             )
@@ -1295,6 +1327,20 @@ def select_migration_manifest(manifest: RelationManifest, plans: tuple | None) -
                 "selected administrative source chain",
             )
             rows.setdefault(row.identity, row)
+        for chain in chains:
+            revisions = selected_revisions[(target, chain)]
+            for introduced, removed, name in _RETIRED_CHAIN_TABLES.get(chain, ()):
+                if introduced in revisions and removed not in revisions:
+                    row = ObjectAuthority(
+                        target,
+                        name,
+                        ObjectKind.TABLE,
+                        manifest.migration_owner,
+                        (),
+                        "retained historical source revision",
+                        required=False,
+                    )
+                    rows.setdefault(row.identity, row)
         if "memory" in chains:
             for name in _RETIRED_MEMORY_TABLES:
                 row = ObjectAuthority(
@@ -1346,7 +1392,7 @@ def select_migration_manifest(manifest: RelationManifest, plans: tuple | None) -
             required_names = {"alembic_version"}
             for chain in chains:
                 required_names.update(
-                    _CORE_TABLES
+                    _core_tables(row.schema)
                     if chain == "core"
                     else _MODULE_TABLES.get(chain, _DOMAIN_TABLES.get(chain, ()))
                 )
