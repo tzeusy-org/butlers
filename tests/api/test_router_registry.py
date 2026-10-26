@@ -55,7 +55,7 @@ def test_complete_route_and_openapi_snapshot(tmp_path, monkeypatch):
     }
     encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "7bb5e2bb4ef71cfd69089437f203920e93cdf28d007906c39f7bbc3e2bfa50c9"
+        "4228b1f45e56b9f19757ecd7f2a29d171c9581fe358c9ff828a77c6e123fcd7f"
     )
     # Exact replacement of the retired bootstrap-body endpoint, independently
     # inverse-bound to the previous whole snapshot; no route-count relaxation.
@@ -75,8 +75,9 @@ def test_complete_route_and_openapi_snapshot(tmp_path, monkeypatch):
         "unpinned_definers",
         "definer_check_available",
     }
-    assert len(snapshot["routes"]) == 614
-    assert len(snapshot["openapi"]["paths"]) == 523
+    assert "/api/health/baselines" in snapshot["openapi"]["paths"]
+    assert len(snapshot["routes"]) == 615
+    assert len(snapshot["openapi"]["paths"]) == 524
     assert not any(
         row["path"] == "/api/healing/attempts/{attempt_id}/retry" for row in snapshot["routes"]
     )

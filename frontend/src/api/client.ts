@@ -163,6 +163,7 @@ import type {
   EntityParams,
   EntitySummary,
   ExpectedSignalsResponse,
+  HealthBaselinesResponse,
   UpdateEntityRequest,
   EpisodeParams,
   Fact,
@@ -2246,6 +2247,11 @@ export async function getMeasurementSources(): Promise<
     "/health/measurements/sources",
   );
   return res.sources ?? [];
+}
+
+/** Read stored Health usual ranges; a failed read remains explicitly unavailable. */
+export function getHealthBaselines(): Promise<HealthBaselinesResponse> {
+  return apiFetch<HealthBaselinesResponse>("/health/baselines");
 }
 
 /** Fetch liveness-qualified Health measurement expectations. */
