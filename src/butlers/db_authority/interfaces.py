@@ -1711,7 +1711,7 @@ def install_functions(connection, definitions: tuple[FunctionDefinition, ...]) -
         raise AuthorityError("Protected interface maintenance prerequisite is unavailable")
     # Every precondition above is read-only. Only now may fixed source DDL run.
     for definition, _ in changes:
-        connection.exec_driver_sql(definition.sql)
+        connection.exec_driver_sql(definition.sql.replace("%", "%%"))
         target = _signature(definition)
         connection.exec_driver_sql(
             f"ALTER FUNCTION {target} OWNER TO {quote_identifier(definition.owner)}"
@@ -4094,7 +4094,7 @@ def stage_dashboard_interfaces(connection) -> None:
     )
     primary = None
     try:
-        connection.exec_driver_sql(DASHBOARD_PURPOSE_SQL)
+        connection.exec_driver_sql(DASHBOARD_PURPOSE_SQL.replace("%", "%%"))
     except BaseException as exc:
         primary = exc
         raise
@@ -4639,10 +4639,10 @@ SELECT polname, polcmd, polpermissive, polroles::oid[] AS roles,
 FROM pg_catalog.pg_policy WHERE polrelid=pg_catalog.to_regclass(:relation)
 ORDER BY polname
 """
-_SHAPE_TRIGGERS = """
+_SHAPE_TRIGGERS = r"""
 SELECT tgname, tgtype, tgenabled, tgfoid, tgargs, tgattr::smallint[] AS attributes,
  tgdeferrable, tginitdeferred, tgconstraint<>0 AS constraint_trigger,
- pg_catalog.regexp_replace(tgqual::text, ':location -?[0-9]+', ':location -1', 'g') AS expression
+ pg_catalog.regexp_replace(tgqual::text, '\:location -?[0-9]+', '\:location -1', 'g') AS expression
 FROM pg_catalog.pg_trigger
 WHERE tgrelid=pg_catalog.to_regclass(:relation) AND NOT tgisinternal
 ORDER BY tgname

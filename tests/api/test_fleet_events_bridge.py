@@ -173,8 +173,13 @@ async def test_listener_daemon_publisher_and_api_pools_resolve_the_same_database
     expected_database: str,
 ) -> None:
     """Every fleet-event participant must use one database-scoped NOTIFY target."""
+    from butlers.db_authority.roles import AuthorityError
+
     captured_listener_kwargs: dict[str, object] = {}
     pool_targets: list[str] = []
+    api_requested_targets: list[str] = []
+    api_refusals: list[AuthorityError] = []
+    create_api_pool = api_db.DatabaseManager._create_pool
     sentinel = object()
 
     async def capture_listener_connect(**kwargs: Any) -> object:
@@ -182,8 +187,28 @@ async def test_listener_daemon_publisher_and_api_pools_resolve_the_same_database
         return sentinel
 
     async def capture_create_pool(**kwargs: Any) -> AsyncMock:
+        from unittest.mock import MagicMock
+
         pool_targets.append(str(kwargs["database"]))
-        return AsyncMock()
+        pool = AsyncMock()
+        pool.acquire = MagicMock(return_value=AsyncMock())
+        return pool
+
+    async def observe_api_create_pool(
+        manager: api_db.DatabaseManager,
+        *,
+        database: str,
+        log_name: str,
+        schema: str | None = None,
+    ) -> Any:
+        api_requested_targets.append(database)
+        try:
+            return await create_api_pool(
+                manager, database=database, log_name=log_name, schema=schema
+            )
+        except AuthorityError as exc:
+            api_refusals.append(exc)
+            raise
 
     async def skip_provision(_: Database) -> None:
         """Keep the startup wiring test at the asyncpg connection boundary."""
@@ -199,6 +224,7 @@ async def test_listener_daemon_publisher_and_api_pools_resolve_the_same_database
     monkeypatch.delenv("BUTLER_SHARED_DB_NAME", raising=False)
     monkeypatch.setattr(fleet_events_bridge.asyncpg, "connect", capture_listener_connect)
     monkeypatch.setattr(api_db.asyncpg, "create_pool", capture_create_pool)
+    monkeypatch.setattr(api_db.DatabaseManager, "_create_pool", observe_api_create_pool)
     monkeypatch.setattr(Database, "provision", skip_provision)
     monkeypatch.setattr(api_deps, "ensure_secrets_schema", AsyncMock())
     monkeypatch.setattr(api_deps, "_db_manager", None)
@@ -221,7 +247,18 @@ async def test_listener_daemon_publisher_and_api_pools_resolve_the_same_database
         assert publisher_db.db_name == expected_database
         assert await _connect_listener() is sentinel
         assert captured_listener_kwargs["database"] == publisher_db.db_name
-        assert pool_targets == [expected_database, expected_database, expected_database]
+        assert api_requested_targets == [expected_database, expected_database]
+        if database_url is None and postgres_db is None:
+            assert pool_targets == [expected_database, expected_database, expected_database]
+            assert api_refusals == []
+        else:
+            assert len(api_refusals) == 2
+            assert all(type(exc) is AuthorityError for exc in api_refusals)
+            assert pool_targets == [expected_database]
+            with pytest.raises(KeyError):
+                api_manager.pool("switchboard")
+            with pytest.raises(KeyError):
+                api_manager.credential_shared_pool()
     finally:
         await publisher_db.close()
         if api_manager is not None:
@@ -284,11 +321,39 @@ async def test_api_startup_uses_resolved_targets_for_one_db_schema_topology(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A URL target keeps shared credentials in public despite legacy roster names."""
+    from butlers.db_authority.roles import AuthorityError
+
     pool_kwargs: list[dict[str, Any]] = []
+    requested_targets: list[tuple[str, str | None]] = []
+    refusals: list[AuthorityError] = []
+    search_paths: list[tuple[str | None, str | None]] = []
+    create_api_pool = api_db.DatabaseManager._create_pool
+    resolve_search_path = api_db.schema_search_path
 
     async def capture_create_pool(**kwargs: Any) -> AsyncMock:
         pool_kwargs.append(kwargs)
         return AsyncMock()
+
+    async def observe_api_create_pool(
+        manager: api_db.DatabaseManager,
+        *,
+        database: str,
+        log_name: str,
+        schema: str | None = None,
+    ) -> Any:
+        requested_targets.append((database, schema))
+        try:
+            return await create_api_pool(
+                manager, database=database, log_name=log_name, schema=schema
+            )
+        except AuthorityError as exc:
+            refusals.append(exc)
+            raise
+
+    def observe_search_path(schema: str | None) -> str | None:
+        result = resolve_search_path(schema)
+        search_paths.append((schema, result))
+        return result
 
     async def skip_provision(_: Database) -> None:
         """Keep this topology decision test at the pool-registration seam."""
@@ -300,6 +365,8 @@ async def test_api_startup_uses_resolved_targets_for_one_db_schema_topology(
     monkeypatch.setenv("POSTGRES_DB", "ignored_postgres_database")
     monkeypatch.delenv("BUTLER_SHARED_DB_NAME", raising=False)
     monkeypatch.setattr(api_db.asyncpg, "create_pool", capture_create_pool)
+    monkeypatch.setattr(api_db.DatabaseManager, "_create_pool", observe_api_create_pool)
+    monkeypatch.setattr(api_db, "schema_search_path", observe_search_path)
     monkeypatch.setattr(Database, "provision", skip_provision)
     monkeypatch.setattr(api_deps, "ensure_secrets_schema", AsyncMock())
     monkeypatch.setattr(api_deps, "_db_manager", None)
@@ -323,12 +390,21 @@ async def test_api_startup_uses_resolved_targets_for_one_db_schema_topology(
             ]
         )
 
-        assert [kwargs["database"] for kwargs in pool_kwargs] == [
-            "canonical_target",
-            "canonical_target",
-            "canonical_target",
+        assert requested_targets == [
+            ("canonical_target", "switchboard"),
+            ("canonical_target", "general"),
+            ("canonical_target", "public"),
         ]
-        assert pool_kwargs[-1]["server_settings"] == {"search_path": "public"}
+        assert search_paths[-1] == ("public", "public")
+        assert len(refusals) == 3
+        assert all(type(exc) is AuthorityError for exc in refusals)
+        assert pool_kwargs == []
+        with pytest.raises(KeyError):
+            api_manager.pool("switchboard")
+        with pytest.raises(KeyError):
+            api_manager.pool("general")
+        with pytest.raises(KeyError):
+            api_manager.credential_shared_pool()
     finally:
         if api_manager is not None:
             await api_manager.close()

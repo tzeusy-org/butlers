@@ -612,12 +612,32 @@ def test_bootstrap_checker_is_read_only_fail_closed_and_distinguishes_connection
     ).get_chain_head("core")
     # The actual immutable generators own the transient cross-schema read ACL;
     # it cannot be a stable prerequisite for reaching its ordinary repair.
-    import subprocess
+    import hashlib
     from types import ModuleType
 
     from butlers.db_authority.apply import _PREDECESSOR_COMMIT
 
     root = Path(__file__).resolve().parents[2]
+    # Complete inert producers bind the rollback release without requiring its
+    # Git history to be present in a shallow CI checkout. Validate both before
+    # compiling or executing either historical producer.
+    assert _PREDECESSOR_COMMIT == "30b376895e1108977bf1b80bf54fcbdaaa3d64ad"
+    pinned_sources = {}
+    for filename, fixture, digest in (
+        (
+            "core_001_foundation.py",
+            "core_001_foundation_30b.py.txt",
+            "10c264462f62aef1afecb0ebb424f46ed1d553ab6b2a62e8c0717cff5e72908a",
+        ),
+        (
+            "core_077_relationship_switchboard_read_grants.py",
+            "core_077_relationship_switchboard_read_grants_30b.py.txt",
+            "10251f7ae7e57a370232c56cb9145628f25276bc7241a97b35a690919ca88c28",
+        ),
+    ):
+        source = (root / "tests" / "fixtures" / "db_authority_predecessor" / fixture).read_bytes()
+        assert hashlib.sha256(source).hexdigest() == digest
+        pinned_sources[filename] = source
     commands = []
     for filename, function, args in (
         (
@@ -628,11 +648,9 @@ def test_bootstrap_checker_is_read_only_fail_closed_and_distinguishes_connection
         ("core_077_relationship_switchboard_read_grants.py", "upgrade", ()),
     ):
         path = "alembic/versions/core/" + filename
-        # Historical broad producer assertions bind the actual pinned rollback
-        # release. The current serving bootstrap cannot retain those helpers.
-        source = subprocess.check_output(
-            ["git", "show", _PREDECESSOR_COMMIT + ":" + path], cwd=root, timeout=10
-        )
+        # Execute the complete, hash-checked historical producer; the current
+        # serving bootstrap cannot retain these broad-authority helpers.
+        source = pinned_sources[filename]
         module = ModuleType("pinned_acl_" + filename.removesuffix(".py"))
         exec(compile(source, path, "exec"), module.__dict__)
         with patch.object(

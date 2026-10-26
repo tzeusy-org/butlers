@@ -1,7 +1,7 @@
 """Executing serving admission controls; driver boundaries only are doubled."""
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import FrozenInstanceError
 from unittest.mock import AsyncMock, Mock, call, patch
 
@@ -12,6 +12,239 @@ from butlers.db_authority import roles
 from butlers.db_authority.roles import AuthorityError, load_runtime_profile
 
 pytestmark = pytest.mark.unit
+
+
+@contextmanager
+def _recording_postgresql_connection(respond):
+    """Real SQLAlchemy dispatch; mapping decoding is not a native PostgreSQL proof."""
+    import psycopg2
+    from sqlalchemy.dialects.postgresql.psycopg2 import PGDialect_psycopg2
+    from sqlalchemy.engine import URL, Engine
+    from sqlalchemy.pool import StaticPool
+
+    calls = []
+
+    class Cursor:
+        description = None
+        rowcount = -1
+
+        def __init__(self, connection):
+            self.connection = connection
+
+        def execute(self, statement, parameters=None):
+            parameters = {} if parameters is None else parameters
+            # Model the mapping-format boundary after the actual PG dialect has
+            # supplied its parameters. Do not interpret SQL or emulate PG roles.
+            decoded = statement % parameters
+            calls.append((statement, dict(parameters), decoded))
+            columns, self.rows = respond(statement, parameters, decoded)
+            self.rows = list(self.rows)
+            self.description = (
+                [(column, None, None, None, None, None, None) for column in columns]
+                if columns is not None
+                else None
+            )
+
+        def fetchone(self):
+            return self.rows.pop(0) if self.rows else None
+
+        def fetchall(self):
+            rows, self.rows = self.rows, []
+            return rows
+
+        def close(self):
+            pass
+
+    class Transport:
+        notices = []
+
+        def cursor(self):
+            return Cursor(self)
+
+        def rollback(self):
+            pass
+
+        def commit(self):
+            pass
+
+        def close(self):
+            pass
+
+    engine = Engine(
+        StaticPool(creator=Transport),
+        PGDialect_psycopg2(dbapi=psycopg2),
+        URL.create("postgresql+psycopg2"),
+    )
+    try:
+        with engine.connect() as connection:
+            yield connection, calls
+    finally:
+        engine.dispose()
+
+
+def test_actual_dashboard_staging_roundtrips_literal_sql_and_restores_identity():
+    from butlers.db_authority import interfaces
+
+    state = {"actor": "previous_actor", "profile": True, "maintenance": True, "fail": None}
+    staged = []
+
+    def respond(statement, parameters, decoded):
+        if "FROM pg_catalog.pg_database d" in statement:
+            return ("database", "owner", "valid"), [
+                ("butlers", "normal_migrator", state["profile"])
+            ]
+        if "current_user=session_user AND rolsuper" in statement:
+            return ("valid",), [(state["maintenance"],)]
+        if statement.startswith("SELECT current_setting"):
+            return ("actor",), [(state["actor"],)]
+        if "pg_catalog.set_config" in statement:
+            state["actor"] = parameters["owner"]
+            return ("actor",), [(state["actor"],)]
+        assert decoded == interfaces.DASHBOARD_PURPOSE_SQL
+        assert dict(parameters) == {}
+        assert state["actor"] == "normal_migrator"
+        if state["fail"] is not None:
+            raise state["fail"]
+        staged.append(decoded)
+        return None, []
+
+    with _recording_postgresql_connection(respond) as (connection, calls):
+        try:
+            interfaces.stage_dashboard_interfaces(connection)
+        finally:
+            assert state["actor"] == "previous_actor"
+        assert staged == [interfaces.DASHBOARD_PURPOSE_SQL]
+        assert any(template != decoded for template, _, decoded in calls)
+        for guard in ("profile", "maintenance"):
+            state[guard] = False
+            with pytest.raises(AuthorityError):
+                interfaces.stage_dashboard_interfaces(connection)
+            state[guard] = True
+            assert staged == [interfaces.DASHBOARD_PURPOSE_SQL]
+        for primary in (LookupError("recording transport failure"), asyncio.CancelledError()):
+            state["fail"] = primary
+            with pytest.raises(type(primary)) as error:
+                interfaces.stage_dashboard_interfaces(connection)
+            assert error.value is primary
+            if isinstance(primary, asyncio.CancelledError):
+                # SQLAlchemy invalidates a DBAPI connection on BaseException;
+                # the real finally attempts restoration and preserves cancel.
+                assert connection.invalidated
+                assert primary.__notes__ == [
+                    "Dashboard maintenance identity restoration was incomplete"
+                ]
+            else:
+                assert state["actor"] == "previous_actor"
+
+
+def test_actual_protected_installer_roundtrips_all_percent_bodies_and_catalog_checks():
+    from butlers.db_authority import interfaces
+    from butlers.db_authority.apply import quote_identifier
+
+    names = ("mutate", "reissue_runtime_attention_episode", "append_runtime_attention_condition")
+    definitions = tuple(
+        next(row for row in interfaces.FUNCTIONS if row.name == name) for name in names
+    )
+    index = {interfaces._signature(row): row for row in definitions}
+    created = {}
+    owners = {}
+    acls = {}
+    installed = []
+    valid = {"owners": True, "maintenance": True}
+
+    def respond(statement, parameters, decoded):
+        if "WITH owners AS" in statement:
+            assert set(parameters["owners"]) == {row.owner for row in definitions}
+            assert parameters["count"] == len(set(parameters["owners"]))
+            return ("valid",), [(valid["owners"],)]
+        if "pg_get_function_identity_arguments" in statement:
+            key = parameters["signature"]
+            row = index[key]
+            return ("oid", "owner", "definer", "config", "body"), (
+                [
+                    (
+                        key,
+                        owners[key],
+                        row.security_definer,
+                        ["search_path=pg_catalog, pg_temp"],
+                        row.body,
+                    )
+                ]
+                if key in created
+                else []
+            )
+        if "pg_catalog.aclexplode" in statement:
+            return ("role", "privilege", "grantable"), [
+                (role, "EXECUTE", False) for role in sorted(acls[parameters["oid"]])
+            ]
+        if "session_user=current_user AND rolsuper" in statement:
+            return ("valid",), [(valid["maintenance"],)]
+        for key, row in index.items():
+            if decoded == row.sql:
+                assert "%" in row.sql
+                assert dict(parameters) == {}
+                created[key] = row
+                owners[key] = "maintenance"
+                acls[key] = {"PUBLIC"}
+                installed.append(decoded)
+                return None, []
+            if decoded == f"ALTER FUNCTION {key} OWNER TO {quote_identifier(row.owner)}":
+                owners[key] = row.owner
+                return None, []
+            if decoded == f"REVOKE ALL ON FUNCTION {key} FROM PUBLIC":
+                acls[key].remove("PUBLIC")
+                return None, []
+            for role in row.executors:
+                if decoded == f"GRANT EXECUTE ON FUNCTION {key} TO {quote_identifier(role)}":
+                    acls[key].add(role)
+                    return None, []
+        raise AssertionError("unexpected protected installer dispatch")
+
+    with _recording_postgresql_connection(respond) as (connection, calls):
+        for guard in ("owners", "maintenance"):
+            valid[guard] = False
+            with pytest.raises(AuthorityError):
+                interfaces.install_functions(connection, definitions)
+            valid[guard] = True
+            assert installed == []
+        interfaces.install_functions(connection, definitions)
+        assert installed == [row.sql for row in definitions]
+        assert all(owners[key] == row.owner for key, row in index.items())
+        assert all(acls[key] == set(row.executors) for key, row in index.items())
+        assert all(
+            interfaces.function_matches(
+                connection, row, interfaces.inspect_function(connection, row)
+            )
+            for row in definitions
+        )
+        interfaces.install_functions(connection, definitions)
+        assert installed == [row.sql for row in definitions]
+        assert len([template for template, _, decoded in calls if decoded in installed]) == 3
+
+
+def test_actual_trigger_shape_query_binds_only_relation_and_preserves_location_normalization():
+    from butlers.db_authority import interfaces
+
+    expected = """
+SELECT tgname, tgtype, tgenabled, tgfoid, tgargs, tgattr::smallint[] AS attributes,
+ tgdeferrable, tginitdeferred, tgconstraint<>0 AS constraint_trigger,
+ pg_catalog.regexp_replace(tgqual::text, ':location -?[0-9]+', ':location -1', 'g') AS expression
+FROM pg_catalog.pg_trigger
+WHERE tgrelid=pg_catalog.to_regclass(:relation) AND NOT tgisinternal
+ORDER BY tgname
+"""
+    relation = "public.protocol_subject"
+
+    def respond(statement, parameters, decoded):
+        assert dict(parameters) == {"relation": relation}
+        assert statement.replace("%(relation)s", ":relation") == expected
+        return ("tgname", "expression"), [("fixed_trigger", "{EXPR :location -1}")]
+
+    with _recording_postgresql_connection(respond) as (connection, calls):
+        assert interfaces._shape_rows(connection, interfaces._SHAPE_TRIGGERS, relation) == (
+            {"tgname": "fixed_trigger", "expression": "{EXPR :location -1}"},
+        )
+        assert len(calls) == 1
 
 
 async def test_connect_rejects_hidden_connecting_login_owner_before_lazy_pool():
@@ -2168,6 +2401,8 @@ def test_actual_selected_deployment_installer_never_grants_absent_runtime(
             raise AssertionError("unexpected installer query")
 
         def exec_driver_sql(self, sql):
+            # Decode the actual unbound driver template before catalog modeling.
+            sql = sql % {}
             if sql.startswith("SELECT session_user=current_user AND rolsuper"):
                 return Result(True)
             for key, row in index.items():

@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router";
 
 import { SystemVerdictBanner } from "@/components/system/SystemVerdictBanner";
 import { useModelAllowance } from "@/hooks/use-model-catalog";
+import { useHealthPosture } from "@/hooks/use-system";
 
 vi.mock("@/hooks/use-model-catalog", () => ({ useModelAllowance: vi.fn() }));
 vi.mock("@/hooks/use-butler-status-board", () => ({
@@ -30,7 +31,7 @@ vi.mock("@/hooks/use-system", () => {
     useDatabaseFacts: hook({}),
     useBackupFacts: hook(backup),
     useEgressFacts: hook({}),
-    useHealthPosture: () => ({ ...ok, data: { security: {} } }),
+    useHealthPosture: vi.fn(),
     useInsightDeliveryState: hook({ failed: 0 }),
     useDriftFacts: hook({ drift_check_available: true, is_drifted: false, drifted: [] }),
     useDeploymentFacts: hook({
@@ -48,7 +49,12 @@ function renderBanner() {
   return render(<MemoryRouter><SystemVerdictBanner /></MemoryRouter>);
 }
 
-beforeEach(() => vi.useFakeTimers({ now: Date.parse("2026-10-18T12:00:00Z"), toFake: ["Date"] }));
+beforeEach(() => {
+  vi.useFakeTimers({ now: Date.parse("2026-10-18T12:00:00Z"), toFake: ["Date"] });
+  vi.mocked(useHealthPosture).mockReset().mockReturnValue({
+    ...ok, data: { security: { database_authority: "admitted" } },
+  } as never);
+});
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe("SystemVerdictBanner allowance source", () => {
@@ -113,5 +119,18 @@ describe("SystemVerdictBanner allowance source", () => {
     setAllowance({ isLoading: true, isPending: true, data: undefined });
     const { container } = renderBanner();
     expect(container.textContent).not.toContain("Instance healthy");
+  });
+
+  it.each([
+    ["missing", {}, "database authority unknown"],
+    ["unknown", { database_authority: "unknown" }, "database authority unknown"],
+    ["unavailable", { database_authority: "unavailable" }, "database authority unavailable"],
+  ] as const)("never says healthy when database authority is %s", (_state, security, warning) => {
+    vi.mocked(useHealthPosture).mockReturnValue({ ...ok, data: { security } } as never);
+    setAllowance({ isError: true, isForbidden: true, data: undefined });
+    const { container } = renderBanner();
+    expect(container.textContent).toContain(warning);
+    expect(container.textContent).not.toContain("Instance healthy");
+    expect(container.textContent).not.toContain("allowance");
   });
 });

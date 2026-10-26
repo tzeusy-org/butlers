@@ -183,22 +183,58 @@ memory_schema = "chronicler_mem"
 """.lstrip()
         )
 
+        from contextlib import contextmanager
+
         calls: list[tuple[str, str | None]] = []
+        events = []
+        held_connection = object()
+        migration_url = "postgresql://fixture_migrator@db.invalid/butlers"
 
-        async def record_migration(db_url: str, chain: str = "core", schema: str | None = None):
-            del db_url
+        @contextmanager
+        def selected_session(db_url):
+            assert db_url == migration_url
+            events.append(("enter", held_connection))
+            try:
+                yield held_connection
+            finally:
+                events.append(("exit", held_connection))
+
+        async def record_migration(
+            db_url: str,
+            chain: str = "core",
+            schema: str | None = None,
+            *,
+            connection=None,
+        ):
+            assert db_url == migration_url
+            assert connection is held_connection
             calls.append((chain, schema))
+            events.append(("migration", chain, schema, connection))
 
-        monkeypatch.setattr(
-            "butlers.db.db_params_from_env",
-            lambda: {"user": "user", "password": "pw", "host": "localhost", "port": 5432},
-        )
+        def record_finalization(connection, *, plans):
+            assert connection is held_connection
+            events.append(("finalize", connection, plans))
+
+        monkeypatch.setenv("BUTLERS_MIGRATOR_DATABASE_URL", migration_url)
         monkeypatch.setattr("butlers.migrations.has_butler_chain", lambda name: False)
+        monkeypatch.setattr("butlers.migrations.migration_session", selected_session)
         monkeypatch.setattr("butlers.migrations.run_migrations", record_migration)
+        monkeypatch.setattr("butlers.migrations.finalize_authority", record_finalization)
 
         await _migrate_all({"chronicler": butler_dir}, dry_run=False)
 
         assert calls == [("core", "chronicler"), ("memory", "chronicler_mem")]
+        assert events == [
+            ("enter", held_connection),
+            ("migration", "core", "chronicler", held_connection),
+            ("migration", "memory", "chronicler_mem", held_connection),
+            (
+                "finalize",
+                held_connection,
+                (("core", "chronicler", None), ("memory", "chronicler_mem", None)),
+            ),
+            ("exit", held_connection),
+        ]
 
 
 class TestUpCommand:
@@ -352,8 +388,9 @@ async def test_actual_migrate_cli_holds_one_selected_session_through_finalizatio
         assert connection is held
         events.append((chain, schema))
 
-    def finalize(connection):
+    def finalize(connection, *, plans):
         assert connection is held
+        assert plans == (("core", "general", None), ("core", "health", None))
         events.append("finalized")
 
     monkeypatch.setenv(
