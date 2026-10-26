@@ -60,6 +60,23 @@ def _declare(
 TOOL_PRESENTATION_INVENTORY = (
     *_declare(
         "core",
+        "infra",
+        "metric_baseline_get",
+        presentable=False,
+        effect_class="read",
+        output_trust="untrusted",
+        output_sensitivity="sensitive",
+        resource_params=("metric_key",),
+        selection_bound={"metric_key": False},
+        safety_args=(),
+        idempotency="none",
+        owner_authority=False,
+        read_stores=("metric_baselines",),
+        write_stores=(),
+        recipient_params=RecipientParameters(),
+    ),
+    *_declare(
+        "core",
         "direct",
         "route.execute",
         effect_class="administer",

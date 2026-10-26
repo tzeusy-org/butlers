@@ -28,5 +28,31 @@ broker refuses that category without evidence. The wording reports the deviation
 own range and the days it rests on, without interpretation or advice. The job logs no measured
 values.
 
-Home energy, Finance spend and the dashboard band are later slices; see
+Home energy and Finance spend are later slices; see
 `openspec/changes/add-personal-baselines/proposal.md`.
+
+
+## Stored reads and Health display (slice 2)
+
+`read_baseline(pool, metric_key, now=...)` reads the caller's schema and returns `None`
+for a key with no current-method row. `read_baselines` reads a requested list in one
+SELECT; it never falls back to another schema or method version. Both use the stored
+counts and the scorer's precedence: unmeasurable, stale, insufficient history, ready.
+Only ready, fresh rows expose a band. Freshness is evaluated against injected `now`;
+a row older than twice the metric's refresh interval is stale. Reads write nothing.
+
+The registered core tool `metric_baseline_get(metric_key)` is an infrastructure read
+on the daemon's captured pool. Its missing result is a typed `no_baseline` response.
+`GET /api/health/baselines` reads the three existing Health metrics through Health's
+pool. It returns counts, coverage, method version and computation time alongside each
+state. A failed store read returns `available: false` with `baselines: null`, rather
+than pretending there are no rows. Authentication follows the existing Health API.
+
+Measurements shows resting heart rate (bpm), HRV (ms), and sleep duration (hours)
+usual ranges with “n of m days”. HRV's ready band also overlays its matching trend.
+The generic heart-rate trend is a different measurement and never uses resting HR's
+band; sleep-stage durations in minutes are likewise not given an hours overlay.
+Thin history, unavailable instruments, stale rows and missing rows show named states
+without ranges. A baseline request failure leaves the existing measurement trends
+visible. These are descriptions of the owner's history, not population targets or
+medical advice.

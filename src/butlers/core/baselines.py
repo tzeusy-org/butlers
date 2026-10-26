@@ -438,6 +438,162 @@ async def upsert_baseline(pool: asyncpg.Pool, baseline: Baseline) -> bool:
     return row is not None
 
 
+NO_BASELINE = "no_baseline"
+
+#: Read states: the scorer's non-value states plus ``ready`` (a fresh, measurable,
+#: sufficient band) and ``no_baseline`` (no stored row for the key).
+BaselineReadState = Literal["ready", "insufficient_history", "unmeasurable", "stale", "no_baseline"]
+
+
+@dataclass(frozen=True, slots=True)
+class BaselineReading:
+    """A stored baseline as the owner may be shown it.
+
+    ``band`` is set only for ``state == "ready"``; every other state is a named
+    reason, never a range. ``computed_at`` is kept for ``stale`` so a reader can
+    say when the band was last computed.
+    """
+
+    metric_key: str
+    state: BaselineReadState
+    band: tuple[float, float] | None
+    center: float | None
+    unit: str | None
+    n_observed: int
+    n_expected: int
+    coverage: float
+    computed_at: datetime | None
+    stale: bool
+    method_version: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "metric_key": self.metric_key,
+            "state": self.state,
+            "band": (
+                {"low": self.band[0], "high": self.band[1]} if self.band is not None else None
+            ),
+            "center": self.center,
+            "unit": self.unit,
+            "n_observed": self.n_observed,
+            "n_expected": self.n_expected,
+            "coverage": self.coverage,
+            "computed_at": self.computed_at.isoformat() if self.computed_at else None,
+            "stale": self.stale,
+            "method_version": self.method_version,
+        }
+
+
+def missing_baseline(metric_key: str) -> BaselineReading:
+    return BaselineReading(metric_key, NO_BASELINE, None, None, None, 0, 0, 0.0, None, False)
+
+
+def reading_from_baseline(
+    baseline: Baseline,
+    *,
+    now: datetime,
+    refresh_interval: timedelta = timedelta(days=1),
+) -> BaselineReading:
+    """Classify ``baseline`` with the same precedence :func:`score` uses.
+
+    Unmeasurable, then stale (older than twice the refresh interval), then thin
+    history; only a ready, fresh, measurable band carries a ``band``.
+    """
+    stale = now - baseline.computed_at > 2 * refresh_interval
+    if baseline.measurability != "measurable":
+        state: BaselineReadState = "unmeasurable"
+    elif stale:
+        state = "stale"
+    elif baseline.status != "ready" or baseline.center is None or baseline.dispersion is None:
+        state = "insufficient_history"
+    else:
+        state = "ready"
+    return BaselineReading(
+        baseline.metric_key,
+        state,
+        baseline.band if state == "ready" else None,
+        baseline.center if state == "ready" else None,
+        baseline.unit,
+        baseline.n_observed,
+        baseline.n_expected,
+        baseline.coverage,
+        baseline.computed_at,
+        stale,
+        baseline.method_version,
+    )
+
+
+async def read_baselines(
+    pool: asyncpg.Pool,
+    metric_keys: Sequence[str],
+    *,
+    now: datetime,
+    refresh_intervals: Mapping[str, timedelta] | None = None,
+) -> list[BaselineReading]:
+    """Read the stored baseline of each key from the caller's own schema.
+
+    One reading per requested key, in request order. A key with no stored row
+    (unknown metric, or the job has not run) reads ``no_baseline``. Only the scorer's
+    current METHOD_VERSION is eligible; an old/future method never supplies a current
+    band. Within that version the most recently computed bucket
+    is read. Read-only.
+    """
+    if not metric_keys:
+        return []
+    rows = await pool.fetch(
+        """
+        SELECT DISTINCT ON (metric_key)
+               metric_key, bucket_value, method_version, status, measurability, unit,
+               center, dispersion, k_mad, n_observed, n_expected, coverage,
+               input_digest, computed_at
+        FROM metric_baselines
+        WHERE metric_key = ANY($1::text[]) AND method_version = $2
+        ORDER BY metric_key, computed_at DESC, bucket_value
+        """,
+        list(metric_keys),
+        METHOD_VERSION,
+    )
+    intervals = refresh_intervals or {}
+    by_key = {
+        row["metric_key"]: reading_from_baseline(
+            Baseline(
+                metric_key=row["metric_key"],
+                bucket_value=row["bucket_value"],
+                method_version=row["method_version"],
+                status=row["status"],
+                measurability=row["measurability"],
+                unit=row["unit"],
+                center=row["center"],
+                dispersion=row["dispersion"],
+                n_observed=row["n_observed"],
+                n_expected=row["n_expected"],
+                coverage=row["coverage"],
+                k_mad=row["k_mad"],
+                input_digest=row["input_digest"],
+                computed_at=row["computed_at"],
+            ),
+            now=now,
+            refresh_interval=intervals.get(row["metric_key"], timedelta(days=1)),
+        )
+        for row in rows
+    }
+    return [by_key.get(key) or missing_baseline(key) for key in metric_keys]
+
+
+async def read_baseline(
+    pool: asyncpg.Pool,
+    metric_key: str,
+    *,
+    now: datetime,
+    refresh_interval: timedelta = timedelta(days=1),
+) -> BaselineReading | None:
+    """Read one metric's stored baseline; see :func:`read_baselines`."""
+    readings = await read_baselines(
+        pool, [metric_key], now=now, refresh_intervals={metric_key: refresh_interval}
+    )
+    return None if readings[0].state == NO_BASELINE else readings[0]
+
+
 async def episode_spans(
     pool: asyncpg.Pool, metric_key: str, *, since: date
 ) -> list[tuple[date, date | None]]:
