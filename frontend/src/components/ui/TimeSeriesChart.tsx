@@ -48,6 +48,8 @@ interface TimeSeriesChartProps {
   compact?: boolean;
   yDomain?: [number | "auto", number | "auto"];
   yUnit?: string;
+  /** Optional usual range, in the same units as this chart. */
+  band?: { low: number; high: number };
   tooltip?: ReactElement;
   animate?: boolean;
   testId?: string;
@@ -67,6 +69,7 @@ export function TimeSeriesChart({
   compact = false,
   yDomain,
   yUnit,
+  band,
   tooltip,
   animate = false,
   testId,
@@ -103,6 +106,14 @@ export function TimeSeriesChart({
         labelFormatter={(l) => formatTick(Number(l))}
         isAnimationActive={animate}
       />
+      {band && (
+        <ReferenceArea
+          y1={band.low}
+          y2={band.high}
+          className="fill-chart-1/10"
+          ifOverflow="extendDomain"
+        />
+      )}
       {label && lastReadingAt !== null && (
         <ReferenceArea
           x1={lastReadingAt}

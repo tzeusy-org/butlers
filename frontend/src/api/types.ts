@@ -2502,6 +2502,26 @@ export interface ExpectedSignal {
   evaluated_at: string;
 }
 
+export interface HealthBaseline {
+  metric_key: string;
+  state: "ready" | "insufficient_history" | "unmeasurable" | "stale" | "no_baseline";
+  band: { low: number; high: number } | null;
+  center: number | null;
+  unit: string | null;
+  n_observed: number;
+  n_expected: number;
+  coverage: number;
+  computed_at: string | null;
+  stale: boolean;
+  method_version: string | null;
+}
+
+export interface HealthBaselinesResponse {
+  baselines: HealthBaseline[] | null;
+  available: boolean;
+  degraded_reason: string | null;
+}
+
 export interface ExpectedSignalsResponse {
   signals: ExpectedSignal[] | null;
   available: boolean;
