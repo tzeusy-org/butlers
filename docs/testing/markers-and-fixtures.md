@@ -139,6 +139,15 @@ Use a real migrated database when the behavior depends on those boundaries.
   fixed UTC. Inject these methods at existing seams, retaining purpose-specific
   datetime adapters when needed; never patch event-loop, timeout or SQL clocks.
 
+- `mcp.registered_tools(server)` and `await mcp.tool_fn(server, name)` use a
+  real `FastMCP` server's public async registration API. Await both helpers;
+  the first returns a name-to-function snapshot, while the second looks up the
+  current registered `Tool.fn` and raises `KeyError(name)` for an unknown name.
+  Each lookup retains current wrappers and gates without unwrapping or caching.
+  Direct handler calls do not prove MCP transport validation or authorization.
+  Keep domain recorders and intentional registration failures; if real FastMCP
+  rejects a subject's signature, report the rejection instead of loosening it.
+
 ## Testcontainer Resilience
 
 ### Hosted image acquisition
