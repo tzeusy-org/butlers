@@ -89,6 +89,115 @@ def _partition_owner_transition(row):
     )
 
 
+def _relation_failure_note(observed, declared, *, phase, migration_owner, maintenance_owner):
+    """Build bounded hashed v2 exception notes without changing admission."""
+    import hashlib
+    import json
+
+    if phase not in {"bind_partitions", "validate_relations"}:
+        return None
+    if not isinstance(observed, (tuple, list)) or not isinstance(declared, (tuple, list)):
+        return None
+    if len(observed) > 4096 or len(declared) > 4096:
+        return None
+
+    def identifier(value):
+        if type(value) is not str or not value or len(value.encode("utf-8")) > 1024:
+            raise ValueError("Unprojectable identifier")
+        return value
+
+    def digests(schema, name):
+        schema, name = identifier(schema), identifier(name)
+        identity = json.dumps([schema, name], ensure_ascii=True, separators=(",", ":"))
+        return {
+            "identity_sha256": hashlib.sha256(identity.encode("utf-8")).hexdigest(),
+            "schema_sha256": hashlib.sha256(schema.encode("utf-8")).hexdigest(),
+            "name_sha256": hashlib.sha256(name.encode("utf-8")).hexdigest(),
+        }
+
+    identifier(migration_owner)
+    identifier(maintenance_owner)
+    expected = {}
+    for row in declared:
+        identifier(row.schema)
+        identifier(row.name)
+        identifier(row.owner)
+        if row.kind not in {ObjectKind.TABLE, ObjectKind.VIEW, ObjectKind.SEQUENCE}:
+            return None
+        if type(row.required) is not bool or row.identity in expected:
+            return None
+        expected[row.identity] = row
+    kinds = {
+        "r": ("table", "table"),
+        "p": ("partitioned_table", "table"),
+        "v": ("view", "view"),
+        "m": ("materialized_view", "other"),
+        "S": ("sequence", "sequence"),
+        "f": ("foreign_table", "other"),
+    }
+    rows, seen = [], set()
+    for actual in observed:
+        schema, name = identifier(actual["schema"]), identifier(actual["name"])
+        owner = identifier(actual["owner"])
+        kind, identity_kind = kinds[actual["kind"]]
+        identity = (schema, name, identity_kind, "")
+        if identity in seen:
+            return None
+        seen.add(identity)
+        row = expected.get(identity)
+        enabled, forced = relation_security_flags(row) if row is not None else (False, False)
+        rows.append(
+            {
+                **digests(schema, name),
+                "kind": kind,
+                "declared_identity": row is not None,
+                "owner_is_expected": row is not None and owner == row.owner,
+                "owner_is_migration": owner == migration_owner,
+                "owner_is_maintenance": owner == maintenance_owner,
+                "actor_observation_available": True,
+                "actual_enabled_is_bool": type(actual["rls"]) is bool,
+                "actual_enabled": actual["rls"] is True,
+                "actual_forced_is_bool": type(actual["forced_rls"]) is bool,
+                "actual_forced": actual["forced_rls"] is True,
+                "expected_flags_available": row is not None,
+                "expected_enabled": enabled is True,
+                "expected_forced": forced is True,
+            }
+        )
+    missing = [
+        {**digests(row.schema, row.name), "declared_kind": row.kind.value}
+        for row in declared
+        if row.required and row.identity not in seen
+    ]
+    payload = {
+        "version": 2,
+        "phase": phase,
+        "exception": "AuthorityError",
+        "observed_count": len(rows),
+        "declared_count": len(declared),
+        "rows": sorted(rows, key=lambda row: (row["identity_sha256"], row["kind"])),
+        "missing_required_count": len(missing),
+        "missing_required": sorted(
+            missing, key=lambda row: (row["identity_sha256"], row["declared_kind"])
+        ),
+    }
+    note = "DB_AUTHORITY_RELATION_DIAGNOSTIC " + json.dumps(
+        payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    )
+    return note if len(note.encode("utf-8")) <= 1024 * 1024 else None
+
+
+def _add_relation_failure_note(error, observed, declared, **context):
+    # Observation is subordinate to the original validator, including if the
+    # bounded projection or the exception's standard note transport fails.
+    try:
+        note = _relation_failure_note(observed, declared, **context)
+        if note is not None:
+            error.add_note(note)
+    except Exception:
+        pass
+
+
 def validate_relations(
     observed,
     declared: tuple[ObjectAuthority, ...],
@@ -357,18 +466,40 @@ def converge_authority(
         migration_owner=migration_owner,
     )
     observed = _rows(connection, _RELATIONS, schemas=list(schemas))
-    declared = bind_partition_relations(
-        observed,
-        manifest.relations,
-        _rows(connection, _PARTITION_LINKS, oids=[row["oid"] for row in observed]),
-        transition_owner=migration_owner if not historical else None,
-    )
-    bound = validate_relations(
-        observed,
-        declared,
-        administrative_history=historical,
-        transition_owner=migration_owner if not historical else None,
-    )
+    try:
+        declared = bind_partition_relations(
+            observed,
+            manifest.relations,
+            _rows(connection, _PARTITION_LINKS, oids=[row["oid"] for row in observed]),
+            transition_owner=migration_owner if not historical else None,
+        )
+    except AuthorityError as error:
+        _add_relation_failure_note(
+            error,
+            observed,
+            manifest.relations,
+            phase="bind_partitions",
+            migration_owner=migration_owner,
+            maintenance_owner=maintenance_owner,
+        )
+        raise
+    try:
+        bound = validate_relations(
+            observed,
+            declared,
+            administrative_history=historical,
+            transition_owner=migration_owner if not historical else None,
+        )
+    except AuthorityError as error:
+        _add_relation_failure_note(
+            error,
+            observed,
+            declared,
+            phase="validate_relations",
+            migration_owner=migration_owner,
+            maintenance_owner=maintenance_owner,
+        )
+        raise
     validate_sequence_bindings(
         bound,
         _rows(
@@ -727,7 +858,7 @@ def converge_ordinary_functions(connection, bound) -> None:
     if changes:
         require_maintenance(connection)
     for row, definition in changes:
-        connection.exec_driver_sql(definition.sql)
+        connection.exec_driver_sql(definition.sql.replace("%", "%%"))
         target = _signature(definition)
         # The complete preflight admits only an exact fixed purpose owner or
         # the independently proved normal migration owner at this transition.

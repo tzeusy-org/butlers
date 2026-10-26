@@ -39,8 +39,8 @@ database:
 
 # Bitwarden Secrets Manager -> Secret `<release>-bws` via External Secrets.
 # Map of env var name -> BWS secret key. Only these keys are synced; the BWS
-# project is shared with other homelab services, so every key the chart reads
-# is named BUTLERS_RUNTIME_* to mark it as owned by this release.
+# project is shared with other homelab services. Runtime-scoped keys use
+# BUTLERS_RUNTIME_*; fixed database-purpose keys keep their separate names.
 externalSecrets:
   storeRef: bitwarden-secretsmanager-dev
   refreshInterval: 1h

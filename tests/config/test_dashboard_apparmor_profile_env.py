@@ -34,6 +34,22 @@ def _security_opts(tmp_path: Path, *extra_env: str) -> dict[str, list[str]]:
                 "POSTGRES_HOST=10.23.4.5",
                 "POSTGRES_PASSWORD=non-secret-test-password",
                 "COMPOSE_PROJECT_NAME=butlers-apparmor-profile-test",
+                "RUNTIME_DB_USER=fixture_runtime",
+                "RUNTIME_DB_PASSWORD=fixture-password",
+                "DASHBOARD_DB_USER=fixture_dashboard",
+                "DASHBOARD_DB_PASSWORD=fixture-password",
+                "CONNECTOR_DB_USER=fixture_connector",
+                "CONNECTOR_DB_PASSWORD=fixture-password",
+                "BACKUP_DB_USER=fixture_backup",
+                "BACKUP_DB_PASSWORD=fixture-password",
+                (
+                    "BUTLERS_MIGRATOR_DATABASE_URL="
+                    "postgresql://fixture_migrator:fixture-password@db.invalid:5432/butlers"
+                ),
+                (
+                    "BUTLERS_CREDENTIAL_DATABASE_URL="
+                    "postgresql://fixture_credentials:fixture-password@db.invalid:5432/butlers"
+                ),
                 *extra_env,
                 "",
             )

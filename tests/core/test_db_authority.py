@@ -222,6 +222,314 @@ def test_actual_protected_installer_roundtrips_all_percent_bodies_and_catalog_ch
         assert len([template for template, _, decoded in calls if decoded in installed]) == 3
 
 
+def test_actual_ordinary_convergence_roundtrips_percent_bodies_and_retains_admission():
+    from butlers.db_authority import apply, interfaces
+    from butlers.db_authority.grants import compile_function_manifest
+    from butlers.db_authority.roles import runtime_profiles
+
+    definitions = tuple(
+        row
+        for row in compile_function_manifest(
+            runtime_profiles("butlers"), "normal_migrator", (("core", None, None),)
+        )
+        if "%" in row.sql
+    )
+    assert definitions
+    index = {interfaces._signature(row): row for row in definitions}
+    catalog = {
+        key: dict(oid=key, owner=row.owner, body="previous body") for key, row in index.items()
+    }
+    acls = {key: {"PUBLIC"} for key in index}
+    installed = []
+    valid = {"owners": True, "maintenance": True, "catalog": True}
+    failure = {"primary": None}
+
+    def respond(statement, parameters, decoded):
+        if "WITH owners AS" in statement:
+            owners = {row.owner for row in definitions if row.security_definer}
+            assert set(parameters["owners"]) == owners
+            assert parameters["count"] == len(owners)
+            return ("valid",), [(valid["owners"],)]
+        if "pg_get_function_identity_arguments" in statement:
+            key = parameters["signature"]
+            actual, row = catalog[key], index[key]
+            return ("oid", "owner", "definer", "config", "body"), [
+                (
+                    actual["oid"] if valid["catalog"] else "changed_oid",
+                    actual["owner"],
+                    row.security_definer,
+                    list(row.settings),
+                    actual["body"],
+                )
+            ]
+        if "pg_catalog.aclexplode" in statement:
+            return ("role", "privilege", "grantable"), [
+                (role, "EXECUTE", False) for role in sorted(acls[parameters["oid"]])
+            ]
+        if "current_user=session_user AND rolsuper" in statement:
+            return ("valid",), [(valid["maintenance"],)]
+        for key, row in index.items():
+            if decoded == row.sql:
+                assert dict(parameters) == {}
+                if failure["primary"] is not None:
+                    raise failure["primary"]
+                catalog[key]["body"] = row.body
+                installed.append(decoded)
+                return None, []
+            if decoded == f"ALTER FUNCTION {key} OWNER TO {apply.quote_identifier(row.owner)}":
+                catalog[key]["owner"] = row.owner
+                return None, []
+            if decoded == f"REVOKE ALL ON FUNCTION {key} FROM PUBLIC":
+                acls[key].remove("PUBLIC")
+                return None, []
+            for role in row.executors:
+                if decoded == f"GRANT EXECUTE ON FUNCTION {key} TO {apply.quote_identifier(role)}":
+                    acls[key].add(role)
+                    return None, []
+        raise AssertionError("unexpected ordinary convergence dispatch")
+
+    population = tuple(
+        dict(
+            oid=key,
+            schema=row.schema,
+            name=row.name,
+            arguments=row.signature,
+            owner=row.owner,
+        )
+        for key, row in index.items()
+    )
+    bound = apply.validate_function_population(
+        population, definitions, {row.identity for row in definitions}
+    )
+    with _recording_postgresql_connection(respond) as (connection, calls):
+        for guard in valid:
+            valid[guard] = False
+            with pytest.raises(AuthorityError):
+                apply.converge_ordinary_functions(connection, bound)
+            valid[guard] = True
+            assert installed == []
+        primary = LookupError("recording transport failure")
+        failure["primary"] = primary
+        with pytest.raises(LookupError) as error:
+            apply.converge_ordinary_functions(connection, bound)
+        assert error.value is primary
+        assert installed == []
+        failure["primary"] = None
+        apply.converge_ordinary_functions(connection, bound)
+        assert installed == [row.sql for row in definitions]
+        assert all(catalog[key]["owner"] == row.owner for key, row in index.items())
+        assert all(
+            acls[key] == {role for role in row.executors if role != row.owner}
+            for key, row in index.items()
+        )
+        assert all(
+            interfaces.function_matches(
+                connection, row, interfaces.inspect_function(connection, row)
+            )
+            for row in definitions
+        )
+        apply.converge_ordinary_functions(connection, bound)
+        assert installed == [row.sql for row in definitions]
+        assert all(template != decoded for template, _, decoded in calls if decoded in installed)
+
+
+@pytest.mark.parametrize(
+    "fault", ["missing", "unlisted", "note_failure", "passed_relations", "cancel"]
+)
+def test_actual_convergence_relation_notes_preserve_validator_and_error(monkeypatch, fault):
+    import json
+
+    from butlers.db_authority import apply
+    from butlers.db_authority.grants import compile_relation_manifest, select_migration_manifest
+    from butlers.migrations import get_chain_head
+
+    plans = (("chronicler", "chronicler", None),)
+    manifest = select_migration_manifest(
+        compile_relation_manifest(
+            "butlers", "normal_owner", "maintenance", source_database="butlers"
+        ),
+        plans,
+    )
+    observed = []
+    if fault == "unlisted":
+        observed = [
+            dict(
+                schema="chronicler",
+                name="synthetic_unlisted",
+                kind="r",
+                owner="normal_owner",
+                rls=False,
+                forced_rls=False,
+                oid=1,
+                partition=False,
+            )
+        ]
+    if fault == "passed_relations":
+        observed = [
+            dict(
+                schema=row.schema,
+                name=row.name,
+                kind={"table": "r", "view": "v", "sequence": "S"}[row.kind.value],
+                owner=row.owner,
+                rls=apply.relation_security_flags(row)[0],
+                forced_rls=apply.relation_security_flags(row)[1],
+                oid=index,
+                partition=False,
+            )
+            for index, row in enumerate(manifest.relations, 1)
+            if row.required
+        ]
+    primary = asyncio.CancelledError() if fault == "cancel" else TypeError("synthetic downstream")
+    calls, originals, original_tracebacks = [], [], []
+
+    def recording(original):
+        def invoke(*args, **kwargs):
+            calls.append(original.__name__)
+            try:
+                return original(*args, **kwargs)
+            except AuthorityError as error:
+                originals.append(error)
+                original_tracebacks.append(error.__traceback__)
+                raise
+
+        return invoke
+
+    monkeypatch.setattr(
+        apply, "bind_partition_relations", recording(apply.bind_partition_relations)
+    )
+    monkeypatch.setattr(apply, "validate_relations", recording(apply.validate_relations))
+    builder = Mock(wraps=apply._relation_failure_note)
+    if fault == "note_failure":
+        builder.side_effect = RuntimeError("synthetic observer failure")
+    monkeypatch.setattr(apply, "_relation_failure_note", builder)
+
+    class Result:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def one(self):
+            return self.rows[0]
+
+        def mappings(self):
+            return self.rows
+
+        def __iter__(self):
+            return iter(self.rows)
+
+    class Connection:
+        info = {}
+
+        def exec_driver_sql(self, sql):
+            if "FROM pg_catalog.pg_database d" in sql:
+                return Result([("butlers", "normal_owner", True)])
+            if sql == "SELECT current_database(), session_user":
+                return Result([("butlers", "maintenance")])
+            assert sql == 'SELECT version_num FROM "chronicler".alembic_version'
+            return Result([(get_chain_head("chronicler"),)])
+
+        def execute(self, sql, params):
+            sql = str(sql)
+            if sql == apply._FUNCTIONS:
+                return Result([])
+            if sql == apply._RELATIONS:
+                return Result(observed)
+            if sql == apply._PARTITION_LINKS:
+                if fault == "cancel":
+                    raise primary
+                return Result([])
+            assert sql == apply._SEQUENCE_LINKS
+            raise primary
+
+    with pytest.raises(BaseException) as caught:
+        apply.converge_authority(Connection(), source_database="butlers", plans=plans)
+    error = caught.value
+    if fault in {"passed_relations", "cancel"}:
+        assert error is primary
+        assert not hasattr(error, "__notes__")
+        builder.assert_not_called()
+        assert calls == (
+            ["bind_partition_relations", "validate_relations"]
+            if fault == "passed_relations"
+            else []
+        )
+        return
+    assert error is originals[0]
+    assert type(error) is AuthorityError
+    traceback = error.__traceback__
+    while traceback is not None and traceback is not original_tracebacks[0]:
+        traceback = traceback.tb_next
+    assert traceback is original_tracebacks[0]
+    assert str(error) == (
+        "Managed database object is not declared"
+        if fault == "unlisted"
+        else "Required database object is unavailable"
+    )
+    assert any(
+        frame.name in {"bind_partition_relations", "validate_relations"}
+        for frame in __import__("traceback").extract_tb(error.__traceback__)
+    )
+    if fault == "note_failure":
+        assert not hasattr(error, "__notes__")
+        return
+    assert len(error.__notes__) == 1
+    note = error.__notes__[0]
+    assert all(
+        json.dumps(value) not in note for value in ("normal_owner", "maintenance", "chronicler")
+    )
+    payload = json.loads(note.split(" ", 1)[1])
+    assert payload["version"] == 2
+    assert payload["phase"] == ("bind_partitions" if fault == "unlisted" else "validate_relations")
+    assert payload["missing_required_count"] == sum(row.required for row in manifest.relations)
+    assert all(
+        set(row) == {"schema_sha256", "name_sha256", "identity_sha256", "declared_kind"}
+        for row in payload["missing_required"]
+    )
+    assert payload["observed_count"] == len(observed)
+    if fault == "unlisted":
+        assert payload["rows"][0]["declared_identity"] is False
+
+
+def test_relation_failure_note_bounds_types_and_typed_missing_are_closed(monkeypatch):
+    import json
+
+    from butlers.db_authority import apply
+    from butlers.db_authority.grants import ObjectAuthority, ObjectKind
+
+    table = ObjectAuthority("synthetic", "same", ObjectKind.TABLE, "normal", (), "synthetic")
+    sequence = ObjectAuthority("synthetic", "same", ObjectKind.SEQUENCE, "normal", (), "synthetic")
+    actual = dict(
+        schema="synthetic", name="same", kind="r", owner="normal", rls=False, forced_rls=False
+    )
+    context = dict(
+        phase="validate_relations", migration_owner="normal", maintenance_owner="maintenance"
+    )
+    note = apply._relation_failure_note((actual,), (table, sequence), **context)
+    payload = json.loads(note.split(" ", 1)[1])
+    assert payload["missing_required_count"] == 1
+    assert payload["missing_required"][0]["declared_kind"] == "sequence"
+    assert payload["rows"][0]["declared_identity"] is True
+    for observed, declared in (
+        ((actual,) * 4097, (table,)),
+        ((actual, actual), (table,)),
+        ((), (table, table)),
+    ):
+        assert apply._relation_failure_note(observed, declared, **context) is None
+    error = AuthorityError("original")
+    apply._add_relation_failure_note(error, (actual | {"schema": "x" * 1025},), (table,), **context)
+    assert not hasattr(error, "__notes__")
+    with monkeypatch.context() as scoped:
+        scoped.setattr(json, "dumps", lambda *args, **kwargs: "x" * (1024 * 1024))
+        assert apply._relation_failure_note((actual,), (table,), **context) is None
+
+    class NoteFailure(AuthorityError):
+        def add_note(self, note):
+            raise ValueError("synthetic note transport failure")
+
+    error = NoteFailure("original")
+    apply._add_relation_failure_note(error, (actual,), (table,), **context)
+    assert str(error) == "original" and not hasattr(error, "__notes__")
+
+
 def test_actual_trigger_shape_query_binds_only_relation_and_preserves_location_normalization():
     from butlers.db_authority import interfaces
 
