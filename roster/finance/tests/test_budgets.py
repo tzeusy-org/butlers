@@ -917,21 +917,14 @@ class TestBudgetSet:
         """Registered budget tools round trip every period on real migrations."""
         from types import SimpleNamespace
 
+        from fastmcp import FastMCP
+
         from butlers.modules._roster_finance.tools import register_tools
+        from butlers.testing.mcp import registered_tools
 
-        class MCP:
-            def __init__(self):
-                self.tools = {}
-
-            def tool(self):
-                def register(fn):
-                    self.tools[fn.__name__] = fn
-                    return fn
-
-                return register
-
-        mcp = MCP()
+        mcp = FastMCP()
         register_tools(mcp, SimpleNamespace(_get_pool=lambda: migrated_budget_pool), config=None)
+        tools = await registered_tools(mcp)
         # Neutralize only this repair in the disposable migrated DB: the same
         # registered call must reach the historical CHECK, not a category FK.
         repaired_check = await migrated_budget_pool.fetchval(
@@ -945,9 +938,7 @@ class TestBudgetSet:
         )
         try:
             with pytest.raises(asyncpg.CheckViolationError) as rejected:
-                await mcp.tools["budget_set"](
-                    category="groceries", amount=100.0, period="quarterly"
-                )
+                await tools["budget_set"](category="groceries", amount=100.0, period="quarterly")
             assert rejected.value.constraint_name == "budgets_period_check"
         finally:
             await migrated_budget_pool.execute(
@@ -955,16 +946,14 @@ class TestBudgetSet:
                 f"ALTER TABLE budgets ADD CONSTRAINT budgets_period_check {repaired_check}"
             )
         for period in ("daily", "weekly", "monthly", "quarterly", "yearly"):
-            result = await mcp.tools["budget_set"](
-                category="groceries", amount=100.0, period=period
-            )
+            result = await tools["budget_set"](category="groceries", amount=100.0, period=period)
             async with migrated_budget_pool.acquire() as conn:
                 stored = await conn.fetchrow(
                     "SELECT * FROM budgets WHERE id=$1::uuid", result["id"]
                 )
             assert stored["period"] == period
             assert stored["amount"] == Decimal("100.00")
-            replacement = await mcp.tools["budget_set"](
+            replacement = await tools["budget_set"](
                 category="groceries", amount=120.0, period=period
             )
             async with migrated_budget_pool.acquire() as conn:
@@ -978,13 +967,11 @@ class TestBudgetSet:
                     "SELECT amount FROM budgets WHERE id=$1::uuid", replacement["id"]
                 ) == Decimal("120.00")
         periods = {"daily", "weekly", "monthly", "quarterly", "yearly"}
-        assert {r["period"] for r in (await mcp.tools["budget_list"]())["budgets"]} == periods
-        assert {r["period"] for r in (await mcp.tools["budget_status"]())["items"]} == periods
+        assert {r["period"] for r in (await tools["budget_list"]())["budgets"]} == periods
+        assert {r["period"] for r in (await tools["budget_status"]())["items"]} == periods
         for period in periods:
-            assert (await mcp.tools["budget_remove"](category="groceries", period=period))[
-                "removed"
-            ]
-        assert (await mcp.tools["budget_list"]())["count"] == 0
+            assert (await tools["budget_remove"](category="groceries", period=period))["removed"]
+        assert (await tools["budget_list"]())["count"] == 0
 
 
 # ---------------------------------------------------------------------------
