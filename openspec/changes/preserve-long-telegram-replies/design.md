@@ -23,3 +23,22 @@ A process-local identity-bound latch fences a known terminal outcome before its 
 ## Verification and scope
 
 Actual registered adapter/Messenger consumers, transport retry consumers and scheduled admission paths provide causal controls and restoration checks. Authored migrated PostgreSQL tests cover exact approved args/digest, independent terminal readback and authenticated recovery. Local collection is topology evidence; PostgreSQL bodies, hosted exact-head execution and protected merge evidence remain separately required. No live Telegram/model/provider traffic is used by software controls.
+
+
+## Proposed correction representation (not yet adopted)
+
+H1 exposes a literal conflict between whole sub-limit code lines, exact raw source,
+the 4000-unit raw fallback bound and exactly one plain-text resend. A 3999-unit
+code line plus opening/closing fence syntax exceeds the raw bound. The reversible
+candidate keeps one balanced rendered line but models its proven-parse-rejection
+fallback as an ordered sequence of independently bounded raw requests. Each has
+strict receipt validation and immediate prefix accounting; no plain request can
+fall back or restart the logical send. The original chat lock/deadline and rate
+retry budget persist. This sequence requires an explicit narrow criterion
+reconciliation; it is not silently adopted by this design note. Existing normative
+requirements and the original ten acceptance criteria remain unchanged.
+
+H2 uses a required audit read at actual credential-transition admission. Lookup
+failure differs from a confirmed absent marker and cannot re-arm a settled old
+transition. Existing terminal rows remain the durable mechanism, with the same
+explicit process-crash/outbox limitation.

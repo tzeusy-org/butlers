@@ -14,6 +14,8 @@ import asyncio
 import logging
 import re
 import time
+from collections import deque
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -52,6 +54,15 @@ REACTION_TO_EMOJI = {
     REACTION_SUCCESS: "\U0001f44d",
     REACTION_FAILURE: "\U0001f47e",
 }
+
+
+@dataclass
+class _TelegramRetryBudget:
+    used: int = 0
+
+
+class _TelegramParseRejected(Exception):
+    """A proven parse rejection permits one bounded plain-source fallback phase."""
 
 
 class TelegramProviderResponseError(RuntimeError):
@@ -416,7 +427,9 @@ class TelegramModule(Module):
             try:
                 async with lock:
                     deadline = time.monotonic() + 30
-                    for index, chunk in enumerate(chunks):
+                    pending = deque((chunk, False, _TelegramRetryBudget()) for chunk in chunks)
+                    while pending:
+                        chunk, plain, retry_budget = pending.popleft()
                         payload: dict[str, Any] = {
                             "chat_id": chat_id,
                             "text": chunk.html,
@@ -429,11 +442,24 @@ class TelegramModule(Module):
                                 {"type": "pre", "offset": 0, "length": text_units(chunk.source)}
                             ]
                             payload["link_preview_options"] = {"is_disabled": True}
-                        if index == 0 and reply_to_message_id is not None:
+                        if plain:
+                            payload.pop("parse_mode")
+                            payload["text"] = chunk.source
+                        if not message_ids and reply_to_message_id is not None:
                             payload["reply_to_message_id"] = reply_to_message_id
-                        if index == len(chunks) - 1 and validated_reply_markup is not None:
+                        if not pending and validated_reply_markup is not None:
                             payload["reply_markup"] = validated_reply_markup
-                        data = await self._send_chunk(payload, chunk.source, deadline)
+                        try:
+                            data = await self._send_chunk(payload, deadline, retry_budget)
+                        except _TelegramParseRejected:
+                            # A fitting visible code line can include >4000 raw
+                            # units of fence syntax. Preserve that source in
+                            # separately bounded, once-only plain requests.
+                            fallback = split_telegram_text(chunk.source, inert=True)
+                            pending.extendleft(
+                                (part, True, retry_budget) for part in reversed(fallback)
+                            )
+                            continue
                         message_ids.append(data["result"]["message_id"])
             except (Exception, asyncio.CancelledError) as exc:
                 if message_ids:
@@ -489,27 +515,22 @@ class TelegramModule(Module):
         return data
 
     async def _send_chunk(
-        self, payload: dict[str, Any], source: str, deadline: float
+        self, payload: dict[str, Any], deadline: float, retry_budget: _TelegramRetryBudget
     ) -> dict[str, Any]:
         """One chunk: only proven rejection permits a bounded resend."""
         client = self._get_client()
         url = f"{self._base_url()}/sendMessage"
-        retries = 0
-        plain = False
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("Telegram logical-send deadline expired.")
             async with asyncio.timeout(remaining):
                 response = await client.post(url, json=payload)
-            if not plain and "parse_mode" in payload and telegram_parse_rejection(response):
-                payload = {k: v for k, v in payload.items() if k != "parse_mode"}
-                payload["text"] = source
-                plain = True
-                continue
+            if "parse_mode" in payload and telegram_parse_rejection(response):
+                raise _TelegramParseRejected()
             delay = telegram_retry_after(response)
-            if delay is not None and retries < 2 and delay < deadline - time.monotonic():
-                retries += 1
+            if delay is not None and retry_budget.used < 2 and delay < deadline - time.monotonic():
+                retry_budget.used += 1
                 await asyncio.sleep(delay)
                 continue
             response.raise_for_status()

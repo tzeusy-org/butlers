@@ -997,3 +997,229 @@ async def test_logical_deadline_prevents_later_chunks_and_cancel_keeps_confirmed
     assert error.value.message_ids == (41,)
     assert len(calls) == (1 if terminal == "deadline" else 2)
     assert module._chat_locks == {}
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["x" * 3996, "x" * 3999, "😀" * 1999 + "x", "x" * 4500],
+    ids=["closing-fence", "whole-line", "astral-line", "oversized-line"],
+)
+async def test_fenced_lines_and_plain_fallback_have_distinct_bounded_requests(line):
+    from html.parser import HTMLParser
+
+    from butlers.telegram_text import split_telegram_text, text_units
+
+    class Visible(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.parts = []
+
+        def handle_data(self, data):
+            self.parts.append(data)
+
+    source = "```\n" + line + "```"
+    chunks = split_telegram_text(source)
+    bodies = []
+    for chunk in chunks:
+        parsed = Visible()
+        parsed.feed(chunk.html)
+        bodies.append("".join(parsed.parts))
+        assert 0 < text_units(bodies[-1]) <= 4000
+    assert "".join(chunk.source for chunk in chunks) == source
+    assert "".join(bodies) == line
+    if text_units(line) <= 4000:
+        assert bodies == [line]  # Fence syntax must not prematurely break the code line.
+    else:
+        assert [text_units(body) for body in bodies] == [4000, 500]
+
+    module = TelegramModule()
+    calls, accepted = [], []
+    keyboard = {"inline_keyboard": [[{"text": "Approve", "callback_data": "controlled"}]]}
+
+    async def post(url, *, json):
+        calls.append(dict(json))
+        if "parse_mode" in json:
+            return httpx.Response(
+                400,
+                request=httpx.Request("POST", url),
+                json={"description": "can't parse entities"},
+            )
+        assert 0 < text_units(json["text"]) <= 4000
+        accepted.append(dict(json))
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={"ok": True, "result": {"message_id": len(accepted)}},
+        )
+
+    with (
+        patch.object(module, "_get_client", return_value=MagicMock(post=post)),
+        patch.object(module, "_base_url", return_value="https://telegram.test"),
+        patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock),
+    ):
+        result = await module._send_message(
+            "123", source, reply_to_message_id=99, reply_markup=keyboard
+        )
+    assert "".join(payload["text"] for payload in accepted) == source
+    assert len([payload for payload in calls if "parse_mode" in payload]) == len(chunks)
+    assert accepted[0]["reply_to_message_id"] == 99
+    assert all("reply_to_message_id" not in payload for payload in accepted[1:])
+    assert accepted[-1]["reply_markup"] == keyboard
+    assert all("reply_markup" not in payload for payload in accepted[:-1])
+    assert result["result"]["message_id"] == len(accepted)
+    assert result["result"]["message_ids"] == list(range(1, len(accepted) + 1))
+    assert module._chat_locks == {}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "intro\n```py\n" + "x" * 3999 + "\n```\nend",
+        "```\nshort\n" + "😀" * 2000 + "\n```",
+        "```\n" + "x" * 4000 + "\r\n```\n" + "tail " * 900,
+        "```\n" + "<&>" * 1333 + "x``` ",
+        "unclosed ```\n" + "x" * 4500,
+        "x" * 3999 + "```\ncode```",
+        "```\n" + "x" * 3994 + "```\n" + "prose " * 900,
+        " \t\r\n" * 1100,
+        "x" * 3999 + "😀",
+        "``````",
+    ],
+    ids=[
+        "language",
+        "second-astral-line",
+        "crlf",
+        "entities",
+        "unclosed",
+        "delimiter-edge",
+        "closing-edge",
+        "whitespace",
+        "scalar-edge",
+        "syntax-only",
+    ],
+)
+def test_fenced_source_accounting_balanced_visible_and_inert_boundaries(source):
+    from html.parser import HTMLParser
+
+    from butlers.telegram_text import render_markdown, split_telegram_text, text_units
+
+    class Visible(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.parts, self.stack = [], []
+
+        def handle_starttag(self, tag, attrs):
+            assert tag in {"b", "i", "s", "code", "pre", "a"}
+            self.stack.append(tag)
+
+        def handle_endtag(self, tag):
+            assert self.stack.pop() == tag
+
+        def handle_data(self, data):
+            self.parts.append(data)
+
+    chunks = split_telegram_text(source)
+    visible = []
+    for chunk in chunks:
+        parsed = Visible()
+        parsed.feed(chunk.html)
+        assert not parsed.stack
+        body = "".join(parsed.parts)
+        assert 0 < text_units(body) <= 4000
+        visible.append(body)
+    whole = Visible()
+    whole.feed(render_markdown(source))
+    assert "".join(visible) == ("".join(whole.parts) or source)
+    assert "".join(chunk.source for chunk in chunks) == source
+    for chunk in chunks:
+        fallback = split_telegram_text(chunk.source, inert=True)
+        assert all(0 < text_units(part.source) <= 4000 for part in fallback)
+        assert "".join(part.source for part in fallback) == chunk.source
+    if source.startswith("intro"):
+        assert any("x" * 3999 in part for part in visible)
+    if source.startswith("```\nshort"):
+        assert any("😀" * 2000 in part for part in visible)
+
+
+@pytest.mark.parametrize("failure", ["timeout", "parse400", "badreceipt", "cancel"])
+async def test_bounded_plain_fallback_keeps_actual_prefix_and_never_falls_back_again(failure):
+    import asyncio
+
+    from butlers.telegram_api import TelegramPartialDeliveryError
+    from butlers.telegram_text import text_units
+
+    module = TelegramModule()
+    calls = []
+
+    async def post(url, *, json):
+        calls.append(dict(json))
+        request = httpx.Request("POST", url)
+        if len(calls) == 1:
+            assert "parse_mode" in json
+            return httpx.Response(
+                400, request=request, json={"description": "can't parse entities"}
+            )
+        assert "parse_mode" not in json
+        assert 0 < text_units(json["text"]) <= 4000
+        if len(calls) == 2:
+            return httpx.Response(
+                200, request=request, json={"ok": True, "result": {"message_id": 101}}
+            )
+        if failure == "timeout":
+            raise httpx.ReadTimeout("controlled fallback timeout")
+        if failure == "cancel":
+            raise asyncio.CancelledError()
+        if failure == "parse400":
+            return httpx.Response(
+                400, request=request, json={"description": "can't parse entities"}
+            )
+        return httpx.Response(
+            200, request=request, json={"ok": True, "result": {"message_id": True}}
+        )
+
+    with (
+        patch.object(module, "_get_client", return_value=MagicMock(post=post)),
+        patch.object(module, "_base_url", return_value="https://telegram.test"),
+        patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock),
+    ):
+        with pytest.raises(TelegramPartialDeliveryError) as error:
+            await module._send_message("123", "```\n" + "x" * 3999 + "```", reply_to_message_id=99)
+    assert error.value.message_ids == (101,)
+    assert error.value.retryable is False
+    assert len(calls) == 3
+    assert calls[1]["reply_to_message_id"] == 99
+    assert "reply_to_message_id" not in calls[2]
+    assert module._chat_locks == {}
+
+
+async def test_plain_fallback_shares_original_chunk_rate_rejection_budget():
+    from butlers.telegram_api import TelegramPartialDeliveryError
+
+    module = TelegramModule()
+    calls = []
+
+    async def post(url, *, json):
+        calls.append(dict(json))
+        request = httpx.Request("POST", url)
+        if len(calls) in {1, 4, 5}:
+            return httpx.Response(429, request=request, json={"parameters": {"retry_after": 0}})
+        if len(calls) == 2:
+            return httpx.Response(
+                400, request=request, json={"description": "can't parse entities"}
+            )
+        return httpx.Response(
+            200, request=request, json={"ok": True, "result": {"message_id": 101}}
+        )
+
+    with (
+        patch.object(module, "_get_client", return_value=MagicMock(post=post)),
+        patch.object(module, "_base_url", return_value="https://telegram.test"),
+        patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock),
+    ):
+        with pytest.raises(TelegramPartialDeliveryError) as error:
+            await module._send_message("123", "```\n" + "x" * 3999 + "```")
+    assert error.value.message_ids == (101,)
+    assert len(calls) == 5  # Two total rate retries, including the initial HTML attempt.
+    assert "parse_mode" in calls[0] and "parse_mode" in calls[1]
+    assert all("parse_mode" not in payload for payload in calls[2:])
+    assert module._chat_locks == {}

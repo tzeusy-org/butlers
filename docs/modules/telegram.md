@@ -93,3 +93,23 @@ None.
 - [Approvals Module](approvals.md) -- telegram send tools should be listed in `gated_tools`
 - [Pipeline Module](pipeline.md) -- telegram ingestion flows through the pipeline
 - [Contacts Module](contacts.md) -- Telegram contact sync
+
+
+### Proposed fallback representation (pending criterion reconciliation)
+
+The reviewed 3999-unit fenced-code boundary exposes incompatible literal limits:
+its rendered line fits 4000 visible UTF-16 units, while its exact original source
+including fences exceeds 4000 raw units. The current correction candidate retains
+the whole rendered line and lossless source span, then, only on explicit parse
+rejection, sends that span as bounded plain-text requests in order. Every request
+requires its own exact positive receipt; failure retains only the accepted prefix.
+The chat lock, original deadline, shared rate-retry allowance, first accepted
+reply reference and final keyboard cover the complete sequence. Plain requests
+cannot fall back again. This is a proposed replacement for the literal **single
+plain-text resend** criterion, not a claim that multiple requests satisfy it.
+No canonical acceptance criterion has been changed or waived.
+
+Credential-transition admission now requires a successful existing audit lookup.
+An unavailable read is unknown and prevents sending; a genuinely absent marker,
+a fresh independent transition and ordinary retryable failures retain their
+existing behavior. The legacy diagnostic lookup helper remains compatible.

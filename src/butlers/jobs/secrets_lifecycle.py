@@ -333,14 +333,14 @@ async def _collect_snapshots(
     return snapshots
 
 
-async def _last_notified_state(pool: Any, key: str) -> str | None:
+async def _last_notified_state(pool: Any, key: str, *, required: bool = False) -> str | None:
     """Return the state we last successfully delivered a notification for.
 
     Read from ``public.audit_log`` (no new migration): the most recent
     ``lifecycle_state_notified`` row's ``note`` column IS the state string
-    that was current at delivery time. Returns None (never notified, or the
-    table/lookup is unavailable) so the caller treats that as "not yet
-    debounced" rather than silently skipping a real transition.
+    that was current at delivery time. Admission uses ``required=True``: an
+    unavailable read is UNKNOWN and must stop the send, unlike a confirmed
+    absent row. The default preserves the legacy diagnostic helper contract.
     """
     try:
         row = await pool.fetchrow(
@@ -354,6 +354,8 @@ async def _last_notified_state(pool: Any, key: str) -> str | None:
             _LIFECYCLE_NOTIFIED_ACTION,
         )
     except Exception:
+        if required:
+            raise
         logger.debug(
             "secrets_lifecycle_check: last-notified lookup failed for key=%s", key, exc_info=True
         )
@@ -732,7 +734,7 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                 )
                 errors += 1
                 continue
-            last_state = await _last_notified_state(shared_pool, snapshot.key)
+            last_state = await _last_notified_state(shared_pool, snapshot.key, required=True)
             if last_state == snapshot.state:
                 # Already notified for this exact state — debounce.
                 continue
