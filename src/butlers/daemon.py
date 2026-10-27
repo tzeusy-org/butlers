@@ -267,9 +267,7 @@ class ButlerDaemon:
         self.switchboard_client: MCPClient | None = None
         self._pipeline: MessagePipeline | None = None
         self._buffer: Any = None  # DurableBuffer instance (switchboard only)
-        self._audit_db: Database | None = None  # Switchboard DB for daemon audit logging
-        # Switchboard-schema pool (butler_registry) used by the scheduler loop to
-        # gate scheduled dispatch on eligibility_state. Set during startup.
+        # Pool for daemon audit writes to public.audit_log. Set during startup.
         self._audit_pool: asyncpg.Pool | None = None
         self._shared_credentials_db: Database | None = None
         self._credential_store: CredentialStore | None = None
@@ -847,44 +845,13 @@ class ButlerDaemon:
         return _McpSseDisconnectGuard(guarded_app, butler_name=butler_name)
 
     async def _create_audit_pool(self, own_pool: asyncpg.Pool) -> asyncpg.Pool | None:
-        """Create or reuse a connection pool for daemon-side audit logging.
+        """Return the pool for daemon-side audit logging.
 
-        The switchboard butler reuses its own pool. Other butlers open a small
-        dedicated pool to the switchboard schema in the shared ``butlers`` DB.
-
-        Returns ``None`` (with a warning) if the pool cannot be created.
+        Audit entries land in ``public.audit_log``, which every butler runtime
+        role may INSERT, so each butler writes them through its own pool and
+        verified role. A separate role-less pool is refused since #5016.
         """
-        # Intentional name check: the switchboard IS the audit schema owner. Reusing its own
-        # pool avoids a redundant connection. This is switchboard-specific, not staffer-generic.
-        if self.config.name == "switchboard":
-            return own_pool
-
-        try:
-            audit_db_name = self.config.db_name or "butlers"
-            audit_db_schema = "switchboard"
-            audit_db = Database.from_env(audit_db_name)
-            if audit_db is self.db:
-                # Same DB object — reuse the existing pool directly (avoids double-close
-                # on shutdown when the audit DB and main DB share the same connection).
-                return own_pool
-            audit_db.set_schema(audit_db_schema)
-            audit_db.min_pool_size = 1
-            audit_db.max_pool_size = 2
-            await audit_db.connect()
-            self._audit_db = audit_db
-            logger.info(
-                "Audit pool connected (db=%s, schema=%s)",
-                audit_db_name,
-                audit_db_schema or "<default>",
-            )
-            return audit_db.pool
-        except Exception:
-            logger.warning(
-                "Failed to create audit pool for %s; daemon audit logging disabled",
-                self.config.name,
-                exc_info=True,
-            )
-            return None
+        return own_pool
 
     async def _connect_switchboard(self) -> None:
         """Open an MCP client connection to the Switchboard butler.
@@ -1237,6 +1204,9 @@ class ButlerDaemon:
         runtime_context = await self._build_scheduler_runtime_context()
 
         daemon = self
+        # Eligibility reads switchboard.butler_registry_*, which only the
+        # switchboard's runtime role may SELECT; other butlers skip the gate.
+        is_switchboard = self.config.name == "switchboard"
         await _background.scheduler_loop(
             pool=self.db.pool,
             dispatch_fn=self._dispatch_scheduled_task,
@@ -1247,7 +1217,7 @@ class ButlerDaemon:
             get_db=lambda: daemon.db,
             prompt_hooks=runtime_context.prompt_hooks,
             completion_hooks=runtime_context.completion_hooks,
-            get_eligibility_pool=lambda: daemon._audit_pool,
+            get_eligibility_pool=lambda: daemon.db.pool if is_switchboard else None,
             default_timezone=runtime_context.default_timezone,
             chronicler_continuation=vars(self).get("_chronicler_continuation"),
         )
