@@ -799,8 +799,8 @@ jobs:
         if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.DURATIONS_APP_ID }}
-          private-key: ${{ secrets.DURATIONS_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.CI_BOT_APP_ID }}
+          private-key: ${{ secrets.CI_BOT_APP_PRIVATE_KEY }}
       - uses: actions/checkout@v6
         with:
           token: ${{ steps.ci-bot.outputs.token || github.token }}
