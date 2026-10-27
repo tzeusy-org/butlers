@@ -11,9 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import Mapping
 from datetime import UTC, date, datetime
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
@@ -22,6 +20,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db, get_mcp_manager
+from butlers.testing.records import Record as _MockRecord
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -29,29 +28,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Mock Record helper
 # ---------------------------------------------------------------------------
-
-
-class _MockRecord(Mapping):
-    """Minimal asyncpg.Record-like Mapping object backed by a dict.
-
-    Must extend Mapping so that dict(record) works correctly — Python's
-    dict() constructor uses the Mapping protocol (keys() + __getitem__).
-    """
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self._data = data
-
-    def __getitem__(self, key: str) -> Any:
-        return self._data[key]
-
-    def __iter__(self):
-        return iter(self._data)
-
-    def __len__(self) -> int:
-        return len(self._data)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return self._data.get(key, default)
 
 
 # ---------------------------------------------------------------------------
