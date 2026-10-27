@@ -471,8 +471,16 @@ def test_actual_convergence_relation_notes_preserve_validator_and_error(monkeypa
     if fault == "note_failure":
         assert not hasattr(error, "__notes__")
         return
-    assert len(error.__notes__) == 1
-    note = error.__notes__[0]
+    if fault == "unlisted":
+        assert len(error.__notes__) == 2
+        assert error.__notes__[0].startswith("DB_AUTHORITY_PARTITION_BINDING_DIAGNOSTIC ")
+    else:
+        assert len(error.__notes__) == 1
+    relation_notes = [
+        note for note in error.__notes__ if note.startswith("DB_AUTHORITY_RELATION_DIAGNOSTIC ")
+    ]
+    assert len(relation_notes) == 1
+    note = relation_notes[0]
     assert all(
         json.dumps(value) not in note for value in ("normal_owner", "maintenance", "chronicler")
     )
@@ -5961,3 +5969,322 @@ def test_ordinary_ddl_note_bounds_and_psycopg_driver_code_precedence(monkeypatch
     error = NoteFailure("private", {}, SimpleNamespace())
     apply._add_ordinary_ddl_failure_note(error, definition)
     assert not hasattr(error, "__notes__")
+
+
+def test_compiled_current_functions_replace_preexisting_overloads_without_dropping_dependencies():
+    import psycopg2
+
+    from butlers.db_authority import apply, grants, interfaces
+    from butlers.db_authority.roles import runtime_profiles
+
+    identities = {
+        ("dashboard_auth", "api", "text,jsonb"),
+        ("dashboard_auth", "host", "text,jsonb"),
+        ("dashboard_auth", "cleanup", ""),
+        ("relationship", "guard_fact_report_authority", ""),
+        ("switchboard", "guard_admission_attempt_binding", ""),
+    }
+    plans = (
+        ("core", None, None),
+        ("relationship", "relationship", None),
+        ("switchboard", "switchboard", None),
+    )
+    definitions = tuple(
+        row
+        for row in grants.compile_function_manifest(
+            runtime_profiles("butlers"), "normal_migrator", plans
+        )
+        if row.identity in identities
+    )
+    assert {row.identity for row in definitions} == identities
+    index = {interfaces._signature(row): row for row in definitions}
+    catalog = {
+        key: {"oid": number, "owner": row.owner, "body": "prior migrated body"}
+        for number, (key, row) in enumerate(index.items(), 100)
+    }
+    original_oids = {key: state["oid"] for key, state in catalog.items()}
+    # The recorder retains dependency sentinels; genuine OID/dependency survival
+    # still requires the migrated PostgreSQL observers in the hosted lane.
+    dependencies = {key: ("dependent trigger or caller",) for key in index}
+    original_dependencies = dict(dependencies)
+    acls = {key: {"PUBLIC"} for key in index}
+    valid = {"owners": True, "maintenance": True, "catalog": True}
+    installed = []
+    driver_failure = {"enabled": False}
+
+    class DuplicateFunction(psycopg2.ProgrammingError):
+        @property
+        def pgcode(self):
+            return "42723"
+
+    def respond(statement, parameters, decoded):
+        if "WITH owners AS" in statement:
+            assert set(parameters["owners"]) == {
+                row.owner for row in definitions if row.security_definer
+            }
+            return ("valid",), [(valid["owners"],)]
+        if "pg_get_function_identity_arguments" in statement:
+            key = parameters["signature"]
+            row, actual = index[key], catalog[key]
+            return ("oid", "owner", "definer", "config", "body"), [
+                (
+                    actual["oid"] if valid["catalog"] else -1,
+                    actual["owner"],
+                    row.security_definer,
+                    list(row.settings),
+                    actual["body"],
+                )
+            ]
+        if "pg_catalog.aclexplode" in statement:
+            key = next(key for key, row in catalog.items() if row["oid"] == parameters["oid"])
+            return ("role", "privilege", "grantable"), [
+                (role, "EXECUTE", False) for role in sorted(acls[key])
+            ]
+        if "current_user=session_user AND rolsuper" in statement:
+            return ("valid",), [(valid["maintenance"],)]
+        for key, row in index.items():
+            if decoded == row.sql:
+                assert not parameters
+                if driver_failure["enabled"] or decoded.startswith("CREATE FUNCTION "):
+                    # Model only PostgreSQL's duplicate-overload driver result;
+                    # the compiler/converger and SQLAlchemy dispatch are real.
+                    raise DuplicateFunction("preexisting fixed overload")
+                assert decoded.startswith("CREATE OR REPLACE FUNCTION ")
+                catalog[key]["body"] = row.body
+                installed.append(key)
+                return None, []
+            if decoded == f"ALTER FUNCTION {key} OWNER TO {apply.quote_identifier(row.owner)}":
+                catalog[key]["owner"] = row.owner
+                return None, []
+            for role in tuple(acls[key] | set(row.executors)):
+                quoted = "PUBLIC" if role == "PUBLIC" else apply.quote_identifier(role)
+                if decoded == f"REVOKE ALL ON FUNCTION {key} FROM {quoted}":
+                    acls[key].remove(role)
+                    return None, []
+                if decoded == f"GRANT EXECUTE ON FUNCTION {key} TO {quoted}":
+                    acls[key].add(role)
+                    return None, []
+        raise AssertionError("unexpected fixed-function convergence operation")
+
+    population = tuple(
+        dict(
+            oid=catalog[key]["oid"],
+            schema=row.schema,
+            name=row.name,
+            arguments=row.signature,
+            owner=row.owner,
+        )
+        for key, row in index.items()
+    )
+    bound = apply.validate_function_population(population, definitions, identities)
+    for invalid in (
+        (*population, population[0]),
+        (*population, dict(population[0], name="unlisted_function")),
+        (dict(population[0], owner="unlisted_owner"), *population[1:]),
+        population[1:],
+    ):
+        with pytest.raises(AuthorityError):
+            apply.validate_function_population(invalid, definitions, identities)
+
+    with _recording_postgresql_connection(respond) as (connection, calls):
+        for guard in valid:
+            valid[guard] = False
+            with pytest.raises(AuthorityError):
+                apply.converge_ordinary_functions(connection, bound)
+            valid[guard] = True
+            assert installed == []
+        apply.converge_ordinary_functions(connection, bound)
+        assert installed == list(index)
+        assert all(catalog[key]["body"] == row.body for key, row in index.items())
+        assert all(catalog[key]["owner"] == row.owner for key, row in index.items())
+        assert all(acls[key] == set(row.executors) - {row.owner} for key, row in index.items())
+        apply.converge_ordinary_functions(connection, bound)
+        assert installed == list(index)
+        for actual in catalog.values():
+            actual["body"] = "later drift"
+        apply.converge_ordinary_functions(connection, bound)
+        assert installed == list(index) * 2
+        assert {key: state["oid"] for key, state in catalog.items()} == original_oids
+        assert dependencies == original_dependencies
+        assert all(
+            interfaces.function_matches(
+                connection, row, interfaces.inspect_function(connection, row)
+            )
+            for row in definitions
+        )
+        assert not any(decoded.startswith("DROP ") for _, _, decoded in calls)
+        # A later driver refusal must identify the actual normalized compiled
+        # statement, not the original CREATE-only predecessor SQL digest.
+        import hashlib
+        import json
+
+        from sqlalchemy.exc import ProgrammingError
+
+        first = next(iter(index.values()))
+        catalog[interfaces._signature(first)]["body"] = "driver refusal drift"
+        driver_failure["enabled"] = True
+        with pytest.raises(ProgrammingError) as caught:
+            apply.converge_ordinary_functions(connection, bound)
+        payload = json.loads(caught.value.__notes__[0].split(" ", 1)[1])
+        assert (
+            payload["identity_sha256"]
+            == hashlib.sha256(
+                json.dumps(first.identity, separators=(",", ":")).encode()
+            ).hexdigest()
+        )
+        assert payload["sql_sha256"] == hashlib.sha256(first.sql.encode()).hexdigest()
+        assert payload["sqlstate"] == "42723" and payload["driver_class"] == "DuplicateFunction"
+        assert caught.value.orig.pgcode == "42723"
+        assert installed == list(index) * 2
+        assert calls[-1][2] == first.sql
+
+    raw = {row[1:4]: row for row in grants._ORDINARY_FUNCTION_SOURCES if row[1:4] in identities}
+    assert set(raw) == identities
+    for row in definitions:
+        original = raw[row.identity]
+        assert original[5].startswith("CREATE FUNCTION ")
+        assert row.header == original[5].replace(
+            "CREATE FUNCTION ", "CREATE OR REPLACE FUNCTION ", 1
+        )
+        assert row.body == original[6]
+        assert row.security_definer is original[4] and row.producer == original[7]
+    assert (
+        grants.compile_function_manifest(
+            runtime_profiles("butlers"), "normal_migrator", (("core", None, "core_239"),)
+        )
+        == ()
+    )
+
+
+def test_partition_precondition_note_identifies_actual_first_refused_row_and_condition():
+    import hashlib
+    import json
+
+    from butlers.db_authority import apply
+    from butlers.db_authority.grants import ObjectAuthority, ObjectKind
+
+    parent = ObjectAuthority("public", "token_usage_ledger", ObjectKind.TABLE, "owner", (), "fixed")
+    declared = dict(oid=1, schema=parent.schema, name=parent.name, owner="owner", kind="p")
+    child = dict(
+        oid=2, schema="public", name="legitimate_child", owner="owner", kind="r", partition=True
+    )
+    child_link = dict(oid=2, parent_schema=parent.schema, parent_name=parent.name)
+    captured = []
+
+    def capture(error, note):
+        captured.append(error)
+        BaseException.add_note(error, note)
+
+    for partition, kind, link_count in (
+        (False, "r", 1),
+        (1, "r", 1),
+        (None, "r", 1),
+        ("missing", "r", 1),
+        (True, "v", 1),
+        (True, "m", 1),
+        (True, "p", 1),
+        (True, "S", 1),
+        (True, "f", 1),
+        (True, "unknown", 1),
+        (True, "r", 0),
+        (True, "r", 2),
+    ):
+        first = dict(
+            oid=3, schema="public", name="first_private_sentinel", owner="owner", kind=kind
+        )
+        if partition != "missing":
+            first["partition"] = partition
+        second = dict(first, oid=4, name="second_private_sentinel")
+        first_links = [dict(child_link, oid=3)] * link_count
+        second_links = [dict(child_link, oid=4)] * link_count
+        for refused in ((first, second), (second, first)):
+            captured.clear()
+            with patch.object(AuthorityError, "add_note", capture):
+                with pytest.raises(AuthorityError) as caught:
+                    apply.bind_partition_relations(
+                        (declared, child, *refused),
+                        (parent,),
+                        (child_link, *first_links, *second_links),
+                    )
+            assert str(caught.value) == "Managed database object is not declared"
+            assert captured == [caught.value]
+            note = caught.value.__notes__[0]
+            assert note.startswith("DB_AUTHORITY_PARTITION_BINDING_DIAGNOSTIC ")
+            assert "private_sentinel" not in note and "public" not in note
+            name = refused[0]["name"]
+            assert json.loads(note.split(" ", 1)[1]) == {
+                "version": 1,
+                "phase": "bind_partitions_precondition",
+                "exception": "AuthorityError",
+                "reason": "unlisted_not_single_table_partition",
+                "identity_sha256": hashlib.sha256(
+                    json.dumps(["public", name], separators=(",", ":")).encode()
+                ).hexdigest(),
+                "schema_sha256": hashlib.sha256(b"public").hexdigest(),
+                "name_sha256": hashlib.sha256(name.encode()).hexdigest(),
+                "kind": {
+                    "r": "table",
+                    "v": "view",
+                    "m": "materialized_view",
+                    "p": "partitioned_table",
+                    "S": "sequence",
+                    "f": "foreign_table",
+                }.get(kind, "UNKNOWN"),
+                "declared_key": False,
+                "partition_is_true": partition is True,
+                "parent_link_count": {0: "zero", 1: "one", 2: "many"}[link_count],
+            }
+
+
+def test_partition_precondition_notes_preserve_admission_later_refusals_and_observer_failures():
+    import json
+
+    from butlers.db_authority import apply
+    from butlers.db_authority.grants import ObjectAuthority, ObjectKind
+
+    parent = ObjectAuthority("public", "token_usage_ledger", ObjectKind.TABLE, "owner", (), "fixed")
+    declared = dict(oid=1, schema=parent.schema, name=parent.name, owner="owner", kind="p")
+    child = dict(
+        oid=2, schema="public", name="generated_child", owner="owner", kind="r", partition=True
+    )
+    link = dict(oid=2, parent_schema=parent.schema, parent_name=parent.name)
+    with patch.object(apply, "_add_partition_precondition_note") as observer:
+        bound = apply.bind_partition_relations((declared, child), (parent,), (link,))
+        assert bound[0] is parent and len(bound) == 2
+        assert bound[1].permissions == () and bound[1].required is False
+        observer.assert_not_called()
+        for invalid in (dict(child, owner="foreign_owner"), dict(child, schema="foreign_schema")):
+            with pytest.raises(
+                AuthorityError, match="partition does not match its source producer"
+            ):
+                apply.bind_partition_relations((invalid,), (parent,), (link,))
+            observer.assert_not_called()
+        with pytest.raises(AuthorityError, match="Required database object is unavailable"):
+            apply.validate_relations((), (parent,))
+        observer.assert_not_called()
+    captured = []
+
+    def capture(error, note):
+        captured.append(error)
+        raise ValueError("private observer failure")
+
+    with patch.object(AuthorityError, "add_note", capture):
+        with pytest.raises(AuthorityError) as caught:
+            apply.bind_partition_relations((dict(child, partition=False),), (parent,), (link,))
+        assert captured == [caught.value] and not hasattr(caught.value, "__notes__")
+    with patch.object(json, "dumps", side_effect=ValueError("private builder failure")):
+        with pytest.raises(AuthorityError) as caught:
+            apply.bind_partition_relations((dict(child, partition=False),), (parent,), (link,))
+        assert str(caught.value) == "Managed database object is not declared"
+        assert not hasattr(caught.value, "__notes__")
+    with patch.object(
+        apply, "ObjectAuthority", side_effect=asyncio.CancelledError()
+    ) as constructor:
+        with pytest.raises(asyncio.CancelledError):
+            apply.bind_partition_relations((child,), (parent,), (link,))
+        constructor.assert_called_once()
+
+    for invalid in (None, "", "x" * 1025, "é" * 513, 1):
+        error = AuthorityError("Managed database object is not declared")
+        apply._add_partition_precondition_note(error, dict(child, schema=invalid), ())
+        assert not hasattr(error, "__notes__")

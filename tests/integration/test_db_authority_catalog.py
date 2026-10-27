@@ -2863,6 +2863,12 @@ async def test_real_normal_multischema_replay_preserves_protected_user_context(p
     connection proves catalog visibility differs from information_schema.
     Locally this genuine PostgreSQL body is authored/collected only.
     """
+    from butlers.db_authority.grants import compile_function_manifest
+    from butlers.db_authority.interfaces import (
+        _FUNCTION_ACL,
+        function_matches,
+        inspect_function,
+    )
     from butlers.migrations import finalize_authority, migration_session, run_migrations
     from butlers.testing.migration import create_migration_db
 
@@ -2884,14 +2890,71 @@ async def test_real_normal_multischema_replay_preserves_protected_user_context(p
             "JOIN pg_catalog.pg_roles r ON r.oid=c.relowner "
             "WHERE n.nspname='public' AND c.relname='user_context' AND c.relkind IN ('r','p')"
         )
+        plans = (("core", "relationship", None),)
+        definition = next(
+            row
+            for row in compile_function_manifest(
+                roles.runtime_profiles("butlers"), unquote(urlparse(normal_url).username), plans
+            )
+            if row.identity == ("dashboard_auth", "api", "text,jsonb")
+        )
+
+        def api_snapshot(connection):
+            actual = inspect_function(connection, definition)
+            assert actual is not None
+            acl = tuple(
+                sorted(
+                    tuple(row)
+                    for row in connection.execute(text(_FUNCTION_ACL), {"oid": actual["oid"]})
+                )
+            )
+            dependencies = tuple(
+                connection.execute(
+                    text(
+                        "SELECT classid,objid,objsubid,refclassid,refobjid,refobjsubid,deptype "
+                        "FROM pg_catalog.pg_depend WHERE "
+                        "(classid='pg_catalog.pg_proc'::regclass AND objid=:oid) OR "
+                        "(refclassid='pg_catalog.pg_proc'::regclass AND refobjid=:oid) "
+                        "ORDER BY classid,objid,objsubid,refclassid,refobjid,refobjsubid,deptype"
+                    ),
+                    {"oid": actual["oid"]},
+                )
+            )
+            return dict(actual), acl, dependencies
+
         try:
             with migration_session(admin_url, source_database="butlers") as held:
                 asyncio.run(
                     run_migrations(normal_url, chain="core", schema="relationship", connection=held)
                 )
-                finalize_authority(
-                    held, source_database="butlers", plans=(("core", "relationship", None),)
-                )
+                # core240 creates this real overload. Its original custom
+                # search_path differs from the current fixed settings, so the
+                # first finalizer must replace a genuinely preexisting function.
+                with observer.connect() as independent:
+                    migrated_api, migrated_acl, migrated_dependencies = api_snapshot(independent)
+                    assert not function_matches(independent, definition, migrated_api)
+                    assert migrated_api["config"] != list(definition.settings)
+                finalize_authority(held, source_database="butlers", plans=plans)
+                with observer.connect() as independent:
+                    finalized_api = api_snapshot(independent)
+                    assert finalized_api[0]["oid"] == migrated_api["oid"]
+                    assert finalized_api[2] == migrated_dependencies
+                    assert function_matches(independent, definition, finalized_api[0])
+                    assert finalized_api[0]["body"] == definition.body
+                    assert finalized_api[0]["owner"] == definition.owner
+                    assert tuple(finalized_api[0]["config"]) == definition.settings
+                    assert finalized_api[1] == tuple(
+                        sorted(
+                            (role, "EXECUTE", False)
+                            for role in definition.executors
+                            if role != definition.owner
+                        )
+                    )
+                # A matched replay must preserve the physical overload and its
+                # complete catalog, ACL and dependency witnesses unchanged.
+                finalize_authority(held, source_database="butlers", plans=plans)
+                with observer.connect() as independent:
+                    assert api_snapshot(independent) == finalized_api
                 # Real source writer, not a fixture table GRANT or direct row
                 # insertion, retains a nonempty protected data witness.
                 held.exec_driver_sql("SET ROLE butler_general_rw")
@@ -2944,6 +3007,7 @@ async def test_real_normal_multischema_replay_preserves_protected_user_context(p
                     ),
                 )
             with observer.connect() as independent:
+                assert api_snapshot(independent) == finalized_api
                 assert independent.execute(catalog).one() == before
                 assert (
                     independent.exec_driver_sql(

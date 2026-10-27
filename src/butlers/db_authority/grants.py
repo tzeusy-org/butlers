@@ -4918,7 +4918,11 @@ def compile_function_manifest(
         for target, context in ((target, context) for target in targets for context in contexts):
             _identifier(target)
             quoted = '"' + target + '"'
-            actual_header = header.replace("__SELECTED_SCHEMA__", quoted)
+            # Convergence replaces only an already-preflighted fixed overload.
+            # Some original producers used CREATE for their first installation.
+            actual_header = header.replace(
+                "CREATE FUNCTION ", "CREATE OR REPLACE FUNCTION ", 1
+            ).replace("__SELECTED_SCHEMA__", quoted)
             actual_body = body.replace("__SELECTED_SCHEMA__", quoted)
             if context is not None:
                 _identifier(context)

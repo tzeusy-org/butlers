@@ -283,6 +283,49 @@ WHERE seq.oid=ANY(:oids) AND seq.relkind='S'
 """
 
 
+def _add_partition_precondition_note(error, actual, parents):
+    """Attach a bounded hashed refusal reason; never change partition admission."""
+    try:
+        import hashlib
+        import json
+
+        schema, name = actual["schema"], actual["name"]
+        if any(
+            type(value) is not str or not value or len(value.encode("utf-8")) > 1024
+            for value in (schema, name)
+        ):
+            return
+        kind = {
+            "r": "table",
+            "p": "partitioned_table",
+            "v": "view",
+            "m": "materialized_view",
+            "S": "sequence",
+            "f": "foreign_table",
+        }.get(actual["kind"], "UNKNOWN")
+        identity = json.dumps([schema, name], ensure_ascii=True, separators=(",", ":"))
+        count = len(parents)
+        payload = {
+            "version": 1,
+            "phase": "bind_partitions_precondition",
+            "exception": "AuthorityError",
+            "reason": "unlisted_not_single_table_partition",
+            "identity_sha256": hashlib.sha256(identity.encode("utf-8")).hexdigest(),
+            "schema_sha256": hashlib.sha256(schema.encode("utf-8")).hexdigest(),
+            "name_sha256": hashlib.sha256(name.encode("utf-8")).hexdigest(),
+            "kind": kind,
+            "declared_key": False,
+            "partition_is_true": actual.get("partition") is True,
+            "parent_link_count": "zero" if count == 0 else "one" if count == 1 else "many",
+        }
+        error.add_note(
+            "DB_AUTHORITY_PARTITION_BINDING_DIAGNOSTIC "
+            + json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        )
+    except Exception:
+        pass
+
+
 def bind_partition_relations(observed, declared, links, *, transition_owner=None):
     """Admit only actual children of fixed source parents, with no direct grants."""
     expected = {(row.schema, row.name): row for row in declared}
@@ -295,7 +338,9 @@ def bind_partition_relations(observed, declared, links, *, transition_owner=None
             continue
         parents = by_oid.get(actual["oid"], ())
         if actual.get("partition") is not True or actual["kind"] != "r" or len(parents) != 1:
-            raise AuthorityError("Managed database object is not declared")
+            error = AuthorityError("Managed database object is not declared")
+            _add_partition_precondition_note(error, actual, parents)
+            raise error
         parent_key = parents[0]["parent_schema"], parents[0]["parent_name"]
         parent = expected.get(parent_key)
         if (
