@@ -2229,15 +2229,22 @@ class ButlerDaemon:
         shared_pool: asyncpg.Pool | None = None
 
         if schema_topology:
-            shared_db = Database.from_env(shared_db_name)
-            shared_db.set_schema(shared_db_schema)
+            # Runtime pools must hold a verified role, so a same-database shared
+            # pool reads ``public`` credentials under this butler's own role.
+            owner_delegates = isinstance(self.db, Database) and self.db.db_name == shared_db_name
+            if owner_delegates:
+                shared_db = self.db.for_owned_schema(shared_db_schema)
+            else:
+                shared_db = Database.from_env(shared_db_name)
+                shared_db.set_schema(shared_db_schema)
             if shared_db is self.db:
                 # Test harnesses may patch Database.from_env to always return the
                 # main DB object. Treat that as local-only mode.
                 shared_pool = local_pool
             else:
                 try:
-                    await shared_db.provision()
+                    if not owner_delegates:
+                        await shared_db.provision()
                     shared_pool = await shared_db.connect()
                     await ensure_secrets_schema(shared_pool)
                     self._shared_credentials_db = shared_db

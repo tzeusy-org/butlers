@@ -256,6 +256,57 @@ async def test_daemon_flat_topology_marks_its_pool_as_explicit_codex_authority()
     assert store.require_system_global_pool() is local_pool
 
 
+def _established_owner(schema: str = "chronicler"):
+    from butlers.db import Database
+
+    owner = Database(db_name="butlers", schema=schema, role=f"butler_{schema}_rw")
+    owner.pool = _make_pool()
+    owner._role_verified = True
+    owner._verified_role = owner.role
+    return owner
+
+
+def test_owner_delegates_public_but_not_sibling_schema() -> None:
+    """REQ-database-security-012: shared ``public`` reads keep the owner's role."""
+    owner = _established_owner()
+
+    shared = owner.for_owned_schema("public")
+    shared._validate_runtime_role()
+    assert (shared.schema, shared.role) == ("public", "butler_chronicler_rw")
+
+    with pytest.raises(RuntimeError, match="unowned schema"):
+        owner.for_owned_schema("switchboard")
+
+
+async def test_daemon_schema_topology_reads_shared_credentials_under_its_role() -> None:
+    """REQ-core-credentials-001: the shared fallback survives fail-closed roles."""
+    from butlers.daemon import ButlerDaemon
+    from butlers.db import Database
+
+    local_pool = _make_pool()
+    shared_pool = _make_pool()
+    daemon = ButlerDaemon.__new__(ButlerDaemon)
+    daemon.config = SimpleNamespace(db_schema="chronicler", db_name="butlers")
+    daemon.db = _established_owner()
+    daemon._shared_credentials_db = None
+
+    async def connect(db: Database):
+        db._validate_runtime_role()  # the real connect's first refusal
+        return shared_pool
+
+    with (
+        patch.object(Database, "connect", new=connect),
+        patch.object(Database, "provision", new=AsyncMock()) as provision,
+        patch("butlers.daemon.ensure_secrets_schema", new=AsyncMock()),
+    ):
+        store = await daemon._build_credential_store(local_pool)
+
+    assert store.require_system_global_pool() is shared_pool
+    shared_db = daemon._shared_credentials_db
+    assert (shared_db.schema, shared_db.role) == ("public", "butler_chronicler_rw")
+    provision.assert_not_awaited()
+
+
 async def test_connector_global_codex_authority_uses_its_own_writable_pool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
