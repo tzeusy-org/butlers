@@ -1,7 +1,7 @@
 # Database Security: Role Enforcement Model
 
 ## Purpose
-Defines the PostgreSQL role-based enforcement model for butler schema isolation. Specifies the SET ROLE mechanism, the public schema write authorization matrix, the connector role model, and the graceful fallback policy.
+Defines the PostgreSQL role-based enforcement model for butler schema isolation. Specifies the SET ROLE mechanism, the public schema write authorization matrix, the connector role model, and the fail-closed runtime role policy.
 
 ## Requirements
 
@@ -23,13 +23,14 @@ Each butler daemon SHALL assume its designated PostgreSQL runtime role on every 
 - **WHEN** the `Database.connect()` method is called with a `role` parameter
 - **THEN** it opens a temporary connection to check `pg_roles` for the role's existence
 - **AND** if the role exists, it sets `_role_verified = True` and registers the `_setup_connection` callback
-- **AND** if the role does not exist, it logs a warning and creates the pool without the callback
+- **AND** a missing or unreadable role, failed role assumption or missing role configuration for a butler schema refuses before a usable runtime pool is returned in every environment
+- **AND** the connecting identity actually assumes the configured role before pool publication, including a lazy pool; owned partial resources are closed on failure or cancellation, with causal errors and content-blind diagnostics
 - **AND** the verification connection is closed before pool creation and does not consume a pool slot
 
 #### Scenario: Database class role parameter
 - **WHEN** a `Database` instance is created
 - **THEN** the `__init__` method accepts an optional `role: str | None` parameter (default `None`)
-- **AND** when `role` is `None`, no SET ROLE enforcement occurs (backward compatible)
+- **AND** a butler schema with `role` absent or mismatched refuses on connect; schema-less administrative/provisioning utilities remain distinct from butler runtime pools and confer no runtime authority
 - **AND** the `from_env()` class method does not set the role -- the caller (lifecycle.py) derives and sets it
 
 ### Requirement: Public Schema Write Authorization Matrix
@@ -126,43 +127,29 @@ Connectors SHALL use the `connector_writer` role for database access, enforced v
 - **THEN** it imports `connector_setup_role` from `src/butlers/connectors/db_role.py`
 - **AND** the utility provides a pre-built asyncpg setup callback and a role verification helper
 
-### Requirement: Graceful Fallback Policy
+### Requirement: Fail-Closed Runtime Role Policy
 
-SET ROLE enforcement SHALL degrade gracefully in environments where runtime roles are absent. The system SHALL retain the existing development fallback for direct runtime connection setup when PostgreSQL roles cannot be verified, including the warning and shared-user connection behavior. This fallback SHALL NOT waive REQ-database-security-011: a supported daemon or launcher that requests online migrations SHALL satisfy the reviewed bootstrap prerequisite first, and missing provenance SHALL stop that migration/startup path even under dev. No fallback SHALL authorize self-bootstrap or recovery privileges. SET ROLE enforcement SHALL retain its existing graceful development fallback for ordinary non-DND workloads. When runtime roles are absent, the normal non-DND context path may continue under the shared database user with the existing warning and application-level authorization behavior. The DND mutation and DND-based durable admission are a strict exception. If a caller cannot prove its active runtime role, the DND RLS/ACL boundary, the singleton guard, or database-time revalidation, it SHALL fail closed before changing DND or writing a durable admission. It SHALL not treat a shared-user development connection, a caller-supplied writer, or migration-owner privilege as a substitute for verified runtime authority.
+Butler runtime pools SHALL establish their designated role before serving queries in every environment. Missing or unverifiable roles, inability to assume the role, and missing role configuration for a butler schema SHALL fail startup or the affected connection acquire. No development setting SHALL permit shared-user runtime continuation. Every acquire SHALL re-establish the designated role, including after connection reset or revoked membership. Partial resources owned by a failed connect SHALL be closed without returning a usable connection. Diagnostics SHALL omit DSNs, credentials and private driver payloads while preserving the causal exception for internal diagnosis. This SHALL NOT alter connector pools, dashboard DatabaseManager, managed bootstrap, migration provisioning or grants. Independent DND RLS/ACL, singleton and database-time admission checks SHALL remain required; verified runtime role establishment alone SHALL NOT authorize a DND mutation or durable admission.
 
 ID: REQ-database-security-012
-Source: about/legends-and-lore/rfcs/0006-database-schema-and-isolation.md (Database Connection Scoping); bu-kqnum.8.10 owner decision and clarification (2026-08-15)
+Source: about/legends-and-lore/rfcs/0006-database-schema-and-isolation.md (Database Connection Scoping); bu-wws1eq recorded owner decision (2026-10-21)
 Scope: v1-mandatory
 
-#### Scenario: Missing roles do not widen DND authority
-- **WHEN** a development environment lacks the required runtime roles or an
-  active `SET ROLE` cannot be verified
-- **THEN** ordinary non-DND context behavior follows the existing development
-  fallback
-- **AND** the canonical DND mutation rejects before any DND row, guard, or
-  audit change
+#### Scenario: Runtime role cannot be established
+- **WHEN** a butler schema lacks its designated role configuration, or role verification or assumption fails
+- **THEN** startup or acquisition refuses before returning a usable runtime connection in every environment
+- **AND** owned partial resources are closed and diagnostics omit private values
+- **AND** no setting permits shared-user runtime continuation or self-bootstrap
 
 #### Scenario: Unprovable DND admission fails closed
-- **WHEN** a consumer cannot establish its guarded DND snapshot/admission
-  boundary because role, RLS/ACL, guard, or database-time evidence is missing
-- **THEN** it writes no durable admission and authorizes no external effect
+- **WHEN** a caller cannot prove its active runtime role, DND RLS/ACL boundary, singleton guard or database-time revalidation
+- **THEN** DND mutation and durable admission refuse before DND row, guard, audit or admission changes
+- **AND** migration-owner or shared-user authority does not substitute for the required evidence
 
-#### Scenario: Missing roles in development
-- **WHEN** the `core_001_foundation` migration ran but could not create roles (e.g., connecting user lacks CREATEROLE)
-- **AND** the request is direct development runtime connection setup and requests no online migration
-- **THEN** the roles do not exist in `pg_roles`
-- **AND** `Database.connect()` detects this and skips the `setup` callback
-- **AND** a warning is logged: "Role {role} not found; SET ROLE enforcement disabled. Butler {name} runs with shared-user privileges."
-- **AND** all queries execute with the shared database user's privileges (identical to pre-enforcement behavior)
-- **AND** no error is raised -- the butler starts and operates normally
-
-- **AND** this direct runtime continuation does not waive a supported online migration/startup prerequisite
-
-#### Scenario: Enforcement in production
-- **WHEN** the PostgreSQL instance has roles created by the migration (production default)
-- **THEN** SET ROLE enforcement is active for all butler and connector connections
-- **AND** the connecting user (`butlers`) must be a member of each runtime role (granted by `core_065`)
-- **AND** any query that violates the role's privileges fails with a PostgreSQL permission error
+#### Scenario: Membership revoked before reacquisition
+- **WHEN** an established runtime connection is released and the connecting login loses membership in the designated role
+- **THEN** the next acquire refuses before returning the connection or executing caller queries
+- **AND** successful prior verification or an SSL retry does not disable the setup callback
 
 ### Requirement: Role Membership
 The shared database user SHALL be a member of all runtime roles to enable SET ROLE.
@@ -176,7 +163,7 @@ The shared database user SHALL be a member of all runtime roles to enable SET RO
 
 ### Requirement: Reviewed Bootstrap Before Supported Alembic Execution
 
-Every supported database, including ordinary dev, SHALL complete the reviewed `scripts/init-db.sql` using its distinct privileged cluster-superuser bootstrap identity before its first online Alembic migration, and SHALL rerun that managed procedure when its managed role/schema/interface surface changes. Online programmatic and direct Alembic admission SHALL read the actual target database's current catalog before extension, target-schema, version-table or revision mutations; missing, unreadable or untrusted required bootstrap provenance SHALL fail closed with a bounded prerequisite error pointing to `scripts/init-db.sql`. The check SHALL validate required extensions, the current bootstrap-managed runtime-role/schema and migration-membership/default-ACL profile, and the exact trusted protected admin signatures/ownership/definer/search-path profile, without executing installers, issuing grants, changing roles or trusting a writable completion marker. Installer-ready and legitimately finalized protected states SHALL both be accepted: completion may consume one-shot installer grants, and a repeated or second-schema migration SHALL NOT demand those consumed grants when the boundary is correctly finalized. Applied protected migrations SHALL retain their independent state-specific guards. The managed bootstrap prerequisite SHALL NOT enable the executor, supply its secret, activate a drill or widen normal migration/runtime privileges; ordinary dev SHALL retain its base-only service selection. Connectivity/authentication errors SHALL remain distinguishable from a successfully inspected missing prerequisite, and diagnostics SHALL omit connection credentials, private row contents and raw SQL values. Supported privileged downgrade operations SHALL retain their existing managed authorization and data-preservation constraints; a bootstrap check SHALL NOT authorize a normal role to perform them. No invocation SHALL run the privileged script blindly before every migration, self-bootstrap, waive provenance or mark a partial migration as complete. The required default-ACL admission profile SHALL cover stable bootstrap authority and own-schema/base privileges; ordinary migration-owned Relationship SELECT defaults on Switchboard SHALL remain outside that profile because applied core_001 revokes them during legitimate bounded replay and core_077 repairs them. Their absence SHALL NOT waive any stable required privilege or attest working runtime read access; actual catalog and effective-role readback SHALL independently distinguish the bounded absent state from the repaired state without trusting a revision, marker or object name as provenance.
+Every supported database, including ordinary dev, SHALL complete the reviewed `scripts/init-db.sql` using its distinct privileged cluster-superuser bootstrap identity before its first online Alembic migration, and SHALL rerun that managed procedure when its managed role/schema/interface surface changes. Online programmatic and direct Alembic admission SHALL read the actual target database's current catalog before extension, target-schema, version-table or revision mutations; missing, unreadable or untrusted required bootstrap provenance SHALL fail closed with a bounded prerequisite error pointing to `scripts/init-db.sql`. The check SHALL validate required extensions, the current bootstrap-managed runtime-role/schema and migration-membership/default-ACL profile, and the exact trusted protected admin signatures/ownership/definer/search-path profile, without executing installers, issuing grants, changing roles or trusting a writable completion marker. Installer-ready and legitimately finalized protected states SHALL both be accepted: completion may consume one-shot installer grants, and a repeated or second-schema migration SHALL NOT demand those consumed grants when the boundary is correctly finalized. Applied protected migrations SHALL retain their independent state-specific guards. The managed bootstrap SHALL end every normal role it normalizes (the migration login, runtime and connector roles, the optional calendar role and the restore-drill roles) with `NOBYPASSRLS`, so a pre-existing role created with `BYPASSRLS` cannot skip forced row-level security, and the prerequisite check SHALL refuse while any of those roles still has `BYPASSRLS`. The managed bootstrap prerequisite SHALL NOT enable the executor, supply its secret, activate a drill or widen normal migration/runtime privileges; ordinary dev SHALL retain its base-only service selection. Connectivity/authentication errors SHALL remain distinguishable from a successfully inspected missing prerequisite, and diagnostics SHALL omit connection credentials, private row contents and raw SQL values. Supported privileged downgrade operations SHALL retain their existing managed authorization and data-preservation constraints; a bootstrap check SHALL NOT authorize a normal role to perform them. No invocation SHALL run the privileged script blindly before every migration, self-bootstrap, waive provenance or mark a partial migration as complete. The required default-ACL admission profile SHALL cover stable bootstrap authority and own-schema/base privileges; ordinary migration-owned Relationship SELECT defaults on Switchboard SHALL remain outside that profile because applied core_001 revokes them during legitimate bounded replay and core_077 repairs them. Their absence SHALL NOT waive any stable required privilege or attest working runtime read access; actual catalog and effective-role readback SHALL independently distinguish the bounded absent state from the repaired state without trusting a revision, marker or object name as provenance.
 
 ID: REQ-database-security-011
 Source: bu-kqnum.8.10 owner decision and clarification (2026-08-15); about/legends-and-lore/rfcs/0006-database-schema-and-isolation.md; scripts/init-db.sql; REQ-database-security-006
@@ -199,6 +186,11 @@ Scope: v1-mandatory
 - **THEN** read-only admission accepts the legitimate finalized state, all-chain revision resolution and per-schema tracking remain correct, planted data survives, and no installer privilege is restored or privileged bootstrap repeated automatically
 - **AND** a genuine checked-init, bounded core_076 and second-schema continuation remains admitted while the ordinary Relationship-to-Switchboard read default is absent, required own-schema privilege loss still refuses without catalog changes, and immutable core_077/head repair restores both the read default and actual runtime SELECT without losing the planted row
 
+#### Scenario: Normal roles end bootstrap without BYPASSRLS
+- **WHEN** a normal runtime, connector or migration role already exists with `BYPASSRLS` and the managed bootstrap runs
+- **THEN** the role ends `NOBYPASSRLS` and a rerun changes nothing, so the forced-RLS DND boundary again filters that role's direct DML
+- **AND** until the bootstrap is rerun, online admission refuses with a bounded "missing or untrusted" prerequisite error, and passes once the role is normalized
+
 #### Scenario: Partial bootstrap and misleading objects do not satisfy admission
 - **WHEN** required managed catalog entries are absent or have wrong ownership, signatures, definer mode, pinned search path, membership or required privileges, including a caller-owned lookalike, a temporary/catalog shadow, or a caller-writable completion marker
 - **THEN** admission refuses before migration side effects using qualified catalog identities, with a genuinely bootstrapped companion accepted; unchanged private authority objects and data are witnessed independently
@@ -217,7 +209,7 @@ Scope: v1-mandatory
 
 ## Source References
 - Non-Negotiable Rule 3 (MCP-only inter-butler communication; SET ROLE is the database-level enforcement mechanism)
-- Non-Negotiable Rule 1 (User-federated; the user controls the database and the graceful fallback respects dev environments)
+- Non-Negotiable Rule 1 (User-federated; the owner controls the database, while runtime isolation fails closed)
 - RFC 0006 (Database Schema and Isolation; defines the schema topology, role naming, and ACL structure that this spec enforces at runtime)
 - RFC 0004 (Identity; public schema identity tables are in the write authorization matrix)
 - RFC 0009 (Context Bus; `public.user_context` write grants)

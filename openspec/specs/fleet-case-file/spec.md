@@ -147,7 +147,7 @@ Scope: v1-mandatory
 #### Scenario: Read list
 
 - **WHEN** a valid filtered list request is made
-- **THEN** a bounded descending keyset page and next_cursor/has_more are returned
+- **THEN** a bounded descending keyset page is returned in the shared `Page[T]` envelope (`items`, `next_cursor`, `limit`), and an invalid cursor is rejected with HTTP 400
 
 #### Scenario: Read detail
 

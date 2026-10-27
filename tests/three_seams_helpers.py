@@ -23,6 +23,12 @@ def baseline_function(name: str, globals_: dict[str, Any]):
     item = json.loads(raw)[name]
     assert hashlib.sha256(item["body"].encode()).hexdigest() == item["body_sha256"]
     namespace = dict(globals_)
+    if name == "create_catalog_entry":
+        # The immutable writer evaluates its old dependency name at definition
+        # time. Adapt only its historical namespace to the public dependency.
+        from butlers.api.deps import get_db
+
+        namespace["_get_db_manager"] = get_db
     filename = Path(__file__).parent / "fixtures" / "historical" / item["git_sha"] / item["path"]
     exec(compile(item["body"], str(filename), "exec"), namespace)
     return namespace[name]

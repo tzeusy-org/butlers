@@ -1,3 +1,12 @@
+## RFC 0038 conformance and evidence boundary
+
+These checkbox states are preserved historical implementation records. They
+do not establish goal-runtime conversion, authorize live activation, or close
+an unresolved scope/sign-off item. The adopted collision disposition requires
+this change to describe deterministic projections plus a declared Chronicler
+narration obligation before archive; conforming text needs no new owner
+exact-text sign-off. The switch, runtime evidence and archive remain separate.
+
 ## 1. Owner sign-off (gate)
 
 - [ ] 1.1 Confirm the scope split vs. `bu-whhll`: this change is the
@@ -72,6 +81,21 @@
   "data unavailable" for the affected lane, not a false all-clear zero.
 
 ## 7. Optional bounded LLM labeling pass (depends on §5)
+
+RFC 0038 D2/D5/D18 re-scopes the model-backed work below as a declared
+Chronicler obligation goal. The existing checked states are legacy delivery
+history, not a claim that the obligation admission, broker/grant custody,
+D6 source-stamp/exposure/taint or D10 budget conversion has executed.
+
+Goal-runtime conversion remains pending: the scheduled producer must submit
+an obligation with a git-declared capability set; trusted admission sets
+origin/cause, ceiling, exposure and budget, and broker-scoped read/record
+capabilities preserve privacy, tenant boundaries, provenance and source taint.
+The original at-most-one model-call bound covers every turn, retry and
+recovery across invocations or goals; a failed call cannot authorize a second
+call. Admission refusal, budget exhaustion and Stop leave deterministic
+rollups/flags correct, with absent narration returned as a normal null.
+The checked entries below retain their original legacy delivery evidence.
 
 - [x] 7.1 One LLM call per local day, invoked after rollup + flags are
   written, input = reduced rollup/flag rows + top episode titles only.

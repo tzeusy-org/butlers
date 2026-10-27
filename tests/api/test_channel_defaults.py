@@ -27,7 +27,7 @@ from fastapi import FastAPI
 
 from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.channel_defaults import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -50,7 +50,7 @@ def _app_with_mock_db(
             shared_pool.fetchrow = AsyncMock(return_value=None)
             shared_pool.execute = AsyncMock(return_value=None)
         mock_db.credential_shared_pool.return_value = shared_pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return mock_db
 
 

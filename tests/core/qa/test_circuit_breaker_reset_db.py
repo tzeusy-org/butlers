@@ -27,8 +27,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_mcp_manager
-from butlers.api.routers.qa import _get_db_manager
+from butlers.api.deps import get_db, get_mcp_manager
 from butlers.core.qa.dispatch import _is_circuit_breaker_tripped
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -87,7 +86,7 @@ def _app_for(pool: asyncpg.Pool):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: MagicMock()
     return app
 

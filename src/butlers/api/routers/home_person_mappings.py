@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 from starlette.responses import JSONResponse
 
 from butlers.api.audit_emit import authenticated_principal
+from butlers.api.deps import OptionalDb
 from butlers.api.models import ApiResponse, ErrorDetail, ErrorResponse
 from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.routers.audit import append as append_audit
@@ -37,11 +38,6 @@ mapping_batch_total = get_or_create_counter(
     "Content-blind terminal outcomes for dashboard HA person mapping batches.",
     labelnames=["outcome", "failure_category"],
 )
-
-
-def _get_db_manager() -> Any:
-    """Dependency stub replaced by the dashboard application wiring."""
-    return None
 
 
 class MappingInput(BaseModel):
@@ -384,7 +380,8 @@ async def _request_invalid_response(
 async def submit_person_mappings(
     request: Request,
     _owner: Literal["owner"] = Depends(require_dashboard_owner_control),
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> JSONResponse | ApiResponse[dict[str, Any]]:
     """Atomically submit exact private mappings and return aggregate evidence."""
     if request.url.query:

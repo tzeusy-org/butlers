@@ -7,17 +7,21 @@ and `NOBYPASSRLS` SHALL use a dedicated pool. A separate `NOLOGIN NOINHERIT NOBY
 own both prompt-history and composition-mode-history tables and SHALL NOT be granted to an
 application role. The generic dashboard pool, runtime roles, connectors, and `PUBLIC` SHALL have no
 INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, or TRIGGER authority over either table.
-RLS SHALL allow the dedicated writer to select and insert overlay and mode-history rows. A fixed database-owned
+RLS SHALL allow the dedicated writer to select and insert overlay and mode-history rows only within
+separately authorized owner-management operations, not to select a goal prompt. A fixed database-owned
 mapping from each canonical runtime role's `current_user` to one exact roster agent SHALL allow that
 runtime to select only its own rows; an unmapped runtime, connector, or generic API login SHALL see
-zero protected rows. No application path SHALL depend on the generic API pool using `SET ROLE`.
+zero protected rows. This fixed role mapping SHALL be only a database upper bound, not a goal grant,
+a runner credential or a cross-domain read path. Domain daemons SHALL NOT read operations into
+reasoning-session prompts; leads use lead policy and owner profile and children their briefs under
+RFC0038 D15. No application path SHALL depend on the generic API pool using `SET ROLE`.
 Associated sequence authority SHALL be limited to the dedicated writer, and normal bootstrap/grant
 reconciliation SHALL preserve this restricted end state. The generic dashboard login SHALL be
 `NOSUPERUSER NOBYPASSRLS` and SHALL neither own nor inherit either table-owner role. Migration and
 backup/restore authority SHALL use a separately governed operational principal that is never
 available to the dashboard process.
 
-ID: REQ-database-security-009
+ID: REQ-database-security-015
 Source: specify-roster-identity-owner-operations-overlay design D5-D6; heart-and-soul/security.md Least Privilege
 Scope: v1-mandatory
 
@@ -27,14 +31,14 @@ Scope: v1-mandatory
 - **AND** the writer cannot UPDATE, DELETE, or TRUNCATE historical rows
 
 #### Scenario: Dedicated writer appends a composition mode
-- **WHEN** the owner-only mode route uses a connection authenticated directly as the dedicated prompt writer
-- **THEN** PostgreSQL permits SELECT and INSERT required for one mode-history append
-- **AND** no application role can update, delete, or truncate mode history
+- **WHEN** a separately authorized owner-management operation appends historical mode evidence using a direct-login dedicated writer
+- **THEN** PostgreSQL permits only the SELECT and INSERT needed for that immutable history append
+- **AND** no application role can update, delete or truncate mode history, and no append selects a goal prompt
 
 #### Scenario: Runtime role reads only its own agent rows
-- **WHEN** a canonical `butler_{name}_rw` runtime connection selects active overlay history
-- **THEN** RLS exposes only rows whose agent matches the fixed mapping for `current_user`
-- **AND** rows for every other agent remain invisible
+- **WHEN** a canonical `butler_{name}_rw` runtime connection selects protected operations history
+- **THEN** RLS exposes at most rows for the exact agent fixed by `current_user`, with every other agent invisible
+- **AND** this database limit grants no goal capability or runner credential and does not inject the rows into a domain or goal system prompt
 
 #### Scenario: Unmapped and connector roles see no prompt rows
 - **WHEN** an unmapped runtime role or `connector_writer` selects from the prompt store
@@ -68,32 +72,37 @@ Scope: v1-mandatory
 
 #### Scenario: Unmapped agent input cannot widen runtime reads
 - **WHEN** a runtime query supplies another agent's name as data
-- **THEN** RLS still derives visibility from `current_user` and the fixed mapping
-- **AND** the supplied name grants no additional row visibility
+- **THEN** RLS derives visibility only from `current_user` and the fixed mapping, with no additional row visibility from the supplied name
+- **AND** role visibility itself does not widen a goal's capability grant or expose history through a new model-facing consumer
 
 ### Requirement: Prompt History Migration and Rollback Integrity
-Migration to roster-plus-overlay composition SHALL preserve every existing prompt-history row and
-its version, text, timestamp, and actor while labeling it `legacy_full_replacement`. The migration
-SHALL create append-only per-agent composition-mode history protected by the same owner, writer, RLS,
-and grant boundary as prompt history. No migration or bootstrap process SHALL reinterpret, copy,
-activate, or delete legacy text as owner-operations
-content. Compatibility code and the dedicated prompt pool SHALL be available before schema,
-behavior, or privilege cutover. Each existing agent SHALL receive a
-`precutover_legacy_hold` mode-history row and remain on that last verified behavior until an
-authenticated owner explicitly reviews its legacy head and creates or activates an overlay.
-Rollback during the approved observation window SHALL restore the selected legacy behavior without
-rewriting history or restoring broad runtime, connector, generic API, table, or sequence authority.
+Migration of owner-operations storage SHALL preserve every existing prompt-history row and its
+version, text, timestamp and actor while labeling it `legacy_full_replacement`, never reinterpreting,
+copying, activating or deleting it as owner operations. Historical append-only per-agent mode records
+SHALL retain the same owner, writer, RLS, grant and audit protections and truthful seeded-versus-owner
+attribution. `precutover_legacy_hold`, `roster_overlay` and `legacy_full_replacement` SHALL NOT become
+selectable goal-runtime modes or re-enable domain-daemon prompt composition. New agents SHALL NOT
+receive a legacy hold, and leaving historical hold SHALL NOT permit re-entry.
+Separately authorized schema-aware code, dedicated pool/credentials and real-PG privilege proof
+SHALL precede live storage changes; failure SHALL preserve the prior verified stage and all rows
+and block the next stage. An authenticated owner SHALL explicitly review any reuse of legacy text;
+migration SHALL NOT infer identity versus operations or activate it automatically. RFC0038 requires
+one hard runtime cutover, not per-agent old/new reasoning paths. Operational rollback/restore during
+its separately approved observation window SHALL retain exact prior-stage evidence, explicit
+acknowledgement, CAS/atomic audit where writes are authorized, and least privilege; it SHALL NOT
+restore broad runtime/connector/generic-API/table/sequence grants or select a second live goal mode.
+Retiring obsolete machinery SHALL require a later reviewed authorized change without deleting
+history. This spec-only amendment SHALL perform no migration, activation or retirement.
 
 ID: REQ-database-security-010
 Source: specify-roster-identity-owner-operations-overlay design D6 and Migration Plan
 Scope: v1-mandatory
 
 #### Scenario: Existing rows retain legacy provenance
-- **WHEN** the additive migration runs against one or more existing prompt-history rows
-- **THEN** every row retains its exact version, text, timestamp, and actor
-- **AND** every row is labeled `legacy_full_replacement`
-- **AND** no row is active or represented as an owner-operations overlay
-- **AND** the initial mode-history row selects `precutover_legacy_hold` without claiming owner selection or rewriting prompt history
+- **WHEN** a separately authorized additive migration processes existing prompt-history rows
+- **THEN** every row retains its exact version, text, timestamp and actor and is labeled `legacy_full_replacement`, never active or represented as an owner-operations overlay
+- **AND** historical seeded mode records retain unreviewed provenance without fabricated owner selection or rewritten history
+- **AND** no live goal compatibility selector is seeded
 
 #### Scenario: Failed migration preserves the prior verified stage
 - **WHEN** schema backfill, role creation, RLS setup, credential provisioning, or verification fails
@@ -102,28 +111,28 @@ Scope: v1-mandatory
 - **AND** no partial success is reported
 
 #### Scenario: Owner review precedes per-agent cutover
-- **WHEN** an existing agent has only legacy full-replacement history and `precutover_legacy_hold`
-- **THEN** migration code does not infer which text is identity or operations content
-- **AND** roster-plus-overlay activation waits for an authenticated owner to create or activate an overlay explicitly
+- **WHEN** an agent has only legacy full-replacement history or a historical seeded hold
+- **THEN** migration code does not infer or copy identity/operations text and any later reuse waits for explicit authenticated owner review
+- **AND** that review does not authorize per-agent goal modes, automatic activation or domain reasoning sessions
 
 #### Scenario: New agent cannot enter a legacy hold
 - **WHEN** an agent is created after the migration
-- **THEN** its initial mode is `roster_overlay`
-- **AND** no migration or API path assigns `precutover_legacy_hold`
+- **THEN** no migration or API assigns `precutover_legacy_hold` or legacy goal composition
+- **AND** its versioned guidance is governed by the same lead-policy/profile and child-brief boundary, without a compatibility default
 
 #### Scenario: Prepared agent cuts over without history rewrite
-- **WHEN** the owner activates a reviewed overlay for one agent and that agent passes cutover verification
-- **THEN** the owner-gated mode route appends `roster_overlay` and new sessions use roster-plus-overlay composition for that agent
-- **AND** legacy rows remain byte-identical history
-- **AND** other agents remain on their previously selected modes
+- **WHEN** separately authorized implementation passes the single RFC0038 hard-cutover verification
+- **THEN** leads use lead policy and owner profile and children their briefs; domain guidance is versioned and no per-agent old/new reasoning selector remains
+- **AND** all legacy rows and per-agent provenance remain byte-identical history, without silent overlay activation or alteration of another agent's records
 
 #### Scenario: Rollback restores selection without restoring broad grants
-- **WHEN** an operator rolls one agent back during the approved observation window
-- **THEN** the owner-gated mode route restores that agent's legacy full-replacement selection with compare-and-swap and explicit acknowledgement
-- **AND** no historical row is updated or deleted
-- **AND** RLS, the dedicated writer, and runtime/connector/generic-API DML denial remain in force
+- **WHEN** a separately authorized operator performs an approved bounded operational rollback/restore
+- **THEN** exact prior-stage evidence and explicit acknowledgement govern the restore, with CAS and metadata-only atomic audit for authorized state transitions
+- **AND** it does not select a legacy goal mode, update/delete historical rows or restore broad grants
+- **AND** RLS, dedicated-writer isolation and runtime/connector/generic-API DML denial remain in force
 
 #### Scenario: Legacy retirement requires a later reviewed change
-- **WHEN** the observation window ends successfully
-- **THEN** legacy-selection removal occurs only through a separately reviewed and authorized change
-- **AND** this migration does not delete legacy history or silently retire rollback capability
+- **WHEN** the separately approved observation window ends successfully
+- **THEN** removal of obsolete selection machinery requires a later reviewed and authorized change
+- **AND** this migration does not delete legacy history or silently retire operational recovery obligations
+- **AND** historical preservation does not imply permission to run a legacy goal selector

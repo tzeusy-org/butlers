@@ -71,7 +71,7 @@ Size: medium. Baseline: `0b0d87a1156f300021aebfc6aabcc5f5bdd2d63e`.
 - G3 Topology [Observed]: connector normalization feeds Switchboard identity/decomposition, then
   structured route context feeds domain memory tools; reconciliation is an explicit operator path.
 - G4 Design [Observed]:
-  `docs/superpowers/specs/2026-08-24-whatsapp-identity-reconciliation-design.md`.
+  `docs/plans/2026-08-24-whatsapp-identity-reconciliation-design.md`.
 - G5 Spec: four modified capability deltas in this changeset; no new capability.
 - G6 Bar [Observed]: TDD, content-blind logs, exact-digest apply authorization, transactional
   revalidation, same-change docs, targeted-to-broad verification, and independent review.

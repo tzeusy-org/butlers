@@ -23,10 +23,11 @@ from butlers.api.deps import (
     ButlerUnreachableError,
     MCPClientManager,
     get_butler_configs,
+    get_db,
     get_mcp_manager,
 )
 from butlers.api.models.butler import ModuleStatus
-from butlers.api.routers.butlers import _get_db_manager, _get_module_health_via_mcp
+from butlers.api.routers.butlers import _get_module_health_via_mcp
 
 from .conftest import make_butler_dir, make_mock_mcp_manager, make_test_app
 
@@ -75,7 +76,7 @@ def _wire(app, configs, mcp_manager=None, db=None):
         db = _mock_audit_db()
     app.dependency_overrides[get_butler_configs] = lambda: configs
     app.dependency_overrides[get_mcp_manager] = lambda: mcp_manager
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     return app
 
 

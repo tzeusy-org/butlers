@@ -386,6 +386,10 @@ export function inspectResultToEpisode(result: MemoryInspectResult): Episode {
     last_referenced_at: null,
     expires_at: null,
     metadata: meta,
+    consolidation_attempts: metaNumber(meta, 'consolidation_attempts') ?? 0,
+    last_consolidation_error: metaString(meta, 'last_consolidation_error') ?? null,
+    dead_letter_reason: metaString(meta, 'dead_letter_reason') ?? null,
+    next_consolidation_retry_at: metaString(meta, 'next_consolidation_retry_at') ?? null,
   }
 }
 

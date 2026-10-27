@@ -18,7 +18,7 @@ Guardrails that were previously duplicated here are now authoritative in:
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import json
 import sys
 import zoneinfo
@@ -36,6 +36,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -122,9 +123,9 @@ def _build_app(rows: list[dict[str, Any]], *, apply_tombstone_sql_filter: bool =
 
     app = create_app()
 
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "chronicler" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "chronicler":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     return app, mock_pool
@@ -1055,10 +1056,7 @@ def _load_chronicler_router():
     module_name = "chronicler_api_router"
     if module_name in sys.modules:
         return sys.modules[module_name]
-    spec = importlib.util.spec_from_file_location(module_name, _ROUTER_PATH)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = mod
-    spec.loader.exec_module(mod)
+    mod = importlib.import_module("butlers.api._roster.chronicler.router")
     return mod
 
 
@@ -1100,11 +1098,11 @@ def _make_mock_row_otel(row: dict[str, Any]) -> MagicMock:
 
 
 def _make_app_with_pool(pool):
-    chronicler_mod = _load_chronicler_router()
+    _chronicler_mod = _load_chronicler_router()
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
     app = create_app(api_key="")
-    app.dependency_overrides[chronicler_mod._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     return app
 
 

@@ -2,14 +2,16 @@
 
 Status: adopted target; implementation and live execution remain outstanding.
 
+Governing doctrine: [vision.md rule 5, model selection is resolved from `public.model_catalog` and edited via the dashboard Models tab](../../heart-and-soul/vision.md#non-negotiable-rules) and [v1.md, Dashboard](../../heart-and-soul/v1.md#dashboard) (the settings console includes the model catalog).
+
 The storage/API, restricted ingress/retention, and diagnostic executor sections below are part of this RFC's normative contract. Exact original adoption SHA256: `d46d758108064d4ea5d00cab2a94a8ebc82a18f54dea5a2b9393b7f1cc25e11e`.
 
 This publication incorporates the exact adopted contract sections User experience and state model through Specification scenarios, preserving all clauses. Historical funnel/review text stays provenance, not future implementation authority.
 
 
-## Amendment 1: proof executor is a D18 model function (proposed, awaiting owner adoption)
+## Amendment 1: proof executor conforms to RFC 0038 D18
 
-Status: proposed; nothing here is adopted until the owner adopts the OpenSpec change [models-exact-path-vision-proof](../../../openspec/changes/models-exact-path-vision-proof/design.md) that carries it. The exact original adoption digest above is unchanged and `adopted-contract.md` stays byte-for-byte provenance.
+Status: source conformance candidate under adopted RFC 0038 D18 and the 2026-10-21 conforming-text disposition recorded on bu-o7lumy. Independent conformance review and separate landing authority remain required. The exact original adoption digest above is unchanged and `adopted-contract.md` stays byte-for-byte provenance. This text grants no implementation or operational release.
 
 RFC 0038 lists "RFC 0036 vision probes" among model functions (D18, "Model functions" bullet in `0038-goal-runtime-and-capability-authorization.md`, lines 814-820 at base 8f75653ed; the owner-vetted bead cites 810-817) and its RFC disposition table says "0036 Models exact-path vision proof | Remains; probes are model functions (D18)" (line 932; the bead cites 928). The source-only measurement below (PR #4360, bu-s1u4br.1) found both installed CLIs unsupported for the CLI/MCP diagnostic profile, so that profile cannot be built. This amendment replaces the executor and keeps the rest of the contract.
 
@@ -22,9 +24,9 @@ The executor is deterministic code that makes one tool-less, single-turn, struct
 - **Kept.** Three same-tuple controls with independent runner-private sentinels, the purpose-bound capability and envelope, durable per-control slots and total reservation, content-blind append-only receipts, the restore epoch, explicit Enable/Apply/Refresh, and the exact-row compare-and-swap Apply with managed applicability and historical preservation.
 - **MCP delivery.** It is not re-proved per row. The server-side wire shape stays pinned by the existing `attachment_view` tests (`test_attachment_view_returns_image_content_block_for_image` and `test_registered_attachment_view_emits_image_block_without_structured_content` in `tests/core/test_attachment_view.py`, and `tests/tools/test_attachments.py`); they pin only what the butler server emits. Runtime-side forwarding of an MCP image block into inference is no longer proven per row or per runtime version: an accepted unproven residual (the bu-m6tgig trade-off), not a pinned property. No new live-proof requirement is added.
 
-RFC 0038's accepted D18 text governs over the RFC 0038 change's `collision-dispositions.md` row for `models-exact-path-vision-proof`, which required attachment_view controls as admitted owner goals and said they are not a D18 model function; adopting this amendment replaces that row (corrected in the same change). The same statement is repeated at `collision-dispositions.md:85` and in that change's `design.md:85`; both are reworded to defer to the corrected row.
+RFC 0038 D18 governs the executor. Merged PR #4891 already reconciled the generalist change's disposition ledger to D18 model functions and assigned this amendment to bu-o7lumy. This amendment preserves that ledger and generalist design exactly; it does not reinstate the superseded owner-goal disposition or edit their shared paths.
 
-Where this amendment conflicts with the executor text of "Exact path and controls", "Restricted dispatch and durable storage authority" (the Spawner diagnostic entry, attachment manifest filter and Switchboard diagnostic admission) and "Diagnostic executor feasibility" below, the amendment controls once adopted. Those passages stay as adopted provenance; the measured paragraph stays as history. Real-provider runs keep their per-run owner authorization, and no executor code, catalog change, migration or provider call is made by this amendment.
+Where this amendment conflicts with the executor text of "Exact path and controls", "Restricted dispatch and durable storage authority" (the Spawner diagnostic entry, attachment manifest filter and Switchboard diagnostic admission) and "Diagnostic executor feasibility" below, the amendment states the governing RFC 0038 D18 contract. Those passages stay as adopted provenance; the measured paragraph stays as history. Real-provider runs keep their per-run owner authorization, and no executor code, catalog change, migration or provider call is made by this amendment.
 
 Models rows retain their existing layout and text Verify action. Add compact capability chips using validated ModelFeature names; absent vision = Unknown, false = Declared unsupported, true = Declared supported. Separate evidence fields show latest check outcome and applied proof applicability. Latest check may be Ready to apply, failed or inconclusive; applied proof may be absent, applicable or stale. A fresh unapplied pass does not hide a stale applied proof or claim restored routing eligibility. Never collapse declaration and proof into a single green check. Historical core248 declarations may show Historical declaration with provenance; no fabricated timestamp or current verified badge.
 
@@ -142,7 +144,7 @@ Nearest tests: tests/scripts/test_pg_dump_backup.py; tests/scripts/test_pg_resto
 
 # Diagnostic executor feasibility: source facts, not live capability claims
 
-> Amendment 1 (proposed): this section is the feasibility history for the CLI/MCP diagnostic profile. If Amendment 1 is adopted, the table's last row and the profile obligations below are not built; the D18 model-function executor replaces them, and the measured paragraph is retained as the reason.
+> Amendment 1 conformance: this section records feasibility history for the CLI/MCP diagnostic profile. RFC 0038 D18 replaces that profile with the bounded model-function executor; the measured paragraph remains historical evidence, not proof that a current adapter is eligible.
 
 [Observed] Repository Codex invoke at core/runtimes/codex.py:1909 accepts max_turns but normal command includes --dangerously-bypass-approvals-and-sandbox at1958; MCP discovery retry begins2230. Those normal paths are NOT diagnostic enforcement. OpenCode invoke accepts max_turns at946 with no source use beyond documentation and includes automatic migration retry. Installed local Codex path resolves to standalone0.157.1; executable existence/version naming is not enforcement attestation. No authenticated CLI/provider invocation performed. OpenCode binary exists; version not asserted from mtime.
 

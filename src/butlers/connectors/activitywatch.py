@@ -122,6 +122,7 @@ from butlers.db import (
 )
 from butlers.ingestion_bearer_scrub import scrub_text
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import CHANNEL_KIND_FEED
 
 if TYPE_CHECKING:
     import asyncpg
@@ -944,7 +945,7 @@ async def persist_activity_event(
     # them, so scrub here. On detector failure the evidence write is skipped
     # (never written raw) and nothing is logged from it.
     # TODO(bu-506glj): raw_payload (URL/tab title) is not scrubbed yet; an existing test
-    # pins the raw tokenised URL and needs a contract-evolution authorization.
+    # pins the raw tokenised URL, so the scrub changes that test in the same reviewed PR.
     if window_title is not None:
         try:
             window_title = scrub_text(window_title, provider_domain=browser_domain or "unknown")[0]
@@ -1172,6 +1173,7 @@ class ActivityWatchConnector:
             metrics=self._metrics,
             get_health_state=self._get_health_state,
             get_checkpoint=self._get_checkpoint_info,
+            channel_kind=CHANNEL_KIND_FEED,
         )
 
     # ------------------------------------------------------------------

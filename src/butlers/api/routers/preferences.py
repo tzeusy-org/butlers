@@ -17,10 +17,11 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
 from butlers.api.routers.memory import (
     _is_missing_memory_schema_error,
@@ -32,11 +33,6 @@ from butlers.core.owner import resolve_owner_entity_id_two_step as _resolve_owne
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/preferences", tags=["preferences"])
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +241,8 @@ async def get_preferences(
             "When omitted, all active preference facts are returned."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[PreferenceEntry]]:
     """Return active user-preference facts for the owner.
 

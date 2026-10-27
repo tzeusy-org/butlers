@@ -16,10 +16,10 @@ from pathlib import Path
 
 # Load the router module dynamically (mirrors how it is loaded at runtime).
 _router_path = Path(__file__).parent.parent / "api" / "router.py"
-_spec = importlib.util.spec_from_file_location("switchboard_api_router_test", _router_path)
+_spec = importlib.util.spec_from_file_location("_switchboard_api_router_test", _router_path)
 assert _spec is not None and _spec.loader is not None
 _router_mod = importlib.util.module_from_spec(_spec)
-sys.modules["switchboard_api_router_test"] = _router_mod
+sys.modules["_switchboard_api_router_test"] = _router_mod
 _spec.loader.exec_module(_router_mod)
 
 _normalize = _router_mod._normalize_jsonb_string_list  # type: ignore[attr-defined]

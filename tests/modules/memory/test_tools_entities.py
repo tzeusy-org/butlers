@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import sys
 import uuid
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -33,6 +32,7 @@ from butlers.modules.memory.tools.entities import (
     entity_resolve,
     entity_update,
 )
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -764,12 +764,8 @@ class TestEntityRebindReceipts:
         transaction.__aexit__ = AsyncMock(return_value=False)
         conn.transaction = MagicMock(return_value=transaction)
 
-        @asynccontextmanager
-        async def _acquire():
-            yield conn
-
         pool = AsyncMock()
-        pool.acquire = MagicMock(return_value=_acquire())
+        pool.acquire = MagicMock(return_value=AsyncCtx(conn))
         return pool
 
     async def test_undefined_tables_are_classified_without_claiming_success(self) -> None:

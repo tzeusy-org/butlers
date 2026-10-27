@@ -6,7 +6,7 @@ RFC0036 at `about/legends-and-lore/rfcs/0036-models-exact-path-vision-proof.md` 
 
 The source map is an inspection snapshot, not ownership transfer. Refresh each reservation before dispatch. No exact CLI executor is yet proven eligible; source/mock-transport enforcement, durable epoch issuance/verification/startup and shared-snapshot backup/restore remain mandatory implementation work. Live environment/account/cost authority remains absent. No doctrine isolation exception or normal tool-authority expansion is introduced.
 
-## Amendment 1: executor is an RFC 0038 D18 model function (proposed, awaiting owner adoption)
+## Amendment 1: executor conforms to RFC 0038 D18
 
 RFC 0038 D18 lists RFC 0036 vision probes among model functions: tool-less, single-turn, structured-output calls made by deterministic code (`0038-goal-runtime-and-capability-authorization.md`, D18 "Model functions" bullet, lines 814-820 at base 8f75653ed, and the RFC disposition row for 0036 at line 932; the bead cites 810-817 and 928, the same passages at an earlier base). The source-only measurement in RFC 0036 (PR #4360, bu-s1u4br.1) found both installed CLIs unsupported, so the CLI/MCP diagnostic profile cannot be built as written. This amendment replaces that executor and keeps everything else.
 
@@ -27,5 +27,15 @@ Open items (not decided here): the concrete maximum-output value and the structu
 
 ### Overlaps (section 0 steps in tasks.md)
 
-- `generalist-lead-focused-delegation` (RFC 0038), conflict: its `collision-dispositions.md` row 39 (merged in #4529, 2026-10-15) says each RFC 0036 control is "an admitted synthetic OWNER goal" with `attachment_view`, "not a D18 model function", with "no vision-proof substitution". That contradicts RFC 0038's own D18 bullet (:817 here, 814-820 at base) and disposition row (:932), which the bu-m6tgig owner vet (2026-10-17) relied on. The same owner-goal statement is repeated at `collision-dispositions.md:85` and `generalist-lead-focused-delegation/design.md:85` ("three-control attachment synthetic goals retain full D3/D5/D7/D14 ... tool-less D18 measurement cannot substitute"); this PR rewords both to defer to row 39. Ruling: the accepted RFC text governs, so this PR corrects row 39 to the D18 model-function disposition; no open PR touches that file, so adoption is atomic. Adopting this amendment replaces row 39's owner-goal disposition; declining keeps row 39 and returns the program to the B/C choice. The change also removes domain-butler sessions and rewrites `core-spawner`/`model-failover`; this proof does not use the Spawner, and the runtime-adapter tool-less mode is the one that change defines.
+- `generalist-lead-focused-delegation`: merged PR #4891 already records vision probes as D18 model functions and assigns this amendment to bu-o7lumy. Its ledger and design are preserved exactly. The runtime adapter tool-less mode is the governing seam; this proof does not use the Spawner. Re-check current shared requirements before implementation.
 - `harden-runtime-auth-and-breaker-attention`: edits other `model-catalog` and `dashboard-model-settings` requirements (circuit breaker, verify-all, catalog identity). No shared requirement name; re-read before implementation.
+
+## Conformance and authority
+
+The 2026-10-21 conforming-text disposition permits drafting and review against
+adopted RFC 0038; this candidate claims no new owner adoption. The retained
+option (a) exercises the exact runtime/CLI tuple and fails Not run when the
+adapter cannot enforce it. Option (b) is an unimplemented alternative requiring
+a separate contract amendment and owner decision, not a choice blocking this
+conforming candidate. Independent review must verify the D18 boundary and the
+explicit residual; provider evidence and landing remain separately gated.

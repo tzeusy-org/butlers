@@ -20,11 +20,8 @@ import pytest
 
 from butlers.api.briefing.cache import BriefingCache
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.notifications import (
-    _get_db_manager,
-    _normalize_notification_metadata,
-    get_cache,
-)
+from butlers.api.deps import get_db
+from butlers.api.routers.notifications import _normalize_notification_metadata, get_cache
 from butlers.core.approval_recovery_exclusion import notification_metadata_is_recovery
 
 pytestmark = pytest.mark.unit
@@ -147,7 +144,7 @@ async def test_notification_list_routes_normalize_legacy_metadata(
     row["status"] = "failed"
     row["effective_status"] = "terminal_failed"
     pool.fetch.return_value = [row]
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -172,7 +169,7 @@ async def test_notification_list_routes_wrap_json_decoder_failures(
     mock_db, pool = _make_available_db()
     pool.fetchval.return_value = 1
     pool.fetch.return_value = [_notification_row(metadata)]
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
@@ -195,7 +192,7 @@ async def test_mark_notification_read_normalizes_legacy_metadata(
     pool.fetchrow = AsyncMock(side_effect=[row, None])
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_cache] = lambda: BriefingCache(ttl_seconds=300)
 
     async with httpx.AsyncClient(
@@ -218,7 +215,7 @@ async def test_mark_notification_read_wraps_json_decoder_failures(app, metadata:
     pool.fetchrow = AsyncMock(side_effect=[row, None])
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_cache] = lambda: BriefingCache(ttl_seconds=300)
 
     async with httpx.AsyncClient(
@@ -233,7 +230,7 @@ async def test_mark_notification_read_wraps_json_decoder_failures(app, metadata:
 
 
 async def test_list_notifications_flags_source_unavailable_when_pool_unreachable(app):
-    app.dependency_overrides[_get_db_manager] = _make_unavailable_db
+    app.dependency_overrides[get_db] = _make_unavailable_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -247,7 +244,7 @@ async def test_list_notifications_flags_source_unavailable_when_pool_unreachable
 
 
 async def test_list_butler_notifications_flags_source_unavailable_when_pool_unreachable(app):
-    app.dependency_overrides[_get_db_manager] = _make_unavailable_db
+    app.dependency_overrides[get_db] = _make_unavailable_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -261,7 +258,7 @@ async def test_list_butler_notifications_flags_source_unavailable_when_pool_unre
 
 
 async def test_notification_stats_flags_source_unavailable_when_pool_unreachable(app):
-    app.dependency_overrides[_get_db_manager] = _make_unavailable_db
+    app.dependency_overrides[get_db] = _make_unavailable_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -280,7 +277,7 @@ async def test_notification_list_query_failure_returns_degraded_envelope(app, pa
     """A live pool can fail during either notification-list database query."""
     mock_db, pool = _make_available_db()
     getattr(pool, query_method).side_effect = ConnectionError("connection reset by peer")
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
@@ -300,7 +297,7 @@ async def test_notification_stats_query_failure_returns_degraded_envelope(app, q
     """A live pool can fail during either notification-stats query type."""
     mock_db, pool = _make_available_db()
     getattr(pool, query_method).side_effect = ConnectionError("connection reset by peer")
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
@@ -326,7 +323,7 @@ async def test_notification_stats_missing_table_remains_available_empty_stats(ap
     pool.fetchval.side_effect = asyncpg.exceptions.UndefinedTableError(
         'relation "notifications" does not exist'
     )
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
@@ -342,7 +339,7 @@ async def test_notification_stats_does_not_mask_response_mapping_errors(app):
     """Only database query failures receive the degraded stats fallback."""
     mock_db, pool = _make_available_db()
     pool.fetch.return_value = [{}]
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
@@ -359,7 +356,7 @@ async def test_notification_list_missing_table_remains_available_empty_page(app)
     pool.fetchval.side_effect = asyncpg.exceptions.UndefinedTableError(
         'relation "notifications" does not exist'
     )
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
@@ -377,7 +374,7 @@ async def test_notification_list_does_not_mask_response_mapping_errors(app):
     """Only database query failures receive the degraded page fallback."""
     mock_db, pool = _make_available_db()
     pool.fetch.return_value = [{}]
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
@@ -390,7 +387,7 @@ async def test_notification_list_does_not_mask_response_mapping_errors(app):
 
 async def test_list_notifications_reports_source_available_on_success(app):
     mock_db, _pool = _make_available_db()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -497,7 +494,7 @@ async def test_list_notifications_reports_source_available_on_success(app):
 
 async def test_notification_stats_reports_source_available_on_success(app):
     mock_db, _pool = _make_available_db()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -513,7 +510,7 @@ async def test_notification_stats_omits_window_predicate_by_default(app):
     """No since/until -> every query against `notifications` carries no bound
     `created_at` predicate (all-time rollup, unchanged pre-existing behavior)."""
     mock_db, pool = _make_available_db()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -532,7 +529,7 @@ async def test_notification_stats_omits_window_predicate_by_default(app):
 async def test_notification_stats_by_butler_is_scoped_to_terminal_failures(app):
     """by_butler breaks down the same terminal failures as ``failed``."""
     mock_db, pool = _make_available_db()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -555,7 +552,7 @@ async def test_notification_stats_threads_since_until_into_every_query(app):
     """?since=...&until=... binds a created_at window on total/sent/failed/
     by_channel/by_butler -- the windowed-verdict facet (bu-y0v0c)."""
     mock_db, pool = _make_available_db()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

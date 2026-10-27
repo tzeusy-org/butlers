@@ -43,6 +43,7 @@ _FREQUENCY_DOSES_PER_DAY: dict[str, float] = {
     "qid": 4.0,
     "weekly": 1 / 7,
     "once a week": 1 / 7,
+    "once weekly": 1 / 7,
     "every other day": 0.5,
     "as needed": 1.0,  # fallback: assume once daily
     "prn": 1.0,
@@ -113,9 +114,15 @@ def expected_dose_count(
 _AS_NEEDED_MARKERS = ("as needed", "prn", "when needed", "if needed")
 
 # Frequencies whose doses fall on a weekday the schedule must name, or whose
-# phase cannot be derived from frequency text alone.
-_WEEKLY_FREQUENCIES = frozenset({"weekly", "once a week", "once weekly"})
-_PHASE_UNKNOWN_FREQUENCIES = frozenset({"every other day"})
+# phase cannot be derived from frequency text alone.  Both are derived from
+# ``_FREQUENCY_DOSES_PER_DAY`` (one-dose-a-week entries, and the other sub-daily
+# entries) so adherence and ``dose_status_today`` classify a frequency alike.
+_WEEKLY_FREQUENCIES = frozenset(
+    key for key, doses in _FREQUENCY_DOSES_PER_DAY.items() if doses == 1 / 7
+)
+_PHASE_UNKNOWN_FREQUENCIES = frozenset(
+    key for key, doses in _FREQUENCY_DOSES_PER_DAY.items() if doses < 1 and doses != 1 / 7
+)
 
 _WEEKDAYS = {
     "monday": 0, "mon": 0, "tuesday": 1, "tue": 1, "tues": 1, "wednesday": 2, "wed": 2,

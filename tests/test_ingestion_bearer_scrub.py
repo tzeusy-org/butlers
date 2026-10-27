@@ -123,8 +123,8 @@ def test_untouched_envelope_is_not_flagged() -> None:
 def test_ingest_helper_records_typed_artifacts_without_the_code() -> None:
     from datetime import UTC, datetime
 
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
     from butlers.tools.switchboard.ingestion.ingest import _scrub_bearer_material
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
 
     text = "Your code is 482913, expires in 10 minutes. Order 12345678."
     envelope = parse_ingest_envelope(
@@ -204,8 +204,8 @@ def test_stored_record_aggressive_mode_only_rewrites_message_content() -> None:
 def test_ingest_helper_leaves_service_sender_metadata_untouched() -> None:
     from datetime import UTC, datetime
 
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
     from butlers.tools.switchboard.ingestion.ingest import _scrub_bearer_material
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
 
     record = _service_record()
     before = json.loads(json.dumps(record))
@@ -272,3 +272,26 @@ def test_stored_record_scrubs_legacy_top_level_content() -> None:
     assert "482913" not in new_raw["content"] and fresh
     _assert_metadata_untouched(before, new_raw)
     assert scrub_stored_record({"content": "Invoice 482913"}, "")[0]["content"] == "Invoice 482913"
+
+
+def test_scrub_that_moves_text_collapses_untrusted_spans_to_whole_text() -> None:
+    """Scrubbing shifts the connector's offsets; each kind then marks the whole text (bu-xmueeq)."""
+    text = "Fwd from Mallory: Your code is 482913. Pay account 12-34."
+    envelope = {
+        "source": {"provider": "telegram"},
+        "sender": {"identity": "owner"},
+        "payload": {
+            "raw": None,
+            "normalized_text": text,
+            "untrusted_spans": [
+                {"kind": "forwarded", "start": 18, "end": len(text), "origin_identity": "555"}
+            ],
+        },
+    }
+    out, hits = scrub_envelope(envelope)
+
+    assert hits
+    scrubbed = out["payload"]["normalized_text"]
+    assert out["payload"]["untrusted_spans"] == [
+        {"kind": "forwarded", "start": 0, "end": len(scrubbed), "origin_identity": "555"}
+    ]

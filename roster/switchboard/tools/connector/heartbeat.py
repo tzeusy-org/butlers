@@ -15,6 +15,7 @@ Key behaviors:
 See docs/connectors/heartbeat.md for the full protocol specification.
 """
 
+import json
 import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -24,7 +25,15 @@ from uuid import UUID, uuid4
 import asyncpg
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
-from butlers.connectors.known_contact_state import CLASSIFICATION_KEY, parse_check
+from butlers.core.goal_admission import EvidenceRefused
+from butlers.core.known_contact_state import CLASSIFICATION_KEY, parse_check
+from butlers.ingestion_spans import (
+    CHANNEL_KIND_CAPABILITY,
+    CHANNEL_KIND_MESSAGE,
+    CHANNEL_KINDS,
+    ChannelKind,
+    effective_channel_kind,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +43,6 @@ ConnectorState = Literal["healthy", "degraded", "error"]
 # Known valid connector types that can register via heartbeat
 VALID_CONNECTOR_TYPES = {
     "activitywatch",
-    "discord_user",
     "gmail",
     "google_calendar",
     "google_drive",
@@ -242,10 +250,56 @@ def parse_connector_heartbeat(payload: Mapping[str, Any]) -> ConnectorHeartbeatV
                 CLASSIFICATION_KEY: parse_check(capabilities[CLASSIFICATION_KEY]),
             },
         }
+    capabilities = payload.get("capabilities")
+    if (
+        isinstance(capabilities, dict)
+        and CHANNEL_KIND_CAPABILITY in capabilities
+        and (
+            not isinstance(capabilities[CHANNEL_KIND_CAPABILITY], str)
+            or capabilities[CHANNEL_KIND_CAPABILITY] not in CHANNEL_KINDS
+        )
+    ):
+        # An unrecognised channel kind is not registered at all, which is a message channel
+        # (REQ-connector-base-spec-003); liveness is unaffected.
+        payload = {
+            **payload,
+            "capabilities": {k: v for k, v in capabilities.items() if k != CHANNEL_KIND_CAPABILITY},
+        }
     try:
         return ConnectorHeartbeatV1.model_validate(payload)
     except Exception as exc:
         raise ValueError(f"Invalid connector.heartbeat.v1 envelope: {exc}") from exc
+
+
+async def registered_channel_kind(
+    pool: asyncpg.Pool | asyncpg.Connection,
+    connector_type: str,
+    endpoint_identity: str,
+) -> ChannelKind:
+    """The channel kind a connector registered (REQ-connector-base-spec-003).
+
+    Goal admission resolves the kind here, from the Switchboard-owned registry row, never from an
+    ingest envelope. Successful missing, undeclared or malformed metadata defaults to message.
+    An unavailable registry refuses admission instead of downgrading a feed.
+    """
+    try:
+        capabilities = await pool.fetchval(
+            """
+            SELECT capabilities
+            FROM switchboard.connector_registry
+            WHERE connector_type = $1 AND endpoint_identity = $2
+            """,
+            connector_type,
+            endpoint_identity,
+        )
+    except Exception:
+        raise EvidenceRefused("channel_registry_unavailable") from None
+    if isinstance(capabilities, str):
+        try:
+            capabilities = json.loads(capabilities)
+        except ValueError:
+            return CHANNEL_KIND_MESSAGE
+    return effective_channel_kind(capabilities if isinstance(capabilities, dict) else None)
 
 
 async def _get_previous_snapshot(
@@ -515,28 +569,37 @@ async def heartbeat(
     # primary transaction commits before any best-effort log/partition work.
     classification_ack = None
     try:
-        if connector_type == "gmail":
-            async with pool.acquire() as connection:
-                async with connection.transaction():
-                    await connection.execute(
-                        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-                        f"connector-classification:{connector_type}:{endpoint_identity}",
+        async with pool.acquire() as connection, connection.transaction():
+            # Serialize even absent rows. Gmail's existing endpoint advisory lock
+            # remains first, before its registry row lock/classification checks.
+            await connection.fetchval(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                f"connector-classification:{connector_type}:{endpoint_identity}",
+            )
+            previous = await _get_previous_snapshot(
+                connection, connector_type, endpoint_identity, for_update=True
+            )
+            if connector_type == "gmail":
+                capabilities, classification_ack, admitted = _classification_admission(
+                    envelope, previous
+                )
+                if not admitted:
+                    return HeartbeatAcceptedResponse(
+                        server_time=received_at.isoformat(), classification_ack=classification_ack
                     )
-                    previous = await _get_previous_snapshot(
-                        connection, connector_type, endpoint_identity, for_update=True
-                    )
-                    capabilities, classification_ack, admitted = _classification_admission(
-                        envelope, previous
-                    )
-                    if not admitted:
-                        return HeartbeatAcceptedResponse(
-                            server_time=received_at.isoformat(),
-                            classification_ack=classification_ack,
-                        )
-                    await _persist_registry(connection, envelope, received_at, capabilities)
-        else:
-            previous = await _get_previous_snapshot(pool, connector_type, endpoint_identity)
-            await _persist_registry(pool, envelope, received_at, capabilities)
+            await _persist_registry(connection, envelope, received_at, capabilities)
+            prior_capabilities = previous.get("capabilities") if previous else None
+            if isinstance(prior_capabilities, str):
+                try:
+                    prior_capabilities = json.loads(prior_capabilities)
+                except ValueError:
+                    prior_capabilities = None
+            drifted = previous is not None and effective_channel_kind(
+                prior_capabilities if isinstance(prior_capabilities, Mapping) else None
+            ) != effective_channel_kind(capabilities)
+        # Never emit a drift verdict before the owning transaction commits.
+        if drifted:
+            logger.warning("Connector channel kind changed outcome=drift")
     except Exception as exc:
         # New classification diagnostics never include input or DB error tails.
         if connector_type == "gmail":

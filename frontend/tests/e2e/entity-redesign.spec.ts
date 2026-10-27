@@ -1,3 +1,5 @@
+import { makeFact } from "./fixtures/memory";
+import { mockJson, type ResponseOf } from "./fixtures/api-responses";
 /**
  * Playwright smoke tests — entity-redesign routes (bu-81rkz / tasks.md §4.5)
  *
@@ -79,7 +81,7 @@ const MOCK_ENTITY_DETAIL_WITH_FACTS = {
     ...MOCK_ENTITY_DETAIL.data,
     fact_count: 2,
     recent_facts: [
-      {
+      makeFact({
         id: "fact-001",
         entity_id: ENTITY_ID,
         subject: ENTITY_ID,
@@ -93,8 +95,8 @@ const MOCK_ENTITY_DETAIL_WITH_FACTS = {
         session_id: null,
         source_butler: null,
         created_at: "2026-02-01T00:00:00Z",
-      },
-      {
+      }),
+      makeFact({
         id: "fact-002",
         entity_id: ENTITY_ID,
         subject: ENTITY_ID,
@@ -108,14 +110,14 @@ const MOCK_ENTITY_DETAIL_WITH_FACTS = {
         session_id: null,
         source_butler: null,
         created_at: "2026-02-01T00:00:00Z",
-      },
+      }),
     ],
     recent_facts_total: 2,
   },
 };
 
 /** Timeline items covering interaction, note, gift, loan kinds. */
-const MOCK_TIMELINE_POPULATED: unknown[] = [
+const MOCK_TIMELINE_POPULATED: ResponseOf<"getEntityTimeline"> = [
   {
     kind: "interaction",
     id: "tl-p-001",
@@ -151,7 +153,7 @@ const MOCK_TIMELINE_POPULATED: unknown[] = [
 ];
 
 /** Non-empty gifts array for GiftsPanel. */
-const MOCK_GIFTS_POPULATED: unknown[] = [
+const MOCK_GIFTS_POPULATED: ResponseOf<"getEntityGifts"> = [
   {
     id: "gift-001",
     description: "Birthday flowers",
@@ -162,7 +164,7 @@ const MOCK_GIFTS_POPULATED: unknown[] = [
 ];
 
 /** Non-empty loans array for LoansPanel. */
-const MOCK_LOANS_POPULATED: unknown[] = [
+const MOCK_LOANS_POPULATED: ResponseOf<"getEntityLoans"> = [
   {
     id: "loan-001",
     description: "Borrowed umbrella",
@@ -176,7 +178,7 @@ const MOCK_LOANS_POPULATED: unknown[] = [
 ];
 
 /** Non-empty linked contacts for ContactChannelCard. */
-const MOCK_LINKED_CONTACTS_POPULATED: unknown[] = [
+const MOCK_LINKED_CONTACTS_POPULATED: ResponseOf<"getEntityLinkedContacts"> = [
   {
     id: CONTACT_ID,
     full_name: "Alice Fixture",
@@ -185,11 +187,12 @@ const MOCK_LINKED_CONTACTS_POPULATED: unknown[] = [
     contact_info: [],
     labels: [],
     preferred_channel: "email",
+    reachable_channels: ["email"],
   },
 ];
 
 /** Non-empty message threads for MessageThreadsSection. */
-const MOCK_MESSAGE_THREADS_POPULATED: unknown[] = [
+const MOCK_MESSAGE_THREADS_POPULATED: ResponseOf<"getEntityMessageThreads"> = [
   {
     source_channel: "email",
     thread_identity: "thread-abc123",
@@ -227,16 +230,9 @@ const MOCK_INTERACTION_ITEM = {
   metadata: {},
 };
 
-function activityResponse(items: unknown[]) {
+function activityResponse(items: ResponseOf<"getEntityTimeline">): ResponseOf<"getEntityActivity"> {
   return {
-    items: items.map((raw) => {
-      const item = raw as {
-        id: string;
-        kind: string;
-        content: string;
-        valid_at: string | null;
-        predicate: string;
-      };
+    items: items.map((item) => {
       return {
         id: item.id,
         ts: item.valid_at,
@@ -267,42 +263,39 @@ function activityResponse(items: unknown[]) {
  * Call this BEFORE page.goto() so stubs are installed before any fetch fires.
  */
 async function installEntityStubs(page: Page, overrides: {
-  timeline?: unknown[];
-  activity?: unknown[];
-  gifts?: unknown[];
-  loans?: unknown[];
-  linkedContacts?: unknown[];
-  messageThreads?: unknown[];
-  dates?: unknown[];
+  timeline?: ResponseOf<"getEntityTimeline">;
+  activity?: ResponseOf<"getEntityTimeline">;
+  gifts?: ResponseOf<"getEntityGifts">;
+  loans?: ResponseOf<"getEntityLoans">;
+  linkedContacts?: ResponseOf<"getEntityLinkedContacts">;
+  messageThreads?: ResponseOf<"getEntityMessageThreads">;
 } = {}) {
   // Memory entity endpoint (EntityDetail in ApiResponse envelope)
   await page.route(`**/api/memory/entities/${ENTITY_ID}**`, (route) => {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(MOCK_ENTITY_DETAIL),
+      body: mockJson("getEntity", MOCK_ENTITY_DETAIL),
     });
   });
 
   // Relationship sub-endpoints — each returns empty array by default
-  const subRoutes: Array<{ suffix: string; key: keyof typeof overrides }> = [
-    { suffix: "timeline", key: "timeline" },
-    { suffix: "gifts", key: "gifts" },
-    { suffix: "loans", key: "loans" },
-    { suffix: "linked-contacts", key: "linkedContacts" },
-    { suffix: "message-threads", key: "messageThreads" },
-    { suffix: "dates", key: "dates" },
+  const subRoutes = [
+    { suffix: "timeline", body: mockJson("getEntityTimeline", overrides.timeline ?? []) },
+    { suffix: "gifts", body: mockJson("getEntityGifts", overrides.gifts ?? []) },
+    { suffix: "loans", body: mockJson("getEntityLoans", overrides.loans ?? []) },
+    { suffix: "linked-contacts", body: mockJson("getEntityLinkedContacts", overrides.linkedContacts ?? []) },
+    { suffix: "message-threads", body: mockJson("getEntityMessageThreads", overrides.messageThreads ?? []) },
   ];
 
-  for (const { suffix, key } of subRoutes) {
-    const data = overrides[key] ?? [];
+  for (const { suffix, body } of subRoutes) {
     await page.route(
       `**/api/relationship/entities/${ENTITY_ID}/${suffix}**`,
       (route) => {
         route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify(data),
+          body,
         });
       },
     );
@@ -314,12 +307,12 @@ async function installEntityStubs(page: Page, overrides: {
     (route) => {
       const requestUrl = new URL(route.request().url());
       const body = requestUrl.searchParams.get("bins") === "daily"
-        ? { bins: [], degraded: false, degraded_reason: null }
-        : activityResponse(activityItems);
+        ? mockJson("getEntityActivityBins", { bins: [], degraded: false, degraded_reason: null })
+        : mockJson("getEntityActivity", activityResponse(activityItems));
       return route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(body),
+        body,
       });
     },
   );
@@ -439,30 +432,29 @@ test.describe("entity-redesign: entity detail page", () => {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(MOCK_ENTITY_DETAIL_WITH_FACTS),
+        body: mockJson("getEntity", MOCK_ENTITY_DETAIL_WITH_FACTS),
       });
     });
 
     // Install all relationship sub-endpoint stubs with populated data.
     // PulseStrip, GiftsPanel, LoansPanel, and ActivityTimeline all share the
     // same timeline/gifts/loans endpoints — one stub each covers all consumers.
-    const subRoutes: Array<{ suffix: string; data: unknown }> = [
-      { suffix: "timeline",        data: MOCK_TIMELINE_POPULATED },
-      { suffix: "gifts",           data: MOCK_GIFTS_POPULATED },
-      { suffix: "loans",           data: MOCK_LOANS_POPULATED },
-      { suffix: "linked-contacts", data: MOCK_LINKED_CONTACTS_POPULATED },
-      { suffix: "message-threads", data: MOCK_MESSAGE_THREADS_POPULATED },
-      { suffix: "dates",           data: [] },
+    const subRoutes = [
+      { suffix: "timeline", body: mockJson("getEntityTimeline", MOCK_TIMELINE_POPULATED) },
+      { suffix: "gifts", body: mockJson("getEntityGifts", MOCK_GIFTS_POPULATED) },
+      { suffix: "loans", body: mockJson("getEntityLoans", MOCK_LOANS_POPULATED) },
+      { suffix: "linked-contacts", body: mockJson("getEntityLinkedContacts", MOCK_LINKED_CONTACTS_POPULATED) },
+      { suffix: "message-threads", body: mockJson("getEntityMessageThreads", MOCK_MESSAGE_THREADS_POPULATED) },
     ];
 
-    for (const { suffix, data } of subRoutes) {
+    for (const { suffix, body } of subRoutes) {
       await page.route(
         `**/api/relationship/entities/${ENTITY_ID}/${suffix}**`,
         (route) => {
           route.fulfill({
             status: 200,
             contentType: "application/json",
-            body: JSON.stringify(data),
+            body,
           });
         },
       );
@@ -473,12 +465,12 @@ test.describe("entity-redesign: entity detail page", () => {
       (route) => {
         const requestUrl = new URL(route.request().url());
         const body = requestUrl.searchParams.get("bins") === "daily"
-            ? { bins: [], degraded: false, degraded_reason: null }
-            : activityResponse(MOCK_TIMELINE_POPULATED);
+            ? mockJson("getEntityActivityBins", { bins: [], degraded: false, degraded_reason: null })
+            : mockJson("getEntityActivity", activityResponse(MOCK_TIMELINE_POPULATED));
         return route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify(body),
+          body,
         });
       },
     );
@@ -575,7 +567,9 @@ async function installEntitiesIndexStubs(page: Page) {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(emptyList),
+        body: new URL(route.request().url()).pathname.endsWith("/queue")
+          ? mockJson("getRelationshipEntityQueue", emptyList)
+          : mockJson("listRelationshipEntities", emptyList),
       });
     },
   );

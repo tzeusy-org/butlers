@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { CalendarWorkspaceSourceFreshness } from "@/api/types";
 
-import { computeFreshnessPlaque } from "./CalendarWorkspacePage";
+import { computeFreshnessPlaque } from "./calendar/freshness";
 
 function freshSource(
   overrides: Partial<CalendarWorkspaceSourceFreshness> = {},

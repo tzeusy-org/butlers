@@ -19,13 +19,7 @@ import asyncpg
 import pytest
 
 from butlers.api.conversation_envelope import build_dashboard_envelope
-from butlers.tools.switchboard.ingestion.ingest import (
-    IngestAcceptedResponse,
-    _compute_content_hash_key,
-    _compute_dedupe_key,
-    ingest_v1,
-)
-from butlers.tools.switchboard.routing.contracts import (
+from butlers.tools.switchboard.contracts import (
     IngestControlV1,
     IngestEnvelopeV1,
     IngestEventV1,
@@ -33,6 +27,12 @@ from butlers.tools.switchboard.routing.contracts import (
     IngestSenderV1,
     IngestSourceV1,
     parse_ingest_envelope,
+)
+from butlers.tools.switchboard.ingestion.ingest import (
+    IngestAcceptedResponse,
+    _compute_content_hash_key,
+    _compute_dedupe_key,
+    ingest_v1,
 )
 
 
@@ -194,6 +194,9 @@ async def pool(provisioned_postgres_pool):
                 policy_tier              TEXT NOT NULL,
                 triage_decision          TEXT,
                 triage_target            TEXT,
+                sender_authentication    TEXT
+                    CONSTRAINT ck_ingestion_events_sender_authentication
+                    CHECK (sender_authentication IN ('authenticated', 'unverified', 'failed')),
                 CONSTRAINT uq_ingestion_events_dedupe_key UNIQUE (dedupe_key)
             )
             """
@@ -857,8 +860,8 @@ def _make_evaluator_with_rules(rules: list[dict]):
 class TestPinnedTargetRouting:
     """Test the ``control.pinned_target`` envelope-pin bypass (bu-qk92y).
 
-    ``_load_available_butlers`` is patched at its import site
-    (``butlers.tools.switchboard.routing.classify``) since ``ingest_v1``
+    ``load_available_butlers`` is patched at its import site
+    (``butlers.tools.switchboard.registry.registry``) since ``ingest_v1``
     imports it lazily inside the pinned-target branch; there is no
     ``butler_registry`` table in this fixture's schema.
     """
@@ -872,7 +875,7 @@ class TestPinnedTargetRouting:
         )
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "finance"}]),
         ):
             result = await ingest_v1(pool, envelope)
@@ -919,7 +922,7 @@ class TestPinnedTargetRouting:
         )
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "finance"}, {"name": "travel"}]),
         ):
             result = await ingest_v1(pool, envelope, policy_evaluator=evaluator)
@@ -942,7 +945,7 @@ class TestPinnedTargetRouting:
         envelope["control"]["pinned_target"] = "finance"
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "finance"}]),
         ):
             result = await ingest_v1(pool, envelope, enable_thread_affinity=True)
@@ -959,7 +962,7 @@ class TestPinnedTargetRouting:
         )
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "finance"}]),
         ):
             with pytest.raises(ValueError, match="does-not-exist"):
@@ -985,7 +988,7 @@ class TestPinnedTargetRouting:
         assert "pinned_target" not in envelope["control"]
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(side_effect=AssertionError("should not be called without a pin")),
         ):
             result = await ingest_v1(pool, envelope)
@@ -1020,7 +1023,7 @@ class TestDashboardConversationEnvelope:
         )
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "relationship"}]),
         ):
             result = await ingest_v1(pool, envelope)
@@ -1061,7 +1064,7 @@ class TestDashboardConversationEnvelope:
 
         # Switchboard is a staffer, never a candidate in the routable butler set.
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "relationship"}, {"name": "finance"}]),
         ):
             with pytest.raises(ValueError, match="switchboard"):
@@ -1081,7 +1084,7 @@ class TestDashboardConversationEnvelope:
         )
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "relationship"}]),
         ):
             first_result = await ingest_v1(pool, first_envelope)
@@ -1095,7 +1098,7 @@ class TestDashboardConversationEnvelope:
         )
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "relationship"}]),
         ):
             with pytest.raises(ValueError, match="ghost"):
@@ -1141,14 +1144,14 @@ class TestDashboardConversationEnvelope:
         assert _compute_dedupe_key(first_model) == _compute_dedupe_key(retry_model)
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "relationship"}]),
         ):
             first_result = await ingest_v1(pool, first_envelope)
         assert first_result.duplicate is False
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "relationship"}]),
         ):
             retry_result = await ingest_v1(pool, retry_envelope)
@@ -1175,7 +1178,7 @@ class TestDashboardConversationEnvelope:
         )
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "relationship"}]),
         ):
             first_result = await ingest_v1(pool, first_envelope)
@@ -1188,10 +1191,49 @@ class TestDashboardConversationEnvelope:
             pinned_target="relationship",
         )
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "relationship"}]),
         ):
             retry_result = await ingest_v1(pool, retry_envelope)
 
         assert retry_result.duplicate is True
         assert retry_result.request_id == first_result.request_id
+
+
+class TestAutomatedKindPersistence:
+    """A connector's automated_kind marker is persisted under control (bu-s11n0s.18)."""
+
+    @staticmethod
+    def _tier2_envelope(message_id: str, **control: object) -> dict:
+        envelope = _make_email_envelope(message_id=message_id, subject="Out of office")
+        envelope["payload"] = {"raw": None, "normalized_text": "Subject: Out of office"}
+        envelope["control"] = {
+            "policy_tier": "default",
+            "ingestion_tier": "metadata",
+            **control,
+        }
+        return envelope
+
+    async def _control(self, pool: asyncpg.Pool, envelope: dict) -> dict:
+        result = await ingest_v1(pool, envelope)
+        row = await pool.fetchrow(
+            "SELECT raw_payload FROM message_inbox WHERE id = $1", result.request_id
+        )
+        assert row is not None
+        return _decode_jsonb(row["raw_payload"])["control"]
+
+    @pytest.mark.parametrize("kind", ["auto_reply", "bounce"])
+    async def test_automated_kind_is_stored_under_control(
+        self, pool: asyncpg.Pool, kind: str
+    ) -> None:
+        control = await self._control(
+            pool, self._tier2_envelope(f"<auto-{kind}@example.com>", automated_kind=kind)
+        )
+
+        assert control["automated_kind"] == kind
+        assert control["ingestion_tier"] == "metadata"
+
+    async def test_an_envelope_without_the_marker_stores_none(self, pool: asyncpg.Pool) -> None:
+        control = await self._control(pool, self._tier2_envelope("<no-marker@example.com>"))
+
+        assert "automated_kind" not in control

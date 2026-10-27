@@ -311,8 +311,12 @@ repository, is never copied into `.env` as a value, and is mounted by Compose
 only at `/run/secrets/restore_drill_executor_password` in the executor
 container. Its content is UTF-8 with at most one terminal LF; embedded/multiple
 LF, CR, and NUL are rejected. The bootstrap procedure creates or repairs the distinct login with
-`LOGIN CREATEDB NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION` and maintains
-the normal-role `NOCREATEDB` boundary.
+`LOGIN CREATEDB NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS` and
+maintains the normal-role `NOCREATEDB` boundary. Every normal role it normalizes
+(the migration login, `butler_*_rw`, `connector_writer`, the optional calendar role
+and the restore-drill roles) also ends bootstrap `NOBYPASSRLS`, so forced
+row-level security binds them; online migration admission refuses with a bounded "missing or untrusted" error
+if any of them still has `BYPASSRLS`. Rerun `scripts/init-db.sql` to repair.
 
 When the executor uses `RESTORE_DRILL_EXECUTOR_SSLMODE=verify-ca` or
 `verify-full`, configure a separate, noncredential CA-root source file as
@@ -370,6 +374,18 @@ the public projection, which is an availability denial: the enclosing
 retaining a partial or false recovery result. Repair the audited trigger through
 normal privileged database governance; never bypass the boundary by granting
 the private owner public-audit DML.
+
+The core audit-integrity stage (`core_279`) adds an insert-bound `writer_role`:
+the fixed definer projection above records
+`restore_drill_executor_audit_writer`, the role actually executing its INSERT.
+A normal runtime cannot supply that writer identity. Logical `actor` and event
+text remain descriptive and do not certify a restore result. The private
+executor ledger remains the sole authority. UPDATE/DELETE and TRUNCATE guards
+survive bootstrap's public-table grant replay, but the shared table owner can
+still alter those guards. Removing that hostile-owner capability belongs to
+the separate managed-topology security work; this stage does not certify it.
+See [audit writer integrity](../data_and_storage/audit-log.md) for transaction,
+rollback and stage boundaries.
 
 Do not bypass that managed procedure. In particular, do not issue ad hoc
 database-role changes, manually pre-create the scratch database, pass a shared

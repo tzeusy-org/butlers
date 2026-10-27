@@ -16,14 +16,15 @@ import asyncio
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from email.utils import parseaddr
+from typing import TYPE_CHECKING, Any, Literal
 
 from prometheus_client import Counter
 
-from butlers.connectors.known_contact_state import KnownContactSnapshot
+from butlers.core.known_contact_state import KnownContactSnapshot
 
 if TYPE_CHECKING:
     import asyncpg
@@ -315,6 +316,86 @@ def classify_ingestion_tier(triage_action: str) -> int:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Automated replies and bounces (header-only detection)
+# ---------------------------------------------------------------------------
+
+AutomatedKind = Literal["auto_reply", "bounce"]
+
+_REPORT_TYPE_DELIVERY_STATUS = re.compile(r"report-type\s*=\s*\"?delivery-status\"?", re.IGNORECASE)
+_BOUNCE_SENDER_LOCAL_PARTS = frozenset({"mailer-daemon", "postmaster"})
+
+
+def _headers_by_lower_name(headers: Any) -> dict[str, str]:
+    """First value per lowercased header name; anything malformed yields no header."""
+    result: dict[str, str] = {}
+    if isinstance(headers, Mapping):
+        pairs: Iterable[Any] = headers.items()
+    elif isinstance(headers, list):
+        pairs = ((h.get("name"), h.get("value")) for h in headers if isinstance(h, Mapping))
+    else:
+        return result
+    for name, value in pairs:
+        if isinstance(name, str) and isinstance(value, str):
+            result.setdefault(name.strip().lower(), value)
+    return result
+
+
+def detect_automated_reply(headers: Any, *, mime_types: Iterable[str] = ()) -> AutomatedKind | None:
+    """Classify a message as an automated reply or a bounce from headers alone.
+
+    Signals, in order:
+
+    1. RFC 3464 bounce: ``Content-Type: multipart/report`` with
+       ``report-type=delivery-status``, or a ``mailer-daemon``/``postmaster`` sender
+       with a ``message/delivery-status`` part (``mime_types``).
+    2. RFC 3834 ``Auto-Submitted: auto-replied``.  ``auto-generated`` mail (alerts and
+       receipts) is NOT an automated reply: the owner's ingestion rules route it.
+    3. ``X-Autoreply`` or ``X-Autorespond`` present.
+    4. ``Precedence: auto_reply``.
+
+    ``Precedence: bulk`` and ``list`` are NOT automated replies: newsletters belong
+    to ingestion rules.  Malformed or missing headers are ordinary mail (``None``),
+    so detection can never drop a message.
+    """
+    h = _headers_by_lower_name(headers)
+    if not h:
+        return None
+    content_type = h.get("content-type", "").lower()
+    if "multipart/report" in content_type and _REPORT_TYPE_DELIVERY_STATUS.search(content_type):
+        return "bounce"
+    sender_local = parseaddr(h.get("from", ""))[1].rpartition("@")[0].strip().lower()
+    if sender_local in _BOUNCE_SENDER_LOCAL_PARTS and any(
+        isinstance(m, str) and m.strip().lower() == "message/delivery-status" for m in mime_types
+    ):
+        return "bounce"
+    # Only ``auto-replied`` is an answer to a person.  ``auto-generated`` (alerts, receipts)
+    # and every other value stay with the owner's ingestion rules.
+    if h.get("auto-submitted", "").split(";", 1)[0].strip().lower() == "auto-replied":
+        return "auto_reply"
+    if "x-autoreply" in h or "x-autorespond" in h:
+        return "auto_reply"
+    if h.get("precedence", "").strip().lower() == "auto_reply":
+        return "auto_reply"
+    return None
+
+
+def _payload_mime_types(payload: Any) -> list[str]:
+    """Every ``mimeType`` in a Gmail payload tree (bounded depth, malformed-safe)."""
+    found: list[str] = []
+    stack = [(payload, 0)]
+    while stack:
+        part, depth = stack.pop()
+        if not isinstance(part, dict) or depth > 8:
+            continue
+        if isinstance(part.get("mimeType"), str):
+            found.append(part["mimeType"])
+        children = part.get("parts")
+        if isinstance(children, list):
+            stack.extend((child, depth + 1) for child in children)
+    return found
+
+
 @dataclass
 class MessagePolicyResult:
     """Result of applying the full policy pipeline to a Gmail message."""
@@ -336,6 +417,9 @@ class MessagePolicyResult:
 
     triage_action: str
     """Triage action that drove ingestion tier, or 'pass_through' if no match."""
+
+    automated_kind: AutomatedKind | None = None
+    """``auto_reply`` or ``bounce`` when headers mark an automated message, else None."""
 
 
 def evaluate_message_policy(
@@ -400,20 +484,23 @@ def evaluate_message_policy(
     ).inc()
 
     # --- Step 2: Ingestion tier (default pass_through -> Tier 1) ---
+    # Automated replies and bounces are decided from headers (RFC 3464 / 3834) and ingest
+    # as Tier 2: no person wrote them, so they must not wake an LLM session.
     # This is the DEFAULT tier for the label/policy pipeline.  The authoritative
     # ingestion tier is resolved by the connector from the global ingestion_rules
     # decision (see GmailConnectorRuntime._apply_global_action_tier): a
     # `metadata_only` action downgrades this to Tier 2.  Keeping the default at
     # pass_through preserves the safety invariant "never silently drop mail" when
     # no global rule matches.
-    triage_action = "pass_through"
-    ingestion_tier = classify_ingestion_tier(triage_action)
-
-    # --- Step 3: Policy tier assignment ---
     payload = message_data.get("payload")
     headers_raw = payload.get("headers") if isinstance(payload, dict) else []
     if not isinstance(headers_raw, list):
         headers_raw = []
+    automated_kind = detect_automated_reply(headers_raw, mime_types=_payload_mime_types(payload))
+    triage_action = "metadata_only" if automated_kind else "pass_through"
+    ingestion_tier = classify_ingestion_tier(triage_action)
+
+    # --- Step 3: Policy tier assignment ---
     headers_dict: dict[str, str] = {}
     for h in headers_raw:
         if isinstance(h, dict):
@@ -430,7 +517,7 @@ def evaluate_message_policy(
     _gmail_tier_counter.labels(
         endpoint_identity=endpoint_identity,
         ingestion_tier=tier_name,
-        reason=triage_action,
+        reason=automated_kind or triage_action,
     ).inc()
 
     _gmail_policy_tier_counter.labels(
@@ -454,6 +541,7 @@ def evaluate_message_policy(
         assignment_rule=assignment_rule,
         filter_reason=filter_reason,
         triage_action=triage_action,
+        automated_kind=automated_kind,
     )
 
 

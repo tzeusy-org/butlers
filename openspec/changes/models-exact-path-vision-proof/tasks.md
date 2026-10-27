@@ -13,7 +13,10 @@
 - [ ] 3.1 Complete separately authorized exact-tuple real-provider evidence under bu-s1u4br; synthetic tests alone do not satisfy it.
 - [ ] 3.2 Independently reconcile every adopted outcome, source receipt and separately authorized operational receipt; no all-disabled/source-only completion.
 
-## 4. Amendment 1 adoption (RFC 0036 / D18)
-- [ ] 4.1 Owner adopts or declines Amendment 1 (proposal.md owner questions). Adopting replaces the generalist ledger row's owner-goal disposition; declining keeps that row and returns the program to commissioning a new executor review or stopping it.
-- [ ] 4.2 Before adoption, re-check the `generalist-lead-focused-delegation` ledger (`collision-dispositions.md` row 39, and the repeated sentence at `collision-dispositions.md:85` and `design.md:85`) still carries the corrected D18 model-function disposition and that change still defines model functions and the runtime-adapter tool-less mode as in RFC 0038 D18, and that no active change edits the same `models-vision-proof`, `model-catalog` "Model Catalog Capability Envelope" or "Fit Before Ranking" blocks.
-- [ ] 4.3 After adoption, update `docs/runtime/model-routing.md` (vision paragraph) to the model-function description.
+## 4. Amendment 1 conformance review
+- [ ] 4.1 Independently review exact-head conformance to adopted RFC 0038 D18, including exact tuple, fail-closed adapter enforcement and the explicitly unproven MCP-forwarding residual. No fresh adoption is asserted by this candidate.
+- [x] 4.2 Preserve merged PR #4891's generalist ledger and design without predecessor hunks; retain the D18 model-function disposition.
+- [ ] 4.3 Re-check overlapping models-vision-proof and model-catalog requirements before separately authorized implementation; update docs/runtime/model-routing.md with the delivered behavior in that implementation change.
+
+Source landing and real-provider evidence retain their separate authority gates.
+The direct-provider alternative is outside this conforming candidate.

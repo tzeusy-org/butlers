@@ -11,7 +11,6 @@ import asyncio
 import contextlib
 import json
 import shutil
-from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
@@ -21,6 +20,7 @@ import pytest
 from butlers.db import register_jsonb_codec
 from butlers.entity_rebind import rebind_entity_references, run_entity_rebind_listener
 from butlers.fleet_events import FLEET_EVENTS_CHANNEL
+from butlers.testing.fake_pool import AsyncCtx
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.testing.schema_standins import (
     CONTACT_ENTITY_MAP,
@@ -67,12 +67,8 @@ def _mock_pool(lock_rows: list[dict]) -> tuple[AsyncMock, AsyncMock, AsyncMock]:
     transaction.__aexit__ = AsyncMock(return_value=False)
     conn.transaction = MagicMock(return_value=transaction)
 
-    @asynccontextmanager
-    async def _acquire():
-        yield conn
-
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_acquire())
+    pool.acquire = MagicMock(return_value=AsyncCtx(conn))
     return pool, conn, transaction
 
 
@@ -928,12 +924,8 @@ async def test_listener_queues_events_that_arrive_during_startup_drain() -> None
         return_value={"source_entity_id": source_id, "target_entity_id": target_id}
     )
 
-    @asynccontextmanager
-    async def _acquire():
-        yield conn
-
     pool = MagicMock()
-    pool.acquire = MagicMock(return_value=_acquire())
+    pool.acquire = MagicMock(return_value=AsyncCtx(conn))
 
     async def _drain(*_args, **_kwargs):
         order.append("drain")
@@ -979,16 +971,8 @@ async def test_listener_reconnects_and_replays_after_connection_failure() -> Non
     second.remove_listener = AsyncMock()
     second.is_closed = MagicMock(return_value=False)
 
-    @asynccontextmanager
-    async def _first_acquire():
-        yield first
-
-    @asynccontextmanager
-    async def _second_acquire():
-        yield second
-
     pool = MagicMock()
-    pool.acquire = MagicMock(side_effect=[_first_acquire(), _second_acquire()])
+    pool.acquire = MagicMock(side_effect=[AsyncCtx(first), AsyncCtx(second)])
     drained_twice = asyncio.Event()
     drained_connections = []
 

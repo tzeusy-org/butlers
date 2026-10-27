@@ -158,7 +158,7 @@ def test_context_start_passes_parse_ingest_envelope(context_start_env: dict[str,
     """Envelope must validate against parse_ingest_envelope contract."""
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     try:
         parse_ingest_envelope(context_start_env)

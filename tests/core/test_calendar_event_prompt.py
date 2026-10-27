@@ -19,8 +19,10 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
+from fastmcp import FastMCP
 
 from butlers.modules.calendar import _CALENDAR_EVENT_DEFAULT_ACTION, CalendarModule
+from butlers.testing.mcp import registered_tools
 
 pytestmark = pytest.mark.unit
 
@@ -102,17 +104,7 @@ def _make_butler_event_module() -> CalendarModule:
 
 async def _register_and_get_tool(mod: CalendarModule) -> object:
     """Register tools on mod and return the calendar_create_butler_event callable."""
-    mcp_tools: dict = {}
-
-    class _StubMCP:
-        def tool(self):
-            def deco(fn):
-                mcp_tools[fn.__name__] = fn
-                return fn
-
-            return deco
-
-    stub = _StubMCP()
+    mcp = FastMCP("calendar-event-prompt-test")
     # db passed to register_tools must have a .pool attribute; mod._db.pool is the
     # _ScheduleCreatePool created by _make_butler_event_module().
     pool = mod._db.pool
@@ -121,12 +113,13 @@ async def _register_and_get_tool(mod: CalendarModule) -> object:
     db_with_pool.db_name = "butlers"
     db_with_pool.db_schema = "finance"
     await mod.register_tools(
-        mcp=stub,
+        mcp=mcp,
         config={"provider": "google", "calendar_id": "cal-id"},
         db=db_with_pool,
         butler_name="finance",
     )
-    return mcp_tools.get("calendar_create_butler_event")
+    tools = await registered_tools(mcp)
+    return tools.get("calendar_create_butler_event")
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +140,9 @@ class TestCalendarEventPromptCarriesIntent:
             captured.append({"prompt": prompt, "display_title": kwargs.get("display_title")})
             return uuid.uuid4()
 
-        monkeypatch.setattr("butlers.modules.calendar._schedule_create", _fake_schedule_create)
+        monkeypatch.setattr(
+            "butlers.modules.calendar.butler_events._schedule_create", _fake_schedule_create
+        )
 
         mod = _make_butler_event_module()
         tool = await _register_and_get_tool(mod)
@@ -177,7 +172,9 @@ class TestCalendarEventPromptCarriesIntent:
             captured.append({"prompt": prompt})
             return uuid.uuid4()
 
-        monkeypatch.setattr("butlers.modules.calendar._schedule_create", _fake_schedule_create)
+        monkeypatch.setattr(
+            "butlers.modules.calendar.butler_events._schedule_create", _fake_schedule_create
+        )
 
         mod = _make_butler_event_module()
         tool = await _register_and_get_tool(mod)
@@ -202,7 +199,9 @@ class TestCalendarEventPromptCarriesIntent:
             captured.append({"prompt": prompt})
             return uuid.uuid4()
 
-        monkeypatch.setattr("butlers.modules.calendar._schedule_create", _fake_schedule_create)
+        monkeypatch.setattr(
+            "butlers.modules.calendar.butler_events._schedule_create", _fake_schedule_create
+        )
 
         mod = _make_butler_event_module()
         tool = await _register_and_get_tool(mod)
@@ -228,7 +227,9 @@ class TestCalendarEventPromptCarriesIntent:
             captured.append({"prompt": prompt})
             return uuid.uuid4()
 
-        monkeypatch.setattr("butlers.modules.calendar._schedule_create", _fake_schedule_create)
+        monkeypatch.setattr(
+            "butlers.modules.calendar.butler_events._schedule_create", _fake_schedule_create
+        )
 
         mod = _make_butler_event_module()
         tool = await _register_and_get_tool(mod)
@@ -253,7 +254,9 @@ class TestCalendarEventPromptCarriesIntent:
             captured.append({"prompt": prompt})
             return uuid.uuid4()
 
-        monkeypatch.setattr("butlers.modules.calendar._schedule_create", _fake_schedule_create)
+        monkeypatch.setattr(
+            "butlers.modules.calendar.butler_events._schedule_create", _fake_schedule_create
+        )
 
         mod = _make_butler_event_module()
         tool = await _register_and_get_tool(mod)

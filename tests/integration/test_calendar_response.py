@@ -1,4 +1,4 @@
-# Spec: REQ-module-calendar-029, REQ-dashboard-api-069, REQ-dashboard-api-070
+# Spec: REQ-module-calendar-029, REQ-dashboard-api-069
 """Owning migrated approval/command transactions with controlled provider HTTP.
 
 This test uses the production core/approvals chains and runtime role on every
@@ -12,6 +12,7 @@ import asyncio
 import copy
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -21,12 +22,11 @@ import pytest
 from fastmcp import Client, FastMCP
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_mcp_manager
-from butlers.api.routers import approvals as approvals_router
-from butlers.api.routers import calendar_workspace as workspace
+from butlers.api.deps import get_db, get_mcp_manager
 from butlers.core.approvals_hooks import DecisionDossier
 from butlers.daemon import ButlerDaemon
-from butlers.db import register_jsonb_codec
+from butlers.db import Database
+from butlers.migrations import run_migrations
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.module import ApprovalsModule
 from butlers.modules.calendar import (
@@ -37,6 +37,8 @@ from butlers.modules.calendar import (
 from butlers.modules.calendar_response import CalendarResponseError, reserve_response_inverse
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app
+
+_THIS_FILE = Path(__file__).resolve()
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -51,36 +53,104 @@ async def response_pool(postgres_container):
         {"core": "messenger", "approvals": "messenger"},
     )
 
-    async def setup(connection):
-        await connection.execute('SET ROLE "butler_messenger_rw"')
-        await connection.execute('SET search_path TO "messenger", public')
-        identity = await connection.fetchrow(
-            "SELECT current_user AS role,current_schema() AS schema"
-        )
-        assert identity["role"] == "butler_messenger_rw" and identity["schema"] == "messenger"
+    from urllib.parse import urlparse
 
-    pool = await asyncpg.create_pool(
-        db_url, min_size=1, max_size=6, init=register_jsonb_codec, setup=setup
-    )
+    for chain in ("core", "approvals"):
+        await run_migrations(db_url, chain=chain, schema="relationship")
+    parsed = urlparse(db_url)
+    databases = {}
+    fences = []
     try:
-        yield pool
+        for owner in ("messenger", "relationship"):
+            database = Database(
+                db_name=parsed.path.lstrip("/"),
+                schema=owner,
+                role=f"butler_{owner}_rw",
+                host=parsed.hostname,
+                port=parsed.port,
+                user=parsed.username,
+                password=parsed.password,
+                min_pool_size=1,
+                max_pool_size=6,
+            )
+            await database.connect()
+            databases[owner] = database
+            async with database.pool.acquire() as connection:
+                identity = await connection.fetchrow(
+                    "SELECT current_user AS role,current_schema() AS schema"
+                )
+                assert identity["role"] == f"butler_{owner}_rw" and identity["schema"] == owner
+        yield SimpleNamespace(databases=databases, fences=fences)
     finally:
-        await pool.close()
+        for fence in fences:
+            await fence.close()
+        for database in databases.values():
+            await database.close()
 
 
 async def test_migrated_response_atomic_park_committed_attempt_and_guarded_inverse(
     response_pool, monkeypatch
 ):
-    pool = response_pool
+    pool = response_pool.databases["messenger"].pool
     module = CalendarModule()
     mcp = FastMCP("migrated-calendar-response")
     await module.register_tools(
         mcp,
         {"provider": "google", "response_enabled": True},
-        SimpleNamespace(pool=pool),
+        response_pool.databases["messenger"],
         "messenger",
     )
     module.set_response_approval_ready(True)
+    # Both registered owners share PostgreSQL but retain strictly isolated pools.
+    peer = CalendarModule()
+    peer_mcp = FastMCP("relationship-response-fence")
+    await peer.register_tools(
+        peer_mcp,
+        {"provider": "google", "response_enabled": False},
+        response_pool.databases["relationship"],
+        "relationship",
+    )
+    peers = {"messenger": mcp, "relationship": peer_mcp}
+
+    # Exercise the real Switchboard route function and both FastMCP envelopes.
+    # Registry readiness and transport endpoints are controlled here; the
+    # routing implementation, trace forwarding and peer tool schema are real.
+    import importlib
+    from urllib.parse import urlparse
+
+    route_module = importlib.import_module("butlers.tools.switchboard.routing.route")
+    route_pool = AsyncMock(spec=asyncpg.Pool)
+
+    async def resolve(_pool, owner, **kwargs):
+        return {"endpoint_url": f"http://{owner}.test/mcp/"}, None
+
+    async def dispatch(endpoint, tool_name, arguments):
+        owner = urlparse(endpoint).hostname.split(".")[0]
+        async with Client(peers[owner]) as client:
+            result = await client.call_tool(tool_name, arguments)
+        return result.data
+
+    monkeypatch.setattr(route_module, "resolve_routing_target", resolve)
+    monkeypatch.setattr(route_module, "receiver_route_cutover_enabled", lambda: False)
+    monkeypatch.setattr(route_module, "inject_trace_context", lambda: {"traceparent": "controlled"})
+    switchboard_mcp = FastMCP("response-fence-switchboard")
+
+    @switchboard_mcp.tool()
+    async def route(target_butler: str, tool_name: str, args: dict, source_butler: str):
+        return await route_module.route(
+            route_pool, target_butler, tool_name, args, source_butler, call_fn=dispatch
+        )
+
+    async def call_route(name, arguments):
+        assert name == "route" and arguments["tool_name"] == "calendar_response_fence_status"
+        async with Client(switchboard_mcp) as client:
+            return await client.call_tool(name, arguments)
+
+    transport = SimpleNamespace(call_tool=call_route)
+
+    for owner_module in (module, peer):
+        owner_module.wire_runtime(None, _THIS_FILE.parents[2], switchboard_client=transport)
+        response_pool.fences.append(owner_module._response_fence)
     account = {"entity_id": str(uuid.uuid4()), "email": "owner@example.test"}
     module._verified_response_account = AsyncMock(return_value=account)
     source_id = await pool.fetchval(
@@ -149,10 +219,9 @@ async def test_migrated_response_atomic_park_committed_attempt_and_guarded_inver
     )
     approvals = ApprovalsModule()
     await approvals.register_tools(mcp, {}, pool, "messenger")
-    from pathlib import Path
 
     daemon = ButlerDaemon(
-        Path(__file__).resolve().parents[2] / "roster" / "messenger", db=SimpleNamespace(pool=pool)
+        _THIS_FILE.parents[2] / "roster" / "messenger", db=SimpleNamespace(pool=pool)
     )
     daemon.config = SimpleNamespace(
         name="messenger",
@@ -176,8 +245,8 @@ async def test_migrated_response_atomic_park_committed_attempt_and_guarded_inver
     database._butler_modules = {"messenger": frozenset({"calendar", "approvals"})}
     database.register_configured_modules("messenger", frozenset({"calendar", "approvals"}))
     app = create_authenticated_domain_app()
-    app.dependency_overrides[workspace._get_db_manager] = lambda: database
-    app.dependency_overrides[approvals_router._get_db_manager] = lambda: database
+    app.dependency_overrides[get_db] = lambda: database
+    app.dependency_overrides[get_db] = lambda: database
     app.dependency_overrides[get_mcp_manager] = lambda: manager
     coordinator = module._response_coordinator
     now = datetime.now(UTC)
@@ -289,22 +358,10 @@ async def test_migrated_response_atomic_park_committed_attempt_and_guarded_inver
             "/api/calendar/workspace/respond", json={**request, "request_id": str(uuid.uuid4())}
         )
         assert noop.status_code == 200 and noop.json()["data"]["status"] == "noop"
-        assert len(writes) == 1 and noop.json()["data"]["undo_available"] is False
-        concurrent_undo = await asyncio.gather(
-            client.post(f"/api/calendar/workspace/undo/{command_id}"),
-            client.post(f"/api/calendar/workspace/undo/{command_id}"),
-        )
-        assert sorted(result.status_code for result in concurrent_undo) == [200, 409]
-        undone = next(result for result in concurrent_undo if result.status_code == 200)
-        assert undone.status_code == 200 and undone.json()["data"]["undone"] is True
-        inverse_id = uuid.UUID(undone.json()["data"]["result"]["command_id"])
-        inverse_args = await pool.fetchval(
-            "SELECT tool_args FROM pending_actions WHERE id=$1", inverse_id
-        )
-        assert inverse_args["response_status"] == "needsAction" and len(writes) == 2
-        assert (await client.post(f"/api/calendar/workspace/undo/{command_id}")).status_code == 409
-        with pytest.raises(CalendarResponseError, match="response_inverse_used"):
-            await reserve_response_inverse(pool, command_id)
+        assert len(writes) == 1
+        # The dashboard no longer exposes undo; reset the controlled provider so the
+        # remaining receipts start again from the original response status.
+        resource["attendees"][0]["responseStatus"] = "needsAction"
 
     # A real committed rejection receipt earns neither success nor inverse.
     # The explicit provider status is controlled; action-log SQL is actual.
@@ -487,3 +544,204 @@ async def test_migrated_response_atomic_park_committed_attempt_and_guarded_inver
             dossier=dossier,
         )
     )["status"] == "uncertain"
+
+    # A second owning schema sees the same physical occurrence under its own
+    # source and approval. The first cancelled attempt remains authoritative
+    # after pending-action pruning, source replacement and disabled execution.
+    peer_pool = response_pool.databases["relationship"].pool
+    peer._config.response_enabled = True
+    peer.set_response_approval_ready(True)
+    peer._provider = module._provider
+    peer._verified_response_account = module._verified_response_account
+    peer_source = await peer_pool.fetchval(
+        "INSERT INTO calendar_sources (source_key,source_kind,lane,provider,calendar_id,writable,metadata) "
+        "VALUES ('provider:google:peer','provider_event','user','google','owner@example.test',true,$1) RETURNING id",
+        {"account_email": "owner@example.test"},
+    )
+    await peer._project_provider_changes(
+        source_id=peer_source,
+        provider_name="google",
+        calendar_id="owner@example.test",
+        updated_events=[replacement_event],
+        cancelled_ids=[],
+    )
+    peer_entry = await peer_pool.fetchval(
+        "SELECT id FROM calendar_event_instances WHERE source_id=$1", peer_source
+    )
+    peer_request = {**held_request, "entry_id": str(peer_entry), "request_id": str(uuid.uuid4())}
+    peer_command = await peer._response_coordinator.prepare_and_park(
+        tool_args=peer_request,
+        requested_at=now,
+        expires_at=now + timedelta(hours=1),
+        dossier=dossier,
+    )
+    peer_id = uuid.UUID(peer_command["command_id"])
+    await peer_pool.execute(
+        "UPDATE pending_actions SET status='approved',decided_by='human:dashboard:rest-api' WHERE id=$1",
+        peer_id,
+    )
+    peer_args = await peer_pool.fetchval(
+        "SELECT tool_args FROM pending_actions WHERE id=$1", peer_id
+    )
+    own_target = retained["action_payload"]["target_key"]
+    peer_payload = await peer_pool.fetchval(
+        "SELECT action_payload FROM calendar_action_log WHERE id=$1", peer_id
+    )
+    assert peer_payload["target_key"] == own_target
+    module._config.response_enabled = False
+
+    async def peer_handler(**arguments):
+        return await peer._response_coordinator.execute(arguments)
+
+    peer_result = await execute_approved_action(
+        peer_pool,
+        peer_id,
+        "calendar_respond",
+        peer_args,
+        peer_handler,
+        origin_butler="relationship",
+    )
+    assert not peer_result.success and peer_result.error == "response_fence_unavailable"
+    assert len(writes) == before_cancel + 1
+    assert (
+        await peer_pool.fetchval(
+            "SELECT action_payload->>'phase' FROM calendar_action_log WHERE id=$1", peer_id
+        )
+        == "prepared"
+    )
+
+    # Same-DB lock proof is visible to ordinary isolated roles, never dependent
+    # on reading another owner's table. A missing/expired nonce cannot attest.
+    from butlers.modules.calendar_response_fence import ResponseFenceUnavailable
+
+    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+        await peer_pool.fetchval("SELECT count(*) FROM messenger.calendar_action_log")
+    clear_target = "a" * 64
+    async with module._response_fence.claim(clear_target) as (_, proof):
+        assert (await peer._response_fence.status(proof))["status"] == "clear"
+        assert await peer._response_fence.status({**proof, "nonce": "0" * 16}) == {
+            "status": "unavailable"
+        }
+        with pytest.raises(ResponseFenceUnavailable, match="response_fence_busy"):
+            async with peer._response_fence.claim(clear_target):
+                pytest.fail("second owner acquired a held physical-target lock")
+    assert await peer._response_fence.status(proof) == {"status": "unavailable"}
+
+    # An ordinary-role connection to another database cannot attest a claim
+    # merely because the protocol and backend PID are syntactically valid.
+    source_db = response_pool.databases["relationship"]
+    foreign_db = Database(
+        db_name="postgres",
+        schema="relationship",
+        role="butler_relationship_rw",
+        host=source_db.host,
+        port=source_db.port,
+        user=source_db.user,
+        password=source_db.password,
+        min_pool_size=1,
+        max_pool_size=1,
+    )
+    await foreign_db.connect()
+    try:
+        async with module._response_fence.claim(clear_target) as (_, proof):
+            with monkeypatch.context() as control:
+                control.setattr(peer._response_fence, "_pool", foreign_db.pool)
+                assert await peer._response_fence.status(proof) == {"status": "unavailable"}
+    finally:
+        await foreign_db.close()
+
+    # Both owners may hold different target locks and serve each other's probes
+    # simultaneously. Normal work-pool exhaustion cannot consume probe capacity.
+    from contextlib import AsyncExitStack
+
+    async with AsyncExitStack() as stack:
+        for owner_pool in (pool, peer_pool):
+            for _ in range(owner_pool.get_max_size()):
+                await stack.enter_async_context(owner_pool.acquire())
+        async with module._response_fence.claim("b" * 64) as (_, first):
+            async with peer._response_fence.claim("c" * 64) as (_, second):
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        module._response_fence.check_peers(first),
+                        peer._response_fence.check_peers(second),
+                    ),
+                    timeout=3,
+                )
+
+    # Malformed unresolved evidence is not cleared; only the fixed status is
+    # returned, with no action/provider details crossing the MCP boundary.
+    await pool.execute(
+        "UPDATE calendar_action_log SET action_payload=action_payload-'target_key' WHERE id=$1",
+        held_id,
+    )
+    async with peer._response_fence.claim(clear_target) as (_, proof):
+        assert await module._response_fence.status(proof) == {"status": "unavailable"}
+    await pool.execute(
+        "UPDATE calendar_action_log SET action_payload=action_payload || $2::jsonb WHERE id=$1",
+        held_id,
+        {"target_key": own_target},
+    )
+
+    # Peer transport/configuration failures occur before the marker and retain
+    # the exact prepared command, including when the error is not a timeout.
+    with monkeypatch.context() as control:
+        control.setattr(peer._response_fence, "_check_inventory", lambda: {}["missing"])
+        refused = await execute_approved_action(
+            peer_pool,
+            peer_id,
+            "calendar_respond",
+            peer_args,
+            peer_handler,
+            origin_butler="relationship",
+        )
+        assert not refused.success and refused.error == "response_command_unavailable"
+    assert (
+        await peer_pool.fetchval(
+            "SELECT action_payload->>'phase' FROM calendar_action_log WHERE id=$1", peer_id
+        )
+        == "prepared"
+    )
+    import butlers.modules.calendar_response_fence as fence_module
+
+    async def stalled_route(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    with monkeypatch.context() as control:
+        control.setattr(fence_module, "_COORDINATION_TIMEOUT", 0.05)
+        control.setattr(transport, "call_tool", stalled_route)
+        refused = await asyncio.wait_for(
+            execute_approved_action(
+                peer_pool,
+                peer_id,
+                "calendar_respond",
+                peer_args,
+                peer_handler,
+                origin_butler="relationship",
+            ),
+            timeout=2,
+        )
+        assert not refused.success and refused.error == "response_fence_unavailable"
+    assert (
+        await peer_pool.fetchval(
+            "SELECT action_payload->>'phase' FROM calendar_action_log WHERE id=$1", peer_id
+        )
+        == "prepared"
+    )
+    with monkeypatch.context() as control:
+        control.setattr(transport, "call_tool", AsyncMock(side_effect=ConnectionError("private")))
+        refused = await execute_approved_action(
+            peer_pool,
+            peer_id,
+            "calendar_respond",
+            peer_args,
+            peer_handler,
+            origin_butler="relationship",
+        )
+        assert not refused.success and refused.error == "response_command_unavailable"
+    assert (
+        await peer_pool.fetchval(
+            "SELECT action_payload->>'phase' FROM calendar_action_log WHERE id=$1", peer_id
+        )
+        == "prepared"
+    )
+    assert len(writes) == before_cancel + 1

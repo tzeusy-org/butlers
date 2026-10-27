@@ -71,6 +71,44 @@ skipped start one second after its completion. Executed successes must retain
 ordered creation/start/completion timestamps. The p50 is the ordinary median;
 p95 is nearest rank, with the clean sample count shown explicitly.
 
+### Shard scheduling wait attribution
+
+Scheduled and manual runs also attribute each sample's shard scheduling wait to
+the work already on the shared runners (`bu-gvut0.5.7`; measurement only). At the
+moment a sample's first `check-unit`/`check-integration` shard job was created,
+the observer counts every other job that was executing (`started_at` at or
+before that moment, not yet completed), split by the triggering event of its
+run: `pull_request`, `merge_group`, or other. Each sample records
+`concurrent_pull_request_jobs`, `concurrent_merge_group_jobs`,
+`concurrent_other_jobs` and an `attribution` of `none`, `pull_request`,
+`merge_group`, `other`, `mixed` or `unattributable`. `report.json` carries an
+`attribution` object with an hourly breakdown (`hourly`, by sample creation
+hour) and the read accounting; `report.md` renders the same table.
+
+- Queued, skipped and cancelled-before-start jobs are not on a runner and do not
+  count.
+- A sample that cannot be attributed is counted, never dropped and never treated as zero,
+  and records why in `unattributable_reason`: `read-budget` (the job-read budget ran
+  out), `unreadable-run`, `over-100-jobs` (a run with more than 100 jobs),
+  `rerun-attempt` (a re-run whose earlier attempts cannot be read in one page),
+  `missing-timestamps` (a job that ran without usable timestamps), `index-truncated`,
+  `stage-failure`, or `deadline` (the 240 s observer deadline). `attribution.unattributable_reasons`
+  counts each cause and `report.md` lists every cause seen.
+- A failure of this stage degrades attribution only; it never changes the
+  latency verdict or the collection error state.
+- Extra reads beyond the latency observer's one run index and one job list per
+  sample: at most 3 pages of the all-workflow run index (runs created within two
+  hours before the earliest shard) and at most 120 job lists for other runs, read newest sample first so an exhausted budget costs
+  the oldest samples. The
+  sample runs' own jobs are reused. The report states the reads used.
+- A first-attempt run is read from its attempt job list. A re-run (attempt above 1) is read
+  with one `jobs?filter=all` page, so jobs that were in flight in an earlier attempt are
+  counted. That read counts against the same 120 job-list budget. If the page holds more than
+  100 jobs, or a job lacks a usable `run_attempt`, the sample is `rerun-attempt`
+  (unattributable) rather than undercounted.
+- The counts show correlation with concurrent load, not a runner quota; they
+  change no queue setting, required check, shard membership or runner.
+
 ## Scheduled visibility and ownership
 
 The separate nonrequired

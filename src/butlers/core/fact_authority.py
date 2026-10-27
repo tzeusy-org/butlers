@@ -24,6 +24,8 @@ import httpx
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from butlers.core.attention_urgency import AttentionOrigin, _current_origin, accepted_source_origin
+
 AUTHORITY_TOKENS = frozenset({"owner", "owner_device", "third_party", "system", "mixed"})
 INVOCATION_HEADER = "X-Butlers-Fact-Invocation"
 SOURCE_HEADER = "X-Butlers-Fact-Source"
@@ -143,6 +145,7 @@ class _SourceClaim:
     expires: float
     source_digest: str
     invocation: tuple[str, str] | None = None
+    attention_origin: AttentionOrigin | None = None
 
 
 class FactSourceContextRegistry:
@@ -395,6 +398,7 @@ class FactSourceContextRegistry:
         if claim.invocation is not None and claim.invocation != binding:
             raise ValueError("source admission already claimed")
         claim.invocation = binding
+        claim.attention_origin = accepted_source_origin(row, claim.report.original_entity_id)
         return claim.report
 
     async def recover(self, target: str, receiver_capability: str) -> str:
@@ -453,6 +457,9 @@ class FactSourceContextRegistry:
                 return JSONResponse(
                     {
                         "report": report.to_record(),
+                        "attention_origin": claim.attention_origin.record()
+                        if claim.attention_origin
+                        else {},
                         "receipt": {
                             "request_id": str(claim.request_id),
                             "digest": claim.source_digest,
@@ -542,6 +549,7 @@ class _Invocation:
     report: FactWriteContext
     source_request: uuid.UUID | None
     deadline: float
+    attention_origin: AttentionOrigin | None = None
 
 
 # The registries hold private producer objects, not copies from public routing
@@ -610,6 +618,7 @@ async def admit_incoming_source(
         response.raise_for_status()
         payload = response.json()
         _incoming_receipt.set(payload.get("receipt"))
+        _current_origin.set(AttentionOrigin.from_record(payload.get("attention_origin", {})))
         return FactWriteContext.from_record(payload["report"])
 
 
@@ -621,12 +630,27 @@ async def register_invocation(
     routed: bool,
 ) -> str:
     report = _current_report.get()
+    attention_origin = _current_origin.get()
     if _incoming_source.get():
-        report = await admit_incoming_source(target, runtime_session, source_endpoint)
+        origin_token = _current_origin.set(None)
+        try:
+            report = await admit_incoming_source(target, runtime_session, source_endpoint)
+            attention_origin = _current_origin.get()
+        finally:
+            _current_origin.reset(origin_token)
     elif _pipeline_source.get() is not None:
         if _source_registry is None:
             raise ValueError("source issuer is unavailable")
-        report = _source_registry._reports.get(_pipeline_source.get())
+        # Reuse the source-owned verifier and its current durable eligibility;
+        # never accept a caller-supplied report or UUID as attention authority.
+        source_token = _source_registry.issue(_pipeline_source.get(), target)
+        try:
+            report = await _source_registry.verify(
+                source_token, target, _incarnation, runtime_session
+            )
+            attention_origin = _source_registry._claims[source_token].attention_origin
+        finally:
+            _source_registry._claims.pop(source_token, None)
     if report is None:
         report = FactWriteContext("third_party" if routed else "system")
     now = time.monotonic()
@@ -634,7 +658,12 @@ async def register_invocation(
         _invocations.pop(stale_token, None)
     token = secrets.token_urlsafe(32)
     _invocations[token] = _Invocation(
-        target, runtime_session, report, _pipeline_source.get(), time.monotonic() + 3600
+        target,
+        runtime_session,
+        report,
+        _pipeline_source.get(),
+        time.monotonic() + 3600,
+        attention_origin,
     )
     return token
 
@@ -655,11 +684,13 @@ def accepted_source_scope(operation: Any) -> Any:
     @wraps(operation)
     async def isolated(*args: Any, **kwargs: Any) -> Any:
         token = _pipeline_source.set(None)
+        origin_token = _current_origin.set(None)
         try:
             return await operation(*args, **kwargs)
         finally:
             source_id = _pipeline_source.get()
             _pipeline_source.reset(token)
+            _current_origin.reset(origin_token)
             if source_id is not None and _source_registry is not None:
                 _source_registry._reports.pop(source_id, None)
                 _source_registry._source_digests.pop(source_id, None)
@@ -672,7 +703,7 @@ def current_fact_write_context() -> FactWriteContext:
     context = _current_report.get()
     if context is not None:
         return context
-    from butlers.api.owner_auth.context import in_http_request, verified_http_principal
+    from butlers.core.owner_auth_context import in_http_request, verified_http_principal
 
     if in_http_request.get():
         if verified_http_principal.get() != "owner":

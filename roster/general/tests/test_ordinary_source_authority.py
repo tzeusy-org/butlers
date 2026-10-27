@@ -21,6 +21,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from butlers.api.deps import get_db
 from butlers.testing.migration import create_migrated_test_pool
 
 pytestmark = [
@@ -104,7 +105,7 @@ def _router_app(pool: asyncpg.Pool) -> FastAPI:
 
     app = FastAPI()
     app.include_router(router_module.router)
-    app.dependency_overrides[router_module._get_db_manager] = lambda: _Db()
+    app.dependency_overrides[get_db] = lambda: _Db()
     return app
 
 

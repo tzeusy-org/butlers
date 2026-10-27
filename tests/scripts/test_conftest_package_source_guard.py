@@ -106,6 +106,9 @@ def test_package_from_another_checkout_is_rejected(root_conftest: ModuleType) ->
     assert "/repo/src" in message
 
 
+# uv sync rebuilds with hatchling from PyPI: TLS certificate checks fail under the
+# faketime legs' shifted clock.
+@pytest.mark.faketime_fragile
 def test_stale_copy_inside_the_checkout_but_outside_src_is_rejected(
     root_conftest: ModuleType,
     tmp_path: Path,

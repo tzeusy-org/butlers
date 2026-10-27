@@ -72,6 +72,7 @@ from typing import Any
 import asyncpg
 
 from butlers.chronicler.adapters._owner_entity import (
+    owner_episode_transaction,
     resolve_owner_entity_id,
     upsert_owner_episode_entity,
 )
@@ -725,25 +726,26 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
             evidence_ids = await self._fetch_location_point_event_ids(conn, span)
             evidence_refs = evidence_refs_from_event_ids(evidence_ids)
 
-            episode = await upsert_episode(
-                conn,
-                Episode(
-                    source_name=self.source_name,
-                    source_ref=source_ref,
-                    episode_type=EPISODE_TYPE_PLACE,
-                    start_at=span.start_at,
-                    end_at=span.end_at,
-                    precision=Precision.EXACT,
-                    title=f"Place: {label}",
-                    payload=payload,
-                    privacy=Privacy.NORMAL,
-                    layer=Layer.ACTIVITY,
-                    confidence=confidence,
-                    evidence_refs=evidence_refs,
-                ),
-            )
-            ep_id = episode.id if episode is not None else None
-            await upsert_owner_episode_entity(conn, ep_id, owner_id=entity_id)
+            async with owner_episode_transaction(conn):
+                episode = await upsert_episode(
+                    conn,
+                    Episode(
+                        source_name=self.source_name,
+                        source_ref=source_ref,
+                        episode_type=EPISODE_TYPE_PLACE,
+                        start_at=span.start_at,
+                        end_at=span.end_at,
+                        precision=Precision.EXACT,
+                        title=f"Place: {label}",
+                        payload=payload,
+                        privacy=Privacy.NORMAL,
+                        layer=Layer.ACTIVITY,
+                        confidence=confidence,
+                        evidence_refs=evidence_refs,
+                    ),
+                )
+                ep_id = episode.id if episode is not None else None
+                await upsert_owner_episode_entity(conn, ep_id, owner_id=entity_id)
         return episode
 
     @staticmethod

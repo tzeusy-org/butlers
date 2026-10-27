@@ -1,3 +1,14 @@
+## Fold-in disposition: core-skills
+
+The `AGENTS.md Read/Write Access` delta (`REQ-core-skills-004`) now lives in
+`generalist-lead-focused-delegation/specs/core-skills/spec.md`; this source no longer edits
+`core-skills`. The 37 task bodies and checkbox states below retain their historical drafting
+evidence and outstanding proposal-spine delivery gates. In particular, completed tasks 1.13,
+2.3 and 2.5 record earlier draft work, not current ownership of the moved delta. Future task
+5.1 syncs only the remaining `improvement-proposal-spine` delta from this change; it must not
+reintroduce the moved `core-skills` block. All implementation, owner-review, verification and
+archive holds remain pending as recorded. This fold does not tick tasks or archive the source.
+
 ## 1. Draft the contract
 
 - [x] 1.1 Specify the restricted public schema (`public.improvement_proposals` /
@@ -38,7 +49,7 @@
   with server-derived actor, and truthful degraded-source disclosure.
 - [x] 1.13 Draft the `core-skills` MODIFIED delta closing the runtime-MCP-tool-surface gap for
   `write_agents_md`/`append_agents_md`, authored as a full superset of the active
-  `k3s-deployment-helm-chart` change's own delta on the same requirement, with the sequencing
+  `k3s-deployment-helm-chart` change's own delta on the same requirement (superseded by 2.5), with the sequencing
   dependency named explicitly in `proposal.md`/`design.md` rather than left implicit.
 - [x] 1.14 Confirm no change to RFC 0021, `pending_actions`, the approvals executor,
   `autonomy-suggestions`'s or `switchboard-rule-promotion`'s baseline requirements, or
@@ -55,7 +66,7 @@
   Any semantic edit invalidates that review and requires a fresh pass.
 - [x] 2.3 Resolve the `core-skills`/`k3s-deployment-helm-chart` sequencing (`design.md` D13) before
   either change archives. Resolved 2026-09-26: k3s change abandoned and removed (bu-60pwv6.3).
-- [ ] 2.5 Rebuild the `core-skills` delta without the DB-fallback scenarios copied from the
+- [x] 2.5 Rebuild the `core-skills` delta without the DB-fallback scenarios copied from the
   abandoned k3s change (tracked in bu-60pwv6.27).
 - [ ] 2.4 Keep any implementation, migration, credential, runtime, or live GitHub/PR call blocked
   until this contract is accepted and its own separate authorities (Open Questions) are satisfied.

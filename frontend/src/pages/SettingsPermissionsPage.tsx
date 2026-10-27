@@ -11,7 +11,7 @@
  * Design language: Dispatch. No card chrome, no word-badges — state is a
  * {dot, glyph, colour} only. Display weight 500 (never 700). Numerals are
  * tabular. Mirrors SettingsConsolePage / SettingsModelsPage and the shared
- * atoms in components/butler-detail/atoms.tsx.
+ * atoms in components/ui/atoms.tsx.
  *
  * CSS: .attention-row[data-tone="red"] from frontend/src/index.css — the only
  * state-color-on-background pattern, reserved here for the data-wipe danger zone.
@@ -63,20 +63,20 @@ import { cn } from "@/lib/utils";
 // Types
 // ---------------------------------------------------------------------------
 
-interface PermissionCell {
+export interface PermissionCell {
   granted: boolean;
   reason: string | null;
   updated_at: string | null;
   inherited: boolean;
 }
 
-interface PermissionsMatrix {
+export interface PermissionsMatrix {
   butlers: string[];
   permissions: string[];
   cells: Record<string, Record<string, PermissionCell>>;
 }
 
-interface WebhookRow {
+export interface WebhookRow {
   id: string;
   endpoint: string;
   events: string[];
@@ -173,10 +173,12 @@ async function deleteWebhook(id: string): Promise<void> {
   }
 }
 
-async function testWebhook(id: string): Promise<{ ok: boolean; status_code: number | null; latency_ms: number | null }> {
+export type WebhookTestResult = { ok: boolean; status_code: number | null; latency_ms: number | null };
+
+async function testWebhook(id: string): Promise<WebhookTestResult> {
   try {
     const body = await apiFetch<{
-      data: { ok: boolean; status_code: number | null; latency_ms: number | null };
+      data: WebhookTestResult;
     }>(`/webhooks/${id}/test`, { method: "POST" });
     return body.data;
   } catch (err) {
@@ -639,7 +641,7 @@ function AuditReelSection() {
 // ---------------------------------------------------------------------------
 
 const EXPORT_SCOPE_LABEL: Record<ExportScope, string> = {
-  all: "all data",
+  all: "all data (supported scopes)",
   memory: "memory",
   audit: "audit log",
   config: "config",
@@ -689,20 +691,27 @@ function DataOpsSection() {
         <div className="flex flex-col gap-1.5">
           <Eyebrow as="p">Export data</Eyebrow>
           <p className="text-xs text-muted-foreground leading-relaxed" data-testid="export-description">
-            Download an AES-256-GCM encrypted export of your data. Decrypt using{" "}
+            Download an AES-256-GCM encrypted export of supported scopes. Decrypt using{" "}
             <span className="font-mono">DASHBOARD_EXPORT_ENCRYPTION_KEY</span>.
           </p>
         </div>
-        <div className="flex gap-2">
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          All data (supported scopes) includes memory facts, rules and episodes from every
+          configured memory butler; per-butler runtime config; the audit log, model catalog
+          and permissions. Other domain records, other brain tables, sessions, schedules
+          and credential stores are excluded. This export is not a full backup or a
+          consistent global snapshot.
+        </p>
+        <div className="flex flex-wrap gap-2">
           <Select
             value={exportScope}
             onValueChange={(v) => setExportScope(v as ExportScope)}
           >
-            <SelectTrigger className="w-36" aria-label="Export scope">
+            <SelectTrigger className="w-full sm:w-72" aria-label="Export scope">
               <SelectValue placeholder="Export scope" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All data</SelectItem>
+              <SelectItem value="all">All data (supported scopes)</SelectItem>
               <SelectItem value="memory">Memory</SelectItem>
               <SelectItem value="audit">Audit log</SelectItem>
               <SelectItem value="config">Config</SelectItem>
