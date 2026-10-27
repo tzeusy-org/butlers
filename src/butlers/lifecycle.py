@@ -965,17 +965,12 @@ async def _shutdown_chronicler_dependents(daemon: Any) -> None:
             logger.exception("Error while detaching DB log handler")
         daemon._db_log_handler = None
 
-    # 7. Close audit DB pool (if separate from main DB)
-    if daemon._audit_db is not None:
-        await daemon._audit_db.close()
-        daemon._audit_db = None
-
-    # 8. Close credential-layer DB pools
+    # 7. Close credential-layer DB pools
     if daemon._shared_credentials_db is not None:
         await daemon._shared_credentials_db.close()
         daemon._shared_credentials_db = None
 
-    # 9. Close DB pool
+    # 8. Close DB pool
     if daemon.db:
         await daemon.db.close()
 
