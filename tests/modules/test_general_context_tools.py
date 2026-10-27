@@ -5,7 +5,7 @@ Covers ``check_context`` / ``set_context`` / ``clear_context`` as registered by
 user-initiated counterpart to the deterministic context-bus producers
 (bu-hmdqz.15). These wrap ``butlers.context_bus`` and were added without
 direct test coverage; this file closes that gap using the same
-fake-``mcp.tool()`` registration harness used elsewhere in the test suite
+real FastMCP registration and public tool lookup used elsewhere in the test suite
 (see ``tests/modules/test_home_maintenance_tools.py``).
 
 Covers:
@@ -29,6 +29,7 @@ import pytest
 from fastmcp import FastMCP
 
 from butlers.modules._roster_general import GeneralModule
+from butlers.testing.mcp import registered_tools as snapshot_registered_tools
 
 pytestmark = pytest.mark.unit
 
@@ -36,24 +37,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-def _make_mcp() -> MagicMock:
-    mcp = MagicMock()
-    tools: dict[str, Any] = {}
-
-    def tool_decorator(*_decorator_args, **decorator_kwargs):
-        declared_name = decorator_kwargs.get("name")
-
-        def decorator(fn):
-            tools[declared_name or fn.__name__] = fn
-            return fn
-
-        return decorator
-
-    mcp.tool = tool_decorator
-    mcp._registered_tools = tools
-    return mcp
 
 
 @pytest.fixture(autouse=True)
@@ -79,13 +62,13 @@ def bound_owner_invocation(monkeypatch):
 
 @pytest.fixture
 async def registered_tools() -> dict[str, Any]:
-    """A GeneralModule wired to a mock pool, with tools registered on a fake mcp."""
+    """A GeneralModule wired to a mock pool, with tools registered on real FastMCP."""
     module = GeneralModule()
     db = MagicMock()
     db.pool = MagicMock()
-    mcp = _make_mcp()
+    mcp = FastMCP("general-context-test-tools")
     await module.register_tools(mcp, config={}, db=db, butler_name="general")
-    return mcp._registered_tools
+    return await snapshot_registered_tools(mcp)
 
 
 # ---------------------------------------------------------------------------

@@ -4292,7 +4292,6 @@ async def test_disposable_deployment_joins_late_credential_tail_before_dependent
         _modules=[],
         blob_store=None,
         _db_log_handler=None,
-        _audit_db=None,
         _credential_purpose_pool=pool,
         db=main,
     )

@@ -967,12 +967,7 @@ async def _shutdown_chronicler_dependents(daemon: Any) -> None:
             logger.exception("Error while detaching DB log handler")
         daemon._db_log_handler = None
 
-    # 7. Close audit DB pool (if separate from main DB)
-    if daemon._audit_db is not None:
-        await daemon._audit_db.close()
-        daemon._audit_db = None
-
-    # 8/9. Retain the complete dependent close sequence across caller timeout
+    # 7/8. Retain the complete dependent close sequence across caller timeout
     # and repeated cancellation. The main pool cannot close before a pending
     # credential diagnostic has physically released its lease.
     tail = getattr(daemon, "_credential_dependents_close_task", None)
