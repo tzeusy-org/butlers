@@ -136,6 +136,21 @@ async def test_migrated_exact_recovery_is_idempotent_and_source_drift_refuses(po
     assert await readback(pool) == before
 
 
+async def test_legacy_scalar_tool_calls_row_does_not_abort_planning(pool):
+    """A day-close session whose tool_calls JSONB is a double-encoded string (legacy
+    rows exist on dev) is no source for any day; it must not fail the whole plan."""
+    await seed(pool)
+    await pool.execute(
+        "INSERT INTO sessions (id, prompt, trigger_source, request_id, success, completed_at, tool_calls)"
+        " VALUES ($1, 'fixture', 'schedule:chronicler_day_close', $2, true, now(), to_jsonb($3::text))",
+        uuid4(),
+        str(uuid4()),
+        "[]",
+    )
+    plan = await plan_recovery(pool, start=DAY - timedelta(days=1), end=DAY, timezone="UTC")
+    assert [entry.reason for entry in plan.entries] == ["missing_source", "eligible"]
+
+
 async def wait_for_lock(pool, table):
     async with asyncio.timeout(5):
         # PostgreSQL lock waits have no Python event; keep this bounded real-DB witness.
