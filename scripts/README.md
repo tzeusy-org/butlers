@@ -3,6 +3,15 @@
 Entry points that CI, Make, Helm, Compose, git hooks and live runbooks call. The
 [script index](#script-index) names every script and its caller.
 
+## repair_attention_ledger_metadata.py
+
+Bounded operator for explicitly selected historical attention-ledger JSONB
+strings. Default mode produces a private read-only plan; exact-plan apply uses
+the existing normal role, a serializable compare-and-swap transaction, private
+beforeimages and independent committed readback. Live planning and owner-approved
+data apply are separate operational allocations. See the
+[metadata repair runbook](../docs/operations/attention-ledger-metadata-repair.md).
+
 ## init-db.sql
 
 Privileged PostgreSQL bootstrap script to run **before** the first Alembic
@@ -328,6 +337,7 @@ criteria and dry-run controls before applying it to a database.
 | [`backfill_fleet_cases.py`](backfill_fleet_cases.py) | operators, per `REQ-fleet-case-file-011` in the [fleet-case-file spec](../openspec/specs/fleet-case-file/spec.md) | Previews or backfills resolved owner-condition episodes as closed historical cases using the Switchboard writer role; never scheduled. |
 | [`migrate_blobs_to_s3.py`](migrate_blobs_to_s3.py) | operators, per the `s3-blob-storage` spec and RFC 0016 | Moves scoped local attachment blobs to the S3-compatible backend. |
 | [`recover_chronicler_day_close_cache.py`](recover_chronicler_day_close_cache.py) | operators, per [`chronicler-day-close-recovery.md`](../docs/operations/chronicler-day-close-recovery.md), after separate operational authorization | Plans bounded day-close cache recovery; applying the reviewed plan requires separate authorization. |
+| [`repair_attention_ledger_metadata.py`](repair_attention_ledger_metadata.py) | operators, per [metadata repair](../docs/operations/attention-ledger-metadata-repair.md), after separate live allocation | Plans exact bounded UUID selections; owner-approved apply repairs one encoded object layer with CAS and committed readback. |
 | [`reconcile_whatsapp_entities.py`](reconcile_whatsapp_entities.py) | operators, per the active `repair-whatsapp-identity-reconciliation` change (tasks 6.3 and 6.4) | Content-blind WhatsApp entity reconciliation pass. Delete when that change archives. |
 | [`scrub_filtered_event_previews.py`](scrub_filtered_event_previews.py) | operators, per [connectors overview](../docs/connectors/overview.md) | Scrubs preview text from filtered-event buffers; imported by two connector tests. |
 
