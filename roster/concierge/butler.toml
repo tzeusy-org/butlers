@@ -20,5 +20,4 @@ schema = "concierge"
 
 [modules.dashboard_read]
 
-# RFC 0015: report errors to QA; this module never dispatches locally.
-[modules.self_healing]
+# RFC 0015: core always registers the error relay; no module opt-in is required.

@@ -319,7 +319,6 @@ async def messenger_role_pool(migrated_db_url: str) -> asyncpg.Pool:
         port=parsed.port or 5432,
         user=parsed.username or "postgres",
         password=parsed.password or "",
-        strict_role_enforcement=True,
         min_pool_size=1,
         max_pool_size=2,
     )

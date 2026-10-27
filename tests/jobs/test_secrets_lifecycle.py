@@ -435,7 +435,9 @@ async def test_run_secrets_lifecycle_check_delivers_on_new_transition():
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -489,7 +491,9 @@ async def test_run_secrets_lifecycle_check_suppressed_does_not_write_debounce_ma
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -537,7 +541,9 @@ async def test_run_secrets_lifecycle_check_no_recipient_counts_as_error_no_marke
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -600,7 +606,9 @@ async def test_run_secrets_lifecycle_check_delivery_error_records_failed_and_enq
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -682,7 +690,7 @@ async def test_run_secrets_lifecycle_check_delivery_error_supersedes_prior_pendi
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ),
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)),
+        patch("butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)),
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -738,7 +746,9 @@ async def test_run_secrets_lifecycle_check_direct_delivery_cancels_leftover_pend
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ),
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -784,7 +794,9 @@ async def test_run_secrets_lifecycle_check_unexpected_error_writes_ledger_row():
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -987,7 +999,9 @@ async def test_run_secrets_lifecycle_check_deferred_enqueues_envelope_not_delive
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -1062,7 +1076,9 @@ async def test_run_secrets_lifecycle_check_defer_queue_failure_records_retryable
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -1122,7 +1138,9 @@ async def test_run_secrets_lifecycle_check_delivers_when_delivery_preferences_pa
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -1170,7 +1188,9 @@ async def test_run_secrets_lifecycle_check_defer_without_recipient_records_faile
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -1237,7 +1257,9 @@ async def test_run_secrets_lifecycle_check_unexpected_error_after_resolution_enq
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -1293,7 +1315,9 @@ async def test_run_secrets_lifecycle_check_unexpected_error_before_resolution_no
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 

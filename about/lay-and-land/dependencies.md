@@ -126,7 +126,6 @@ each module under `src/butlers/modules/` depends on its own provider API.
 | **Gmail API** | gmail connector | Watch/history delta email ingestion | Email ingestion stops |
 | **Google Calendar API** | calendar module | Calendar CRUD | Calendar tools return errors |
 | **Google Contacts API** | contacts module | Contact sync | Contact sync pauses |
-| **Discord Gateway** | discord connector | WebSocket event stream | Discord ingestion stops (Draft status) |
 
 ### Build-Time Dependencies
 

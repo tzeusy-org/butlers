@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiMeta, ApiResponse
 from butlers.api.models.search import SearchResponse, SearchResult
-from butlers.api.read_models.search_v1 import (
+from butlers.api.read_models.search import (
     query_contact_search,
     query_entity_search,
     query_session_search,
@@ -29,11 +30,6 @@ from butlers.api.read_models.search_v1 import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/search", tags=["search"])
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +91,8 @@ def _extract_snippet(text: str, query: str, max_len: int = 200) -> str:
 async def search(
     q: str = Query("", description="Search query (ILIKE pattern)"),
     limit: int = Query(20, ge=1, le=100, description="Max results per category"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SearchResponse]:
     """Search across butler databases and shared schema.
 

@@ -36,6 +36,7 @@ spec:
             {{- include "butlers.postgresEnv" . | nindent 12 }}
             - {name: BUTLERS_DISABLE_FILE_LOGGING, value: "1"}
             - {name: BUTLERS_HOST, value: butlers-up}
+            - {name: SWITCHBOARD_MCP_URL, value: "http://{{ include "butlers.switchboardHost" . }}:41100/sse"}
             - {name: WHATSAPP_BRIDGE_SOCKET, value: /tmp/wa-bridge/bridge.sock}
             - {name: BUTLERS_BACKUP_DIR, value: /backups}
             - {name: BUTLERS_API_DB_POOL_MIN_SIZE, value: {{ .Values.database.apiPoolMinSize | quote }}}
@@ -64,6 +65,15 @@ spec:
             - name: DASHBOARD_API_KEY
               valueFrom:
                 secretKeyRef: {name: {{ .Values.localSecrets.envSecretName }}, key: DASHBOARD_API_KEY, optional: true}
+            {{- if .Values.dashboardApi.externalDeadman.enabled }}
+            - name: EXTERNAL_DEADMAN_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "externalDeadman.urlSecretRef.name is required" .Values.dashboardApi.externalDeadman.urlSecretRef.name | quote }}
+                  key: {{ required "externalDeadman.urlSecretRef.key is required" .Values.dashboardApi.externalDeadman.urlSecretRef.key | quote }}
+            - name: EXTERNAL_DEADMAN_CHECK_INTERVAL_S
+              value: {{ .Values.dashboardApi.externalDeadman.intervalSeconds | quote }}
+            {{- end }}
             {{- range $k, $v := .Values.dashboardApi.extraEnv }}
             - {name: {{ $k }}, value: {{ $v | quote }}}
             {{- end }}
@@ -90,7 +100,6 @@ spec:
             - {name: wa-bridge, mountPath: /tmp/wa-bridge}
             - {name: backups, mountPath: /backups, readOnly: true}
             {{- include "butlers.verifiersMount" . | nindent 12 }}
-            {{- if .Values.beadsExport.enabled }}{{- include "butlers.beadsExportMount" . | nindent 12 }}{{- end }}
             - name: runtime-probe-signer
               mountPath: /run/secrets/runtime_probe_control_signing_key
               subPath: runtime_probe_control_signing_key
@@ -102,7 +111,6 @@ spec:
         - name: backups
           persistentVolumeClaim: {claimName: {{ .Release.Name }}-backups}
         {{- include "butlers.verifiersVolume" . | nindent 8 }}
-        {{- if .Values.beadsExport.enabled }}{{- include "butlers.beadsExportVolume" . | nindent 8 }}{{- end }}
         - name: runtime-probe-signer
           secret:
             secretName: {{ .Values.localSecrets.runtimeProbeControlSecretName }}

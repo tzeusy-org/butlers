@@ -4,7 +4,7 @@
 A butler SHALL be a long-lived MCP server daemon backed by a dedicated PostgreSQL schema. When triggered, it SHALL spawn an ephemeral LLM CLI session wired exclusively to itself via a locked-down MCP config. The butler SHALL be the unit of deployment, isolation, and capability composition. Butlers SHALL be one of two agent types in the ecosystem; the other is staffers (see `staffer-archetype` spec).
 
 ID: REQ-butler-base-spec-003
-Source: heart-and-soul/vision.md Rules 3-5; RFC 0001 §Startup Phases; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.1
+Source: heart-and-soul/vision.md Rules 3-5; RFC 0001 §Startup Phases; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.1
 Scope: v1-mandatory
 
 #### Scenario: Butler identity contract
@@ -91,7 +91,7 @@ of scope for v1 (they require in-process access the dashboard API layer does not
 This requirement defines what the daemon is responsible for maintaining.
 
 ID: REQ-butler-base-spec-002
-Source: RFC 0001 §Startup Phases; heart-and-soul/vision.md Rules 4-5; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.1
+Source: RFC 0001 §Startup Phases; heart-and-soul/vision.md Rules 4-5; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.1
 Scope: v1-mandatory
 
 #### Scenario: Heartbeat registration is kept current

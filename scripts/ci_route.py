@@ -35,7 +35,6 @@ def route(
             "frontend": "true",
             "mode": "full" if event == "merge_group" else "push",
             "test_paths": [],
-            "inventory": "true",
         }
     if event != "pull_request":
         raise ValueError("event/ref has no admitted routing policy")
@@ -48,7 +47,6 @@ def route(
             "frontend": "true",
             "mode": "full",
             "test_paths": [],
-            "inventory": "true",
         }
     backend = bool(set(files) - set(docs))
     frontend = any(
@@ -60,14 +58,12 @@ def route(
         "frontend": str(frontend).lower(),
         "mode": "docs",
         "test_paths": [],
-        "inventory": "false",
     }
     if not backend:
         return result
-    result.update(mode="full", inventory="true")
-    # Admission to the optional inventory omission is deliberately narrower than
-    # the existing affected-path planner. All inventory inputs and uncertainty
-    # require fresh full inventory and execution.
+    result.update(mode="full")
+    # Admission to the scoped lane is deliberately narrower than the existing
+    # affected-path planner. Any uncertainty requires full execution.
     unchanged = all(
         name.startswith("src/")
         and name.endswith(".py")
@@ -91,7 +87,7 @@ def route(
             and admitted_paths(plan.test_paths)
             and all((root / path).is_file() for path in plan.test_paths)
         ):
-            result.update(mode="scoped", inventory="false", test_paths=plan.test_paths)
+            result.update(mode="scoped", test_paths=plan.test_paths)
     except (OSError, ValueError, RuntimeError):
         pass
     return result
@@ -123,11 +119,12 @@ def verdict(*, needs: dict, event: str, ref: str) -> bool:
     expected = {
         "route",
         "guards",
-        "inventory",
         "check-preflight",
         "check-unit",
         "check-integration",
         "check-affected",
+        "frontend-e2e",
+        "go-bridge",
     }
     if not isinstance(needs, dict) or not expected <= needs.keys():
         return False
@@ -179,16 +176,17 @@ def verdict(*, needs: dict, event: str, ref: str) -> bool:
         not admitted_paths(paths) or needs["check-affected"]["outputs"].get("verified") != "true"
     ):
         return False
-    if outputs.get("inventory") != ("true" if mode in {"full", "push"} else "false"):
-        return False
     results = {
         "route": "success",
         "guards": "success",
-        "inventory": "success" if mode in {"full", "push"} else "skipped",
         "check-preflight": "success" if mode in {"full", "scoped"} else "skipped",
         "check-affected": "success" if mode == "scoped" else "skipped",
         "check-unit": "success" if mode == "full" else "skipped",
         "check-integration": "success" if mode == "full" else "skipped",
+        # Playwright e2e is required wherever it runs: every merge group and main
+        # push, and pull requests the route marks as frontend changes.
+        "frontend-e2e": "success" if outputs["frontend"] == "true" else "skipped",
+        "go-bridge": "success" if outputs["backend"] == "true" else "skipped",
     }
     return all(job["result"] == results.get(name, "success") for name, job in needs.items())
 

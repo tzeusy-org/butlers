@@ -6,10 +6,16 @@
 #     --build-arg API_URL=/butlers-dev-api/api .
 # scripts/k8s/build-push.sh does this.
 FROM node:24-slim AS build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
+# The flat /app/scripts layout resolves ../../src to /src. Parse only these two
+# source contracts during typecheck; no backend package is imported or shipped.
+COPY src/butlers/api/routers/permissions.py src/butlers/api/routers/spend.py /src/butlers/api/routers/
 ARG BASE_PATH=/butlers/
 ARG API_URL=/butlers-api/api
 # Browser-visible CARTO basemap key (public by design); passed as a build secret

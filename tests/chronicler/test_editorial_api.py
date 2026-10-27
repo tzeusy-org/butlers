@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.chronicler import editorial
 from butlers.chronicler.editorial import (
     AttentionItem,
@@ -81,11 +82,8 @@ def _load_chronicler_router():
     module_name = "chronicler_api_router"
     if module_name in sys.modules:
         return sys.modules[module_name]
-    spec = importlib.util.spec_from_file_location(module_name, _ROUTER_PATH)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = mod
-    assert spec.loader is not None
-    spec.loader.exec_module(mod)
+    mod = importlib.import_module("butlers.api._roster.chronicler.router")
+    assert mod.__spec__ is not None and mod.__spec__.loader is not None
     return mod
 
 
@@ -96,9 +94,9 @@ def _mock_db(pool: _Pool):
 
 
 def _make_app(conn: _Conn):
-    chronicler_mod = _load_chronicler_router()
+    _chronicler_mod = _load_chronicler_router()
     app = create_app(api_key="")
-    app.dependency_overrides[chronicler_mod._get_db_manager] = lambda: _mock_db(_Pool(conn))
+    app.dependency_overrides[get_db] = lambda: _mock_db(_Pool(conn))
     return app
 
 

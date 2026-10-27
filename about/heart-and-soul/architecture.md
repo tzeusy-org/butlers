@@ -184,8 +184,8 @@ Modules are the only way to add capabilities to a butler. A module implements
 the `Module` abstract base class and provides:
 
 - `register_tools()` --- adds MCP tools to the butler's server
-- `migration_revisions()` --- declares the Alembic branch label for module-specific
-  migrations (or returns None when the module owns no tables)
+- Module migration directories --- select module-specific chains consistently in
+  CLI and daemon startup; modules with no migration directory add no chain
 - `on_startup()` / `on_shutdown()` --- lifecycle hooks
 
 **Why this constraint matters:**

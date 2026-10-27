@@ -293,24 +293,6 @@ _GOOGLE_HEALTH_MANIFEST = ScopeManifest(
     ],
 )
 
-_DISCORD_MANIFEST = ScopeManifest(
-    version=1,
-    required=[
-        ScopeDecl(
-            name="identify",
-            serif_note="Used to read your Discord user ID and username",
-        ),
-        ScopeDecl(
-            name="guilds",
-            serif_note="Used to list the servers you belong to",
-        ),
-        ScopeDecl(
-            name="messages.read",
-            serif_note="Used to read messages from channels you have access to",
-        ),
-    ],
-)
-
 # ---------------------------------------------------------------------------
 # Scope manifest registry — maps connector_type → ScopeManifest
 # ---------------------------------------------------------------------------
@@ -321,8 +303,6 @@ _OAUTH_MANIFESTS: dict[str, ScopeManifest] = {
     "google_calendar": _GOOGLE_CALENDAR_MANIFEST,
     "google_drive": _GOOGLE_DRIVE_MANIFEST,
     "google_health": _GOOGLE_HEALTH_MANIFEST,
-    "discord": _DISCORD_MANIFEST,
-    "discord_user": _DISCORD_MANIFEST,  # same OAuth surface, different connector name
 }
 
 
@@ -389,16 +369,6 @@ APPLICABILITY_MATRIX: dict[str, ConnectorAuthEntry] = {
     "google_health": ConnectorAuthEntry(
         connector_type="google_health",
         credential_model="google_oauth",
-        oauth_supported=True,
-    ),
-    "discord": ConnectorAuthEntry(
-        connector_type="discord",
-        credential_model="oauth2",
-        oauth_supported=True,
-    ),
-    "discord_user": ConnectorAuthEntry(
-        connector_type="discord_user",
-        credential_model="oauth2",
         oauth_supported=True,
     ),
     "telegram_bot": ConnectorAuthEntry(

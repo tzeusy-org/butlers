@@ -15,7 +15,6 @@ import { CaseDossierHeader, CaseList, QaKpiStrip, StateTrack } from "@/component
 const qaHookMocks = vi.hoisted(() => ({
   removeDismissalMutate: vi.fn(),
   dismissIssueMutate: vi.fn(),
-  retryAttemptMutate: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-qa", () => ({
@@ -25,10 +24,6 @@ vi.mock("@/hooks/use-qa", () => ({
   }),
   useDismissQaIssue: () => ({
     mutate: qaHookMocks.dismissIssueMutate,
-    isPending: false,
-  }),
-  useRetryHealingAttempt: () => ({
-    mutate: qaHookMocks.retryAttemptMutate,
     isPending: false,
   }),
 }));
@@ -110,7 +105,6 @@ describe("QA dossier atoms", () => {
   beforeEach(() => {
     qaHookMocks.removeDismissalMutate.mockReset();
     qaHookMocks.dismissIssueMutate.mockReset();
-    qaHookMocks.retryAttemptMutate.mockReset();
   });
 
   it("renders null MTTR as an em dash with the terminal-case sublabel", () => {
@@ -344,7 +338,7 @@ describe("QA dossier atoms", () => {
     );
   });
 
-  it("renders Retry pill for terminal stage (landed) and hides Dismiss pill", () => {
+  it("terminal landed history has neither Retry nor Dismiss", () => {
     render(
       <CaseDossierHeader
         case={{ ...cases[0], state: "landed" }}
@@ -354,11 +348,11 @@ describe("QA dossier atoms", () => {
       />,
     );
 
-    expect(screen.getByLabelText("Retry investigation")).toBeTruthy();
+    expect(screen.queryByLabelText("Retry investigation")).toBeNull();
     expect(screen.queryByLabelText("Dismiss case")).toBeNull();
   });
 
-  it("invokes retry mutation with case id when Retry pill is clicked", () => {
+  it("terminal escalated history has no Retry control", () => {
     render(
       <CaseDossierHeader
         case={{ ...cases[0], state: "escalated" }}
@@ -367,12 +361,7 @@ describe("QA dossier atoms", () => {
         dismissal={null}
       />,
     );
-
-    fireEvent.click(screen.getByLabelText("Retry investigation"));
-
-    expect(qaHookMocks.retryAttemptMutate).toHaveBeenCalledWith(
-      cases[0].id,
-      expect.objectContaining({ onSuccess: expect.any(Function) }),
-    );
+    expect(screen.queryByLabelText("Retry investigation")).toBeNull();
+    expect(screen.queryByLabelText("Dismiss case")).toBeNull();
   });
 });

@@ -96,7 +96,7 @@ def test_batch_without_messages_keeps_prior_shape(connector):
 
 @pytest.mark.parametrize("sender_ids", [(int(_SERVICE),), (1001, 1002), (1001, int(_SERVICE))])
 def test_batch_row_payload_replays_as_a_valid_ingest_envelope(connector, sender_ids):
-    from roster.switchboard.tools.routing.contracts import parse_ingest_envelope
+    from roster.switchboard.tools.contracts import parse_ingest_envelope
 
     row = _record(connector, _msgs(*sender_ids), subject_or_preview="hello")
     replayed = dict(row[_PAYLOAD_IDX])

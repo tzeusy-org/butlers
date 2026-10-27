@@ -302,7 +302,7 @@ The dashboard API SHALL provide owner-scoped full-text search across every butle
 - **WHEN** `GET /api/conversations/messages/search?q=keyword&limit=20` is called
 - **THEN** messages matching `keyword` across every butler's conversations are returned, ordered by text relevance (`ts_rank`) then recency
 - **AND** each result includes `message_id`, `conversation_id`, `role`, `created_at`, `butler_name`, `session_id`, a `snippet` excerpt, `highlight_ranges` (`[start, end)` offsets into `snippet` for each matched term), and a `deep_link` navigation path
-- **AND** the response follows cursor pagination (`data`/`meta.next_cursor`/`meta.has_more`, no `total`/`offset`) per the dashboard API response conventions
+- **AND** the response follows cursor pagination with the shared `Page[T]` envelope (`items`/`next_cursor`/`limit`, no `total`/`offset`/`has_more`) per the dashboard API response conventions, and an invalid cursor is rejected with HTTP 400
 
 #### Scenario: Cursor stable across a concurrent insert
 

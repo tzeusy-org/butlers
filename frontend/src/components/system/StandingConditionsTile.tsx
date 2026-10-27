@@ -13,7 +13,8 @@
 // than a duplicate one, distinguished by a small ledger badge per row.
 // Also surfaces, per infra condition, how many QA dispatches it suppressed
 // (useInfraConditionSuppressionCounts -> GET /api/healing/dispatch-events?
-// decision=infra_condition_open), joined on the shared fingerprint identity
+// decision=infra_condition_open&fingerprint=...), using each filtered total
+// rather than a sample of the newest global events
 // -- the concrete "link to the condition that suppressed them" slice 3 asks
 // for. Owner conditions have no QA-dispatch suppression concept, so that
 // chip is only ever computed/shown for ledger="infra" rows.
@@ -204,8 +205,7 @@ function supersedingIdentityVersion(condition: ConditionEntry): number | null {
  * still standing. A deadline in the past on an already-resolved commitment is
  * history, not a warning, so only a still-standing commitment can be overdue.
  *
- * A standalone module-level function (same shape as DecisionsPage's
- * resolveExportAsOfIsWarn and ButlerActivityTab's window helper) so the
+ * A standalone module-level function, like ButlerActivityTab's window helper, so the
  * react-hooks/purity rule does not flag a direct Date.now() call inside a
  * component body. Reading the clock here rather than threading a `now` prop
  * down from the tile also keeps the freshness of the comparison local to the
@@ -312,6 +312,8 @@ const ATTENTION_COPY: Record<string, { label: string; warn: boolean }> = {
   failed: { label: "Owner alert not delivered", warn: true },
   uncertain: { label: "Owner alert may not have arrived; it is not resent automatically", warn: true },
   unavailable: { label: "Owner alert status unknown", warn: true },
+  not_raised: { label: "No owner alert has been raised for this condition", warn: true },
+  within_grace: { label: "Owner alert waits for the attention grace", warn: false },
 }
 
 function attentionCopy(status: string): { label: string; warn: boolean } {
@@ -525,14 +527,20 @@ function collectCounterpartyIds(conditions: ConditionEntry[]): string[] {
 export function StandingConditionsTile() {
   const infraQuery = useSystemConditions({ limit: 20 })
   const ownerQuery = useSystemConditions({ limit: 20, ledger: "owner" })
-  const { counts: suppressedCounts, isError: suppressionCountsError } =
-    useInfraConditionSuppressionCounts()
   const [filter, setFilter] = useState<ConditionFilter>("all")
 
   // Counterparty ids are read off the raw query payloads rather than the
   // merged list below, because this hook must run before the early returns.
   const infraConditions = infraQuery.data?.data.conditions
   const ownerConditions = ownerQuery.data?.data.conditions
+  const suppressionFingerprints = !infraQuery.isError && infraQuery.data?.data.conditions_available
+    ? (infraConditions ?? []).filter((condition) => condition.ledger === "infra").map((condition) => condition.fingerprint)
+    : []
+  const {
+    counts: suppressedCounts,
+    isError: suppressionCountsError,
+    isLoading: suppressionCountsLoading,
+  } = useInfraConditionSuppressionCounts(suppressionFingerprints)
   const counterpartyIds = useMemo(
     () => collectCounterpartyIds([...(infraConditions ?? []), ...(ownerConditions ?? [])]),
     [infraConditions, ownerConditions],
@@ -590,9 +598,12 @@ export function StandingConditionsTile() {
     condition,
     commitment: commitmentFields(condition),
   }))
-  // A source that could not report alert delivery is a degraded read, never calm.
+  // A source that could not report alert delivery, or an active paging condition that no
+  // alert covers, is a degraded read, never calm.
   const attentionUnavailable = merged.some(
-    (condition) => condition.attention?.status === "unavailable",
+    (condition) =>
+      condition.attention?.status === "unavailable" ||
+      (condition.attention?.status === "not_raised" && condition.state !== "resolved"),
   )
   const visible = sortForDisplay(
     decorated.filter(({ commitment }) =>
@@ -633,6 +644,10 @@ export function StandingConditionsTile() {
           label="QA dispatch suppression counts"
           testId="standing-conditions-suppression-degraded"
         />
+      ) : suppressionCountsLoading ? (
+        <p role="status" className="mb-2 text-xs text-muted-foreground">
+          Loading QA dispatch suppression counts.
+        </p>
       ) : null}
       {merged.length === 0 ? (
         <p className="text-muted-foreground text-sm">No standing conditions recorded.</p>
@@ -660,9 +675,9 @@ export function StandingConditionsTile() {
                   suppressedCount={
                     condition.ledger !== "infra"
                       ? null
-                      : suppressionCountsError
+                      : suppressionCountsError || suppressionCountsLoading
                         ? null
-                        : (suppressedCounts.get(condition.fingerprint) ?? 0)
+                        : (suppressedCounts.get(condition.fingerprint) ?? null)
                   }
                 />
               ))}

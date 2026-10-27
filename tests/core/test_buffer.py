@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -32,6 +33,15 @@ from butlers.core.buffer import (
 from butlers.switchboard_wiring import build_buffer_pipeline_inputs
 
 pytestmark = pytest.mark.unit
+
+
+def _write_switchboard_config(sw_dir: Path) -> Path:
+    sw_dir.mkdir(exist_ok=True)
+    (sw_dir / "butler.toml").write_text(
+        '[butler]\nname = "switchboard"\nport = 41100\n\n'
+        '[butler.db]\nname = "butlers"\nschema = "switchboard"\n'
+    )
+    return sw_dir
 
 
 # ---------------------------------------------------------------------------
@@ -512,6 +522,37 @@ async def test_buffer_daemon_integration(tmp_path: Any) -> None:
     from butlers.daemon import ButlerDaemon
 
     mock_pool = AsyncMock()
+
+    async def runtime_row(query, *args):
+        if query.lstrip().startswith("SELECT *") and "runtime_config" in query:
+            return {
+                "butler_name": args[0],
+                "core_groups": None,
+                "core_groups_narrowing_reason": None,
+                "catalog_read_sensitivity": "normal",
+                "max_concurrent": 3,
+                "max_queued": 10,
+                "tool_exposure_policy": "eager_filtered",
+                "blind_spot_preamble_enabled": True,
+                "seeded_at": None,
+                "updated_at": None,
+            }
+        return None
+
+    mock_pool.fetchrow = AsyncMock(side_effect=runtime_row)
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetchval = AsyncMock(return_value=None)
+    mock_conn.fetch = AsyncMock(return_value=[])
+    mock_conn.execute = AsyncMock(return_value=None)
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=None)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    mock_conn.transaction = MagicMock(return_value=transaction)
+    acquisition = MagicMock()
+    acquisition.__aenter__ = AsyncMock(return_value=mock_conn)
+    acquisition.__aexit__ = AsyncMock(return_value=False)
+    mock_pool.acquire = MagicMock(return_value=acquisition)
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()
     mock_db.connect = AsyncMock(return_value=mock_pool)
@@ -550,7 +591,9 @@ async def test_buffer_daemon_integration(tmp_path: Any) -> None:
         "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
         "FastMCP": patch("butlers.lifecycle.FastMCP"),
         "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=_MockAdapterCls),
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter", return_value=_MockAdapterCls()
+        ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "start_mcp_server": patch(
             "butlers.daemon.ButlerDaemon._start_mcp_server", new_callable=AsyncMock
@@ -561,12 +604,7 @@ async def test_buffer_daemon_integration(tmp_path: Any) -> None:
     }
 
     # Switchboard gets DurableBuffer
-    sw_dir = Path(tmp_path / "sw")
-    sw_dir.mkdir(exist_ok=True)
-    (sw_dir / "butler.toml").write_text(
-        '[butler]\nname = "switchboard"\nport = 41100\n\n'
-        '[butler.db]\nname = "butlers"\nschema = "switchboard"\n'
-    )
+    sw_dir = await asyncio.to_thread(_write_switchboard_config, Path(tmp_path / "sw"))
     # This mocked lifecycle installs the real process-local source issuer.
     # Preserve the object already owned by another test, including on failure;
     # replacing it with None would also discard a preexisting live registry.
@@ -581,7 +619,7 @@ async def test_buffer_daemon_integration(tmp_path: Any) -> None:
             common_patches["sync_schedules"],
             common_patches["FastMCP"],
             common_patches["Spawner"],
-            common_patches["get_adapter"],
+            common_patches["build_runtime_adapter"],
             common_patches["shutil_which"],
             common_patches["start_mcp_server"],
             common_patches["connect_switchboard"],

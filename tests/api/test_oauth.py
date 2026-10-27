@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from butlers.api.deps import get_db_optional
 from butlers.api.models.oauth import OAuthCredentialState, OAuthCredentialStatus
 from butlers.api.routers import oauth as oauth_module
 from butlers.api.routers.oauth import (
@@ -104,7 +105,7 @@ def _make_app(
     pool.acquire = _acquire
     db_manager = MagicMock()
     db_manager.credential_shared_pool.return_value = pool
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
+    app.dependency_overrides[get_db_optional] = lambda: db_manager
     return app
 
 
@@ -255,7 +256,7 @@ async def test_start_sets_include_granted_scopes_for_incremental_auth(app):
 
 
 async def test_start_missing_credentials_returns_503(app):
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: None
+    app.dependency_overrides[get_db_optional] = lambda: None
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -388,7 +389,7 @@ async def test_scope_widening_unions_granted_scopes(app):
 
 def _shared_pool(app):
     """The pool ``_make_app`` wired in, so a test can control its fetchrow."""
-    return app.dependency_overrides[oauth_module._get_db_manager]().credential_shared_pool()
+    return app.dependency_overrides[get_db_optional]().credential_shared_pool()
 
 
 async def test_account_ref_resolves_to_the_stored_login_hint(app):
@@ -707,7 +708,7 @@ async def test_oauth_status_returns_google_structure(app):
     pool.acquire = _acquire
     db_manager = MagicMock()
     db_manager.credential_shared_pool.return_value = pool
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
+    app.dependency_overrides[get_db_optional] = lambda: db_manager
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -961,7 +962,7 @@ def _make_callback_app(app):
     pool.acquire = _acquire
     db_manager = MagicMock()
     db_manager.credential_shared_pool.return_value = pool
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
+    app.dependency_overrides[get_db_optional] = lambda: db_manager
     return app, pool
 
 

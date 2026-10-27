@@ -26,7 +26,7 @@ async function openRoute(page: Page, route: PhoneEntryRoute) {
       r.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(body),
+        body,
       }),
     );
   }

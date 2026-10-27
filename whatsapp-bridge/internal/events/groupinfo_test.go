@@ -1,4 +1,4 @@
-package events_test
+package events
 
 import (
 	"errors"
@@ -7,13 +7,11 @@ import (
 	"time"
 
 	waTypes "go.mau.fi/whatsmeow/types"
-
-	"github.com/butlers/whatsapp-bridge/internal/events"
 )
 
-// fakeGroupInfoFetcher signals each completed fetch on a channel so tests
-// can deterministically wait for GroupInfoCache's background refresh
-// goroutine to land, instead of racing it with a sleep.
+// fakeGroupInfoFetcher announces a result before returning it. That notification
+// does not mean GroupInfoCache has published the result; release can hold the
+// fetch open to exercise that ordering explicitly.
 type fakeGroupInfoFetcher struct {
 	mu      sync.Mutex
 	calls   int
@@ -21,7 +19,8 @@ type fakeGroupInfoFetcher struct {
 		count int
 		err   error
 	}
-	done chan struct{}
+	done    chan struct{}
+	release <-chan struct{}
 }
 
 func newFakeFetcher(results ...struct {
@@ -42,6 +41,9 @@ func (f *fakeGroupInfoFetcher) ParticipantCount(jid waTypes.JID) (int, error) {
 	}
 	result := f.perCall[idx]
 	f.done <- struct{}{}
+	if f.release != nil {
+		<-f.release
+	}
 	return result.count, result.err
 }
 
@@ -51,15 +53,38 @@ func (f *fakeGroupInfoFetcher) callCount() int {
 	return f.calls
 }
 
-// waitForFetch blocks until the fetcher completes at least one more fetch,
-// or fails the test after a generous timeout — the deterministic
-// alternative to sleeping past GroupInfoCache's background goroutine.
-func (f *fakeGroupInfoFetcher) waitForFetch(t *testing.T) {
+// waitForFetchResult observes the fake's pre-return notification only.
+func (f *fakeGroupInfoFetcher) waitForFetchResult(t *testing.T) {
 	t.Helper()
 	select {
 	case <-f.done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for background fetch to complete")
+		t.Fatal("timed out waiting for fetch result")
+	}
+}
+
+// waitForPublication observes the cache entry and completed refresh under the
+// cache mutex. In particular, a published failure (count 0) must be distinguished
+// from an absent entry, which also returns 0 through ParticipantCount.
+func waitForPublication(t *testing.T, cache *GroupInfoCache, jid waTypes.JID, want int) {
+	t.Helper()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		cache.mu.Lock()
+		entry, present := cache.entries[jid.String()]
+		refreshing := cache.refreshing[jid.String()]
+		cache.mu.Unlock()
+		if present && entry.count == want && !refreshing {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-timer.C:
+			t.Fatalf("cache publication: want %d, got %d (present=%t, refreshing=%t)", want, entry.count, present, refreshing)
+		}
 	}
 }
 
@@ -72,8 +97,8 @@ func mustParseJID(t *testing.T, s string) waTypes.JID {
 	return jid
 }
 
-func newTestCache(fetcher events.GroupInfoFetcher, ttl time.Duration) *events.GroupInfoCache {
-	return events.NewGroupInfoCache(fetcher, ttl)
+func newTestCache(fetcher GroupInfoFetcher, ttl time.Duration) *GroupInfoCache {
+	return NewGroupInfoCache(fetcher, ttl)
 }
 
 func TestGroupInfoCache_ColdCacheReturnsZeroImmediatelyAndRefreshesInBackground(t *testing.T) {
@@ -81,6 +106,11 @@ func TestGroupInfoCache_ColdCacheReturnsZeroImmediatelyAndRefreshesInBackground(
 		count int
 		err   error
 	}{count: 15})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFetch := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseFetch)
+	fetcher.release = release
 	cache := newTestCache(fetcher, time.Hour)
 	jid := mustParseJID(t, "123456-group@g.us")
 
@@ -91,7 +121,14 @@ func TestGroupInfoCache_ColdCacheReturnsZeroImmediatelyAndRefreshesInBackground(
 		t.Errorf("expected 0 on cold cache (never block on the network), got %d", first)
 	}
 
-	fetcher.waitForFetch(t)
+	fetcher.waitForFetchResult(t)
+	// The old notification has arrived, but the fetch cannot return yet, so
+	// the result cannot have been published. The public hot path stays cold.
+	if pending := cache.ParticipantCount(jid); pending != 0 {
+		t.Errorf("expected 0 before fetch returns, got %d", pending)
+	}
+	releaseFetch()
+	waitForPublication(t, cache, jid, 15)
 
 	second := cache.ParticipantCount(jid)
 	if second != 15 {
@@ -108,7 +145,7 @@ func TestGroupInfoCache_CachesWithinTTL(t *testing.T) {
 	jid := mustParseJID(t, "123456-group@g.us")
 
 	cache.ParticipantCount(jid) // cold: 0, triggers refresh
-	fetcher.waitForFetch(t)
+	waitForPublication(t, cache, jid, 15)
 	cache.ParticipantCount(jid) // now warm: 15
 
 	// A burst of further calls within the TTL must not trigger additional
@@ -137,7 +174,7 @@ func TestGroupInfoCache_RefetchesAfterTTLExpires(t *testing.T) {
 	jid := mustParseJID(t, "123456-group@g.us")
 
 	cache.ParticipantCount(jid)
-	fetcher.waitForFetch(t)
+	waitForPublication(t, cache, jid, 15)
 
 	time.Sleep(20 * time.Millisecond)
 
@@ -145,14 +182,18 @@ func TestGroupInfoCache_RefetchesAfterTTLExpires(t *testing.T) {
 	if stale != 15 {
 		t.Errorf("expected stale value 15 to still be served while refresh is in flight, got %d", stale)
 	}
-	fetcher.waitForFetch(t)
+	waitForPublication(t, cache, jid, 18)
+
+	// Check the two completed refreshes before another public lookup: if the
+	// scheduler pauses longer than the unchanged 10ms TTL, that lookup may
+	// legitimately start a third refresh while still returning the stored 18.
+	if fetcher.callCount() != 2 {
+		t.Errorf("expected 2 fetches after TTL expiry, got %d", fetcher.callCount())
+	}
 
 	fresh := cache.ParticipantCount(jid)
 	if fresh != 18 {
 		t.Errorf("expected 18 after TTL-triggered refresh lands, got %d", fresh)
-	}
-	if fetcher.callCount() != 2 {
-		t.Errorf("expected 2 fetches after TTL expiry, got %d", fetcher.callCount())
 	}
 }
 
@@ -171,7 +212,7 @@ func TestGroupInfoCache_FetchFailureIsNegativeCachedBriefly(t *testing.T) {
 	jid := mustParseJID(t, "123456-group@g.us")
 
 	cache.ParticipantCount(jid) // cold: 0, triggers refresh (fails)
-	fetcher.waitForFetch(t)
+	waitForPublication(t, cache, jid, 0)
 
 	afterFailure := cache.ParticipantCount(jid)
 	if afterFailure != 0 {
@@ -205,7 +246,7 @@ func TestGroupInfoCache_ConcurrentCallsDedupeToOneInFlightFetch(t *testing.T) {
 	}
 	wg.Wait()
 
-	fetcher.waitForFetch(t)
+	waitForPublication(t, cache, jid, 42)
 	time.Sleep(20 * time.Millisecond) // let any (unwanted) duplicate fetches surface
 
 	if fetcher.callCount() != 1 {
@@ -234,9 +275,9 @@ func TestGroupInfoCache_DifferentJIDsCachedIndependently(t *testing.T) {
 	jidB := mustParseJID(t, "222-group@g.us")
 
 	cache.ParticipantCount(jidA)
-	fetcher.waitForFetch(t)
+	waitForPublication(t, cache, jidA, 5)
 	cache.ParticipantCount(jidB)
-	fetcher.waitForFetch(t)
+	waitForPublication(t, cache, jidB, 300)
 
 	countA := cache.ParticipantCount(jidA)
 	countB := cache.ParticipantCount(jidB)

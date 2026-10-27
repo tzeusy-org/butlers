@@ -26,9 +26,11 @@ from butlers.core.model_routing import Complexity
 from butlers.core.tool_call_capture import (
     reset_current_approval_push_runtime,
     reset_current_codex_auth_authority,
+    reset_current_credential_store,
     reset_current_switchboard_client,
     set_current_approval_push_runtime,
     set_current_codex_auth_authority,
+    set_current_credential_store,
     set_current_switchboard_client,
 )
 from butlers.scheduled_jobs import (
@@ -83,6 +85,8 @@ async def dispatch_scheduled_task(
     max_token_budget: int | None = None,
     switchboard_client: Any | None = None,
     approval_push_runtime: Any | None = None,
+    credential_store: Any | None = None,
+    chronicler_continuation: Any | None = None,
 ) -> Any:
     """Dispatch one scheduled task via deterministic jobs or prompt fallback.
 
@@ -162,13 +166,25 @@ async def dispatch_scheduled_task(
         _codex_authority_token = set_current_codex_auth_authority(
             getattr(spawner, "codex_auth_authority", None),
         )
+        _store_token = set_current_credential_store(credential_store)
         try:
             with bind_memory_maintenance_dispatch(
                 butler_name=butler_name,
                 spawner=spawner,
             ):
-                return await handler(pool, job_args)
+                result = await handler(pool, job_args)
+                if chronicler_continuation is not None and butler_name == "chronicler":
+                    # Fixed source registry identity, not a job_args callback.
+                    original = get_deterministic_schedule_job_registry().get("chronicler", {})
+                    eligible = (
+                        resolved_job_name.startswith("chronicler_project_")
+                        or resolved_job_name == "chronicler_rollup_daily"
+                    )
+                    if eligible and original.get(resolved_job_name) is handler:
+                        chronicler_continuation.after_job(resolved_job_name, result)
+                return result
         finally:
+            reset_current_credential_store(_store_token)
             reset_current_codex_auth_authority(_codex_authority_token)
             reset_current_approval_push_runtime(_push_token)
             reset_current_switchboard_client(_client_token)
@@ -177,6 +193,8 @@ async def dispatch_scheduled_task(
         raise RuntimeError("Scheduler dispatch requires an initialized spawner")
     if prompt is None or not prompt.strip():
         raise RuntimeError("Prompt-mode scheduler dispatch requires a non-empty prompt payload")
+    if chronicler_continuation is not None and trigger_source == "schedule:chronicler_day_close":
+        chronicler_continuation.day_close_ran = True
     return await spawner.trigger(
         prompt=prompt,
         trigger_source=trigger_source,
@@ -229,6 +247,7 @@ async def scheduler_loop(
     completion_hooks: dict[str, Any] | None = None,
     get_eligibility_pool: Callable[[], Any] | None = None,
     default_timezone: str = "UTC",
+    chronicler_continuation: Any | None = None,
 ) -> None:
     """Periodically call tick() to dispatch due scheduled tasks.
 
@@ -290,6 +309,18 @@ async def scheduler_loop(
 
     async def _scheduler_notify_fn(envelope: dict) -> None:
         """Deliver a deferred notify.v1 envelope via the standard notify pipeline."""
+        # Stored envelopes must re-read current attention state before release.
+        # A failed/active read raises, so the existing flush keeps the original
+        # pending row and deadline; no label in the envelope is bypass authority.
+        from butlers.core.approvals_policy import AttentionReadUnavailable
+        from butlers.core.attention_ledger import check_owner_notify_suppression
+
+        db = get_db()
+        if db is None or db.pool is None:
+            raise AttentionReadUnavailable("attention_store_unavailable")
+        reason = await check_owner_notify_suppression(db.pool, log_context="deferred_notify")
+        if reason is not None:
+            raise AttentionReadUnavailable("deferred_attention_hold")
         _client = get_switchboard_client()
         _db = get_db()
         if _client is None and butler_name != "switchboard":
@@ -336,6 +367,8 @@ async def scheduler_loop(
         while True:
             await asyncio.sleep(interval)
             eligibility_pool = get_eligibility_pool() if get_eligibility_pool is not None else None
+            if chronicler_continuation is not None:
+                chronicler_continuation.begin_tick()
             tick_task = asyncio.create_task(
                 tick_fn(
                     pool,
@@ -372,6 +405,12 @@ async def scheduler_loop(
                     "Scheduler loop: tick() raised an exception for butler %s; continuing",
                     butler_name,
                 )
+            if chronicler_continuation is not None:
+                try:
+                    # Durable discovery also recovers a missed postcommit hook.
+                    await chronicler_continuation.resume_once()
+                except Exception:
+                    logger.exception("Chronicler continuation deferred after tick")
             await _sweep_domain_event_reactions(pool, butler_name)
     except asyncio.CancelledError:
         logger.info("Scheduler loop cancelled for butler %s", butler_name)

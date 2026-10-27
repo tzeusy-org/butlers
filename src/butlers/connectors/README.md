@@ -32,7 +32,6 @@ account — no manual env var configuration needed:
 - **Telegram bot:** `getMe` API → `telegram:bot:@<username>`
 - **Telegram user client:** Telethon `get_me()` → `telegram:user:@<username>`
 - **Gmail:** derived from `public.google_accounts.email` → `gmail:user:<email>`
-- **Discord:** `/users/@me` API → `discord:user:@<username>`
 
 ## Telegram Bot Connector
 
@@ -187,3 +186,31 @@ uv run pytest tests/connectors/ -v
 # Run specific connector test
 uv run pytest tests/connectors/test_telegram_bot_connector.py::test_name -v
 ```
+
+## Channel kinds and provider-authored text
+
+The native heartbeat producers declare `capabilities.channel_kind` under
+REQ-connector-base-spec-003 and RFC 0038 D5:
+
+| Connector | Kind | Reason |
+| --- | --- | --- |
+| Spotify | `feed` | Playback observations and listening digests describe account activity; they do not deliver a person's message. Track, playlist and device names remain externally editable data. |
+| Google Calendar | `message` | Event changes and invitations carry organizer-authored content, with that organizer retained as the sender. The same declaration applies to synthesized starting-soon notifications. |
+| Google Drive | `feed` | Change polling emits file metadata and batch digests, not document bodies, comments or a person's addressed message. Both the manager heartbeat and the direct per-account heartbeat update declare this kind. |
+
+A feed declaration establishes neither owner origin nor trusted content or
+recipient ownership. Under D5/D6, editable metadata such as filenames and
+playlist names remains untrusted input; reasoning from a feed requires a
+declared subscription. An undeclared or unreadable registry entry still falls
+back to `message`.
+
+REQ-connector-base-spec-004 marks provider-identified nested messages, rather
+than every externally authored field. These producers currently supply no such
+forwarded, quoted or embedded message: Spotify supplies playback metadata;
+Drive never downloads document bodies or comments; Calendar's normalized title
+and location are the direct organizer's content, not a nested message. Its raw
+event remains provider data, and neither the organizer field nor a `message`
+declaration proves owner authorization. No spans are invented for that content.
+A future content-bearing or provider-marked nested-message path must mark its
+actual normalized-text boundaries (or the whole text when boundaries are
+unknown). This change does not alter ingest routing or owner authorization.

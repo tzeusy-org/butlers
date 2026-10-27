@@ -58,6 +58,12 @@ def test_parse_extracts_only_untrusted_lookup_fields() -> None:
     assert parsed.verb == "a"
     assert parse_approval_callback_token(f"{token[:-1]}0") is not None
     assert parse_approval_callback_token("not-an-approval-token") is None
+    assert (
+        parse_approval_callback_token(
+            "dsk1:12345678-1234-5678-1234-567812345678:0:0123456789abcdef"
+        )
+        is None
+    )
 
 
 def test_callback_token_rejects_tampered_hmac() -> None:

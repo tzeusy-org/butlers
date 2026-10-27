@@ -13,9 +13,17 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
+import os
+import platform
 import shutil
+import time
 import uuid
+import warnings
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
@@ -422,6 +430,226 @@ async def test_quota_reset_and_window_exclusion(pool: asyncpg.Pool) -> None:
     await _insert_ledger_row(pool, catalog_entry_id=eid2, input_tokens=50)
     r2 = await check_token_quota(pool, eid2)
     assert r2.usage_30d == 50 and r2.allowed is True
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_monthly_ceiling_measured_synthetic_cost(pool: asyncpg.Pool) -> None:
+    """Retain real per-call samples, with status controls, before considering a cache.
+
+    Only disposable synthetic data is reported. The informational warning is an
+    intentional receipt: xdist forwards warnings from passing workers, whereas
+    their stdout and arbitrary JUnit properties do not survive the CI carrier.
+    No elapsed-time assertion is a performance threshold or a production claim.
+    """
+    from butlers.core import model_routing
+    from butlers.core.pricing import estimate_session_cost, load_pricing
+
+    started = time.perf_counter()
+    await pool.execute("DELETE FROM public.spend_ceiling")
+    model_ids = (
+        "claude-haiku-4-5-20251001",
+        "claude-sonnet-4-6",
+        "claude-opus-4-6",
+    )
+    for index, model_id in enumerate(model_ids):
+        await pool.execute(
+            """INSERT INTO public.model_catalog
+               (alias, runtime_type, model_id, complexity_tier, enabled, priority)
+               VALUES ($1, 'claude', $2, 'workhorse', true, 0)""",
+            f"synthetic-ceiling-{index}",
+            model_id,
+        )
+    pricing = load_pricing()
+    ceiling_usd = 100_000.0
+    expected_usd = 0.0
+
+    async def checked_sample(*, configured: bool = True, allowed: bool = True) -> float:
+        before = time.perf_counter_ns()
+        status = await check_monthly_ceiling(pool)
+        elapsed_ms = (time.perf_counter_ns() - before) / 1_000_000
+        # A swallowed SQL/pricing error must never masquerade as a fast sample.
+        assert status.ceiling_usd == (ceiling_usd if configured else None)
+        assert status.mtd_usd == pytest.approx(expected_usd)
+        assert status.allowed is allowed
+        assert status.unpriced_models == () and status.unmeasurable_attempts == 0
+        return round(elapsed_ms, 6)
+
+    receipt = {
+        "kind": "informational-synthetic-monthly-ceiling-v1",
+        "python": platform.python_version(),
+        "asyncpg": asyncpg.__version__,
+        "platform": platform.system(),
+        "cpu_count": os.cpu_count(),
+        "source": {
+            key: os.environ.get(key)
+            for key in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")
+        },
+        "pricing_sha256": hashlib.sha256(
+            await asyncio.to_thread(Path("pricing.toml").read_bytes)
+        ).hexdigest(),
+        "pool": {"min_size": pool.get_min_size(), "max_size": pool.get_max_size()},
+        "method": {
+            "clock": "perf_counter_ns; milliseconds",
+            "full_call": "await check_monthly_ceiling(pool), including pool/query/pricing",
+            "first": "first call after seed/ANALYZE; existing pool; no OS/PG cache flush",
+            "steady_warmups": 3,
+            "serial_samples": 20,
+            "concurrent_samples": 12,
+            "concurrency": 3,
+            "components": "five isolated pool acquire/query/pricing samples; not additive",
+            "synthetic_tokens": {
+                "input": 1000,
+                "output": 200,
+                "cached_input": 250,
+                "cache_creation": 50,
+            },
+            "historical_tokens": "twice current tokens; excluded from expected MTD",
+            "models": model_ids,
+        },
+        "profiles": [],
+    }
+    # These catalogs describe only this disposable test database, never a live estate.
+    receipt["database"] = dict(
+        await pool.fetchrow("""
+        SELECT version() AS version, current_setting('TimeZone') AS timezone,
+               current_setting('shared_buffers') AS shared_buffers,
+               current_setting('jit') AS jit, r.rolsuper AS superuser,
+               r.rolbypassrls AS bypassrls, r.rolcreaterole AS createrole,
+               inet_server_addr() IS NOT NULL AS tcp,
+               COALESCE((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false)
+                   AS tls
+        FROM pg_roles r WHERE r.rolname = current_user
+    """)
+    )
+    receipt["relations"] = [
+        dict(row)
+        for row in await pool.fetch("""
+        SELECT c.relname, c.relkind::text AS relkind, c.relrowsecurity, c.relforcerowsecurity
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relname IN ('model_catalog', 'token_usage_ledger', 'spend_ceiling')
+        ORDER BY c.relname
+    """)
+    ]
+    receipt["indexes"] = [
+        dict(row)
+        for row in await pool.fetch("""
+        SELECT tablename, indexname, indexdef FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND tablename IN ('model_catalog', 'token_usage_ledger', 'spend_ceiling')
+        ORDER BY tablename, indexname
+    """)
+    ]
+    receipt["partitions"] = [
+        row["relname"]
+        for row in await pool.fetch("""
+        SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+        WHERE i.inhparent = 'public.token_usage_ledger'::regclass ORDER BY c.relname
+    """)
+    ]
+    receipt["migration_heads"] = [
+        row["version_num"]
+        for row in await pool.fetch("SELECT version_num FROM public.alembic_version")
+    ]
+    receipt["no_ceiling_ms"] = [await checked_sample(configured=False) for _ in range(10)]
+    await pool.execute(
+        "INSERT INTO public.spend_ceiling (id, monthly_usd) VALUES (1, $1)", ceiling_usd
+    )
+    receipt["owner_setup_ms"] = round((time.perf_counter() - started) * 1000, 6)
+
+    try:
+        for row_count in (0, 1_000, 10_000, 100_000):
+            before_seed = time.perf_counter()
+            await pool.execute("TRUNCATE public.token_usage_ledger")
+            await pool.execute(
+                """
+                INSERT INTO public.token_usage_ledger
+                    (catalog_entry_id, butler_name, input_tokens, output_tokens,
+                     cached_input_tokens, cache_creation_tokens, recorded_at)
+                SELECT mc.id, 'synthetic-ceiling', 1000 * period.multiplier,
+                       200 * period.multiplier, 250 * period.multiplier,
+                       50 * period.multiplier, period.recorded_at
+                FROM generate_series(0, $1::integer - 1) AS s(number)
+                JOIN public.model_catalog mc
+                  ON mc.alias = 'synthetic-ceiling-' || (s.number % 3)::text
+                CROSS JOIN (VALUES
+                    (date_trunc('month', now() AT TIME ZONE 'UTC'), 1),
+                    (date_trunc('month', now() AT TIME ZONE 'UTC') - interval '1 month', 2)
+                ) AS period(recorded_at, multiplier)
+            """,
+                row_count,
+            )
+            await pool.execute("ANALYZE public.token_usage_ledger")
+            await pool.execute("ANALYZE public.model_catalog")
+            expected_usd = 0.0
+            for index, model_id in enumerate(model_ids):
+                count = (row_count + 2 - index) // 3
+                cost = estimate_session_cost(
+                    pricing,
+                    model_id,
+                    count * 1000,
+                    count * 200,
+                    cached_input_tokens=count * 250,
+                    cache_creation_tokens=count * 50,
+                )
+                assert cost is not None
+                expected_usd += cost
+            assert await pool.fetchval("SELECT count(*) FROM public.token_usage_ledger") == (
+                row_count * 2
+            )
+            profile = {
+                "current_rows": row_count,
+                "previous_month_rows": row_count,
+                "expected_mtd_usd": expected_usd,
+                "seed_analyze_ms": round((time.perf_counter() - before_seed) * 1000, 6),
+                "first_ms": await checked_sample(),
+            }
+            profile["warmup_ms"] = [await checked_sample() for _ in range(3)]
+            profile["serial_ms"] = [await checked_sample() for _ in range(20)]
+            concurrent = []
+            wave_ms = []
+            for _ in range(4):
+                before = time.perf_counter_ns()
+                concurrent.extend(await asyncio.gather(*(checked_sample() for _ in range(3))))
+                wave_ms.append(round((time.perf_counter_ns() - before) / 1e6, 6))
+            profile["concurrent_ms"] = concurrent
+            profile["concurrent_wave_ms"] = wave_ms
+            components = {
+                key: [] for key in ("acquire", "ceiling_query", "ledger_query", "pricing")
+            }
+            for _ in range(5):
+                before = time.perf_counter_ns()
+                async with pool.acquire():
+                    components["acquire"].append((time.perf_counter_ns() - before) / 1e6)
+                for name, sql in (
+                    ("ceiling_query", model_routing._CEILING_SELECT_SQL),
+                    ("ledger_query", model_routing._MTD_USAGE_BY_MODEL_SQL),
+                ):
+                    before = time.perf_counter_ns()
+                    rows = await pool.fetch(sql)
+                    components[name].append((time.perf_counter_ns() - before) / 1e6)
+                before = time.perf_counter_ns()
+                spend = model_routing.price_ledger_usage_rows(rows)
+                components["pricing"].append((time.perf_counter_ns() - before) / 1e6)
+                assert spend.cost_usd == pytest.approx(expected_usd)
+            profile["components_ms"] = {
+                key: [round(value, 6) for value in values] for key, values in components.items()
+            }
+            receipt["profiles"].append(profile)
+        # Real positive MTD must refuse, rather than timing a no-limit/fail-open result.
+        assert expected_usd > 1.0
+        ceiling_usd = 1.0
+        await pool.execute("UPDATE public.spend_ceiling SET monthly_usd = $1", ceiling_usd)
+        receipt["reached_ms"] = await checked_sample(allowed=False)
+    finally:
+        await pool.execute("DELETE FROM public.spend_ceiling")
+    warnings.warn(
+        "MONTHLY_CEILING_SYNTHETIC_MEASUREMENT=" + json.dumps(receipt, separators=(",", ":")),
+        UserWarning,
+        stacklevel=1,
+    )
 
 
 @pytest.mark.integration

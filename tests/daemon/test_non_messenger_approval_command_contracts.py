@@ -464,6 +464,9 @@ def test_non_messenger_direct_park_sites_stay_declared() -> None:
         # The registered Calendar tool uses its trusted startup-bound canonical
         # preparer; replay still runs through the owning gate and executor.
         ("src/butlers/modules/calendar_response.py", "prepare_and_park"),
+        # Messenger parks the original registered route.execute envelope; the
+        # executor's exact task/tool/argument context authorizes its replay.
+        ("src/butlers/core_tools/_routing.py", "_check_routed_delivery_approval"),
     }
     found_sources: set[tuple[str, str]] = set()
     for root in (_REPO_ROOT / "src", _REPO_ROOT / "roster"):

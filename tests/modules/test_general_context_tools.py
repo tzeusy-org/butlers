@@ -56,6 +56,27 @@ def _make_mcp() -> MagicMock:
     return mcp
 
 
+@pytest.fixture(autouse=True)
+def bound_owner_invocation(monkeypatch):
+    """Use the actual server routing accessor, not an auth helper stub."""
+    from butlers.core import tool_call_capture as capture
+
+    owner = UUID("11111111-1111-1111-1111-111111111111")
+    monkeypatch.setattr(
+        "butlers.modules.memory.content_authority.fetch_owner_entity_id",
+        AsyncMock(return_value=owner),
+    )
+    token = capture.set_current_runtime_session_id("context-owner-test")
+    unbound = capture.set_current_runtime_session_locator_unbound(False)
+    capture.set_runtime_session_routing_context(
+        "context-owner-test", {"source_entity_id": str(owner)}
+    )
+    yield
+    capture.clear_runtime_session_routing_context("context-owner-test")
+    capture.reset_current_runtime_session_locator_unbound(unbound)
+    capture.reset_current_runtime_session_id(token)
+
+
 @pytest.fixture
 async def registered_tools() -> dict[str, Any]:
     """A GeneralModule wired to a mock pool, with tools registered on a fake mcp."""
@@ -393,3 +414,65 @@ async def test_clear_context_scopes_to_general_butler(
     kwargs = mock_clear.await_args.kwargs
     assert kwargs.get("butler_name") == "general"
     assert kwargs.get("signal_type") == "focused"
+
+
+@pytest.mark.parametrize(
+    "context,unbound",
+    [
+        (None, False),
+        ({"source_entity_id": "22222222-2222-2222-2222-222222222222"}, False),
+        ({"source_channel": "dashboard", "owner": True}, False),
+        ({"source_entity_id": "11111111-1111-1111-1111-111111111111"}, True),
+    ],
+)
+async def test_context_mutations_refuse_unverified_owner_without_writes(
+    registered_tools, monkeypatch, context, unbound
+):
+    """REQ-context-bus-012: text/IDs/channel labels/locators never authorize writes."""
+    from butlers import context_bus as bus
+    from butlers.core import tool_call_capture as capture
+
+    capture.clear_runtime_session_routing_context("context-owner-test")
+    if context:
+        capture.set_runtime_session_routing_context("context-owner-test", context)
+    token = capture.set_current_runtime_session_locator_unbound(unbound)
+    write = AsyncMock()
+    clear = AsyncMock()
+    monkeypatch.setattr(bus, "set_context", write)
+    monkeypatch.setattr(bus, "clear_context", clear)
+    try:
+        for name in ("set_context", "clear_context"):
+            with pytest.raises(PermissionError, match="bound owner"):
+                await registered_tools[name](signal_type="sick")
+    finally:
+        capture.reset_current_runtime_session_locator_unbound(token)
+    write.assert_not_awaited()
+    clear.assert_not_awaited()
+
+
+async def test_context_owner_device_and_resolution_outage(registered_tools, monkeypatch):
+    """REQ-context-bus-012: authenticated bound device works; owner lookup cannot fail open."""
+    from butlers import context_bus as bus
+    from butlers.core import tool_call_capture as capture
+
+    capture.set_runtime_session_routing_context(
+        "context-owner-test", {"request_context": {"source_channel": "dashboard"}}
+    )
+    write, clear = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(bus, "set_context", write)
+    monkeypatch.setattr(bus, "clear_context", clear)
+    await registered_tools["set_context"](signal_type="sick")
+    await registered_tools["clear_context"](signal_type="sick")
+    write.assert_awaited_once()
+    clear.assert_awaited_once()
+    write.reset_mock()
+    clear.reset_mock()
+    monkeypatch.setattr(
+        "butlers.modules.memory.content_authority.fetch_owner_entity_id",
+        AsyncMock(side_effect=RuntimeError("owner read unavailable")),
+    )
+    for name in ("set_context", "clear_context"):
+        with pytest.raises(RuntimeError):
+            await registered_tools[name](signal_type="sick")
+    write.assert_not_awaited()
+    clear.assert_not_awaited()

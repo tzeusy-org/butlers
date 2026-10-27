@@ -28,6 +28,7 @@ from butlers.testing.migration import (
     migration_bootstrap_db_url,
     migration_db_name,
 )
+from tests.audit_helpers import clear_audit_log_for_test
 
 # Without these this file is invisible to `-m db` / `-m integration` selection
 # and *errors* rather than skips on a host with no Docker, unlike its sibling
@@ -158,10 +159,8 @@ async def test_legacy_runtime_writers_get_debounce_markers_planted_for_them(
     honours its own debounce, not an ingress gate.
     """
     pool = migrated_v2_pool
-    async with pool.acquire() as admin_connection:
-        await admin_connection.execute(
-            "TRUNCATE public.audit_log, public.model_dispatch_attempts CASCADE"
-        )
+    await clear_audit_log_for_test(pool)
+    await pool.execute("TRUNCATE public.model_dispatch_attempts CASCADE")
     try:
         entry_id = uuid.uuid4()
         await pool.execute(
@@ -227,7 +226,8 @@ async def test_legacy_runtime_writers_get_debounce_markers_planted_for_them(
             """
         ), "the retired audit vocabulary is still being planted"
     finally:
-        await pool.execute("TRUNCATE public.audit_log, public.model_dispatch_attempts CASCADE")
+        await clear_audit_log_for_test(pool)
+        await pool.execute("TRUNCATE public.model_dispatch_attempts CASCADE")
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -256,7 +256,8 @@ async def test_rollover_crossing_denial_is_evidence_for_the_month_being_guarded(
     denial's own ``model_dispatch_attempts`` row rolled back with it.
     """
     pool = migrated_v2_pool
-    await pool.execute("TRUNCATE public.audit_log, public.model_dispatch_attempts CASCADE")
+    await clear_audit_log_for_test(pool)
+    await pool.execute("TRUNCATE public.model_dispatch_attempts CASCADE")
     try:
         entry_id = uuid.uuid4()
         await pool.execute(
@@ -327,7 +328,8 @@ async def test_rollover_crossing_denial_is_evidence_for_the_month_being_guarded(
         assert episode.fleet_halt_month == guarded_month
         assert episode.source_snapshot["denied_count"] == 1
     finally:
-        await pool.execute("TRUNCATE public.audit_log, public.model_dispatch_attempts CASCADE")
+        await clear_audit_log_for_test(pool)
+        await pool.execute("TRUNCATE public.model_dispatch_attempts CASCADE")
         engine = create_engine(migrated_v2_bootstrap_url, isolation_level="AUTOCOMMIT")
         try:
             with engine.connect() as connection:

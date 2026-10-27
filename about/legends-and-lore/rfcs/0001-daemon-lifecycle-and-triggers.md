@@ -23,7 +23,7 @@ The daemon executes these phases in strict order. A failure at a fatal phase abo
 |-------|--------|--------------|
 | 1 | Load config from `butler.toml` and configure structured logging | Fatal -- no config, no butler |
 | 2 | Initialize telemetry/metrics and scan config values for inline secrets | Telemetry falls back to no-op providers; secret findings warn |
-| 3 | Initialize modules via topological sort and skip modules whose required config is omitted | Fatal if dependency cycle detected |
+| 3 | Construct only declared modules and order via topological sort | Fatal if an unknown name, missing declared dependency or cycle is detected |
 | 4 | Validate module config schemas (Pydantic) | Non-fatal per module |
 | 5 | Validate `butler.env` credentials (env-only fast-fail for non-secret config) | Fatal on missing required env vars |
 | 6 | Provision or receive the database pool and assign `db.owner_butler` from configured identity | Fatal |

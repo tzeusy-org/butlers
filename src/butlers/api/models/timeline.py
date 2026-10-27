@@ -109,9 +109,7 @@ class TimelineResponse(BaseModel):
     Uses an opaque composite ``(timestamp, id)`` keyset cursor for stable
     descending pagination — pass ``meta.cursor`` back as the ``before``
     parameter for the next page. ``meta.has_more`` indicates whether
-    additional pages exist. A bare ISO-8601 timestamp is also still accepted
-    as ``before`` for backward compatibility, without the same-timestamp
-    tiebreak that the composite cursor provides.
+    additional pages exist.
     """
 
     data: list[TimelineEvent]

@@ -1,0 +1,574 @@
+"""Timeline read-model v1 — versioned read boundary for the cross-butler timeline.
+
+Centralises the SQL projections and fan-out query functions for the unified
+timeline endpoint, which merges sessions and notifications from all butler
+schemas into a time-ordered stream.
+
+A breaking schema change (new required column, renamed column, type change)
+should produce a ``timeline_v2`` module rather than silently altering this one.
+
+Public surface
+--------------
+Column constants:
+    SESSION_COLUMNS
+    NOTIFICATION_COLUMNS
+
+Query functions (all async):
+    query_timeline_sessions_fan_out(
+        db, event_id, before, before_id, limit, butler_names, only_errors, trace_id
+    )
+        -> tuple[list[TimelineSessionRow], list[str]]  (rows, degraded butler names)
+    query_timeline_notifications_single(
+        pool, event_id, before, before_id, limit, butler_names, trace_id
+    )
+        -> list[TimelineNotificationRow]
+    query_timeline_session_histogram_fan_out(...)
+        -> tuple[list[TimelineMinuteCount], list[str]]
+    query_timeline_notification_histogram_single(...)
+        -> list[TimelineMinuteCount]
+    query_timeline_attention_sessions_fan_out(...)
+        -> tuple[list[TimelineAttentionRow], dict[str, int], list[str]]
+    query_timeline_attention_notifications_single(...)
+        -> tuple[list[TimelineAttentionRow], int]
+
+Row DTOs:
+    TimelineSessionRow
+    TimelineNotificationRow
+    TimelineAttentionRow
+
+The ``(timestamp, id)`` keyset cursor is minted and read with
+:mod:`butlers.api.pagination`; the id tiebreak is what stops events sharing a
+boundary timestamp (e.g. heartbeat ticks on the same cron second) from being
+skipped across a page boundary.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Literal
+from uuid import UUID
+
+import asyncpg
+
+from butlers.api.db import DatabaseManager
+from butlers.core.approval_recovery_exclusion import notification_recovery_exclusion_sql
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Version marker
+# ---------------------------------------------------------------------------
+
+#: Stability contract — bump to ``timeline_v2`` for breaking changes.
+READ_MODEL_VERSION = "timeline_v1"
+
+# The attention endpoint deliberately caps returned identifiers while keeping
+# its aggregate counts independent of the cap.
+TIMELINE_ATTENTION_LIMIT = 5
+
+# ---------------------------------------------------------------------------
+# Column projections (v1 schema contract)
+# ---------------------------------------------------------------------------
+
+#: Session columns projected for timeline events.
+SESSION_COLUMNS: str = (
+    "id, trace_id, prompt, trigger_source, success, started_at, completed_at, duration_ms"
+)
+
+#: Notification columns projected for timeline events.
+NOTIFICATION_COLUMNS: str = "id, source_butler, channel, recipient, message, status, created_at"
+
+# ---------------------------------------------------------------------------
+# Typed row DTOs
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TimelineSessionRow:
+    """Typed DTO for a session row as used in the cross-butler timeline (v1)."""
+
+    id: UUID
+    trace_id: str | None
+    prompt: str | None
+    trigger_source: str | None
+    success: bool | None
+    started_at: datetime
+    completed_at: datetime | None
+    duration_ms: int | None
+    #: Butler name attached after fan-out lookup.
+    butler: str | None = None
+
+
+@dataclass
+class TimelineNotificationRow:
+    """Typed DTO for a notification row as used in the cross-butler timeline (v1)."""
+
+    id: UUID
+    source_butler: str
+    channel: str | None
+    recipient: str | None
+    message: str | None
+    status: str | None
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class TimelineMinuteCount:
+    """Content-blind count returned by a source-local minute aggregation."""
+
+    start: datetime
+    count: int
+
+
+@dataclass(frozen=True)
+class TimelineAttentionRow:
+    """Content-blind identifier for a currently failed recent record."""
+
+    id: UUID
+    kind: Literal["session", "notification"]
+    butler: str
+    timestamp: datetime
+
+
+# ---------------------------------------------------------------------------
+# Row converters
+# ---------------------------------------------------------------------------
+
+
+def _row_to_session(row: asyncpg.Record, *, butler: str) -> TimelineSessionRow:
+    """Convert a raw asyncpg row to a :class:`TimelineSessionRow`."""
+    return TimelineSessionRow(
+        id=row["id"],
+        trace_id=row["trace_id"],
+        prompt=row["prompt"],
+        trigger_source=row["trigger_source"],
+        success=row["success"],
+        started_at=row["started_at"],
+        completed_at=row["completed_at"],
+        duration_ms=row["duration_ms"],
+        butler=butler,
+    )
+
+
+def _row_to_notification(row: asyncpg.Record) -> TimelineNotificationRow:
+    """Convert a raw asyncpg row to a :class:`TimelineNotificationRow`."""
+    return TimelineNotificationRow(
+        id=row["id"],
+        source_butler=row["source_butler"],
+        channel=row["channel"],
+        recipient=row["recipient"],
+        message=row["message"],
+        status=row["status"],
+        created_at=row["created_at"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Query functions
+# ---------------------------------------------------------------------------
+
+
+async def query_timeline_sessions_fan_out(
+    db: DatabaseManager,
+    *,
+    event_id: UUID | None = None,
+    before: datetime | None = None,
+    before_id: UUID | None = None,
+    limit: int,
+    butler_names: list[str] | None = None,
+    only_errors: bool | None = None,
+    trace_id: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> tuple[list[TimelineSessionRow], list[str]]:
+    """Fan out a timeline session query across all (or a subset of) butlers.
+
+    Parameters
+    ----------
+    db:
+        The DatabaseManager that manages per-butler pools.
+    event_id:
+        When set, resolve this persisted identifier independently of cursor pagination.
+    before:
+        Cursor timestamp — only sessions strictly before this position are
+        returned.  Pass ``None`` for no cursor filter (first page).
+    before_id:
+        Id half of the composite ``(started_at, id)`` keyset position from
+        the previous page's last row.  When given alongside ``before``, the
+        predicate is ``(started_at, id) < (before, before_id)`` instead of
+        the timestamp-only ``started_at < before`` — this is what stops
+        same-timestamp rows (e.g. simultaneous heartbeat ticks) from being
+        skipped across a page boundary.  Ignored when ``before`` is ``None``.
+    limit:
+        Maximum rows to fetch per butler (typically ``requested_limit + 1``
+        to allow has_more detection before trimming).
+    butler_names:
+        Subset of butler names to query.  Defaults to all registered butlers.
+    only_errors:
+        Pushes the ``event_type`` filter into SQL instead of filtering the
+        derived type after the fact (which under-reports and breaks
+        pagination — a page of errors used to be computed from the newest
+        ``limit`` sessions post-filtered, so older errors past that window
+        were unreachable and ``has_more`` was wrong).
+        ``True`` → only failed sessions (``success = false``, the "error"
+        event type). ``False`` → only non-failed sessions (``success`` true
+        or null, the "session" event type). ``None`` → no filter (both types).
+    trace_id:
+        When set, return only sessions carrying this OpenTelemetry trace ID.
+    since / until:
+        Optional paired inclusive/exclusive interval bounds. Validation and
+        pairing are owned by the API route.
+
+    Returns
+    -------
+    tuple[list[TimelineSessionRow], list[str]]
+        ``(rows, degraded_butlers)``. ``rows`` are combined from all queried
+        butlers, unordered — callers must sort and trim as needed.
+        ``degraded_butlers`` lists the names of any butler whose query failed
+        (so the caller can surface a per-source degraded flag rather than
+        silently returning a partial, indistinguishable-from-empty result).
+    """
+    conditions: list[str] = []
+    args: list[Any] = []
+    idx = 1
+
+    if event_id is not None:
+        conditions.append(f"id = ${idx}")
+        args.append(event_id)
+        idx += 1
+
+    if since is not None:
+        conditions.append(f"started_at >= ${idx}")
+        args.append(since)
+        idx += 1
+
+    if until is not None:
+        conditions.append(f"started_at < ${idx}")
+        args.append(until)
+        idx += 1
+
+    if before is not None:
+        if before_id is not None:
+            conditions.append(f"(started_at, id) < (${idx}, ${idx + 1})")
+            args.extend([before, before_id])
+            idx += 2
+        else:
+            conditions.append(f"started_at < ${idx}")
+            args.append(before)
+            idx += 1
+
+    if only_errors is True:
+        conditions.append("success = false")
+    elif only_errors is False:
+        conditions.append("success IS DISTINCT FROM false")
+
+    if trace_id is not None:
+        conditions.append(f"trace_id = ${idx}")
+        args.append(trace_id)
+
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    sql = (
+        f"SELECT {SESSION_COLUMNS} FROM sessions{where} "
+        f"ORDER BY started_at DESC, id DESC LIMIT {limit}"
+    )
+
+    results, degraded_butlers = await db.fan_out_with_status(
+        sql, tuple(args), butler_names=butler_names
+    )
+
+    rows: list[TimelineSessionRow] = []
+    for butler_name, db_rows in results.items():
+        for db_row in db_rows:
+            rows.append(_row_to_session(db_row, butler=butler_name))
+    return rows, degraded_butlers
+
+
+async def query_timeline_notifications_single(
+    pool: asyncpg.Pool,
+    *,
+    event_id: UUID | None = None,
+    before: datetime | None = None,
+    before_id: UUID | None = None,
+    limit: int,
+    source_butlers: list[str] | None = None,
+    only_failed: bool = False,
+    trace_id: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> list[TimelineNotificationRow]:
+    """Query the notifications table from a single pool (switchboard DB).
+
+    Notifications are stored in a single cross-butler table (in the switchboard
+    schema), so a single-pool query is correct — not a fan-out.
+
+    Parameters
+    ----------
+    pool:
+        The asyncpg pool to query (typically the switchboard pool).
+    event_id:
+        When set, resolve this persisted identifier independently of cursor pagination.
+    before:
+        Cursor timestamp — only notifications strictly before this position
+        are returned.  Pass ``None`` for no cursor filter.
+    before_id:
+        Id half of the composite ``(created_at, id)`` keyset position from the
+        previous page's last row — see :func:`query_timeline_sessions_fan_out`
+        for why this tiebreak matters.  Ignored when ``before`` is ``None``.
+    limit:
+        Maximum rows to fetch.
+    source_butlers:
+        If given, filter to notifications whose ``source_butler`` is in this list.
+    only_failed:
+        When ``True``, restrict to failed deliveries (``status = 'failed'``).
+        This backs the timeline Errors lens, which surfaces bounced deliveries
+        alongside failed sessions — a failed owner alert is an error the owner
+        must see, not a calm notification. Defaults to ``False`` (all statuses).
+    trace_id:
+        When set, return only notification deliveries carrying this OpenTelemetry
+        trace ID.
+    since / until:
+        Optional paired inclusive/exclusive interval bounds. Validation and
+        pairing are owned by the API route.
+
+    Returns
+    -------
+    list[TimelineNotificationRow]
+        Typed notification DTOs ordered by ``created_at DESC``.
+    """
+    conditions: list[str] = [notification_recovery_exclusion_sql()]
+    args: list[Any] = []
+    idx = 1
+
+    if event_id is not None:
+        conditions.append(f"id = ${idx}")
+        args.append(event_id)
+        idx += 1
+
+    if since is not None:
+        conditions.append(f"created_at >= ${idx}")
+        args.append(since)
+        idx += 1
+
+    if until is not None:
+        conditions.append(f"created_at < ${idx}")
+        args.append(until)
+        idx += 1
+
+    if before is not None:
+        if before_id is not None:
+            conditions.append(f"(created_at, id) < (${idx}, ${idx + 1})")
+            args.extend([before, before_id])
+            idx += 2
+        else:
+            conditions.append(f"created_at < ${idx}")
+            args.append(before)
+            idx += 1
+
+    if source_butlers is not None:
+        conditions.append(f"source_butler = ANY(${idx})")
+        args.append(source_butlers)
+        idx += 1
+
+    if trace_id is not None:
+        conditions.append(f"trace_id = ${idx}")
+        args.append(trace_id)
+        idx += 1
+
+    if only_failed:
+        conditions.append("status = 'failed'")
+
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    sql = (
+        f"SELECT {NOTIFICATION_COLUMNS} "
+        f"FROM notifications{where} "
+        f"ORDER BY created_at DESC, id DESC "
+        f"LIMIT {limit}"
+    )
+
+    db_rows = await pool.fetch(sql, *args)
+    return [_row_to_notification(r) for r in db_rows]
+
+
+async def query_timeline_session_histogram_fan_out(
+    db: DatabaseManager,
+    *,
+    since: datetime,
+    until: datetime,
+    butler_names: list[str],
+    only_errors: bool | None = None,
+    trace_id: str | None = None,
+) -> tuple[list[TimelineMinuteCount], list[str]]:
+    """Count matching sessions per UTC minute inside each selected butler pool."""
+    conditions = ["started_at >= $1", "started_at < $2"]
+    args: list[Any] = [since, until]
+    idx = 3
+    if only_errors is True:
+        conditions.append("success = false")
+    elif only_errors is False:
+        conditions.append("success IS DISTINCT FROM false")
+    if trace_id is not None:
+        conditions.append(f"trace_id = ${idx}")
+        args.append(trace_id)
+
+    sql = (
+        "SELECT date_trunc('minute', started_at) AS bucket_start, COUNT(*)::bigint AS count "
+        f"FROM sessions WHERE {' AND '.join(conditions)} "
+        "GROUP BY bucket_start ORDER BY bucket_start ASC"
+    )
+    results, degraded_butlers = await db.fan_out_with_status(
+        sql, tuple(args), butler_names=butler_names
+    )
+    counts: list[TimelineMinuteCount] = []
+    for rows in results.values():
+        counts.extend(
+            TimelineMinuteCount(start=row["bucket_start"], count=row["count"]) for row in rows
+        )
+    return counts, degraded_butlers
+
+
+async def query_timeline_notification_histogram_single(
+    pool: asyncpg.Pool,
+    *,
+    since: datetime,
+    until: datetime,
+    source_butlers: list[str] | None = None,
+    only_failed: bool = False,
+    trace_id: str | None = None,
+) -> list[TimelineMinuteCount]:
+    """Count matching notifications per UTC minute in the Switchboard pool."""
+    conditions = [
+        notification_recovery_exclusion_sql(),
+        "created_at >= $1",
+        "created_at < $2",
+    ]
+    args: list[Any] = [since, until]
+    idx = 3
+    if source_butlers is not None:
+        conditions.append(f"source_butler = ANY(${idx})")
+        args.append(source_butlers)
+        idx += 1
+    if trace_id is not None:
+        conditions.append(f"trace_id = ${idx}")
+        args.append(trace_id)
+        idx += 1
+    if only_failed:
+        conditions.append("status = 'failed'")
+
+    sql = (
+        "SELECT date_trunc('minute', created_at) AS bucket_start, COUNT(*)::bigint AS count "
+        f"FROM notifications WHERE {' AND '.join(conditions)} "
+        "GROUP BY bucket_start ORDER BY bucket_start ASC"
+    )
+    rows = await pool.fetch(sql, *args)
+    return [TimelineMinuteCount(start=row["bucket_start"], count=row["count"]) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Recent-failure attention projection
+# ---------------------------------------------------------------------------
+
+
+def _attention_count(row: asyncpg.Record, *, fallback: int = 0) -> int:
+    """Read the window count attached to a capped attention row."""
+    try:
+        return int(row["total_count"])
+    except (KeyError, TypeError, ValueError):
+        # Keep the read-model helper usable with older test doubles while the
+        # server query remains authoritative for the real endpoint. A capped
+        # result cannot prove a larger count without the window column, but it
+        # can still report its visible row count honestly.
+        return fallback
+
+
+async def query_timeline_attention_sessions_fan_out(
+    db: DatabaseManager,
+    *,
+    since: datetime,
+    until: datetime,
+    butler_names: list[str],
+    trace_id: str | None = None,
+) -> tuple[list[TimelineAttentionRow], dict[str, int], list[str]]:
+    """Read up to five currently-failed sessions from each selected pool.
+
+    ``COUNT(*) OVER ()`` keeps the exact per-pool count available on the same
+    source-local query as the bounded rows. A pool that answers with no rows is
+    a healthy zero; ``fan_out_with_status`` separately identifies query and
+    missing-pool failures so the API can report honest availability.
+    """
+    conditions = ["started_at >= $1", "started_at < $2", "success = false"]
+    args: list[Any] = [since, until]
+    if trace_id is not None:
+        conditions.append("trace_id = $3")
+        args.append(trace_id)
+
+    sql = (
+        "SELECT id, started_at, COUNT(*) OVER ()::bigint AS total_count "
+        f"FROM sessions WHERE {' AND '.join(conditions)} "
+        "ORDER BY started_at DESC, id DESC "
+        f"LIMIT {TIMELINE_ATTENTION_LIMIT}"
+    )
+    results, degraded_butlers = await db.fan_out_with_status(
+        sql, tuple(args), butler_names=butler_names
+    )
+
+    rows: list[TimelineAttentionRow] = []
+    counts: dict[str, int] = {}
+    for butler_name, db_rows in results.items():
+        counts[butler_name] = _attention_count(db_rows[0], fallback=len(db_rows)) if db_rows else 0
+        rows.extend(
+            TimelineAttentionRow(
+                id=db_row["id"],
+                kind="session",
+                butler=butler_name,
+                timestamp=db_row["started_at"],
+            )
+            for db_row in db_rows
+        )
+    return rows, counts, degraded_butlers
+
+
+async def query_timeline_attention_notifications_single(
+    pool: asyncpg.Pool,
+    *,
+    since: datetime,
+    until: datetime,
+    source_butlers: list[str] | None = None,
+    trace_id: str | None = None,
+) -> tuple[list[TimelineAttentionRow], int]:
+    """Read up to five currently-failed notifications from Switchboard."""
+    conditions = [
+        notification_recovery_exclusion_sql(),
+        "created_at >= $1",
+        "created_at < $2",
+        "status = 'failed'",
+    ]
+    args: list[Any] = [since, until]
+    idx = 3
+    if source_butlers is not None:
+        conditions.append(f"source_butler = ANY(${idx})")
+        args.append(source_butlers)
+        idx += 1
+    if trace_id is not None:
+        conditions.append(f"trace_id = ${idx}")
+        args.append(trace_id)
+
+    sql = (
+        "SELECT id, source_butler, created_at, COUNT(*) OVER ()::bigint AS total_count "
+        f"FROM notifications WHERE {' AND '.join(conditions)} "
+        "ORDER BY created_at DESC, id DESC "
+        f"LIMIT {TIMELINE_ATTENTION_LIMIT}"
+    )
+    db_rows = await pool.fetch(sql, *args)
+    count = _attention_count(db_rows[0], fallback=len(db_rows)) if db_rows else 0
+    rows = [
+        TimelineAttentionRow(
+            id=db_row["id"],
+            kind="notification",
+            butler=db_row["source_butler"],
+            timestamp=db_row["created_at"],
+        )
+        for db_row in db_rows
+    ]
+    return rows, count

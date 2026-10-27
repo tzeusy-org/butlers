@@ -257,3 +257,63 @@ Scope: v1-mandatory
 
 - **WHEN** the goal for a butler's untainted owner-class partition reads its episodes and dedup context while that butler also holds third-party contact facts
 - **THEN** the dedup context excludes the third-party and tainted facts and rules, the goal stays unexposed, and the rules it derives from owner evidence are active without endorsement
+
+#### Scenario: Throughput decision retains existing batching
+
+- **WHEN** the consolidation throughput decision recorded in `docs/decisions/consolidation-throughput-2026-10-15.md` is applied
+- **THEN** additional batching changes SHALL be recorded as deliberately not needed for the evidenced current state
+- **AND** existing bounded episode claims, deterministic grouping and one session per non-empty tenant/source group SHALL remain unchanged
+- **AND** this decision SHALL NOT reinterpret the ordinary default100 or existing scheduled backfill500 as a new universal cap
+
+#### Scenario: Throughput decision declines an additional per-run cap
+
+- **WHEN** the recorded throughput decision is applied
+- **THEN** a new consolidation-specific session, token or dollar cap SHALL be recorded as deliberately not needed for the evidenced current state
+- **AND** existing model-catalog and Spawner quota, failover and timeout authority SHALL remain unchanged
+- **AND** descriptive observed session token counts SHALL NOT be represented as exact whole-pipeline invocation cost or a newly adopted limit
+
+#### Scenario: Throughput decision declines backlog deadman automation
+
+- **WHEN** the recorded throughput decision is applied
+- **THEN** a new pending-backlog deadman SHALL be recorded as deliberately not needed for the evidenced current state
+- **AND** this decision SHALL authorize no alert-triggered runtime work, retry, lease clearing, drain, deletion, quarantine or automatic lifecycle change
+- **AND** an empty eligible population SHALL preserve a NULL oldest-eligible age rather than treating it as measured zero
+
+#### Scenario: Throughput decision preserves catalog-authoritative transport
+
+- **WHEN** the recorded throughput decision is applied
+- **THEN** a consolidation-specific forced cheap tier or transport SHALL be recorded as deliberately not needed for the evidenced current state
+- **AND** scheduled consolidation SHALL continue through the live catalog-backed Spawner without model, runtime or session-timeout overrides
+- **AND** absent authoritative billing or quality comparison SHALL NOT be replaced with guessed monetary savings or equivalence claims
+
+#### Scenario: Reconsidering a declined throughput control
+
+- **WHEN** a later proposal would adopt any of the four declined controls
+- **THEN** fresh source-bound backlog and exact attributable token evidence, including explicit unmeasurable gaps, SHALL precede numerical thresholds
+- **AND** the proposal SHALL define the threshold and action in a reviewed capability spec delta and create one separate implementation issue for each adopted control before implementation
+- **AND** the recorded present declines SHALL NOT be construed as proof that future stalls, cost pressure or useful catalog-compatible changes are impossible
+
+## ADDED Requirements
+
+### Requirement: Cross-domain recall is labelled and read-pure
+Recall SHALL implement S5's typed query, rank fusion, per-item provenance/conflicts/age and read-purity contract through owning services. Repeated reads SHALL NOT mutate reference counts, last-reference timestamps, ranking, authority or steering state. Private custody and existing source-specific inventory/read contracts SHALL remain intact.
+
+ID: REQ-module-memory-016
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S5; bu-dhloi1.19
+Scope: v1-mandatory
+
+#### Scenario: Repeated exposed recall is read-only
+- **WHEN** an exposed invocation repeats the same authorized search
+- **THEN** fact/rule/ranking state is unchanged apart from separate immutable read receipts, and labels still expose the actual reader
+
+#### Scenario: Different domain scores conflict
+- **WHEN** two domains return differently scored evidence about the same subject
+- **THEN** rank-level fusion retains source-labelled conflict sets and stated credence order without promoting authority
+
+#### Scenario: Sensitive default and explicit reads differ
+- **WHEN** a third-party or exposed goal composes context or explicitly searches a category
+- **THEN** default six-category recall is absent and situation is availability-only; explicit search still requires grant/category checks and cannot reveal raw coordinates/private custody
+
+#### Scenario: All sources fail or a label is missing
+- **WHEN** all selected domains time out or a returned item lacks a usable stamp
+- **THEN** the result is unavailable or the item is refused/unknown under D6, never a successful empty trusted answer

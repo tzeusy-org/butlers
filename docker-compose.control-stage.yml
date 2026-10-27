@@ -1,0 +1,55 @@
+# Dev-only KEY_ABSENT_STAGE. Requires Docker Compose >=2.24.4 for !reset/!override.
+# Canonical launcher selects this explicitly; production never includes it.
+services:
+  butlers-up:
+    entrypoint:
+    - /app/scripts/dev_entrypoint.sh
+    - butlers/up
+    - sh
+    - -c
+    - uv sync --dev && exec uv run butlers up --exclude switchboard
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - curl -sf http://localhost:41101/health || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+    environment:
+      BUTLERS_MAX_GLOBAL_SESSIONS: '4'
+      SWITCHBOARD_MCP_URL: http://butlers-control:41100/sse
+    ports: !reset []
+    depends_on: !override
+      butlers-control:
+        condition: service_healthy
+      log-init:
+        condition: service_completed_successfully
+      oauth-gate:
+        condition: service_completed_successfully
+      migrations:
+        condition: service_completed_successfully
+  butlers-up-hotreload:
+    entrypoint:
+    - sh
+    - -c
+    - uv sync --dev && exec uv run butlers up --exclude switchboard
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - curl -sf http://localhost:41101/health || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+    environment:
+      BUTLERS_MAX_GLOBAL_SESSIONS: '4'
+      SWITCHBOARD_MCP_URL: http://butlers-control:41100/sse
+    ports: !reset []
+    depends_on: !override
+      log-init:
+        condition: service_completed_successfully
+      oauth-gate:
+        condition: service_completed_successfully
+      butlers-control-hotreload:
+        condition: service_healthy

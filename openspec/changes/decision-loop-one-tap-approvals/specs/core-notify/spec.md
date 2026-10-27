@@ -4,10 +4,16 @@
 
 ### Requirement: Approval-Request Delivery Intent
 
+ID: REQ-core-notify-035
+Source: RFC-0021,RFC-0023; bu-jv1moa.2 S1
+Scope: v1-mandatory
+
 The `notify.v1` envelope SHALL support `intent = "approval_request"` for
 owner-targeted approval notifications originated by daemon infrastructure (the
 approvals gate park path). The envelope carries an `actions` payload listing
-decision affordances (verb, signed callback token, dashboard deep link).
+decision affordances (verb, signed callback token, dashboard deep link);
+Approve and Reject affordances are present only when the rendered message shows
+the whole stored call, otherwise the payload carries the Open affordance only.
 `approval_request` envelopes MUST target the owner only — envelopes targeting
 any non-owner recipient are rejected at validation. Channel rendering is the
 delivery plane's responsibility: telegram renders inline buttons; channels
@@ -19,8 +25,9 @@ budget.
 
 - **WHEN** an `approval_request` envelope with an `actions` payload is
   delivered to the owner's telegram channel
-- **THEN** the Messenger sends the message with Approve/Reject inline buttons
-  bound to the payload's callback tokens and an Open dashboard link
+- **THEN** the Messenger sends the message with the payload's affordances: when
+  the payload carries Approve and Reject, inline buttons bound to their
+  callback tokens, and always an Open dashboard link
 
 #### Scenario: Non-interactive channel falls back to a deep link
 

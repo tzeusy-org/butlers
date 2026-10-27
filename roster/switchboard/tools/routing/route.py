@@ -31,7 +31,7 @@ from butlers.tools.switchboard.routing.telemetry import (
     get_switchboard_telemetry,
     normalize_error_class,
 )
-from butlers.tools.switchboard.routing.transport import (
+from butlers.tools.switchboard.transport import (
     CONFIRMED,
     POLICY_DENIED,
     RECIPIENT_UNAVAILABLE,
@@ -324,6 +324,7 @@ async def route(
     *,
     internal_context: dict[str, Any] | None = None,
     call_fn: Any | None = None,
+    finance_warning_call: Any | None = None,
 ) -> dict[str, Any]:
     """Route a tool call to a target butler via its MCP endpoint.
 
@@ -359,6 +360,13 @@ async def route(
         folded into the standard ``input.context`` envelope field; it is never
         forwarded as a target MCP keyword or to an arbitrary target tool.
     """
+    operation_pool = pool
+    if finance_warning_call is not None:
+        from butlers.core.finance_warning_control import _HeldCall
+
+        if type(finance_warning_call) is not _HeldCall:
+            raise PermissionError("finance_warning_binding_refused")
+        operation_pool = finance_warning_call.pool_operations(pool)
     tracer = trace.get_tracer("butlers")
     telemetry = get_switchboard_telemetry()
     route_args, route_context = _extract_route_context(args)
@@ -437,7 +445,10 @@ async def route(
             # identities.
             if tool_name == "delegate_wake":
                 wake_error = await _verify_delegate_wake_callback(
-                    pool, route_args, source_butler=source_butler, target_butler=target_butler
+                    operation_pool,
+                    route_args,
+                    source_butler=source_butler,
+                    target_butler=target_butler,
                 )
                 if wake_error is not None:
                     span.set_status(trace.StatusCode.ERROR, wake_error)
@@ -453,7 +464,13 @@ async def route(
                         },
                     )
                     await _log_routing(
-                        pool, source_butler, target_butler, tool_name, False, 0, wake_error
+                        operation_pool,
+                        source_butler,
+                        target_butler,
+                        tool_name,
+                        False,
+                        0,
+                        wake_error,
                     )
                     return {
                         "error": wake_error,
@@ -466,9 +483,9 @@ async def route(
             # routing retains exactly its current authority in the meantime.
             receiver_cutover = receiver_route_cutover_enabled()
             transient_refusal = False
-            if receiver_cutover:
+            if receiver_cutover or finance_warning_call is not None:
                 decision, resolve_error, transient_refusal = await _resolve_receiver_route_target(
-                    pool,
+                    operation_pool,
                     target_butler,
                     required_capability=required_capability,
                     route_contract_version=route_contract_version,
@@ -482,7 +499,7 @@ async def route(
                 # they cannot bypass an owner hold or an unverified receiver.
             else:
                 target_row, resolve_error = await resolve_routing_target(
-                    pool,
+                    operation_pool,
                     target_butler,
                     required_capability=required_capability,
                     route_contract_version=route_contract_version,
@@ -504,7 +521,7 @@ async def route(
                     },
                 )
                 await _log_routing(
-                    pool, source_butler, target_butler, tool_name, False, 0, error_msg
+                    operation_pool, source_butler, target_butler, tool_name, False, 0, error_msg
                 )
                 return {
                     "error": error_msg,
@@ -528,7 +545,7 @@ async def route(
 
             # Inject trace context into args
             trace_context = inject_trace_context()
-            if trace_context:
+            if trace_context and finance_warning_call is None:
                 route_args = {**route_args, "trace_context": trace_context}
             # Only the transport call itself belongs in this try. Everything
             # after it is bookkeeping about a send that already happened, and
@@ -542,7 +559,16 @@ async def route(
                 else:
                     from butlers.core.fact_authority import source_transport_headers
 
-                    headers = (
+                    private_headers = {}
+                    if finance_warning_call is not None:
+                        from butlers.core.finance_warning_control import _HeldCall
+
+                        if type(finance_warning_call) is not _HeldCall or decision is None:
+                            raise PermissionError("finance_warning_binding_refused")
+                        private_headers = finance_warning_call.headers(
+                            pool, target_butler, tool_name, route_args, decision
+                        )
+                    headers = private_headers or (
                         source_transport_headers(target_butler)
                         if tool_name == "route.execute"
                         else {}
@@ -552,15 +578,27 @@ async def route(
                         # endpoint-cached MCP session with unrelated reports.
                         from fastmcp.client.transports import StreamableHttpTransport
 
-                        async with MCPClient(
+                        peer_client = MCPClient(
                             StreamableHttpTransport(endpoint_url, headers=headers)
-                        ) as peer:
+                        )
+                        peer_context = (
+                            finance_warning_call.client_context(peer_client)
+                            if finance_warning_call is not None
+                            else peer_client
+                        )
+                        async with peer_context as peer:
                             result = await peer.call_tool(
                                 tool_name, route_args, raise_on_error=False
                             )
                             if getattr(result, "isError", False):
                                 raise TransportRejected(_extract_mcp_error_text(result))
                             result = _extract_fact_route_result(result)
+                            if (
+                                private_headers
+                                and type(result) is dict
+                                and set(result) == {"result"}
+                            ):
+                                result = result["result"]
                     else:
                         result = await _call_butler_tool(endpoint_url, tool_name, route_args)
             except Exception as exc:
@@ -594,7 +632,13 @@ async def route(
                     },
                 )
                 await _log_routing(
-                    pool, source_butler, target_butler, tool_name, False, duration_ms, error_msg
+                    operation_pool,
+                    source_butler,
+                    target_butler,
+                    tool_name,
+                    False,
+                    duration_ms,
+                    error_msg,
                 )
                 return {
                     "error": error_msg,
@@ -621,7 +665,7 @@ async def route(
                 },
             )
             await _record_confirmed_route(
-                pool,
+                operation_pool,
                 source_butler=source_butler,
                 target_butler=target_butler,
                 tool_name=tool_name,

@@ -1,6 +1,6 @@
 ## Context
 
-`roster/relationship/modules/tools.py` currently assigns eight tools to the
+`roster/relationship/modules/tools.py` currently initially assigns nine tools to the
 Relationship module's `entity` group:
 
 | Tool | Effect | Selected state |
@@ -13,6 +13,7 @@ Relationship module's `entity` group:
 | `relationship_lookup` | read | include in `entity` |
 | `entity_update` | write | keep pruned |
 | `relationship_record_coverage` | write | keep pruned |
+| `entity_set_posture` | write | keep pruned |
 
 `relationship_assert_fact` is deliberately ungrouped because the daemon must
 resolve approved fact writes against that registered handler even when it is
@@ -29,7 +30,7 @@ the entire combined daemon surface.
 **Goals:**
 
 - Give Relationship sessions the six owner-selected reads as one exact group.
-- Keep both Relationship grouped writes absent from the activated roster
+- Keep all three Relationship grouped writes absent from the activated roster
   surface.
 - Preserve approved replay through `relationship_assert_fact`.
 - Make canonical registration names and module ownership unambiguous.
@@ -38,10 +39,12 @@ the entire combined daemon surface.
 
 **Non-Goals:**
 
-- Activating any group or editing roster/runtime configuration in this change.
+- Restarting or activating a running deployment; source selection of the six-read
+  group is authorized by closed owner decision `bu-t89d9m` option A
+  (2026-10-20 14:36 UTC).
 - Changing the signatures or result schemas of the six reads.
 - Renaming memory-module tools or adding a bare `entity_create` alias.
-- Removing the two dormant write handlers from the Relationship module.
+- Removing the three dormant write handlers from the Relationship module.
 - Reading entity, relationship, provider, or production data.
 - Restarting, deploying, merging, or queueing an implementation.
 
@@ -49,7 +52,7 @@ the entire combined daemon surface.
 
 ### The Relationship `entity` group is read-only by membership
 
-The `entity` group SHALL contain exactly the six selected reads. The two writes
+The `entity` group SHALL contain exactly the six selected reads. The three writes
 remain registered in source but SHALL use a separate, inactive
 `entity_write` group so that selecting `groups = ["entity"]` cannot make them
 callable. This makes the property mechanically testable at FastMCP registration
@@ -99,13 +102,13 @@ error path and SHALL NOT fabricate `null`, an empty collection, `unknown`, or
 
 ## Activation Boundary
 
-After separate owner approval and implementation, the Relationship roster may
+Under closed owner decision `bu-t89d9m` option A and after implementation, the Relationship roster may
 add `entity` to `[modules.relationship].groups` while leaving `entity_write`
 absent. The relevant combined registration inventory is then:
 
 - present from the Relationship read group: the exact six selected reads;
-- absent from the Relationship write group: `entity_update` and
-  `relationship_record_coverage`;
+- absent from the Relationship write group: `entity_update`,
+  `relationship_record_coverage`, and `entity_set_posture`;
 - present independently: `relationship_assert_fact`;
 - present from the separately configured memory module:
   `memory_entity_create` under its canonical prefixed name.
@@ -116,9 +119,9 @@ No bare `entity_create` handler or alias may appear.
 
 The implementation must use a real FastMCP instance and inspect
 `await mcp.list_tools()` after Relationship module registration. One focused
-test selects only `entity` and proves the six reads are present, the two writes
+test selects only `entity` and proves the six reads are present, the three writes
 are absent, and `relationship_assert_fact` remains present. A second focused
-test omits both `entity` and `entity_write` and proves all eight grouped tools
+test omits both `entity` and `entity_write` and proves all nine grouped tools
 are absent while the unconditional writer remains present.
 
 Focused behavior tests must also pin the structured unknown-fact result,

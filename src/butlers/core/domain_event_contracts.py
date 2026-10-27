@@ -392,7 +392,9 @@ def load_contract_registry(roster_dir: Path | None = None) -> DomainEventContrac
         try:
             document = tomllib.loads(declaration_path.read_text(encoding="utf-8"))
         except (OSError, tomllib.TOMLDecodeError) as exc:
-            raise DomainEventContractError(f"{declaration_path}: unreadable declaration: {exc}")
+            raise DomainEventContractError(
+                f"{declaration_path}: unreadable declaration: {exc}"
+            ) from exc
         events = document.get("event", [])
         if not isinstance(events, list):
             raise DomainEventContractError(

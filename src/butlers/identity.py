@@ -915,6 +915,8 @@ async def resolve_owner_channel_via_definer(
     pool: asyncpg.Pool,
     channel_type: str,
     channel_value: str,
+    *,
+    raise_on_error: bool = False,
 ) -> tuple[ResolvedContact, bool] | None:
     """Resolve an OWNER channel through the ``public.resolve_owner_triple`` function.
 
@@ -934,7 +936,8 @@ async def resolve_owner_channel_via_definer(
     Returns ``(owner_contact, is_primary)`` when the candidate values resolve
     to exactly one live entity and that entity is the owner.  Returns ``None``
     for non-owner, unknown, or cross-entity ambiguous identifiers, unknown
-    channel types, and unavailable lookup infrastructure.
+    channel types, and unavailable lookup infrastructure. Trusted admission callers
+    set ``raise_on_error=True`` to distinguish unavailable infrastructure from a miss.
     """
     candidates = _owner_channel_authorization_candidates(channel_type, channel_value)
     if not candidates:
@@ -947,6 +950,8 @@ async def resolve_owner_channel_via_definer(
             list(candidates),
         )
     except Exception:  # noqa: BLE001
+        if raise_on_error:
+            raise
         logger.debug("identity.owner_channel_resolution_failed")
         return None
 
