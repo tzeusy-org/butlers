@@ -13,8 +13,10 @@ import inspect
 from pathlib import Path
 
 import pytest
+from fastmcp import FastMCP
 
 from butlers.modules.calendar import CalendarModule
+from butlers.testing.mcp import registered_tools
 
 pytestmark = pytest.mark.unit
 
@@ -47,22 +49,8 @@ EXPECTED_CALENDAR_TOOLS = frozenset(
 )
 
 
-class _StubMCP:
-    """Minimal MCP stub that captures registered tools by function name."""
-
-    def __init__(self) -> None:
-        self.tools: dict[str, object] = {}
-
-    def tool(self, *args, **kwargs):
-        def decorator(func):
-            self.tools[func.__name__] = func
-            return func
-
-        return decorator
-
-
 async def _registered_tools(groups: list[str] | None) -> set[str]:
-    mcp = _StubMCP()
+    mcp = FastMCP("calendar-test-tools")
     mod = CalendarModule()
     config = {"provider": "google", "calendar_id": "primary", "response_enabled": True}
     if groups is not None:
@@ -73,7 +61,7 @@ async def _registered_tools(groups: list[str] | None) -> set[str]:
         db=None,
         butler_name="messenger",
     )
-    return set(mcp.tools)
+    return set(await registered_tools(mcp))
 
 
 @pytest.mark.parametrize(
