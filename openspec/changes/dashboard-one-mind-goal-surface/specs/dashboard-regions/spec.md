@@ -239,4 +239,4 @@ Scope: post-v1
 - RFC 0038 D19 and owner decision 11; further exact decisions and current source boundaries remain the per-requirement Source fields.
 - Requirement-level source: RFC 0038 D19 and owner decision 11; RFC 0038 D7, D11, D13; design.md
 - Amendment source: bu-idcqzy design and D19 owner note (2026-10-15); RFC 0038 D7 and D14; design.md
-- Gap amendment source (2026-10-22): bu-85bqeq.1; RFC 0038 D19; RFC 0032 and openspec/specs/fleet-case-file for situations, plus the contributor-filter delta REQ-fleet-case-file-015 in this change; pending owner adoption.
+- Gap amendment source (2026-10-22): bu-85bqeq.1; RFC 0038 D19; RFC 0032 and openspec/specs/fleet-case-file for situations, plus the contributor-filter delta REQ-fleet-case-file-015 in this change; owner adoption recorded 2026-10-27.
