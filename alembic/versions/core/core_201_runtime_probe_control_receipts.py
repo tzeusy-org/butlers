@@ -116,6 +116,9 @@ def _for_existing_role(role: str, statement: str) -> None:
 
 
 def upgrade() -> None:
+    from butlers.db_authority.interfaces import runtime_probe_verifier_revision_reuse
+
+    reuse_verifier = runtime_probe_verifier_revision_reuse(op.get_bind())
     op.execute(f"""
         CREATE TABLE IF NOT EXISTS {_RECEIPTS} (
             audience       TEXT        NOT NULL,
@@ -197,6 +200,11 @@ def upgrade() -> None:
             WITH CHECK (current_user = '{_SWITCHBOARD_ROLE}')
     """)
 
+    if not reuse_verifier:
+        _upgrade_verifier()
+
+
+def _upgrade_verifier() -> None:
     op.execute("""
         CREATE OR REPLACE FUNCTION public.record_runtime_probe_verification(
             p_catalog_entry_id uuid,

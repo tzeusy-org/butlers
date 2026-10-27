@@ -20784,3 +20784,584 @@ def _verify_declared_security_shapes(
                     if primary is None:
                         raise
                     primary.add_note("Database security parser cleanup was incomplete")
+
+
+@dataclass(frozen=True)
+class ConnectorsRevisionReuse:
+    global_reused: bool
+    target_wrapper_reused: bool
+
+
+# Fixed current connector component, not a marker or a discovered DDL surface.
+_CONNECTORS_PARENT_BODY = """
+ id UUID NOT NULL DEFAULT gen_random_uuid(),
+ received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ connector_type TEXT NOT NULL, endpoint_identity TEXT NOT NULL,
+ external_message_id TEXT NOT NULL, source_channel TEXT NOT NULL,
+ sender_identity TEXT NOT NULL, subject_or_preview TEXT,
+ filter_reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'filtered',
+ full_payload JSONB NOT NULL, error_detail TEXT,
+ replay_requested_at TIMESTAMPTZ, replay_completed_at TIMESTAMPTZ,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ PRIMARY KEY (received_at, id),
+ CONSTRAINT chk_filtered_events_status CHECK (status IN
+ ('filtered', 'error', 'replay_pending', 'replay_complete', 'replay_failed'))
+"""
+_CONNECTORS_INDEXES = (
+    ("ix_filtered_events_drain", "(connector_type, endpoint_identity, status, received_at DESC)"),
+    ("ix_filtered_events_timeline", "(received_at DESC)"),
+    ("ix_filtered_events_id", "(id)"),
+    ("ix_filtered_events_status_received", "(status, received_at DESC)"),
+)
+_CONNECTORS_RELATIONS = """
+/* connectors-replay:relations */
+SELECT c.oid, n.nspname AS schema, c.relname AS name, c.relkind AS kind,
+ owner.rolname AS owner, c.relispartition AS partition,
+ c.relrowsecurity AS rls, c.relforcerowsecurity AS forced_rls,
+ c.reloptions, c.relreplident, c.relpersistence AS persistence,
+ pg_catalog.pg_get_partkeydef(c.oid) AS partition_key,
+ pg_catalog.pg_get_expr(c.relpartbound,c.oid,false) AS bound,
+ ARRAY(SELECT inhparent FROM pg_catalog.pg_inherits WHERE inhrelid=c.oid ORDER BY inhseqno)
+   AS parents,
+ EXISTS(SELECT FROM pg_catalog.pg_rewrite WHERE ev_class=c.oid) AS rules
+FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+JOIN pg_catalog.pg_roles owner ON owner.oid=c.relowner
+WHERE c.relkind IN ('r','p','v','m','S','f') AND (
+ c.oid=pg_catalog.to_regclass('connectors.filtered_events')
+ OR (n.nspname='connectors' AND c.relname LIKE 'filtered_events\\_%' ESCAPE '\\')
+ OR EXISTS(SELECT FROM pg_catalog.pg_inherits i
+   WHERE i.inhrelid=c.oid AND i.inhparent=pg_catalog.to_regclass('connectors.filtered_events')))
+ORDER BY c.oid
+"""
+_CONNECTORS_INDEX_CATALOG = """
+/* connectors-replay:indexes */
+SELECT c.oid, c.relname AS name, c.relkind AS kind, owner.rolname AS owner,
+ am.amname, c.reloptions, i.indislive, i.indisunique, i.indisprimary, i.indisexclusion,
+ i.indisvalid, i.indisready, i.indnkeyatts, i.indnatts,
+ ARRAY(SELECT a.attname FROM unnest(i.indkey::smallint[]) WITH ORDINALITY k(num,ord)
+ LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.num
+ ORDER BY k.ord) AS columns,
+ i.indoption::smallint[] AS options, i.indclass::oid[] AS opclasses,
+ i.indcollation::oid[] AS collations,
+ pg_catalog.pg_get_expr(i.indexprs,i.indrelid,false) AS expressions,
+ pg_catalog.pg_get_expr(i.indpred,i.indrelid,false) AS predicate,
+ ARRAY(SELECT inhparent FROM pg_catalog.pg_inherits WHERE inhrelid=c.oid ORDER BY inhseqno)
+ AS parents
+FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class c ON c.oid=i.indexrelid
+JOIN pg_catalog.pg_roles owner ON owner.oid=c.relowner
+JOIN pg_catalog.pg_am am ON am.oid=c.relam
+WHERE i.indrelid=pg_catalog.to_regclass(:relation)
+ORDER BY i.indisprimary DESC,c.relname
+"""
+_CONNECTORS_COLUMNS = """
+/* connectors-replay:column-metadata */
+SELECT a.attnum,a.attname,a.atttypid,a.atttypmod,a.attndims,a.attcollation,
+ a.attnotnull,a.attidentity,a.attgenerated,a.attstorage,a.attcompression,a.attisdropped
+FROM pg_catalog.pg_attribute a
+WHERE a.attrelid=pg_catalog.to_regclass(:relation) AND a.attnum>0 ORDER BY a.attnum
+"""
+_CONNECTORS_FUNCTION_METADATA = """
+/* connectors-replay:function-metadata */
+SELECT count(*)=1 AND bool_and(p.prokind='f' AND l.lanname='plpgsql'
+ AND p.prorettype='text'::regtype AND NOT p.proretset
+ AND p.pronargs=1 AND p.proargtypes[0]='timestamptz'::regtype
+ AND p.proargnames=ARRAY['reference_ts']::text[] AND p.proargmodes IS NULL
+ AND p.pronargdefaults=1 AND pg_catalog.pg_get_expr(p.proargdefaults,0)='now()'
+ AND p.provolatile='v' AND NOT p.proisstrict AND NOT p.proleakproof
+ AND p.proparallel='u' AND p.procost=100 AND p.prorows=0 AND p.prosupport=0)
+FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+JOIN pg_catalog.pg_language l ON l.oid=p.prolang
+WHERE n.nspname=:schema AND p.proname='connectors_filtered_events_ensure_partition'
+"""
+
+
+def _connectors_index_shape(row):
+    return tuple(
+        (key, tuple(value) if isinstance(value, list) else value)
+        for key, value in sorted(row.items())
+        if key not in {"oid", "name", "owner", "kind", "parents"}
+    )
+
+
+def _verify_connectors_function(connection, definition) -> None:
+    from sqlalchemy import text
+
+    from .roles import AuthorityError
+
+    if connection.execute(
+        text(_CONNECTORS_FUNCTION_METADATA), {"schema": definition.schema}
+    ).scalar_one() is not True or not function_matches(
+        connection, definition, inspect_function(connection, definition)
+    ):
+        raise AuthorityError("Finalized connector function differs from fixed source")
+
+
+def _verify_connectors_relations(connection, relations, parent, manifest) -> None:
+    """Parse fixed temporary source shapes; never copy data or execute catalog SQL."""
+    import re
+    import uuid
+    from dataclasses import replace
+
+    from sqlalchemy import text
+
+    from .apply import quote_identifier, verify_relation
+    from .roles import AuthorityError
+
+    def reject():
+        raise AuthorityError("Finalized connector relation differs from fixed source")
+
+    declared = next(
+        row
+        for row in manifest.relations
+        if (row.schema, row.name) == ("connectors", "filtered_events")
+    )
+    owner = declared.owner
+    if (
+        parent["schema"],
+        parent["kind"],
+        parent["partition"],
+        parent["partition_key"],
+        parent["parents"],
+        parent["bound"],
+    ) != ("connectors", "p", False, "RANGE (received_at)", [], None):
+        reject()
+    for row in relations:
+        if (
+            row["schema"] != "connectors"
+            or row["owner"] != owner
+            or row["rls"] is not False
+            or row["forced_rls"] is not False
+            or row["reloptions"] not in (None, [])
+            or row["relreplident"] != "d"
+            or row["rules"] is not False
+            or row["persistence"] != "p"
+        ):
+            reject()
+        if row is not parent:
+            match = re.fullmatch(r"filtered_events_[0-9]{6,}", row["name"])
+            bounds = re.fullmatch(
+                r"FOR VALUES FROM \('([^']+)'\) TO \('([^']+)'\)", row["bound"] or ""
+            )
+            if (
+                (row["kind"], row["partition"], row["parents"], row["partition_key"])
+                != ("r", True, [parent["oid"]], None)
+                or not match
+                or not bounds
+            ):
+                reject()
+            if (
+                len(bounds[1]) > 128
+                or len(bounds[2]) > 128
+                or connection.execute(
+                    text("""
+                /* connectors-replay:partition-bounds */
+                SELECT :name=pg_catalog.format('filtered_events_%s',
+                  pg_catalog.to_char(CAST(:start AS timestamptz),'YYYYMM'))
+                AND CAST(:start AS timestamptz)=pg_catalog.date_trunc(
+                  'month',CAST(:start AS timestamptz))
+                AND CAST(:end AS timestamptz)=CAST(:start AS timestamptz)+interval '1 month'
+            """),
+                    {"name": row["name"], "start": bounds[1], "end": bounds[2]},
+                ).scalar_one()
+                is not True
+            ):
+                reject()
+        verify_relation(
+            connection,
+            row,
+            declared if row is parent else replace(declared, name=row["name"], permissions=()),
+        )
+    token = "_butlers_connectors_" + uuid.uuid4().hex
+    scratch = "pg_temp." + quote_identifier(token)
+    created = False
+    primary = None
+    try:
+        connection.exec_driver_sql(
+            f"CREATE TEMPORARY TABLE {quote_identifier(token)} "
+            f"({_CONNECTORS_PARENT_BODY}) PARTITION BY RANGE (received_at)"
+        )
+        created = True
+        for ordinal, (_, suffix) in enumerate(_CONNECTORS_INDEXES):
+            connection.exec_driver_sql(
+                f"CREATE INDEX {quote_identifier(token + '_' + str(ordinal))} ON {scratch} {suffix}"
+            )
+        expected_indexes = tuple(
+            dict(row)
+            for row in connection.execute(
+                text(_CONNECTORS_INDEX_CATALOG), {"relation": scratch}
+            ).mappings()
+        )
+        if len(expected_indexes) != 5:
+            reject()
+        source_index_names = {
+            token + "_" + str(i): name for i, (name, _) in enumerate(_CONNECTORS_INDEXES)
+        }
+        expected_shapes = {
+            "filtered_events_pkey"
+            if row["indisprimary"]
+            else source_index_names[row["name"]]: _connectors_index_shape(row)
+            for row in expected_indexes
+        }
+        parent_indexes = tuple(
+            dict(row)
+            for row in connection.execute(
+                text(_CONNECTORS_INDEX_CATALOG), {"relation": '"connectors"."filtered_events"'}
+            ).mappings()
+        )
+        if {row["name"] for row in parent_indexes} != {
+            "filtered_events_pkey",
+            *(name for name, _ in _CONNECTORS_INDEXES),
+        }:
+            reject()
+        parent_by_shape = {}
+        for row in parent_indexes:
+            shape = _connectors_index_shape(row)
+            if (
+                row["owner"] != owner
+                or row["kind"] != "I"
+                or row["parents"]
+                or shape != expected_shapes.get(row["name"])
+            ):
+                reject()
+            # Complete population plus unique shapes binds all five source indexes.
+            key = shape
+            if key in parent_by_shape:
+                reject()
+            parent_by_shape[key] = row["oid"]
+        if len(parent_by_shape) != 5:
+            reject()
+        for row in relations:
+            target = quote_identifier(row["schema"]) + "." + quote_identifier(row["name"])
+            if _column_shape(connection, target, frozenset()) != _column_shape(
+                connection, scratch, frozenset()
+            ):
+                reject()
+            for query in (
+                _CONNECTORS_COLUMNS,
+                _SHAPE_CONSTRAINTS,
+                _SHAPE_POLICIES,
+                _SHAPE_TRIGGERS,
+            ):
+                if _shape_rows(connection, query, target) != _shape_rows(
+                    connection, query, scratch
+                ):
+                    reject()
+            if row is parent:
+                continue
+            indexes = tuple(
+                dict(item)
+                for item in connection.execute(
+                    text(_CONNECTORS_INDEX_CATALOG), {"relation": target}
+                ).mappings()
+            )
+            if len(indexes) != 5:
+                reject()
+            seen = set()
+            for index in indexes:
+                shape_key = _connectors_index_shape(index)
+                expected_parent = parent_by_shape.get(shape_key)
+                if (
+                    index["kind"] != "i"
+                    or index["owner"] != owner
+                    or expected_parent is None
+                    or index["parents"] != [expected_parent]
+                    or expected_parent in seen
+                ):
+                    reject()
+                seen.add(expected_parent)
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        if created:
+            try:
+                connection.exec_driver_sql(f"DROP TABLE {scratch}")
+            except BaseException:
+                if primary is None:
+                    raise
+                primary.add_note("Connector source parser cleanup was incomplete")
+
+
+def connectors_revision_reuse(connection, revision: str) -> ConnectorsRevisionReuse:
+    """Reuse only the complete finalized source component, never an owner/name marker.
+
+    Ordinary historical producers keep their original owner, DDL, concurrent
+    index algorithm and cleanup. This guard adds no role switch or installer.
+    A new target's local compatibility function remains its own ordinary DDL.
+    """
+    from dataclasses import replace
+
+    from sqlalchemy import text
+
+    from alembic import op
+    from butlers.migrations import maintenance_profile
+
+    from .apply import (
+        _DEFAULT_ACL,
+        _NAMESPACE_ACL,
+        _NAMESPACE_CATALOG,
+        _rows,
+        namespace_permissions,
+    )
+    from .grants import (
+        ORDINARY_PARTITION_OWNERS,
+        compile_function_manifest,
+        compile_relation_manifest,
+        ordinary_schema_creators,
+    )
+    from .roles import AuthorityError
+
+    if revision not in {"core_007", "core_135", "core_231", "core_245"}:
+        raise AuthorityError("Connector revision is not source-owned")
+    owner = maintenance_profile(connection)
+    database, actor, active, ordinary_actor = connection.exec_driver_sql(
+        "SELECT current_database(), session_user, current_schema(), current_user"
+    ).one()
+    target = op.get_context().opts.get("version_table_schema") or "public"
+    if active != target or ordinary_actor != owner:
+        raise AuthorityError("Connector target differs from selected migration schema")
+    source = connection.info.get("butlers.source_database", database)
+    manifest = compile_relation_manifest(database, owner, actor, source_database=source)
+    relations = [dict(row) for row in connection.execute(text(_CONNECTORS_RELATIONS)).mappings()]
+    parents = [
+        row
+        for row in relations
+        if (row["schema"], row["name"]) == ("connectors", "filtered_events")
+    ]
+    if len(parents) > 1:
+        raise AuthorityError("Connector parent is ambiguous")
+    functions = list(
+        connection.execute(
+            text("""
+        /* connectors-replay:function-population */
+        SELECT n.nspname AS schema, pg_catalog.oidvectortypes(p.proargtypes) AS arguments,
+          r.rolname AS owner FROM pg_catalog.pg_proc p
+        JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+        JOIN pg_catalog.pg_roles r ON r.oid=p.proowner
+        WHERE n.nspname=ANY(:schemas)
+          AND p.proname='connectors_filtered_events_ensure_partition'
+    """),
+            {"schemas": ["connectors", target]},
+        ).mappings()
+    )
+    seen_functions = set()
+    for function in functions:
+        key = function["schema"], function["arguments"]
+        if (
+            key in seen_functions
+            or function["arguments"] != "timestamp with time zone"
+            or function["owner"] not in {owner, "connector_partition_owner"}
+        ):
+            raise AuthorityError("Connector function population differs from source")
+        seen_functions.add(key)
+    if not parents:
+        if relations or functions:
+            raise AuthorityError("Connector source component is incomplete")
+        return ConnectorsRevisionReuse(False, False)
+    parent = parents[0]
+    global_population = [row for row in functions if row["schema"] == "connectors"]
+    closed = parent["owner"] == owner and any(
+        row["owner"] == "connector_partition_owner" for row in global_population
+    )
+    if parent["owner"] == owner and not closed:
+        if any(function["owner"] != owner for function in functions):
+            raise AuthorityError("Connector ordinary component has mixed function ownership")
+        return ConnectorsRevisionReuse(False, False)
+    if parent["owner"] != "connector_partition_owner" and not closed:
+        raise AuthorityError("Connector parent owner differs from source")
+    if closed:
+        # Same transforms as select_migration_manifest's historical branch.
+        # Current core plus bounded Finance keeps ordinary relations normal-owned,
+        # while current-core functions are converged and then closed to EXECUTE.
+        # This is a catalog-only reuse contract; it grants no serving authority.
+        manifest = replace(
+            manifest,
+            relations=tuple(
+                replace(
+                    row,
+                    permissions=(),
+                    owner=owner
+                    if (row.schema, row.name) in ORDINARY_PARTITION_OWNERS
+                    else row.owner,
+                )
+                for row in manifest.relations
+            ),
+        )
+    role_ok = connection.execute(
+        text("""
+        /* connectors-replay:owner */
+        SELECT count(*)=1 AND bool_and(NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper
+          AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls)
+          AND NOT EXISTS(SELECT FROM pg_catalog.pg_auth_members m JOIN pg_catalog.pg_roles r
+            ON r.oid=m.roleid OR r.oid=m.member WHERE r.rolname='connector_partition_owner')
+        FROM pg_catalog.pg_roles WHERE rolname='connector_partition_owner'
+    """)
+    ).scalar_one()
+    if role_ok is not True:
+        raise AuthorityError("Connector purpose owner is unavailable")
+    definitions = tuple(
+        row
+        for row in compile_function_manifest(manifest.profiles, owner, (("core", target, None),))
+        if row.name == "connectors_filtered_events_ensure_partition"
+    )
+    if closed:
+        definitions = tuple(replace(row, executors=()) for row in definitions)
+    global_definition = next(row for row in definitions if row.schema == "connectors")
+    _verify_connectors_function(connection, global_definition)
+    _verify_connectors_relations(connection, relations, parent, manifest)
+    namespace = _rows(connection, _NAMESPACE_CATALOG, schemas=["connectors"])
+    if len(namespace) != 1 or namespace[0]["owner"] != owner:
+        raise AuthorityError("Connector namespace owner differs from source")
+    users = set(namespace_permissions(manifest.relations).get("connectors", ()))
+    users.update(row.owner for row in manifest.relations if row.schema == "connectors")
+    users.update((global_definition.owner, *global_definition.executors))
+    expected_acl = {(role, "USAGE") for role in users if role != owner}
+    if not closed:
+        expected_acl.update(
+            (role, "CREATE")
+            for role in ordinary_schema_creators(manifest.relations).get("connectors", ())
+        )
+    acl = _rows(connection, _NAMESPACE_ACL, oid=namespace[0]["oid"])
+    if (
+        any(row["grantable"] is not False for row in acl)
+        or {(row["role"], row["verb"]) for row in acl} != expected_acl
+    ):
+        raise AuthorityError("Connector namespace privileges differ from source")
+    if _rows(
+        connection,
+        _DEFAULT_ACL,
+        schemas=["connectors"],
+        owners=[owner, "connector_partition_owner"],
+    ):
+        raise AuthorityError("Connector default privileges differ from source")
+    local = next(row for row in definitions if row.schema == target)
+    actual = inspect_function(connection, local)
+    if actual is None:
+        reused = False
+    elif actual["owner"] == owner:
+        reused = False
+    elif actual["owner"] == local.owner:
+        _verify_connectors_function(connection, local)
+        reused = True
+    else:
+        raise AuthorityError("Connector target wrapper owner differs from source")
+    return ConnectorsRevisionReuse(True, reused)
+
+
+def runtime_probe_verifier_revision_reuse(connection) -> bool:
+    """Reuse one exact finalized verifier, preserving all ordinary receipt DDL.
+
+    Administrative closure is derived only after the complete existing connector
+    source component has been validated. Empty EXECUTE by itself is not phase proof.
+    No role switch, grant, builder, serving admission or durable marker is added.
+    """
+    from dataclasses import replace
+
+    from sqlalchemy import text
+
+    from alembic import op
+    from butlers.migrations import maintenance_profile
+
+    from .apply import _RELATIONS, _rows, validate_relations, verify_relation
+    from .grants import compile_function_manifest, compile_relation_manifest
+    from .roles import AuthorityError
+
+    component = connectors_revision_reuse(connection, "core_135")
+    owner = maintenance_profile(connection)
+    database, actor = connection.exec_driver_sql("SELECT current_database(), session_user").one()
+    source = connection.info.get("butlers.source_database", database)
+    manifest = compile_relation_manifest(database, owner, actor, source_database=source)
+    population = tuple(
+        connection.execute(
+            text("""
+        /* runtime-probe-replay:population */
+        SELECT pg_catalog.oidvectortypes(p.proargtypes) AS arguments, r.rolname AS owner
+        FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+        JOIN pg_catalog.pg_roles r ON r.oid=p.proowner
+        WHERE n.nspname='public' AND p.proname='record_runtime_probe_verification'
+    """)
+        ).mappings()
+    )
+    if len(population) > 1 or any(
+        row["arguments"] != "uuid, boolean, integer, text"
+        or row["owner"] not in {owner, "model_probe_owner"}
+        for row in population
+    ):
+        raise AuthorityError("Runtime probe verifier population differs from source")
+    if not component.global_reused:
+        if any(row["owner"] != owner for row in population):
+            raise AuthorityError("Runtime probe finalized source phase is unavailable")
+        return False
+    if len(population) != 1 or population[0]["owner"] != "model_probe_owner":
+        raise AuthorityError("Finalized runtime probe verifier is unavailable")
+    # This owner is read only AFTER connectors_revision_reuse has validated its
+    # entire function/relation/partition/index/namespace/ACL source state.
+    parent_owner = connection.exec_driver_sql(
+        "SELECT pg_catalog.pg_get_userbyid(relowner) FROM pg_catalog.pg_class "
+        "WHERE oid='connectors.filtered_events'::regclass"
+    ).scalar_one()
+    if parent_owner not in {owner, "connector_partition_owner"}:
+        raise AuthorityError("Runtime probe source phase is unavailable")
+    closed = parent_owner == owner
+    target = op.get_context().opts.get("version_table_schema") or "public"
+    definitions = tuple(
+        row
+        for row in compile_function_manifest(manifest.profiles, owner, (("core", target, None),))
+        if (row.schema, row.name, row.signature)
+        == ("public", "record_runtime_probe_verification", "uuid,boolean,integer,text")
+    )
+    if len(definitions) != 1:
+        raise AuthorityError("Runtime probe verifier source is ambiguous")
+    definition = replace(definitions[0], executors=()) if closed else definitions[0]
+    role_ok = connection.execute(
+        text("""
+        /* runtime-probe-replay:owner */
+        SELECT count(*)=1 AND bool_and(NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper
+          AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls)
+          AND NOT EXISTS(SELECT FROM pg_catalog.pg_auth_members m JOIN pg_catalog.pg_roles r
+            ON r.oid=m.roleid OR r.oid=m.member WHERE r.rolname='model_probe_owner')
+        FROM pg_catalog.pg_roles WHERE rolname='model_probe_owner'
+    """)
+    ).scalar_one()
+    metadata_ok = connection.execute(
+        text("""
+        /* runtime-probe-replay:metadata */
+        SELECT count(*)=1 AND bool_and(p.prokind='f' AND l.lanname='plpgsql'
+          AND p.prorettype='boolean'::regtype AND NOT p.proretset AND p.pronargs=4
+          AND pg_catalog.oidvectortypes(p.proargtypes)='uuid, boolean, integer, text'
+          AND p.proargnames=ARRAY['p_catalog_entry_id','p_ok','p_latency_ms','p_error']::text[]
+          AND p.proargmodes IS NULL AND p.pronargdefaults=0 AND p.proargdefaults IS NULL
+          AND p.provolatile='v' AND NOT p.proisstrict AND NOT p.proleakproof
+          AND p.proparallel='u' AND p.procost=100 AND p.prorows=0 AND p.prosupport=0)
+        FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+        JOIN pg_catalog.pg_language l ON l.oid=p.prolang
+        WHERE n.nspname='public' AND p.proname='record_runtime_probe_verification'
+    """)
+    ).scalar_one()
+    namespace_ok = connection.execute(
+        text("""
+        /* runtime-probe-replay:namespace */
+        SELECT pg_catalog.pg_get_userbyid(nspowner) IN (:owner,'pg_database_owner')
+          AND pg_catalog.has_schema_privilege('model_probe_owner',oid,'USAGE')
+          AND NOT pg_catalog.has_schema_privilege('model_probe_owner',oid,'CREATE')
+        FROM pg_catalog.pg_namespace WHERE nspname='public'
+    """),
+        {"owner": owner},
+    ).scalar_one()
+    if role_ok is not True or metadata_ok is not True or namespace_ok is not True:
+        raise AuthorityError("Runtime probe verifier catalog prerequisite differs from source")
+    declaration = next(
+        row for row in manifest.relations if (row.schema, row.name) == ("public", "model_catalog")
+    )
+    if closed:
+        declaration = replace(declaration, permissions=())
+    observed = tuple(
+        row
+        for row in _rows(connection, _RELATIONS, schemas=["public"])
+        if row["name"] == "model_catalog"
+    )
+    for actual, expected in validate_relations(observed, (declaration,)):
+        verify_relation(connection, actual, expected)
+    if not function_matches(connection, definition, inspect_function(connection, definition)):
+        raise AuthorityError("Finalized runtime probe verifier differs from fixed source")
+    return True

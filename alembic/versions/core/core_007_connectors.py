@@ -49,7 +49,7 @@ depends_on = None
 # All butler roles that need read access to connectors tables.
 
 
-def upgrade() -> None:
+def _upgrade_global() -> None:
     # -------------------------------------------------------------------------
     # 1. Create connectors schema
     # -------------------------------------------------------------------------
@@ -150,6 +150,9 @@ def upgrade() -> None:
     # -------------------------------------------------------------------------
     # 5. Unqualified backward-compat wrapper (for butler-scoped search_path).
     # -------------------------------------------------------------------------
+
+
+def _upgrade_target_wrapper() -> None:
     op.execute("""
         CREATE OR REPLACE FUNCTION connectors_filtered_events_ensure_partition(
             reference_ts TIMESTAMPTZ DEFAULT now()
@@ -197,8 +200,23 @@ def upgrade() -> None:
         $$
     """)
 
+
+def _seed_global() -> None:
+
     # Create initial partitions for current month and next month.
     op.execute("SELECT connectors.connectors_filtered_events_ensure_partition(now())")
+
+
+def upgrade() -> None:
+    from butlers.db_authority.interfaces import connectors_revision_reuse
+
+    reuse = connectors_revision_reuse(op.get_bind(), revision)
+    if not reuse.global_reused:
+        _upgrade_global()
+    if not reuse.target_wrapper_reused:
+        _upgrade_target_wrapper()
+    if not reuse.global_reused:
+        _seed_global()
 
     # Serving privileges are finalized from the source-owned object manifest.
     # No schema CREATE, ALL TABLES, or future-object default ACL is replayed here.

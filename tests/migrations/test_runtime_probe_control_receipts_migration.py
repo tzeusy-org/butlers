@@ -23,6 +23,7 @@ import shutil
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import asyncpg
@@ -71,11 +72,67 @@ def _load_migration():
     return module
 
 
+class _FreshStructureCatalog:
+    """Fixed fresh catalog IO; real authority/compiler/guard code still executes."""
+
+    info = {"butlers.source_database": "butlers"}
+
+    def __init__(self):
+        self.calls = []
+
+    def exec_driver_sql(self, statement):
+        self.calls.append(statement)
+        if "actor.rolsuper AND actor.rolname=session_user" in statement:
+            return SimpleNamespace(
+                one=lambda: ("test_receipt_structure", "structural_migration", True)
+            )
+        if statement == "SELECT current_database(), session_user, current_schema(), current_user":
+            return SimpleNamespace(
+                one=lambda: (
+                    "test_receipt_structure",
+                    "structural_maintenance",
+                    "general",
+                    "structural_migration",
+                )
+            )
+        if statement == "SELECT current_database(), session_user":
+            return SimpleNamespace(one=lambda: ("test_receipt_structure", "structural_maintenance"))
+        raise AssertionError(
+            "Unmodeled structural catalog query " + hashlib.sha256(statement.encode()).hexdigest()
+        )
+
+    def execute(self, statement, parameters=None):
+        query = str(statement)
+        self.calls.append(query)
+        if any(
+            marker in query
+            for marker in (
+                "connectors-replay:relations",
+                "connectors-replay:function-population",
+                "runtime-probe-replay:population",
+            )
+        ):
+            return SimpleNamespace(mappings=lambda: ())
+        raise AssertionError(
+            "Unmodeled structural catalog query " + hashlib.sha256(query.encode()).hexdigest()
+        )
+
+
 def _executed_sql(function_name: str) -> str:
     module = _load_migration()
     op = MagicMock()
-    with patch.object(module, "op", op):
+    catalog = _FreshStructureCatalog()
+    op.get_bind.return_value = catalog
+    with (
+        patch.object(module, "op", op),
+        patch(
+            "alembic.op.get_context",
+            return_value=SimpleNamespace(opts={"version_table_schema": "general"}),
+        ),
+    ):
         getattr(module, function_name)()
+    if function_name == "upgrade":
+        assert any("runtime-probe-replay:population" in query for query in catalog.calls)
     return "\n".join(str(call.args[0]) for call in op.execute.call_args_list)
 
 

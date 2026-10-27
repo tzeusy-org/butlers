@@ -1923,6 +1923,77 @@ def test_core_chain_is_idempotent_for_two_target_schemas_without_switchboard_dep
                 # A pending original exception, especially cancellation, keeps
                 # its original traceback while physical cleanup is settled.
 
+    def connector_catalog_snapshot(*, seed=False):
+        """Independent native readback; settle its session before chain replay."""
+        witness = uuid.UUID("fbc15609-8c13-4f51-bc05-26010c3568e8")
+        observer = create_engine(
+            _maintenance_url(db_url),
+            connect_args={"connect_timeout": 5, "options": "-c statement_timeout=30000"},
+        )
+        try:
+            with observer.begin() as independent:
+                if seed:
+                    independent.execute(
+                        text("""
+                        INSERT INTO connectors.filtered_events
+                        (id,connector_type,endpoint_identity,external_message_id,
+                         source_channel,sender_identity,filter_reason,full_payload)
+                        VALUES (:id,'test','serial-replay','serial-replay','test','test',
+                                'source-replay','{}'::jsonb)
+                    """),
+                        {"id": witness},
+                    )
+                objects = tuple(
+                    tuple(row)
+                    for row in independent.execute(
+                        text("""
+                    WITH RECURSIVE tables(oid) AS (
+                      SELECT 'connectors.filtered_events'::regclass::oid
+                      UNION ALL SELECT i.inhrelid FROM pg_catalog.pg_inherits i
+                        JOIN tables t ON t.oid=i.inhparent
+                    ), objects AS (
+                      SELECT oid FROM tables UNION
+                      SELECT indexrelid FROM pg_catalog.pg_index
+                        WHERE indrelid IN(SELECT oid FROM tables)
+                    )
+                    SELECT c.oid,c.relname,c.relkind,r.rolname,c.relrowsecurity,
+                      c.relforcerowsecurity,c.relacl::text,c.reloptions,
+                      CASE WHEN i.indexrelid IS NULL THEN NULL
+                        ELSE pg_catalog.pg_get_indexdef(c.oid) END,
+                      i.indisvalid,i.indisready
+                    FROM objects o JOIN pg_catalog.pg_class c ON c.oid=o.oid
+                    JOIN pg_catalog.pg_roles r ON r.oid=c.relowner
+                    LEFT JOIN pg_catalog.pg_index i ON i.indexrelid=c.oid
+                    ORDER BY c.oid
+                """)
+                    )
+                )
+                function = tuple(
+                    independent.execute(
+                        text("""
+                    SELECT p.oid,r.rolname,p.prosecdef,p.proconfig,p.proacl::text,
+                      pg_catalog.encode(pg_catalog.sha256(
+                        pg_catalog.convert_to(p.prosrc,'UTF8')),'hex')
+                    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_roles r ON r.oid=p.proowner
+                    WHERE p.oid=pg_catalog.to_regprocedure(
+                      'connectors.connectors_filtered_events_ensure_partition(timestamptz)')
+                """)
+                    ).one()
+                )
+                planted = independent.execute(
+                    text("""
+                    SELECT count(*) FROM connectors.filtered_events
+                    WHERE id=:id AND filter_reason='source-replay' AND full_payload='{}'::jsonb
+                """),
+                    {"id": witness},
+                ).scalar_one()
+                assert planted == 1
+                return objects, function
+        finally:
+            observer.dispose()
+
+    connector_before_second = connector_catalog_snapshot(seed=True)
+
     try:
         before_second = asyncio.run(pre_second_catalog())
     except Exception:
@@ -1995,6 +2066,8 @@ def test_core_chain_is_idempotent_for_two_target_schemas_without_switchboard_dep
             pass
         raise
 
+    assert connector_catalog_snapshot() == connector_before_second
+
     engine = create_engine(migration_bootstrap_db_url(postgres_container, db_name))
     try:
         with engine.connect() as conn:
@@ -2017,6 +2090,239 @@ def test_core_chain_is_idempotent_for_two_target_schemas_without_switchboard_dep
             )
             assert_at_chain_head(conn, "general")
             assert_at_chain_head(conn, "switchboard")
+            from butlers.db_authority.grants import compile_function_manifest
+
+            definitions = compile_function_manifest(
+                compile_deployment_profiles(db_name, source_database="butlers"),
+                unquote(urlparse(db_url).username or ""),
+                (("core", "general", None), ("core", "switchboard", None)),
+            )
+            for target in ("general", "switchboard"):
+                definition = next(
+                    row
+                    for row in definitions
+                    if row.schema == target
+                    and row.name == "connectors_filtered_events_ensure_partition"
+                )
+                assert function_matches(conn, definition, inspect_function(conn, definition))
+
+    finally:
+        engine.dispose()
+
+    # Actual bounded-history finalization retains the ordinary parent owner.
+    # These are real predecessor upgrades, not fabricated older purpose owners.
+    for predecessor, index_name in (
+        ("core_230", "ix_filtered_events_id"),
+        ("core_244", "ix_filtered_events_status_received"),
+    ):
+        historical_name = migration_db_name()
+        historical_url = create_migration_db(postgres_container, historical_name)
+        selected = _build_alembic_config(historical_url, chains=["core"], target_schema="general")
+        _selected_upgrade(selected, predecessor)
+        with migration_session(_maintenance_url(historical_url), source_database="butlers") as held:
+            finalize_authority(
+                held, source_database="butlers", plans=(("core", "general", predecessor),)
+            )
+        independent_engine = create_engine(
+            _maintenance_url(historical_url),
+            connect_args={"connect_timeout": 5, "options": "-c statement_timeout=30000"},
+        )
+        try:
+            with independent_engine.connect() as independent:
+                assert independent.execute(
+                    text("""
+                    SELECT r.rolname FROM pg_catalog.pg_class c
+                    JOIN pg_catalog.pg_roles r ON r.oid=c.relowner
+                    WHERE c.oid='connectors.filtered_events'::regclass
+                """)
+                ).scalar_one() == unquote(urlparse(historical_url).username or "")
+                assert (
+                    independent.execute(
+                        text("SELECT pg_catalog.to_regclass(:index)"),
+                        {"index": "connectors." + index_name},
+                    ).scalar_one()
+                    is None
+                )
+                assert (
+                    independent.execute(
+                        text("SELECT count(*) FROM connectors.filtered_events")
+                    ).scalar_one()
+                    == 0
+                )
+            _selected_upgrade(selected, "core@head")
+            with independent_engine.connect() as independent:
+                assert_at_chain_head(independent, "general")
+                assert (
+                    independent.execute(
+                        text("""
+                    SELECT i.indisvalid AND i.indisready FROM pg_catalog.pg_index i
+                    WHERE i.indexrelid=pg_catalog.to_regclass(:index)
+                """),
+                        {"index": "connectors." + index_name},
+                    ).scalar_one()
+                    is True
+                )
+                assert (
+                    independent.execute(
+                        text("""
+                    SELECT r.rolname FROM pg_catalog.pg_class c
+                    JOIN pg_catalog.pg_roles r ON r.oid=c.relowner
+                    WHERE c.oid='connectors.filtered_events'::regclass
+                """)
+                    ).scalar_one()
+                    == "connector_partition_owner"
+                )
+                assert (
+                    independent.execute(
+                        text("SELECT count(*) FROM connectors.filtered_events")
+                    ).scalar_one()
+                    == 0
+                )
+        finally:
+            independent_engine.dispose()
+
+    # Real mixed administrative history: current core plus Finance018 closes
+    # current purpose functions while keeping ordinary relation ownership.
+    # No owner/ACL mutation constructs this state and no serving admission is claimed.
+    mixed_name = migration_db_name()
+    mixed_url = create_migration_db(postgres_container, mixed_name)
+    mixed_plans = (
+        ("core", "general", None),
+        ("core", "switchboard", None),
+        ("core", "finance", None),
+        ("finance", "finance", "finance_018"),
+    )
+    with migration_session(_maintenance_url(mixed_url), source_database="butlers") as held:
+        for _, schema, _ in mixed_plans[:-1]:
+            asyncio.run(run_migrations(mixed_url, chain="core", schema=schema, connection=held))
+        _upgrade_chain_to_revision(
+            mixed_url, chain="finance", schema="finance", revision="finance_018", connection=held
+        )
+        finalize_authority(held, source_database="butlers", plans=mixed_plans)
+    mixed_engine = create_engine(
+        _maintenance_url(mixed_url),
+        connect_args={"connect_timeout": 5, "options": "-c statement_timeout=30000"},
+    )
+    try:
+        from dataclasses import replace
+
+        from butlers.db_authority.grants import compile_function_manifest
+
+        normal = unquote(urlparse(mixed_url).username or "")
+        definition = next(
+            replace(row, executors=())
+            for row in compile_function_manifest(
+                compile_deployment_profiles(mixed_name, source_database="butlers"),
+                normal,
+                mixed_plans,
+            )
+            if (row.schema, row.name)
+            == ("connectors", "connectors_filtered_events_ensure_partition")
+        )
+        with mixed_engine.connect() as independent:
+            before_function = dict(inspect_function(independent, definition))
+            assert function_matches(independent, definition, before_function)
+            assert (
+                independent.execute(
+                    text(
+                        "SELECT pg_catalog.pg_get_userbyid(relowner) "
+                        "FROM pg_catalog.pg_class WHERE oid='connectors.filtered_events'::regclass"
+                    )
+                ).scalar_one()
+                == normal
+            )
+            before_parent = independent.execute(
+                text(
+                    "SELECT oid FROM pg_catalog.pg_class "
+                    "WHERE oid='connectors.filtered_events'::regclass"
+                )
+            ).scalar_one()
+        verifier_before = _runtime_probe_verifier_snapshot(mixed_url, seed=True, closed=True)
+        # public is an admitted administrative target, absent from mixed_plans.
+        with migration_session(_maintenance_url(mixed_url), source_database="butlers") as held:
+            asyncio.run(run_migrations(mixed_url, chain="core", schema="public", connection=held))
+            assert _runtime_probe_verifier_snapshot(mixed_url, closed=True) == verifier_before
+            finalize_authority(
+                held, source_database="butlers", plans=(*mixed_plans, ("core", "public", None))
+            )
+        with mixed_engine.connect() as independent:
+            assert_at_chain_head(independent, "public")
+            assert _runtime_probe_verifier_snapshot(mixed_url, closed=True) == verifier_before
+            assert dict(inspect_function(independent, definition)) == before_function
+            assert function_matches(
+                independent, definition, inspect_function(independent, definition)
+            )
+            assert (
+                independent.execute(
+                    text(
+                        "SELECT oid FROM pg_catalog.pg_class "
+                        "WHERE oid='connectors.filtered_events'::regclass"
+                    )
+                ).scalar_one()
+                == before_parent
+            )
+    finally:
+        mixed_engine.dispose()
+
+
+def _runtime_probe_verifier_snapshot(db_url: str, *, seed=False, closed=False):
+    """Independent settled native catalog/data witness; never serving admission."""
+    from dataclasses import replace
+
+    from butlers.db_authority.grants import compile_function_manifest
+    from butlers.db_authority.interfaces import _FUNCTION_ACL
+
+    normal = unquote(urlparse(db_url).username or "")
+    definition = next(
+        row
+        for row in compile_function_manifest(
+            compile_deployment_profiles(_database(db_url), source_database="butlers"),
+            normal,
+            (("core", "general", None),),
+        )
+        if row.name == "record_runtime_probe_verification"
+    )
+    if closed:
+        definition = replace(definition, executors=())
+    witness_id = uuid.UUID("63c3bb2b-dbc6-48c1-96b5-6c4026786293")
+    engine = create_engine(
+        _maintenance_url(db_url),
+        connect_args={"connect_timeout": 5, "options": "-c statement_timeout=30000"},
+    )
+    try:
+        with engine.begin() as independent:
+            if seed:
+                independent.execute(
+                    text(
+                        "INSERT INTO public.model_catalog(id,alias,runtime_type,model_id) "
+                        "VALUES(:id,'source-verifier-replay-witness','codex','source-only')"
+                    ),
+                    {"id": witness_id},
+                )
+            actual = dict(inspect_function(independent, definition))
+            assert function_matches(independent, definition, actual)
+            acl = tuple(
+                sorted(
+                    tuple(row.values())
+                    for row in independent.execute(
+                        text(_FUNCTION_ACL), {"oid": actual["oid"]}
+                    ).mappings()
+                )
+            )
+            planted = dict(
+                independent.execute(
+                    text(
+                        "SELECT id,alias,runtime_type,model_id,enabled,priority,last_verified_at,"
+                        "last_verified_latency_ms,last_verified_ok,last_verified_error "
+                        "FROM public.model_catalog WHERE id=:id"
+                    ),
+                    {"id": witness_id},
+                )
+                .mappings()
+                .one()
+            )
+            assert planted["alias"] == "source-verifier-replay-witness"
+            return actual, acl, planted
     finally:
         engine.dispose()
 
@@ -2066,6 +2372,12 @@ def test_core_chain_serializes_global_runtime_attention_install_across_processes
         engine.dispose()
 
     assert _has_exact_finalized_runtime_attention_interface(db_url)
+
+    verifier_before = _runtime_probe_verifier_snapshot(db_url, seed=True)
+    _selected_upgrade(
+        _build_alembic_config(db_url, chains=["core"], target_schema="public"), "core@head"
+    )
+    assert _runtime_probe_verifier_snapshot(db_url) == verifier_before
 
 
 def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_across_processes(
@@ -2142,6 +2454,12 @@ def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_ac
     finally:
         engine.dispose()
     assert _has_bootstrap_finalized_runtime_attention_interface(bootstrap_url)
+
+    verifier_before = _runtime_probe_verifier_snapshot(db_url, seed=True)
+    _selected_upgrade(
+        _build_alembic_config(db_url, chains=["core"], target_schema="public"), "core@head"
+    )
+    assert _runtime_probe_verifier_snapshot(db_url) == verifier_before
 
 
 @pytest.mark.parametrize(

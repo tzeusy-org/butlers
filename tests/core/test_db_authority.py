@@ -36,7 +36,13 @@ def _recording_postgresql_connection(respond):
             # Model the mapping-format boundary after the actual PG dialect has
             # supplied its parameters. Do not interpret SQL or emulate PG roles.
             decoded = statement % parameters
-            calls.append((statement, dict(parameters), decoded))
+            calls.append(
+                (
+                    statement,
+                    dict(parameters) if isinstance(parameters, dict) else tuple(parameters),
+                    decoded,
+                )
+            )
             columns, self.rows = respond(statement, parameters, decoded)
             self.rows = list(self.rows)
             self.description = (
@@ -7677,3 +7683,1005 @@ def test_serving_deployment_preserves_source_module_prerequisites(finance_revisi
             )
             assert all(event[0] == "migration" for event in events[: len(actual)])
         engine.dispose.assert_called()
+
+
+class _ConnectorsReplayCatalog:
+    """Catalog transport recorder; SQL shape parsing and PostgreSQL remain native proof."""
+
+    def __init__(self, *, normal=False, local=False, closed=False, fault=None):
+        from butlers.db_authority import grants, interfaces
+        from butlers.db_authority.apply import namespace_permissions
+
+        self.normal, self.local, self.closed, self.fault = normal or closed, local, closed, fault
+        self.statements, self.scratch = [], set()
+        self.manifest = grants.compile_relation_manifest(
+            "test_replay", "normal_owner", "maintenance", source_database="butlers"
+        )
+        if closed:
+            self.manifest = grants.select_migration_manifest(
+                self.manifest,
+                (("core", "general", None), ("finance", "finance", "finance_018")),
+            )
+            declaration = next(
+                row
+                for row in self.manifest.relations
+                if (row.schema, row.name) == ("connectors", "filtered_events")
+            )
+            assert declaration.owner == "normal_owner"
+            assert declaration.permissions == ()
+        self.functions = {
+            row.schema: row
+            for row in grants.compile_function_manifest(
+                self.manifest.profiles, "normal_owner", (("core", "general", None),)
+            )
+            if row.name == "connectors_filtered_events_ensure_partition"
+        }
+        if closed:
+            from dataclasses import replace
+
+            self.functions = {
+                schema: replace(row, executors=()) for schema, row in self.functions.items()
+            }
+        self.parent = dict(
+            oid=11,
+            schema="connectors",
+            name="filtered_events",
+            kind="p",
+            owner="normal_owner" if normal or closed else "connector_partition_owner",
+            partition=False,
+            rls=False,
+            forced_rls=False,
+            reloptions=None,
+            relreplident="d",
+            persistence="p",
+            partition_key="RANGE (received_at)",
+            bound=None,
+            parents=[],
+            rules=False,
+        )
+        self.child = dict(
+            self.parent,
+            oid=12,
+            name="filtered_events_202610",
+            kind="r",
+            partition=True,
+            partition_key=None,
+            bound="FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00')",
+            parents=[11],
+        )
+        self.relations = [self.parent, self.child]
+        self.indexes = []
+        definitions = (
+            ("filtered_events_pkey", ["received_at", "id"], [0, 0], True),
+            (
+                "ix_filtered_events_drain",
+                ["connector_type", "endpoint_identity", "status", "received_at"],
+                [0, 0, 0, 3],
+                False,
+            ),
+            ("ix_filtered_events_timeline", ["received_at"], [3], False),
+            ("ix_filtered_events_id", ["id"], [0], False),
+            ("ix_filtered_events_status_received", ["status", "received_at"], [0, 3], False),
+        )
+        for index, (name, columns, options, primary) in enumerate(definitions):
+            self.indexes.append(
+                dict(
+                    oid=20 + index,
+                    name=name,
+                    kind="I",
+                    owner=self.parent["owner"],
+                    amname="btree",
+                    reloptions=None,
+                    indislive=True,
+                    indisunique=primary,
+                    indisprimary=primary,
+                    indisexclusion=False,
+                    indisvalid=True,
+                    indisready=True,
+                    indnkeyatts=len(columns),
+                    indnatts=len(columns),
+                    columns=columns,
+                    options=options,
+                    opclasses=[1] * len(columns),
+                    collations=[0] * len(columns),
+                    expressions=None,
+                    predicate=None,
+                    parents=[],
+                )
+            )
+        users = set(namespace_permissions(self.manifest.relations)["connectors"])
+        users.update(r.owner for r in self.manifest.relations if r.schema == "connectors")
+        users.update((self.functions["connectors"].owner, *self.functions["connectors"].executors))
+        self.namespace_acl = [
+            dict(role=r, verb="USAGE", grantable=False) for r in sorted(users - {"normal_owner"})
+        ]
+        self.namespace_acl.append(
+            dict(role="connector_partition_owner", verb="CREATE", grantable=False)
+        )
+        if closed:
+            self.namespace_acl = [
+                dict(role="connector_partition_owner", verb="USAGE", grantable=False)
+            ]
+        self.source_shape = interfaces._CONNECTORS_PARENT_BODY
+
+    @staticmethod
+    def result(rows):
+        rows = list(rows)
+        return (list(rows[0]) if rows else [], [tuple(r.values()) for r in rows])
+
+    def respond(self, wire, parameters, decoded):
+        import hashlib
+        import re
+
+        import psycopg2
+
+        from butlers.db_authority import apply, grants, interfaces
+
+        self.statements.append(decoded)
+        sql = decoded.strip()
+        normalized = re.sub(r"%\(([A-Za-z0-9_]+)\)s", r":\1", wire).replace("%%", "%").strip()
+
+        def result(rows):
+            return self.result(rows)
+
+        if "actor.rolsuper AND actor.rolname=session_user" in sql:
+            return ["database", "owner", "valid"], [
+                ("test_replay", "normal_owner", self.fault != "actor")
+            ]
+        if sql == "SELECT current_database(), session_user, current_schema(), current_user":
+            return ["database", "actor", "schema", "ordinary"], [
+                (
+                    "test_replay",
+                    "maintenance",
+                    "foreign" if self.fault == "target" else "general",
+                    "normal_owner",
+                )
+            ]
+        if "connectors-replay:function-population" in sql:
+            rows = [
+                dict(
+                    schema="connectors",
+                    arguments="timestamp with time zone",
+                    owner="normal_owner"
+                    if self.normal and not self.closed
+                    else "connector_partition_owner",
+                )
+            ]
+            if self.local:
+                rows.append(dict(rows[0], schema="general"))
+            if self.fault == "foreign_function":
+                rows[0]["owner"] = "foreign"
+            return result(rows)
+        if "connectors-replay:partition-bounds" in sql:
+            return ["valid"], [(self.fault != "bound_semantics",)]
+        if "connectors-replay:relations" in sql:
+            rows = [dict(r) for r in self.relations]
+            if self.fault == "owner":
+                rows[0]["owner"] = "foreign"
+            if self.fault == "rls":
+                rows[0]["rls"] = True
+            if self.fault == "partition":
+                rows[1]["parents"] = []
+            if self.fault == "bound":
+                rows[1]["bound"] = "DEFAULT"
+            if self.fault == "rules":
+                rows[0]["rules"] = True
+            return result(rows)
+        if "connectors-replay:owner" in sql or "connectors-replay:function-metadata" in sql:
+            bad = self.fault == ("role" if "replay:owner" in sql else "metadata")
+            return ["valid"], [(not bad,)]
+        if normalized == interfaces._FUNCTION_CATALOG.strip() or "p.prosrc AS body" in sql:
+            schema = "connectors" if '"connectors".' in parameters["signature"] else "general"
+            if schema == "general" and not self.local:
+                return ["oid", "owner", "definer", "config", "body", "arguments"], []
+            definition = self.functions[schema]
+            return result(
+                [
+                    dict(
+                        oid=100 if schema == "connectors" else 101,
+                        owner=definition.owner,
+                        definer=definition.security_definer,
+                        config=list(definition.settings),
+                        body="counterfeit" if self.fault == "body" else definition.body,
+                        arguments="reference_ts timestamp with time zone",
+                    )
+                ]
+            )
+        if normalized == interfaces._FUNCTION_ACL.strip():
+            definition = self.functions["connectors" if parameters["oid"] == 100 else "general"]
+            rows = [
+                (role, "EXECUTE", False)
+                for role in definition.executors
+                if role != definition.owner
+            ]
+            if self.fault == "function_acl":
+                rows.append(("PUBLIC", "EXECUTE", False))
+            return ["role", "privilege", "grantable"], rows
+        if normalized == apply._RELATION_ACL.strip():
+            declaration = next(
+                r
+                for r in self.manifest.relations
+                if (r.schema, r.name) == ("connectors", "filtered_events")
+            )
+            rows = (
+                [
+                    dict(role=p.role, verb=v, grantable=False)
+                    for p in declaration.permissions
+                    for v in p.verbs
+                ]
+                if parameters["oid"] == 11
+                else []
+            )
+            if self.closed:
+                rows = []
+            if self.fault == "acl":
+                rows.append(dict(role="PUBLIC", verb="SELECT", grantable=False))
+            return ["role", "verb", "grantable"], [tuple(r.values()) for r in rows]
+        if normalized == apply._COLUMN_ACL.strip():
+            return ["name", "role", "verb", "grantable"], (
+                [("id", "PUBLIC", "SELECT", False)] if self.fault == "column_acl" else []
+            )
+        if normalized == apply._NAMESPACE_CATALOG.strip():
+            return ["oid", "name", "owner"], [(4, "connectors", "normal_owner")]
+        if normalized == apply._NAMESPACE_ACL.strip():
+            rows = list(self.namespace_acl)
+            if self.fault == "namespace_acl":
+                rows.append(dict(role="PUBLIC", verb="USAGE", grantable=False))
+            return result(rows)
+        if normalized == apply._DEFAULT_ACL.strip():
+            return ["owner", "schema", "kind", "role", "verb"], (
+                [("normal_owner", "connectors", "r", "PUBLIC", "SELECT")]
+                if self.fault == "default_acl"
+                else []
+            )
+        if sql.startswith("CREATE TEMPORARY TABLE"):
+            token = re.match(r'CREATE TEMPORARY TABLE "([a-z0-9_]+)"', sql)[1]
+            assert not self.scratch
+            # Compare full fixed body to the actual original revision source, not a query stub.
+            import ast
+            from pathlib import Path
+
+            original = Path(__file__).parents[2] / "alembic/versions/core/core_007_connectors.py"
+            tree = ast.parse(original.read_text())
+            table = next(
+                n.value
+                for n in ast.walk(tree)
+                if isinstance(n, ast.Constant)
+                and isinstance(n.value, str)
+                and "CREATE TABLE IF NOT EXISTS connectors.filtered_events (" in n.value
+            )
+            body = table.split("(", 1)[1].rsplit(") PARTITION BY", 1)[0]
+            actual = sql.split("(", 1)[1].rsplit(") PARTITION BY", 1)[0]
+            assert grants.security_expression_tokens(actual) == grants.security_expression_tokens(
+                body
+            )
+            self.scratch.add(token)
+            return None, []
+        if sql.startswith("CREATE INDEX") and "_butlers_connectors_" in sql:
+            import ast
+            from pathlib import Path
+
+            ordinal = int(re.search(r'_([0-3])" ON', sql)[1])
+            revision, name = (
+                ("core_007", "ix_filtered_events_drain"),
+                ("core_007", "ix_filtered_events_timeline"),
+                ("core_231", "ix_filtered_events_id"),
+                ("core_245", "ix_filtered_events_status_received"),
+            )[ordinal]
+            path = next(
+                (Path(__file__).parents[2] / "alembic/versions/core").glob(revision + "_*.py")
+            )
+            source = next(
+                n.value
+                for n in ast.walk(ast.parse(path.read_text()))
+                if isinstance(n, ast.Constant)
+                and isinstance(n.value, str)
+                and re.search(r"CREATE\s+INDEX\s+IF\s+NOT\s+EXISTS\s+" + name + r"\b", n.value)
+            )
+            expected_suffix = source.split("connectors.filtered_events", 1)[1]
+            actual_suffix = sql[sql.index("(") :]
+            assert grants.security_expression_tokens(
+                actual_suffix
+            ) == grants.security_expression_tokens(expected_suffix)
+            return None, []
+        if sql.startswith("DROP TABLE pg_temp."):
+            self.scratch.clear()
+            return None, []
+        if "connectors-replay:indexes" in sql:
+            scratch = "pg_temp." in parameters["relation"]
+            child = "filtered_events_202610" in parameters["relation"]
+            rows = [dict(r) for r in self.indexes]
+            if scratch:
+                token = parameters["relation"].split('"')[1]
+                rows = [
+                    dict(r, name=token + "_pkey" if i == 0 else token + "_" + str(i - 1))
+                    for i, r in enumerate(rows)
+                ]
+            if child:
+                rows = [
+                    dict(r, oid=40 + i, name="generated_" + str(i), kind="i", parents=[r["oid"]])
+                    for i, r in enumerate(rows)
+                ]
+            if not scratch:
+                if self.fault == "missing_index":
+                    rows.pop()
+                if self.fault == "index_keys":
+                    rows[1]["columns"] = ["id"]
+                if self.fault == "index_options":
+                    rows[1]["options"] = [0, 0, 0, 0]
+                if self.fault == "index_opclass":
+                    rows[1]["opclasses"] = [9, 9, 9, 9]
+                if self.fault == "index_invalid":
+                    rows[1]["indisvalid"] = False
+                if self.fault == "index_predicate":
+                    rows[1]["predicate"] = "true"
+                if self.fault == "index_owner":
+                    rows[1]["owner"] = "foreign"
+                if self.fault == "leaf" and child:
+                    rows[1]["parents"] = []
+            return result(rows)
+        if "connectors-replay:column-metadata" in sql:
+            return ["opaque"], [("source-column-catalog",)]
+        if normalized == interfaces._SHAPE_COLUMNS.strip():
+            # Source-opaque driver rows: mutation proves comparison, not native type parsing.
+            rows = [
+                dict(
+                    attname="received_at",
+                    type="timestamp with time zone",
+                    attnotnull=True,
+                    default="now()",
+                )
+            ]
+            if self.fault == "columns" and "pg_temp." not in parameters["relation"]:
+                rows[0]["type"] = "text"
+            return result(rows)
+        if normalized == interfaces._SHAPE_CONSTRAINTS.strip():
+            return ["contype", "definition"], [("p", "PRIMARY KEY (received_at, id)")]
+        if "FROM pg_catalog.pg_policy" in sql or "FROM pg_catalog.pg_trigger" in sql:
+            return ["opaque"], [
+                ("counterfeit",)
+            ] if self.fault == "security" and "pg_temp." not in parameters["relation"] else []
+        if sql == "SHOW lock_timeout":
+            return ["lock_timeout"], [("0",)]
+        if "pg_try_advisory_lock(" in sql:
+            return ["locked"], [(True,)]
+        if "SELECT child.oid, ns.nspname, child.relname" in sql:
+            return ["oid", "schema", "table"], [(12, "connectors", "filtered_events_202610")]
+        if "AND idx.indrelid = 12 AND idx.indisvalid" in sql:
+            return ["attached"], []
+        if "SELECT idx.indisvalid FROM pg_index" in sql:
+            return ["valid"], [(False,)]
+        if sql.startswith(
+            (
+                "SET lock_timeout",
+                "SELECT pg_advisory_unlock",
+                "SELECT set_config",
+                "DROP INDEX CONCURRENTLY",
+                "ALTER INDEX",
+            )
+        ):
+            return None, []
+        if (not self.normal or self.closed) and sql.startswith(
+            "CREATE OR REPLACE FUNCTION connectors."
+        ):
+            raise psycopg2.errors.InsufficientPrivilege("purpose function replay control")
+        if sql.startswith("CREATE INDEX") and not self.normal:
+            raise psycopg2.errors.InsufficientPrivilege("source-owned index replay control")
+        if sql.startswith(("CREATE ", "SELECT connectors.")):
+            return None, []
+        raise AssertionError(
+            "Unmodeled catalog operation " + hashlib.sha256(decoded.encode()).hexdigest()
+        )
+
+
+@pytest.mark.parametrize("revision", ["core_007", "core_135", "core_231", "core_245"])
+@pytest.mark.parametrize("local", [False, True])
+@pytest.mark.parametrize("closed", [False, True], ids=["current", "closed-current-core-history"])
+def test_connectors_finalized_replay_preserves_global_catalog_and_new_target(
+    revision, local, closed
+):
+    """Execute the real revision on SQLAlchemy's physical recording boundary."""
+    import runpy
+    from contextlib import nullcontext
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from sqlalchemy import text
+
+    root = Path(__file__).parents[2]
+    path = next((root / "alembic/versions/core").glob(revision + "_*.py"))
+    producer = runpy.run_path(str(path))
+    model = _ConnectorsReplayCatalog(local=local, closed=closed)
+    statements = model.statements
+
+    with _recording_postgresql_connection(model.respond) as (connection, _):
+        connection.info["butlers.source_database"] = "butlers"
+        context = SimpleNamespace(
+            autocommit_block=nullcontext, opts={"version_table_schema": "general"}
+        )
+        with (
+            patch("alembic.op.get_bind", return_value=connection),
+            patch("alembic.op.get_context", return_value=context),
+            patch(
+                "alembic.op.execute",
+                side_effect=lambda statement: connection.execute(text(statement)),
+            ),
+        ):
+            producer["upgrade"]()
+    durable = [sql for sql in statements if "_butlers_connectors_" not in sql]
+    assert not any(sql.lstrip().startswith("CREATE INDEX") for sql in durable)
+    assert not any(
+        "CREATE OR REPLACE FUNCTION connectors." in sql or "SELECT connectors." in sql
+        for sql in durable
+    )
+    assert any(
+        "CREATE OR REPLACE FUNCTION connectors_filtered_events_ensure_partition(" in sql
+        for sql in durable
+    ) is (revision in {"core_007", "core_135"} and not local)
+    assert not any(
+        sql.startswith(("RESET ROLE", "SET ROLE", "GRANT ", "ALTER TABLE")) for sql in statements
+    )
+    assert not model.scratch
+
+
+def test_connectors_ordinary_history_keeps_original_producers_and_cic():
+    import runpy
+    from contextlib import nullcontext
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from sqlalchemy import text
+
+    for revision in ("core_007", "core_135", "core_231", "core_245"):
+        model = _ConnectorsReplayCatalog(normal=True)
+        producer = runpy.run_path(
+            str(
+                next((Path(__file__).parents[2] / "alembic/versions/core").glob(revision + "_*.py"))
+            )
+        )
+        context = SimpleNamespace(
+            autocommit_block=nullcontext, opts={"version_table_schema": "general"}
+        )
+        with _recording_postgresql_connection(model.respond) as (connection, _):
+            connection.info["butlers.source_database"] = "butlers"
+            with (
+                patch("alembic.op.get_bind", return_value=connection),
+                patch("alembic.op.get_context", return_value=context),
+                patch(
+                    "alembic.op.execute",
+                    side_effect=lambda statement: connection.execute(text(statement)),
+                ),
+            ):
+                producer["upgrade"]()
+        if revision in {"core_231", "core_245"}:
+            assert any("CREATE INDEX CONCURRENTLY" in sql for sql in model.statements)
+            assert any("DROP INDEX CONCURRENTLY" in sql for sql in model.statements)
+            assert any("ATTACH PARTITION" in sql for sql in model.statements)
+            assert any("pg_advisory_unlock" in sql for sql in model.statements)
+            assert model.statements[-1].startswith("SELECT set_config('lock_timeout'")
+        else:
+            assert any(
+                "CREATE OR REPLACE FUNCTION connectors_filtered_events_ensure_partition(" in sql
+                for sql in model.statements
+            )
+            assert any(
+                "SELECT connectors.connectors_filtered_events_ensure_partition" in sql
+                for sql in model.statements
+            )
+        assert not any(
+            sql.startswith(("RESET ROLE", "SET ROLE", "GRANT ")) for sql in model.statements
+        )
+
+
+@pytest.mark.parametrize(
+    "faults",
+    [
+        (
+            "actor",
+            "target",
+            "owner",
+            "foreign_function",
+            "role",
+            "metadata",
+            "body",
+            "rls",
+            "partition",
+            "bound",
+            "bound_semantics",
+            "rules",
+            "acl",
+            "function_acl",
+            "column_acl",
+            "namespace_acl",
+            "default_acl",
+            "security",
+        ),
+        (
+            "missing_index",
+            "index_keys",
+            "index_options",
+            "index_opclass",
+            "index_invalid",
+            "index_predicate",
+            "index_owner",
+            "leaf",
+            "columns",
+        ),
+    ],
+    ids=["identity-authority-partition", "index-column-closure"],
+)
+def test_connectors_current_reuse_refuses_counterfeit_before_managed_effects(faults):
+    import itertools
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from sqlalchemy import text
+
+    for fault, closed in itertools.product(faults, (False, True)):
+        model = _ConnectorsReplayCatalog(local=True, closed=closed, fault=fault)
+        producer = runpy.run_path(
+            str(next((Path(__file__).parents[2] / "alembic/versions/core").glob("core_007_*.py")))
+        )
+        with _recording_postgresql_connection(model.respond) as (connection, _):
+            connection.info["butlers.source_database"] = "butlers"
+            with (
+                patch("alembic.op.get_bind", return_value=connection),
+                patch(
+                    "alembic.op.get_context",
+                    return_value=SimpleNamespace(opts={"version_table_schema": "general"}),
+                ),
+                patch(
+                    "alembic.op.execute",
+                    side_effect=lambda statement: connection.execute(text(statement)),
+                ),
+            ):
+                with pytest.raises(AuthorityError):
+                    producer["upgrade"]()
+        assert not model.scratch
+        assert not any(
+            sql.lstrip().startswith(
+                (
+                    "CREATE INDEX",
+                    "CREATE OR REPLACE FUNCTION",
+                    "ALTER ",
+                    "GRANT ",
+                    "SET ROLE",
+                    "RESET ROLE",
+                )
+            )
+            and "_butlers_connectors_" not in sql
+            for sql in model.statements
+        )
+
+
+def test_connectors_parser_cleanup_preserves_original_cancellation():
+    import asyncio
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from sqlalchemy import text
+
+    for cleanup_fails in (False, True):
+        model = _ConnectorsReplayCatalog(local=True)
+        original = asyncio.CancelledError("source parser control")
+        calls = []
+
+        def respond(
+            wire,
+            parameters,
+            decoded,
+            *,
+            original=original,
+            calls=calls,
+            cleanup_fails=cleanup_fails,
+            model=model,
+        ):
+            if decoded.strip().startswith("DROP TABLE pg_temp."):
+                calls.append("close")
+                if cleanup_fails:
+                    raise RuntimeError("source parser cleanup control")
+            return model.respond(wire, parameters, decoded)
+
+        producer = runpy.run_path(
+            str(next((Path(__file__).parents[2] / "alembic/versions/core").glob("core_007_*.py")))
+        )
+        with _recording_postgresql_connection(respond) as (connection, _):
+            connection.info["butlers.source_database"] = "butlers"
+            execute = connection.execute
+
+            def execute_catalog(statement, *args, original=original, execute=execute, **kwargs):
+                if "connectors-replay:column-metadata" in str(statement):
+                    raise original
+                return execute(statement, *args, **kwargs)
+
+            with (
+                patch.object(connection, "execute", side_effect=execute_catalog),
+                patch("alembic.op.get_bind", return_value=connection),
+                patch(
+                    "alembic.op.get_context",
+                    return_value=SimpleNamespace(opts={"version_table_schema": "general"}),
+                ),
+                patch("alembic.op.execute", side_effect=lambda sql: connection.execute(text(sql))),
+            ):
+                with pytest.raises(asyncio.CancelledError) as caught:
+                    producer["upgrade"]()
+        assert caught.value is original
+        assert calls == ["close"]
+        assert bool(getattr(original, "__notes__", ())) is cleanup_fails
+        assert not any(sql.startswith("CREATE OR REPLACE FUNCTION") for sql in model.statements)
+
+
+class _RuntimeProbeReplayCatalog(_ConnectorsReplayCatalog):
+    """Real SQLAlchemy transport; aggregate server facts are not native PG proof."""
+
+    def __init__(self, mode, *, namespace_owner="normal_owner", fault=None):
+        from dataclasses import replace
+
+        from butlers.db_authority import grants
+
+        self.mode, self.probe_fault, self.public_owner = mode, fault, namespace_owner
+        super().__init__(
+            normal=mode in {"fresh", "ordinary"},
+            local=True,
+            closed=mode == "closed",
+            fault="function_acl" if fault == "phase_acl" else None,
+        )
+        self.verifier = next(
+            row
+            for row in grants.compile_function_manifest(
+                self.manifest.profiles, "normal_owner", (("core", "general", None),)
+            )
+            if row.name == "record_runtime_probe_verification"
+        )
+        if mode == "closed":
+            self.verifier = replace(self.verifier, executors=())
+        self.model_declaration = next(
+            row
+            for row in self.manifest.relations
+            if (row.schema, row.name) == ("public", "model_catalog")
+        )
+
+    def respond(self, wire, parameters, decoded):
+        import re
+
+        import psycopg2
+
+        from butlers.db_authority import apply, grants, interfaces
+
+        sql = decoded.strip()
+        normalized = re.sub(r"%\(([A-Za-z0-9_]+)\)s", r":\1", wire).replace("%%", "%").strip()
+        fault = self.probe_fault
+
+        def answer(columns, rows):
+            self.statements.append(decoded)
+            return columns, rows
+
+        if "butlers:core_252:definer_search_paths" in sql:
+            return answer(["locked"], [(None,)])
+        if "p.proname = ANY(:names)" in normalized:
+            definitions = (self.verifier, *self.functions.values())
+            return answer(
+                ["signature", "schema_name", "function_name", "search_path"],
+                [
+                    (
+                        f"{row.schema}.{row.name}({row.signature})",
+                        row.schema,
+                        row.name,
+                        next(
+                            setting.split("=", 1)[1]
+                            for setting in row.settings
+                            if setting.startswith("search_path=")
+                        ),
+                    )
+                    for row in definitions
+                ],
+            )
+        if sql == "SELECT current_database(), session_user":
+            return answer(["database", "actor"], [("test_replay", "maintenance")])
+        if "runtime-probe-replay:population" in sql:
+            rows = (
+                []
+                if self.mode == "fresh" or fault == "missing"
+                else [
+                    (
+                        "uuid, boolean, integer, text",
+                        "normal_owner"
+                        if self.mode == "ordinary" or fault == "normal_owner"
+                        else "model_probe_owner",
+                    )
+                ]
+            )
+            if fault == "signature":
+                rows = [("text", "model_probe_owner")]
+            if fault == "foreign_owner":
+                rows = [("uuid, boolean, integer, text", "foreign")]
+            if fault == "overload":
+                rows *= 2
+            return answer(["arguments", "owner"], rows)
+        if sql.startswith("SELECT pg_catalog.pg_get_userbyid(relowner)"):
+            return answer(["owner"], [(self.parent["owner"],)])
+        if "runtime-probe-replay:owner" in sql:
+            assert "NOT rolinherit" in sql and "pg_auth_members" in sql
+            return answer(["valid"], [(fault not in {"role", "membership"},)])
+        if "runtime-probe-replay:metadata" in sql:
+            # Assert the actual source query contains every modeled predicate;
+            # false aggregate responses prove refusal, not PostgreSQL evaluation.
+            for predicate in (
+                "p.prorettype='boolean'::regtype",
+                "p.pronargdefaults=0",
+                "p.proargnames=ARRAY",
+                "NOT p.proretset",
+                "l.lanname='plpgsql'",
+                "NOT p.proisstrict",
+                "NOT p.proleakproof",
+                "p.prosupport=0",
+            ):
+                assert predicate in sql
+            return answer(
+                ["valid"], [(fault not in {"return_type", "defaults", "argnames", "language"},)]
+            )
+        if "runtime-probe-replay:namespace" in sql:
+            assert "IN (:owner,'pg_database_owner')" in normalized
+            return answer(
+                ["valid"],
+                [
+                    (
+                        self.public_owner in {"normal_owner", "pg_database_owner"}
+                        and fault not in {"usage", "create"},
+                    )
+                ],
+            )
+        if (
+            normalized == interfaces._FUNCTION_CATALOG.strip()
+            and "record_runtime_probe_verification" in parameters["signature"]
+        ):
+            return answer(
+                ["oid", "owner", "definer", "config", "body", "arguments"],
+                [
+                    (
+                        300,
+                        self.verifier.owner,
+                        self.verifier.security_definer,
+                        ["search_path=foreign"]
+                        if fault == "settings"
+                        else list(self.verifier.settings),
+                        "counterfeit" if fault == "body" else self.verifier.body,
+                        "p_catalog_entry_id uuid, p_ok boolean, p_latency_ms integer, p_error text",
+                    )
+                ],
+            )
+        if normalized == interfaces._FUNCTION_ACL.strip() and parameters["oid"] == 300:
+            rows = [
+                (role, "EXECUTE", False)
+                for role in self.verifier.executors
+                if role != self.verifier.owner
+            ]
+            if fault == "acl_extra":
+                rows.append(("PUBLIC", "EXECUTE", False))
+            if fault == "acl_missing":
+                rows = []
+            return answer(["role", "privilege", "grantable"], rows)
+        if normalized == apply._RELATIONS.strip():
+            enabled, forced = grants.relation_security_flags(self.model_declaration)
+            return answer(
+                ["schema", "name", "kind", "owner", "rls", "forced_rls", "oid", "partition"],
+                []
+                if fault == "missing_model"
+                else [
+                    (
+                        "public",
+                        "model_catalog",
+                        "r",
+                        "foreign" if fault == "model_owner" else "normal_owner",
+                        not enabled if fault == "model_rls" else enabled,
+                        forced,
+                        301,
+                        False,
+                    )
+                ],
+            )
+        if (
+            normalized in {apply._RELATION_ACL.strip(), apply._COLUMN_ACL.strip()}
+            and parameters["oid"] == 301
+        ):
+            columns = normalized == apply._COLUMN_ACL.strip()
+            rows = []
+            for permission in self.model_declaration.permissions:
+                if bool(permission.columns) != columns:
+                    continue
+                for verb in permission.verbs:
+                    if columns:
+                        rows.extend(
+                            (col, permission.role, verb, False) for col in permission.columns
+                        )
+                    else:
+                        rows.append((permission.role, verb, False))
+            if fault == "model_acl" and not columns:
+                rows.append(("PUBLIC", "UPDATE", False))
+            return answer(
+                ["name", "role", "verb", "grantable"] if columns else ["role", "verb", "grantable"],
+                rows,
+            )
+        if (
+            sql.startswith(
+                ("CREATE ", "DROP TRIGGER", "DROP POLICY", "ALTER TABLE", "REVOKE ", "DO ")
+            )
+            and "_butlers_connectors_" not in sql
+        ):
+            if (
+                "CREATE OR REPLACE FUNCTION public.record_runtime_probe_verification(" in sql
+                and self.mode not in {"fresh", "ordinary"}
+            ):
+                self.statements.append(decoded)
+                raise psycopg2.errors.InsufficientPrivilege("source verifier replay control")
+            return answer(None, [])
+        return super().respond(wire, parameters, decoded)
+
+
+def test_runtime_probe_verifier_replay_preserves_source_phase_and_ordinary_receipts(tmp_path):
+    import runpy
+    from contextlib import nullcontext
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from sqlalchemy import text
+
+    producer = runpy.run_path(
+        str(
+            Path(__file__).parents[2]
+            / "alembic/versions/core/core_201_runtime_probe_control_receipts.py"
+        )
+    )
+    for mode in ("current", "closed", "fresh", "ordinary", "current-empty"):
+        roster = tmp_path / "roster"
+        (roster / "general").mkdir(parents=True, exist_ok=True)
+        (roster / "general/butler.toml").write_text(
+            '[butler]\nname="general"\n[butler.db]\nname="butlers"\nschema="general"\n'
+        )
+        source = (
+            patch.object(roles, "_ROSTER_ROOT", roster)
+            if mode == "current-empty"
+            else nullcontext()
+        )
+        with source:
+            for namespace_owner in ("normal_owner", "pg_database_owner"):
+                model = _RuntimeProbeReplayCatalog(mode, namespace_owner=namespace_owner)
+                if mode == "current-empty":
+                    assert model.verifier.executors == ()
+                with _recording_postgresql_connection(model.respond) as (connection, _):
+                    connection.info["butlers.source_database"] = "butlers"
+                    with (
+                        patch("alembic.op.get_bind", return_value=connection),
+                        patch(
+                            "alembic.op.get_context",
+                            return_value=SimpleNamespace(opts={"version_table_schema": "general"}),
+                        ),
+                        patch(
+                            "alembic.op.execute",
+                            side_effect=lambda sql: connection.execute(text(sql)),
+                        ),
+                    ):
+                        producer["upgrade"]()
+                        if mode in {"current", "closed", "current-empty"}:
+                            for filename in (
+                                "core_212_runtime_probe_control_receipts_owner_fence.py",
+                                "core_252_pin_definer_search_paths.py",
+                            ):
+                                survivor = runpy.run_path(
+                                    str(
+                                        Path(__file__).parents[2]
+                                        / "alembic/versions/core"
+                                        / filename
+                                    )
+                                )
+                                survivor["upgrade"]()
+                if mode in {"current", "closed", "current-empty"}:
+                    assert any(
+                        "ALTER TABLE public.runtime_probe_control_receipts FORCE ROW LEVEL SECURITY"
+                        in sql
+                        for sql in model.statements
+                    )
+                    assert any(
+                        "CREATE TRIGGER trg_runtime_probe_control_receipts_no_truncate" in sql
+                        for sql in model.statements
+                    )
+                    assert any("p.proname = ANY" in sql for sql in model.statements)
+                    assert not any(
+                        sql.lstrip().startswith("ALTER FUNCTION") for sql in model.statements
+                    )
+                assert any(
+                    "CREATE TABLE IF NOT EXISTS public.runtime_probe_control_receipts" in sql
+                    for sql in model.statements
+                )
+                assert any(
+                    "CREATE POLICY runtime_probe_control_receipts_switchboard" in sql
+                    for sql in model.statements
+                )
+                assert any(
+                    "CREATE OR REPLACE FUNCTION public.runtime_probe_control_receipt_retention"
+                    in sql
+                    for sql in model.statements
+                )
+                verifier_effects = [
+                    sql
+                    for sql in model.statements
+                    if "FUNCTION public.record_runtime_probe_verification(" in sql
+                    or "FUNCTION public.record_runtime_probe_verification(uuid," in sql
+                ]
+                assert bool(verifier_effects) is (mode in {"fresh", "ordinary"})
+                if mode not in {"fresh", "ordinary"}:
+                    assert any("runtime-probe-replay:metadata" in sql for sql in model.statements)
+                    assert any("connectors-replay:indexes" in sql for sql in model.statements)
+                assert not any(
+                    sql.startswith(("RESET ROLE", "SET ROLE")) for sql in model.statements
+                )
+                assert not model.scratch
+
+
+def test_runtime_probe_verifier_replay_refuses_counterfeit_before_effects():
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from sqlalchemy import text
+
+    producer = runpy.run_path(
+        str(
+            Path(__file__).parents[2]
+            / "alembic/versions/core/core_201_runtime_probe_control_receipts.py"
+        )
+    )
+    for mode in ("current", "closed"):
+        faults = (
+            "missing",
+            "normal_owner",
+            "foreign_owner",
+            "signature",
+            "overload",
+            "role",
+            "membership",
+            "return_type",
+            "defaults",
+            "argnames",
+            "language",
+            "settings",
+            "body",
+            "acl_extra",
+            "usage",
+            "create",
+            "missing_model",
+            "model_owner",
+            "model_rls",
+            "model_acl",
+            "phase_acl",
+        )
+        if mode == "current":
+            faults += ("acl_missing",)
+        for fault in (*faults, "namespace_owner"):
+            model = _RuntimeProbeReplayCatalog(
+                mode,
+                namespace_owner="foreign" if fault == "namespace_owner" else "normal_owner",
+                fault=fault,
+            )
+            with _recording_postgresql_connection(model.respond) as (connection, _):
+                connection.info["butlers.source_database"] = "butlers"
+                with (
+                    patch("alembic.op.get_bind", return_value=connection),
+                    patch(
+                        "alembic.op.get_context",
+                        return_value=SimpleNamespace(opts={"version_table_schema": "general"}),
+                    ),
+                    patch(
+                        "alembic.op.execute", side_effect=lambda sql: connection.execute(text(sql))
+                    ),
+                ):
+                    with pytest.raises(AuthorityError):
+                        producer["upgrade"]()
+            assert not model.scratch
+            assert not any(
+                "runtime_probe_control_receipts" in sql
+                and sql.lstrip().startswith(("CREATE ", "ALTER ", "REVOKE ", "DROP "))
+                for sql in model.statements
+            )
