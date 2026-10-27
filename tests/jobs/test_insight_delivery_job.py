@@ -24,6 +24,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.records import row
+
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
 _PINNED_NOW = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
@@ -39,32 +42,6 @@ def _make_mock_pool() -> AsyncMock:
     return AsyncMock()
 
 
-class _FakeRecord:
-    """Minimal asyncpg.Record-alike that supports dict(row) via keys() + __getitem__."""
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self._data = data
-
-    def __getitem__(self, key: str) -> Any:
-        return self._data[key]
-
-    def keys(self) -> Any:
-        return self._data.keys()
-
-    def __iter__(self) -> Any:
-        return iter(self._data)
-
-
-class _FakeTxnCtx:
-    """No-op async context manager standing in for asyncpg's conn.transaction()."""
-
-    async def __aenter__(self) -> _FakeTxnCtx:
-        return self
-
-    async def __aexit__(self, *exc_info: Any) -> bool:
-        return False
-
-
 class _FakeConn:
     """Minimal connection stand-in for the post-delivery bookkeeping transaction.
 
@@ -77,21 +54,8 @@ class _FakeConn:
     def __init__(self) -> None:
         self.execute = AsyncMock(return_value="UPDATE 3")
 
-    def transaction(self) -> _FakeTxnCtx:
-        return _FakeTxnCtx()
-
-
-class _FakeAcquireCtx:
-    """No-op async context manager standing in for asyncpg's pool.acquire()."""
-
-    def __init__(self, conn: _FakeConn) -> None:
-        self._conn = conn
-
-    async def __aenter__(self) -> _FakeConn:
-        return self._conn
-
-    async def __aexit__(self, *exc_info: Any) -> bool:
-        return False
+    def transaction(self) -> AsyncCtx:
+        return AsyncCtx(None)
 
 
 # ---------------------------------------------------------------------------
@@ -608,15 +572,15 @@ class TestBrokerChannelSelectionInNotifyMetadata:
 
             async def mock_fetch(query: str, *args: Any) -> list:
                 if "SELECT id, origin_butler" in query:
-                    return [_FakeRecord(c) for c in candidates]
+                    return [row(**c) for c in candidates]
                 if "insight_candidates" in query:
-                    return [_FakeRecord({"id": c["id"]}) for c in candidates]
+                    return [row(**{"id": c["id"]}) for c in candidates]
                 return []
 
             mock_pool.fetch = mock_fetch
             mock_pool.execute = AsyncMock(return_value="UPDATE 3")
             mock_pool.executemany = AsyncMock()
-            mock_pool.acquire = lambda: _FakeAcquireCtx(_FakeConn())
+            mock_pool.acquire = lambda: AsyncCtx(_FakeConn())
 
             await delivery_cycle(mock_pool, notify_fn=_capture_notify, now=_PINNED_NOW)
 
@@ -754,7 +718,7 @@ async def test_actual_insight_cycle_quarantines_partial_through_failed_terminal_
 
     conn.execute.side_effect = fresh_write
     pool.fetch = AsyncMock(side_effect=fresh_fetch)
-    pool.acquire.return_value = _FakeAcquireCtx(conn)
+    pool.acquire.return_value = AsyncCtx(conn)
     notify.return_value = {"status": "sent"}
     values.update(
         {
@@ -854,11 +818,11 @@ async def test_real_delivery_cycle_rechecks_finance_after_format_and_preserves_u
     pool = AsyncMock()
 
     async def fetch(query, *args):
-        return [_FakeRecord(candidate)]
+        return [row(**candidate)]
 
     pool.fetch = fetch
     pool.execute = AsyncMock(return_value="UPDATE 1")
-    pool.acquire = lambda: _FakeAcquireCtx(_FakeConn())
+    pool.acquire = lambda: AsyncCtx(_FakeConn())
     read = AsyncMock(side_effect=[True, final_verdict])
     notify = AsyncMock(return_value={"status": "sent"})
     replacements = {

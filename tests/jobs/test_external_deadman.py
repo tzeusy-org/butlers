@@ -30,6 +30,7 @@ from butlers.jobs.external_deadman import (
     run_external_deadman_check,
     run_external_deadman_loop,
 )
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -50,14 +51,8 @@ async def test_ping_success_on_2xx(monkeypatch):
             return False
 
         def stream(self, method, url):
-            class Response:
-                async def __aenter__(self):
-                    return resp
 
-                async def __aexit__(self, *exc):
-                    return False
-
-            return Response()
+            return AsyncCtx(resp)
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: _FakeClient())
 
@@ -75,14 +70,8 @@ async def test_ping_failure_on_non_2xx(monkeypatch):
             return False
 
         def stream(self, method, url):
-            class Response:
-                async def __aenter__(self):
-                    return resp
 
-                async def __aexit__(self, *exc):
-                    return False
-
-            return Response()
+            return AsyncCtx(resp)
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: _FakeClient())
 
