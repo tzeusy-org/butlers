@@ -9,16 +9,13 @@ per RFC 0014 §D7.
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
 import logging
-import sys
 import time
 import zoneinfo
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dt_time
-from pathlib import Path
 from typing import Annotated, Any, Protocol
 from uuid import UUID
 
@@ -76,62 +73,56 @@ from butlers.chronicler.storage import (
     update_routine,
     upsert_tier2_cache,
 )
+from butlers.roster_imports import roster_module
 
-_models_path = Path(__file__).parent / "models.py"
-_spec = importlib.util.spec_from_file_location("chronicler_api_models", _models_path)
-if _spec is not None and _spec.loader is not None:
-    _models = importlib.util.module_from_spec(_spec)
-    sys.modules["chronicler_api_models"] = _models
-    _spec.loader.exec_module(_models)
+_models = roster_module("chronicler", "api/models", api_source=__file__)
 
-    ChroniclerPointEvent = _models.ChroniclerPointEvent
-    ChroniclerEpisode = _models.ChroniclerEpisode
-    ChroniclerOverride = _models.ChroniclerOverride
-    SourceStateRow = _models.SourceStateRow
-    SubsourceCheckpoint = _models.SubsourceCheckpoint
-    SubmitCorrectionRequest = _models.SubmitCorrectionRequest
-    ResolveGapInterviewRequest = _models.ResolveGapInterviewRequest
-    AggregateByDayRow = _models.AggregateByDayRow
-    SourceBreakdownEntry = _models.SourceBreakdownEntry
-    CategoryBucket = _models.CategoryBucket
-    CategoryBuckets = _models.CategoryBuckets
-    DayCloseFreshResponse = _models.DayCloseFreshResponse
-    DayCloseStaleResponse = _models.DayCloseStaleResponse
-    DayCloseInvalidResponse = _models.DayCloseInvalidResponse
-    DayCloseRefreshRequest = _models.DayCloseRefreshRequest
-    DayCloseRefreshResponse = _models.DayCloseRefreshResponse
-    DayCloseRefreshQuietResponse = _models.DayCloseRefreshQuietResponse
-    EpisodeExplainResponse = _models.EpisodeExplainResponse
-    OpsSessionRow = _models.OpsSessionRow
-    ProjectionHealthRow = _models.ProjectionHealthRow
-    ChroniclesAttentionItem = _models.ChroniclesAttentionItem
-    ChroniclesBriefing = _models.ChroniclesBriefing
-    ChroniclesBriefingSubqueryAvailability = _models.ChroniclesBriefingSubqueryAvailability
-    ChroniclesKpi = _models.ChroniclesKpi
-    ChroniclesLaneHours = _models.ChroniclesLaneHours
-    ChroniclesRecentDay = _models.ChroniclesRecentDay
-    ChroniclesStreaks = _models.ChroniclesStreaks
-    EvidenceChainLink = _models.EvidenceChainLink
-    ActivityEvidenceChain = _models.ActivityEvidenceChain
-    CorrectionPrompt = _models.CorrectionPrompt
-    CorrectionPrompts = _models.CorrectionPrompts
-    RoutineRow = _models.RoutineRow
-    CreateRoutineRequest = _models.CreateRoutineRequest
-    UpdateRoutineRequest = _models.UpdateRoutineRequest
-    RollupLaneRow = _models.RollupLaneRow
-    RollupFlagRow = _models.RollupFlagRow
-    RollupDay = _models.RollupDay
-    RollupsResponse = _models.RollupsResponse
-    BalanceLaneRow = _models.BalanceLaneRow
-    BalanceResponse = _models.BalanceResponse
-    TrendLaneDay = _models.TrendLaneDay
-    TrendLaneSeries = _models.TrendLaneSeries
-    TrendAnomaly = _models.TrendAnomaly
-    TrendsResponse = _models.TrendsResponse
-    CompanionEntry = _models.CompanionEntry
-    WhoYouWereWithResponse = _models.WhoYouWereWithResponse
-else:  # pragma: no cover — defensive
-    raise RuntimeError("Failed to load chronicler API models module")
+ChroniclerPointEvent = _models.ChroniclerPointEvent
+ChroniclerEpisode = _models.ChroniclerEpisode
+ChroniclerOverride = _models.ChroniclerOverride
+SourceStateRow = _models.SourceStateRow
+SubsourceCheckpoint = _models.SubsourceCheckpoint
+SubmitCorrectionRequest = _models.SubmitCorrectionRequest
+ResolveGapInterviewRequest = _models.ResolveGapInterviewRequest
+AggregateByDayRow = _models.AggregateByDayRow
+SourceBreakdownEntry = _models.SourceBreakdownEntry
+CategoryBucket = _models.CategoryBucket
+CategoryBuckets = _models.CategoryBuckets
+DayCloseFreshResponse = _models.DayCloseFreshResponse
+DayCloseStaleResponse = _models.DayCloseStaleResponse
+DayCloseInvalidResponse = _models.DayCloseInvalidResponse
+DayCloseRefreshRequest = _models.DayCloseRefreshRequest
+DayCloseRefreshResponse = _models.DayCloseRefreshResponse
+DayCloseRefreshQuietResponse = _models.DayCloseRefreshQuietResponse
+EpisodeExplainResponse = _models.EpisodeExplainResponse
+OpsSessionRow = _models.OpsSessionRow
+ProjectionHealthRow = _models.ProjectionHealthRow
+ChroniclesAttentionItem = _models.ChroniclesAttentionItem
+ChroniclesBriefing = _models.ChroniclesBriefing
+ChroniclesBriefingSubqueryAvailability = _models.ChroniclesBriefingSubqueryAvailability
+ChroniclesKpi = _models.ChroniclesKpi
+ChroniclesLaneHours = _models.ChroniclesLaneHours
+ChroniclesRecentDay = _models.ChroniclesRecentDay
+ChroniclesStreaks = _models.ChroniclesStreaks
+EvidenceChainLink = _models.EvidenceChainLink
+ActivityEvidenceChain = _models.ActivityEvidenceChain
+CorrectionPrompt = _models.CorrectionPrompt
+CorrectionPrompts = _models.CorrectionPrompts
+RoutineRow = _models.RoutineRow
+CreateRoutineRequest = _models.CreateRoutineRequest
+UpdateRoutineRequest = _models.UpdateRoutineRequest
+RollupLaneRow = _models.RollupLaneRow
+RollupFlagRow = _models.RollupFlagRow
+RollupDay = _models.RollupDay
+RollupsResponse = _models.RollupsResponse
+BalanceLaneRow = _models.BalanceLaneRow
+BalanceResponse = _models.BalanceResponse
+TrendLaneDay = _models.TrendLaneDay
+TrendLaneSeries = _models.TrendLaneSeries
+TrendAnomaly = _models.TrendAnomaly
+TrendsResponse = _models.TrendsResponse
+CompanionEntry = _models.CompanionEntry
+WhoYouWereWithResponse = _models.WhoYouWereWithResponse
 
 logger = logging.getLogger(__name__)
 

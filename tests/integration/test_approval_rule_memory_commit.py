@@ -27,6 +27,7 @@ from butlers.db import register_jsonb_codec
 from butlers.modules.memory import tools as memory_tools
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import _DomainOwnerState
+from tests.audit_helpers import clear_audit_log_for_test
 
 pytestmark = [
     pytest.mark.integration,
@@ -75,6 +76,18 @@ class _UnavailableDaemon:
         raise ConnectionError("synthetic owning daemon unavailable")
 
 
+@pytest.fixture(autouse=True)
+def admitted_standing_rule_boundary(monkeypatch):
+    """Retain this owner's non-auth invariants after explicit D13 admission.
+
+    No factor/nonce/role evidence is claimed here; the dedicated migrated
+    dashboard-stepup owner executes that authority with real signed assertions.
+    """
+    from tests.approval_stepup_helpers import admit_rule_boundary_for_non_auth_owner
+
+    admit_rule_boundary_for_non_auth_owner(monkeypatch)
+
+
 @pytest.fixture(scope="module")
 def migrated_db_url(postgres_container) -> str:
     return create_migrated_test_db(
@@ -101,8 +114,9 @@ async def database(migrated_db_url: str):
         )
         cleanup.push_async_callback(_close_pool, observer)
         try:
+            await clear_audit_log_for_test(owner)
             await owner.execute(
-                "TRUNCATE public.audit_log, home_mem.memory_links, home_mem.facts, "
+                "TRUNCATE home_mem.memory_links, home_mem.facts, "
                 "approval_events, pending_actions, approval_rules, "
                 "autonomy_approval_history, autonomy_suggestions CASCADE"
             )

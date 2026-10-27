@@ -632,13 +632,9 @@ class TestToolRegistration:
 
     def test_register_tools_function_exists(self):
         """register_tools function is importable from finance modules."""
-        import importlib.util
-        from pathlib import Path
+        import importlib
 
-        tools_path = Path(__file__).parent.parent / "modules" / "tools.py"
-        spec = importlib.util.spec_from_file_location("finance_module_tools", tools_path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = importlib.import_module("butlers.modules._roster_finance.tools")
 
         assert hasattr(module, "register_tools")
         assert callable(module.register_tools)

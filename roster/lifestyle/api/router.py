@@ -8,12 +8,9 @@ fetched page length (docs/api_and_protocols/response-conventions.md).
 
 from __future__ import annotations
 
-import importlib.util
 import logging
-import sys
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -22,20 +19,14 @@ from fastapi import APIRouter, HTTPException, Query
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
+from butlers.roster_imports import roster_module
 
-_models_path = Path(__file__).parent / "models.py"
-_spec = importlib.util.spec_from_file_location("lifestyle_api_models", _models_path)
-if _spec is not None and _spec.loader is not None:
-    _models = importlib.util.module_from_spec(_spec)
-    sys.modules["lifestyle_api_models"] = _models
-    _spec.loader.exec_module(_models)
+_models = roster_module("lifestyle", "api/models", api_source=__file__)
 
-    TasteSummary = _models.TasteSummary
-    TasteSummaryQueryAvailability = _models.TasteSummaryQueryAvailability
-    TasteWork = _models.TasteWork
-    TasteVerdict = _models.TasteVerdict
-else:
-    raise RuntimeError("Failed to load lifestyle API models")
+TasteSummary = _models.TasteSummary
+TasteSummaryQueryAvailability = _models.TasteSummaryQueryAvailability
+TasteWork = _models.TasteWork
+TasteVerdict = _models.TasteVerdict
 
 logger = logging.getLogger(__name__)
 

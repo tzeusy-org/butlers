@@ -7,15 +7,12 @@ health butler's PostgreSQL database via asyncpg.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
 import os
 import re
-import sys
 from datetime import UTC, datetime, timedelta
 from math import isfinite
-from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -28,54 +25,54 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
+from butlers.core import baselines as baselines_core
 from butlers.core.general_settings import load_general_settings, resolve_general_timezone
+from butlers.core.health_baseline_metrics import METRICS as BASELINE_METRICS
 from butlers.core.model_routing import Complexity
 from butlers.credential_store import CredentialStore
+from butlers.roster_imports import roster_module
 
 # Dynamically load models module from the same directory
-_models_path = Path(__file__).parent / "models.py"
-_spec = importlib.util.spec_from_file_location("health_api_models", _models_path)
-if _spec is not None and _spec.loader is not None:
-    _models = importlib.util.module_from_spec(_spec)
-    sys.modules["health_api_models"] = _models
-    _spec.loader.exec_module(_models)
+_models = roster_module("health", "api/models", api_source=__file__)
 
-    Briefing = _models.Briefing
-    Condition = _models.Condition
-    ConditionCreateRequest = _models.ConditionCreateRequest
-    ConditionUpdateRequest = _models.ConditionUpdateRequest
-    Dose = _models.Dose
-    DoseLogRequest = _models.DoseLogRequest
-    ExpectedSignalResponse = _models.ExpectedSignalResponse
-    ExpectedSignalsResponse = _models.ExpectedSignalsResponse
-    LatestMeasurementEntry = _models.LatestMeasurementEntry
-    LatestMeasurementsResponse = _models.LatestMeasurementsResponse
-    Meal = _models.Meal
-    MealCreateRequest = _models.MealCreateRequest
-    MealUpdateRequest = _models.MealUpdateRequest
-    Measurement = _models.Measurement
-    MeasurementCreateRequest = _models.MeasurementCreateRequest
-    MeasurementTypeInfo = _models.MeasurementTypeInfo
-    MeasurementTypesResponse = _models.MeasurementTypesResponse
-    MeasurementUpdateRequest = _models.MeasurementUpdateRequest
-    MeasurementSource = _models.MeasurementSource
-    MeasurementSourcesResponse = _models.MeasurementSourcesResponse
-    Medication = _models.Medication
-    MedicationAdherenceResponse = _models.MedicationAdherenceResponse
-    MedicationCreateRequest = _models.MedicationCreateRequest
-    MedicationUpdateRequest = _models.MedicationUpdateRequest
-    NutritionDailyAverage = _models.NutritionDailyAverage
-    NutritionSummaryResponse = _models.NutritionSummaryResponse
-    Research = _models.Research
-    ResearchCreateRequest = _models.ResearchCreateRequest
-    ResearchUpdateRequest = _models.ResearchUpdateRequest
-    SleepSessionResponse = _models.SleepSessionResponse
-    SleepStage = _models.SleepStage
-    Symptom = _models.Symptom
-    SymptomCreateRequest = _models.SymptomCreateRequest
-    SymptomUpdateRequest = _models.SymptomUpdateRequest
-    TrendBucket = _models.TrendBucket
-    TrendResponse = _models.TrendResponse
+BaselineResponse = _models.BaselineResponse
+BaselinesResponse = _models.BaselinesResponse
+Briefing = _models.Briefing
+Condition = _models.Condition
+ConditionCreateRequest = _models.ConditionCreateRequest
+ConditionUpdateRequest = _models.ConditionUpdateRequest
+Dose = _models.Dose
+DoseLogRequest = _models.DoseLogRequest
+ExpectedSignalResponse = _models.ExpectedSignalResponse
+ExpectedSignalsResponse = _models.ExpectedSignalsResponse
+LatestMeasurementEntry = _models.LatestMeasurementEntry
+LatestMeasurementsResponse = _models.LatestMeasurementsResponse
+Meal = _models.Meal
+MealCreateRequest = _models.MealCreateRequest
+MealUpdateRequest = _models.MealUpdateRequest
+Measurement = _models.Measurement
+MeasurementCreateRequest = _models.MeasurementCreateRequest
+MeasurementTypeInfo = _models.MeasurementTypeInfo
+MeasurementTypesResponse = _models.MeasurementTypesResponse
+MeasurementUpdateRequest = _models.MeasurementUpdateRequest
+MeasurementSource = _models.MeasurementSource
+MeasurementSourcesResponse = _models.MeasurementSourcesResponse
+Medication = _models.Medication
+MedicationAdherenceResponse = _models.MedicationAdherenceResponse
+MedicationCreateRequest = _models.MedicationCreateRequest
+MedicationUpdateRequest = _models.MedicationUpdateRequest
+NutritionDailyAverage = _models.NutritionDailyAverage
+NutritionSummaryResponse = _models.NutritionSummaryResponse
+Research = _models.Research
+ResearchCreateRequest = _models.ResearchCreateRequest
+ResearchUpdateRequest = _models.ResearchUpdateRequest
+SleepSessionResponse = _models.SleepSessionResponse
+SleepStage = _models.SleepStage
+Symptom = _models.Symptom
+SymptomCreateRequest = _models.SymptomCreateRequest
+SymptomUpdateRequest = _models.SymptomUpdateRequest
+TrendBucket = _models.TrendBucket
+TrendResponse = _models.TrendResponse
 
 logger = logging.getLogger(__name__)
 
@@ -2009,6 +2006,42 @@ async def get_measurement_expected_signals(
             )
             for row in rows
         ],
+        available=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /baselines: the stored personal baselines behind the Health deviation notices
+# ---------------------------------------------------------------------------
+
+
+@router.get("/baselines", response_model=BaselinesResponse)
+async def get_baselines(
+    db: Db,
+) -> BaselinesResponse:
+    """Return every Health metric's stored baseline, or a named reason for no band.
+
+    Read-only, through the Health butler's own pool. An unreadable store answers
+    a degraded envelope, never an empty list that would read as "no baselines".
+    """
+    try:
+        pool = _pool(db)
+        readings = await baselines_core.read_baselines(
+            pool,
+            [metric.key for metric in BASELINE_METRICS],
+            now=datetime.now(UTC),
+            refresh_intervals={metric.key: metric.refresh_interval for metric in BASELINE_METRICS},
+        )
+    except Exception:  # noqa: BLE001 -- the response carries explicit degradation
+        logger.warning("Health baselines read is unavailable")
+        return BaselinesResponse(
+            baselines=None,
+            available=False,
+            degraded_reason="baselines_unavailable",
+        )
+
+    return BaselinesResponse(
+        baselines=[BaselineResponse(**reading.as_dict()) for reading in readings],
         available=True,
     )
 

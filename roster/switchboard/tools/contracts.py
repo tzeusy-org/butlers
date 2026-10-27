@@ -544,6 +544,32 @@ class ApprovalRecoveryV1(BaseModel):
         return self
 
 
+class SelfLinkReferenceV1(BaseModel):
+    """An application route reference, never a caller-supplied URL."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["self"]
+    route_key: NonEmptyStr
+    params: dict[str, Any]
+
+
+_RESOLVED_LINK_CONTEXT = object()
+
+
+class _ResolvedOpenLinkV1(BaseModel):
+    """Private delivery output; its fields are re-derived by the receiver."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    verb: Literal["open_link"]
+    reference: SelfLinkReferenceV1
+    label: NonEmptyStr
+    url: NonEmptyStr
+    host: NonEmptyStr
+    provenance: Literal["dashboard"]
+
+
 class ApprovalRequestActionV1(BaseModel):
     """One deterministic affordance on an owner approval-request notification."""
 
@@ -551,7 +577,7 @@ class ApprovalRequestActionV1(BaseModel):
 
     verb: ApprovalActionVerb
     callback_token: NonEmptyStr | None = None
-    dashboard_url: NonEmptyStr
+    reference: SelfLinkReferenceV1 | None = None
 
     @model_validator(mode="after")
     def _validate_approval_actions(self) -> ApprovalRequestActionV1:
@@ -565,6 +591,12 @@ class ApprovalRequestActionV1(BaseModel):
             raise PydanticCustomError(
                 "approval_dashboard_action_token_forbidden",
                 "approval-request open_dashboard action must not include callback_token.",
+                {},
+            )
+        if (self.verb == "open_dashboard") != (self.reference is not None):
+            raise PydanticCustomError(
+                "approval_self_reference_required",
+                "only open_dashboard requires a self reference.",
                 {},
             )
         return self
@@ -583,8 +615,9 @@ class NotifyRequestV1(BaseModel):
     # envelope only preserves the already-validated context across deferred
     # delivery so Messenger can validate it again against the flush-time target.
     decision_dossier: dict[str, Any] | None = None
-    actions: tuple[ApprovalRequestActionV1, ...] | None = None
+    actions: tuple[ApprovalRequestActionV1 | _ResolvedOpenLinkV1, ...] | None = None
     recovery: ApprovalRecoveryV1 | None = None
+    render_links_inert: bool = Field(default=False, strict=True)
 
     @field_validator("schema_version")
     @classmethod
@@ -663,7 +696,7 @@ class NotifyRequestV1(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _validate_approval_request(self) -> NotifyRequestV1:
+    def _validate_approval_request(self, info: ValidationInfo) -> NotifyRequestV1:
         """Keep approval-request envelopes structurally safe before egress.
 
         Owner identity itself is an asynchronous database lookup owned by
@@ -671,6 +704,11 @@ class NotifyRequestV1(BaseModel):
         requires an explicit target and action affordances so that a request
         can never degrade into an unaddressed, non-interactive owner page.
         """
+        if self.actions and any(isinstance(a, _ResolvedOpenLinkV1) for a in self.actions):
+            if info.context is not _RESOLVED_LINK_CONTEXT:
+                raise PydanticCustomError(
+                    "server_open_link_only", "open_link is server delivery output only.", {}
+                )
         if self.delivery.intent != "approval_request":
             if self.actions is not None:
                 raise PydanticCustomError(
@@ -719,7 +757,10 @@ class NotifyRequestV1(BaseModel):
                 "approval_request intent requires a non-empty actions payload.",
                 {},
             )
-        verbs = [action.verb for action in self.actions]
+        verbs = [
+            "open_dashboard" if action.verb == "open_link" else action.verb
+            for action in self.actions
+        ]
         if "choose" in verbs:
             raise PydanticCustomError(
                 "approval_action_verb_unexpected",
@@ -732,7 +773,7 @@ class NotifyRequestV1(BaseModel):
                 "approval_request actions may contain each verb at most once.",
                 {},
             )
-        if not any(action.verb == "open_dashboard" for action in self.actions):
+        if "open_dashboard" not in verbs:
             raise PydanticCustomError(
                 "approval_dashboard_action_required",
                 "approval_request actions must include open_dashboard.",

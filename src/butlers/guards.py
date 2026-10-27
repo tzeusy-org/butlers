@@ -189,6 +189,11 @@ class _McpRuntimeSessionGuard:
         return resolved_session_id, trigger_source
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        from butlers.core.finance_warning_control import HEADER, _pending
+
+        pending_token = _pending.set(
+            self._header_value(scope.get("headers"), HEADER.lower().encode())
+        )
         runtime_session_id, trigger_source = self._resolve_session_params(scope)
         from butlers.core import fact_authority
 
@@ -207,6 +212,11 @@ class _McpRuntimeSessionGuard:
                 binding = None
             else:
                 self._admitted_sessions[mcp_session] = binding.runtime_session
+        from butlers.core.attention_urgency import _current_origin
+
+        attention_token = _current_origin.set(
+            binding.attention_origin if binding is not None else None
+        )
         report_token = fact_authority._current_report.set(
             binding.report
             if binding is not None
@@ -250,6 +260,8 @@ class _McpRuntimeSessionGuard:
         try:
             await self._app(scope, receive, _send_with_session_capture)
         finally:
+            _pending.reset(pending_token)
+            _current_origin.reset(attention_token)
             fact_authority._incoming_receipt.reset(receipt_token)
             fact_authority._pipeline_source.reset(pipeline_token)
             fact_authority._incoming_source.reset(source_token)

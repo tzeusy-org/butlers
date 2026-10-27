@@ -40,8 +40,9 @@ is the design.
 - Every lead and child reasoning session becomes an invocation of an
   admitted goal. Switchboard, moved into its own process, hosts admission, the
   goal ledger, the goal runner and the capability broker. Message
-  classification and route dispatch are removed. Engineering executors and
-  tool-less model functions are the only named model use outside goals.
+  classification and route dispatch are removed. Engineering executors,
+  tool-less model functions and dashboard fast answers are the only named model
+  use outside goals.
 - Domain butlers stop spawning sessions. Scheduled prompts become obligation
   admissions with capability sets declared in git.
 - Sessions run sandboxed on a separate session host, reach only the broker,

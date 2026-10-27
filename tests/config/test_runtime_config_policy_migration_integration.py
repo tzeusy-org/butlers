@@ -208,6 +208,9 @@ async def test_concurrent_operator_narrowing_wins_over_stale_startup_reconciliat
         def __init__(self) -> None:
             self.initial_read_seen = False
 
+        def acquire(self, *args, **kwargs):
+            return pool.acquire(*args, **kwargs)
+
         async def execute(self, query, *args):
             return await pool.execute(query, *args)
 

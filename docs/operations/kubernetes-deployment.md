@@ -93,6 +93,14 @@ address is both the policy's allowed source and `dashboardAuth.trustedProxyPeers
 role the Docker bridge gateway played under compose. The NodePort Services use
 `externalTrafficPolicy: Local`, so remote clients keep their own source IP and are refused.
 
+## Notification metadata repair evidence
+
+Before any historical notification metadata repair, follow the read-only
+[serving-writer evidence procedure](notification-metadata-repair.md). It accounts for actual
+Switchboard and in-process dashboard writers, source/image/mount provenance, the required #3458
+ancestry, applied migration frontier and bounded aggregate-only observations. This link grants no
+live execution, deployment/restart, production access or historical-migration authority.
+
 ## Deploy
 
 For dev, one command from the repo root builds and pushes images for `HEAD`, upgrades the

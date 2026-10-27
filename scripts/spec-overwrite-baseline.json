@@ -1669,6 +1669,18 @@
       "excerpt": "- **WHEN** a runtime instance spawned by a butler lists available MCP tools",
       "kind": "clause",
       "scenario": "Tool available to runtime instance"
+    },
+    {
+      "digest": "76c69b556590",
+      "excerpt": "The `priority` parameter (enum: `high`, `medium`, `low`, default `medium`) is added to support time-aware delivery. P...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "93bb5edad151",
+      "excerpt": "`channel` is OPTIONAL. When the caller omits it, the notify tool resolves it before any channel-dependent validation ...",
+      "kind": "prose",
+      "scenario": null
     }
   ],
   "generalist-lead-focused-delegation/core-notify/Request Context Propagation": [

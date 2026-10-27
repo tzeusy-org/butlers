@@ -108,7 +108,9 @@ which defines episodes, facts, and rules). `modules/registry.py` scans both
 
 Butlers in the roster can define their own modules under `roster/{butler}/modules/`.
 These are discovered at startup by the registry via synthetic module names
-(`butlers.modules._roster_{butler}`).
+(`butlers.modules._roster_{butler}`). Roster Python execution is owned by
+`butlers.roster_imports`: tools, modules, jobs and API aliases share canonical
+per-process objects. Its module docstring records the identity map.
 
 ---
 

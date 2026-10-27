@@ -35,7 +35,6 @@ Test conventions:
 from __future__ import annotations
 
 import hashlib
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -47,6 +46,7 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.fake_pool import AsyncCtx
 from butlers.tools.relationship.relationship_assert_fact import AssertOutcome
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -654,14 +654,10 @@ class TestCreateEntity:
         mock_txn.__aexit__ = AsyncMock(return_value=False)
         mock_conn.transaction = MagicMock(return_value=mock_txn)
 
-        @asynccontextmanager
-        async def _acquire():
-            yield mock_conn
-
         mock_pool = AsyncMock()
         owner_row = _make_owner_row() if owner_exists else None
         mock_pool.fetchrow = AsyncMock(return_value=owner_row)
-        mock_pool.acquire = MagicMock(side_effect=_acquire)
+        mock_pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(mock_conn))
         return _wire_app(mock_pool)
 
     async def test_happy_path_returns_201_on_create(self):
@@ -1124,13 +1120,9 @@ class TestForgetEntity:
         mock_txn.__aexit__ = AsyncMock(return_value=False)
         mock_conn.transaction = MagicMock(return_value=mock_txn)
 
-        @asynccontextmanager
-        async def _acquire():
-            yield mock_conn
-
         mock_pool = AsyncMock()
         mock_pool.fetchrow = AsyncMock(side_effect=[owner_row, entity_row])
-        mock_pool.acquire = MagicMock(return_value=_acquire())
+        mock_pool.acquire = MagicMock(return_value=AsyncCtx(mock_conn))
         return _wire_app(mock_pool), mock_pool
 
     async def test_happy_path_returns_204(self):
@@ -1246,10 +1238,6 @@ class TestMergeEntities:
         mock_txn.__aexit__ = AsyncMock(return_value=False)
         mock_conn.transaction = MagicMock(return_value=mock_txn)
 
-        @asynccontextmanager
-        async def _acquire():
-            yield mock_conn
-
         mock_pool = AsyncMock()
         # merge_entities computes the pre-transaction merge-review snapshot, which
         # issues: fetchrow(owner gate), fetchrow(summary A), fetchrow(summary B),
@@ -1269,7 +1257,7 @@ class TestMergeEntities:
         )
         mock_pool.fetch = AsyncMock(side_effect=[[], [], [], [], []])
         mock_pool.fetchval = AsyncMock(return_value=uuid4())
-        mock_pool.acquire = MagicMock(side_effect=_acquire)
+        mock_pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(mock_conn))
         return _wire_app(mock_pool), mock_pool
 
     async def test_happy_path_returns_200_with_merge_response(self):
@@ -3023,11 +3011,7 @@ class TestMergeWritesAuditRow:
         mock_txn.__aexit__ = AsyncMock(return_value=False)
         mock_conn.transaction = MagicMock(return_value=mock_txn)
 
-        @asynccontextmanager
-        async def _acquire():
-            yield mock_conn
-
-        mock_pool.acquire = MagicMock(side_effect=_acquire)
+        mock_pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(mock_conn))
 
         app = _wire_app(mock_pool)
         resp = await _post(

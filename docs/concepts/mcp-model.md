@@ -309,3 +309,31 @@ retains its shutdown task across repeated cancellation, attempts the existing
 MCP/socket/scheduler/module/database cleanup after retirement failure, and then
 propagates the retirement error or caller cancellation. A failed retirement
 retains its owner slot; continuing resource cleanup does not claim retirement.
+
+
+## Pre-switch notification urgency
+
+The current registered `notify` schema has no `priority` argument. Legacy
+Python callers may still supply its old label for compatibility, but it cannot
+confer an exception. The adopted [D7 notification contract](../../openspec/changes/generalist-lead-focused-delegation/specs/core-notify/spec.md)
+requires owner-started and third-party model work to remain routine under
+quiet/sleep holds. Explicitly naming the owner's address or entity does not
+escape that gate. Recipient resolution, non-owner approval, dossiers and
+reply/react targeting retain their separate checks.
+
+The shared current evaluator admits only a verified current owner clause or
+an unchanged definition stamped by genuine owner opt-in at creation. The Home
+safety sentinel has a separate code-only deterministic producer after its
+source/watch/debounce checks; there is no tool argument selecting that producer.
+Accepted source identity and claimed scheduler occurrences travel in private
+invocation context, not message text, caller metadata or a diagnostic session
+locator. Broker candidate scores remain ranking inputs. `urgent_only`, a daily
+fallback deadline, unavailable storage and retries cannot manufacture a cause.
+Each selected candidate is checked again immediately before dispatch; mixed
+routine work cannot ride an authorized candidate's exception. This read cannot
+recall an already started external effect or prove future broker activation.
+
+Cause receipts contain a fixed classification plus an opaque reference; they
+never copy message content, bearer material or a sender address. A missing,
+expired, revoked, edited or unreadable cause remains routine. This is the
+pre-switch boundary; RFC0038 first-switch delivery remains separate work.

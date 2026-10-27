@@ -86,7 +86,8 @@ require a positive terminator before a run is called green; `UNKNOWN` is never a
   unclear.
 - **Butler API routes** live in `roster/{butler}/api/router.py` (module-level `router` variable, no
   `__init__.py`, Pydantic models co-located in `models.py`) and are auto-discovered by
-  `src/butlers/api/router_discovery.py`, with DB deps auto-wired by `wire_db_dependencies()`.
+  `src/butlers/api/router_discovery.py`. Routers import the shared `Db` dependency from
+  `src/butlers/api/deps.py`; `src/butlers/api/app.py` manages its singleton's lifespan.
 - **Development is spec-driven:** requirements in `openspec/`, doctrine in `about/heart-and-soul/`,
   work items in beads.
 

@@ -315,6 +315,10 @@ def _make_runtime_config_row(
     return {
         "butler_name": butler_name,
         "core_groups": core_groups,
+        # Restricted fixture rows are legitimate, explicitly reasoned narrowing.
+        "core_groups_narrowing_reason": "Fixture group restriction"
+        if core_groups is not None
+        else None,
         "catalog_read_sensitivity": "normal",
         "max_concurrent": 3,
         "max_queued": 10,
@@ -344,9 +348,13 @@ def _patch_infra(*, core_groups: list[str] | None = None):
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
+    mock_conn.transaction = MagicMock()
+    mock_conn.transaction.return_value.__aenter__ = AsyncMock(return_value=None)
+    mock_conn.transaction.return_value.__aexit__ = AsyncMock(return_value=False)
 
     mock_pool = AsyncMock()
-    # Support `async with pool.acquire() as conn:` for _ensure_owner_entity
+    # Acquire and transaction are synchronous factories for async contexts.
+    mock_pool.acquire = MagicMock()
     mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
     mock_pool.fetchval = AsyncMock(return_value=None)
@@ -575,7 +583,10 @@ async def test_all_core_tools_registered(butler_dir: Path) -> None:
     # A domain butler receives its actual group-gated surface, not a parallel
     # hand-maintained catalog.  The dispatcher inventory test owns exhaustive
     # coverage; this startup test protects the daemon integration seam.
-    assert len(set(registered_tools)) == 72
+    assert len(set(registered_tools)) == 75
+    assert "metric_baseline_get" in registered_tools
+    assert {"report_error", "get_healing_status"} <= set(registered_tools)
+    assert "retry_healing" not in registered_tools
     assert {
         "cost_claim_assert",
         "cost_claim_amend",
@@ -1749,8 +1760,14 @@ async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict):
     return daemon, route_execute_fn
 
 
-async def test_route_execute_messenger_scenarios(tmp_path: Path) -> None:
+async def test_route_execute_messenger_scenarios(tmp_path: Path, monkeypatch) -> None:
     """route.execute: missing notify_request errors; success delivers; missing recipient errors."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration",
+        AsyncMock(return_value=SimpleNamespace(roles=["owner"])),
+    )
     # Missing notify_request → validation_error
     m1 = tmp_path / "m1"
     m1.mkdir()
@@ -1921,8 +1938,14 @@ async def test_route_execute_parks_email_actions_with_native_tool_args(
     assert result["status"] == "error"
     assert result["error"]["class"] == "validation_error"
     call_kwargs = guard.await_args.kwargs
-    assert call_kwargs["park_tool_name"] == expected_tool
-    assert call_kwargs["park_tool_args"] == expected_args
+    assert call_kwargs["rule_tool_name"] == expected_tool
+    assert call_kwargs["rule_match_args"] == expected_args
+    assert call_kwargs["park_tool_name"] == "route.execute"
+    assert call_kwargs["park_tool_args"] == {
+        "schema_version": "route.v1",
+        "request_context": _route_request_context(),
+        "input": {"prompt": "Deliver.", "context": {"notify_request": notify_request}},
+    }
 
     # Spec: REQ-core-notify-032; only committed typed recipient parks emit a review reference.
     refusal = result["result"]["notify_response"]
@@ -2071,6 +2094,10 @@ async def test_route_execute_revalidates_notify_decision_dossier(tmp_path: Path)
 async def test_route_execute_rejects_non_owner_missing_decision_dossier(tmp_path: Path) -> None:
     """A direct or legacy deferred envelope cannot park/deliver without why."""
     import butlers.core.approvals_hooks as approval_hooks
+    from butlers.core.tool_call_capture import (
+        reset_current_runtime_session_id,
+        set_current_runtime_session_id,
+    )
     from butlers.modules.approvals.email_guard import check_recipient
 
     butler_dir = _make_butler_toml(
@@ -2090,6 +2117,9 @@ async def test_route_execute_rejects_non_owner_missing_decision_dossier(tmp_path
         recipient_guard=check_recipient,
         park_pending_action=AsyncMock(),
     )
+    # This owner exercises an LLM runtime; deterministic proposals have their own
+    # factual server dossier and are covered by the scheduled-delivery owner.
+    session_token = set_current_runtime_session_id(str(uuid.uuid4()))
     try:
         with (
             patch(
@@ -2118,6 +2148,7 @@ async def test_route_execute_rejects_non_owner_missing_decision_dossier(tmp_path
                 },
             )
     finally:
+        reset_current_runtime_session_id(session_token)
         approval_hooks.unregister_approval_hooks(hook_pool, hook_runtime)
 
     assert result["status"] == "error"
@@ -2396,3 +2427,57 @@ async def test_staffer_briefing_exclusion_and_type_field(tmp_path: Path) -> None
         assert all(p["type"] == "staffer" for p in posted_payloads)
     finally:
         await daemon2.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_actual_http_app_keeps_finance_bearer_pending_through_mcp_handshake(monkeypatch):
+    """Real daemon HTTP assembly + fresh streamable Client, not a fake guard."""
+    from types import SimpleNamespace
+
+    import httpx
+    from fastmcp import Client
+    from fastmcp.client.transports import StreamableHttpTransport
+
+    from butlers.core import finance_warning_control as control
+    from butlers.modules.registry import default_registry
+
+    pool = object()
+    module = default_registry()._modules["finance"]()
+    mcp = RuntimeFastMCP("finance-http-proof")
+    await module.register_tools(mcp, module.config_schema(), SimpleNamespace(pool=pool), "finance")
+    daemon = SimpleNamespace(db=SimpleNamespace(pool=pool), config=SimpleNamespace(name="finance"))
+    owner = control.FinanceWarningControlOwner(daemon)
+    daemon._finance_warning_control_owner = owner
+    observed = []
+
+    async def consume(args, reader):
+        observed.append((control._pending.get(), args, reader.__name__))
+        return None
+
+    monkeypatch.setattr(owner, "consume_and_read", consume)
+    app = ButlerDaemon._build_mcp_http_app(
+        mcp, butler_name="finance", finance_warning_control_owner=owner
+    )
+
+    def factory(**kw):
+        return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), **kw)
+
+    args = {"subject": str(uuid.UUID(int=1)), "selected_date": "2026-10-27", "epoch": 0}
+    try:
+        async with app._app._app.router.lifespan_context(app._app._app):
+            async with asyncio.timeout(10):
+                async with Client(
+                    StreamableHttpTransport(
+                        "http://fixed/mcp",
+                        headers={control.HEADER: "synthetic-pending"},
+                        httpx_client_factory=factory,
+                    )
+                ) as client:
+                    await client.list_tools()
+                    assert observed == []
+                    result = await client.call_tool(control.TOOL, args)
+                    assert result.data is None
+                    assert observed == [("synthetic-pending", args, control.TOOL)]
+        assert control._pending.get() is None
+    finally:
+        await owner.close(1)

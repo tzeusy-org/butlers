@@ -122,8 +122,9 @@ Non-goals:
 - Multi-user authority. One owner; every grant is a narrowing of the owner's.
 - Replacing the approvals, insight, notify, scheduler, identity or memory
   subsystems. They remain the owners of their decisions.
-- Engineering executors and model functions (D18), which are not reasoning
-  sessions over owner capabilities and keep their own contracts.
+- Engineering executors, model functions and dashboard fast answers (D18),
+  which are not reasoning sessions over owner capabilities and keep their own
+  contracts.
 
 ## Vocabulary
 
@@ -277,9 +278,14 @@ listener; the session host itself exposes no inbound port to the dashboard.
 Each invocation runs in its own kernel-enforced filesystem and process domain
 (Bubblewrap, as `src/butlers/cli_auth/sandbox.py` already uses; the session
 host must permit unprivileged user namespaces) holding only `PATH`, its staged
-model credential and its MCP config. One invocation cannot read another's
-token or files, and the whole descendant domain is terminated before results
-are accepted.
+model credential, its MCP config and adapter-owned file pointers. A file pointer
+is an environment variable the runtime adapter sets whose value is only the path
+of a file or directory staged inside that invocation's own domain, such as
+Gemini's `GEMINI_SYSTEM_MD` and `GEMINI_CLI_SYSTEM_SETTINGS_PATH`. A pointer's
+value is never secret, and the files it names hold no secret other than the
+staged model credential and the invocation's own MCP config. One invocation cannot
+read another's token or files, and the whole descendant domain is terminated
+before results are accepted.
 
 Runtime built-in tools are disabled: no shell, filesystem, web fetch or local
 MCP servers, and no provider-hosted tools (server-side web search or fetch,
@@ -368,6 +374,40 @@ Two owner rules apply to every origin, grant and exposure state, lead or child:
   A generic gateway takes the most consequential class among the targets it
   can reach: Home Assistant's service gateway is `actuate`, under the RFC 0028
   risk map in which unknown services are protected.
+
+**Owner tightening, rule inputs and categories.** The owner may impose
+`never` or `always_ask` by capability, region or effect class. These are
+selectors of the existing S1 policy `scope` (capability/resource), not another
+policy record or grant: capability selects the catalog's exact capability
+identity; region selects capabilities by their catalog `owner_domain`; effect
+class selects capabilities by their catalog `effect_class`. Resource scope
+continues to narrow those capabilities. Match these selectors against the
+current catalog on every call, including new capabilities in a selected region
+or class; do not freeze a one-time expansion that silently drops a restriction
+after publication. An unresolved selector or unreadable current catalog cannot
+be treated as an empty permissive match. Existing S1 id, monotonic version,
+constraint, expiry, owner-action identity, CAS and audit fields are unchanged.
+`never` refuses and `always_ask` parks the exact otherwise-permitted effect;
+neither grants a tool, widens a resource/selection scope, clears a label or
+removes another approval constraint.
+
+A standing rule's typed slots accept values supplied by the owner, a device or
+deterministic code. A different principal may supply a slot only when the
+owner's rule-creation card explicitly permits **that rule's own recipient** to
+fill **that exact slot**. This is not permission for arbitrary third parties,
+for other slots or for free text; missing or mismatched supplier provenance
+makes the rule ineligible. A valid slot does not declassify its value or change
+D6's per-invocation exposure and held typed-value/cited-label boundaries.
+
+After an invocation reads sensitive data, a standing rule for communication to
+anyone other than the owner must explicitly name every applicable sensitive
+category the invocation read: `health`, `finance`, `location`, `routine`,
+`relationship_notes`, `credentials` (S1). Missing category coverage makes the
+rule ineligible and parks an otherwise-permitted call for per-event owner
+approval; an independently refused call stays refused. Unknown labels
+retain S1's all-category restriction. Naming categories is necessary, not
+sufficient: recipient/template pins, slot provenance, grant/currentness,
+selection, exposure, park-only and `always_per_event` constraints still apply.
 
 Two kinds of tool are never LLM-presentable and therefore never grantable:
 
@@ -502,6 +542,35 @@ Approvals of effects requested by exposed invocations do not count toward the
 RFC 0021 promotion ladder.
 
 ### D7. Wire contract, call verification and keys
+
+**Constraint order and urgency.** Apply the S1 intersections in order:
+current catalog/origin/grant, invocation exposure/category/slot constraints,
+owner law, mode tightening, then health/admission restrictions. The per-call
+transaction and existing goal/effect locks fence the current policy version
+before an effect is committed for forwarding. A committed tightening is seen
+by the next call; a call racing that fence either commits under the prior
+version before the tightening or is held/refused under the new one. A retry
+cannot restore an earlier policy version. Record the holding/refusing stage
+and every constraining term and version in the typed receipt, without content
+or secret-bearing arguments; do not claim that an unreadable stage passed.
+Committed effects remain honestly recorded, not described as undone. Missing
+or stale invocation binding and unknown origin never acquire authority from
+policy or urgency.
+
+Only an allowlisted deterministic safety producer, a matching current
+owner-authored break-through rule, or an obligation explicitly flagged for
+break-through by the owner at creation may bypass quiet-hours or sleep
+suppression. The delivery boundary verifies server-held producer identity or
+persisted owner provenance, not a caller's label or message. Model invocations,
+including owner-started goals, cannot choose high priority; model-presentable
+`notify` has no priority/urgency argument. Missing, unknown, stale, revoked or
+spoofed urgency provenance is routine for suppression, not an exception.
+Retries and fallback cannot raise urgency. Record the classification/cause
+without message content. A verified suppression exception does not bypass
+capability, recipient, category, grant, approval, Stop, mode or health rules;
+it changes only the quiet/sleep hold that the owner authorized. Pre-switch
+notify enforcement belongs to .3, and first-switch `deliver()` enforcement to
+.22; neither changes this authority boundary.
 
 **Session tokens.** Sessions reach the broker over MCP streamable HTTP on the
 session listener's goal endpoint. The runner writes the invocation's MCP config
@@ -788,6 +857,32 @@ Before dispatch the broker re-checks that the goal is not stopped. A stopped
 goal cancels its parked effects; a goal whose lead has finished waits in
 `settling` and still executes approvals that arrive.
 
+**One tap and narrow step-up.** Ordinary approve, reject, edit and dispatch
+remain one tap after the existing owner, exact stored-call, current-version,
+Stop and grant checks. Step-up is required only to create or promote a standing
+rule, Vouch, Contain, or loosen a mode. Being owner-only under D4 does not itself
+require step-up. Rule creation/promotion uses the dashboard's authenticated
+owner session and independent passkey factor on a different device from the
+Telegram phone. A Telegram request without that confirmation gets a
+non-mutating open-dashboard handoff, never an automatic approval. The same
+step-up boundary applies when the existing Vouch, Contain and mode-loosening
+owners implement their actions; it does not activate those held consumers or
+change factor custody.
+
+The step-up nonce binds the authenticated owner/session, action kind and
+identity, exact action digest (including recipients and arguments), current
+action/policy version, and expiry. Verify those bindings, revocation and
+unconsumed state and consume it atomically with the authorized owner transition
+and its audit receipt. A missing, invalid, expired, revoked, wrong-owner,
+wrong-session, wrong-action or stale-version nonce refuses that transition;
+a changed action or digest needs a fresh confirmation. A failed transaction
+commits neither mutation nor consumption. Concurrent decisions on the same
+current action/version have one winner across dashboard and Telegram. Retrying
+the same completed action reads back that outcome, not another rule or effect;
+replay cannot authorize a second or different action. A presentation ACK,
+callback token, delivery fallback or model text is not a step-up nonce. No
+nonce overrides Stop, a revoked grant/selection or current effect constraints.
+
 Standing rules and the promotion ladder of RFC 0021 apply unchanged to
 unexposed invocations; exposed invocations can use only the standing rules D4
 exempts. A standing rule is **template-pinned** when its argument constraints
@@ -899,8 +994,11 @@ usage and outcome; none of those payloads enters telemetry.
 
 ### D18. Model use outside goals
 
-Only two kinds of model use run outside goals. Each keeps its own contract
-and never reaches the broker or a domain capability:
+Three kinds of model use are not goal invocations. Each keeps its own
+contract. Engineering executors and model functions never reach the broker or
+a domain capability. A dashboard fast answer reaches only allowlisted read
+capabilities, and only through deterministic code calling the broker, never
+through its model calls:
 
 - **Engineering executors.** QA investigation agents and self-healing agents
   (RFC 0015) work on the repository with a shell and a worktree. They keep
@@ -916,6 +1014,75 @@ and never reaches the broker or a domain capability:
   They have no tools; any consequence comes from the deterministic code that
   reads their typed output, and their output entering a goal is third-party
   content except for the narrow authorship-preserving transform below.
+- **Dashboard fast answers** (later owner decision `bu-u5euwb.21`). A narrow
+  path that answers the owner's dashboard question from live data without a
+  goal. Its model calls are model functions; what sets the kind apart is that
+  deterministic code reads data between them and the result is an
+  owner-facing answer. Its contract:
+  - *Scope.* Only a question the owner types into the authenticated dashboard
+    (owner origin, D5). It is read-only: it produces no effect, parks no
+    approval, starts no goal, child or obligation, and writes nothing but its
+    one reply and its audit records.
+  - *Admission.* Deterministic control-plane code checks the turn's
+    eligibility, then makes one model-function call that returns a typed plan:
+    whether the turn is an eligible question and which reads, at most three,
+    answer it. The model holds no tools, MCP config, invocation token or
+    capability, and deterministic code validates the plan before acting on
+    it. This binary eligibility choice, between this fast answer and an
+    ordinary owner goal, is the only model classification before admission; it
+    selects no route, butler, origin, ceiling or goal, so D1's removed route
+    classification gains no successor here. The call may be retried
+    once on the same model, before any read, only when its output fails the
+    schema.
+  - *Reads.* Deterministic code, not the model, makes each planned read. Each
+    names a capability on a fixed, checked-in allowlist whose current catalog
+    entry (D4) is `read`, grantable, has no `approval_policy` gate, approval
+    mode `default` and no selection-bound `resource_params`; current owner
+    `never` tightening still applies. A plan naming anything else is rejected
+    whole before its first read. Each read's capability and arguments are fixed
+    by the validated plan; no read result selects or parameterizes another
+    read. The
+    broker forwards each read exactly as it forwards a dashboard
+    service-plane call (D7): origin `owner`, principal `dashboard`, `goal_id`
+    null, under a signed assertion the owning domain verifies. The allowlist
+    narrows the owner's ceiling and never widens it. Tool visibility,
+    discovery metadata, catalog search provenance and ranking grant no
+    authority. Broadening the allowlist needs an owner decision.
+  - *Phrasing.* Exactly one model-function call, with no retry, composes one
+    answer from the validated read results, which enter it fenced as data.
+    The answer's sources are derived by server code from the reads; the
+    model cannot add or change them.
+  - *Output and attribution.* One idempotent reply in the thread that asked,
+    attributed as a fast answer with its model calls and reads, not as a goal
+    or goal outcome. Reads and model calls are audited by identifier and
+    digest (D17); its spans and audit records carry its runtime identity in
+    place of `goal_id` and `invocation_id`, outside the goal ledger. When any
+    read's output is `untrusted`, or `stamped` with an item that is not
+    untainted owner authority (D6), the reply renders URLs inert with link
+    previews disabled, as D4 requires of owner `notify` under exposure. The
+    stored reply is stamped as non-owner model output, so any goal that reads
+    it, including as thread context at admission, is exposed (D6).
+  - *Stop and replay.* One durable runtime identity, owned by the control
+    plane and registered against the asking message before the first model
+    call, spans every call and the reply. Owner Stop on that message fences
+    every later read, model call and reply, and is confirmed only after
+    in-flight work settles. There is no provider failover, and no uncertain
+    attempt is replayed: an unknown reply outcome is settled from its durable
+    receipt or reported as unknown.
+  - *Fallback.* Before the first read starts, any ineligibility,
+    unavailability, schema or provider failure, or uncertainty ends the fast
+    answer and the unchanged message goes to owner-goal admission (D5);
+    nothing the fast answer produced enters that goal's admission, origin,
+    ceiling or exposure. A Stop admits no goal. Once a read has started,
+    nothing re-executes the turn: a failed read or phrasing call ends in an
+    honest failure reply, never a fabricated answer.
+
+  The kind is built on the control plane in the dark build and switched on by
+  the cutover release; it does not extend today's classification path, which
+  stays frozen and is deleted at the switch. Its mechanics (lease and recovery
+  timings, reply observation windows, the allowlist's entries, model
+  resolution and latency evidence) belong to the re-scoped
+  `define-dashboard-fast-answer-runtime` change.
 
 **Instruction-free ASR-class transcription** preserves the source's authorship,
 not a model's asserted authorship. It takes only audio and fixed server-held
@@ -935,17 +1102,18 @@ fallback. `payload.transcription` remains outcome metadata, not authorization.
 Model use that today runs outside a session but composes owner-facing text or
 judgment, such as briefing elaboration, chronicler narration, insight
 synthesis, dashboard quick-add and memory consolidation, becomes an obligation
-or owner goal at the switch rather than a model function.
+or owner goal at the switch rather than a model function. Dashboard fast
+answers are the single named exception.
 
 Every other model use SHALL run within an admitted goal: as a lead or child
 invocation, or solely as D20's broker-accepted, runner-launched research
 subcall. Research stays within the calling goal's authority, exposure and
-budget accounting; it is not a third outside-goal kind, a new admission path
-or a child and receives no invocation token, grant or MCP tools. Adding a kind
-to the outside-goal list requires an RFC amendment. Pending OpenSpec changes
-that add a model path, such as `define-dashboard-fast-answer-runtime`, must
-still be re-scoped as goals or as a named outside-goal kind here before
-approval; D20 supplies no exception for those paths.
+budget accounting; it is not an additional outside-goal kind, a new admission path
+or a child and receives no invocation token, grant or MCP tools. Adding a kind to this list requires
+an RFC amendment. `define-dashboard-fast-answer-runtime` is re-scoped to the
+dashboard fast-answer kind above (`bu-u5euwb.28`) before approval. Any other
+pending OpenSpec change that adds a model path must be re-scoped as goals or
+as a named kind here before approval. D20 supplies no exception for those paths.
 
 ### D19. Owner surface: one mind, specialized regions
 
@@ -1241,7 +1409,9 @@ All evidence is produced in a dev namespace against the release candidate:
    second research call; a research host reaching the session listener, a
    domain, service listener, PostgreSQL, the Kubernetes API, cloud metadata or
    arbitrary internet host; and a research profile exposing any tool beyond
-   provider-hosted search.
+   provider-hosted search; dashboard
+   fast answers whose plan or read results attempt a read off the allowlist, a
+   fourth read, a tool call or any effect.
 3. Replay evaluation over a fixed set of recorded owner requests and
    scheduled obligations, graded by the owner rubric for whole-goal success,
    constraint preservation and corrections needed, with latency and total cost.
@@ -1340,6 +1510,8 @@ hard-cutover gates or alter the private-custody boundary.
 |---|---|---|
 | 2026-10-20T14:46Z, `bu-p5umi2.4` = A | Commits Butlers to an "always per-event" approval mode that no standing rule can satisfy, matching `bu-qlx055` = A (decision sets, wait envelopes) and `bu-o3638f` = A (standing-rule slots and categories). | D4 `approval_policy` gains the `always_per_event` mode and D13 applies it. Text conforming to the decision is adopted through independent conformance review (owner rule, 2026-10-21). |
 | 2026-10-20T14:46Z, `bu-p5umi2.4` = A (OQ1) | A grant's resource scope binds to the owner's exact selection through a control-plane selection record written only from the owner dashboard, not a General-owned record. | D4 `resource_params` may be selection-bound and D7 adds owner selection records. Adopted through the same conformance review. |
+| 2026-10-24T14:30Z, `bu-u5euwb.21` = C | Names dashboard fast answers as a D18 kind, instead of withdrawing `define-dashboard-fast-answer-runtime` or rewriting it as a goal. Adopted D18 reopens for this one kind only; owner latency work on the goal path (`bu-dhloi1.12`) continues unchanged. | D18 gains the dashboard fast-answer kind as the single exception to its owner-composition rule, and the change is re-scoped to it (`bu-u5euwb.28`). Amendment text: `bu-u5euwb.27`, adopted through the same conformance review. |
+| 2026-10-24T14:30Z, `bu-u5euwb.22` = A | A goal invocation's environment may also hold adapter-owned, non-secret pointers to files staged inside its own sandbox; secrets stay limited to the staged model credential (beside the MCP config D3 already admits). | D3 admits adapter-owned file pointers and `REQ-core-spawner-010` follows. Text only: each adapter still proves D3 eligibility per runtime and model tuple, and runtime activation stays a separate authorization. |
 
 ## Proposed shared switch and M7 interfaces (2026-10-24)
 
@@ -2046,7 +2218,7 @@ approval-mode and owner-selection meanings.
 | `goal-orchestration` 005 finite work | D10 |
 | `goal-orchestration` 006 honest outcomes | D11, D12, D14 |
 | `goal-orchestration` 007 domain care | D2, D5 |
-| `goal-orchestration` 008 single admission path | D1, D2, D18, Hard cutover |
+| `goal-orchestration` 008 single admission path | D1, D2, D18, Hard cutover, later owner decision `bu-u5euwb.21` |
 | `capability-authorization` 001 sandbox | D1, D3, D20 |
 | `capability-authorization` 002 catalog metadata | D4 |
 | `capability-authorization` 003 origin ceilings | D5, D20 |

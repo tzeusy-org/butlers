@@ -8,7 +8,6 @@ codes and senders only.
 from __future__ import annotations
 
 import hashlib
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.connectors.telegram_bot import TelegramBotConnector
+from butlers.testing.fake_pool import AsyncCtx
 from butlers.tools.switchboard.contracts import (
     IngestControlV1,
     IngestEnvelopeV1,
@@ -213,13 +213,11 @@ async def test_raw_only_telegram_links_keep_distinct_events_and_dedupe_retries()
         async def fetchval(self, *args):
             return None
 
-        @asynccontextmanager
-        async def acquire(self):
-            yield self
+        def acquire(self):
+            return AsyncCtx(self)
 
-        @asynccontextmanager
-        async def transaction(self):
-            yield
+        def transaction(self):
+            return AsyncCtx(None)
 
     pool = Pool()
     with patch("butlers.fleet_events.publish_fleet_event", AsyncMock()):

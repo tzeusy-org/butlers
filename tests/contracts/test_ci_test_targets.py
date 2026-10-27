@@ -1488,8 +1488,6 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
         "archived_requirements",
         "countable_tasks",
         "cited_requirements",
-        "frontend_copy_regenerate",
-        "frontend_copy",
         "duplicate_names",
     ):
         guard_step = next(step for step in guards["steps"] if step.get("id") == guard_id)
@@ -2297,6 +2295,32 @@ else:
     assert "WATCHDOG_SECONDS=6360" in nightly_shell
     assert "--signal=SIGABRT --kill-after=30s" in nightly_shell
     assert "--timeout=300 --timeout-method=thread" in nightly_shell
+    assert nightly["strategy"] == {"fail-fast": False, "matrix": {"offset": ["+45d", "+120d"]}}
+    suite = _workflow_step(job=nightly, name="Full suite at faketime offset ${{ matrix.offset }}")
+    suite_argv = shlex.split(
+        suite["run"][suite["run"].index("uv run pytest ") :].replace("\\\n", " ")
+    )
+    # Both shifted PostgreSQL legs admit clock cases; retain the independent
+    # exclusions and complete tests/roster scope, distribution and finite timers.
+    assert suite_argv == [
+        "uv",
+        "run",
+        "pytest",
+        "tests/",
+        "roster/",
+        "-v",
+        "-rf",
+        "--tb=short",
+        "--ignore=tests/e2e",
+        "-m",
+        "not bench and not perf and not nightly and not faketime_fragile",
+        "-n",
+        "auto",
+        "--dist",
+        "loadfile",
+        "--timeout=300",
+        "--timeout-method=thread",
+    ]
     faketime_budget = next(row for row in register["jobs"] if row["job"] == "faketime-matrix")
     assert faketime_budget["successful_sample_n"] == 2 and faketime_budget["p95_s"] is None
     observations = faketime_budget["healthy_job_observations"]

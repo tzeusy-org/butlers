@@ -347,7 +347,7 @@ async def test_scheduled_maintenance_uses_chronicler_memory_runtime(
         password=parsed.password or "postgres",
         min_pool_size=1,
         max_pool_size=3,
-        strict_role_enforcement=False,
+        role="butler_chronicler_rw",
     )
     await domain_db.connect()
     module = MemoryModule()
@@ -477,7 +477,7 @@ async def test_scheduled_consolidation_uses_chronicler_memory_runtime(
         password=parsed.password or "postgres",
         min_pool_size=1,
         max_pool_size=3,
-        strict_role_enforcement=False,
+        role="butler_chronicler_rw",
     )
     await domain_db.connect()
     module = MemoryModule()
@@ -551,7 +551,7 @@ async def test_session_hooks_keep_chronicler_private_pool_when_other_daemons_sta
         password=parsed.password or "postgres",
         min_pool_size=1,
         max_pool_size=3,
-        strict_role_enforcement=False,
+        role="butler_chronicler_rw",
     )
     await domain_db.connect()
 

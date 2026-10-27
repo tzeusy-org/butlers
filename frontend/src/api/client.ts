@@ -1,4 +1,5 @@
 import { ownerFetch } from "./owner-session";
+import { standingRuleHeaders } from "./approval-step-up";
 /**
  * Typed fetch wrapper for the Butlers dashboard API.
  *
@@ -162,6 +163,7 @@ import type {
   EntityParams,
   EntitySummary,
   ExpectedSignalsResponse,
+  HealthBaselinesResponse,
   UpdateEntityRequest,
   EpisodeParams,
   Fact,
@@ -2247,6 +2249,11 @@ export async function getMeasurementSources(): Promise<
   return res.sources ?? [];
 }
 
+/** Read stored Health usual ranges; a failed read remains explicitly unavailable. */
+export function getHealthBaselines(): Promise<HealthBaselinesResponse> {
+  return apiFetch<HealthBaselinesResponse>("/health/baselines");
+}
+
 /** Fetch liveness-qualified Health measurement expectations. */
 export function getExpectedSignals(): Promise<ExpectedSignalsResponse> {
   return apiFetch<ExpectedSignalsResponse>(
@@ -3476,12 +3483,13 @@ export function getApprovalGatedTools(): Promise<ApiResponse<ApprovalGatedTool[]
   return apiFetch<ApiResponse<ApprovalGatedTool[]>>("/approvals/gated-tools");
 }
 
-export function createApprovalRule(
+export async function createApprovalRule(
   request: ApprovalRuleCreateRequest,
 ): Promise<ApiResponse<ApprovalRule>> {
+  const proof = await standingRuleHeaders("create", request);
   return apiFetch<ApiResponse<ApprovalRule>>("/approvals/rules", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...proof },
     body: JSON.stringify(request),
   });
 }
@@ -3494,12 +3502,13 @@ export function getApprovalRuleSuggestions(
   );
 }
 
-export function createApprovalRuleFromAction(
+export async function createApprovalRuleFromAction(
   request: ApprovalRuleFromActionRequest,
 ): Promise<ApiResponse<ApprovalRule>> {
+  const proof = await standingRuleHeaders("from_action", request);
   return apiFetch<ApiResponse<ApprovalRule>>("/approvals/rules/from-action", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...proof },
     body: JSON.stringify(request),
   });
 }
@@ -3673,12 +3682,13 @@ export function getAutonomySuggestions(
   );
 }
 
-export function confirmAutonomySuggestion(
+export async function confirmAutonomySuggestion(
   suggestionId: string,
 ): Promise<ApiResponse<AutonomySuggestion>> {
+  const proof = await standingRuleHeaders("promotion", { suggestion_id: suggestionId });
   return apiFetch<ApiResponse<AutonomySuggestion>>(
     `/approvals/suggestions/${encodeURIComponent(suggestionId)}/confirm`,
-    { method: "POST" },
+    { method: "POST", headers: proof },
   );
 }
 
@@ -5469,30 +5479,6 @@ export function disconnectSteamAccount(accountId: string): Promise<SteamDisconne
 // ---------------------------------------------------------------------------
 // Healing attempts API (used by QA investigation detail page)
 // ---------------------------------------------------------------------------
-
-export interface RetryHealingAttemptResponse {
-  attempt_id: string;
-  fingerprint: string;
-  status: string;
-  /**
-   * Whether a healing agent was actually scheduled to spawn. False in the
-   * typical dashboard deployment (no in-process spawner) — the row is merely
-   * queued. Do NOT claim the investigation was re-dispatched when false.
-   */
-  dispatched: boolean;
-  /** Truthful human-readable summary of what happened. */
-  detail: string;
-}
-
-/** POST /api/healing/attempts/:id/retry — create a new attempt for the same fingerprint */
-export function retryHealingAttempt(
-  attemptId: string,
-): Promise<RetryHealingAttemptResponse> {
-  return apiFetch<RetryHealingAttemptResponse>(
-    `/healing/attempts/${encodeURIComponent(attemptId)}/retry`,
-    { method: "POST" },
-  );
-}
 
 // ---------------------------------------------------------------------------
 // QA Staffer API

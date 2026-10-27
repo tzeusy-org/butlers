@@ -14,10 +14,7 @@ contract answers 503 rather than falling back to unfiltered reads.
 from __future__ import annotations
 
 import functools
-import importlib.util
 import logging
-import sys
-from pathlib import Path
 
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query
@@ -25,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Query
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
+from butlers.roster_imports import roster_module
 from butlers.tools.general.source_authority import (
     ORDINARY_PARENT,
     GeneralSourceUnavailable,
@@ -33,19 +31,12 @@ from butlers.tools.general.source_authority import (
 )
 
 # Dynamically load models module from the same directory
-_models_path = Path(__file__).parent / "models.py"
-_spec = importlib.util.spec_from_file_location("general_api_models", _models_path)
-if _spec is not None and _spec.loader is not None:
-    _models = importlib.util.module_from_spec(_spec)
-    sys.modules["general_api_models"] = _models
-    _spec.loader.exec_module(_models)
+_models = roster_module("general", "api/models", api_source=__file__)
 
-    Collection = _models.Collection
-    Entity = _models.Entity
-    GeneralStats = _models.GeneralStats
-    SizeHistogramBucket = _models.SizeHistogramBucket
-else:
-    raise RuntimeError("Failed to load general API models")
+Collection = _models.Collection
+Entity = _models.Entity
+GeneralStats = _models.GeneralStats
+SizeHistogramBucket = _models.SizeHistogramBucket
 
 logger = logging.getLogger(__name__)
 

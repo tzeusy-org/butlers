@@ -176,6 +176,38 @@ remain numeric for wire compatibility, but when more than one currency contribut
 as if it had one denomination. A single-currency result carries that real currency; an empty result
 does not invent USD.
 
+## Notification metadata: one-layer object-or-null compatibility
+
+`NotificationSummary.metadata` uses the same normalizer in all three response paths:
+`GET /api/notifications`, `GET /api/butlers/{name}/notifications`, and
+`PATCH /api/notifications/{id}/read`. The field remains an object or `null`; it does not expose
+arbitrary JSON values or infer missing provenance.
+
+| Decoded database value | Response `metadata` |
+| --- | --- |
+| Mapping/object | A shallow object copy. |
+| `null` | `null`. |
+| JSONB string whose one JSON parse yields an object | That parsed object. |
+| Malformed string, or a string whose single parse cannot complete because of a JSON decoder safety limit | `{"_raw": <the exact original outer string>}`. |
+| String whose one parse yields an array, string, number, boolean or `null` | `{"_raw": <the exact original outer string>}`. |
+| Actual non-string, non-object JSONB value, such as an array, number or boolean | `null`, without an `_raw` wrapper. |
+
+The normalizer parses at most once. An outer string that parses to another JSON-looking string
+retains the original outer string under `_raw`; it is not decoded again. Decoder-limit failures
+(`ValueError` or `RecursionError`, including JSON decoder failures) use the same fallback. This is
+read compatibility, not a database rewrite or a change to delivery, retries, effective status,
+pagination, source availability, degraded-source handling, mark-read behavior or authorization.
+Only the existing authenticated API response may carry `_raw`; operational evidence must never
+print that content.
+
+The existing executable owners are the direct and three-path regressions in
+`tests/api/test_notifications.py`. The writer is a separate seam: the registered production JSONB
+codec must receive a JSON-safe mapping once, including `None` and empty-metadata handling, as
+covered by `roster/switchboard/tests/test_tools.py`. The cross-schema delivery test alone does not
+prove that normalization. Historical repair remains blocked by the separate
+[serving-writer evidence procedure](../operations/notification-metadata-repair.md); a green API or
+writer regression is not serving-deployment evidence.
+
 ## Implementation Notes
 
 - Connector summaries are owned by `ApiResponse[ConnectorSummaryResponse]` and its explicit nested

@@ -64,7 +64,7 @@ from butlers.credential_store import CredentialStore
 from butlers.db import (
     check_infra_default_creds,
     has_insecure_infra_defaults,
-    is_grafana_anon_outside_dev,
+    is_grafana_anonymous_enabled,
 )
 from butlers.jobs.calendar_sync_deadman import (
     DEFAULT_CALENDAR_DEADMAN_CHECK_INTERVAL_S,
@@ -667,13 +667,13 @@ def create_app(
         #
         # security.insecure_infra_defaults: True when any infra credential is at
         #   its known default (absent env var = docker-compose default applies) OR
-        #   when Grafana anonymous access is enabled outside dev posture.
+        #   when Grafana anonymous access is configured in this process.
         #   Clears only when all infra creds are overridden AND anon access is
-        #   disabled (or posture is dev).  Read at request time for live updates.
+        #   disabled. This is a configuration diagnostic, not fleet attestation.
         #
         # security.role_enforcement_disabled: True when SET ROLE schema-isolation
-        #   is NOT active for the managed database connections.  In dev posture
-        #   the butler schema isolation layer is disabled (no DB role configured
+        #   is NOT active for the managed database connections. The API
+        #   has its own authority boundary (no DB role configured
         #   on the API pools); this clears only when all managed pools have an
         #   active, verified DB role.  Read from the DatabaseManager singleton
         #   so it reflects real connection state established at startup.
@@ -704,7 +704,7 @@ def create_app(
             },
             "security": {
                 "insecure_infra_defaults": has_insecure_infra_defaults()
-                or is_grafana_anon_outside_dev(),
+                or is_grafana_anonymous_enabled(),
                 "role_enforcement_disabled": role_enforcement_disabled,
             },
         }

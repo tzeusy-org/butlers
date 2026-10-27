@@ -16,6 +16,8 @@ import json
 from datetime import datetime
 from typing import Any
 
+from pydantic import StrictInt
+
 
 def _parse_metadata(metadata: str | None) -> dict[str, Any] | None:
     """Parse a JSON string into a dict, passthrough None."""
@@ -215,6 +217,21 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
             source_message_id=source_message_id,
             metadata=_parse_metadata(metadata),
             _expected_signal_source=await runtime_signal_source(pool),
+        )
+
+    @_tool("subscriptions")
+    async def subscription_warning_still_relevant(
+        subject: str, selected_date: str, epoch: StrictInt
+    ) -> bool | None:
+        """Private fixed currentness read; an ordinary model invocation has no read authority."""
+        from butlers.core.finance_warning_control import lookup_owner
+
+        owner = lookup_owner(module._get_pool())
+        if owner is None:
+            return None
+        return await owner.consume_and_read(
+            {"subject": subject, "selected_date": selected_date, "epoch": epoch},
+            _subscriptions.subscription_warning_still_relevant,
         )
 
     # =================================================================

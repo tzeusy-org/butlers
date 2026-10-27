@@ -115,9 +115,11 @@ DTO versions.
 Butler-specific API routes live in `roster/{butler}/api/router.py` and are auto-discovered by `src/butlers/api/router_discovery.py`. The discovery process:
 
 1. Scans `roster/` for butler subdirectories containing `api/router.py`.
-2. Loads each module dynamically via `importlib.util.spec_from_file_location()`. Already-loaded modules in `sys.modules` are reused.
+2. Loads through `butlers.roster_imports`, the roster execution owner. Each file keeps one canonical module object; cached source paths are checked and failed loads are removed. Explicit custom roots retain distinct router and adjacent-model cache names. Router headers pass `api_source=__file__` to `roster_module()` so custom copies use their own fenced `api/models.py`; model-only namespace imports still select the default roster without executing routers.
 3. Validates that the module exports a `router` variable that is an `APIRouter` instance.
 4. Returns a sorted list of `(butler_name, router_module)` tuples.
+
+`butlers.api._roster.<butler>.router` aliases the actual `<butler>_api_router` module. The models alias and `router._models` (`_models_module` for Relationship) share its actual local models module, retaining the existing model execution name. Importing only models does not execute its router.
 
 Dynamic routers are mounted **after** static core routers to prevent shadowing fixed API paths (e.g., `/api/oauth/*`). No `__init__.py` is needed in the `api/` directory. One ordered registry (`api/router_registry.py`) supplies core exports, including secondary/hidden routers, followed by these sorted roster modules. Direct health routes and the final SPA mount remain explicit.
 

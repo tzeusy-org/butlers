@@ -149,10 +149,9 @@ ATTENTION_LEDGER_SESSION_KEY = "session_id"
 
 # Priority range shared with RFC 0011's Priority Scoring Convention (1-100
 # scale): 90-100 is "time-critical — action needed within 24-48 hours". The
-# attention policy (quiet hours, context-bus dnd/sleeping) fails OPEN for any
-# candidate/notification at or above this threshold — it always gets through,
-# regardless of quiet hours or dnd/sleeping context signals. Only the routine
-# (below-threshold) path is budgeted/suppressible.
+# This is a ranking/ledger convention, not interruption authority. The D7
+# notify and Insight delivery boundaries require a current verified cause for
+# quiet-hours or dnd/sleeping exceptions; a model-assigned score never grants one.
 URGENT_PRIORITY_THRESHOLD = 90
 
 # notify()'s priority parameter is a 3-level enum (high/medium/low), not the

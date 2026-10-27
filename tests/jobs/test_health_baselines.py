@@ -388,3 +388,57 @@ async def test_sleep_is_summed_by_wake_day_and_short_nights_open_an_episode(
         rows = await _candidates(pool)
         assert [r["dedup_key"].split(":")[2] for r in rows] == ["sleep_duration"]
         assert "below your usual range" in rows[0]["message"] and "hours" in rows[0]["message"]
+
+
+@pytest.mark.parametrize("state", ["ready", "stale", "insufficient_history", "unmeasurable"])
+async def test_watch_stored_baseline_reads_current_version_and_honest_state(
+    provisioned_postgres_pool, state: str
+) -> None:
+    from dataclasses import replace
+
+    from butlers.core.baselines import (
+        METHOD_VERSION,
+        compute_baselines,
+        read_baseline,
+        upsert_baseline,
+    )
+    from butlers.jobs.health_baselines import METRICS, run_baseline_watch
+
+    async with provisioned_postgres_pool(schema="health") as pool:
+        await _setup(pool)
+        await _connector(pool, "offline" if state == "unmeasurable" else "healthy")
+        if state != "insufficient_history":
+            await _seed_resting_hr(pool, elevated_days=0)
+        await run_baseline_watch(pool, now=_NOW)
+        # A newer shadow-method row must not replace the current scorer's row.
+        (decoy,) = compute_baselines(METRICS[0], {}, as_of=_AS_OF, now=_NOW)
+        await upsert_baseline(
+            pool,
+            replace(decoy, method_version="future-shadow", computed_at=_NOW + timedelta(days=10)),
+        )
+        now = _NOW + timedelta(days=3) if state == "stale" else _NOW
+        async with pool.acquire() as observer:
+            reading = await read_baseline(observer, "resting_hr", now=now)
+            stored = await observer.fetchrow(
+                "SELECT * FROM metric_baselines WHERE metric_key='resting_hr' AND method_version=$1",
+                METHOD_VERSION,
+            )
+            unknown = await read_baseline(observer, "nonexistent", now=now)
+        assert reading is not None and reading.state == state
+        assert reading.method_version == METHOD_VERSION
+        assert (reading.n_observed, reading.n_expected, reading.coverage) == (
+            stored["n_observed"],
+            stored["n_expected"],
+            stored["coverage"],
+        )
+        assert reading.computed_at == stored["computed_at"]
+        assert reading.stale is (state == "stale")
+        assert unknown is None
+        if state == "ready":
+            assert reading.band == (
+                stored["center"] - stored["k_mad"] * stored["dispersion"],
+                stored["center"] + stored["k_mad"] * stored["dispersion"],
+            )
+        else:
+            assert reading.band is None
+        assert await pool.fetchval("SELECT to_regclass('public.metric_baselines')") is None

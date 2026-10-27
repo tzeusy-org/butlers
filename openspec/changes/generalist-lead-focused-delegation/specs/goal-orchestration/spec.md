@@ -164,15 +164,19 @@ existing authority, exposure and budget accounting. Research SHALL receive no
 invocation token, grant, MCP configuration, capability or delegation tool,
 SHALL add no hierarchy depth, and SHALL NOT admit a goal or spawn another
 reasoning session. It SHALL NOT be a lead, child or D18 outside-goal function.
-Owner requests, third-party events, domain obligations and staffer work SHALL
-all enter through goal admission. No domain butler, staffer, module or scheduled
-job SHALL spawn a reasoning session by any other path, and no model-classification
-routing step SHALL precede admission. The only model use outside goals SHALL
-remain the engineering executors and tool-less model functions that RFC 0038
-names, which receive no capabilities.
+Owner requests, third-party events, domain
+obligations and staffer work SHALL all enter through goal admission. No domain
+butler, staffer, module or scheduled job SHALL spawn a reasoning session by any
+other path, and no model-classification routing step SHALL precede admission
+except a dashboard fast answer's eligibility classification, which chooses only
+between that fast answer and admitting the unchanged message as an owner goal.
+The only model use outside goals SHALL be the engineering executors, tool-less
+model functions and dashboard fast answers that RFC 0038 D18 names. None of
+them SHALL receive capabilities; a dashboard fast answer's allowlisted reads
+SHALL be made by deterministic code through the broker.
 
 ID: REQ-goal-orchestration-008
-Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, D1, D2, D3, D7, D16, D18, D20 and Hard cutover
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, D1, D2, D3, D7, D16, D18, D20 and Hard cutover; later owner decision bu-u5euwb.21
 Scope: v1-mandatory
 
 #### Scenario: A domain schedule needs reasoning
@@ -182,6 +186,11 @@ Scope: v1-mandatory
 #### Scenario: An owner message arrives
 - **WHEN** a connector submits an owner message
 - **THEN** admission creates a goal directly from the envelope without a model classification or route-dispatch step
+
+#### Scenario: A dashboard fast answer declines before its first read
+- **WHEN** the owner's dashboard question is ineligible, or its plan fails the schema, or its provider fails before the first read
+- **THEN** the unchanged message is admitted as an owner goal
+- **AND** nothing the fast answer produced enters that goal's admission, origin, ceiling or exposure
 
 ## Source References
 

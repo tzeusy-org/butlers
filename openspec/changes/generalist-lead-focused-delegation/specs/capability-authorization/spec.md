@@ -36,10 +36,27 @@ Scope: v1-mandatory
 - **THEN** the associated write/effect does not commit without its restriction and receipt
 
 ### Requirement: Tighten-only policy versions fence the next call
-The broker SHALL apply S1's owner-only CAS policy schema and deterministic constraint order on every call, emitting typed term/version receipts. The API SHALL NOT be grantable to goals or accept model/source text as owner authority. The structural constraint slots SHALL consume .18 policy wording without inventing a mode, urgency or step-up grant.
+The broker SHALL apply S1's owner-only CAS policy schema and deterministic constraint order on every call, emitting typed term/version receipts. The API SHALL NOT be grantable to goals or accept model/source text as owner authority. The owner SHALL be able to tighten by `never` or `always_ask` for a capability,
+region or effect class. These selectors SHALL resolve within S1's existing
+capability/resource `scope`: exact catalog capability identity, catalog
+`owner_domain` for a region, and catalog `effect_class` for a class, with
+resource narrowing retained. Matching SHALL use the current catalog on every
+call, including later capabilities in a selected region/class, rather than a
+one-time expansion that silently loses restrictions. Unresolved scope SHALL
+refuse, not become an empty permissive match. Existing S1 fields, monotonic
+versions, expiry, owner-action identity and expected-version CAS SHALL remain
+the single policy representation. `always_ask` SHALL hold only an otherwise
+permitted exact effect; an otherwise refused call SHALL stay refused. No owner
+term SHALL grant a capability, widen resources/selection, clear labels, bypass
+park-only/always-per-event, or override another restriction. The structural
+constraint slots SHALL NOT invent a mode, urgency or step-up grant. Owner cards
+and `/status` SHALL show the actual narrowing stage/term/version using S6's
+existing surface/privacy rules; shared-room output SHALL retain mode/health
+redaction. A reason string or ACK SHALL NOT confer authority. Unknown health
+SHALL NOT be described as healthy or bypass its existing admission hold.
 
 ID: REQ-capability-authorization-020
-Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S1; bu-dhloi1.19
+Source: RFC 0038 D4, D7 and S1; bu-dhloi1.19; bu-u33sb7; bu-dhloi1.18
 Scope: v1-mandatory
 
 #### Scenario: Never and always ask do not grant
@@ -57,6 +74,26 @@ Scope: v1-mandatory
 #### Scenario: Policy retry is not a second mutation
 - **WHEN** the owner retries the same expected-version change or a stale client submits it
 - **THEN** the same action has one receipt, while a conflicting version refuses without overwrite
+
+#### Scenario: Scope selectors survive catalog publication
+- **WHEN** never or always_ask selects a capability, region or effect class and a later catalog is published
+- **THEN** the same term/version constrains all matching current capabilities and narrowed resources, including new region/class members, without granting any call
+- **AND** unresolved selector/catalog state refuses rather than silently dropping the restriction
+
+#### Scenario: Receipts identify the holding intersection without payloads
+- **WHEN** a call is evaluated against catalog/origin/grant, exposure/category/slot, owner law, mode and health/admission restrictions
+- **THEN** it is checked in that order, and the typed receipt names its holding/refusing stage and constraining terms with versions without message content or secret arguments
+- **AND** a missing/stale invocation binding, unknown origin or unreadable stage is never reported as authorized
+
+#### Scenario: A tightening races the final effect fence
+- **WHEN** a committed policy update and a call contend at the existing goal/effect transaction fence
+- **THEN** the call either commits under the old version before the tightening or is held/refused under the new version, and a retry cannot restore an older version
+- **AND** already committed effects are not described as undone
+
+#### Scenario: Private and shared status keep the same authority
+- **WHEN** an owner card or `/status` explains a policy, mode or health hold on a private or shared-room surface
+- **THEN** it shows the actual narrowing stage and term/version under the existing surface privacy rules, retaining mode/health redaction in shared rooms
+- **AND** neither its text nor an ACK clears a restriction or treats unknown health as healthy
 
 ### Requirement: Declared gateway interfaces cannot widen workload egress
 Gateway consumers SHALL implement S7's workload/profile identity, destination, redirect, static-key custody, denial and bounded-recovery interfaces. Static-key eligibility SHALL be registered and gateway-owned; it SHALL NOT grant a model, caller or unregistered analysis workload credentials, hosts or a runtime widening path.
@@ -272,7 +309,6 @@ SHALL require per-event owner approval; and `record` writes with owner
 authority SHALL be refused. Approvals of effects requested while exposed SHALL
 NOT count toward standing-rule promotion. Exposure SHALL NOT relax the
 non-owner communication rule (`REQ-capability-authorization-016`).
-
 A standing rule SHALL count as template-pinned only when its argument
 constraints fix every content-bearing argument (body, subject, title,
 description, caption, attachment and any other argument whose value reaches
@@ -280,10 +316,23 @@ the recipient as text or content) to an exact value or to an owner-authored
 template whose slots accept only typed values such as dates, amounts and
 identifiers, never free text. A rule that leaves any content-bearing argument
 unconstrained, or whose template has a free-text slot, SHALL NOT exempt an
-exposed call.
+exposed call. Slot supplier authority SHALL be checked independently of type:
+only owner, device or deterministic code may supply it, except that the
+owner's rule-creation card may explicitly permit that rule's own recipient to
+fill that exact slot. Unknown/mismatched principals and arbitrary third-party
+suppliers SHALL make the rule ineligible, not be laundered through a typed
+value. After reading sensitive data, a standing-rule send to a non-owner SHALL
+name every applicable invocation category: `health`, `finance`, `location`,
+`routine`, `relationship_notes`, `credentials`. Unknown labels SHALL retain
+S1's all-category restriction. Missing coverage SHALL park an otherwise
+permitted call for per-event approval; an independently refused call SHALL
+stay refused. These conditions SHALL NOT release D6's held typed-value/cited-label
+semantics or replace recipient/template pins, selection, current grant,
+park-only or always-per-event constraints.
+
 
 ID: REQ-capability-authorization-006
-Source: RFC 0038, D4, D6 and D13; RFC 0021
+Source: RFC 0038, D4, D6 and D13; RFC 0021; bu-o3638f; bu-dhloi1.18
 Scope: v1-mandatory
 
 #### Scenario: An injected instruction asks the lead to forward mail
@@ -305,6 +354,16 @@ Scope: v1-mandatory
 #### Scenario: A template with a free-text slot does not exempt an exposed send
 - **WHEN** an exposed invocation sends a message under a standing rule whose owner-authored template has a slot that accepts free text
 - **THEN** the send is parked for per-event owner approval
+
+#### Scenario: A typed slot retains its supplier boundary
+- **WHEN** a rule's typed slot is filled by its declared owner/device/code supplier or by its own recipient explicitly permitted for that slot on the creation card
+- **THEN** that slot is eligible subject to every other rule and label restriction
+- **AND** an arbitrary third party, unknown supplier or recipient filling a different slot makes the rule ineligible and the call parks
+
+#### Scenario: Every sensitive category must be named
+- **WHEN** an invocation reads health and finance data and sends to a non-owner under a rule naming health alone
+- **THEN** the rule cannot approve the call and it parks for per-event approval
+- **AND** naming both categories would only satisfy category coverage, not bypass template, slot, grant, selection or always-per-event checks
 
 ### Requirement: Domains execute model-reachable tools only with a valid broker assertion
 The broker SHALL forward each call with a signed assertion naming the owning
@@ -460,7 +519,13 @@ Scope: v1-mandatory
 Tools that approve, reject, edit or dispatch parked actions, create or promote
 standing rules, create, change or revoke owner selection records
 (`REQ-capability-authorization-018`), or return private-custody content SHALL
-NOT be LLM-presentable or grantable to any invocation.
+NOT be LLM-presentable or grantable to any invocation. Ordinary owner
+approve/reject/edit/dispatch SHALL remain one tap after the existing current
+exact-action checks. Dashboard step-up SHALL be limited to standing-rule
+creation/promotion, Vouch, Contain and mode loosening, using RFC 0038 D13's
+independent owner factor and atomic action-bound nonce; owner-only status
+SHALL NOT extend that list. Held action implementations and factor custody
+SHALL remain unchanged by this contract.
 
 ID: REQ-capability-authorization-014
 Source: RFC 0038, D4; RFC 0021; RFC 0037
@@ -473,6 +538,14 @@ Scope: v1-mandatory
 #### Scenario: A lead looks for a tool that selects sources
 - **WHEN** a lead searches its catalog for a tool that selects sources for a subject or creates, changes or revokes an owner selection record
 - **THEN** no such tool is listed or callable, and only the owner's action on the owner surface can write or revoke a selection
+
+#### Scenario: Ordinary owner approval is still one tap
+- **WHEN** the authenticated owner approves, rejects, edits or dispatches an otherwise permitted current exact action
+- **THEN** the existing one-tap route applies without blanket owner-only step-up, while Stop, exact digest and current authorization remain checked
+
+#### Scenario: A listed authority change needs independent step-up
+- **WHEN** an owner requests standing-rule creation/promotion, Vouch, Contain or mode loosening without its bound dashboard confirmation
+- **THEN** the transition refuses with a non-mutating dashboard handoff; Telegram identity, callback ACK or model priority cannot supply the independent factor
 
 ### Requirement: Transact capabilities are disabled
 The broker SHALL NOT grant or list a `transact` capability to any goal or

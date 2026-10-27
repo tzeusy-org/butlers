@@ -6,7 +6,7 @@ For a lead or child goal invocation, an adapter SHALL disable every runtime buil
 A research invocation SHALL use the separate RFC 0038 D20 profile, with exactly one provider-hosted search tool, every runtime built-in tool disabled, no MCP servers and no broker authority. The runner SHALL launch it only on the separate research host and only on a runtime/model tuple proven to honor the broker-selected live or cached mode and required limits and audit evidence. Version 1 SHALL admit only Codex research tuples; inability to prove the profile SHALL refuse launch. In the existing session-host requirements and scenarios below, an unqualified goal invocation means a lead or child; a research invocation follows this distinct D20 profile and has no MCP configuration.
 The launcher (the goal runner or the Spawner) SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) keyed by runtime type. When model resolution selects a runtime type different from the TOML-configured adapter, the launcher instantiates the required adapter on demand via `get_adapter(type).create_worker()` and caches it for reuse.
 
-ID: REQ-core-spawner-015
+ID: REQ-core-spawner-016
 Source: RFC 0038 D3, D10, D16, D18 and D20
 Scope: v1-mandatory
 
@@ -116,7 +116,7 @@ Scope: v1-mandatory
 #### Scenario: Gemini adapter invocation
 - **WHEN** the selected runtime type is `gemini`
 - **THEN** the GeminiAdapter runs the `gemini` binary with `--system-prompt` and `--prompt` flags
-- **AND** passes only the environment its launcher provides; for a goal invocation that is `PATH`, the staged model credential and the MCP config
+- **AND** passes only the environment its launcher provides plus its adapter-owned file pointers; for a goal invocation that is `PATH`, the staged model credential, the MCP config and the `GEMINI_CLI_SYSTEM_SETTINGS_PATH` pointer, which names a settings file staged inside the invocation's sandbox
 
 #### Scenario: OpenCode adapter invocation
 - **WHEN** the selected runtime type is `opencode`
@@ -210,6 +210,10 @@ Scope: v1-mandatory
 ### Requirement: Trigger Source Tracking
 The Spawner's valid trigger sources SHALL be the engineering-executor sources `qa` and `healing`, and the trigger source SHALL be passed through to session creation for audit. The sources `tick`, `external`, `trigger`, `route` and `schedule:<task-name>` SHALL NOT start a Spawner session: the work they named is admitted as a goal, whose origin, cause and invocation lineage (`goal_id`, `invocation_id`, `depth`, `epoch`) take the place of a trigger source.
 
+Until the RFC 0038 goal-runtime cutover, the existing ordinary dispatch paths retain the following source-audit contract; it does not authorize a goal invocation or re-enable the retired local healing dispatcher:
+
+Valid trigger sources include `tick`, `external`, `trigger`, `route`, `qa`, and `schedule:<task-name>`. Historical `healing` provenance SHALL remain readable and its existing isolation/recursion safeguards SHALL remain intact; it SHALL NOT enable the retired local dispatcher. The trigger source SHALL be passed through to session creation for audit.
+
 ID: REQ-core-spawner-006
 Source: RFC 0038 D5, D17 and D18; core-spawner trigger audit; RFC 0015 centralized QA; bu-lsxqb0.6 and bu-1fe7xv rounds 3-4
 Scope: v1-mandatory
@@ -224,9 +228,10 @@ Scope: v1-mandatory
 - **THEN** the session's `trigger_source` is `"qa"`
 
 #### Scenario: Healing trigger source
-- **WHEN** an existing shared legacy healing dispatcher explicitly spawns an investigation session
-- **THEN** the session's `trigger_source` is `"healing"`
-- **AND** this does not enable direct investigation dispatch by the relay module or Spawner crash handler
+- **WHEN** an existing session carries historical `trigger_source="healing"` provenance
+- **THEN** its original trigger source remains unchanged
+- **AND** neither the core QA relay nor the Spawner crash handler starts a local investigation
+- **AND** new centralized QA investigations retain `trigger_source="qa"`
 
 #### Scenario: Healing sessions skip fallback dispatcher
 - **WHEN** a session with `trigger_source = "healing"` fails
@@ -234,7 +239,7 @@ Scope: v1-mandatory
 - **AND** the centralized QA self-recursion barrier remains authoritative for QA-origin findings
 
 ### Requirement: Credential Isolation
-The Spawner SHALL build an explicit environment dict for each engineering executor containing only `PATH` and the credentials that executor's contract declares (for example `GH_TOKEN`, and the CLI auth provider credential its runtime needs, such as `ANTHROPIC_API_KEY` for the Claude runtime). Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or API keys entered via the dashboard Settings → CLI Runtime Authentication card, depending on the provider's `auth_mode`. Spawner credentials SHALL be resolved DB-first via `CredentialStore.resolve()` with env-var fallback. A goal invocation's environment SHALL contain only `PATH`, its staged model credential and its MCP config, and SHALL NOT contain `[butler.env]` vars, module or connector credentials, database credentials, or credential-store access. Undeclared env vars SHALL NOT leak through.
+The Spawner SHALL build an explicit environment dict for each engineering executor containing only `PATH` and the credentials that executor's contract declares (for example `GH_TOKEN`, and the CLI auth provider credential its runtime needs, such as `ANTHROPIC_API_KEY` for the Claude runtime). Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or API keys entered via the dashboard Settings → CLI Runtime Authentication card, depending on the provider's `auth_mode`. Spawner credentials SHALL be resolved DB-first via `CredentialStore.resolve()` with env-var fallback. A goal invocation's environment SHALL contain only `PATH`, its staged model credential, its MCP config and adapter-owned file pointers, and SHALL NOT contain `[butler.env]` vars, module or connector credentials, database credentials, or credential-store access. An adapter-owned file pointer is a variable the runtime adapter sets whose value is only the path of a file or directory staged inside that invocation's own sandbox; its value SHALL NOT be secret, and the files it names SHALL hold no secret other than the staged model credential and the invocation's own MCP config. Undeclared env vars SHALL NOT leak through.
 
 Until the RFC 0038 goal-runtime cutover, ordinary legacy sessions retain the following isolation contract; it grants no additional credentials to goal invocations or engineering executors:
 
@@ -274,6 +279,11 @@ ID: REQ-core-spawner-010
 - **WHEN** the goal runner launches an invocation for a goal that needs a Messenger send capability
 - **THEN** the invocation's environment holds no Telegram bot token, email password or other connector credential
 - **AND** the invocation can reach Messenger's capability only through the broker
+
+#### Scenario: Goal invocations admit only non-secret pointers into their own sandbox
+- **WHEN** a runtime adapter adds a variable to a goal invocation's environment beyond `PATH`, the staged model credential and the MCP config
+- **THEN** the variable is admitted only if its value is the path of a file or directory staged inside that invocation's own sandbox and the named files hold no secret other than the staged model credential and the invocation's own MCP config
+- **AND** a variable that points outside the sandbox, or whose value or named file carries any other secret, makes that adapter ineligible for goal invocations
 
 ### Requirement: System Prompt Composition
 For an engineering executor the Spawner launches, the system prompt is read from `CLAUDE.md` in the launching butler's config directory. Include directives (`<!-- @include path/to/file.md -->`) are resolved relative to the roster directory. Shared prompt snippets (`BUTLER_SKILLS.md`, `MCP_LOGGING.md`) are appended if present. The Spawner SHALL NOT inject situational context into an engineering executor's prompt (RFC 0038 D18): it no longer calls `get_active_context()` or `format_context_preamble()` at launch, and an executor sees only the anonymized payloads RFC 0015 allows.

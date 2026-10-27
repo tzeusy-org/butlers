@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import shutil
 import uuid
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -21,6 +20,7 @@ import asyncpg
 import pytest
 
 from butlers.modules.memory import knowledge_gaps, storage
+from butlers.testing.fake_pool import AsyncCtx
 from tests.modules.memory.test_content_authority import (  # noqa: F401
     _engine,
     _routed,
@@ -191,9 +191,8 @@ class _BorrowedPool:
     def __init__(self, pool, conn):
         self.pool, self.conn = pool, conn
 
-    @asynccontextmanager
-    async def acquire(self):
-        yield self.conn
+    def acquire(self):
+        return AsyncCtx(self.conn)
 
     def __getattr__(self, name):
         return getattr(self.pool, name)

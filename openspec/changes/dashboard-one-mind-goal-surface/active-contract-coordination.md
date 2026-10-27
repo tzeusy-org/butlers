@@ -4,7 +4,7 @@
 The original 13-file / 37-requirement / 281-scenario population remains fully retained. It is a subset of the current 68 active changes and 45 intersecting full changes (plus explicit PR4485), totaling 443 full requirement bodies / 1,968 scenarios in the foreign program source account. All current sources remain held. The correction neither copies a foreign amendment into the repo nor adopts its pending future bodies.
 
 
-bu-li92cu owns the complete collision disposition program. Its fast-answer amendment remains a proposal for deterministically admitted same-model read goals under D4/D7/D14/D18, with no added D18 category. Separate proposed paths do not confer semantic clearance. PR4524 at 3c824 remains a prospective three-file recipient/exact-call union, not a merged source authority; failed hosted run 38610786151 provides no PASS or retry permission. PR4526 logging/quarantine is a separate foreign owner proposal and grants no D19 source-admission or testing exception.
+bu-li92cu owns the complete collision disposition program. Owner decision `bu-u5euwb.21` = C names dashboard fast answers as a D18 kind (`bu-u5euwb.27`); `define-dashboard-fast-answer-runtime` is re-scoped to it (`bu-u5euwb.28`). Separate proposed paths do not confer semantic clearance. PR4524 at 3c824 remains a prospective three-file recipient/exact-call union, not a merged source authority; failed hosted run 38610786151 provides no PASS or retry permission. PR4526 logging/quarantine is a separate foreign owner proposal and grants no D19 source-admission or testing exception.
 
 
 ## openspec/changes/durable-dashboard-terminal-action-recovery/specs/dashboard-conversations/spec.md

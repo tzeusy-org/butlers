@@ -28,6 +28,7 @@ from butlers.tools.switchboard.notification.log import (
     _log_notification_with_review,
     log_notification,
 )
+from butlers.tools.switchboard.notification.self_links import resolve_self_links
 from butlers.tools.switchboard.registry.registry import (
     expected_route_target,
     receiver_route_cutover_enabled,
@@ -678,6 +679,7 @@ async def deliver(
     call_fn: Any | None = None,
     trusted_source: str | None = None,
     verified_context: TrustedRecoveryContext | None = None,
+    content_requires_inert_links: bool = False,
 ) -> dict[str, Any]:
     """Deliver a notification through the specified channel.
 
@@ -725,6 +727,17 @@ async def deliver(
         if authenticated is None:
             return _recovery_authority_refusal()
         parsed_notify, request_context, trusted = authenticated
+        from butlers.core.delivery_rendering import delivery_content_requires_inert_links
+
+        # Authenticate the original source-admitted envelope first. Rendering
+        # authority is a separate private sender fact, never its public flag.
+        parsed_notify = parsed_notify.model_copy(
+            update={
+                "render_links_inert": (
+                    delivery_content_requires_inert_links() or content_requires_inert_links is True
+                )
+            }
+        )
         tracer = trace.get_tracer("butlers")
         with tracer.start_as_current_span("switchboard.deliver") as span:
             span.set_attribute("source_butler", trusted.issuer)
@@ -732,7 +745,7 @@ async def deliver(
             span.set_attribute("target_butler", MESSENGER_BUTLER_NAME)
             return await _deliver_recovery_via_notify_request(
                 pool,
-                notify_request=parsed_notify,
+                notify_request=resolve_self_links(parsed_notify),
                 request_context=request_context,
                 trusted=trusted,
                 call_fn=call_fn,
@@ -754,6 +767,16 @@ async def deliver(
             return {"error": error_msg, "status": "failed"}
 
         if envelope_payload is not None:
+            from butlers.core.delivery_rendering import delivery_content_requires_inert_links
+
+            # The input envelope is a tool argument. Only deterministic, internal
+            # sender facts can supply this field at the Switchboard boundary.
+            envelope_payload = {
+                **envelope_payload,
+                "render_links_inert": (
+                    delivery_content_requires_inert_links() or content_requires_inert_links is True
+                ),
+            }
             try:
                 parsed_notify = parse_notify_request(envelope_payload)
             except ValidationError as exc:
@@ -782,7 +805,7 @@ async def deliver(
 
             return await _deliver_via_notify_request(
                 pool,
-                notify_request=parsed_notify,
+                notify_request=resolve_self_links(parsed_notify),
                 request_context=request_context,
                 source_butler=source_butler,
                 metadata=metadata,

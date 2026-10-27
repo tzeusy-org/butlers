@@ -25,11 +25,22 @@ specified in [`messenger-tracking-retirement`](../../openspec/specs/messenger-tr
   Telegram, email or WhatsApp adapter, then the outcome and attention ledger. `msg_003` retired the
   unwired `delivery_requests` tracking stack; do not reintroduce a tracking health, queue, retry or
   receipt surface without an admission path that owns those records.
-- Inline approvals materialise one registered native delivery command before gating and reuse it
-  for immediate execution and deferred replay (`tool_args` hold only handler kwargs). Email replies
+- Inline approvals materialise the native command for owner and standing-rule checks. A recipient
+  park stores the complete original `route.execute` envelope, including rendering policy. Human
+  approval replays that exact envelope through the registered handler and the existing executor's
+  task, tool and argument binding. Scheduled non-owner deliveries without a matching owner rule
+  now require approval; a missing runtime or failed park refuses before sending. Email replies
   need an authoritative `request_context.source_thread_identity`, never `request_id`, and channel
   policies such as WhatsApp `send_enabled` apply on both paths. Retries expose only allowlisted
   validation classes; raw provider errors stay in logs and audit.
+- `render_links_inert` is derived from internal sender marks at Switchboard, never a model tool
+  argument. A nested sender cannot clear an existing mark. Telegram sends literal text in explicit
+  `pre` entities and disables previews; email defangs address and URL separators. Telegram refuses
+  caller URL buttons while marked and always refuses `login_url` and `web_app`; existing server
+  dashboard buttons remain usable. See the [Telegram Bot API](https://core.telegram.org/bots/api)
+  entity and link-preview contracts. The current WhatsApp delivery bridge has no preview-control
+  contract, so marked deliveries park for explicit approval. Its ingestion connector's readback
+  fields do not establish outbound preview support. Unmarked WhatsApp behavior is unchanged.
 
 - A committed recipient park emits a typed same-request/channel Messenger review reference.
   Switchboard's internal writer stores that bounded reference beside the failed notification in
@@ -37,3 +48,29 @@ specified in [`messenger-tracking-retirement`](../../openspec/specs/messenger-tr
   error text, failed parking, and legacy rows cannot create a review door. Logging failure leaves
   the committed park intact and does not retry delivery. The feed opens the adopted approval
   dossier only after complete unique-source admission, and the destination repeats that check.
+
+
+### Fixed dashboard controls
+
+Approval cards carry typed self references, not raw dashboard URLs. The fixed
+server registry maps `approval_detail` (canonical UUID `action_id`) to
+`/approvals/<action_id>` and `approvals_queue` (no parameters) to `/approvals`.
+Switchboard resolves these references using the configured HTTPS `DASHBOARD_URL`
+origin. Messenger independently resolves them again; a wire URL, host, label,
+provenance string or claimed server flag is never link authority. Valid controls
+show the actual host and dashboard provenance. Self references do not expire.
+
+The public notify contract rejects server-only `open_link` output and raw
+`dashboard_url` actions. Missing or unsafe origin configuration, unknown routes,
+invalid parameters and URLs over 300 characters produce `[link not verified]`
+without a URL button, while preserving delivery and valid signed callbacks.
+Origins cannot supply paths, queries, fragments, user information, IP or IDN
+hosts, or non-default ports. The builder's legacy `dashboard_base_url` argument
+remains accepted for call compatibility but does not authorize or mint a URL.
+
+Normal and authenticated recovery delivery use the same resolver. Existing
+owner recipient checks, callback signatures, recovery transport authority,
+exact stored replay, inert message text and disabled previews remain in force.
+The fixed dashboard control does not turn message-body URLs into live links,
+change unsupported transport policy, or authorize general links or login flows.
+A source guard binds every Python self route to the existing phone entry routes.

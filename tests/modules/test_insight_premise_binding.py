@@ -526,3 +526,22 @@ class TestPremiseBoundDelivery:
         assert "Refill due" in sent
         assert "Since last digest: Resolved" in sent
         assert await premise_pool.fetchval("SELECT state FROM insight_amendments") == "folded"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", [True, False, None, "true", 1])
+async def test_fixed_finance_probe_uses_only_held_reader_and_strict_tristate(verdict):
+    args = {
+        "subject": "00000000-0000-0000-0000-000000000001",
+        "selected_date": "2026-10-27",
+        "epoch": 0,
+    }
+    premise = probe_premise("finance", "subscription_warning_still_relevant", args)
+    pool = AsyncMock()
+    assert await premises.check_premise(pool, premise) is None
+    reader = AsyncMock(return_value=verdict)
+    actual = await premises.check_premise(pool, premise, finance_warning_reader=reader)
+    assert actual is (verdict if type(verdict) is bool else None)
+    reader.assert_awaited_once_with(args)
+    pool.fetchrow.assert_not_awaited()
+    pool.fetchval.assert_not_awaited()

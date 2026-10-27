@@ -55,7 +55,9 @@ def postgres_container() -> Iterator[PostgresContainer]:
 
 ### `provisioned_postgres_pool` (function scope)
 
-Creates a fresh database and asyncpg pool for a single test. Each invocation creates a database with a random name (`test_{uuid_hex[:12]}`), ensuring no table or schema leakage between tests.
+Creates a fresh database and an **administrative** asyncpg pool for a single test. Each invocation creates a database with a random name (`test_{uuid_hex[:12]}`), ensuring no table or schema leakage between tests. The container login owns this pool; it intentionally supports partial, legacy, and absent-table setup. It does not establish a runtime role and is not evidence of runtime authorization or isolation. Use migrated databases and real `SET ROLE` identities for that proof.
+
+Optional `schema=` validates and sets the administrative search path before provisioning; it neither creates that schema nor grants access. The pool retains the normal JSONB codec, finite SSL fallback, and context-owned cleanup on failure or cancellation. Runtime `Database` role refusals remain unchanged.
 
 ```python
 async with provisioned_postgres_pool() as pool:
@@ -108,6 +110,43 @@ def test_something(mock_spawner):
     mock_spawner.enqueue_result(SpawnerResult(success=True))
     ...
 ```
+
+## Explicit test-kit helpers
+
+Import DB-free helpers directly from `butlers.testing`; these are not root
+fixtures and do not provide SQL, JSONB, transaction, role or RLS evidence.
+Use a real migrated database when the behavior depends on those boundaries.
+
+- `records.row(**columns)` and `records.records(iterable_of_mappings)` return
+  fresh `Record` snapshots. Key/index lookup and `dict(record)` work; iteration
+  yields **values**, as asyncpg does. Missing keys and attribute access refuse.
+- `fake_pool.fake_pool(fetch=[...], execute="UPDATE 1")` configures only those
+  async calls. Unconfigured methods raise `AssertionError`; explicit `None`
+  is a configured result. Pass `AsyncMock(side_effect=...)` for queues or
+  failures. Pool and acquired connection share call assertions; `acquire()`
+  and connection `transaction()` create fresh `AsyncCtx` objects. Context
+  exits release once, including body exceptions and cancellation. Callable
+  SQL dispatch is refused.
+- `migration.load_migration(path, name=None)` imports a fresh module from an
+  explicit file without calling `upgrade` or `downgrade`. The default name is
+  `_migration_<file stem>`; use the existing caller's explicit name when its
+  identity matters. Opt-in `register=True` temporarily registers the module
+  for import-time consumers such as dataclasses and restores the prior
+  `sys.modules` entry even on failure. It does not provision a database.
+- `clock.FakeClock(aware_instant, monotonic=0)` exposes `now()` and
+  `monotonic()`. `advance(seconds_or_timedelta)` advances both; negative or
+  nonfinite advances refuse without changing either. The default origin is
+  fixed UTC. Inject these methods at existing seams, retaining purpose-specific
+  datetime adapters when needed; never patch event-loop, timeout or SQL clocks.
+
+- `mcp.registered_tools(server)` and `await mcp.tool_fn(server, name)` use a
+  real `FastMCP` server's public async registration API. Await both helpers;
+  the first returns a name-to-function snapshot, while the second looks up the
+  current registered `Tool.fn` and raises `KeyError(name)` for an unknown name.
+  Each lookup retains current wrappers and gates without unwrapping or caching.
+  Direct handler calls do not prove MCP transport validation or authorization.
+  Keep domain recorders and intentional registration failures; if real FastMCP
+  rejects a subject's signature, report the rejection instead of loosening it.
 
 ## Testcontainer Resilience
 

@@ -41,6 +41,7 @@ from typing import Any, Literal
 import asyncpg
 
 from butlers.core.attention_ledger import record_attention_event
+from butlers.core.attention_urgency import home_safety_decision
 from butlers.core.owner_conditions import (
     Observation,
     compute_fingerprint,
@@ -302,6 +303,8 @@ async def send_urgent_notify(pool: asyncpg.Pool, message: str) -> bool:
     hook) binds for the duration of the call.
     """
 
+    cause = home_safety_decision()
+
     async def _record(outcome: str, reason: str | None = None, ref: str | None = None) -> None:
         await record_attention_event(
             pool,
@@ -313,6 +316,7 @@ async def send_urgent_notify(pool: asyncpg.Pool, message: str) -> bool:
             priority="high",
             reason=reason,
             notification_ref=ref,
+            metadata={"attention_cause": cause.cause, "producer": cause.ref},
         )
 
     recipient = await resolve_owner_telegram_recipient(pool)
@@ -341,16 +345,15 @@ async def send_urgent_notify(pool: asyncpg.Pool, message: str) -> bool:
             timeout=_DELIVER_TIMEOUT_S,
         )
     except Exception as exc:
-        logger.warning("home safety: deliver() failed: %s", exc, exc_info=True)
-        await _record("failed", f"delivery_error:{exc}")
+        logger.warning("home safety: deliver() failed: %s", type(exc).__name__)
+        await _record("failed", f"delivery_error:{type(exc).__name__}")
         return False
     if result.is_error:
-        text = str(result.content[0].text) if result.content else "Unknown error"
-        await _record("failed", f"delivery_error:{text}")
+        await _record("failed", "delivery_error:remote_refusal")
         return False
     data = result.data
     if isinstance(data, dict) and data.get("status") == "failed":
-        await _record("failed", f"delivery_error:{data.get('error', 'Delivery failed')}")
+        await _record("failed", "delivery_error:remote_refusal")
         return False
     await _record("delivered", ref=data.get("notification_id") if isinstance(data, dict) else None)
     return True

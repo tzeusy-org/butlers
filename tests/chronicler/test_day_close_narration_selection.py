@@ -44,8 +44,10 @@ def registered_notify():
     """Read the real registration signature without invoking a handler."""
     handlers = {}
 
-    def decorate(_group):
+    def decorate(_group, **tool_kwargs):
         def capture(fn):
+            if fn.__name__ == "notify":
+                assert tool_kwargs == {"exclude_args": ["priority"]}
             handlers[fn.__name__] = fn
             return fn
 
@@ -209,10 +211,13 @@ async def test_real_sanitized_notify_capture_and_merge_selects_intended_narratio
     class MCP:
         def __init__(self):
             self.handlers = {}
+            self.metadata = {}
 
         def tool(self, *args, **kwargs):
             def decorate(fn):
-                self.handlers[kwargs.get("name") or fn.__name__] = fn
+                name = kwargs.get("name") or fn.__name__
+                self.handlers[name] = fn
+                self.metadata[name] = kwargs
                 return fn
 
             return decorate
@@ -236,7 +241,8 @@ async def test_real_sanitized_notify_capture_and_merge_selects_intended_narratio
         is_messenger=False,
         route_metrics=None,
     )
-    register_notification_tools(context, proxy, lambda _group: proxy.tool())
+    register_notification_tools(context, proxy, lambda _group, **kwargs: proxy.tool(**kwargs))
+    assert mcp.metadata["notify"] == {"exclude_args": ["priority"]}
     token = set_current_runtime_session_id(str(SESSION))
     try:
         with ExitStack() as stack:
@@ -409,6 +415,9 @@ def test_unbound_or_ambiguous_parser_values_never_establish_executed_narration(s
 def test_signature_discovery_failure_or_version_mismatch_cannot_guess_defaults(monkeypatch, schema):
     import inspect
 
+    from butlers.chronicler import day_close_writer as writer
+
+    discover = writer._notify_signature
     notify = notification()
     signature = inspect.signature(registered_notify())
     if schema == "changed-default":
@@ -429,6 +438,30 @@ def test_signature_discovery_failure_or_version_mismatch_cannot_guess_defaults(m
         timezone="UTC",
     )
     assert selected.invalid
+    # Inspect real registration for each policy drift, not a supplied signature.
+    for policy in (None, [], ["recipient"], ["priority", "recipient"]):
+
+        def changed_registration(context, mcp, decorate, policy=policy):
+            def changed_policy(group, **kwargs):
+                if "exclude_args" in kwargs:
+                    if policy is None:
+                        kwargs.pop("exclude_args")
+                    else:
+                        kwargs["exclude_args"] = policy
+                return decorate(group, **kwargs)
+
+            register_notification_tools(context, mcp, changed_policy)
+
+        with monkeypatch.context() as changed:
+            changed.setattr(
+                "butlers.core_tools._notifications.register_notification_tools",
+                changed_registration,
+            )
+            discover.cache_clear()
+            try:
+                assert discover() is None
+            finally:
+                discover.cache_clear()
 
 
 @pytest.mark.parametrize("inner", [{"status": "failed"}, {"status": "refused"}, None])
