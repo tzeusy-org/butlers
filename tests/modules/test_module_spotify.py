@@ -14,10 +14,10 @@ Covers:
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastmcp import FastMCP
 from pydantic import BaseModel, ValidationError
 
 from butlers.connectors.spotify_client import SpotifyTokenRefreshUnavailableError
@@ -27,6 +27,7 @@ from butlers.modules.spotify import (
     SpotifyModuleConfig,
     _token_refresh_unavailable_error,
 )
+from butlers.testing.mcp import registered_tools
 
 pytestmark = pytest.mark.unit
 
@@ -65,22 +66,8 @@ def spotify_module() -> SpotifyModule:
 
 
 @pytest.fixture
-def mock_mcp() -> MagicMock:
-    mcp = MagicMock()
-    tools: dict[str, Any] = {}
-
-    def tool_decorator(*_args, **kwargs):
-        name = kwargs.get("name")
-
-        def decorator(fn):
-            tools[name or fn.__name__] = fn
-            return fn
-
-        return decorator
-
-    mcp.tool = tool_decorator
-    mcp._registered_tools = tools
-    return mcp
+def mock_mcp() -> FastMCP:
+    return FastMCP("providers8-spotify-tools")
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +115,7 @@ class TestToolRegistration:
         await spotify_module.register_tools(
             mcp=mock_mcp, config={}, db=None, butler_name="test-butler"
         )
-        registered = set(mock_mcp._registered_tools.keys())
+        registered = set((await registered_tools(mock_mcp)).keys())
         assert EXPECTED_SPOTIFY_TOOLS.issubset(registered)
         assert EXPECTED_PLAYBACK_TOOLS.issubset(registered)
 
@@ -158,14 +145,18 @@ class TestToolBehaviors:
         )
         module._client = mock_client
         await module.register_tools(mcp=mock_mcp, config={}, db=None, butler_name="test-butler")
-        result = await mock_mcp._registered_tools["spotify_search"](query="test song", type="track")
+        result = await (await registered_tools(mock_mcp))["spotify_search"](
+            query="test song", type="track"
+        )
         assert result is not None
 
     async def test_missing_credentials_returns_error(self, mock_mcp: MagicMock) -> None:
         module = SpotifyModule()
         # No client set → should return error dict, not raise
         await module.register_tools(mcp=mock_mcp, config={}, db=None, butler_name="test-butler")
-        result = await mock_mcp._registered_tools["spotify_search"](query="test", type="track")
+        result = await (await registered_tools(mock_mcp))["spotify_search"](
+            query="test", type="track"
+        )
         assert isinstance(result, dict)
         assert "error" in result or result.get("status") == "error" or len(result) > 0
 
