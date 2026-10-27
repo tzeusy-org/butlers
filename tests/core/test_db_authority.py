@@ -3793,7 +3793,10 @@ def test_ordinary_purpose_policy_reverse_preserves_full_shape_and_savepoint_clea
     assert rejected.events[-1] == "ROLLBACK SAVEPOINT"
 
 
-def test_disposable_serving_deployment_keeps_control_and_native_identities_separate():
+@pytest.mark.parametrize("include_connector", [False, True])
+def test_disposable_serving_deployment_keeps_control_and_native_identities_separate(
+    include_connector,
+):
     """Execute producer orchestration; physical SQL is doubled, never PG credit."""
     from contextlib import contextmanager
     from types import SimpleNamespace
@@ -3849,7 +3852,11 @@ def test_disposable_serving_deployment_keeps_control_and_native_identities_separ
         patch("butlers.migrations.run_migrations", new_callable=AsyncMock) as upgrade,
         patch("butlers.migrations.finalize_authority") as finalize,
     ):
-        with migration.serving_test_deployment(container) as deployment:
+        with (
+            migration.serving_test_deployment(container, include_connector=True)
+            if include_connector
+            else migration.serving_test_deployment(container)
+        ) as deployment:
             create.assert_called_once_with(container, "butlers", _owned_creation=[])
             assert deployment.migration_url == "normal-owner-url"
             assert stage.call_count > 0
@@ -3866,8 +3873,14 @@ def test_disposable_serving_deployment_keeps_control_and_native_identities_separ
             assert runtime.db_name == "butlers"
             assert deployment.purpose_logins["dashboard"].role == "dashboard_api"
             assert deployment.purpose_logins["credential"].role == "credential_store_writer"
+            assert ("connector" in deployment.purpose_logins) is include_connector
+            if include_connector:
+                assert deployment.purpose_logins["connector"].role == "connector_writer"
             created = [sql for sql, _ in calls if sql.startswith("CREATE ROLE")]
-            assert len(created) == len(deployment.runtime_logins) + 2
+            if include_connector:
+                assert len(created) == len(deployment.runtime_logins) + 3
+            else:
+                assert len(created) == len(deployment.runtime_logins) + 2
             assert all("LOGIN NOINHERIT NOSUPERUSER" in sql for sql in created)
             grants = [sql for sql, _ in calls if sql.startswith("GRANT")]
             assert len(grants) == len(created)
@@ -3883,7 +3896,11 @@ def test_disposable_serving_deployment_keeps_control_and_native_identities_separ
             fail_create[0] = failed_ordinal
             fail_revoke[0] = failed_ordinal == 2
             with pytest.raises(RuntimeError, match="not acknowledged") as original:
-                with migration.serving_test_deployment(container):
+                with (
+                    migration.serving_test_deployment(container, include_connector=True)
+                    if include_connector
+                    else migration.serving_test_deployment(container)
+                ):
                     pytest.fail("Partial serving identity setup was published")
             attempted = [sql for sql, _ in calls if sql.startswith("CREATE ROLE")]
             dropped = [sql for sql, _ in calls if sql.startswith("DROP ROLE")]
@@ -3892,6 +3909,21 @@ def test_disposable_serving_deployment_keeps_control_and_native_identities_separ
             assert all(unacknowledged not in sql for sql in dropped)
             if failed_ordinal == 2:
                 assert "cleanup was incomplete" in " ".join(original.value.__notes__)
+        for invalid in (None, 0, 1, "connector"):
+            previous_creations = create.call_count
+            with pytest.raises(ValueError):
+                with migration.serving_test_deployment(container, include_connector=invalid):
+                    pytest.fail("Invalid connector input was admitted")
+
+            async def invalid_async(selected=invalid):
+                async with migration.async_serving_test_deployment(
+                    container, include_connector=selected
+                ):
+                    pytest.fail("Invalid async connector input was admitted")
+
+            with pytest.raises(ValueError):
+                asyncio.run(invalid_async())
+            assert create.call_count == previous_creations
 
 
 @pytest.mark.parametrize("cancel_phase", ["enter", "resources", "exit"])
@@ -6288,3 +6320,293 @@ def test_partition_precondition_notes_preserve_admission_later_refusals_and_obse
         error = AuthorityError("Managed database object is not declared")
         apply._add_partition_precondition_note(error, dict(child, schema=invalid), ())
         assert not hasattr(error, "__notes__")
+
+
+def test_real_retired_contact_and_switchboard_view_producers_select_exact_windows():
+    import runpy
+    from pathlib import Path
+
+    from butlers.db_authority import apply, grants
+
+    root = Path(__file__).parents[2]
+    full = grants.compile_relation_manifest(
+        "test_windows", "normal_owner", "maintenance", source_database="butlers"
+    )
+    created = []
+    producer = runpy.run_path(str(root / "alembic/versions/core/core_002_identity.py"))
+    with patch("alembic.op.execute", side_effect=created.append):
+        producer["upgrade"]()
+    assert any("CREATE TABLE IF NOT EXISTS public.contact_info" in sql for sql in created)
+    dropped = []
+    producer = runpy.run_path(str(root / "alembic/versions/core/core_115_drop_contact_info.py"))
+    bind = Mock()
+    bind.execute.return_value.scalar.side_effect = [1, None, 0]
+    with (
+        patch("alembic.op.execute", side_effect=dropped.append),
+        patch("alembic.op.get_bind", return_value=bind),
+    ):
+        producer["upgrade"]()
+    assert "DROP TABLE IF EXISTS public.contact_info CASCADE" in dropped
+    for plans, present in (
+        ((("core", None, "core_001"),), False),
+        ((("core", None, "core_002"),), True),
+        ((("core", "general", "core_114"),), True),
+        ((("core", None, "core_115"),), False),
+        ((("core", None, None),), False),
+        ((("core", None, "core_114"), ("core", "general", None)), False),
+    ):
+        manifest = grants.select_migration_manifest(full, plans)
+        rows = [r for r in manifest.relations if (r.schema, r.name) == ("public", "contact_info")]
+        assert bool(rows) is present
+        actual = dict(
+            schema="public",
+            name="contact_info",
+            kind="r",
+            owner="normal_owner",
+            rls=False,
+            forced_rls=False,
+            oid=1,
+            partition=False,
+        )
+        if present:
+            (row,) = rows
+            assert not row.required and row.permissions == ()
+            assert apply.validate_relations((actual,), (row,), administrative_history=True)
+            with pytest.raises(AuthorityError):
+                apply.validate_relations(
+                    (actual | {"owner": "foreign"},), (row,), administrative_history=True
+                )
+        else:
+            with pytest.raises(AuthorityError):
+                apply.bind_partition_relations((actual,), manifest.relations, ())
+
+    producer = runpy.run_path(str(root / "roster/switchboard/migrations/024_v_qa_infra_state.py"))
+    emitted = []
+    with patch("alembic.op.execute", side_effect=emitted.append):
+        producer["upgrade"]()
+    names = ("v_qa_connector_state", "v_qa_butler_heartbeat")
+    readers = {producer["_QA_ROLE"], *producer["_OTHER_BUTLER_ROLES"]}
+    selected_roles = {profile.role for profile in full.profiles}
+    for name in names:
+        assert any(f"CREATE VIEW public.{name} AS" in sql for sql in emitted)
+        row = next(r for r in full.relations if (r.schema, r.name) == ("public", name))
+        assert row.kind == grants.ObjectKind.VIEW and row.owner == "normal_owner"
+        assert {(p.role, p.verbs) for p in row.permissions} == {
+            (role, ("SELECT",)) for role in readers & selected_roles
+        }
+    for target in (None, "switchboard"):
+        for revision, present in (("sw_023", False), ("sw_024", True), (None, True)):
+            manifest = grants.select_migration_manifest(full, (("switchboard", target, revision),))
+            rows = [r for r in manifest.relations if r.name in names]
+            assert {r.name for r in rows} == (set(names) if present else set())
+            assert all(r.required is (revision is None) for r in rows)
+            assert all(bool(r.permissions) is (revision is None) for r in rows)
+    core = grants.select_migration_manifest(full, (("core", None, None),))
+    assert not any(r.name in names for r in core.relations)
+    accumulated = grants.select_migration_manifest(
+        full, (("switchboard", "switchboard", "sw_023"), ("switchboard", "switchboard", None))
+    )
+    assert {r.name for r in accumulated.relations if r.name in names} == set(names)
+    assert all(not r.permissions for r in accumulated.relations)
+
+
+def test_finance_materialized_view_uses_actual_producer_namespace_and_closed_kind():
+    import runpy
+    from contextlib import nullcontext
+    from dataclasses import replace
+    from pathlib import Path
+
+    from butlers.db_authority import apply, catalog, grants
+
+    root = Path(__file__).parents[2]
+    producer = runpy.run_path(str(root / "roster/finance/migrations/006_intelligence_tables.py"))
+    emitted = []
+    context = Mock()
+    context.autocommit_block.side_effect = nullcontext
+    with (
+        patch("alembic.op.execute", side_effect=emitted.append),
+        patch("alembic.op.get_context", return_value=context),
+    ):
+        producer["upgrade"]()
+    assert any(
+        "CREATE MATERIALIZED VIEW IF NOT EXISTS spending_summaries AS" in sql for sql in emitted
+    )
+    full = grants.compile_relation_manifest(
+        "test_windows", "normal_owner", "maintenance", source_database="butlers"
+    )
+    source_row = next(
+        r for r in full.relations if (r.schema, r.name) == ("finance", "spending_summaries")
+    )
+    assert "WHEN 'm' THEN 'materialized_view'" in catalog._CATALOG_OBJECT_SQL
+    assert "ELSE 'invalid' END<>c.expected->>'kind'" in catalog._CATALOG_OBJECT_SQL
+    assert "WHEN 'f'" not in catalog._CATALOG_OBJECT_SQL
+    assert source_row.kind == grants.ObjectKind.MATERIALIZED_VIEW
+    assert source_row.owner == "normal_owner" and source_row.required
+    assert source_row.permissions == (
+        grants.Permission("butler_finance_rw", ("SELECT",)),
+        grants.Permission("dashboard_api", ("SELECT",)),
+    )
+    for target in (None, "finance"):
+        for revision, present in (("finance_005", False), ("finance_006", True), (None, True)):
+            manifest = grants.select_migration_manifest(full, (("finance", target, revision),))
+            rows = [r for r in manifest.relations if r.name == "spending_summaries"]
+            assert len(rows) == int(present)
+            if rows:
+                (row,) = rows
+                assert row.schema == (target or "public")
+                assert row.kind == grants.ObjectKind.MATERIALIZED_VIEW
+                assert row.required is (revision is None)
+                assert bool(row.permissions) is (revision is None and target == "finance")
+        core_only = grants.select_migration_manifest(full, (("core", target, None),))
+        assert not any(r.name == "spending_summaries" for r in core_only.relations)
+    actual = dict(
+        schema="finance",
+        name="spending_summaries",
+        kind="m",
+        owner="normal_owner",
+        rls=False,
+        forced_rls=False,
+        oid=42,
+        partition=False,
+    )
+    assert apply.bind_partition_relations((actual,), (source_row,), ()) == (source_row,)
+    assert apply.validate_relations((actual,), (source_row,)) == ((actual, source_row),)
+    for invalid in (
+        None,
+        dict(kind="v"),
+        dict(kind="r"),
+        dict(kind="f"),
+        dict(name="unknown_mv"),
+        dict(schema="public"),
+        dict(owner="foreign"),
+        dict(rls=True),
+        dict(forced_rls=True),
+    ):
+        with pytest.raises(AuthorityError):
+            apply.validate_relations(() if invalid is None else (actual | invalid,), (source_row,))
+    with pytest.raises(AuthorityError):
+        apply.bind_partition_relations((actual | {"name": "unknown_mv"},), (source_row,), ())
+    context = dict(
+        phase="validate_relations", migration_owner="normal_owner", maintenance_owner="maintenance"
+    )
+    note = apply._relation_failure_note((actual,), (source_row,), **context)
+    payload = __import__("json").loads(note.split(" ", 1)[1])
+    assert payload["rows"][0]["declared_identity"] is True
+    assert payload["rows"][0]["kind"] == "materialized_view"
+    # The unchanged v2 missing-kind schema cannot encode a missing MV. The
+    # required validator still refuses; diagnostic unavailability is not admission.
+    assert apply._relation_failure_note((), (source_row,), **context) is None
+
+    acl = {("unlisted_role", "SELECT")}
+
+    def respond(statement, parameters, decoded):
+        source_sql = __import__("re").sub(r"%\((\w+)\)s", r":\1", statement)
+        if source_sql == apply._RELATION_ACL:
+            assert parameters == {"oid": 42}
+            return ("role", "verb", "grantable"), [(role, verb, False) for role, verb in acl]
+        if source_sql == apply._COLUMN_ACL:
+            return ("role", "name", "verb", "grantable"), []
+        if decoded.startswith("REVOKE ALL PRIVILEGES ON TABLE"):
+            assert (
+                decoded
+                == 'REVOKE ALL PRIVILEGES ON TABLE "finance"."spending_summaries" FROM "unlisted_role"'
+            )
+            acl.clear()
+            return None, []
+        for permission in source_row.permissions:
+            if (
+                decoded
+                == f'GRANT SELECT ON TABLE "finance"."spending_summaries" TO "{permission.role}"'
+            ):
+                acl.add((permission.role, "SELECT"))
+                return None, []
+        pytest.fail("Unexpected materialized-view ACL operation")
+
+    with _recording_postgresql_connection(respond) as (connection, calls):
+        apply._revoke_relation(connection, actual, source_row)
+        apply._grant_relation(connection, source_row)
+        apply.verify_relation(connection, actual, source_row)
+        assert acl == {(p.role, "SELECT") for p in source_row.permissions}
+        assert not any("ROW LEVEL SECURITY" in decoded for _, _, decoded in calls)
+    # Ownership transfer requires PostgreSQL's distinct MATERIALIZED VIEW DDL;
+    # GRANT/REVOKE retain its TABLE privilege grammar.
+    assert apply._relation_ddl_kind(source_row) == "MATERIALIZED VIEW"
+    assert apply._relation_ddl_kind(replace(source_row, kind=grants.ObjectKind.VIEW)) == "VIEW"
+
+
+def test_actual_finalizer_keeps_finance_materialized_view_closed_on_bounded_source():
+    from butlers.db_authority import apply
+
+    for target in (None, "finance"):
+        schema = target or "public"
+        actual = dict(
+            schema=schema,
+            name="spending_summaries",
+            kind="m",
+            owner="normal_owner",
+            rls=False,
+            forced_rls=False,
+            oid=42,
+            partition=False,
+        )
+        namespace_acl = set()
+
+        def respond(
+            statement,
+            parameters,
+            decoded,
+            schema=schema,
+            actual=actual,
+            namespace_acl=namespace_acl,
+        ):
+            source_sql = __import__("re").sub(r"%\((\w+)\)s", r":\1", statement)
+            if "FROM pg_catalog.pg_database d" in statement:
+                return ("database", "owner", "valid"), [("test_windows", "normal_owner", True)]
+            if decoded == "SELECT current_database(), session_user":
+                return ("database", "actor"), [("test_windows", "maintenance")]
+            if decoded == f'SELECT version_num FROM "{schema}".alembic_version':
+                return ("version_num",), [("finance_006",)]
+            if source_sql == apply._FUNCTIONS:
+                return ("oid", "schema", "name", "arguments", "owner"), []
+            if source_sql == apply._RELATIONS:
+                return tuple(actual), [tuple(actual.values())]
+            if source_sql in (
+                apply._PARTITION_LINKS,
+                apply._SEQUENCE_LINKS,
+                apply._RELATION_ACL,
+                apply._COLUMN_ACL,
+                apply._DEFAULT_ACL,
+            ):
+                return ("unused",), []
+            if source_sql == apply._NAMESPACE_CATALOG:
+                return ("oid", "name", "owner"), [(43, schema, "normal_owner")]
+            if source_sql == apply._NAMESPACE_ACL:
+                return ("role", "verb", "grantable"), [
+                    (role, "USAGE", False) for role in namespace_acl
+                ]
+            if decoded.startswith(f'GRANT USAGE ON SCHEMA "{schema}" TO '):
+                namespace_acl.add(decoded.rsplit('"', 2)[1])
+                return None, []
+            if decoded.startswith("ALTER DEFAULT PRIVILEGES"):
+                assert " REVOKE ALL " in decoded
+                return None, []
+            pytest.fail("Unexpected bounded finalizer operation")
+
+        with _recording_postgresql_connection(respond) as (connection, calls):
+            connection.info["butlers.source_database"] = "butlers"
+            apply.converge_authority(
+                connection, source_database="butlers", plans=(("finance", target, "finance_006"),)
+            )
+            assert not any(
+                decoded.startswith(
+                    ("GRANT SELECT", "GRANT INSERT", "ALTER TABLE ", "ALTER MATERIALIZED")
+                )
+                for _, _, decoded in calls
+            )
+            assert (
+                sum(
+                    __import__("re").sub(r"%\((\w+)\)s", r":\1", statement) == apply._RELATIONS
+                    for statement, _, _ in calls
+                )
+                == 2
+            )

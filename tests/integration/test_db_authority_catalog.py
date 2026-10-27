@@ -3025,3 +3025,164 @@ async def test_real_normal_multischema_replay_preserves_protected_user_context(p
             observer.dispose()
 
     await asyncio.to_thread(run)
+
+
+async def test_real_source_windows_and_finance_materialized_projection_keep_closed_authority(
+    postgres_container,
+    tmp_path,
+    monkeypatch,
+):
+    """Real producers, normal owner and independent catalog/active-role readback.
+
+    This is a physical database/ACL witness, not serving-pool admission. It
+    creates no substitute relation or GRANT; locally authored/collected only.
+    """
+    from butlers.db_authority.apply import quote_identifier
+    from butlers.db_authority.catalog import assert_object_catalog
+    from butlers.db_authority.roles import AuthorityError
+    from butlers.migrations import finalize_authority, migration_session
+    from butlers.testing.migration import migrate_test_database
+
+    root = tmp_path / "roster"
+    sources = {}
+    for schema in ("finance", "switchboard"):
+        entry = root / schema
+        entry.mkdir(parents=True)
+        sources[entry / "butler.toml"] = (
+            f'[butler]\nname="{schema}"\n[butler.db]\nname="butlers"\nschema="{schema}"\n'
+        )
+        (entry / "butler.toml").write_text(sources[entry / "butler.toml"])
+    monkeypatch.setattr(roles, "_ROSTER_ROOT", root)
+
+    def run():
+        name = migration_db_name()
+        normal_url = create_migrated_test_db(
+            postgres_container,
+            name,
+            chains=["core"],
+            schemas={"core": "finance"},
+            revisions={"core": "core_114"},
+        )
+        admin_url = migration_bootstrap_db_url(postgres_container, name)
+        engine = create_engine(admin_url, poolclass=NullPool, connect_args={"connect_timeout": 5})
+        owner = unquote(urlparse(normal_url).username)
+        catalog = text(
+            "SELECT c.oid,c.relkind,r.rolname,c.relrowsecurity,c.relforcerowsecurity "
+            "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+            "JOIN pg_catalog.pg_roles r ON r.oid=c.relowner "
+            "WHERE n.nspname=:schema AND c.relname=:name"
+        )
+        plans = (
+            ("core", "switchboard", None),
+            ("switchboard", "switchboard", None),
+            ("core", "finance", None),
+            ("finance", "finance", None),
+        )
+        try:
+            with engine.connect() as independent:
+                retained = independent.execute(
+                    catalog, {"schema": "public", "name": "contact_info"}
+                ).one()
+                assert retained[1:3] == ("r", owner)
+                assert (
+                    independent.exec_driver_sql(
+                        "SELECT has_table_privilege('butler_finance_rw', 'public.contact_info', 'SELECT')"
+                    ).scalar_one()
+                    is False
+                )
+            migrate_test_database(postgres_container, normal_url, plans=plans)
+            for path, source in sources.items():
+                path.write_text(source.replace('name="butlers"', f'name="{name}"'))
+
+            async def runtime_catalog():
+                # Independent physical acquisition, real runtime role and real
+                # read-only catalog predicate; no serving pool or mocked verdict.
+                connection = await asyncpg.connect(admin_url)
+                try:
+                    await connection.execute('SET ROLE "butler_finance_rw"')
+                    assert await connection.fetchval("SELECT current_user") == "butler_finance_rw"
+                    await assert_object_catalog(connection, name)
+                finally:
+                    await connection.close()
+
+            asyncio.run(runtime_catalog())
+            targets = (
+                ("public", "v_qa_butler_heartbeat", "v"),
+                ("public", "v_qa_connector_state", "v"),
+                ("finance", "spending_summaries", "m"),
+            )
+
+            def snapshot(connection):
+                result = {}
+                for schema, name, kind in targets:
+                    row = connection.execute(catalog, {"schema": schema, "name": name}).one()
+                    assert row[1:] == (kind, owner, False, False)
+                    result[(schema, name)] = tuple(row)
+                return result
+
+            with engine.connect() as independent:
+                assert (
+                    independent.execute(
+                        catalog, {"schema": "public", "name": "contact_info"}
+                    ).first()
+                    is None
+                )
+                before = snapshot(independent)
+                independent.exec_driver_sql("SET LOCAL ROLE butler_finance_rw")
+                assert (
+                    independent.exec_driver_sql("SELECT current_user").scalar_one()
+                    == "butler_finance_rw"
+                )
+                for schema, name, _ in targets:
+                    independent.exec_driver_sql(f'SELECT * FROM "{schema}"."{name}" LIMIT 1').all()
+                    assert (
+                        independent.execute(
+                            text("SELECT has_table_privilege(current_user,:target,'INSERT')"),
+                            {"target": f"{schema}.{name}"},
+                        ).scalar_one()
+                        is False
+                    )
+                independent.rollback()
+                independent.exec_driver_sql("SET LOCAL ROLE butler_switchboard_rw")
+                assert (
+                    independent.execute(
+                        text(
+                            "SELECT has_table_privilege(current_user,'finance.spending_summaries','SELECT')"
+                        )
+                    ).scalar_one()
+                    is False
+                )
+                independent.rollback()
+                # REFRESH is owner-only on the supported PostgreSQL version;
+                # it is not a new runtime permission or a fabricated definer.
+                independent.exec_driver_sql(f'SET LOCAL ROLE "{owner}"')
+                independent.exec_driver_sql("REFRESH MATERIALIZED VIEW finance.spending_summaries")
+                independent.commit()
+            # The genuine MV remains a declared closed object: a wrong owner
+            # must fail the actual runtime catalog, then exact restoration admits.
+            with engine.begin() as independent:
+                administrator = independent.exec_driver_sql("SELECT session_user").scalar_one()
+                assert administrator != owner
+                independent.exec_driver_sql(
+                    "ALTER MATERIALIZED VIEW finance.spending_summaries OWNER TO "
+                    + quote_identifier(administrator)
+                )
+            try:
+                with pytest.raises(AuthorityError):
+                    asyncio.run(runtime_catalog())
+            finally:
+                with engine.begin() as independent:
+                    independent.exec_driver_sql(
+                        "ALTER MATERIALIZED VIEW finance.spending_summaries OWNER TO "
+                        + quote_identifier(owner)
+                    )
+            asyncio.run(runtime_catalog())
+            with migration_session(admin_url, source_database="butlers") as held:
+                finalize_authority(held, source_database="butlers", plans=plans)
+            with engine.connect() as independent:
+                assert snapshot(independent) == before
+            asyncio.run(runtime_catalog())
+        finally:
+            engine.dispose()
+
+    await asyncio.to_thread(run)

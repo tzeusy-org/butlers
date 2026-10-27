@@ -16,6 +16,7 @@ from .roles import AuthorityError, RuntimeProfile, runtime_profiles
 class ObjectKind(StrEnum):
     TABLE = "table"
     VIEW = "view"
+    MATERIALIZED_VIEW = "materialized_view"
     SEQUENCE = "sequence"
     FUNCTION = "function"
 
@@ -560,6 +561,10 @@ _MODULE_MIGRATION_CHAINS = {"home_assistant": "home"}
 _MODULE_TABLES["home_assistant"] = _DOMAIN_TABLES["home"]
 
 
+_DOMAIN_MATERIALIZED_VIEWS = {"finance": ("spending_summaries",)}
+_SWITCHBOARD_INFRA_VIEWS = ("v_qa_connector_state", "v_qa_butler_heartbeat")
+
+
 _DOMAIN_VIEWS = {
     "chronicler": ("v_episodes_corrected", "v_latest_overrides", "v_point_events_corrected"),
     "travel": ("booking_fragmentation_inventory",),
@@ -645,6 +650,17 @@ def local_objects(
                     migration_owner,
                     permissions,
                     "RFC0010/RFC0030 or owning domain filtered view",
+                )
+            )
+        for name in _DOMAIN_MATERIALIZED_VIEWS.get(schema, ()):
+            result.append(
+                ObjectAuthority(
+                    schema,
+                    name,
+                    ObjectKind.MATERIALIZED_VIEW,
+                    migration_owner,
+                    (Permission(runtime, _READ), Permission("dashboard_api", _READ)),
+                    "finance_006 fixed materialized projection; refresh remains owner-only",
                 )
             )
     return tuple(result)
@@ -889,7 +905,9 @@ def auxiliary_objects(migration_owner: str, maintenance_owner: str) -> tuple[Obj
     return tuple(rows)
 
 
-def shared_reader_objects(migration_owner: str) -> tuple[ObjectAuthority, ...]:
+def shared_reader_objects(
+    migration_owner: str, *, switchboard: bool = False
+) -> tuple[ObjectAuthority, ...]:
     """Released filtered projections and connector-owned producers only."""
     connector_rows = {
         "filtered_events": (Permission("connector_writer", _CRUD),),
@@ -955,6 +973,34 @@ def shared_reader_objects(migration_owner: str) -> tuple[ObjectAuthority, ...]:
                 "fixed filtered QA failure projection, no underlying specialist grants",
             )
         )
+    if switchboard:
+        # sw_024 creates this pair in public even when its own chain is scoped.
+        # Only its exact QA/observability readers acquire SELECT, never base-table rights.
+        readers = (
+            "qa",
+            "chronicler",
+            "education",
+            "finance",
+            "general",
+            "health",
+            "home",
+            "lifestyle",
+            "messenger",
+            "relationship",
+            "switchboard",
+            "travel",
+        )
+        rows.extend(
+            ObjectAuthority(
+                "public",
+                name,
+                ObjectKind.VIEW,
+                migration_owner,
+                tuple(Permission(f"butler_{reader}_rw", _READ) for reader in readers),
+                "sw_024 fixed infra-state QA projection",
+            )
+            for name in _SWITCHBOARD_INFRA_VIEWS
+        )
     for name in ("v_overlay_contributions", "v_prep_contributions"):
         rows.append(
             ObjectAuthority(
@@ -1019,7 +1065,9 @@ def compile_relation_manifest(
         *local_objects(database, migration_owner, profiles=profiles),
         *protected_objects(profiles),
         *auxiliary_objects(migration_owner, maintenance_owner),
-        *shared_reader_objects(migration_owner),
+        *shared_reader_objects(
+            migration_owner, switchboard=any(p.primary_schema == "switchboard" for p in profiles)
+        ),
     )
     relations = ordinary_purpose_relations(relations)
     relations += declared_sequences(relations)
@@ -1306,7 +1354,35 @@ def select_migration_manifest(manifest: RelationManifest, plans: tuple | None) -
         ):
             if edge in core_revisions:
                 schemas.add(namespace)
-    rows = {row.identity: row for row in manifest.relations if row.schema in schemas}
+    infra_views = any(
+        chain == "switchboard" and "sw_024" in revisions
+        for (_, chain), revisions in selected_revisions.items()
+    )
+    if infra_views:
+        schemas.add("public")
+    rows = {
+        row.identity: row
+        for row in manifest.relations
+        if row.schema in schemas
+        and (row.name not in _SWITCHBOARD_INFRA_VIEWS or infra_views)
+        and (
+            row.kind != ObjectKind.MATERIALIZED_VIEW
+            or "finance_006" in selected_revisions.get((row.schema, "finance"), set())
+        )
+    }
+    # core_002 creates this database-global table; core_115 drops it. A later
+    # selected core replay supersedes an older prefix, independent of target schema.
+    if "core_002" in core_revisions and "core_115" not in core_revisions:
+        row = ObjectAuthority(
+            "public",
+            "contact_info",
+            ObjectKind.TABLE,
+            manifest.migration_owner,
+            (),
+            "core_002..pre-core_115 retained administrative identity",
+            required=False,
+        )
+        rows[row.identity] = row
     # Supported administrative public/isolated-schema chains have no fabricated
     # runtime profile. Their declared objects remain normal-owner, closed ACLs.
     for target, chains in selected.items():
@@ -1341,6 +1417,17 @@ def select_migration_manifest(manifest: RelationManifest, plans: tuple | None) -
                         required=False,
                     )
                     rows.setdefault(row.identity, row)
+        if "finance_006" in selected_revisions.get((target, "finance"), set()):
+            for name in _DOMAIN_MATERIALIZED_VIEWS["finance"]:
+                row = ObjectAuthority(
+                    target,
+                    name,
+                    ObjectKind.MATERIALIZED_VIEW,
+                    manifest.migration_owner,
+                    (),
+                    "finance_006 selected administrative materialized projection",
+                )
+                rows.setdefault(row.identity, row)
         if "memory" in chains:
             for name in _RETIRED_MEMORY_TABLES:
                 row = ObjectAuthority(
@@ -1398,6 +1485,12 @@ def select_migration_manifest(manifest: RelationManifest, plans: tuple | None) -
                 )
                 required_names.update(_DOMAIN_VIEWS.get(chain, ()))
             required = row.required and row.name in required_names
+        if row.name in _SWITCHBOARD_INFRA_VIEWS:
+            required = row.required and infra_views
+        elif row.kind == ObjectKind.MATERIALIZED_VIEW:
+            required = row.required and "finance_006" in selected_revisions.get(
+                (row.schema, "finance"), set()
+            )
         if row.name in _RETIRED_MEMORY_TABLES:
             required = False
         result.append(

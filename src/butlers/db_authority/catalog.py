@@ -468,7 +468,8 @@ SELECT NOT EXISTS(
    c.owner_name IS DISTINCT FROM COALESCE(c.expected->>'owner',
      (SELECT rolname FROM pg_catalog.pg_roles WHERE oid=(SELECT datdba FROM normal_owner)))
    OR CASE c.relkind WHEN 'r' THEN 'table' WHEN 'p' THEN 'table'
-        WHEN 'v' THEN 'view' WHEN 'S' THEN 'sequence' ELSE 'invalid' END<>c.expected->>'kind'
+        WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized_view'
+        WHEN 'S' THEN 'sequence' ELSE 'invalid' END<>c.expected->>'kind'
    OR c.relrowsecurity IS DISTINCT FROM (c.expected->>'row_security')::boolean
    OR c.relforcerowsecurity IS DISTINCT FROM (c.expected->>'forced_rls')::boolean
    OR EXISTS(

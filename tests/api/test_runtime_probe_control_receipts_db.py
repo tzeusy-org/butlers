@@ -45,7 +45,7 @@ from butlers.core.runtime_probe_control.receipts import (
     nonce_digest,
 )
 from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import async_serving_test_deployment
 from butlers.testing.runtime_probe_control import (
     current_entry,
     keyring_document,
@@ -64,20 +64,15 @@ _KID = "probe-db-current"
 _SWITCHBOARD = "butler_switchboard_rw"
 
 
-async def _as_switchboard(connection: asyncpg.Connection) -> None:
-    """asyncpg pool ``setup`` callback: every acquired connection runs as
-    Switchboard, the only role this table's core_201/core_212 RLS policy
-    admits (per-connection, since a pool hands out different connections)."""
-    await connection.execute(f'SET ROLE "{_SWITCHBOARD}"')
+@pytest.fixture(scope="module")
+async def receipt_deployment(postgres_container):
+    async with async_serving_test_deployment(postgres_container) as deployment:
+        yield deployment
 
 
 @pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-    )
+def migrated_db_url(receipt_deployment) -> str:
+    return receipt_deployment.migration_url
 
 
 @pytest.fixture
@@ -107,19 +102,18 @@ async def pool(migrated_db_url: str):
 
 
 @pytest.fixture
-async def switchboard_pool(migrated_db_url: str):
-    """The identity every receipts-table operation in production runs as.
-
-    core_212 fenced the table owner out of this table's RLS policy, so the
-    owner pool above can no longer stand in for Switchboard here; using it
-    would either raise (INSERT/UPDATE) or silently read/delete zero rows
-    (SELECT/DELETE) instead of exercising the real boundary.
-    """
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=2, max_size=6, init=register_jsonb_codec, setup=_as_switchboard
-    )
-    yield p
-    await p.close()
+async def switchboard_pool(pool, receipt_deployment):
+    """Actual authenticated pool, after the original administrative cleanup."""
+    database = receipt_deployment.runtime_database("switchboard", min_size=2, max_size=6)
+    native_pool = await database.connect()
+    try:
+        async with native_pool.acquire() as connection:
+            identity = await connection.fetchrow("SELECT session_user, current_user")
+            assert identity["session_user"] == receipt_deployment.runtime_logins["switchboard"].user
+            assert identity["current_user"] == _SWITCHBOARD
+        yield native_pool
+    finally:
+        await database.close()
 
 
 @pytest.fixture
@@ -282,7 +276,7 @@ async def test_the_receipt_stores_a_digest_and_never_the_nonce(pool, switchboard
 
 
 async def test_a_replay_is_still_denied_after_a_restart(
-    pool, switchboard_pool, keys, migrated_db_url
+    pool, switchboard_pool, keys, migrated_db_url, receipt_deployment
 ):
     """Criterion 2: the receipt is durable, not process state.
 
@@ -299,19 +293,14 @@ async def test_a_replay_is_still_denied_after_a_restart(
     compact = _sign_dashboard_capability(signer, entry_id)
     assert (await first.run(compact)).status is ProbeStatus.COMPLETED
 
-    restarted_pool = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=2,
-        init=register_jsonb_codec,
-        setup=_as_switchboard,
-    )
+    restarted_database = receipt_deployment.runtime_database("switchboard", min_size=1, max_size=2)
+    restarted_pool = await restarted_database.connect()
     try:
         persistence = _CountingPersistence(restarted_pool)
         restarted = _coordinator(restarted_pool, keyring, persistence, launches=launches)
         result = await restarted.run(compact)
     finally:
-        await restarted_pool.close()
+        await restarted_database.close()
 
     assert result.status is ProbeStatus.REPLAY
     assert launches == ["launch"]

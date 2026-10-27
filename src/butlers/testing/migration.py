@@ -949,7 +949,7 @@ def _close_created_test_database(postgres_container, created):
 
 
 @contextmanager
-def serving_test_deployment(postgres_container: object):
+def serving_test_deployment(postgres_container: object, *, include_connector: bool = False):
     """Explicit disposable operator preparation for genuine serving tests.
 
     The caller owns an isolated server and closes every serving pool before
@@ -958,6 +958,8 @@ def serving_test_deployment(postgres_container: object):
     control login creates only synthetic dedicated logins and their sole
     existing capability memberships; no object privilege is manufactured.
     ``create_migration_db`` still returns only the normal migration URL.
+    ``include_connector`` opts into one additional synthetic connector-purpose
+    login through this same constructor; defaults and object authority do not change.
     """
     from butlers.db_authority.apply import quote_identifier
     from butlers.db_authority.grants import deployment_function_plans
@@ -968,6 +970,9 @@ def serving_test_deployment(postgres_container: object):
         migration_session,
         run_migrations,
     )
+
+    if type(include_connector) is not bool:
+        raise ValueError("Disposable connector selection must be boolean")
 
     owned: list[tuple[str, str]] = []
     created: list[tuple[str, str, int, int | None]] = []
@@ -1042,7 +1047,11 @@ def serving_test_deployment(postgres_container: object):
             runtime = {p.primary_schema: create_login(p.role) for p in profiles}
             purposes = {
                 purpose: create_login(purpose_profile("butlers", purpose).role)
-                for purpose in ("credential", "dashboard")
+                for purpose in (
+                    "credential",
+                    "dashboard",
+                    *(("connector",) if include_connector else ()),
+                )
             }
         except BaseException as exc:
             setup_error = exc
@@ -1107,14 +1116,22 @@ def serving_test_deployment(postgres_container: object):
 
 
 @asynccontextmanager
-async def async_serving_test_deployment(postgres_container: object):
+async def async_serving_test_deployment(
+    postgres_container: object, *, include_connector: bool = False
+):
     """Own off-loop preparation and cleanup through repeated caller cancellation.
 
     The synchronous producer uses real Alembic/DBAPI and bootstrap's asyncio.run.
     A cancelled caller joins its exact worker before disposing acknowledged
     identities; it cannot abandon a still-creating thread or close its server.
     """
-    context = serving_test_deployment(postgres_container)
+    if type(include_connector) is not bool:
+        raise ValueError("Disposable connector selection must be boolean")
+    context = (
+        serving_test_deployment(postgres_container, include_connector=True)
+        if include_connector
+        else serving_test_deployment(postgres_container)
+    )
 
     async def settle(task):
         cancelled = None

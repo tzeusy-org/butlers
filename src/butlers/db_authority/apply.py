@@ -70,9 +70,21 @@ def _relation_kind(value: str) -> ObjectKind:
         return ObjectKind.TABLE
     if value == "v":
         return ObjectKind.VIEW
+    if value == "m":
+        return ObjectKind.MATERIALIZED_VIEW
     if value == "S":
         return ObjectKind.SEQUENCE
     raise AuthorityError("Managed database object is not declared")
+
+
+def _relation_ddl_kind(row: ObjectAuthority) -> str:
+    """Ownership grammar is distinct from TABLE privilege grammar for views."""
+    return {
+        ObjectKind.TABLE: "TABLE",
+        ObjectKind.VIEW: "VIEW",
+        ObjectKind.MATERIALIZED_VIEW: "MATERIALIZED VIEW",
+        ObjectKind.SEQUENCE: "SEQUENCE",
+    }[row.kind]
 
 
 def _partition_owner_transition(row):
@@ -123,7 +135,12 @@ def _relation_failure_note(observed, declared, *, phase, migration_owner, mainte
         identifier(row.schema)
         identifier(row.name)
         identifier(row.owner)
-        if row.kind not in {ObjectKind.TABLE, ObjectKind.VIEW, ObjectKind.SEQUENCE}:
+        if row.kind not in {
+            ObjectKind.TABLE,
+            ObjectKind.VIEW,
+            ObjectKind.MATERIALIZED_VIEW,
+            ObjectKind.SEQUENCE,
+        }:
             return None
         if type(row.required) is not bool or row.identity in expected:
             return None
@@ -132,7 +149,7 @@ def _relation_failure_note(observed, declared, *, phase, migration_owner, mainte
         "r": ("table", "table"),
         "p": ("partitioned_table", "table"),
         "v": ("view", "view"),
-        "m": ("materialized_view", "other"),
+        "m": ("materialized_view", "materialized_view"),
         "S": ("sequence", "sequence"),
         "f": ("foreign_table", "other"),
     }
@@ -165,6 +182,14 @@ def _relation_failure_note(observed, declared, *, phase, migration_owner, mainte
                 "expected_forced": forced is True,
             }
         )
+    # The unchanged v2 missing-kind protocol cannot express materialized views.
+    # Keep the optional diagnostic unavailable rather than emitting an invalid
+    # payload; validate_relations still refuses the missing required object.
+    if any(
+        row.required and row.kind == ObjectKind.MATERIALIZED_VIEW and row.identity not in seen
+        for row in declared
+    ):
+        return None
     missing = [
         {**digests(row.schema, row.name), "declared_kind": row.kind.value}
         for row in declared
@@ -607,7 +632,7 @@ def converge_authority(
             converge_ordinary_security_policies(connection, manifest)
             for actual, row in bound:
                 if actual["owner"] != row.owner:
-                    kind = "SEQUENCE" if row.kind == ObjectKind.SEQUENCE else "TABLE"
+                    kind = _relation_ddl_kind(row)
                     connection.exec_driver_sql(
                         f"ALTER {kind} {_qualified(row)} OWNER TO {quote_identifier(row.owner)}"
                     )
