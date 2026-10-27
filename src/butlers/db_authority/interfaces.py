@@ -21365,3 +21365,1038 @@ def runtime_probe_verifier_revision_reuse(connection) -> bool:
     if not function_matches(connection, definition, inspect_function(connection, definition)):
         raise AuthorityError("Finalized runtime probe verifier differs from fixed source")
     return True
+
+
+def _owner_lookup_revision_vector(connection, manifest, target, *, source_identity):
+    """Read source-qualified durable producer state; never a grant authority.
+
+    The caller binds an actual source snapshot for this catalog read. No
+    caller success token or future plan is consumed.
+    ACL/body/namespace/component checks remain mandatory after this reader.
+    """
+    from sqlalchemy import text
+
+    from .apply import _COLUMN_ACL, _RELATION_ACL, _RELATIONS, _rows, quote_identifier
+    from .grants import (
+        _owner_lookup_graph_templates,
+        _owner_lookup_selected_template,
+        _owner_lookup_validate_source_plans,
+    )
+    from .roles import AuthorityError
+
+    # Admit the current ordinary target independently; this does not attest that
+    # its future producers (or any future domain chain) have already executed.
+    _owner_lookup_selected_template(manifest, (("core", target, None),), source_identity)
+    # Only the actual source manifest and already-admitted ordinary target supply
+    # possible ledger namespaces. An observed name cannot append a namespace.
+    schemas = tuple(sorted(set(manifest.schemas) | {target}))
+    ledgers = tuple(
+        row
+        for row in _rows(connection, _RELATIONS, schemas=list(schemas))
+        if row["name"] == "alembic_version"
+    )
+    if len({row["schema"] for row in ledgers}) != len(ledgers):
+        raise AuthorityError("Owner lookup revision namespace is ambiguous")
+    templates = _owner_lookup_graph_templates(source_identity)
+    chains = tuple(chain for chain, _, _ in templates)
+    revision_sets = {chain: revisions for chain, _, revisions in templates}
+    heads = {chain: head for chain, head, _ in templates}
+    result = []
+    qualified_plans = []
+    for ledger in ledgers:
+        if (
+            ledger["schema"] not in schemas
+            or ledger["kind"] != "r"
+            or ledger["partition"] is not False
+            or ledger["owner"] != manifest.migration_owner
+            or ledger["rls"] is not False
+            or ledger["forced_rls"] is not False
+        ):
+            raise AuthorityError("Owner lookup revision relation differs from source")
+        # This is the actual Alembic version-table ABI, not a name-only witness.
+        abi = connection.execute(
+            text("""
+            /* owner-lookup-replay:revision-abi */
+            SELECT
+              (SELECT count(*)=1 AND bool_and(a.attname='version_num'
+                AND pg_catalog.format_type(a.atttypid,a.atttypmod)='character varying(32)'
+                AND a.attnotnull AND a.attidentity='' AND a.attgenerated='')
+               FROM pg_catalog.pg_attribute a
+               WHERE a.attrelid=:oid AND a.attnum>0 AND NOT a.attisdropped)
+              AND NOT EXISTS(SELECT FROM pg_catalog.pg_attrdef d WHERE d.adrelid=:oid)
+              AND (SELECT count(*)=1 AND bool_and(c.contype='p' AND NOT c.condeferrable
+                    AND NOT c.condeferred AND c.convalidated)
+                   FROM pg_catalog.pg_constraint c WHERE c.conrelid=:oid)
+              AND (SELECT count(*)=1 AND bool_and(i.indisprimary AND i.indisunique
+                    AND i.indisvalid AND i.indisready AND i.indnkeyatts=1
+                    AND i.indnatts=1 AND i.indexprs IS NULL AND i.indpred IS NULL
+                    AND ARRAY(SELECT a.attname::text
+                        FROM unnest(i.indkey::smallint[]) WITH ORDINALITY k(id,n)
+                        JOIN pg_catalog.pg_attribute a
+                          ON a.attrelid=i.indrelid AND a.attnum=k.id ORDER BY k.n)
+                        =ARRAY['version_num']::text[])
+                   FROM pg_catalog.pg_index i WHERE i.indrelid=:oid)
+        """),
+            {"oid": ledger["oid"]},
+        ).scalar_one()
+        if abi is not True:
+            raise AuthorityError("Owner lookup revision structure differs from source")
+        declaration = tuple(
+            row
+            for row in manifest.relations
+            if (row.schema, row.name) == (ledger["schema"], "alembic_version")
+        )
+        allowed_readers = {
+            permission.role
+            for row in declaration
+            for permission in row.permissions
+            if permission.verbs == ("SELECT",) and not permission.columns
+        }
+        acl = _rows(connection, _RELATION_ACL, oid=ledger["oid"])
+        if any(
+            row["grantable"] is not False
+            or row["verb"] != "SELECT"
+            or row["role"] not in allowed_readers
+            for row in acl
+        ) or _rows(connection, _COLUMN_ACL, oid=ledger["oid"]):
+            raise AuthorityError("Owner lookup revision write authority differs from source")
+        identity = quote_identifier(ledger["schema"]) + '."alembic_version"'
+        revisions = tuple(
+            connection.exec_driver_sql("SELECT version_num FROM " + identity).scalars()
+        )
+        if any(type(row) is not str for row in revisions) or len(revisions) != len(set(revisions)):
+            raise AuthorityError("Owner lookup revision population is ambiguous")
+        seen = set()
+        for revision in revisions:
+            matching = tuple(chain for chain in chains if revision in revision_sets[chain])
+            if len(matching) != 1 or matching[0] in seen:
+                raise AuthorityError("Owner lookup installed revision is not source-owned")
+            chain = matching[0]
+            seen.add(chain)
+            expected = None if revision == heads[chain] else revision
+            plan = (chain, ledger["schema"], expected)
+            # Existing graph/profile/schema admission validates this source row.
+            # The resulting historical flag is NOT a global phase classifier.
+            qualified_plans.append(plan)
+            result.append((chain, ledger["schema"], revision))
+    _owner_lookup_validate_source_plans(manifest, tuple(qualified_plans), source_identity)
+    return tuple(sorted(result))
+
+
+def _owner_lookup_capability_matches(connection, expected):
+    """Compare complete explicit fixed-role capabilities, including other schemas.
+
+    Owner-implicit rights remain separately checked by the complete ownership
+    prerequisite. PUBLIC's ambient built-in capabilities are not represented as
+    direct grants to this NOLOGIN/NOINHERIT role. Managed-object PUBLIC rights
+    receive their own source-bound comparison below.
+    """
+    from sqlalchemy import text
+
+    from .grants import PurposeCapability
+
+    rows = tuple(
+        connection.execute(
+            text(
+                "\n      /* owner-lookup-replay:complete-purpose-capabilities "
+                "*/\n      WITH purpose AS (SELECT oid FROM pg_catalog.pg_role"
+                "s WHERE rolname='identity_lookup_owner'),\n      caps AS (\n  "
+                "      SELECT 'relation'::text AS kind,n.nspname::text AS sch"
+                "ema,c.relname::text AS name,\n          ''::text AS signature"
+                ",''::text AS \"column\",a.privilege_type::text AS verb,a.is_gr"
+                "antable AS grantable\n        FROM pg_catalog.pg_class c JOIN"
+                " pg_catalog.pg_namespace n ON n.oid=c.relnamespace\n        C"
+                "ROSS JOIN LATERAL pg_catalog.aclexplode(c.relacl) a\n        "
+                "WHERE a.grantee=(SELECT oid FROM purpose) AND c.relowner<>a."
+                "grantee\n        UNION ALL\n        SELECT 'column',n.nspname,"
+                "c.relname,'',att.attname,a.privilege_type,a.is_grantable\n   "
+                "     FROM pg_catalog.pg_attribute att JOIN pg_catalog.pg_cla"
+                "ss c ON c.oid=att.attrelid\n        JOIN pg_catalog.pg_namesp"
+                "ace n ON n.oid=c.relnamespace\n        CROSS JOIN LATERAL pg_"
+                "catalog.aclexplode(att.attacl) a\n        WHERE a.grantee=(SE"
+                "LECT oid FROM purpose) AND c.relowner<>a.grantee\n        UNI"
+                "ON ALL\n        SELECT 'function',n.nspname,p.proname,pg_cata"
+                "log.oidvectortypes(p.proargtypes),'',\n          a.privilege_"
+                "type,a.is_grantable\n        FROM pg_catalog.pg_proc p JOIN p"
+                "g_catalog.pg_namespace n ON n.oid=p.pronamespace\n        CRO"
+                "SS JOIN LATERAL pg_catalog.aclexplode(p.proacl) a\n        WH"
+                "ERE a.grantee=(SELECT oid FROM purpose) AND p.proowner<>a.gr"
+                "antee\n        UNION ALL\n        SELECT 'namespace',n.nspname"
+                ",'','','',a.privilege_type,a.is_grantable\n        FROM pg_ca"
+                "talog.pg_namespace n CROSS JOIN LATERAL pg_catalog.aclexplod"
+                "e(n.nspacl) a\n        WHERE a.grantee=(SELECT oid FROM purpo"
+                "se) AND n.nspowner<>a.grantee\n        UNION ALL\n        SELE"
+                "CT 'database','',d.datname,'','',a.privilege_type,a.is_grant"
+                "able\n        FROM pg_catalog.pg_database d CROSS JOIN LATERA"
+                "L pg_catalog.aclexplode(d.datacl) a\n        WHERE a.grantee="
+                "(SELECT oid FROM purpose) AND d.datdba<>a.grantee\n        UN"
+                "ION ALL\n        SELECT 'default',COALESCE(n.nspname,''),d.de"
+                "faclobjtype::text,'','',a.privilege_type,a.is_grantable\n    "
+                "    FROM pg_catalog.pg_default_acl d LEFT JOIN pg_catalog.pg"
+                "_namespace n ON n.oid=d.defaclnamespace\n        CROSS JOIN L"
+                "ATERAL pg_catalog.aclexplode(d.defaclacl) a\n        WHERE a."
+                "grantee=(SELECT oid FROM purpose) OR d.defaclrole=(SELECT oi"
+                "d FROM purpose)\n        UNION ALL\n        SELECT 'type',n.ns"
+                "pname,t.typname,'','',a.privilege_type,a.is_grantable\n      "
+                "  FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n O"
+                "N n.oid=t.typnamespace\n        CROSS JOIN LATERAL pg_catalog"
+                ".aclexplode(t.typacl) a\n        WHERE a.grantee=(SELECT oid "
+                "FROM purpose) AND t.typowner<>a.grantee\n        UNION ALL\n  "
+                "      SELECT 'language','',l.lanname,'','',a.privilege_type,"
+                "a.is_grantable\n        FROM pg_catalog.pg_language l CROSS J"
+                "OIN LATERAL pg_catalog.aclexplode(l.lanacl) a\n        WHERE "
+                "a.grantee=(SELECT oid FROM purpose) AND l.lanowner<>a.grante"
+                "e\n        UNION ALL\n        SELECT 'tablespace','',s.spcname"
+                ",'','',a.privilege_type,a.is_grantable\n        FROM pg_catal"
+                "og.pg_tablespace s CROSS JOIN LATERAL pg_catalog.aclexplode("
+                "s.spcacl) a\n        WHERE a.grantee=(SELECT oid FROM purpose"
+                ") AND s.spcowner<>a.grantee\n        UNION ALL\n        SELECT"
+                " 'large_object','',l.oid::text,'','',a.privilege_type,a.is_g"
+                "rantable\n        FROM pg_catalog.pg_largeobject_metadata l C"
+                "ROSS JOIN LATERAL pg_catalog.aclexplode(l.lomacl) a\n        "
+                "WHERE a.grantee=(SELECT oid FROM purpose) AND l.lomowner<>a."
+                "grantee\n        UNION ALL\n        SELECT 'foreign_wrapper','"
+                "',f.fdwname,'','',a.privilege_type,a.is_grantable\n        FR"
+                "OM pg_catalog.pg_foreign_data_wrapper f CROSS JOIN LATERAL p"
+                "g_catalog.aclexplode(f.fdwacl) a\n        WHERE a.grantee=(SE"
+                "LECT oid FROM purpose) AND f.fdwowner<>a.grantee\n        UNI"
+                "ON ALL\n        SELECT 'foreign_server','',s.srvname,'','',a."
+                "privilege_type,a.is_grantable\n        FROM pg_catalog.pg_for"
+                "eign_server s CROSS JOIN LATERAL pg_catalog.aclexplode(s.srv"
+                "acl) a\n        WHERE a.grantee=(SELECT oid FROM purpose) AND"
+                " s.srvowner<>a.grantee\n        UNION ALL\n        SELECT 'par"
+                "ameter','',p.parname,'','',a.privilege_type,a.is_grantable\n "
+                "       FROM pg_catalog.pg_parameter_acl p\n        CROSS JOIN"
+                " LATERAL pg_catalog.aclexplode(p.paracl) a\n        WHERE a.g"
+                "rantee=(SELECT oid FROM purpose)\n        UNION ALL\n        S"
+                "ELECT 'ownership','','','','','OWN',false\n        FROM pg_ca"
+                "talog.pg_shdepend d\n        WHERE d.refclassid='pg_catalog.p"
+                "g_authid'::regclass\n          AND d.refobjid=(SELECT oid FRO"
+                "M purpose) AND d.deptype='o'\n          AND d.dbid IN (0,(SEL"
+                "ECT oid FROM pg_catalog.pg_database WHERE datname=current_da"
+                "tabase()))\n          AND NOT (d.classid='pg_catalog.pg_proc'"
+                "::regclass\n            AND d.objid='public.resolve_owner_tri"
+                "ple(text,text[])'::regprocedure)\n      ) SELECT kind,schema,"
+                'name,signature,"column",verb,grantable FROM caps\n    '
+            )
+        ).mappings()
+    )
+    if any(row["grantable"] is not False for row in rows):
+        return False
+    observed = tuple(
+        PurposeCapability(
+            row["kind"],
+            row["schema"],
+            row["name"],
+            row["signature"].replace(", ", ","),
+            row["column"],
+            row["verb"],
+        )
+        for row in rows
+    )
+    normalized = tuple(
+        PurposeCapability(
+            row.kind, row.schema, row.name, row.signature.replace(", ", ","), row.column, row.verb
+        )
+        for row in expected.capabilities
+    )
+    if not (len(observed) == len(set(observed)) and set(observed) == set(normalized)):
+        return False
+    return _owner_lookup_public_capability_matches(connection, expected) and all(
+        _owner_lookup_metadata_matches(connection, row)
+        and function_matches(connection, row, inspect_function(connection, row))
+        for row in expected.functions
+    )
+
+
+def _owner_lookup_public_capability_matches(connection, expected):
+    """Validate effective PUBLIC rights on exact source-managed identities.
+
+    Built-in database CONNECT/TEMP, language/type defaults and extension-owned
+    functions outside the compiled managed set are ambient.
+    Unknown non-extension user-defined capabilities in source-managed schemas
+    have no allowance. Context functions receive complete source variant ACL
+    validation independently, including their legitimate ordinary PUBLIC state.
+    PostgreSQL acldefault retains ambient database CONNECT/TEMP and type/language
+    USAGE, while any extra PUBLIC global privilege has no source allowance.
+    Explicit managed defaults and parameter grants have no source allowance.
+    The parameters below are compiled identities, never discovered authority.
+    """
+    import json
+
+    from sqlalchemy import text
+
+    from .grants import PurposeCapability
+
+    rows = tuple(
+        connection.execute(
+            text("""
+      /* owner-lookup-replay:managed-public-capabilities */
+      WITH relations AS (
+        SELECT * FROM pg_catalog.jsonb_to_recordset(CAST(:relations AS jsonb))
+          AS k(schema text,name text)
+      ), functions AS (
+        SELECT * FROM pg_catalog.jsonb_to_recordset(CAST(:functions AS jsonb))
+          AS k(schema text,name text,signature text)
+      ), caps AS (
+        SELECT 'relation'::text AS kind,n.nspname::text AS schema,c.relname::text AS name,
+          ''::text AS signature,''::text AS "column",a.privilege_type::text AS verb,
+          a.is_grantable AS grantable
+        FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+        LEFT JOIN relations k ON k.schema=n.nspname AND k.name=c.relname
+        CROSS JOIN LATERAL pg_catalog.aclexplode(c.relacl) a
+        WHERE a.grantee=0 AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema'
+          AND (n.nspname=ANY(:object_schemas) OR EXISTS (
+            SELECT FROM pg_catalog.aclexplode(
+              COALESCE(n.nspacl,pg_catalog.acldefault('n',n.nspowner))) reachable
+            WHERE reachable.grantee=0 AND reachable.privilege_type='USAGE'))
+          AND c.relkind IN ('r','p','v','m','S','f')
+          AND (k.name IS NOT NULL OR NOT EXISTS (
+            SELECT FROM pg_catalog.pg_depend d
+            WHERE d.classid='pg_catalog.pg_class'::regclass AND d.objid=c.oid AND d.deptype='e'))
+        UNION ALL
+        SELECT 'column',n.nspname,c.relname,'',att.attname,a.privilege_type,a.is_grantable
+        FROM pg_catalog.pg_attribute att JOIN pg_catalog.pg_class c ON c.oid=att.attrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+        LEFT JOIN relations k ON k.schema=n.nspname AND k.name=c.relname
+        CROSS JOIN LATERAL pg_catalog.aclexplode(att.attacl) a
+        WHERE a.grantee=0 AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema'
+          AND (n.nspname=ANY(:object_schemas) OR EXISTS (
+            SELECT FROM pg_catalog.aclexplode(
+              COALESCE(n.nspacl,pg_catalog.acldefault('n',n.nspowner))) reachable
+            WHERE reachable.grantee=0 AND reachable.privilege_type='USAGE'))
+          AND c.relkind IN ('r','p','v','m','S','f')
+          AND (k.name IS NOT NULL OR NOT EXISTS (
+            SELECT FROM pg_catalog.pg_depend d
+            WHERE d.classid='pg_catalog.pg_class'::regclass AND d.objid=c.oid AND d.deptype='e'))
+        UNION ALL
+        SELECT 'function',n.nspname,p.proname,pg_catalog.oidvectortypes(p.proargtypes),'',
+          a.privilege_type,a.is_grantable
+        FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+        LEFT JOIN functions k ON k.schema=n.nspname AND k.name=p.proname
+          AND replace(pg_catalog.oidvectortypes(p.proargtypes),', ',',')=
+              replace(k.signature,', ',',')
+        CROSS JOIN LATERAL pg_catalog.aclexplode(
+          COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
+        WHERE a.grantee=0 AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema'
+          AND (n.nspname=ANY(:object_schemas) OR EXISTS (
+            SELECT FROM pg_catalog.aclexplode(
+              COALESCE(n.nspacl,pg_catalog.acldefault('n',n.nspowner))) reachable
+            WHERE reachable.grantee=0 AND reachable.privilege_type='USAGE'))
+          AND (k.name IS NOT NULL OR NOT EXISTS (
+            SELECT FROM pg_catalog.pg_depend d
+            WHERE d.classid='pg_catalog.pg_proc'::regclass AND d.objid=p.oid AND d.deptype='e'))
+          AND NOT EXISTS (
+            SELECT FROM pg_catalog.jsonb_to_recordset(CAST(:contexts AS jsonb))
+              AS context(schema text,name text,signature text)
+            WHERE context.schema=n.nspname AND context.name=p.proname
+              AND replace(context.signature,', ',',')=
+                  replace(pg_catalog.oidvectortypes(p.proargtypes),', ',',')
+          )
+        UNION ALL
+        SELECT 'namespace',n.nspname,'','','',a.privilege_type,a.is_grantable
+        FROM pg_catalog.pg_namespace n
+        CROSS JOIN LATERAL pg_catalog.aclexplode(n.nspacl) a
+        WHERE a.grantee=0 AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema'
+          AND (n.nspname=ANY(:schemas) OR NOT EXISTS (
+            SELECT FROM pg_catalog.pg_depend d
+            WHERE d.classid='pg_catalog.pg_namespace'::regclass
+              AND d.objid=n.oid AND d.deptype='e'))
+        UNION ALL
+        SELECT 'default',COALESCE(n.nspname,''),d.defaclobjtype::text,'','',
+          a.privilege_type,a.is_grantable
+        FROM pg_catalog.pg_default_acl d
+        LEFT JOIN pg_catalog.pg_namespace n ON n.oid=d.defaclnamespace
+        CROSS JOIN LATERAL pg_catalog.aclexplode(d.defaclacl) a
+        WHERE a.grantee=0 AND pg_catalog.pg_get_userbyid(d.defaclrole)=ANY(:owners)
+          AND (d.defaclnamespace=0 OR n.nspname=ANY(:schemas))
+        UNION ALL
+        SELECT 'database','',d.datname,'','',a.privilege_type,a.is_grantable
+        FROM pg_catalog.pg_database d
+        CROSS JOIN LATERAL pg_catalog.aclexplode(d.datacl) a
+        WHERE a.grantee=0 AND (a.is_grantable OR NOT EXISTS (
+          SELECT FROM pg_catalog.aclexplode(pg_catalog.acldefault('d',d.datdba)) ambient
+          WHERE ambient.grantee=0 AND ambient.privilege_type=a.privilege_type))
+        UNION ALL
+        SELECT 'type',n.nspname,t.typname,'','',a.privilege_type,a.is_grantable
+        FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid=t.typnamespace
+        CROSS JOIN LATERAL pg_catalog.aclexplode(t.typacl) a
+        WHERE a.grantee=0 AND (a.is_grantable OR NOT EXISTS (
+          SELECT FROM pg_catalog.aclexplode(pg_catalog.acldefault('T',t.typowner)) ambient
+          WHERE ambient.grantee=0 AND ambient.privilege_type=a.privilege_type))
+        UNION ALL
+        SELECT 'language','',l.lanname,'','',a.privilege_type,a.is_grantable
+        FROM pg_catalog.pg_language l
+        CROSS JOIN LATERAL pg_catalog.aclexplode(l.lanacl) a
+        WHERE a.grantee=0 AND (a.is_grantable OR NOT EXISTS (
+          SELECT FROM pg_catalog.aclexplode(pg_catalog.acldefault('l',l.lanowner)) ambient
+          WHERE ambient.grantee=0 AND ambient.privilege_type=a.privilege_type))
+        UNION ALL
+        SELECT 'tablespace','',s.spcname,'','',a.privilege_type,a.is_grantable
+        FROM pg_catalog.pg_tablespace s
+        CROSS JOIN LATERAL pg_catalog.aclexplode(s.spcacl) a WHERE a.grantee=0
+        UNION ALL
+        SELECT 'large_object','',l.oid::text,'','',a.privilege_type,a.is_grantable
+        FROM pg_catalog.pg_largeobject_metadata l
+        CROSS JOIN LATERAL pg_catalog.aclexplode(l.lomacl) a WHERE a.grantee=0
+        UNION ALL
+        SELECT 'foreign_wrapper','',f.fdwname,'','',a.privilege_type,a.is_grantable
+        FROM pg_catalog.pg_foreign_data_wrapper f
+        CROSS JOIN LATERAL pg_catalog.aclexplode(f.fdwacl) a WHERE a.grantee=0
+        UNION ALL
+        SELECT 'foreign_server','',s.srvname,'','',a.privilege_type,a.is_grantable
+        FROM pg_catalog.pg_foreign_server s
+        CROSS JOIN LATERAL pg_catalog.aclexplode(s.srvacl) a WHERE a.grantee=0
+        UNION ALL
+        SELECT 'parameter','',p.parname,'','',a.privilege_type,a.is_grantable
+        FROM pg_catalog.pg_parameter_acl p
+        CROSS JOIN LATERAL pg_catalog.aclexplode(p.paracl) a WHERE a.grantee=0
+      ) SELECT kind,schema,name,signature,"column",verb,grantable FROM caps
+    """),
+            {
+                "relations": json.dumps(
+                    [dict(schema=schema, name=name) for schema, name in expected.public_relations]
+                ),
+                "functions": json.dumps(
+                    [
+                        dict(schema=schema, name=name, signature=signature)
+                        for schema, name, signature in expected.public_functions
+                    ]
+                ),
+                "contexts": json.dumps(
+                    [
+                        dict(schema=schema, name=name, signature=signature)
+                        for schema, name, signature in expected.public_context_functions
+                    ]
+                ),
+                "object_schemas": list(expected.public_object_schemas),
+                "schemas": list(expected.public_schemas),
+                "owners": list(expected.public_default_owners),
+            },
+        ).mappings()
+    )
+    if any(row["grantable"] is not False for row in rows):
+        return False
+    observed = tuple(
+        PurposeCapability(
+            row["kind"],
+            row["schema"],
+            row["name"],
+            row["signature"].replace(", ", ","),
+            row["column"],
+            row["verb"],
+        )
+        for row in rows
+    )
+    wanted = tuple(
+        PurposeCapability(
+            row.kind,
+            row.schema,
+            row.name,
+            row.signature.replace(", ", ","),
+            row.column,
+            row.verb,
+        )
+        for row in expected.public_capabilities
+    )
+    return len(observed) == len(set(observed)) and set(observed) == set(wanted)
+
+
+def _owner_lookup_metadata_matches(connection, definition):
+    from sqlalchemy import text
+
+    language = "plpgsql"
+    if definition.name == "resolve_owner_triple":
+        predicate = """
+          p.prorettype='record'::regtype AND p.proretset AND p.pronargs=2
+          AND pg_catalog.oidvectortypes(p.proargtypes)='text, text[]'
+          AND p.proallargtypes=ARRAY['text'::regtype,'text[]'::regtype,
+                'uuid'::regtype,'boolean'::regtype]::oid[]
+          AND p.proargnames=ARRAY['p_predicate','p_candidates','entity_id','is_primary']::text[]
+          AND p.proargmodes=ARRAY['i','i','t','t']::"char"[] AND p.provolatile='s'
+          AND p.pronargdefaults=0 AND p.proargdefaults IS NULL AND p.prorows=1000
+        """
+    elif definition.name == "connectors_filtered_events_ensure_partition":
+        # Same full fixed wrapper metadata as the admitted component verifier.
+        return (
+            connection.execute(
+                text(_CONNECTORS_FUNCTION_METADATA), {"schema": definition.schema}
+            ).scalar_one()
+            is True
+        )
+    elif (definition.schema, definition.name, definition.signature) == (
+        "public",
+        "uuid_generate_v7",
+        "",
+    ):
+        predicate = """
+          p.prorettype='uuid'::regtype AND NOT p.proretset AND p.pronargs=0
+          AND p.proallargtypes IS NULL AND p.proargnames IS NULL AND p.proargmodes IS NULL
+          AND p.provolatile='v' AND p.pronargdefaults=0 AND p.proargdefaults IS NULL
+          AND p.prorows=0
+        """
+    elif definition.signature == "" and "RETURNS TRIGGER" in definition.header.upper():
+        predicate = """
+          p.prorettype='trigger'::regtype AND NOT p.proretset AND p.pronargs=0
+          AND p.proallargtypes IS NULL AND p.proargnames IS NULL AND p.proargmodes IS NULL
+          AND p.provolatile='v' AND p.pronargdefaults=0 AND p.proargdefaults IS NULL
+          AND p.prorows=0
+        """
+    elif (definition.schema, definition.name, definition.signature) == (
+        "public",
+        "posture_writer_allowed",
+        "text",
+    ):
+        language = "sql"
+        predicate = """
+          p.prorettype='boolean'::regtype AND NOT p.proretset AND p.pronargs=1
+          AND pg_catalog.oidvectortypes(p.proargtypes)='text'
+          AND p.proallargtypes IS NULL AND p.proargnames=ARRAY['role_name']::text[]
+          AND p.proargmodes IS NULL AND p.provolatile='i' AND p.pronargdefaults=0
+          AND p.proargdefaults IS NULL AND p.prorows=0
+        """
+    else:
+        return False
+    return (
+        connection.execute(
+            text(
+                """
+        /* owner-lookup-replay:metadata */
+        SELECT count(*)=1 AND bool_and(p.prokind='f' AND l.lanname=:language
+          AND NOT p.proisstrict AND NOT p.proleakproof AND p.proparallel='u'
+          AND p.procost=100 AND p.prosupport=0 AND p.provariadic=0
+          AND p.probin IS NULL AND p.protrftypes IS NULL AND p.prosqlbody IS NULL
+          AND ("""
+                + predicate
+                + """))
+        FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+        JOIN pg_catalog.pg_language l ON l.oid=p.prolang
+        WHERE n.nspname=:schema AND p.proname=:name
+    """
+            ),
+            {"schema": definition.schema, "name": definition.name, "language": language},
+        ).scalar_one()
+        is True
+    )
+
+
+def _owner_lookup_security_matches(
+    connection, manifest, declarations, *, predecessor=False, component=None
+):
+    """Use the existing read-only source token/trigger comparator, no scratch DDL."""
+    import json
+
+    from sqlalchemy import text
+
+    from .catalog import _security_catalog_sql
+    from .grants import compiled_security_contract
+
+    identities = {(row.schema, row.name) for row in declarations}
+    contract = compiled_security_contract(manifest, ordinary_purposes=not predecessor)
+    if component is not None:
+        contract = {
+            "policies": [json.loads(row) for row in component.policies],
+            "triggers": [json.loads(row) for row in component.triggers],
+        }
+    contract = {
+        kind: [row for row in contract[kind] if (row["schema"], row["table"]) in identities]
+        for kind in ("policies", "triggers")
+    }
+    # All keys come from the fixed source manifest. Catalog rows add no identity.
+    keys = [{"schema": schema, "name": name} for schema, name in sorted(identities)]
+    comparison = _security_catalog_sql().replace("(($1::json)::jsonb", "(CAST(:contract AS jsonb)")
+    # SQLAlchemy text() scans inside SQL dollar/quoted literals too. Escape
+    # literal colon tokens in the fixed comparator; the compiler removes these
+    # escapes on the wire, preserving the original PostgreSQL expression.
+    comparison = comparison.replace(":", r"\:").replace(r"\:contract", ":contract")
+    sql = (
+        """
+        /* owner-lookup-replay:security */
+        WITH normal_owner AS (
+          SELECT datdba FROM pg_catalog.pg_database WHERE datname=current_database()
+        ), relation_catalog AS (
+          SELECT c.oid,n.nspname AS schema_name,c.relname FROM pg_catalog.pg_class c
+          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+          JOIN pg_catalog.jsonb_to_recordset(CAST(:keys AS jsonb)) k(schema text,name text)
+            ON k.schema=n.nspname AND k.name=c.relname
+        ) SELECT true
+    """
+        + comparison
+    )
+    return (
+        connection.execute(
+            text(sql), {"contract": json.dumps(contract), "keys": json.dumps(keys)}
+        ).scalar_one()
+        is True
+    )
+
+
+def _owner_lookup_namespace_matches(
+    connection, manifest, schema, declarations, functions, *, closed, source_users=None
+):
+    from .apply import (
+        _DEFAULT_ACL,
+        _NAMESPACE_ACL,
+        _NAMESPACE_CATALOG,
+        _rows,
+        namespace_permissions,
+    )
+    from .grants import ordinary_schema_creators
+
+    namespace = _rows(connection, _NAMESPACE_CATALOG, schemas=[schema])
+    owners = (
+        {manifest.migration_owner, "pg_database_owner"}
+        if schema == "public"
+        else {manifest.migration_owner}
+    )
+    if len(namespace) != 1 or namespace[0]["owner"] not in owners:
+        return False
+    users = set(namespace_permissions(declarations).get(schema, ()))
+    users.update(row.owner for row in declarations if row.schema == schema)
+    for row in functions:
+        if row.schema == schema:
+            users.update((row.owner, *row.executors))
+    if source_users is not None:
+        users = set(source_users)
+    expected = {(role, "USAGE") for role in users if role != namespace[0]["owner"]}
+    if not closed:
+        expected.update(
+            (role, "CREATE")
+            for role in ordinary_schema_creators(declarations).get(schema, ())
+            if role != namespace[0]["owner"]
+        )
+    actual = _rows(connection, _NAMESPACE_ACL, oid=namespace[0]["oid"])
+    if (
+        any(row["grantable"] is not False for row in actual)
+        or {(row["role"], row["verb"]) for row in actual} != expected
+    ):
+        return False
+    default_owners = sorted(
+        {manifest.migration_owner, manifest.maintenance_owner}
+        | {row.owner for row in declarations}
+        | {row.owner for row in functions}
+    )
+    return not _rows(connection, _DEFAULT_ACL, schemas=[schema], owners=default_owners)
+
+
+def _owner_lookup_acl_matches(connection, actual, declaration):
+    from .apply import _COLUMN_ACL, _RELATION_ACL, _rows
+
+    expected_tables = {
+        (permission.role, verb)
+        for permission in declaration.permissions
+        if not permission.columns
+        for verb in permission.verbs
+        if permission.role != declaration.owner
+    }
+    expected_columns = {
+        (column, permission.role, verb)
+        for permission in declaration.permissions
+        for column in permission.columns
+        for verb in permission.verbs
+        if permission.role != declaration.owner
+    }
+    tables = _rows(connection, _RELATION_ACL, oid=actual["oid"])
+    columns = _rows(connection, _COLUMN_ACL, oid=actual["oid"])
+    return (
+        all(row["grantable"] is False for row in (*tables, *columns))
+        and {(row["role"], row["verb"]) for row in tables} == expected_tables
+        and {(row["name"], row["role"], row["verb"]) for row in columns} == expected_columns
+    )
+
+
+def owner_lookup_revision_reuse(connection, revision):
+    """Exact source reuse for the two fixed owner-lookup producers.
+
+    Producer heads establish required presence. Complete source-defined component
+    profiles establish existing current/closed state, never desired future work.
+    This administrative predicate cannot certify full runtime serving readiness.
+    The admitted connector verifier retains its owned TEMP parsing effects;
+    this lookup extension adds catalog reads and no persistent DDL/DCL.
+    """
+    from dataclasses import replace
+
+    from sqlalchemy import text
+
+    from alembic import op
+    from butlers.migrations import (
+        get_chain_head,
+        maintenance_profile,
+    )
+
+    from .apply import _FUNCTIONS, _NAMESPACE_CATALOG, _RELATIONS, _rows, validate_relations
+    from .grants import (
+        _owner_lookup_source_template_identity,
+        compile_function_manifest,
+        compile_relation_manifest,
+        deployment_function_plans,
+    )
+    from .roles import AuthorityError
+
+    if revision not in {"core_145", "core_233"}:
+        raise AuthorityError("Owner lookup revision is not source-owned")
+    # Bind immutable source work once for this actual catalog consumer. A
+    # second fresh fingerprint must match before any successful/ordinary exit.
+    source_identity = _owner_lookup_source_template_identity()
+    component = connectors_revision_reuse(connection, "core_135")
+    owner = maintenance_profile(connection)
+    database, actor, active, ordinary = connection.exec_driver_sql(
+        "SELECT current_database(), session_user, current_schema(), current_user"
+    ).one()
+    target = op.get_context().opts.get("version_table_schema") or "public"
+    if active != target or ordinary != owner:
+        raise AuthorityError("Owner lookup target differs from selected migration schema")
+    source = connection.info.get("butlers.source_database", database)
+    manifest = compile_relation_manifest(database, owner, actor, source_database=source)
+    population = tuple(
+        connection.execute(
+            text("""
+        /* owner-lookup-replay:population */
+        SELECT pg_catalog.oidvectortypes(p.proargtypes) AS arguments,r.rolname AS owner
+        FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+        JOIN pg_catalog.pg_roles r ON r.oid=p.proowner
+        WHERE n.nspname='public' AND p.proname='resolve_owner_triple'
+    """)
+        ).mappings()
+    )
+    if len(population) > 1 or any(
+        row["arguments"] != "text, text[]" or row["owner"] not in {owner, "identity_lookup_owner"}
+        for row in population
+    ):
+        raise AuthorityError("Owner lookup population differs from source")
+    if not component.global_reused:
+        if any(row["owner"] != owner for row in population):
+            raise AuthorityError("Owner lookup finalized component phase is unavailable")
+        if _owner_lookup_source_template_identity() != source_identity:
+            raise AuthorityError("Owner lookup source changed during validation")
+        return False
+    if len(population) != 1 or population[0]["owner"] != "identity_lookup_owner":
+        raise AuthorityError("Finalized owner lookup is unavailable")
+
+    vector = _owner_lookup_revision_vector(
+        connection, manifest, target, source_identity=source_identity
+    )
+    if not any(chain == "core" and head == get_chain_head("core") for chain, _, head in vector):
+        raise AuthorityError("Owner lookup current producer is unavailable")
+    parent_owner = connection.exec_driver_sql(
+        "SELECT pg_catalog.pg_get_userbyid(relowner) FROM pg_catalog.pg_class "
+        "WHERE oid='connectors.filtered_events'::regclass"
+    ).scalar_one()
+    if parent_owner not in {owner, "connector_partition_owner"}:
+        raise AuthorityError("Owner lookup component phase is unavailable")
+    # This classification follows COMPLETE admitted connector validation.
+    closed = parent_owner == owner
+    plans = (("core", target, None), *deployment_function_plans(manifest.profiles))
+    ordinary_definitions = compile_function_manifest(manifest.profiles, owner, plans)
+    protected_definitions = final_functions(manifest.profiles, owner)
+    lookup = tuple(
+        row
+        for row in ordinary_definitions
+        if row.identity == ("public", "resolve_owner_triple", "text,text[]")
+    )
+    if len(lookup) != 1:
+        raise AuthorityError("Owner lookup source definition is ambiguous")
+    definition = replace(lookup[0], executors=()) if closed else lookup[0]
+    role_ok = connection.execute(
+        text(
+            "\n        /* owner-lookup-replay:owner */\n        SELECT coun"
+            "t(*)=1 AND bool_and(NOT rolcanlogin AND NOT rolinherit AND N"
+            "OT rolsuper\n          AND NOT rolcreatedb AND NOT rolcreater"
+            "ole AND NOT rolreplication AND NOT rolbypassrls)\n          A"
+            "ND NOT EXISTS(SELECT FROM pg_catalog.pg_auth_members m JOIN "
+            "pg_catalog.pg_roles r\n            ON r.oid=m.roleid OR r.oid"
+            "=m.member WHERE r.rolname='identity_lookup_owner')\n         "
+            " AND NOT pg_catalog.has_database_privilege('identity_lookup_"
+            "owner',current_database(),'CREATE')\n          AND NOT EXISTS"
+            "(SELECT FROM pg_catalog.pg_database d JOIN pg_catalog.pg_rol"
+            "es r\n            ON r.oid=d.datdba WHERE r.rolname='identity"
+            "_lookup_owner')\n          AND NOT EXISTS(SELECT FROM pg_cata"
+            "log.pg_namespace n JOIN pg_catalog.pg_roles r\n            ON"
+            " r.oid=n.nspowner WHERE r.rolname='identity_lookup_owner')\n "
+            "         AND NOT EXISTS(SELECT FROM pg_catalog.pg_class c JO"
+            "IN pg_catalog.pg_roles r\n            ON r.oid=c.relowner WHE"
+            "RE r.rolname='identity_lookup_owner')\n          AND NOT EXIS"
+            "TS(SELECT FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_roles"
+            " r\n            ON r.oid=p.proowner WHERE r.rolname='identity"
+            "_lookup_owner' AND p.oid<>\n            'public.resolve_owner"
+            "_triple(text,text[])'::regprocedure)\n        FROM pg_catalog"
+            ".pg_roles WHERE rolname='identity_lookup_owner'\n    "
+        )
+    ).scalar_one()
+    if (
+        role_ok is not True
+        or not _owner_lookup_metadata_matches(connection, definition)
+        or not (function_matches(connection, definition, inspect_function(connection, definition)))
+    ):
+        raise AuthorityError("Finalized owner lookup differs from fixed source")
+
+    public_rows = tuple(row for row in manifest.relations if row.schema == "public")
+    if closed:
+        public_rows = tuple(replace(row, permissions=()) for row in public_rows)
+    public_functions = tuple(row for row in ordinary_definitions if row.schema == "public")
+    if closed:
+        public_functions = tuple(replace(row, executors=()) for row in public_functions)
+    # apply closes known ordinary executors but keeps protected definitions'
+    # separately compiled namespace requirements; do not erase that population.
+    public_functions = (
+        *public_functions,
+        *tuple(row for row in protected_definitions if row.schema == "public"),
+    )
+    entity = tuple(row for row in public_rows if row.name == "entities")
+    actual_entity = tuple(
+        row
+        for row in _rows(connection, _RELATIONS, schemas=["public"])
+        if row["name"] == "entities"
+    )
+    if len(entity) != 1:
+        raise AuthorityError("Owner lookup entity source is ambiguous")
+    bound = validate_relations(actual_entity, (replace(entity[0], required=True),))
+    if any(
+        not _owner_lookup_acl_matches(connection, actual, expected) for actual, expected in bound
+    ):
+        raise AuthorityError("Owner lookup entity privileges differ from source")
+    if not _owner_lookup_namespace_matches(
+        connection, manifest, "public", public_rows, public_functions, closed=closed
+    ):
+        raise AuthorityError("Owner lookup public namespace differs from source")
+
+    from .grants import (
+        _compile_owner_lookup_capabilities,
+        _compile_relationship_component_profiles,
+    )
+
+    profiles = _compile_relationship_component_profiles(manifest, vector, source_identity)
+    observed_relationship = tuple(_rows(connection, _RELATIONS, schemas=["relationship"]))
+    function_population = tuple(_rows(connection, _FUNCTIONS, schemas=["relationship"]))
+    from .grants import _owner_lookup_revision_path_template
+
+    def get_chain_revision_path(chain, head):
+        return _owner_lookup_revision_path_template(chain, head, source_identity)
+
+    from .grants import relationship_retained_objects
+
+    relationship_revisions = frozenset().union(
+        *(
+            get_chain_revision_path(chain, head)
+            for chain, schema, head in vector
+            if chain == "relationship" and schema == "relationship"
+        )
+    )
+    core_revisions = frozenset().union(
+        *(get_chain_revision_path(chain, head) for chain, _, head in vector if chain == "core")
+    )
+    retained_public = tuple(
+        row
+        for row in relationship_retained_objects(
+            owner, relationship_revisions=relationship_revisions, core_revisions=core_revisions
+        )
+        if row.schema == "public"
+    )
+    retained_names = {
+        "contacts_preferred_channel_dropbak_rel_003",
+        "entities_contact_profile_bak_rel_031",
+    }
+    observed_retained = tuple(
+        row
+        for row in _rows(connection, _RELATIONS, schemas=["public"])
+        if row["name"] in retained_names
+    )
+    retained_bound = validate_relations(observed_retained, retained_public)
+    if any(
+        not _owner_lookup_acl_matches(connection, actual, row) for actual, row in retained_bound
+    ):
+        raise AuthorityError("Owner lookup retained source privileges differ")
+    matched = []
+    for profile in profiles:
+        # Domain authority is independent of unrelated local core producers.
+        # Context rows keep source identity/owner/kind/RLS validation; no grant
+        # or domain phase is inferred from their ACLs.
+        declarations = (*profile.relations, *profile.context_relations)
+        keys = {row.identity for row in profile.relations}
+        try:
+            observed_bound = validate_relations(observed_relationship, declarations)
+        except AuthorityError:
+            continue
+        domain_bound = tuple(
+            (actual, row) for actual, row in observed_bound if row.identity in keys
+        )
+        context = profile.context_functions
+        functions = (*profile.functions, *(group[0] for group in context))
+        if len(function_population) != len(functions) or {
+            (row["schema"], row["name"], row["arguments"].replace(", ", ","))
+            for row in function_population
+        } != {row.identity for row in functions}:
+            continue
+        if (
+            any(not _owner_lookup_metadata_matches(connection, row) for row in profile.functions)
+            or any(
+                not function_matches(connection, row, inspect_function(connection, row))
+                for row in profile.functions
+            )
+            or any(
+                not any(
+                    _owner_lookup_metadata_matches(connection, row)
+                    and function_matches(connection, row, inspect_function(connection, row))
+                    for row in group
+                )
+                for group in context
+            )
+            or any(
+                not _owner_lookup_acl_matches(connection, actual, row)
+                for actual, row in domain_bound
+            )
+            or not (
+                (
+                    not declarations
+                    and not functions
+                    and not _rows(connection, _NAMESPACE_CATALOG, schemas=["relationship"])
+                )
+                or _owner_lookup_namespace_matches(
+                    connection,
+                    manifest,
+                    "relationship",
+                    profile.relations,
+                    functions,
+                    closed=profile.phase.startswith("closed:"),
+                    source_users=profile.namespace_users,
+                )
+            )
+            or not _owner_lookup_security_matches(
+                connection, manifest, profile.relations, component=profile
+            )
+        ):
+            continue
+        facts = tuple((actual, row) for actual, row in domain_bound if row.name == "entity_facts")
+        if bool(facts) != bool(profile.dependency_columns):
+            continue
+        if facts:
+            actual_columns = tuple(
+                connection.execute(
+                    text(
+                        "\n              /* owner-lookup-replay:prefix-columns */\n    "
+                        "          SELECT a.attname AS name,pg_catalog.format_type(a."
+                        "atttypid,a.atttypmod) AS type,\n                a.attnotnull "
+                        "AS required,a.attgenerated AS generated,a.attidentity AS ide"
+                        "ntity\n              FROM pg_catalog.pg_attribute a WHERE a.a"
+                        "ttrelid=:oid AND a.attnum>0 AND NOT a.attisdropped\n         "
+                        "     ORDER BY a.attnum\n            "
+                    ),
+                    {"oid": facts[0][0]["oid"]},
+                ).mappings()
+            )
+            expected_columns = {
+                name: (kind, required) for name, kind, required in profile.dependency_columns
+            }
+            if len(actual_columns) != len(expected_columns) or {
+                row["name"] for row in actual_columns
+            } != set(expected_columns):
+                continue
+            if any(
+                (row["type"], row["required"]) != expected_columns[row["name"]]
+                or row["identity"] != ""
+                or row["generated"] != ("s" if row["name"] == "object_entity_id" else "")
+                for row in actual_columns
+            ):
+                continue
+        capabilities = _compile_owner_lookup_capabilities(
+            manifest, component=profile, ordinary_closed=closed, source_identity=source_identity
+        )
+        if not _owner_lookup_capability_matches(connection, capabilities):
+            continue
+        matched.append((profile, facts))
+    if len(matched) != 1:
+        raise AuthorityError("Owner lookup dependency source profile is incomplete or ambiguous")
+    component, facts = matched[0]
+    bound = (*bound, *facts)
+
+    dependency_types = {
+        ("public", "entities"): {
+            "id": ("uuid", True),
+            "roles": ("text[]", True),
+            "metadata": ("jsonb", False),
+        },
+        ("relationship", "entity_facts"): {
+            "id": ("uuid", True),
+            "subject": ("uuid", True),
+            "primary": ("boolean", False),
+            "validity": ("text", True),
+            "object_kind": ("text", True),
+            "predicate": ("text", True),
+            "object": ("text", True),
+        },
+    }
+    for actual, row in bound:
+        columns = tuple(
+            connection.execute(
+                text("""
+            /* owner-lookup-replay:dependency-columns */
+            SELECT a.attname AS name,pg_catalog.format_type(a.atttypid,a.atttypmod) AS type,
+              a.attnotnull AS required,a.attgenerated AS generated,a.attidentity AS identity
+            FROM pg_catalog.pg_attribute a WHERE a.attrelid=:oid AND a.attnum>0
+              AND NOT a.attisdropped ORDER BY a.attnum
+        """),
+                {"oid": actual["oid"]},
+            ).mappings()
+        )
+        seen = {item["name"]: item for item in columns}
+        if len(seen) != len(columns):
+            raise AuthorityError("Owner lookup dependency column population is ambiguous")
+        for name, (kind, required) in dependency_types[(row.schema, row.name)].items():
+            item = seen.get(name)
+            if item is None or (
+                item["type"],
+                item["required"],
+                item["generated"],
+                item["identity"],
+            ) != (kind, required, "", ""):
+                raise AuthorityError("Owner lookup dependency ABI differs from source")
+        keys_ok = connection.execute(
+            text("""
+            /* owner-lookup-replay:dependency-keys */
+            SELECT (SELECT count(*)=1 AND bool_and(NOT c.condeferrable AND NOT c.condeferred
+                AND c.convalidated AND i.indisvalid AND i.indisready AND i.indisunique
+                AND ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(id,n)
+                    JOIN pg_catalog.pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.id
+                    ORDER BY k.n)=ARRAY['id']::text[])
+              FROM pg_catalog.pg_constraint c JOIN pg_catalog.pg_index i ON i.indexrelid=c.conindid
+              WHERE c.conrelid=:oid AND c.contype='p')
+              AND (NOT :facts OR (SELECT count(*)=1 AND bool_and(c.convalidated
+                AND NOT c.condeferrable AND NOT c.condeferred AND c.confdeltype='c'
+                AND c.confrelid='public.entities'::regclass
+                AND ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(id,n)
+                    JOIN pg_catalog.pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.id
+                    ORDER BY k.n)=ARRAY['subject']::text[]
+                AND ARRAY(SELECT a.attname::text FROM unnest(c.confkey) WITH ORDINALITY k(id,n)
+                    JOIN pg_catalog.pg_attribute a ON a.attrelid=c.confrelid AND a.attnum=k.id
+                    ORDER BY k.n)=ARRAY['id']::text[])
+                FROM pg_catalog.pg_constraint c WHERE c.conrelid=:oid AND c.contype='f'
+                AND ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(id,n)
+                    JOIN pg_catalog.pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.id
+                    ORDER BY k.n)=ARRAY['subject']::text[]))
+        """),
+            {"oid": actual["oid"], "facts": row.schema == "relationship"},
+        ).scalar_one()
+        if keys_ok is not True:
+            raise AuthorityError("Owner lookup dependency key differs from source")
+    if not _owner_lookup_security_matches(connection, manifest, entity):
+        raise AuthorityError("Owner lookup entity security differs from source")
+    # Trigger functions are part of the entity fence, not merely matching names.
+    from .grants import compiled_security_contract
+
+    security = compiled_security_contract(manifest)
+    trigger_keys = {
+        (row["function_schema"], row["function_name"], row["signature"])
+        for row in security["triggers"]
+        if (row["schema"], row["table"]) == ("public", "entities")
+    }
+    trigger_keys.add(("public", "posture_writer_allowed", "text"))
+    trigger_definitions = tuple(row for row in public_functions if row.identity in trigger_keys)
+    if len(trigger_definitions) != len(trigger_keys) or any(
+        not _owner_lookup_metadata_matches(connection, row)
+        or not function_matches(connection, row, inspect_function(connection, row))
+        for row in trigger_definitions
+    ):
+        raise AuthorityError("Owner lookup entity trigger function differs from source")
+    if _owner_lookup_source_template_identity() != source_identity:
+        raise AuthorityError("Owner lookup source changed during validation")
+    return True

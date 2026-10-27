@@ -104,9 +104,14 @@ def _create_db(postgres_container, db_name: str) -> str:
     migration_url = create_migration_db(postgres_container, "butlers")
     control_url = migration_bootstrap_db_url(postgres_container, "butlers")
     profiles = runtime_profiles("butlers")
-    available = frozenset(get_all_chains())
-    declared = deployment_function_plans(profiles)
-    plans = tuple(row for row in declared if row[0] in available)
+    available = tuple(get_all_chains())
+    chain_order = {chain: index for index, chain in enumerate(available)}
+    plans = tuple(
+        sorted(
+            (row for row in deployment_function_plans(profiles) if row[0] in chain_order),
+            key=lambda row: (chain_order[row[0]], row[1] or ""),
+        )
+    )
     # No alternate compiler or hand-built object/role grants. A non-migration
     # module label has no Alembic chain; all real source chains are included.
     core = tuple(row for row in plans if row[0] == "core")
@@ -1463,3 +1468,339 @@ def test_actual_native_operator_deploy_pool_keeps_selected_session_and_ledger_bo
         if created:
             with _engine_connection(control) as connection:
                 connection.execute(text(f"DROP ROLE {_quote_ident(login)}"))
+
+
+def test_actual_native_connector_cursor_factory_keeps_login_and_fences_reacquisition(
+    postgres_container, monkeypatch
+):
+    """Physical cursor-factory identity, committed checkpoint and fresh drift fence."""
+    from butlers.connectors import cursor_store, db_role
+    from butlers.db_authority.roles import AuthorityError
+
+    db_url = _create_db(postgres_container, _unique_db_name())
+    control = _control_url(postgres_container)
+    parsed = urlparse(db_url)
+    role = purpose_profile("butlers", "connector").role
+    endpoint = f"native-cursor-{uuid.uuid4().hex}"
+    value = "synthetic-native-cursor"
+    with _serving_login(control, role) as (login, password):
+
+        async def exercise():
+            pools = []
+            primary = None
+            try:
+                # Actual factory callback inverse: a physical NOINHERIT LOGIN
+                # without setup must fail the real current_user assertion.
+                async def omit_admission(connection):
+                    return None
+
+                with monkeypatch.context() as inverse:
+                    inverse.setattr(db_role, "connector_setup_role", omit_admission)
+                    unchecked = await cursor_store.create_cursor_pool(
+                        host=parsed.hostname or "localhost",
+                        port=parsed.port or 5432,
+                        user=login,
+                        password=password,
+                        database="butlers",
+                        ssl="disable",
+                        min_size=1,
+                        max_size=1,
+                    )
+                    pools.append(unchecked)
+                    with pytest.raises(AssertionError):
+                        await _native_identity(unchecked, login, role)
+                    await _close_native_pool(unchecked)
+                    pools.remove(unchecked)
+                pool = await cursor_store.create_cursor_pool(
+                    host=parsed.hostname or "localhost",
+                    port=parsed.port or 5432,
+                    user=login,
+                    password=password,
+                    database="butlers",
+                    ssl="disable",
+                    min_size=1,
+                    max_size=1,
+                )
+                pools.append(pool)
+                await _native_identity(pool, login, role)
+                await cursor_store.save_cursor(
+                    pool,
+                    "gmail",
+                    endpoint,
+                    value,
+                    parent_endpoint_identity=cursor_store.NO_PARENT,
+                )
+                assert await cursor_store.load_cursor(pool, "gmail", endpoint) == value
+                assert (
+                    _scalar(
+                        control,
+                        "SELECT checkpoint_cursor FROM switchboard.connector_registry "
+                        "WHERE connector_type='gmail' AND endpoint_identity=:endpoint",
+                        {"endpoint": endpoint},
+                    )
+                    == value
+                )
+                # Every helper acquisition has returned before committed drift.
+                with _foreign_membership(control, login):
+                    with pytest.raises(AuthorityError):
+                        async with pool.acquire():
+                            pytest.fail("Unsafe cursor LOGIN was handed out")
+                    assert (
+                        _scalar(
+                            control,
+                            "SELECT checkpoint_cursor FROM switchboard.connector_registry "
+                            "WHERE connector_type='gmail' AND endpoint_identity=:endpoint",
+                            {"endpoint": endpoint},
+                        )
+                        == value
+                    )
+                await _native_identity(pool, login, role)
+                assert await cursor_store.load_cursor(pool, "gmail", endpoint) == value
+            except BaseException as exc:
+                primary = exc
+                raise
+            finally:
+                failures = []
+                for pool in reversed(pools):
+                    try:
+                        await _close_native_pool(pool)
+                    except BaseException as exc:
+                        failures.append(exc)
+                try:
+                    with _engine_connection(control) as connection:
+                        connection.execute(
+                            text(
+                                "DELETE FROM switchboard.connector_registry "
+                                "WHERE connector_type='gmail' AND endpoint_identity=:endpoint"
+                            ),
+                            {"endpoint": endpoint},
+                        )
+                except BaseException as exc:
+                    failures.append(exc)
+                if primary is not None:
+                    if failures:
+                        primary.add_note("Owned cursor fixture cleanup was incomplete")
+                elif failures:
+                    raise failures[0]
+
+        asyncio.run(exercise())
+
+
+def test_actual_native_operator_catalog_measurement_uses_selected_pool_readonly(
+    postgres_container, monkeypatch, tmp_path
+):
+    """Real operator CLI/native transactions, exact comparator and unchanged rows."""
+    import json
+    from contextlib import asynccontextmanager
+
+    from butlers.modules.memory import catalog_measurement, storage
+
+    db_url = _create_db(postgres_container, _unique_db_name())
+    control = _control_url(postgres_container)
+    parsed = urlparse(db_url)
+    login = unquote(parsed.username or "")
+    native_url = _native_dsn(db_url, login, unquote(parsed.password or ""))
+    tenant = f"native-measurement-{uuid.uuid4().hex}"
+    source_ids = (uuid.uuid4(), uuid.uuid4())
+    vectors = [[1.0, *([0.0] * 383)], [0.0, 1.0, *([0.0] * 382)]]
+    vector_file = tmp_path / "synthetic-vectors.json"
+    vector_file.write_text(json.dumps([vectors[0]]))
+    args = catalog_measurement._parser().parse_args(
+        [
+            "--vectors-json",
+            str(vector_file),
+            "--tenant-id",
+            tenant,
+            "--memory-type",
+            "fact",
+            "--limit",
+            "2",
+            "--exact-candidate-cap",
+            "2",
+            "--query-timeout-seconds",
+            "5",
+        ]
+    )
+    monkeypatch.setenv("DATABASE_URL", native_url)
+    monkeypatch.setenv("POSTGRES_DB", "not_the_selected_native_database")
+
+    def snapshot():
+        with _engine_connection(control) as connection:
+            return tuple(
+                connection.execute(
+                    text(
+                        "SELECT md5(row_to_json(c)::text) FROM public.memory_catalog c "
+                        "WHERE source_schema='general' AND source_table='facts' "
+                        "AND source_id IN (:first,:second) ORDER BY source_id"
+                    ),
+                    {"first": source_ids[0], "second": source_ids[1]},
+                ).scalars()
+            )
+
+    async def exercise():
+        real_create_pool = asyncpg.create_pool
+        writer = None
+        created = []
+        observed = []
+        omit_readonly = False
+        primary = None
+
+        class ObservedConnection:
+            def __init__(self, raw, default_isolation):
+                self.raw = raw
+                self.default_isolation = default_isolation
+
+            def transaction(self, **options):
+                # Test-local real-driver inverse only: source requests readonly,
+                # the negative removes it at the actual native transaction edge.
+                if omit_readonly and options.get("isolation") == "repeatable_read":
+                    options = dict(options, readonly=False)
+                return self.raw.transaction(**options)
+
+            async def inspect(self, statement):
+                readonly = await self.raw.fetchval("SHOW transaction_read_only")
+                isolation = await self.raw.fetchval("SHOW transaction_isolation")
+                assert readonly == "on", "Native measurement transaction must be read-only"
+                if "pg_stat_user_tables" in statement:
+                    kind = "maintenance_table"
+                elif "pg_relation_size" in statement:
+                    kind = "maintenance_index"
+                elif "COUNT(*) FILTER" in statement:
+                    kind = "maintenance_lifecycle"
+                elif statement.lstrip().startswith("EXPLAIN (FORMAT JSON)"):
+                    kind = "plan"
+                elif "WITH candidates AS MATERIALIZED" in statement:
+                    kind = "exact"
+                elif "SELECT COUNT(*) FROM public.memory_catalog" in statement:
+                    kind = "count"
+                elif "SELECT id, embedding <=>" in statement:
+                    kind = "nearest"
+                else:
+                    pytest.fail("Unrecognized source operator query boundary")
+                expected = (
+                    self.default_isolation if kind.startswith("maintenance_") else "repeatable read"
+                )
+                assert isolation == expected
+                observed.append((kind, readonly, isolation))
+
+            async def fetch(self, statement, *parameters, **options):
+                await self.inspect(statement)
+                return await self.raw.fetch(statement, *parameters, **options)
+
+            async def fetchrow(self, statement, *parameters, **options):
+                await self.inspect(statement)
+                return await self.raw.fetchrow(statement, *parameters, **options)
+
+            async def fetchval(self, statement, *parameters, **options):
+                await self.inspect(statement)
+                return await self.raw.fetchval(statement, *parameters, **options)
+
+        class ObservedPool:
+            def __init__(self, raw, default_isolation):
+                self.raw = raw
+                self.default_isolation = default_isolation
+
+            @asynccontextmanager
+            async def acquire(self):
+                async with self.raw.acquire() as connection:
+                    yield ObservedConnection(connection, self.default_isolation)
+
+            async def close(self):
+                await _close_native_pool(self.raw)
+
+        async def actual_factory(**options):
+            assert options.get("database") == "butlers"
+            pool = await real_create_pool(**options)
+            created.append(pool)
+            # Inspect the physical target before forwarding any business query.
+            await _native_identity(pool, login, login)
+            async with pool.acquire() as connection:
+                default_isolation = await connection.fetchval("SHOW default_transaction_isolation")
+            return ObservedPool(pool, default_isolation)
+
+        try:
+            writer = await real_create_pool(
+                dsn=native_url,
+                min_size=1,
+                max_size=1,
+                command_timeout=5,
+            )
+            await _native_identity(writer, login, login)
+            for source_id, vector in zip(source_ids, vectors, strict=True):
+                await storage._upsert_catalog(
+                    writer,
+                    source_schema="general",
+                    source_table="facts",
+                    source_id=source_id,
+                    source_butler="general",
+                    tenant_id=tenant,
+                    entity_id=None,
+                    summary="Synthetic native operator fact",
+                    embedding=vector,
+                    search_text="Synthetic native operator fact",
+                    memory_type="fact",
+                    sensitivity="normal",
+                )
+            before = snapshot()
+            assert len(before) == 2, "Both actual catalog writes must be committed"
+            with monkeypatch.context() as observer:
+                observer.setattr(catalog_measurement.asyncpg, "create_pool", actual_factory)
+                omit_readonly = True
+                try:
+                    with pytest.raises(AssertionError, match="must be read-only"):
+                        await catalog_measurement._run_cli(args)
+                finally:
+                    omit_readonly = False
+                assert all(pool.is_closing() for pool in created)
+                assert snapshot() == before
+                observed.clear()
+                result = await catalog_measurement._run_cli(args)
+            assert all(pool.is_closing() for pool in created)
+            report = result["measurement"]
+            assert len(report["observations"]) == 1
+            observation = report["observations"][0]
+            assert observation["filtered_candidate_count"] == 2
+            assert observation["exact_result_count"] == 2
+            assert observation["exact_status"] == "completed"
+            assert 0 <= observation["approximate_result_count"] <= 2
+            assert type(observation["ivfflat_plan_used"]) is bool
+            assert report["safety"]["read_only_transaction"] is True
+            assert report["safety"]["planner_or_index_settings_changed"] is False
+            assert {kind for kind, _, _ in observed} == {
+                "count",
+                "nearest",
+                "plan",
+                "exact",
+                "maintenance_lifecycle",
+                "maintenance_table",
+                "maintenance_index",
+            }
+            assert snapshot() == before
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            failures = []
+            for pool in reversed([*created, *([writer] if writer is not None else [])]):
+                try:
+                    await _close_native_pool(pool)
+                except BaseException as exc:
+                    failures.append(exc)
+            try:
+                with _engine_connection(control) as connection:
+                    connection.execute(
+                        text(
+                            "DELETE FROM public.memory_catalog WHERE source_schema='general' "
+                            "AND source_table='facts' AND source_id IN (:first,:second)"
+                        ),
+                        {"first": source_ids[0], "second": source_ids[1]},
+                    )
+            except BaseException as exc:
+                failures.append(exc)
+            if primary is not None:
+                if failures:
+                    primary.add_note("Owned operator fixture cleanup was incomplete")
+            elif failures:
+                raise failures[0]
+
+    asyncio.run(exercise())

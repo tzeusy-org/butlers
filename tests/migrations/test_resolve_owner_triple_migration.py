@@ -12,7 +12,7 @@ Verified:
    when any of its matching candidate facts is primary.
 4. Schema isolation — a butler role with NO direct read access to
    ``relationship.entity_facts`` can call the SECURITY DEFINER function via
-   the EXECUTE grant added in core_145 and receives correct owner-only results.
+   the exact source-manifest EXECUTE capability and receives correct owner-only results.
    Crucially, that same role is blocked from reading the underlying table
    directly, proving the SECURITY DEFINER boundary holds.
 5. Ambiguity safety — an identifier shared by owner and external entities
@@ -33,11 +33,16 @@ import pytest
 
 from alembic import command
 from butlers.config import ApprovalRiskTier
-from butlers.db import Database
 from butlers.migrations import _build_alembic_config
 from butlers.modules.approvals.email_guard import check_email_recipient, check_recipient
 from butlers.modules.approvals.gate import _make_gate_wrapper
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import (
+    async_serving_test_deployment,
+    create_migrated_test_db,
+    migration_bootstrap_db_url,
+    migration_db_name,
+    run_test_alembic_command,
+)
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -51,43 +56,62 @@ pytestmark = [
 # Module-scoped fixtures (provisioned once per test module)
 # ──────────────────────────────────────────────────────────────────────────────
 
-_ISOLATED_ROLE = "butler_isolated_rw_core145"
-_ISOLATED_ROLE_PASSWORD = "isolated_test_pw_core145"
+
+@pytest.fixture(scope="module")
+async def lookup_deployment(postgres_container):
+    """Real source-declared identities; owned pools close before DB teardown."""
+    async with async_serving_test_deployment(postgres_container) as deployment:
+        yield deployment
 
 
 @pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision core, relationship, and Messenger approvals schemas.
+async def migrated_db_url(lookup_deployment) -> str:
+    return lookup_deployment.migration_url
 
-    The ``core`` chain creates ``public.entities`` and
-    ``public.resolve_owner_triple`` (core_145).  The ``relationship`` chain
-    creates ``relationship.entity_facts``.  The approvals chain supplies real
-    pending/rule tables under Messenger's schema for guard-level assertions.
-    """
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "relationship", "approvals"],
-        schemas={"relationship": "relationship", "approvals": "messenger"},
+
+@pytest.fixture(scope="module")
+async def lookup_maintenance_pool(postgres_container, lookup_deployment):
+    """Independent disposable maintenance is used only for seed/mutation/readback."""
+    pool = await asyncpg.create_pool(
+        migration_bootstrap_db_url(postgres_container, "butlers"), min_size=1, max_size=2
     )
+    try:
+        yield pool
+    finally:
+        await pool.close()
 
 
 @pytest.fixture(scope="module")
-async def migration_pool(migrated_db_url: str) -> asyncpg.Pool:
-    """Migration-role asyncpg pool to the migrated disposable database."""
-    pool = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
-    yield pool
-    await pool.close()
+async def migration_pool(lookup_deployment) -> asyncpg.Pool:
+    """Retained test parameter now borrows the actual admitted General runtime."""
+    database = lookup_deployment.runtime_database("general")
+    selected = lookup_deployment.runtime_logins["general"]
+    pool = await database.connect()
+    try:
+        identity = await pool.fetchrow("SELECT current_database(),session_user,current_user")
+        assert tuple(identity) == ("butlers", selected.user, selected.role)
+        assert selected.user != urlparse(lookup_deployment.migration_url).username
+        assert (
+            await pool.fetchval(
+                "SELECT pg_has_role(session_user, $1, 'MEMBER')",
+                urlparse(lookup_deployment.migration_url).username,
+            )
+            is False
+        )
+        yield pool
+    finally:
+        await database.close()
 
 
 @pytest.fixture(scope="module")
-async def seeded_data(migration_pool: asyncpg.Pool) -> dict:
+async def seeded_data(lookup_maintenance_pool: asyncpg.Pool) -> dict:
     """Seed owner + non-owner entities and matching ``entity_facts`` rows.
 
     Returns a dict with the entity UUIDs and the handle values used in tests.
     Owner has two handles: one primary, one non-primary.  The non-owner has
     one handle with the same predicate (to confirm owner-only scoping).
     """
+    migration_pool = lookup_maintenance_pool
     owner_id = await migration_pool.fetchval(
         "INSERT INTO public.entities (canonical_name, roles) VALUES ($1, $2) RETURNING id",
         "Test Owner",
@@ -239,92 +263,22 @@ async def seeded_data(migration_pool: asyncpg.Pool) -> dict:
 
 
 @pytest.fixture(scope="module")
-async def isolated_role_pool(
-    postgres_container,
-    migrated_db_url: str,
-) -> asyncpg.Pool:
-    """Pool connected as a schema-isolated butler role.
-
-    The role has:
-    - CONNECT on the database
-    - USAGE on the public schema (needed to call public functions)
-    - EXECUTE on public.resolve_owner_triple via the PUBLIC grant in core_145
-
-    It does NOT have:
-    - USAGE on the relationship schema
-    - SELECT on relationship.entity_facts
-
-    This mirrors the real constraint: a non-relationship butler (e.g. messenger)
-    runs under SET ROLE butler_<schema>_rw and cannot read relationship.entity_facts
-    directly.  The SECURITY DEFINER function bridges that gap.
-    """
-    parsed = urlparse(migrated_db_url)
-    db_name = parsed.path.lstrip("/")
-
-    # The migrated DB URL deliberately authenticates as a NOCREATEROLE normal
-    # migration user. Provision this test-only isolated role through the
-    # disposable testcontainer control URL instead; the asserted runtime role
-    # remains restricted below.
-    bootstrap_conn = await asyncpg.connect(
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        database=db_name,
-    )
-    try:
-        # Idempotent: a prior partial run may have left the cluster-global role.
-        await bootstrap_conn.execute(
-            f"""
-            DO $$
-            BEGIN
-                IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_ISOLATED_ROLE}') THEN
-                    CREATE ROLE "{_ISOLATED_ROLE}" WITH LOGIN
-                        PASSWORD '{_ISOLATED_ROLE_PASSWORD}'
-                        NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT;
-                END IF;
-            END
-            $$
-            """
-        )
-        await bootstrap_conn.execute(f'GRANT CONNECT ON DATABASE "{db_name}" TO "{_ISOLATED_ROLE}"')
-        # Allow calling public.* functions (schema USAGE, no table USAGE).
-        await bootstrap_conn.execute(f'GRANT USAGE ON SCHEMA public TO "{_ISOLATED_ROLE}"')
-        # Explicitly do NOT grant USAGE on relationship schema or SELECT on entity_facts.
-    finally:
-        await bootstrap_conn.close()
-
-    pool = await asyncpg.create_pool(
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=_ISOLATED_ROLE,
-        password=_ISOLATED_ROLE_PASSWORD,
-        database=db_name,
-        min_size=1,
-        max_size=2,
-    )
-    yield pool
-    await pool.close()
+async def isolated_role_pool(migration_pool) -> asyncpg.Pool:
+    """General is a real lookup executor and has no direct Relationship reads."""
+    yield migration_pool
 
 
 @pytest.fixture(scope="module")
-async def messenger_role_pool(migrated_db_url: str) -> asyncpg.Pool:
-    """Production Database pool constrained by the real Messenger runtime role."""
-    parsed = urlparse(migrated_db_url)
-    database = Database(
-        db_name=parsed.path.lstrip("/"),
-        schema="messenger",
-        role="butler_messenger_rw",
-        host=parsed.hostname or "localhost",
-        port=parsed.port or 5432,
-        user=parsed.username or "postgres",
-        password=parsed.password or "",
-        min_pool_size=1,
-        max_pool_size=2,
-    )
+async def messenger_role_pool(lookup_deployment) -> asyncpg.Pool:
+    database = lookup_deployment.runtime_database("messenger")
+    selected = lookup_deployment.runtime_logins["messenger"]
     pool = await database.connect()
-    yield pool
-    await database.close()
+    try:
+        identity = await pool.fetchrow("SELECT current_database(),session_user,current_user")
+        assert tuple(identity) == ("butlers", selected.user, selected.role)
+        yield pool
+    finally:
+        await database.close()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -413,7 +367,7 @@ class TestOwnerOnlyScoping:
         )
 
     async def test_unsafe_owner_associations_return_nothing(
-        self, migration_pool: asyncpg.Pool, seeded_data: dict
+        self, migration_pool: asyncpg.Pool, seeded_data: dict, lookup_maintenance_pool
     ) -> None:
         """Ambiguous, inactive, merged, and deleted associations cannot authorize."""
         from butlers.modules.approvals.gate import _resolve_target_contact
@@ -445,7 +399,7 @@ class TestOwnerOnlyScoping:
                     "deleted owner entity",
                 ),
             ):
-                await migration_pool.execute(
+                await lookup_maintenance_pool.execute(
                     "UPDATE public.entities SET metadata = $1::jsonb WHERE id = $2",
                     json.dumps(metadata),
                     seeded_data["owner_id"],
@@ -464,7 +418,7 @@ class TestOwnerOnlyScoping:
                 )
                 assert direct is None, f"direct entity dispatch must also reject a {failure_class}"
         finally:
-            await migration_pool.execute(
+            await lookup_maintenance_pool.execute(
                 "UPDATE public.entities SET metadata = '{}'::jsonb WHERE id = $1",
                 seeded_data["owner_id"],
             )
@@ -772,6 +726,8 @@ class TestSchemaIsolation:
 
 async def test_core_233_downgrade_and_reapply_restores_function_behavior(
     postgres_container,
+    lookup_deployment,
+    lookup_maintenance_pool,
 ) -> None:
     """The bounded migration lifecycle restores, then reapplies, ambiguity safety."""
     db_url = await asyncio.to_thread(
@@ -814,7 +770,9 @@ async def test_core_233_downgrade_and_reapply_restores_function_behavior(
         await pool.close()
 
     config = _build_alembic_config(db_url, chains=["core"])
-    await asyncio.to_thread(command.downgrade, config, "core_232")
+    await asyncio.to_thread(
+        run_test_alembic_command, postgres_container, command.downgrade, config, "core_232"
+    )
 
     pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
     try:
@@ -828,7 +786,9 @@ async def test_core_233_downgrade_and_reapply_restores_function_behavior(
     finally:
         await pool.close()
 
-    await asyncio.to_thread(command.upgrade, config, "core@core_233")
+    await asyncio.to_thread(
+        run_test_alembic_command, postgres_container, command.upgrade, config, "core@core_233"
+    )
 
     pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
     try:
@@ -842,3 +802,144 @@ async def test_core_233_downgrade_and_reapply_restores_function_behavior(
         )
     finally:
         await pool.close()
+
+    # A separate source-produced canonical deployment preserves the original
+    # random core233→232→233 outcome above. No hand ownership/ACL changes
+    # manufacture this finalized non-head Relationship state.
+    from butlers.db_authority import grants
+    from butlers.db_authority.roles import runtime_profiles
+    from butlers.migrations import get_chain_head
+    from butlers.testing.migration import (
+        async_migrate_test_database,
+        async_run_test_alembic_command,
+    )
+
+    current_url = lookup_deployment.migration_url
+    independent_url = migration_bootstrap_db_url(postgres_container, "butlers")
+    profiles = runtime_profiles("butlers")
+    full_plans = grants.deployment_function_plans(profiles)
+    assert ("core", "public", None) not in full_plans
+    relationship_config = _build_alembic_config(
+        current_url, chains=["relationship"], target_schema="relationship"
+    )
+    public_config = _build_alembic_config(current_url, chains=["core"], target_schema="public")
+
+    async def observe_lookup():
+        # Independent physical observer closes before the next migration call.
+        observer = await asyncpg.connect(independent_url)
+        try:
+            assert await observer.fetchval("SELECT current_database()") == "butlers"
+            row = await observer.fetchrow("""
+                SELECT p.oid,pg_get_userbyid(p.proowner) AS owner,p.prosecdef,
+                       p.proconfig,md5(p.prosrc) AS body,
+                       ARRAY(SELECT (CASE WHEN a.grantee=0 THEN 'PUBLIC'
+                           ELSE pg_get_userbyid(a.grantee) END)||':'||a.privilege_type||':'||a.is_grantable
+                           FROM aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a
+                           WHERE a.grantee<>p.proowner ORDER BY 1) AS acl
+                FROM pg_proc p WHERE p.oid='public.resolve_owner_triple(text,text[])'::regprocedure
+            """)
+            assert row["owner"] == "identity_lookup_owner" and row["prosecdef"] is True
+            assert row["proconfig"] == ["search_path=pg_catalog, pg_temp"]
+            return tuple(row)
+        finally:
+            await observer.close()
+
+    before = await observe_lookup()
+    # The real rel037 guard remains authoritative: this test may not erase any
+    # classified/candidate/decision data merely to obtain a successful rollback.
+    assert (
+        await lookup_maintenance_pool.fetchval("""
+        SELECT NOT EXISTS(SELECT FROM relationship.entity_facts WHERE
+            content_authority IS NOT NULL OR authority_original_entity_id IS NOT NULL
+            OR confirmed_at IS NOT NULL OR validity='candidate')
+          AND NOT EXISTS(SELECT FROM relationship.fact_approval_context WHERE
+            frozen_report IS NOT NULL OR decision_report IS NOT NULL)
+          AND NOT EXISTS(SELECT FROM relationship.fact_identity_decisions)
+          AND NOT EXISTS(SELECT FROM relationship.fact_approval_rule_context)
+    """)
+        is True
+    )
+    downgraded = False
+    try:
+        await async_run_test_alembic_command(
+            postgres_container, command.downgrade, relationship_config, "rel_036"
+        )
+        downgraded = True
+        assert (
+            await lookup_maintenance_pool.fetchval(
+                "SELECT count(*)=1 FROM relationship.alembic_version WHERE version_num='rel_036'"
+            )
+            is True
+        )
+        assert (
+            await lookup_maintenance_pool.fetchval(
+                "SELECT to_regclass('relationship.fact_identity_decisions') IS NULL"
+            )
+            is True
+        )
+        assert await observe_lookup() == before
+        # Public is an actual source-admitted NEW ordinary core target. Its
+        # original 145/233 consumers now encounter the existing purpose lookup
+        # while the real Relationship source stamp is non-head.
+        from butlers.db_authority.roles import AuthorityError
+
+        assert (
+            await lookup_maintenance_pool.fetchval("""
+            SELECT NOT EXISTS(SELECT FROM pg_attribute att
+              CROSS JOIN LATERAL aclexplode(att.attacl) a
+              WHERE att.attrelid='public.model_catalog'::regclass
+                AND att.attname='id' AND a.grantee=0)
+        """)
+            is True
+        )
+        await lookup_maintenance_pool.execute("GRANT SELECT(id) ON public.model_catalog TO PUBLIC")
+        try:
+            with pytest.raises(AuthorityError):
+                await async_run_test_alembic_command(
+                    postgres_container, command.upgrade, public_config, "core@head"
+                )
+        finally:
+            await lookup_maintenance_pool.execute(
+                "REVOKE SELECT(id) ON public.model_catalog FROM PUBLIC"
+            )
+        assert await observe_lookup() == before
+        assert (
+            await lookup_maintenance_pool.fetchval("""
+            SELECT NOT EXISTS(SELECT FROM pg_attribute att
+              CROSS JOIN LATERAL aclexplode(att.attacl) a
+              WHERE att.attrelid='public.model_catalog'::regclass
+                AND att.attname='id' AND a.grantee=0)
+        """)
+            is True
+        )
+        await async_run_test_alembic_command(
+            postgres_container, command.upgrade, public_config, "core@head"
+        )
+        assert (
+            await lookup_maintenance_pool.fetchval(
+                "SELECT count(*)=1 FROM public.alembic_version WHERE version_num=$1",
+                get_chain_head("core"),
+            )
+            is True
+        )
+        assert await observe_lookup() == before
+    finally:
+        if downgraded:
+            await async_run_test_alembic_command(
+                postgres_container, command.upgrade, relationship_config, "relationship@head"
+            )
+            await async_migrate_test_database(
+                postgres_container,
+                current_url,
+                plans=(),
+                final_plans=(*full_plans, ("core", "public", None)),
+            )
+    # Serving admission belongs AFTER the actual head producers/full finalizer,
+    # not to the temporary administrative rel036 state.
+    database = lookup_deployment.runtime_database("general")
+    try:
+        admitted = await database.connect()
+        assert await admitted.fetchval("SELECT current_database()") == "butlers"
+        assert await observe_lookup() == before
+    finally:
+        await database.close()

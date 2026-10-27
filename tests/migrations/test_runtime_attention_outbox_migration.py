@@ -1992,6 +1992,63 @@ def test_core_chain_is_idempotent_for_two_target_schemas_without_switchboard_dep
         finally:
             observer.dispose()
 
+    def owner_lookup_snapshot(selected_url, *, closed=False):
+        """Independent source/physical/OID/ACL witness, closed before replay."""
+        import hashlib
+        from dataclasses import replace
+
+        from butlers.db_authority.grants import compile_function_manifest
+        from butlers.db_authority.interfaces import (
+            _FUNCTION_ACL,
+            _owner_lookup_metadata_matches,
+            function_matches,
+            inspect_function,
+        )
+
+        selected_name = _database(selected_url)
+        normal = unquote(urlparse(selected_url).username or "")
+        profiles = compile_deployment_profiles(selected_name, source_database="butlers")
+        definition = next(
+            row
+            for row in compile_function_manifest(profiles, normal, (("core", "public", None),))
+            if row.identity == ("public", "resolve_owner_triple", "text,text[]")
+        )
+        if closed:
+            definition = replace(definition, executors=())
+        observer = create_engine(
+            _maintenance_url(selected_url),
+            connect_args={
+                "connect_timeout": 5,
+                "options": "-c statement_timeout=30000",
+            },
+        )
+        try:
+            with observer.connect() as independent:
+                assert (
+                    independent.exec_driver_sql("SELECT current_database()").scalar_one()
+                    == selected_name
+                )
+                actual = inspect_function(independent, definition)
+                assert _owner_lookup_metadata_matches(independent, definition)
+                assert function_matches(independent, definition, actual)
+                acl = tuple(
+                    sorted(
+                        tuple(row)
+                        for row in independent.execute(text(_FUNCTION_ACL), {"oid": actual["oid"]})
+                    )
+                )
+                assert {row[0] for row in acl} == set(definition.executors) - {definition.owner}
+                return (
+                    actual["oid"],
+                    actual["owner"],
+                    actual["definer"],
+                    tuple(actual["config"] or ()),
+                    hashlib.sha256(actual["body"].encode()).hexdigest(),
+                    acl,
+                )
+        finally:
+            observer.dispose()
+
     connector_before_second = connector_catalog_snapshot(seed=True)
 
     try:
@@ -2067,6 +2124,21 @@ def test_core_chain_is_idempotent_for_two_target_schemas_without_switchboard_dep
         raise
 
     assert connector_catalog_snapshot() == connector_before_second
+
+    # Actual current replay: compare BEFORE its later finalizer could conceal
+    # replacement or ACL activation. The original serial calls stay unchanged.
+    current_lookup = owner_lookup_snapshot(db_url)
+    with migration_session(_maintenance_url(db_url), source_database="butlers") as held:
+        asyncio.run(run_migrations(db_url, chain="core", schema="public", connection=held))
+        assert owner_lookup_snapshot(db_url) == current_lookup
+        current_plans = tuple(
+            ("core", schema, revision) for schema, revision in _SELECTED_PLANS[db_name].items()
+        )
+        finalize_authority(
+            held, source_database="butlers", plans=(*current_plans, ("core", "public", None))
+        )
+    assert owner_lookup_snapshot(db_url) == current_lookup
+    _SELECTED_PLANS[db_name]["public"] = None
 
     engine = create_engine(migration_bootstrap_db_url(postgres_container, db_name))
     try:
@@ -2190,11 +2262,13 @@ def test_core_chain_is_idempotent_for_two_target_schemas_without_switchboard_dep
         ("core", "general", None),
         ("core", "switchboard", None),
         ("core", "finance", None),
+        ("core", "relationship", None),
+        ("relationship", "relationship", None),
         ("finance", "finance", "finance_018"),
     )
     with migration_session(_maintenance_url(mixed_url), source_database="butlers") as held:
-        for _, schema, _ in mixed_plans[:-1]:
-            asyncio.run(run_migrations(mixed_url, chain="core", schema=schema, connection=held))
+        for chain, schema, _ in mixed_plans[:-1]:
+            asyncio.run(run_migrations(mixed_url, chain=chain, schema=schema, connection=held))
         _upgrade_chain_to_revision(
             mixed_url, chain="finance", schema="finance", revision="finance_018", connection=held
         )
@@ -2238,16 +2312,48 @@ def test_core_chain_is_idempotent_for_two_target_schemas_without_switchboard_dep
                 )
             ).scalar_one()
         verifier_before = _runtime_probe_verifier_snapshot(mixed_url, seed=True, closed=True)
+        closed_lookup = owner_lookup_snapshot(mixed_url, closed=True)
+        # The first historical finalizer above genuinely produces closed
+        # Relationship current functions/relations. Its real rel037 inverse
+        # now tests age independently of the administrative zero-rights phase.
+        from alembic import command
+        from butlers.testing.migration import run_test_alembic_command
+
+        mixed_relationship_config = _build_alembic_config(
+            mixed_url, chains=["relationship"], target_schema="relationship"
+        )
+        run_test_alembic_command(
+            postgres_container, command.downgrade, mixed_relationship_config, "rel_036"
+        )
+        with mixed_engine.connect() as independent:
+            assert (
+                independent.execute(
+                    text(
+                        "SELECT count(*)=1 FROM relationship.alembic_version WHERE version_num='rel_036'"
+                    )
+                ).scalar_one()
+                is True
+            )
+        assert owner_lookup_snapshot(mixed_url, closed=True) == closed_lookup
         # public is an admitted administrative target, absent from mixed_plans.
         with migration_session(_maintenance_url(mixed_url), source_database="butlers") as held:
             asyncio.run(run_migrations(mixed_url, chain="core", schema="public", connection=held))
             assert _runtime_probe_verifier_snapshot(mixed_url, closed=True) == verifier_before
+            assert owner_lookup_snapshot(mixed_url, closed=True) == closed_lookup
+            # Restore the real selected head on this SAME held session before
+            # the original complete historical finalizer; no second lock/session.
+            asyncio.run(
+                run_migrations(
+                    mixed_url, chain="relationship", schema="relationship", connection=held
+                )
+            )
             finalize_authority(
                 held, source_database="butlers", plans=(*mixed_plans, ("core", "public", None))
             )
         with mixed_engine.connect() as independent:
             assert_at_chain_head(independent, "public")
             assert _runtime_probe_verifier_snapshot(mixed_url, closed=True) == verifier_before
+            assert owner_lookup_snapshot(mixed_url, closed=True) == closed_lookup
             assert dict(inspect_function(independent, definition)) == before_function
             assert function_matches(
                 independent, definition, inspect_function(independent, definition)

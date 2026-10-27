@@ -375,8 +375,21 @@ async def test_legacy_lifecycle_recovery_derives_public_audit_identity(
     runtime = SimpleNamespace(binary_name="claude")
     spawner = SimpleNamespace(stop_accepting=lambda: None, drain=AsyncMock())
 
-    def _discard_background_task(coro: Any, *args: Any, **kwargs: Any) -> None:
+    create_task = asyncio.create_task
+    cleanup_tasks = []
+
+    def _discard_background_task(coro: Any, *args: Any, **kwargs: Any) -> asyncio.Task[Any] | None:
+        if kwargs.get("name") == "daemon-credential-dependent-close":
+            task = create_task(coro, *args, **kwargs)
+            cleanup_tasks.append(task)
+            return task
         coro.close()
+        return None
+
+    async def _close_primary() -> None:
+        assert cleanup_tasks == [asyncio.current_task()]
+
+    db.close.side_effect = _close_primary
 
     lifecycle_patches = (
         patch("butlers.lifecycle.init_telemetry"),
@@ -442,6 +455,11 @@ async def test_legacy_lifecycle_recovery_derives_public_audit_identity(
         finally:
             await daemon.shutdown()
 
+    assert len(cleanup_tasks) == 1
+    assert cleanup_tasks[0].done()
+    assert not cleanup_tasks[0].cancelled()
+    assert cleanup_tasks[0].exception() is None
+    db.close.assert_awaited_once()
     assert db.schema is None
     assert db.owner_butler == owner_butler
     assert row is not None

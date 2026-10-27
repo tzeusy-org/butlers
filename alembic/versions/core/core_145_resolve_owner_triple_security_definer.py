@@ -90,6 +90,10 @@ $fn$;
 
 
 def upgrade() -> None:
+    from butlers.db_authority.interfaces import owner_lookup_revision_reuse
+
+    if owner_lookup_revision_reuse(op.get_bind(), revision):
+        return
     _execute_best_effort(_CREATE_FN)
     # Read-only owner-channel probe; callable by every butler runtime role.
     _execute_best_effort(

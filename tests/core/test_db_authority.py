@@ -8684,3 +8684,1481 @@ def test_runtime_probe_verifier_replay_refuses_counterfeit_before_effects():
                 and sql.lstrip().startswith(("CREATE ", "ALTER ", "REVOKE ", "DROP "))
                 for sql in model.statements
             )
+
+
+class _OwnerLookupReplayCatalog(_ConnectorsReplayCatalog):
+    """Actual compiler/driver consumer; aggregate rows are not native catalog proof."""
+
+    def __init__(self, mode, *, fault=None, public_owner="normal_owner"):
+        from dataclasses import replace
+
+        from butlers.db_authority import grants, interfaces
+        from butlers.migrations import get_all_chains
+
+        super().__init__(normal=mode in {"fresh", "ordinary"}, local=True, closed=mode == "closed")
+        self.lookup_mode, self.lookup_fault, self.public_owner = mode, fault, public_owner
+        self.lookup_manifest = grants.compile_relation_manifest(
+            "test_replay", "normal_owner", "maintenance", source_database="butlers"
+        )
+        available = set(get_all_chains())
+        plans = tuple(
+            row
+            for row in grants.deployment_function_plans(self.lookup_manifest.profiles)
+            if row[0] in available
+        )
+        self.version_rows = {}
+        source_heads = {
+            chain: head
+            for chain, head, _ in grants._owner_lookup_graph_templates(
+                grants._owner_lookup_source_template_identity()
+            )
+        }
+        for chain, schema, _ in plans:
+            if mode == "absent" and schema == "relationship":
+                continue
+            head = "finance_018" if mode == "closed" and chain == "finance" else source_heads[chain]
+            self.version_rows.setdefault(schema, []).append(head)
+        definitions = grants.compile_function_manifest(
+            self.lookup_manifest.profiles, "normal_owner", (("core", "general", None), *plans)
+        )
+        self.lookup_definitions = {}
+        for definition in (
+            *definitions,
+            *interfaces.final_functions(self.lookup_manifest.profiles, "normal_owner"),
+        ):
+            if (
+                definition.name == "connectors_filtered_events_ensure_partition"
+                and definition.schema in {"general", "connectors"}
+            ):
+                continue
+            ordinary = definition in definitions
+            component_closed = mode == "closed" or (
+                mode == "module_closed" and definition.schema == "relationship"
+            )
+            if ordinary and component_closed:
+                definition = replace(definition, executors=())
+            self.lookup_definitions[interfaces._signature(definition)] = definition
+        self.function_oids = {
+            key: 4000 + index for index, key in enumerate(sorted(self.lookup_definitions))
+        }
+        self.catalog_relations = {}
+        for index, row in enumerate(self.lookup_manifest.relations):
+            if (
+                (row.schema, row.name) != ("public", "entities")
+                and row.schema != "relationship"
+                and row.name != "alembic_version"
+            ):
+                continue
+            if mode == "absent" and row.schema == "relationship":
+                continue
+            if row.name == "alembic_version" and row.schema not in self.version_rows:
+                continue
+            if fault == "missing_facts" and (row.schema, row.name) == (
+                "relationship",
+                "entity_facts",
+            ):
+                continue
+            if mode == "closed" or (mode == "module_closed" and row.schema == "relationship"):
+                row = replace(row, permissions=())
+            self.catalog_relations[3000 + index] = row
+        self.namespace_oids = {50: "public", 51: "relationship"}
+
+    def respond(self, wire, parameters, decoded):
+        import re
+
+        import psycopg2
+
+        from butlers.db_authority import apply, grants, interfaces
+
+        sql = decoded.strip()
+        normalized = re.sub(r"%\(([A-Za-z0-9_]+)\)s", r":\1", wire).replace("%%", "%").strip()
+        fault = self.lookup_fault
+
+        def answer(names, rows):
+            self.statements.append(decoded)
+            return names, rows
+
+        def records(rows):
+            names = list(rows[0]) if rows else []
+            return answer(names, [tuple(row[name] for name in names) for row in rows])
+
+        if "owner-lookup-replay:population" in sql:
+            rows = (
+                []
+                if self.lookup_mode == "fresh"
+                else [
+                    (
+                        "text, text[]",
+                        "normal_owner"
+                        if self.lookup_mode == "ordinary"
+                        else "identity_lookup_owner",
+                    )
+                ]
+            )
+            if fault == "signature":
+                rows = [("text", "identity_lookup_owner")]
+            if fault == "overload":
+                rows *= 2
+            if fault == "foreign_owner":
+                rows = [("text, text[]", "foreign")]
+            return answer(["arguments", "owner"], rows)
+        if normalized == apply._RELATIONS.strip():
+            rows = []
+            for oid, row in self.catalog_relations.items():
+                if row.schema not in parameters["schemas"]:
+                    continue
+                enabled, forced = grants.relation_security_flags(row)
+                rows.append(
+                    dict(
+                        schema=row.schema,
+                        name=row.name,
+                        kind={
+                            "table": "r",
+                            "view": "v",
+                            "materialized_view": "m",
+                            "sequence": "S",
+                            "partition": "p",
+                        }[row.kind.value],
+                        owner="foreign"
+                        if fault == "relation_owner" and row.name == "entities"
+                        else row.owner,
+                        rls=not enabled if fault == "rls" and row.name == "entities" else enabled,
+                        forced_rls=forced,
+                        oid=oid,
+                        partition=False,
+                    )
+                )
+            return records(rows)
+        if "owner-lookup-replay:revision-abi" in sql:
+            for predicate in (
+                "version_num",
+                "character varying(32)",
+                "condeferrable",
+                "indisvalid",
+                "indexprs IS NULL",
+            ):
+                assert predicate in sql
+            return answer(["valid"], [(fault != "ledger_abi",)])
+        match = re.fullmatch(r'SELECT version_num FROM "([a-z_]+)"\."alembic_version"', sql)
+        if match:
+            rows = [(head,) for head in self.version_rows[match[1]]]
+            if fault == "unknown_revision":
+                rows.append(("unlisted_revision",))
+            return answer(["version_num"], rows)
+        if "owner-lookup-replay:owner" in sql:
+            assert (
+                "pg_auth_members" in sql
+                and "NOT rolinherit" in sql
+                and "has_database_privilege" in sql
+            )
+            return answer(
+                ["valid"],
+                [(fault not in {"role", "membership", "database_create", "role_ownership"},)],
+            )
+        if "owner-lookup-replay:metadata" in sql:
+            for predicate in (
+                "prokind",
+                "proisstrict",
+                "proleakproof",
+                "proparallel",
+                "prosupport",
+                "pronargdefaults",
+                "proargnames",
+                "proargmodes",
+                "provolatile",
+            ):
+                assert predicate in sql
+            return answer(["valid"], [(fault != "metadata",)])
+        if (
+            normalized == interfaces._FUNCTION_CATALOG.strip()
+            and parameters["signature"] in self.lookup_definitions
+        ):
+            key = parameters["signature"]
+            row = self.lookup_definitions[key]
+            return answer(
+                ["oid", "owner", "definer", "config", "body", "arguments"],
+                [
+                    (
+                        self.function_oids[key],
+                        row.owner,
+                        not row.security_definer if fault == "definer" else row.security_definer,
+                        ["search_path=foreign"] if fault == "settings" else list(row.settings),
+                        "counterfeit" if fault == "body" else row.body,
+                        row.signature,
+                    )
+                ],
+            )
+        if (
+            normalized == interfaces._FUNCTION_ACL.strip()
+            and parameters["oid"] in self.function_oids.values()
+        ):
+            key = next(key for key, oid in self.function_oids.items() if oid == parameters["oid"])
+            row = self.lookup_definitions[key]
+            rows = [(role, "EXECUTE", False) for role in row.executors if role != row.owner]
+            if row.name == "resolve_owner_triple":
+                if fault == "executor_missing":
+                    rows = rows[:-1]
+                if fault == "executor_extra":
+                    rows.append(("PUBLIC", "EXECUTE", False))
+                if fault == "executor_grantable" and rows:
+                    rows[0] = (*rows[0][:2], True)
+            return answer(["role", "privilege", "grantable"], rows)
+        if (
+            normalized in {apply._RELATION_ACL.strip(), apply._COLUMN_ACL.strip()}
+            and parameters["oid"] in self.catalog_relations
+        ):
+            row = self.catalog_relations[parameters["oid"]]
+            columns = normalized == apply._COLUMN_ACL.strip()
+            rows = []
+            for permission in row.permissions:
+                if bool(permission.columns) != columns or permission.role == row.owner:
+                    continue
+                for verb in permission.verbs:
+                    rows.extend(
+                        (col, permission.role, verb, False) for col in permission.columns
+                    ) if columns else rows.append((permission.role, verb, False))
+            if row.name in {"entities", "entity_facts"}:
+                if fault == "column_missing" and columns:
+                    rows = rows[:-1]
+                if fault == "column_extra" and columns:
+                    rows.append(("id", "PUBLIC", "SELECT", False))
+                if fault == "table_extra" and not columns:
+                    rows.append(("PUBLIC", "SELECT", False))
+                if fault == "grantable" and rows:
+                    rows[0] = (*rows[0][:-1], True)
+            if fault == "ledger_acl" and row.name == "alembic_version" and not columns:
+                rows.append(("PUBLIC", "INSERT", False))
+            return answer(
+                ["name", "role", "verb", "grantable"] if columns else ["role", "verb", "grantable"],
+                rows,
+            )
+        if normalized == apply._NAMESPACE_CATALOG.strip() and parameters["schemas"] != [
+            "connectors"
+        ]:
+            return answer(
+                ["oid", "name", "owner"],
+                [
+                    (oid, name, self.public_owner if name == "public" else "normal_owner")
+                    for oid, name in self.namespace_oids.items()
+                    if name in parameters["schemas"]
+                ],
+            )
+        if normalized == apply._NAMESPACE_ACL.strip() and parameters["oid"] in self.namespace_oids:
+            schema = self.namespace_oids[parameters["oid"]]
+            rows = tuple(row for row in self.lookup_manifest.relations if row.schema == schema)
+            closed = self.lookup_mode == "closed" or (
+                schema == "relationship" and self.lookup_mode == "module_closed"
+            )
+            if closed:
+                from dataclasses import replace
+
+                rows = tuple(replace(row, permissions=()) for row in rows)
+            users = set(apply.namespace_permissions(rows).get(schema, ())) | {
+                row.owner for row in rows
+            }
+            for row in self.lookup_definitions.values():
+                if row.schema == schema:
+                    users.update((row.owner, *row.executors))
+            expected = {
+                (role, "USAGE", False)
+                for role in users
+                if role != (self.public_owner if schema == "public" else "normal_owner")
+            }
+            if not closed:
+                expected.update(
+                    (role, "CREATE", False)
+                    for role in grants.ordinary_schema_creators(rows).get(schema, ())
+                )
+            if fault == "namespace_extra":
+                expected.add(("PUBLIC", "USAGE", False))
+            if fault == "namespace_missing" and expected:
+                expected.remove(sorted(expected)[0])
+            return answer(["role", "verb", "grantable"], sorted(expected))
+        if normalized == apply._DEFAULT_ACL.strip() and parameters["schemas"] != ["connectors"]:
+            return answer(
+                ["owner", "schema", "kind", "role", "verb"],
+                [("normal_owner", "public", "f", "PUBLIC", "EXECUTE")]
+                if fault == "default"
+                else [],
+            )
+        if normalized == apply._FUNCTIONS.strip() and parameters["schemas"] == ["relationship"]:
+            return answer(
+                ["oid", "schema", "name", "arguments", "owner"],
+                [
+                    (self.function_oids[key], row.schema, row.name, row.signature, row.owner)
+                    for key, row in self.lookup_definitions.items()
+                    if row.schema == "relationship"
+                ],
+            )
+        if "owner-lookup-replay:security" in sql:
+            assert "pg_policy" in sql and "pg_trigger" in sql and "regexp_matches" in sql
+            return answer(["valid"], [(fault != "security",)])
+        if "owner-lookup-replay:dependency-columns" in sql:
+            row = self.catalog_relations[parameters["oid"]]
+            columns = (
+                (("id", "uuid", True), ("roles", "text[]", True), ("metadata", "jsonb", False))
+                if row.name == "entities"
+                else (
+                    ("id", "uuid", True),
+                    ("subject", "uuid", True),
+                    ("primary", "boolean", False),
+                    ("validity", "text", True),
+                    ("object_kind", "text", True),
+                    ("predicate", "text", True),
+                    ("object", "text", True),
+                )
+            )
+            return answer(
+                ["name", "type", "required", "generated", "identity"],
+                [
+                    (
+                        name,
+                        "integer" if fault == "dependency_type" and name == "id" else kind,
+                        required,
+                        "",
+                        "",
+                    )
+                    for name, kind, required in columns
+                ],
+            )
+        if "owner-lookup-replay:dependency-keys" in sql:
+            assert "indisvalid" in sql and "confdeltype='c'" in sql and "convalidated" in sql
+            return answer(["valid"], [(fault != "dependency_keys",)])
+        if "resolve_owner_triple" in sql and (
+            sql.startswith("DO ") or sql.startswith("CREATE ") or sql.startswith("GRANT ")
+        ):
+            self.statements.append(decoded)
+            if self.lookup_mode not in {"fresh", "ordinary"}:
+                raise psycopg2.errors.InsufficientPrivilege("source replay control")
+            return None, []
+        return super().respond(wire, parameters, decoded)
+
+
+def test_owner_lookup_replay_uses_qualified_source_profiles_without_rewriting_functions(tmp_path):
+    import runpy
+    from contextlib import nullcontext
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from sqlalchemy import text
+
+    roster = tmp_path / "roster"
+    (roster / "general").mkdir(parents=True)
+    (roster / "general/butler.toml").write_text(
+        '[butler]\nname="general"\n[butler.db]\nname="butlers"\nschema="general"\n'
+    )
+    cases = [
+        (False, mode, "normal_owner")
+        for mode in ("fresh", "ordinary", "current", "closed", "absent", "module_closed")
+    ] + [(False, "current", "pg_database_owner"), (True, "absent", "normal_owner")]
+    for sparse, mode, namespace_owner in cases:
+        context = patch.object(roles, "_ROSTER_ROOT", roster) if sparse else nullcontext()
+        with context:
+            for revision in ("145", "233"):
+                producer = runpy.run_path(
+                    str(
+                        next(
+                            (Path(__file__).parents[2] / "alembic/versions/core").glob(
+                                f"core_{revision}_*.py"
+                            )
+                        )
+                    )
+                )
+                model = _OwnerLookupPrefixCatalog(mode, public_owner=namespace_owner)
+                with _recording_postgresql_connection(model.respond) as (connection, _):
+                    connection.info["butlers.source_database"] = "butlers"
+                    with (
+                        patch("alembic.op.get_bind", return_value=connection),
+                        patch(
+                            "alembic.op.get_context",
+                            return_value=SimpleNamespace(opts={"version_table_schema": "general"}),
+                        ),
+                        patch(
+                            "alembic.op.execute",
+                            side_effect=lambda sql: connection.execute(text(sql)),
+                        ),
+                    ):
+                        producer["upgrade"]()
+                effects = [
+                    sql
+                    for sql in model.statements
+                    if "resolve_owner_triple" in sql
+                    and sql.lstrip().startswith(("DO ", "CREATE ", "GRANT "))
+                ]
+                assert bool(effects) is (mode in {"fresh", "ordinary"})
+                lookup = next(
+                    row
+                    for row in model.lookup_definitions.values()
+                    if row.name == "resolve_owner_triple"
+                )
+                assert (lookup.executors == ()) is (mode == "closed")
+                if mode != "closed":
+                    assert {"connector_writer", "dashboard_api"} <= set(lookup.executors)
+                assert not model.scratch
+
+
+@pytest.mark.parametrize(
+    "fault",
+    (
+        "signature",
+        "overload",
+        "foreign_owner",
+        "role",
+        "membership",
+        "database_create",
+        "role_ownership",
+        "metadata",
+        "definer",
+        "settings",
+        "body",
+        "executor_missing",
+        "executor_extra",
+        "executor_grantable",
+        "ledger_abi",
+        "unknown_revision",
+        "ledger_acl",
+        "missing_facts",
+        "relation_owner",
+        "rls",
+        "column_missing",
+        "column_extra",
+        "table_extra",
+        "grantable",
+        "namespace_extra",
+        "namespace_missing",
+        "default",
+        "security",
+        "dependency_type",
+        "dependency_keys",
+    ),
+)
+def test_owner_lookup_replay_refuses_incomplete_source_profiles_before_persistent_effects(fault):
+    from types import SimpleNamespace
+
+    from butlers.db_authority import interfaces
+    from butlers.db_authority.roles import AuthorityError
+
+    model = _OwnerLookupPrefixCatalog("current", fault=fault)
+    with _recording_postgresql_connection(model.respond) as (connection, _):
+        connection.info["butlers.source_database"] = "butlers"
+        with patch(
+            "alembic.op.get_context",
+            return_value=SimpleNamespace(opts={"version_table_schema": "general"}),
+        ):
+            with pytest.raises(AuthorityError):
+                interfaces.owner_lookup_revision_reuse(connection, "core_233")
+    assert not any(
+        "resolve_owner_triple" in sql and sql.lstrip().startswith(("DO ", "CREATE ", "GRANT "))
+        for sql in model.statements
+    )
+    assert not model.scratch
+
+
+class _OwnerLookupPrefixCatalog(_OwnerLookupReplayCatalog):
+    """Source-compiled profiles over a recording driver, never physical PG proof.
+
+    The recorder models catalog transport only. Actual compiler, revision graph,
+    component validation, function comparator and migration bodies stay unpatched.
+    """
+
+    def __init__(
+        self,
+        mode,
+        *,
+        fault=None,
+        public_owner="normal_owner",
+        prefix=37,
+        transition=None,
+        contacts=False,
+        backups=False,
+    ):
+        from butlers.db_authority import grants, interfaces
+
+        super().__init__(mode, fault=fault, public_owner=public_owner)
+        self.component = None
+        if mode in {"fresh", "ordinary"}:
+            return
+        if mode != "absent":
+            versions = [
+                row for row in self.version_rows["relationship"] if not row.startswith("rel_")
+            ]
+            if prefix:
+                versions.append(f"rel_{prefix:03}")
+            self.version_rows["relationship"] = versions
+        # Read every actual source chain once for this recording model,
+        # rather than re-importing all migration modules for every ledger row.
+        # This caches no physical row, ACL, or validation verdict.
+        source_revisions = {
+            chain: revisions
+            for chain, _, revisions in grants._owner_lookup_graph_templates(
+                grants._owner_lookup_source_template_identity()
+            )
+        }
+        vector = tuple(
+            sorted(
+                (chain, schema, head)
+                for schema, heads in self.version_rows.items()
+                for head in heads
+                for chain, revisions in source_revisions.items()
+                if head in revisions
+            )
+        )
+        profiles = grants.compile_relationship_component_profiles(
+            self.lookup_manifest, installed_plans=vector
+        )
+        phase = "closed" if mode in {"closed", "module_closed"} else "current"
+        wanted = transition or f"{phase}:{prefix}:{phase}"
+        allowed = [
+            row
+            for row in profiles
+            if wanted in row.source_states
+            and ("contacts" in {obj.name for obj in row.relations})
+            is (contacts or (0 < prefix < 3))
+            and ("addresses_dedup_bak_rel_030" in {obj.name for obj in row.relations}) is backups
+            and ({obj.name for obj in row.relations} & {"reminders", "_reminders_backup"})
+            == (
+                {"reminders"}
+                if 0 < prefix < 7
+                else {"_reminders_backup"}
+                if prefix < 20 and prefix >= 7
+                else set()
+            )
+        ]
+        if mode == "absent":
+            allowed = list(profiles)
+        assert allowed, (mode, prefix, wanted)
+        self.component = allowed[0]
+        self.catalog_relations = {
+            oid: row for oid, row in self.catalog_relations.items() if row.schema != "relationship"
+        }
+        for index, row in enumerate((*self.component.relations, *self.component.context_relations)):
+            if fault == "missing_facts" and row.name == "entity_facts":
+                continue
+            self.catalog_relations[9000 + index] = row
+        self.lookup_definitions = {
+            key: row for key, row in self.lookup_definitions.items() if row.schema != "relationship"
+        }
+        for row in (
+            *self.component.functions,
+            *(group[0] for group in self.component.context_functions),
+        ):
+            self.lookup_definitions[interfaces._signature(row)] = row
+        self.function_oids = {
+            key: 4000 + index for index, key in enumerate(sorted(self.lookup_definitions))
+        }
+        self.expected_capabilities = grants.compile_owner_lookup_capabilities(
+            self.lookup_manifest, component=self.component, ordinary_closed=mode == "closed"
+        )
+
+    def respond(self, wire, parameters, decoded):
+        import re
+
+        from butlers.db_authority import apply
+
+        sql = decoded.strip()
+        normalized = re.sub(r"%\(([A-Za-z0-9_]+)\)s", r":\1", wire).replace("%%", "%").strip()
+
+        def answer(names, rows):
+            self.statements.append(decoded)
+            return names, rows
+
+        if sql == (
+            "SELECT pg_catalog.pg_get_userbyid(relowner) FROM pg_catalog.pg_class "
+            "WHERE oid='connectors.filtered_events'::regclass"
+        ):
+            return answer(["owner"], [(self.parent["owner"],)])
+        if "owner-lookup-replay:complete-purpose-capabilities" in sql:
+            assert all(
+                name in sql
+                for name in (
+                    "pg_class",
+                    "pg_attribute",
+                    "pg_proc",
+                    "pg_namespace",
+                    "pg_default_acl",
+                    "pg_database",
+                    "pg_type",
+                    "pg_language",
+                    "pg_tablespace",
+                    "pg_largeobject_metadata",
+                    "pg_foreign_data_wrapper",
+                    "pg_foreign_server",
+                )
+            )
+            rows = [
+                (row.kind, row.schema, row.name, row.signature, row.column, row.verb, False)
+                for row in self.expected_capabilities.capabilities
+            ]
+            if self.lookup_fault == "model_catalog_extra_column":
+                rows.append(("column", "public", "model_catalog", "", "id", "SELECT", False))
+            elif self.lookup_fault == "other_function_grant":
+                rows.append(
+                    ("function", "public", "posture_writer_allowed", "text", "", "EXECUTE", False)
+                )
+            elif self.lookup_fault == "purpose_default_grant":
+                rows.append(("default", "public", "r", "", "", "SELECT", False))
+            elif self.lookup_fault in {"parameter_set_grant", "parameter_alter_system_grant"}:
+                # An omitted producer query cannot observe this catalog. This
+                # control therefore FAILS on R4's omission rather than feeding
+                # a fictitious parameter row through an unrelated ACL query.
+                if "pg_parameter_acl" in sql:
+                    verb = "SET" if self.lookup_fault == "parameter_set_grant" else "ALTER SYSTEM"
+                    rows.append(("parameter", "", "work_mem", "", "", verb, False))
+            elif self.lookup_fault == "uuid_execute_missing":
+                rows = [
+                    row
+                    for row in rows
+                    if not (row[0] == "function" and row[2] == "uuid_generate_v7")
+                ]
+            return answer(
+                ["kind", "schema", "name", "signature", "column", "verb", "grantable"], rows
+            )
+        if "owner-lookup-replay:managed-public-capabilities" in sql:
+            import json
+
+            assert "a.grantee=0" in sql and "pg_attribute" in sql
+            assert "COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))" in sql
+            relation_keys = {
+                (row["schema"], row["name"]) for row in json.loads(parameters["relations"])
+            }
+            function_keys = {
+                (row["schema"], row["name"], row["signature"])
+                for row in json.loads(parameters["functions"])
+            }
+            rows = []
+            for row in self.catalog_relations.values():
+                if (row.schema, row.name) not in relation_keys or row.schema not in parameters[
+                    "object_schemas"
+                ]:
+                    continue
+                for permission in row.permissions:
+                    if permission.role != "PUBLIC":
+                        continue
+                    for verb in permission.verbs:
+                        if permission.columns:
+                            rows.extend(
+                                ("column", row.schema, row.name, "", column, verb, False)
+                                for column in permission.columns
+                            )
+                        else:
+                            rows.append(("relation", row.schema, row.name, "", "", verb, False))
+            for row in self.lookup_definitions.values():
+                if (
+                    row.identity in function_keys
+                    and "PUBLIC" in row.executors
+                    and row.schema in parameters["object_schemas"]
+                ):
+                    rows.append(
+                        ("function", row.schema, row.name, row.signature, "", "EXECUTE", False)
+                    )
+            if self.component is not None and "PUBLIC" in self.component.namespace_users:
+                rows.append(("namespace", self.component.schema, "", "", "", "USAGE", False))
+            if self.lookup_fault == "public_model_catalog_extra_column":
+                assert ("public", "model_catalog") in relation_keys
+                rows.append(("column", "public", "model_catalog", "", "id", "SELECT", False))
+            if self.lookup_fault == "public_context_extra_column":
+                assert any(row.name == "sessions" for row in self.component.context_relations)
+                if ("relationship", "sessions") in relation_keys:
+                    rows.append(("column", "relationship", "sessions", "", "id", "SELECT", False))
+            # Only an actual namespace-wide non-extension catalog predicate
+            # can observe these unknown source-external user-defined objects.
+            # Exact source names do not expand in response to these rows.
+            if self.lookup_fault == "public_unknown_relation" and (
+                "c.relkind IN ('r','p','v','m','S','f')" in sql
+                and "d.objid=c.oid" in sql
+                and "d.deptype='e'" in sql
+            ):
+                assert "public" in parameters["schemas"]
+                rows.append(
+                    ("relation", "public", "undeclared_owner_probe", "", "", "SELECT", False)
+                )
+            if self.lookup_fault == "public_unknown_column" and (
+                "c.relkind IN ('r','p','v','m','S','f')" in sql
+                and "d.objid=c.oid" in sql
+                and "d.deptype='e'" in sql
+            ):
+                rows.append(
+                    ("column", "public", "undeclared_owner_probe", "", "id", "SELECT", False)
+                )
+            if self.lookup_fault == "public_unknown_namespace" and "n.nspname !~ '^pg_'" in sql:
+                rows.append(("namespace", "undeclared_owner_probe", "", "", "", "USAGE", False))
+            if self.lookup_fault == "public_unknown_function" and (
+                "d.objid=p.oid" in sql and "d.deptype='e'" in sql
+            ):
+                assert "public" in parameters["schemas"]
+                rows.append(
+                    ("function", "public", "undeclared_owner_probe", "", "", "EXECUTE", False)
+                )
+            global_faults = {
+                "public_database_create": ("pg_database", "database", "test_replay", "CREATE"),
+                "public_tablespace_create": ("pg_tablespace", "tablespace", "pg_default", "CREATE"),
+                "public_large_object_read": (
+                    "pg_largeobject_metadata",
+                    "large_object",
+                    "50000",
+                    "SELECT",
+                ),
+                "public_foreign_wrapper_usage": (
+                    "pg_foreign_data_wrapper",
+                    "foreign_wrapper",
+                    "unlisted_wrapper",
+                    "USAGE",
+                ),
+                "public_foreign_server_usage": (
+                    "pg_foreign_server",
+                    "foreign_server",
+                    "unlisted_server",
+                    "USAGE",
+                ),
+            }
+            if self.lookup_fault in global_faults:
+                catalog, kind, name, verb = global_faults[self.lookup_fault]
+                if "FROM pg_catalog." + catalog + " " in sql:
+                    if kind == "database":
+                        assert "pg_catalog.acldefault('d',d.datdba)" in sql
+                    rows.append((kind, "", name, "", "", verb, False))
+            return answer(
+                ["kind", "schema", "name", "signature", "column", "verb", "grantable"], rows
+            )
+        if "owner-lookup-replay:prefix-columns" in sql:
+            return answer(
+                ["name", "type", "required", "generated", "identity"],
+                [
+                    (name, kind, required, "s" if name == "object_entity_id" else "", "")
+                    for name, kind, required in self.component.dependency_columns
+                ],
+            )
+        if normalized == apply._NAMESPACE_ACL.strip() and parameters["oid"] == 51:
+            rows = [
+                (role, "USAGE", False)
+                for role in self.component.namespace_users
+                if role != "normal_owner"
+            ]
+            if self.lookup_fault == "namespace_extra":
+                rows.append(("PUBLIC", "USAGE", False))
+            if self.lookup_fault == "namespace_missing" and rows:
+                rows = rows[:-1]
+            return answer(["role", "verb", "grantable"], rows)
+        if "butlers:core_252:definer_search_paths" in sql:
+            return answer(["locked"], [(None,)])
+        if "p.proname = ANY(:names)" in normalized:
+            return answer(
+                ["signature", "schema_name", "function_name", "search_path"],
+                [
+                    (
+                        key,
+                        row.schema,
+                        row.name,
+                        next(
+                            setting.partition("=")[2]
+                            for setting in row.settings
+                            if setting.startswith("search_path=")
+                        ),
+                    )
+                    for key, row in self.lookup_definitions.items()
+                    if row.name == "resolve_owner_triple"
+                ],
+            )
+        return super().respond(wire, parameters, decoded)
+
+
+@pytest.mark.parametrize("prefix", range(1, 38))
+def test_owner_lookup_all_relationship_source_prefixes_use_actual_consumers(prefix):
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from sqlalchemy import text
+
+    from butlers.migrations import get_chain_revision_path
+
+    actual = get_chain_revision_path("relationship", f"rel_{prefix:03}")
+    assert actual == frozenset(f"rel_{n:03}" for n in range(1, prefix + 1))
+    for mode in ("current", "closed", "module_closed"):
+        # One unchanged catalog is replayed by all three actual consumers;
+        # every consumer still issues its own fresh catalog/role/ACL reads.
+        model = _OwnerLookupPrefixCatalog(mode, prefix=prefix)
+        for revision in ("145", "233", "252"):
+            producer = runpy.run_path(
+                str(
+                    next(
+                        (Path(__file__).parents[2] / "alembic/versions/core").glob(
+                            f"core_{revision}_*.py"
+                        )
+                    )
+                )
+            )
+            with _recording_postgresql_connection(model.respond) as (connection, _):
+                connection.info["butlers.source_database"] = "butlers"
+                with (
+                    patch("alembic.op.get_bind", return_value=connection),
+                    patch(
+                        "alembic.op.get_context",
+                        return_value=SimpleNamespace(opts={"version_table_schema": "general"}),
+                    ),
+                    patch(
+                        "alembic.op.execute", side_effect=lambda sql: connection.execute(text(sql))
+                    ),
+                ):
+                    producer["upgrade"]()
+            names = {row.name for row in model.component.relations}
+            assert ("entity_facts" in names) is (prefix >= 13)
+            assert (
+                "guard_fact_report_authority" in {row.name for row in model.component.functions}
+            ) is (prefix == 37)
+            assert (
+                "reject_fact_evidence_update" in {row.name for row in model.component.functions}
+            ) is (prefix >= 34)
+            assert not any(
+                "resolve_owner_triple" in sql
+                and sql.lstrip().startswith(("DO ", "CREATE ", "GRANT ", "ALTER "))
+                for sql in model.statements
+            )
+            uuid = [
+                row
+                for row in model.expected_capabilities.capabilities
+                if row.kind == "function" and row.name == "uuid_generate_v7"
+            ]
+            assert bool(uuid) is (mode != "closed")
+            assert not model.scratch
+
+
+def test_owner_lookup_prefix_transitions_keep_actual_recreated_and_retained_rights():
+    from butlers.db_authority import grants
+    from butlers.migrations import get_chain_head
+
+    model = _OwnerLookupPrefixCatalog("current", prefix=36, transition="current:35:current")
+    rows = {row.name: row for row in model.component.relations}
+    current_facts = next(
+        row
+        for row in model.lookup_manifest.relations
+        if row.schema == "relationship" and row.name == "entity_facts"
+    )
+    # A finalized-current component retains its source-declared rights. The
+    # rel033 producer is not replayed by a later rel035 -> rel036 transition.
+    assert rows["entity_facts"].permissions == current_facts.permissions
+    assert "identity_lookup_owner" in {p.role for p in rows["entity_facts"].permissions}
+    assert "connector_writer" not in {p.role for p in rows["entity_facts"].permissions}
+    # Crossing rel033 really reintroduces only its exact Connector read grant.
+    import runpy
+    from pathlib import Path
+
+    from sqlalchemy import text
+
+    producer = runpy.run_path(
+        str(next((Path(__file__).parents[2] / "roster/relationship/migrations").glob("033_*.py")))
+    )
+    emitted = []
+
+    def record(wire, parameters, decoded):
+        emitted.append(decoded)
+        return None, []
+
+    with _recording_postgresql_connection(record) as (connection, _):
+        with patch("alembic.op.execute", side_effect=lambda sql: connection.execute(text(sql))):
+            producer["upgrade"]()
+            upgrade = tuple(emitted)
+            emitted.clear()
+            producer["downgrade"]()
+    assert len(upgrade) == len(emitted) == 2
+    assert (
+        sum(
+            'GRANT SELECT ON TABLE relationship.entity_facts TO "connector_writer"' in sql
+            for sql in upgrade
+        )
+        == 1
+    )
+    assert (
+        sum(
+            'REVOKE SELECT ON TABLE relationship.entity_facts FROM "connector_writer"' in sql
+            for sql in emitted
+        )
+        == 1
+    )
+    crossed = _OwnerLookupPrefixCatalog("current", prefix=36, transition="current:32:current")
+    crossed_facts = next(row for row in crossed.component.relations if row.name == "entity_facts")
+    assert (
+        tuple(p for p in crossed_facts.permissions if p.role != "connector_writer")
+        == current_facts.permissions
+    )
+    assert tuple(p for p in crossed_facts.permissions if p.role == "connector_writer") == (
+        grants.Permission("connector_writer", grants._READ),
+    )
+    assert {p.role for p in rows["meeting_debriefs"].permissions} == {"butler_relationship_rw"}
+    # Real rel033 inverse removes only its fixed Connector rights; current
+    # authority does not disappear merely because the installed prefix is old.
+    older = _OwnerLookupPrefixCatalog("current", prefix=32, transition="current:32:current")
+    assert "connector_writer" not in {
+        p.role
+        for row in older.component.relations
+        if row.name == "entity_facts"
+        for p in row.permissions
+    }
+    assert "connector_writer" not in older.component.namespace_users
+    profiles = grants.compile_relationship_component_profiles(
+        model.lookup_manifest,
+        installed_plans=(
+            ("core", "relationship", get_chain_head("core")),
+            ("relationship", "relationship", "rel_030"),
+        ),
+    )
+    # Conditional branch alternatives must never make all eight backups fresh-required.
+    assert any(
+        not any(row.name.endswith("_dedup_bak_rel_030") for row in profile.relations)
+        for profile in profiles
+    )
+    assert any(
+        sum(row.name.endswith("_dedup_bak_rel_030") for row in profile.relations) == 8
+        for profile in profiles
+    )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    (
+        "model_catalog_extra_column",
+        "public_model_catalog_extra_column",
+        "public_context_extra_column",
+        "public_unknown_relation",
+        "public_unknown_column",
+        "public_unknown_function",
+        "public_unknown_namespace",
+        "public_database_create",
+        "public_tablespace_create",
+        "public_large_object_read",
+        "public_foreign_wrapper_usage",
+        "public_foreign_server_usage",
+        "other_function_grant",
+        "purpose_default_grant",
+        "uuid_execute_missing",
+        "parameter_set_grant",
+        "parameter_alter_system_grant",
+    ),
+)
+def test_owner_lookup_complete_fixed_purpose_capability_census_refuses_unrelated_grants(fault):
+    from types import SimpleNamespace
+
+    from butlers.db_authority import interfaces
+    from butlers.db_authority.roles import AuthorityError
+
+    model = _OwnerLookupPrefixCatalog("current", fault=fault)
+    with _recording_postgresql_connection(model.respond) as (connection, _):
+        connection.info["butlers.source_database"] = "butlers"
+        with patch(
+            "alembic.op.get_context",
+            return_value=SimpleNamespace(opts={"version_table_schema": "general"}),
+        ):
+            with pytest.raises(AuthorityError):
+                interfaces.owner_lookup_revision_reuse(connection, "core_233")
+    assert not any(
+        "resolve_owner_triple" in sql and sql.lstrip().startswith(("DO ", "CREATE ", "GRANT "))
+        for sql in model.statements
+    )
+    assert not model.scratch
+
+
+@pytest.mark.parametrize(
+    "schema,name",
+    (
+        ("relationship", "contacts"),
+        ("relationship", "addresses_dedup_bak_rel_030"),
+        ("relationship", "contact_labels_dedup_bak_rel_030"),
+        ("relationship", "group_members_dedup_bak_rel_030"),
+        ("relationship", "important_dates_dedup_bak_rel_030"),
+        ("relationship", "life_events_dedup_bak_rel_030"),
+        ("relationship", "relationships_dedup_bak_rel_030"),
+        ("relationship", "tasks_dedup_bak_rel_030"),
+        ("relationship", "contact_entity_map_dedup_bak_rel_030"),
+        ("public", "contacts_preferred_channel_dropbak_rel_003"),
+    ),
+)
+def test_relationship_retained_actual_compiler_and_validator_preserve_closed_source_outputs(
+    schema, name
+):
+    from butlers.db_authority import apply, grants, interfaces
+    from butlers.db_authority.roles import AuthorityError
+
+    manifest = grants.compile_relation_manifest(
+        "test_retained", "normal_owner", "maintenance", source_database="butlers"
+    )
+    selected = grants.select_migration_manifest(
+        manifest, (("core", "relationship", None), ("relationship", "relationship", None))
+    )
+    for source in (manifest, selected):
+        declared = tuple(
+            row for row in source.relations if row.schema in {"public", "relationship"}
+        )
+        observed = []
+        for index, row in enumerate(declared):
+            if not row.required and (row.schema, row.name) != (schema, name):
+                continue
+            enabled, forced = grants.relation_security_flags(row)
+            observed.append(
+                dict(
+                    schema=row.schema,
+                    name=row.name,
+                    kind={
+                        "table": "r",
+                        "sequence": "S",
+                        "view": "v",
+                        "materialized_view": "m",
+                        "partition": "p",
+                    }[row.kind.value],
+                    owner=row.owner,
+                    rls=enabled,
+                    forced_rls=forced,
+                    oid=index + 1,
+                    partition=False,
+                )
+            )
+        # The source producer observation is independent of whether the old
+        # compiler remembered to declare it: this is the pre-correction RED.
+        if not any((row["schema"], row["name"]) == (schema, name) for row in observed):
+            observed.append(
+                dict(
+                    schema=schema,
+                    name=name,
+                    kind="r",
+                    owner="normal_owner",
+                    rls=False,
+                    forced_rls=False,
+                    oid=999999,
+                    partition=False,
+                )
+            )
+        bound = apply.validate_relations(observed, declared)
+        actual, row = next(
+            (actual, row) for actual, row in bound if (row.schema, row.name) == (schema, name)
+        )
+        assert row.owner == "normal_owner" and row.permissions == () and row.required is False
+        inverse = tuple(row for row in declared if (row.schema, row.name) != (schema, name))
+        with pytest.raises(AuthorityError):
+            apply.validate_relations(observed, inverse)
+        with pytest.raises(AuthorityError):
+            apply.validate_relations(
+                [dict(value, owner="foreign") if value is actual else value for value in observed],
+                declared,
+            )
+        with pytest.raises(AuthorityError):
+            apply.validate_relations(
+                [*observed, dict(actual, name="unlisted_retained_lookalike", oid=999998)], declared
+            )
+        # Complete absence of optional outputs remains a valid fresh shape.
+        apply.validate_relations([value for value in observed if value is not actual], declared)
+
+        def acl(wire, parameters, decoded):
+            if "pg_attribute col" in decoded:
+                return ["name", "role", "verb", "grantable"], []
+            return ["role", "verb", "grantable"], [("dashboard_api", "SELECT", False)]
+
+        with _recording_postgresql_connection(acl) as (connection, _):
+            assert not interfaces._owner_lookup_acl_matches(connection, actual, row)
+        assert not any(
+            (entry.schema, entry.name) == (schema, name) and entry.permissions
+            for entry in grants.ordinary_purpose_relations((row,))
+        )
+
+
+def test_relationship_retained_source_edges_preserve_real_retirement_and_no_future_admission():
+    from butlers.db_authority import grants
+    from butlers.migrations import get_chain_revision_path
+
+    manifest = grants.compile_relation_manifest(
+        "test_retained", "normal_owner", "maintenance", source_database="butlers"
+    )
+    for rel, core, expected in (
+        ("rel_002", "core_123", True),
+        ("rel_003", "core_123", True),
+        ("rel_031", "core_133", True),
+        ("rel_031", "core_151", False),
+    ):
+        rows = grants.relationship_retained_objects(
+            "normal_owner",
+            relationship_revisions=get_chain_revision_path("relationship", rel),
+            core_revisions=get_chain_revision_path("core", core),
+        )
+        name = (
+            "entities_contact_profile_bak_rel_031"
+            if rel == "rel_031"
+            else "contacts_preferred_channel_dropbak_rel_003"
+        )
+        assert any(row.name == name for row in rows) is expected
+        assert all(
+            row.owner == "normal_owner" and row.permissions == () and not row.required
+            for row in rows
+        )
+    before = grants.select_migration_manifest(
+        manifest,
+        (("core", "relationship", "core_133"), ("relationship", "relationship", "rel_029")),
+    )
+    after = grants.select_migration_manifest(
+        manifest,
+        (("core", "relationship", "core_133"), ("relationship", "relationship", "rel_030")),
+    )
+    assert not any(row.name.endswith("_dedup_bak_rel_030") for row in before.relations)
+    assert sum(row.name.endswith("_dedup_bak_rel_030") for row in after.relations) == 8
+    core_only = grants.select_migration_manifest(manifest, (("core", "general", None),))
+    assert not any(
+        row.name in grants._RELATIONSHIP_RETAINED_NAMES
+        for row in core_only.relations
+        if row.schema == "relationship"
+    )
+
+
+@pytest.mark.parametrize("edge", (15, 17))
+def test_owner_lookup_actual_relationship_registry_regrants_preserve_closed_retained_rights(edge):
+    """Actual producer SQL is independent of the profile-generated catalog."""
+    import runpy
+    from dataclasses import replace
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from sqlalchemy import text
+
+    from butlers.db_authority import grants, interfaces
+    from butlers.migrations import get_chain_head
+
+    root = Path(__file__).parents[2]
+    producer = runpy.run_path(
+        str(next((root / "roster/relationship/migrations").glob(f"{edge:03}_*.py")))
+    )
+    emitted = []
+
+    def record(wire, parameters, decoded):
+        emitted.append(decoded)
+        return None, []
+
+    with _recording_postgresql_connection(record) as (connection, _):
+        with patch("alembic.op.execute", side_effect=lambda sql: connection.execute(text(sql))):
+            producer["upgrade"]()
+            upgrade = tuple(emitted)
+            emitted.clear()
+            producer["downgrade"]()
+    grant = 'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE relationship.entity_predicate_registry TO "butler_relationship_rw"'
+    assert sum(grant in statement for statement in upgrade) == 1
+    assert not any("REVOKE" in statement for statement in emitted)
+    # Independent source-action observation: only the registry receives this
+    # grant; no credential/fact/namespace grant can follow from this SQL.
+    assert not any("GRANT" in statement and grant not in statement for statement in upgrade)
+    model = _OwnerLookupPrefixCatalog("module_closed", prefix=edge - 1)
+    old = {row.name: row for row in model.component.relations}
+    assert old["entity_facts"].permissions == ()
+    if edge == 17:
+        assert old["credentials"].permissions == ()
+    changed = replace(
+        old["entity_predicate_registry"],
+        permissions=(grants.Permission("butler_relationship_rw", grants._CRUD),),
+    )
+    observed = tuple(
+        changed if row.name == changed.name else row for row in model.component.relations
+    )
+    plans = (
+        ("core", "relationship", get_chain_head("core")),
+        ("relationship", "relationship", f"rel_{edge:03}"),
+    )
+    profiles = grants.compile_relationship_component_profiles(
+        model.lookup_manifest, installed_plans=plans
+    )
+
+    # The catalog cannot observe the compiler's descriptive producer label.
+    # All actual identity/owner/ACL/RLS/requiredness/security fields stay exact.
+    def observable(rows):
+        return tuple(replace(row, producer="") for row in rows)
+
+    assert any(
+        observable(profile.relations) == observable(observed)
+        and profile.namespace_users == model.component.namespace_users
+        for profile in profiles
+    )
+    # The no-op/no-revoke inverse must retain the same independent observation.
+    inverse_profiles = grants.compile_relationship_component_profiles(
+        model.lookup_manifest,
+        installed_plans=(
+            ("core", "relationship", get_chain_head("core")),
+            ("relationship", "relationship", f"rel_{edge - 1:03}"),
+        ),
+    )
+    assert any(
+        observable(profile.relations) == observable(observed) for profile in inverse_profiles
+    )
+    model.component = replace(model.component, revision=f"rel_{edge:03}", relations=observed)
+    model.catalog_relations.update(
+        {
+            oid: changed
+            for oid, row in model.catalog_relations.items()
+            if row.schema == "relationship" and row.name == changed.name
+        }
+    )
+    model.version_rows["relationship"] = [
+        f"rel_{edge:03}" if value.startswith("rel_") else value
+        for value in model.version_rows["relationship"]
+    ]
+    with _recording_postgresql_connection(model.respond) as (connection, _):
+        connection.info["butlers.source_database"] = "butlers"
+        with patch(
+            "alembic.op.get_context",
+            return_value=SimpleNamespace(opts={"version_table_schema": "general"}),
+        ):
+            assert interfaces.owner_lookup_revision_reuse(connection, "core_233") is True
+    assert not model.scratch
+
+
+@pytest.mark.parametrize("calendar", ("absent", "junction_absent", "present"))
+def test_owner_lookup_actual_reminder_guard_and_inverse_populations(calendar):
+    import runpy
+    from pathlib import Path
+
+    from sqlalchemy import text
+
+    from butlers.db_authority import grants
+    from butlers.migrations import get_chain_head
+
+    root = Path(__file__).parents[2] / "roster/relationship/migrations"
+    rel007 = runpy.run_path(str(next(root.glob("007_*.py"))))
+    rel020 = runpy.run_path(str(next(root.glob("020_*.py"))))
+    rel001 = runpy.run_path(str(next(root.glob("001_*.py"))))
+    tables = {"reminders"}
+    statements = []
+
+    def record(wire, parameters, decoded):
+        sql = decoded.strip()
+        statements.append(sql)
+        if sql.startswith("SELECT to_regclass("):
+            name = sql.partition("('")[2].partition("')")[0]
+            exists = (
+                name in tables
+                or name == "calendar_events"
+                and calendar != "absent"
+                or name == "calendar_event_entities"
+                and calendar == "present"
+            )
+            return ["oid"], [(1 if exists else None,)]
+        if sql == "ALTER TABLE reminders RENAME TO _reminders_backup":
+            tables.remove("reminders")
+            tables.add("_reminders_backup")
+        elif sql == "ALTER TABLE _reminders_backup RENAME TO reminders":
+            tables.remove("_reminders_backup")
+            tables.add("reminders")
+        elif sql == "DROP TABLE IF EXISTS _reminders_backup":
+            tables.discard("_reminders_backup")
+        elif sql.startswith("CREATE TABLE IF NOT EXISTS _reminders_backup"):
+            tables.add("_reminders_backup")
+        elif sql in {
+            "DROP TABLE IF EXISTS " + name
+            for name in (
+                "activity_feed",
+                "quick_facts",
+                "contact_labels",
+                "labels",
+                "group_members",
+                "groups",
+                "loans",
+                "gifts",
+                "reminders",
+                "interactions",
+                "notes",
+                "important_dates",
+                "relationships",
+                "contacts",
+            )
+        }:
+            tables.discard(sql.rpartition(" ")[2])
+        elif sql.startswith("SELECT id FROM calendar_sources WHERE source_key"):
+            return ["id"], [(None,)]
+        else:
+            raise AssertionError("Unmodeled reminder producer operation")
+        return None, []
+
+    manifest = grants.compile_relation_manifest(
+        "butlers", "normal_owner", "maintenance", source_database="butlers"
+    )
+
+    def matches(prefix):
+        profiles = grants.compile_relationship_component_profiles(
+            manifest,
+            installed_plans=(
+                ("core", "relationship", get_chain_head("core")),
+                *((("relationship", "relationship", f"rel_{prefix:03}"),) if prefix else ()),
+            ),
+        )
+        return any(
+            {
+                row.name
+                for row in profile.relations
+                if row.name in {"reminders", "_reminders_backup"}
+            }
+            == tables
+            for profile in profiles
+        )
+
+    with _recording_postgresql_connection(record) as (connection, _):
+        with (
+            patch("alembic.op.get_bind", return_value=connection),
+            patch("alembic.op.execute", side_effect=lambda sql: connection.execute(text(sql))),
+        ):
+            rel007["upgrade"]()
+            assert tables == ({"_reminders_backup"} if calendar == "present" else {"reminders"})
+            assert matches(7)
+            rel020["upgrade"]()
+            assert tables == (set() if calendar == "present" else {"reminders"})
+            assert matches(20)
+            rel020["downgrade"]()
+            assert "_reminders_backup" in tables
+            assert matches(19)
+            rel007["downgrade"]()
+            assert "reminders" in tables
+            assert matches(6)
+            before_base = len(statements)
+            rel001["downgrade"]()
+            assert len(statements) - before_base == 14
+            assert tables == (set() if calendar == "present" else {"_reminders_backup"})
+            assert matches(0)
+    if calendar != "present":
+        assert not any(
+            sql == "ALTER TABLE reminders RENAME TO _reminders_backup" for sql in statements
+        )
+    retained = grants.relationship_retained_objects(
+        "normal_owner",
+        relationship_revisions=frozenset(f"rel_{n:03}" for n in range(1, 38)),
+        core_revisions=frozenset(),
+    )
+    row = next(row for row in retained if row.name == "reminders")
+    assert row.permissions == () and row.owner == "normal_owner" and row.required is False
+
+
+@pytest.mark.parametrize(
+    "edge,name", ((34, "reject_fact_evidence_update"), (37, "guard_fact_report_authority"))
+)
+def test_owner_lookup_managed_public_census_preserves_real_function_producers(edge, name):
+    """Actual producer actions establish PUBLIC-default source provenance."""
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from sqlalchemy import text
+
+    from butlers.db_authority import interfaces
+
+    producer = runpy.run_path(
+        str(
+            next(
+                (Path(__file__).parents[2] / "roster/relationship/migrations").glob(
+                    f"{edge:03}_*.py"
+                )
+            )
+        )
+    )
+    statements = []
+
+    def record(wire, parameters, decoded):
+        statements.append(decoded)
+        return None, []
+
+    with _recording_postgresql_connection(record) as (connection, _):
+        with patch("alembic.op.execute", side_effect=lambda sql: connection.execute(text(sql))):
+            producer["upgrade"]()
+    create = [
+        sql
+        for sql in statements
+        if f"CREATE OR REPLACE FUNCTION relationship.{name}()" in sql
+        or f"CREATE FUNCTION relationship.{name}()" in sql
+    ]
+    assert len(create) == 1
+    assert (
+        sum(
+            create[0].count(prefix + f"relationship.{name}()")
+            for prefix in ("CREATE OR REPLACE FUNCTION ", "CREATE FUNCTION ")
+        )
+        == 1
+    )
+    assert not any("REVOKE" in sql for sql in statements)
+    model = _OwnerLookupPrefixCatalog("closed", prefix=edge, transition=f"closed:{edge - 1}:closed")
+    row = next(row for row in model.component.functions if row.name == name)
+    assert row.executors == ("PUBLIC",) and row.settings == ()
+    public = [
+        row
+        for row in model.expected_capabilities.public_capabilities
+        if row.kind == "function" and row.name == name
+    ]
+    assert len(public) == 1 and public[0].verb == "EXECUTE"
+    with _recording_postgresql_connection(model.respond) as (connection, _):
+        connection.info["butlers.source_database"] = "butlers"
+        with patch(
+            "alembic.op.get_context",
+            return_value=SimpleNamespace(opts={"version_table_schema": "general"}),
+        ):
+            assert interfaces.owner_lookup_revision_reuse(connection, "core_233") is True
+    assert any("owner-lookup-replay:managed-public-capabilities" in sql for sql in model.statements)
+    assert not model.scratch
+
+
+def test_owner_lookup_public_census_preserves_actual_ordinary_target_wrapper():
+    import runpy
+    from dataclasses import replace
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from sqlalchemy import text
+
+    from butlers.db_authority import interfaces
+
+    producer = runpy.run_path(
+        str(next((Path(__file__).parents[2] / "alembic/versions/core").glob("core_135_*.py")))
+    )
+    model = _OwnerLookupPrefixCatalog("current")
+    model.local = False
+    context = SimpleNamespace(opts={"version_table_schema": "general"})
+    with _recording_postgresql_connection(model.respond) as (connection, _):
+        connection.info["butlers.source_database"] = "butlers"
+        with (
+            patch("alembic.op.get_bind", return_value=connection),
+            patch("alembic.op.get_context", return_value=context),
+            patch("alembic.op.execute", side_effect=lambda sql: connection.execute(text(sql))),
+        ):
+            producer["upgrade"]()
+    created = [
+        sql
+        for sql in model.statements
+        if sql.lstrip().startswith(
+            "CREATE OR REPLACE FUNCTION connectors_filtered_events_ensure_partition("
+        )
+    ]
+    assert len(created) == 1
+    assert producer["_FUNCTION_BODY"] in created[0]
+    assert "SET search_path = connectors, public, pg_temp" in created[0]
+    assert not any(
+        sql.lstrip().startswith("CREATE OR REPLACE FUNCTION connectors.")
+        for sql in model.statements
+    )
+    # Catalog transport follows the actual ordinary session and observed
+    # producer body/default ACL. No membership, serving grant or owner switch.
+    ordinary = replace(
+        model.functions["general"],
+        owner="normal_owner",
+        executors=("PUBLIC",),
+        settings=("search_path=connectors, public, pg_temp",),
+    )
+    model.functions["general"] = ordinary
+    model.local = True
+    model.lookup_definitions[interfaces._signature(ordinary)] = ordinary
+    model.function_oids[interfaces._signature(ordinary)] = max(model.function_oids.values()) + 1
+    model.version_rows["general"] = [
+        "core_144" if value.startswith("core_") else value
+        for value in model.version_rows["general"]
+    ]
+
+    def observe(wire, parameters, decoded):
+        if "connectors-replay:function-population" in decoded:
+            model.statements.append(decoded)
+            return ["schema", "arguments", "owner"], [
+                ("connectors", "timestamp with time zone", "connector_partition_owner"),
+                ("general", "timestamp with time zone", "normal_owner"),
+            ]
+        return model.respond(wire, parameters, decoded)
+
+    with _recording_postgresql_connection(observe) as (connection, _):
+        connection.info["butlers.source_database"] = "butlers"
+        with patch("alembic.op.get_context", return_value=context):
+            assert interfaces.owner_lookup_revision_reuse(connection, "core_145") is True
+    assert "general" not in model.expected_capabilities.public_object_schemas
+    assert ordinary.executors == ("PUBLIC",) and not model.scratch

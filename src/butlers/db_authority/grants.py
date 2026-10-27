@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import lru_cache as _owner_lookup_template_cache
 
 from .roles import AuthorityError, RuntimeProfile, runtime_profiles
 
@@ -1085,6 +1086,14 @@ def compile_relation_manifest(
             migration_owner, switchboard=any(p.primary_schema == "switchboard" for p in profiles)
         ),
     )
+    if any(profile.primary_schema == "relationship" for profile in profiles):
+        from butlers.migrations import get_chain_revision_path
+
+        relations += relationship_retained_objects(
+            migration_owner,
+            relationship_revisions=get_chain_revision_path("relationship"),
+            core_revisions=get_chain_revision_path("core"),
+        )
     relations = ordinary_purpose_relations(relations)
     relations += declared_sequences(relations)
     # A fixed cross-runtime exception cannot manufacture an absent daemon
@@ -1390,6 +1399,27 @@ def select_migration_manifest(manifest: RelationManifest, plans: tuple | None) -
             or "finance_006" in selected_revisions.get((row.schema, "finance"), set())
         )
     }
+    # Retained outputs follow actual installed source edges, independently of
+    # requested serving rights. A core-only/future-domain target cannot admit
+    # a Relationship backup just because the full deployment knows its name.
+    retained_keys = {("relationship", name) for name in _RELATIONSHIP_RETAINED_NAMES} | {
+        ("public", "contacts_preferred_channel_dropbak_rel_003"),
+        ("public", "entities_contact_profile_bak_rel_031"),
+    }
+    rows = {key: row for key, row in rows.items() if (row.schema, row.name) not in retained_keys}
+    relationship_revisions = frozenset().union(
+        *(
+            revisions
+            for (_, chain), revisions in selected_revisions.items()
+            if chain == "relationship"
+        )
+    )
+    for row in relationship_retained_objects(
+        manifest.migration_owner,
+        relationship_revisions=relationship_revisions,
+        core_revisions=core_revisions,
+    ):
+        rows[row.identity] = row
     # core_002 creates this database-global table; core_115 drops it. A later
     # selected core replay supersedes an older prefix, independent of target schema.
     if "core_002" in core_revisions and "core_115" not in core_revisions:
@@ -5810,3 +5840,956 @@ def compiled_security_contract(manifest: RelationManifest, *, ordinary_purposes=
                 constraint=True,
             )
     return dict(policies=policies, triggers=triggers)
+
+
+# Exact retained outputs of Relationship producers. These administrative rows
+# confer no serving permission and are never promoted into _DOMAIN_TABLES.
+_RELATIONSHIP_RETAINED_NAMES = (
+    "contacts",
+    "addresses_dedup_bak_rel_030",
+    "contact_labels_dedup_bak_rel_030",
+    "group_members_dedup_bak_rel_030",
+    "important_dates_dedup_bak_rel_030",
+    "life_events_dedup_bak_rel_030",
+    "relationships_dedup_bak_rel_030",
+    "tasks_dedup_bak_rel_030",
+    "contact_entity_map_dedup_bak_rel_030",
+    "reminders",
+)
+
+
+def relationship_retained_objects(migration_owner, *, relationship_revisions, core_revisions):
+    """Closed, conditional outputs of exact checked-in producer edges.
+
+    Current source cannot attest which conditional branch ran. It declares
+    only these possible retained identities, without granting a capability or
+    requiring that a fresh deployment contain a backup.
+    """
+    rows = []
+    if "rel_001" in relationship_revisions:
+        # rel007 can return before its rename when local core calendar
+        # producers have not run. rel020 drops only the backup, not this table.
+        rows.append(
+            ObjectAuthority(
+                "relationship",
+                "reminders",
+                ObjectKind.TABLE,
+                migration_owner,
+                (),
+                "rel001 retained after rel007 calendar-guard skip",
+                required=False,
+            )
+        )
+        rows.append(
+            ObjectAuthority(
+                "relationship",
+                "contacts",
+                ObjectKind.TABLE,
+                migration_owner,
+                (),
+                "rel001 local producer / rel003 conditional shadow",
+                required=False,
+            )
+        )
+    if "rel_030" in relationship_revisions:
+        rows.extend(
+            ObjectAuthority(
+                "relationship",
+                name,
+                ObjectKind.TABLE,
+                migration_owner,
+                (),
+                "rel030 conditional retained dedup snapshot",
+                required=False,
+            )
+            for name in _RELATIONSHIP_RETAINED_NAMES
+            if name.endswith("_dedup_bak_rel_030")
+        )
+    # rel003 downgrade deliberately leaves this recovery snapshot. Any
+    # installed Relationship prefix may be a genuine inverse of that producer;
+    # absence remains valid and no access is granted by this retained row.
+    if relationship_revisions:
+        rows.append(
+            ObjectAuthority(
+                "public",
+                "contacts_preferred_channel_dropbak_rel_003",
+                ObjectKind.TABLE,
+                migration_owner,
+                (),
+                "rel003 conditional preference snapshot",
+                required=False,
+            )
+        )
+    if "rel_031" in relationship_revisions and "core_151" not in core_revisions:
+        rows.append(
+            ObjectAuthority(
+                "public",
+                "entities_contact_profile_bak_rel_031",
+                ObjectKind.TABLE,
+                migration_owner,
+                (),
+                "rel031 conditional profile snapshot; core151 retirement",
+                required=False,
+            )
+        )
+    return tuple(rows)
+
+
+@dataclass(frozen=True)
+class ComponentAuthorityProfile:
+    """A complete fixed source alternative; catalog observations choose no grants."""
+
+    chain: str
+    schema: str
+    revision: str
+    phase: str
+    relations: tuple[ObjectAuthority, ...]
+    functions: tuple[FunctionAuthority, ...]
+    policies: tuple[str, ...]
+    triggers: tuple[str, ...]
+    dependency_columns: tuple[tuple[str, str, bool], ...]
+    forbidden_columns: tuple[str, ...]
+    namespace_users: tuple[str, ...]
+    context_relations: tuple[ObjectAuthority, ...]
+    context_functions: tuple[tuple[FunctionAuthority, ...], ...]
+    source_states: tuple[str, ...] = ()
+
+
+# (introduced, retired-before, source name). These are literal checked-in
+# producer windows, not names discovered from a database or a function body.
+_RELATIONSHIP_TABLE_WINDOWS = (
+    (1, None, "relationships"),
+    (1, None, "important_dates"),
+    (1, 10, "notes"),
+    (1, 10, "interactions"),
+    (1, 10, "gifts"),
+    (1, 10, "loans"),
+    (1, 10, "activity_feed"),
+    (1, None, "groups"),
+    (1, None, "group_members"),
+    (1, None, "labels"),
+    (1, None, "contact_labels"),
+    (1, 25, "quick_facts"),
+    (5, None, "addresses"),
+    (8, None, "relationship_types"),
+    (8, None, "life_event_categories"),
+    (8, None, "life_event_types"),
+    (9, None, "life_events"),
+    (9, None, "tasks"),
+    (13, None, "entity_facts"),
+    (14, None, "entity_predicate_registry"),
+    (16, None, "credentials"),
+    (21, None, "entity_view_marks"),
+    (21, None, "merge_reviews"),
+    (23, None, "group_labels"),
+    (29, None, "contact_entity_map"),
+    (34, None, "fact_evidence"),
+    (34, None, "fact_coverage"),
+    (34, None, "fact_approval_context"),
+    (36, None, "meeting_debriefs"),
+    (37, None, "fact_approval_rule_context"),
+    (37, None, "fact_identity_decisions"),
+)
+_RELATIONSHIP_REL030_BACKUPS = (
+    "addresses",
+    "contact_labels",
+    "group_members",
+    "important_dates",
+    "life_events",
+    "relationships",
+    "tasks",
+    "contact_entity_map",
+)
+_RELATIONSHIP_FUNCTION_EDGES = {
+    "reject_fact_evidence_update": "rel_034",
+    "guard_fact_report_authority": "rel_037",
+}
+_RELATIONSHIP_FACT_COLUMNS = (
+    (13, "id", "uuid", True),
+    (13, "subject", "uuid", True),
+    (13, "predicate", "text", True),
+    (13, "object", "text", True),
+    (13, "object_kind", "text", True),
+    (13, "src", "text", True),
+    (13, "conf", "double precision", True),
+    (13, "last_seen", "timestamp with time zone", False),
+    (13, "weight", "integer", False),
+    (13, "verified", "boolean", True),
+    (13, "primary", "boolean", False),
+    (13, "validity", "text", True),
+    (13, "created_at", "timestamp with time zone", True),
+    (13, "updated_at", "timestamp with time zone", True),
+    (21, "observed_at", "timestamp with time zone", False),
+    (21, "metadata", "jsonb", False),
+    (34, "assert_origin", "text", False),
+    (34, "assert_session_id", "uuid", False),
+    (34, "assert_action_id", "uuid", False),
+    (35, "effective_period_id", "uuid", False),
+    (35, "effective_from", "timestamp with time zone", False),
+    (35, "effective_from_precision", "text", False),
+    (35, "effective_to", "timestamp with time zone", False),
+    (35, "effective_to_precision", "text", False),
+    (37, "content_authority", "text", False),
+    (37, "authority_entity_id", "uuid", False),
+    (37, "authority_original_entity_id", "uuid", False),
+    (37, "authority_entity_created_at", "timestamp with time zone", False),
+    (37, "confirmed_by_entity_id", "uuid", False),
+    (37, "confirmed_by_original_entity_id", "uuid", False),
+    (37, "confirmed_at", "timestamp with time zone", False),
+    (37, "confirmation_source", "text", False),
+    (37, "object_entity_id", "uuid", False),
+)
+
+
+_RELATIONSHIP_CONTEXT_FUNCTION_EDGES = {
+    "alembic/versions/core/core_135_filtered_events_ensure_partition_security_definer.py": (
+        "core",
+        "core_135",
+    ),
+    "src/butlers/modules/approvals/migrations/001_approvals_tables.py": (
+        "approvals",
+        "approvals_001",
+    ),
+    "src/butlers/modules/approvals/migrations/008_retain_event_action_provenance.py": (
+        "approvals",
+        "approvals_008",
+    ),
+    "src/butlers/modules/approvals/migrations/009_retain_rule_creator_provenance.py": (
+        "approvals",
+        "approvals_009",
+    ),
+    "src/butlers/modules/approvals/migrations/011_retain_event_rule_provenance.py": (
+        "approvals",
+        "approvals_011",
+    ),
+    "src/butlers/modules/approvals/migrations/015_delivery_intent_recovery.py": (
+        "approvals",
+        "approvals_015",
+    ),
+    "src/butlers/modules/approvals/migrations/016_retention_cascade_attempt_cleanup.py": (
+        "approvals",
+        "approvals_016",
+    ),
+    "src/butlers/modules/memory/migrations/001_memory_schema.py": ("memory", "mem_001"),
+    "src/butlers/modules/memory/migrations/010_preserve_episode_provenance.py": (
+        "memory",
+        "mem_010",
+    ),
+    "roster/general/migrations/003_ordinary_source_authority.py": ("general", "gen_003"),
+    "roster/relationship/migrations/034_fact_evidence_and_coverage.py": ("relationship", "rel_034"),
+    "roster/relationship/migrations/037_fact_content_authority.py": ("relationship", "rel_037"),
+}
+_RELATIONSHIP_CORE007_WRAPPER = (
+    (
+        "\n        CREATE OR REPLACE FUNCTION connectors_filtered_even"
+        "ts_ensure_partition(\n            reference_ts TIMESTAMPTZ DE"
+        "FAULT now()\n        ) RETURNS TEXT\n        LANGUAGE plpgsql\n"
+        "        "
+    ),
+    (
+        "\n        DECLARE\n            month_start    TIMESTAMPTZ;\n   "
+        "         month_end      TIMESTAMPTZ;\n            partition_n"
+        "ame TEXT;\n            next_start     TIMESTAMPTZ;\n          "
+        "  next_end       TIMESTAMPTZ;\n            next_name      TEX"
+        "T;\n        BEGIN\n            -- Current month partition\n    "
+        "        month_start    := date_trunc('month', reference_ts);"
+        "\n            month_end      := month_start + INTERVAL '1 mon"
+        "th';\n            partition_name := format('filtered_events_%"
+        "s', to_char(month_start, 'YYYYMM'));\n\n            EXECUTE fo"
+        "rmat(\n                'CREATE TABLE IF NOT EXISTS connectors"
+        ".%I '\n                'PARTITION OF connectors.filtered_even"
+        "ts '\n                'FOR VALUES FROM (%L) TO (%L)',\n       "
+        "         partition_name,\n                month_start,\n      "
+        "          month_end\n            );\n\n            -- Next mont"
+        "h partition (proactive)\n            next_start := month_end;"
+        "\n            next_end   := next_start + INTERVAL '1 month';\n"
+        "            next_name  := format('filtered_events_%s', to_ch"
+        "ar(next_start, 'YYYYMM'));\n\n            EXECUTE format(\n    "
+        "            'CREATE TABLE IF NOT EXISTS connectors.%I '\n    "
+        "            'PARTITION OF connectors.filtered_events '\n     "
+        "           'FOR VALUES FROM (%L) TO (%L)',\n                n"
+        "ext_name,\n                next_start,\n                next_e"
+        "nd\n            );\n\n            RETURN partition_name;\n      "
+        "  END;\n        "
+    ),
+)
+
+
+def _owner_lookup_source_template_identity():
+    """Fingerprint actual compiler/graph bytes; never cache a catalog verdict."""
+    import hashlib
+    from pathlib import Path
+
+    from butlers import migrations
+
+    from . import roles
+
+    paths = {
+        Path(__file__).resolve(),
+        Path(migrations.__file__).resolve(),
+        Path(roles.__file__).resolve(),
+        Path(__file__).with_name("interfaces.py"),
+        migrations.ALEMBIC_DIR / "alembic.ini",
+    }
+    for chain in migrations.get_all_chains():
+        directory = migrations._resolve_chain_dir(chain)
+        if directory is None:
+            raise AuthorityError("Source component directory is unavailable")
+        paths.update(directory.glob("*.py"))
+    digest = hashlib.sha256()
+    for path in sorted(paths):
+        data = path.read_bytes()
+        digest.update(str(path.resolve()).encode())
+        digest.update(b"\0" + len(data).to_bytes(8, "big") + data)
+    return digest.hexdigest()
+
+
+@_owner_lookup_template_cache(maxsize=16)
+def _owner_lookup_function_templates(profiles, owner, source_identity):
+    # The key includes actual graph/compiler bytes and complete declared roles.
+    # These are immutable definitions, not physical OIDs/ACLs or prior success.
+    from .interfaces import final_functions
+
+    ordinary = compile_function_manifest(
+        profiles, owner, (("core", "public", None), *deployment_function_plans(profiles))
+    )
+    return ordinary, final_functions(profiles, owner)
+
+
+@_owner_lookup_template_cache(maxsize=16)
+def _owner_lookup_graph_templates(source_identity):
+    from butlers import migrations
+
+    return tuple(
+        (chain, migrations.get_chain_head(chain), migrations.get_chain_revision_ids(chain))
+        for chain in migrations.get_all_chains()
+    )
+
+
+@_owner_lookup_template_cache(maxsize=128)
+def _owner_lookup_revision_path_template(chain, revision, source_identity):
+    from butlers.migrations import get_chain_revision_path
+
+    return get_chain_revision_path(chain, revision)
+
+
+def _owner_lookup_source_revision_path(chain, revision):
+    return _owner_lookup_revision_path_template(
+        chain, revision, _owner_lookup_source_template_identity()
+    )
+
+
+@_owner_lookup_template_cache(maxsize=256)
+def _owner_lookup_selected_template(manifest, plans, source_identity):
+    return select_migration_manifest(manifest, plans)
+
+
+def _owner_lookup_validate_source_plans(manifest, plans, source_identity):
+    # Source admission was originally per ledger row. Reuse only those pure
+    # stencils across prefix alternatives; the complete installed vector and
+    # its physical catalog still undergo independent component validation.
+    for plan in plans:
+        _owner_lookup_selected_template(manifest, (plan,), source_identity)
+
+
+def _owner_lookup_admit_source_plans(manifest, plans):
+    return _owner_lookup_selected_template(
+        manifest, plans, _owner_lookup_source_template_identity()
+    )
+
+
+def compile_relationship_component_profiles(manifest, *, installed_plans):
+    if (
+        not isinstance(manifest, RelationManifest)
+        or type(installed_plans) is not tuple
+        or any(
+            type(row) is not tuple
+            or len(row) != 3
+            or any(type(value) is not str or not value for value in row)
+            for row in installed_plans
+        )
+    ):
+        raise AuthorityError("Installed component source vector is unavailable")
+    return _compile_relationship_component_profiles(
+        manifest, installed_plans, _owner_lookup_source_template_identity()
+    )
+
+
+@_owner_lookup_template_cache(maxsize=16)
+def _compile_relationship_component_profiles(manifest, installed_plans, source_identity):
+    """Compile all source prefixes independently of desired future batch plans.
+
+    This explicit API does not alter any existing compiler caller/default.
+    Actual installed rows must first be physically/source qualified. Revision age
+    controls producer requiredness, while source authority phase controls rights.
+    Neither observed object absence nor an observed ACL enters this compiler.
+    """
+    import json
+    from dataclasses import replace
+    from functools import lru_cache
+    from itertools import product
+
+    from butlers import migrations
+
+    # Each actual graph is loaded once for this pure compilation. The outer
+    # key fingerprints those same source bytes before every consumer call.
+    get_chain_head = lru_cache(maxsize=None)(migrations.get_chain_head)
+
+    def get_chain_revision_path(chain, revision):
+        return _owner_lookup_revision_path_template(chain, revision, source_identity)
+
+    if not isinstance(installed_plans, tuple):
+        raise AuthorityError("Installed component source vector is unavailable")
+    selected = []
+    seen = set()
+    for row in installed_plans:
+        if not isinstance(row, tuple) or len(row) != 3:
+            raise AuthorityError("Installed component source row is invalid")
+        chain, schema, revision = row
+        if any(type(value) is not str or not value for value in row) or (chain, schema) in seen:
+            raise AuthorityError("Installed component revision is ambiguous")
+        seen.add((chain, schema))
+        try:
+            path = get_chain_revision_path(chain, revision)
+        except RuntimeError as exc:
+            raise AuthorityError("Installed component revision is not source-owned") from exc
+        if revision not in path:
+            raise AuthorityError("Installed component revision is not source-owned")
+        selected.append((chain, schema, revision))
+    # Use the existing complete source admission once, without recompiling one
+    # entire manifest for every repeated per-schema core row.
+    _owner_lookup_validate_source_plans(manifest, tuple(selected), source_identity)
+    heads = [
+        revision
+        for chain, schema, revision in selected
+        if chain == "relationship" and schema == "relationship"
+    ]
+    if len(heads) > 1:
+        raise AuthorityError("Relationship source vector is ambiguous")
+    revision = heads[0] if heads else "base"
+    path = frozenset(get_chain_revision_path("relationship", revision)) if heads else frozenset()
+    expected = tuple(f"rel_{number:03}" for number in range(1, 38))
+    if revision != "base" and (
+        revision not in expected or path != frozenset(expected[: expected.index(revision) + 1])
+    ):
+        raise AuthorityError("Relationship prefix is not an enumerated source state")
+    n = expected.index(revision) + 1 if revision != "base" else 0
+    declared = {row.name: row for row in manifest.relations if row.schema == "relationship"}
+    names = {
+        name
+        for since, until, name in _RELATIONSHIP_TABLE_WINDOWS
+        if since <= n and (until is None or n < until)
+    }
+    if heads:
+        names.add("alembic_version")
+    context_relations = ()
+    # A qualified current core prefix owns its declared local component. Bounded
+    # core rows stay source-known, without claiming a future core producer ran.
+    core_heads = [
+        head for chain, schema, head in selected if chain == "core" and schema == "relationship"
+    ]
+    if core_heads:
+        core_manifest = _owner_lookup_selected_template(
+            manifest,
+            (
+                (
+                    "core",
+                    "relationship",
+                    None if core_heads[0] == get_chain_head("core") else core_heads[0],
+                ),
+            ),
+            source_identity,
+        )
+        context_relations = tuple(
+            row
+            for row in core_manifest.relations
+            if row.schema == "relationship"
+            and row.name
+            not in {
+                *_DOMAIN_TABLES["relationship"],
+                *_RELATIONSHIP_RETAINED_NAMES,
+                "alembic_version",
+            }
+        )
+        if not heads:
+            names.add("alembic_version")
+            context_relations = tuple(
+                row for row in context_relations if row.name != "alembic_version"
+            )
+    # Exact rel007/020 producer and inverse populations. Calendar guards can
+    # skip the rename; rel020 drops only backup, and its inverse recreates it.
+    # Both names can therefore coexist. Neither acquires serving privileges.
+    if n == 0:
+        reminder_variants = ((), ("_reminders_backup",))
+    elif n < 7:
+        reminder_variants = (("reminders",), ("reminders", "_reminders_backup"))
+    elif n < 20:
+        reminder_variants = (
+            ("_reminders_backup",),
+            ("reminders",),
+            ("reminders", "_reminders_backup"),
+        )
+    else:
+        reminder_variants = ((), ("reminders",))
+    # rel003 can retain the local shadow if core134 ran first; durable current
+    # heads do not encode that ordering. Both complete producer shapes are fixed
+    # source alternatives. No runtime right is granted to either old identity.
+    contacts_variants = (False,) if n == 0 else ((True,) if n < 3 else (False, True))
+    backup_variants = (False, True) if n >= 30 else (False,)
+    definitions = compile_function_manifest(
+        manifest.profiles,
+        manifest.migration_owner,
+        (("relationship", "relationship", None),)
+        + tuple(
+            (chain, schema, None)
+            for chain, schema, _ in selected
+            if schema == "relationship" and chain != "relationship"
+        ),
+    )
+    functions = []
+    context_functions = []
+    for row in definitions:
+        if row.schema != "relationship":
+            continue
+        edge = _RELATIONSHIP_FUNCTION_EDGES.get(row.name)
+        if edge is not None:
+            if edge in path:
+                functions.append(row)
+            continue
+        # Core-produced local compatibility functions need their own installed
+        # core source edge, not the requested future target's chain.
+        edge = _RELATIONSHIP_CONTEXT_FUNCTION_EDGES.get(row.producer)
+        if edge is not None:
+            chain, edge_revision = edge
+            actual = next(
+                (head for c, schema, head in selected if c == chain and schema == "relationship"),
+                None,
+            )
+            if actual is not None and edge_revision in get_chain_revision_path(chain, actual):
+                ordinary_settings = (
+                    ("search_path=pg_catalog, connectors",)
+                    if row.name == "connectors_filtered_events_ensure_partition"
+                    else ()
+                )
+                variants = (
+                    row,
+                    replace(row, executors=()),
+                    replace(
+                        row,
+                        owner=manifest.migration_owner,
+                        executors=("PUBLIC",),
+                        settings=ordinary_settings,
+                    ),
+                    replace(
+                        row,
+                        owner=manifest.migration_owner,
+                        executors=(),
+                        settings=ordinary_settings,
+                    ),
+                )
+                context_functions.append(tuple(dict.fromkeys(variants)))
+    # The core007 wrapper is a distinct ordinary invoker predecessor, not the
+    # later core135 source body/definer state with its revision label changed.
+    if core_heads:
+        core_path = get_chain_revision_path("core", core_heads[0])
+        if "core_007" in core_path and "core_135" not in core_path:
+            header, body = _RELATIONSHIP_CORE007_WRAPPER
+            context_functions.append(
+                (
+                    FunctionAuthority(
+                        "relationship",
+                        "connectors_filtered_events_ensure_partition",
+                        "timestamp with time zone",
+                        manifest.migration_owner,
+                        ("PUBLIC",),
+                        False,
+                        header,
+                        body,
+                        "alembic/versions/core/core_007_connectors.py",
+                        (),
+                    ),
+                )
+            )
+    relation_roles = {p.role for p in manifest.profiles if p.primary_schema == "relationship"}
+    producer_grants = {
+        "entity_facts": (13, _CRUD),
+        "entity_predicate_registry": (14, _CRUD),
+        "credentials": (16, _CRUD),
+        "entity_view_marks": (21, _CRUD),
+        "merge_reviews": (21, _CRUD),
+        "fact_evidence": (34, _CRUD),
+        "fact_coverage": (34, _CRUD),
+        "fact_approval_context": (34, _CRUD),
+        "meeting_debriefs": (36, _CRUD),
+        "fact_approval_rule_context": (37, _CRUD),
+        "fact_identity_decisions": (37, _CRUD),
+    }
+    namespace_current_fs = compile_function_manifest(
+        manifest.profiles,
+        manifest.migration_owner,
+        (("relationship", "relationship", None),)
+        + ((("core", "relationship", None),) if core_heads else ()),
+    )
+    result = []
+    birth = {name: since for since, _, name in _RELATIONSHIP_TABLE_WINDOWS}
+    birth.update({name + "_dedup_bak_rel_030": 30 for name in _RELATIONSHIP_REL030_BACKUPS})
+    birth.update({"contacts": 1, "reminders": 1, "_reminders_backup": 7})
+    # Finite actual transitions: producers from base, or a finalized current
+    # source component downgraded to a lower source prefix and then upgraded.
+    # A new table/function receives only its actual producer effects; retained
+    # objects keep the prior current/closed posture. No finalizer is invented.
+    transitions = [("producer", 0, core_phase) for core_phase in ("current", "closed")]
+    transitions += [
+        (phase, low, phase) for phase in ("current", "closed") for low in range(0, n + 1)
+    ]
+    # rel015/017 repeat the registry CRUD grant without recreating it. Their
+    # inverses never revoke it, including a later inverse back to rel014/016.
+    transitions += [
+        (phase, low, phase + "+registry17")
+        for phase in ("current", "closed")
+        for low in range(14, n + 1)
+    ]
+    for contacts, backups, reminders, (phase, low, core_phase) in product(
+        contacts_variants, backup_variants, reminder_variants, transitions
+    ):
+        registry_regranted = core_phase.endswith("+registry17")
+        core_phase = core_phase.removesuffix("+registry17")
+        state = (
+            phase
+            + ":"
+            + str(low)
+            + ":"
+            + core_phase
+            + ("+registry17" if registry_regranted else "")
+        )
+        population = names | set(reminders) | ({"contacts"} if contacts else set())
+        if backups:
+            population.update(name + "_dedup_bak_rel_030" for name in _RELATIONSHIP_REL030_BACKUPS)
+        rows = []
+        for name in sorted(population):
+            row = declared.get(name) or ObjectAuthority(
+                "relationship",
+                name,
+                ObjectKind.TABLE,
+                manifest.migration_owner,
+                (),
+                "fixed Relationship predecessor producer window " + revision,
+            )
+            retained = phase != "producer" and birth.get(name, 0) <= low
+            permissions = (
+                row.permissions
+                if (
+                    (retained and phase == "current")
+                    or (birth.get(name, 0) == 0 and core_phase == "current")
+                )
+                else ()
+            )
+            if not retained and birth.get(name, 0) > 0:
+                grant = producer_grants.get(name)
+                permissions = (
+                    tuple(Permission(role, grant[1]) for role in sorted(relation_roles))
+                    if grant
+                    else ()
+                )
+                if name == "entity_facts" and n >= 33:
+                    permissions += (Permission("connector_writer", _READ),)
+                if name == "fact_coverage" and n >= 34:
+                    permissions += (Permission("connector_writer", _READ),)
+            elif name == "entity_facts" and low < 33:
+                # rel033 downgrade revokes, and a later upgrade grants only
+                # this exact fixed reader. It never restores other ACLs.
+                permissions = tuple(p for p in permissions if p.role != "connector_writer")
+                if n >= 33:
+                    permissions += (Permission("connector_writer", _READ),)
+            if name == "entity_predicate_registry" and (
+                registry_regranted or any(low < edge <= n for edge in (15, 17))
+            ):
+                # Exactly the checked-in repeated grants; no namespace, other
+                # table or purpose-owner right follows from these statements.
+                by_role = {p.role: p for p in permissions}
+                for role in relation_roles:
+                    by_role[role] = Permission(role, _CRUD)
+                permissions = tuple(by_role[role] for role in sorted(by_role))
+            rows.append(replace(row, required=True, permissions=permissions))
+        rows = tuple(rows)
+        fs = []
+        for row in functions:
+            edge = _RELATIONSHIP_FUNCTION_EDGES.get(row.name)
+            newly_produced = edge is not None and (phase == "producer" or int(edge[4:]) > low)
+            if newly_produced:
+                # Both actual Relationship function producers have no SET
+                # clause and ordinary PostgreSQL PUBLIC EXECUTE initially.
+                row = replace(row, executors=("PUBLIC",), settings=())
+            elif (phase if edge else core_phase) == "closed":
+                row = replace(row, executors=())
+            fs.append(row)
+        fs = tuple(fs)
+        profile_manifest = replace(manifest, relations=rows)
+        security = compiled_security_contract(
+            profile_manifest, ordinary_purposes=phase != "producer"
+        )
+        allowed_function_names = {row.name for row in fs}
+        security["triggers"] = [
+            row for row in security["triggers"] if row["function_name"] in allowed_function_names
+        ]
+        # Namespace grants survive table/function drops. Derive that retained
+        # posture from the fixed source base and rel033's explicit inverse,
+        # not the final relation grant list or a catalog observation.
+        if phase == "current":
+            ns_rows = tuple(row for row in manifest.relations if row.schema == "relationship")
+            users = {row.owner for row in ns_rows}
+            users.update(p.role for row in ns_rows for p in row.permissions)
+            current_fs = namespace_current_fs
+            users.update(r.owner for r in current_fs if r.schema == "relationship")
+            users.update(
+                role for r in current_fs if r.schema == "relationship" for role in r.executors
+            )
+        else:
+            users = {manifest.migration_owner}
+            if core_phase == "current":
+                core_names = {name for name in names if birth.get(name, 0) == 0}
+                users.update(
+                    p.role
+                    for name in core_names
+                    for p in declared.get(
+                        name,
+                        ObjectAuthority(
+                            "relationship",
+                            name,
+                            ObjectKind.TABLE,
+                            manifest.migration_owner,
+                            (),
+                            "core source",
+                        ),
+                    ).permissions
+                )
+        users.update(group[0].owner for group in context_functions)
+        if phase != "producer" and low < 33:
+            users.discard("connector_writer")
+        if n >= 33 and (phase == "producer" or low < 33):
+            users.add("connector_writer")
+        result.append(
+            ComponentAuthorityProfile(
+                "relationship",
+                "relationship",
+                revision,
+                state,
+                rows,
+                fs,
+                tuple(
+                    json.dumps(row, sort_keys=True, separators=(",", ":"))
+                    for row in security["policies"]
+                ),
+                tuple(
+                    json.dumps(row, sort_keys=True, separators=(",", ":"))
+                    for row in security["triggers"]
+                ),
+                tuple(
+                    (name, kind, required)
+                    for since, name, kind, required in _RELATIONSHIP_FACT_COLUMNS
+                    if since <= n
+                ),
+                tuple(name for since, name, _, _ in _RELATIONSHIP_FACT_COLUMNS if since > n),
+                tuple(sorted(users)),
+                context_relations,
+                tuple(context_functions),
+                (state,),
+            )
+        )
+    # Equivalent source alternatives are one predicate, not an ambiguous runtime
+    # authority choice. A differing catalog right never creates another profile.
+    unique = {}
+    for profile in result:
+        key = (
+            profile.relations,
+            profile.functions,
+            profile.policies,
+            profile.triggers,
+            profile.dependency_columns,
+            profile.forbidden_columns,
+            profile.namespace_users,
+            profile.context_relations,
+            profile.context_functions,
+        )
+        if key in unique:
+            previous = unique[key]
+            unique[key] = replace(
+                previous, source_states=(*previous.source_states, *profile.source_states)
+            )
+        else:
+            unique[key] = profile
+    return tuple(unique.values())
+
+
+@dataclass(frozen=True)
+class PurposeAuthorityProfile:
+    capabilities: tuple[PurposeCapability, ...]
+    functions: tuple[FunctionAuthority, ...]
+    public_capabilities: tuple[PurposeCapability, ...]
+    public_relations: tuple[tuple[str, str], ...]
+    public_functions: tuple[tuple[str, str, str], ...]
+    public_context_functions: tuple[tuple[str, str, str], ...]
+    public_schemas: tuple[str, ...]
+    public_object_schemas: tuple[str, ...]
+    public_default_owners: tuple[str, ...]
+
+
+@dataclass(frozen=True, order=True)
+class PurposeCapability:
+    kind: str
+    schema: str
+    name: str
+    signature: str
+    column: str
+    verb: str
+
+
+def compile_owner_lookup_capabilities(manifest, *, component, ordinary_closed):
+    """Compile the fixed source role allow-set with a fresh source snapshot."""
+    return _compile_owner_lookup_capabilities(
+        manifest,
+        component=component,
+        ordinary_closed=ordinary_closed,
+        source_identity=_owner_lookup_source_template_identity(),
+    )
+
+
+def _compile_owner_lookup_capabilities(manifest, *, component, ordinary_closed, source_identity):
+    """Full fixed-role source allow-set, never the role's observed grant list.
+
+    Ordinary closure is independently established by the complete global
+    component validator. A Relationship prefix's exact transition profile is
+    independent. Existing current compiler defaults/callers are untouched.
+    """
+    from dataclasses import replace
+
+    if type(ordinary_closed) is not bool or (
+        component is not None and not isinstance(component, ComponentAuthorityProfile)
+    ):
+        raise AuthorityError("Owner lookup source capability profile is unavailable")
+    role = "identity_lookup_owner"
+    relations = (
+        tuple(replace(row, permissions=()) for row in manifest.relations)
+        if ordinary_closed
+        else manifest.relations
+    )
+    if component is not None:
+        relations = (
+            tuple(row for row in relations if row.schema != "relationship") + component.relations
+        )
+    else:
+        relations = tuple(row for row in relations if row.schema != "relationship")
+    functions, protected = _owner_lookup_function_templates(
+        manifest.profiles, manifest.migration_owner, source_identity
+    )
+    if ordinary_closed:
+        functions = tuple(replace(row, executors=()) for row in functions)
+    if component is not None:
+        functions = (
+            tuple(row for row in functions if row.schema != "relationship") + component.functions
+        )
+    else:
+        functions = tuple(row for row in functions if row.schema != "relationship")
+    functions = (*functions, *protected)
+    result = set()
+    for row in relations:
+        for permission in row.permissions:
+            if permission.role != role:
+                continue
+            for verb in permission.verbs:
+                if permission.columns:
+                    result.update(
+                        PurposeCapability("column", row.schema, row.name, "", column, verb)
+                        for column in permission.columns
+                    )
+                else:
+                    result.add(PurposeCapability("relation", row.schema, row.name, "", "", verb))
+            result.add(PurposeCapability("namespace", row.schema, "", "", "", "USAGE"))
+    for row in functions:
+        if role in row.executors and row.owner != role:
+            result.add(
+                PurposeCapability("function", row.schema, row.name, row.signature, "", "EXECUTE")
+            )
+        if role in (row.owner, *row.executors):
+            result.add(PurposeCapability("namespace", row.schema, "", "", "", "USAGE"))
+    if component is not None and role in component.namespace_users:
+        result.add(PurposeCapability("namespace", component.schema, "", "", "", "USAGE"))
+    for schema, creators in ordinary_schema_creators(relations).items():
+        if role in creators:
+            result.add(PurposeCapability("namespace", schema, "", "", "", "CREATE"))
+    # No source default privilege, database, tablespace, language, type, large
+    # object or foreign-server privilege belongs to this fixed purpose role.
+    # In particular the current uuid_generate_v7 EXECUTE follows its real
+    # compiler row, rather than an ad-hoc lookup/two-table whitelist.
+    # PUBLIC is an effective principal even for NOINHERIT roles. Compare its
+    # managed-object grants separately; ambient PostgreSQL/extension capabilities
+    # outside these exact source identities are not reclassified as direct role
+    # privileges. Context-function alternatives already receive full source/body/
+    # ACL validation, so none of their observations selects a grant profile here.
+    public_result = set()
+    context_keys = (
+        {row.identity for group in component.context_functions for row in group}
+        if component is not None
+        else set()
+    )
+    public_functions = tuple(row for row in functions if row.identity not in context_keys)
+    public_declarations = (
+        (*relations, *component.context_relations) if component is not None else relations
+    )
+    for row in public_declarations:
+        for permission in row.permissions:
+            if permission.role == "PUBLIC":
+                for verb in permission.verbs:
+                    if permission.columns:
+                        public_result.update(
+                            PurposeCapability("column", row.schema, row.name, "", column, verb)
+                            for column in permission.columns
+                        )
+                    else:
+                        public_result.add(
+                            PurposeCapability("relation", row.schema, row.name, "", "", verb)
+                        )
+    for row in public_functions:
+        if "PUBLIC" in row.executors:
+            public_result.add(
+                PurposeCapability("function", row.schema, row.name, row.signature, "", "EXECUTE")
+            )
+            if component is None or row.schema != component.schema:
+                public_result.add(PurposeCapability("namespace", row.schema, "", "", "", "USAGE"))
+    if component is not None and "PUBLIC" in component.namespace_users:
+        public_result.add(PurposeCapability("namespace", component.schema, "", "", "", "USAGE"))
+    for row in relations:
+        if any(permission.role == "PUBLIC" for permission in row.permissions):
+            public_result.add(PurposeCapability("namespace", row.schema, "", "", "", "USAGE"))
+    for schema, creators in ordinary_schema_creators(relations).items():
+        if "PUBLIC" in creators:
+            public_result.add(PurposeCapability("namespace", schema, "", "", "", "CREATE"))
+    # Reachability is source-defined, not inferred from observed PUBLIC grants.
+    # Ordinary wrappers in other target schemas can keep their real producer
+    # PUBLIC EXECUTE without becoming accessible to this fixed purpose role.
+    object_schemas = {
+        row.schema
+        for row in manifest.relations
+        if any(permission.role == role for permission in row.permissions)
+    } | {row.schema for row in functions if role in (row.owner, *row.executors)}
+    object_schemas.update(
+        row.schema for row in public_result if row.kind == "namespace" and row.verb == "USAGE"
+    )
+    if component is not None:
+        object_schemas.add(component.schema)
+    return PurposeAuthorityProfile(
+        tuple(sorted(result)),
+        tuple(row for row in functions if role in row.executors and row.owner != role),
+        tuple(sorted(public_result)),
+        tuple(sorted({(row.schema, row.name) for row in public_declarations})),
+        tuple(sorted({row.identity for row in public_functions})),
+        tuple(sorted(context_keys)),
+        tuple(sorted({row.schema for row in (*relations, *functions)})),
+        tuple(sorted(object_schemas)),
+        tuple(
+            sorted(
+                {manifest.migration_owner, manifest.maintenance_owner}
+                | {row.owner for row in (*relations, *functions)}
+            )
+        ),
+    )

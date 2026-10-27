@@ -1067,6 +1067,45 @@ def test_controlled_maintenance_uses_normal_owner_for_actual_chain_and_restores(
 def test_actual_historical_connector_and_calendar_producers_do_not_replay_broad_authority():
     """Run the real revision producers; the driver is the only replaced boundary."""
     import importlib.util
+    from types import SimpleNamespace
+
+    from butlers.db_authority.interfaces import _CONNECTORS_RELATIONS
+
+    class FreshConnectorDriver:
+        """Catalog transport for a fresh ordinary target; unknown reads refuse."""
+
+        info = {"butlers.source_database": "butlers"}
+
+        def __init__(self):
+            self.reads = []
+
+        def exec_driver_sql(self, sql):
+            if "JOIN pg_catalog.pg_roles actor" in sql:
+                self.reads.append("maintenance_identity")
+                return SimpleNamespace(one=lambda: ("test_producer", "migration_selected", True))
+            if sql == "SELECT current_database(), session_user, current_schema(), current_user":
+                self.reads.append("ordinary_context")
+                return SimpleNamespace(
+                    one=lambda: (
+                        "test_producer",
+                        "maintenance_selected",
+                        "public",
+                        "migration_selected",
+                    )
+                )
+            raise AssertionError("Unexpected producer identity query")
+
+        def execute(self, statement, parameters=None):
+            sql = str(statement)
+            if sql == _CONNECTORS_RELATIONS:
+                assert parameters is None
+                self.reads.append("absent_relations")
+            elif "/* connectors-replay:function-population */" in sql:
+                assert parameters == {"schemas": ["connectors", "public"]}
+                self.reads.append("absent_functions")
+            else:
+                raise AssertionError("Unexpected producer catalog query")
+            return SimpleNamespace(mappings=lambda: ())
 
     root = Path(__file__).resolve().parents[2]
     for filename, view, prefix in (
@@ -1080,7 +1119,22 @@ def test_actual_historical_connector_and_calendar_producers_do_not_replay_broad_
         producer = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(producer)
         statements = []
-        with patch.object(producer.op, "execute", side_effect=statements.append):
+        driver = FreshConnectorDriver()
+        with ExitStack() as driver_patches:
+            driver_patches.enter_context(
+                patch.object(producer.op, "execute", side_effect=statements.append)
+            )
+            if filename == "core_007_connectors.py":
+                driver_patches.enter_context(
+                    patch.object(producer.op, "get_bind", return_value=driver)
+                )
+                driver_patches.enter_context(
+                    patch.object(
+                        producer.op,
+                        "get_context",
+                        return_value=SimpleNamespace(opts={"version_table_schema": "public"}),
+                    )
+                )
             if view and view != "foundation":
                 with patch.object(producer, "_state_table_exists", return_value=True):
                     producer.upgrade()
@@ -1123,6 +1177,12 @@ def test_actual_historical_connector_and_calendar_producers_do_not_replay_broad_
                 producer.upgrade()
             assert "WHERE FALSE" in "\n".join(statements)
         else:
+            assert driver.reads == [
+                "maintenance_identity",
+                "ordinary_context",
+                "absent_relations",
+                "absent_functions",
+            ]
             assert "CREATE TABLE IF NOT EXISTS connectors.filtered_events" in sql
             assert "PARTITION OF connectors.filtered_events" in sql
             assert "full_payload        JSONB NOT NULL" in sql
