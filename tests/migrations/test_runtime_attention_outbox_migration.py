@@ -1755,9 +1755,245 @@ def test_core_chain_is_idempotent_for_two_target_schemas_without_switchboard_dep
     _selected_upgrade(
         _build_alembic_config(db_url, chains=["core"], target_schema="general"), "core@head"
     )
-    _selected_upgrade(
-        _build_alembic_config(db_url, chains=["core"], target_schema="switchboard"), "core@head"
-    )
+
+    # Diagnostic only: no role selection, DDL, explicit transaction or lock.
+    # Its independent physical connection is settled before the real upgrade.
+    async def pre_second_catalog():
+        from butlers.db_authority.grants import compile_function_manifest
+
+        normal = unquote(urlparse(db_url).username or "")
+        profiles = compile_deployment_profiles(db_name, source_database="butlers")
+        plans = tuple(
+            ("core", schema, revision) for schema, revision in _SELECTED_PLANS[db_name].items()
+        )
+        matches = tuple(
+            row
+            for row in compile_function_manifest(profiles, normal, plans)
+            if (row.schema, row.name, row.signature)
+            == (
+                "connectors",
+                "connectors_filtered_events_ensure_partition",
+                "timestamp with time zone",
+            )
+        )
+        if len(matches) != 1:
+            return {"status": "UNKNOWN", "facts": {}}
+        definition = matches[0]
+        connection = await asyncpg.connect(
+            _asyncpg_url(_maintenance_url(db_url)), timeout=10, command_timeout=30
+        )
+        primary = None
+        try:
+            record = await connection.fetchrow(
+                """
+                WITH database_row AS (
+                    SELECT * FROM pg_catalog.pg_database WHERE datname=current_database()
+                ), parent AS (
+                    SELECT p.*, owner.rolname AS owner_name FROM pg_catalog.pg_class p
+                    JOIN pg_catalog.pg_namespace n ON n.oid=p.relnamespace
+                    JOIN pg_catalog.pg_roles owner ON owner.oid=p.relowner
+                    WHERE n.nspname='connectors' AND p.relname='filtered_events'
+                ), indexes AS (
+                    SELECT i.*, idx.relname FROM pg_catalog.pg_index i
+                    JOIN pg_catalog.pg_class idx ON idx.oid=i.indexrelid
+                    WHERE i.indrelid=(SELECT oid FROM parent)
+                ), callable AS (
+                    SELECT p.* FROM pg_catalog.pg_proc p
+                    WHERE p.oid=pg_catalog.to_regprocedure(
+                        'connectors.connectors_filtered_events_ensure_partition(timestamp with time zone)'
+                    )
+                )
+                SELECT current_database()=$1 AS database_matches_selected,
+                    COALESCE((SELECT rolsuper AND current_user=session_user
+                        FROM pg_catalog.pg_roles WHERE rolname=session_user),false)
+                        AS maintenance_actor_qualified,
+                    COALESCE((SELECT d.datdba=r.oid FROM database_row d
+                        JOIN pg_catalog.pg_roles r ON r.rolname=$2),false)
+                        AS normal_login_matches_database_owner,
+                    COALESCE((SELECT NOT (rolsuper OR rolcreatedb OR rolcreaterole
+                        OR rolreplication OR rolbypassrls OR rolinherit)
+                        FROM pg_catalog.pg_roles WHERE rolname=$2),false)
+                        AS normal_login_nonprivileged,
+                    EXISTS(SELECT FROM parent) AS parent_present,
+                    COALESCE((SELECT relkind='p' FROM parent),false)
+                        AS parent_kind_partitioned,
+                    COALESCE((SELECT owner_name='connector_partition_owner' FROM parent),false)
+                        AS parent_owner_fixed_purpose,
+                    COALESCE((SELECT p.relowner=d.datdba FROM parent p CROSS JOIN database_row d),false)
+                        AS parent_owner_normal_database_owner,
+                    EXISTS(SELECT FROM indexes WHERE relname='ix_filtered_events_drain')
+                        AS drain_index_present,
+                    EXISTS(SELECT FROM indexes WHERE relname='ix_filtered_events_drain'
+                        AND indisvalid AND indisready AND NOT indisunique
+                        AND indnkeyatts=4 AND indnatts=4 AND indexprs IS NULL AND indpred IS NULL
+                        AND indoption[0]=0 AND indoption[1]=0 AND indoption[2]=0 AND indoption[3]=3
+                        AND ARRAY(SELECT a.attname::text
+                            FROM unnest(indkey::smallint[]) WITH ORDINALITY k(num,ord)
+                            JOIN pg_catalog.pg_attribute a ON a.attrelid=indrelid AND a.attnum=k.num
+                            ORDER BY k.ord)=ARRAY['connector_type','endpoint_identity','status','received_at'])
+                        AS drain_source_keys_options,
+                    EXISTS(SELECT FROM indexes WHERE relname='ix_filtered_events_timeline')
+                        AS timeline_index_present,
+                    EXISTS(SELECT FROM indexes WHERE relname='ix_filtered_events_timeline'
+                        AND indisvalid AND indisready AND NOT indisunique
+                        AND indnkeyatts=1 AND indnatts=1 AND indexprs IS NULL AND indpred IS NULL
+                        AND indoption[0]=3
+                        AND ARRAY(SELECT a.attname::text
+                            FROM unnest(indkey::smallint[]) WITH ORDINALITY k(num,ord)
+                            JOIN pg_catalog.pg_attribute a ON a.attrelid=indrelid AND a.attnum=k.num
+                            ORDER BY k.ord)=ARRAY['received_at'])
+                        AS timeline_source_keys_options,
+                    EXISTS(SELECT FROM callable) AS global_function_present,
+                    COALESCE((SELECT owner.rolname=$5 FROM callable p
+                        JOIN pg_catalog.pg_roles owner ON owner.oid=p.proowner),false)
+                        AS global_function_owner_source,
+                    COALESCE((SELECT prosrc=$3 FROM callable),false) AS global_function_body_source,
+                    COALESCE((SELECT proconfig=$4::text[] FROM callable),false)
+                        AS global_function_settings_source,
+                    COALESCE((SELECT prosecdef=$6 FROM callable),false)
+                        AS global_function_definer_source,
+                    COALESCE((SELECT
+                        COALESCE((SELECT array_agg(COALESCE(r.rolname,'PUBLIC')::text ORDER BY
+                            COALESCE(r.rolname,'PUBLIC')::text)
+                            FROM pg_catalog.aclexplode(COALESCE(p.proacl,
+                                pg_catalog.acldefault('f',p.proowner))) a
+                            LEFT JOIN pg_catalog.pg_roles r ON r.oid=a.grantee
+                            WHERE a.grantee<>p.proowner),ARRAY[]::text[])=$7::text[]
+                        AND NOT EXISTS(SELECT FROM pg_catalog.aclexplode(COALESCE(p.proacl,
+                            pg_catalog.acldefault('f',p.proowner))) a
+                            WHERE a.grantee<>p.proowner AND
+                                (a.is_grantable OR a.privilege_type<>'EXECUTE'))
+                        FROM callable p),false) AS global_function_acl_source
+                """,
+                db_name,
+                normal,
+                definition.body,
+                list(definition.settings),
+                definition.owner,
+                definition.security_definer,
+                sorted(set(definition.executors) - {definition.owner}),
+            )
+            keys = {
+                "database_matches_selected",
+                "maintenance_actor_qualified",
+                "normal_login_matches_database_owner",
+                "normal_login_nonprivileged",
+                "parent_present",
+                "parent_kind_partitioned",
+                "parent_owner_fixed_purpose",
+                "parent_owner_normal_database_owner",
+                "drain_index_present",
+                "drain_source_keys_options",
+                "timeline_index_present",
+                "timeline_source_keys_options",
+                "global_function_present",
+                "global_function_owner_source",
+                "global_function_body_source",
+                "global_function_settings_source",
+                "global_function_definer_source",
+                "global_function_acl_source",
+            }
+            facts = dict(record) if record is not None else {}
+            if set(facts) != keys or any(type(value) is not bool for value in facts.values()):
+                return {"status": "UNKNOWN", "facts": {}}
+            return {"status": "OBSERVED", "facts": facts}
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            cleanup_error = None
+            try:
+                await connection.close(timeout=10)
+            except BaseException as error:
+                cleanup_error = error
+            finally:
+                try:
+                    if not connection.is_closed():
+                        connection.terminate()
+                except BaseException as error:
+                    if cleanup_error is None or (
+                        isinstance(cleanup_error, Exception) and not isinstance(error, Exception)
+                    ):
+                        cleanup_error = error
+            if cleanup_error is not None:
+                if primary is None or (
+                    isinstance(primary, Exception) and not isinstance(cleanup_error, Exception)
+                ):
+                    raise cleanup_error
+                # A pending original exception, especially cancellation, keeps
+                # its original traceback while physical cleanup is settled.
+
+    try:
+        before_second = asyncio.run(pre_second_catalog())
+    except Exception:
+        # Observation failure cannot replace or suppress the original upgrade.
+        before_second = {"status": "UNKNOWN", "facts": {}}
+    try:
+        _selected_upgrade(
+            _build_alembic_config(db_url, chains=["core"], target_schema="switchboard"), "core@head"
+        )
+    except Exception as error:
+        try:
+            from psycopg2 import Error as PostgreSQLError
+            from psycopg2 import errors as pg_errors
+            from sqlalchemy.exc import InternalError, OperationalError, ProgrammingError
+
+            outer_types = (
+                (ProgrammingError, "ProgrammingError"),
+                (OperationalError, "OperationalError"),
+                (InternalError, "InternalError"),
+                (AuthorityError, "AuthorityError"),
+            )
+            outer = next(
+                (label for kind, label in outer_types if isinstance(error, kind)), "UNKNOWN"
+            )
+            original = error.orig if isinstance(error, DBAPIError) else None
+            inner_types = (
+                (pg_errors.InsufficientPrivilege, "InsufficientPrivilege"),
+                (pg_errors.UndefinedTable, "UndefinedTable"),
+                (pg_errors.UndefinedFunction, "UndefinedFunction"),
+                (pg_errors.DuplicateTable, "DuplicateTable"),
+                (pg_errors.DuplicateFunction, "DuplicateFunction"),
+                (pg_errors.InvalidSchemaName, "InvalidSchemaName"),
+                (pg_errors.ObjectNotInPrerequisiteState, "ObjectNotInPrerequisiteState"),
+                (pg_errors.InvalidTransactionState, "InvalidTransactionState"),
+                (pg_errors.SerializationFailure, "SerializationFailure"),
+                (pg_errors.DeadlockDetected, "DeadlockDetected"),
+            )
+            inner = next(
+                (label for kind, label in inner_types if isinstance(original, kind)), "UNKNOWN"
+            )
+            code = (
+                getattr(original, "sqlstate", None)
+                if isinstance(original, PostgreSQLError)
+                else None
+            )
+            if not (type(code) is str and re.fullmatch(r"[0-9A-Z]{5}", code)):
+                code = (
+                    getattr(original, "pgcode", None)
+                    if isinstance(original, PostgreSQLError)
+                    else None
+                )
+            if not (type(code) is str and re.fullmatch(r"[0-9A-Z]{5}", code)):
+                code = "UNKNOWN"
+            error.add_note(
+                "DB_SERIAL_REPLAY_DIAGNOSTIC "
+                + json.dumps(
+                    {
+                        "version": 1,
+                        "phase": "second_core_upgrade",
+                        "pre_second_catalog": before_second,
+                        "exception_class": outer,
+                        "driver_class": inner,
+                        "sqlstate": code,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+        except Exception:
+            pass
+        raise
 
     engine = create_engine(migration_bootstrap_db_url(postgres_container, db_name))
     try:
@@ -2476,6 +2712,23 @@ def test_core_198_downgrade_refuses_durable_evidence_and_names_forward_remediati
     bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
     _selected_upgrade(_build_alembic_config(db_url, chains=["core"]), "core_198")
 
+    def bounded_catalog_oids():
+        database = _database(db_url)
+        plans = tuple(
+            ("core", schema, revision) for schema, revision in _SELECTED_PLANS[database].items()
+        )
+        with migration_session(_maintenance_url(db_url), source_database="butlers") as held:
+            normal = unquote(urlparse(_NORMAL_URLS[database]).username or "")
+            profiles = compile_deployment_profiles(database, source_database="butlers")
+            definitions = _source_attention_definitions(profiles, normal, plans)
+            assert definitions
+            assert all(not row.executors for row in definitions)
+            assert all(
+                function_matches(held, row, inspect_function(held, row)) for row in definitions
+            )
+            return tuple(inspect_function(held, row)["oid"] for row in definitions)
+
+    before_catalog_oids = bounded_catalog_oids()
     engine = create_engine(bootstrap_url)
     try:
         with engine.begin() as conn:
@@ -2497,6 +2750,7 @@ def test_core_198_downgrade_refuses_durable_evidence_and_names_forward_remediati
             ).scalar_one()
     finally:
         engine.dispose()
+    assert bounded_catalog_oids() == before_catalog_oids
     assert _has_bootstrap_finalized_runtime_attention_interface(bootstrap_url)
 
 
@@ -3159,9 +3413,46 @@ def test_condition_producer_appends_one_safe_episode_per_condition_even_after_re
 
             # Retention: the outbox row ages out; the active condition keeps its
             # episode identity and last delivery category and never re-pages.
-            await admin.execute(
-                "DELETE FROM public.runtime_attention_outbox WHERE id = $1", fleet_episode
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await pool.execute(
+                    "DELETE FROM public.runtime_attention_outbox WHERE id = $1", fleet_episode
+                )
+            for actor in (_SWITCHBOARD, _MODEL_PRODUCER, _DASHBOARD, _CONNECTOR):
+                with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                    await _call_as_role(
+                        pool,
+                        actor,
+                        "DELETE FROM public.runtime_attention_outbox WHERE id = $1 RETURNING id",
+                        fleet_episode,
+                    )
+            assert (
+                await admin.execute(
+                    "DELETE FROM public.runtime_attention_outbox WHERE id = $1", fleet_episode
+                )
+                == "DELETE 1"
             )
+            # A separate physical administrative connection independently proves
+            # committed retention and the durable marker before any re-append.
+            readback = await asyncpg.connect(
+                _asyncpg_url(bootstrap_url), timeout=10, command_timeout=30
+            )
+            try:
+                assert await readback.fetchval(
+                    "SELECT NOT EXISTS (SELECT FROM public.runtime_attention_outbox WHERE id=$1)",
+                    fleet_episode,
+                )
+                assert await readback.fetchval(
+                    "SELECT EXISTS (SELECT FROM public.runtime_attention_outbox WHERE id=$1)",
+                    qa_episode,
+                )
+                assert await readback.fetchval(
+                    "SELECT episode_id=$1 FROM public.runtime_attention_condition_episodes "
+                    "WHERE condition_id=$2",
+                    fleet_episode,
+                    fleet,
+                )
+            finally:
+                await readback.close(timeout=10)
             assert await _call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, fleet) == (
                 fleet_episode
             )

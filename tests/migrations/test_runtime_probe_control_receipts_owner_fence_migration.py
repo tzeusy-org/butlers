@@ -143,33 +143,64 @@ async def test_owner_can_no_longer_read_with_row_security_off(core_db_url: str) 
 
 @_integration
 @_asyncio_session
-async def test_owner_sees_zero_rows_under_ordinary_row_security(core_db_url: str) -> None:
-    """With row_security left on (pg_dump's default off aside), the owner reads
-    zero rows rather than erroring -- FORCE applies the same USING clause to it
-    that switchboard already had."""
-    switchboard = await _connect(core_db_url, role=_SWITCHBOARD)
-    digest = nonce_digest(_synthetic_nonce())
-    try:
-        await switchboard.execute(
-            f"INSERT INTO {_TABLE} (audience, nonce_digest, kid, capability_exp) "
-            "VALUES ($1, $2, $3, $4)",
-            _AUDIENCE,
-            digest,
-            "probe-2026-05a",
-            datetime.now(UTC) + timedelta(seconds=60),
-        )
-    finally:
-        await switchboard.close()
+async def test_owner_sees_zero_rows_under_ordinary_row_security(
+    core_db_url: str, postgres_container
+) -> None:
+    """Forced RLS hides a committed runtime receipt from the actual ordinary owner."""
+    from butlers.testing.migration import async_serving_test_deployment
 
-    owner = await _connect(core_db_url)
+    # Retain the original core-only owner and unsupported role-selection boundary.
+    ordinary = await _connect(core_db_url)
     try:
-        visible = await owner.fetchval(
-            f"SELECT count(*) FROM {_TABLE} WHERE nonce_digest = $1", digest
+        assert await ordinary.fetchval(
+            "SELECT current_user = pg_get_userbyid(relowner) FROM pg_class "
+            "WHERE oid = 'public.runtime_probe_control_receipts'::regclass"
         )
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await ordinary.execute(f'SET ROLE "{_SWITCHBOARD}"')
+        assert await ordinary.fetchval(f"SELECT count(*) FROM {_TABLE}") == 0
     finally:
-        await owner.close()
+        await ordinary.close()
 
-    assert visible == 0
+    async with async_serving_test_deployment(postgres_container) as deployment:
+        runtime = deployment.runtime_database("switchboard")
+        digest = nonce_digest(_synthetic_nonce())
+        try:
+            await runtime.connect()
+            switchboard = runtime.pool
+            assert await switchboard.fetchval("SELECT current_user") == _SWITCHBOARD
+            await switchboard.execute(
+                f"INSERT INTO {_TABLE} (audience, nonce_digest, kid, capability_exp) "
+                "VALUES ($1, $2, $3, $4)",
+                _AUDIENCE,
+                digest,
+                "probe-2026-05a",
+                datetime.now(UTC) + timedelta(seconds=60),
+            )
+            assert (
+                await switchboard.fetchval(
+                    f"SELECT count(*) FROM {_TABLE} WHERE nonce_digest = $1", digest
+                )
+                == 1
+            )
+        finally:
+            await runtime.close()
+
+        owner = await _connect(deployment.migration_url)
+        try:
+            assert await owner.fetchval(
+                "SELECT current_user = session_user "
+                "AND current_user = pg_get_userbyid(relowner) "
+                "AND relrowsecurity AND relforcerowsecurity "
+                "FROM pg_class WHERE oid = 'public.runtime_probe_control_receipts'::regclass"
+            )
+            visible = await owner.fetchval(
+                f"SELECT count(*) FROM {_TABLE} WHERE nonce_digest = $1", digest
+            )
+        finally:
+            await owner.close()
+
+        assert visible == 0
 
 
 @_integration

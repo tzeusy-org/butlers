@@ -756,6 +756,9 @@ SET search_path = pg_catalog, pg_temp
             "        END IF;\n"
             "        NEW.updated_at := now();\n"
             "    END IF;\n"
+            "    IF TG_OP = 'DELETE' THEN\n"
+            "        RETURN OLD;\n"
+            "    END IF;\n"
             "    RETURN NEW;\n"
             "END;\n"
         ),
@@ -4060,6 +4063,12 @@ def install_protected_state(connection, profiles, operator: str, *, group: str |
                 f"OWNER TO {quote_identifier(owner)}"
             )
     definitions = protected_group_functions(profiles, operator, groups)
+    if group is not None:
+        # A selected historical edge stages bodies without serving EXECUTE;
+        # only the full current-plan finalizer installs serving capabilities.
+        from dataclasses import replace
+
+        definitions = tuple(replace(row, executors=()) for row in definitions)
     install_functions(connection, definitions)
     if "attention" in states and not states["attention"]:
         if attention_stage:

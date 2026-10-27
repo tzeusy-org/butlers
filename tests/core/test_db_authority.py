@@ -2338,6 +2338,16 @@ def test_actual_attention_installer_advances_only_verified_source_states_without
             self.scratch_markers = set()
             self.commands = []
             self.owner_selects = []
+            self.acls = {
+                signature: set(row.executors) - {row.owner}
+                for signature, row in definitions.items()
+            }
+            self.bodies = {signature: row.body for signature, row in definitions.items()}
+            for signature, row in definitions.items():
+                if row.name == "runtime_attention_outbox_guard":
+                    self.bodies[signature] = row.body.replace(
+                        "    IF TG_OP = 'DELETE' THEN\n        RETURN OLD;\n    END IF;\n", ""
+                    )
 
         def execute(self, statement, params=None):
             sql = str(statement)
@@ -2352,7 +2362,7 @@ def test_actual_attention_installer_advances_only_verified_source_states_without
                         owner=definition.owner,
                         definer=definition.security_definer,
                         config=["search_path=pg_catalog, pg_temp"],
-                        body=definition.body,
+                        body=self.bodies[params["signature"]],
                     )
                 )
             if sql == interfaces._FUNCTION_ACL:
@@ -2360,32 +2370,27 @@ def test_actual_attention_installer_advances_only_verified_source_states_without
                 return Result(
                     [
                         dict(role=role, privilege="EXECUTE", grantable=False)
-                        for role in definition.executors
-                        if role != definition.owner
+                        for role in sorted(self.acls[params["oid"]])
                     ]
                 )
             if "tgname='runtime_attention_condition_marker_sync_trigger'" in sql:
                 return Result(self.marker)
             if "WHERE n.nspname=:schema AND c.relname=:name" in sql:
                 self.owner_selects.append(params["name"])
-                return Result(
-                    None
-                    if params["name"] not in self.names
-                    else dict(relkind="r", owner="runtime_attention_outbox_owner")
-                )
+                for group, rows in interfaces._PROTECTED_GROUPS.items():
+                    for schema, name, owner in rows:
+                        if (schema, name) == (params["schema"], params["name"]):
+                            present = group != "attention" or name in self.names
+                            return Result(dict(relkind="r", owner=owner) if present else None)
+                raise AssertionError("unlisted protected relation lookup")
             target = params.get("relation", "")
             if sql == interfaces._SHAPE_SECURITY:
-                enabled = any(
-                    name in target
-                    for name in (
-                        "runtime_attention_outbox",
-                        "runtime_attention_delivery_lease",
-                        "runtime_attention_condition_episodes",
-                    )
-                )
-                return Result(
-                    [dict(owner="runtime_attention_outbox_owner", enabled=enabled, forced=enabled)]
-                )
+                for group, schema, name, _body, _indexes in interfaces._PROTECTED_TABLE_SHAPES:
+                    if target == f'"{schema}"."{name}"':
+                        owner = interfaces._PROTECTED_OWNERS[group]
+                        enabled = name in interfaces._RELATION_POLICIES
+                        return Result([dict(owner=owner, enabled=enabled, forced=enabled)])
+                raise AssertionError("unlisted protected security lookup")
             if sql == interfaces._SHAPE_TRIGGERS:
                 marker = (
                     target in self.scratch_markers
@@ -2399,6 +2404,20 @@ def test_actual_attention_installer_advances_only_verified_source_states_without
 
         def exec_driver_sql(self, sql):
             self.commands.append(sql)
+            from butlers.db_authority.apply import quote_identifier
+
+            for signature, definition in definitions.items():
+                if sql == definition.sql.replace("%", "%%"):
+                    self.bodies[signature] = definition.body
+                    return Result(None)
+                for role in set(definition.executors) | self.acls[signature]:
+                    target = quote_identifier(role)
+                    if sql == f"REVOKE ALL ON FUNCTION {signature} FROM {target}":
+                        self.acls[signature].discard(role)
+                        return Result(None)
+                    if sql == f"GRANT EXECUTE ON FUNCTION {signature} TO {target}":
+                        self.acls[signature].add(role)
+                        return Result(None)
             if sql.startswith("SELECT"):
                 return Result(True)
             if sql.startswith('CREATE TABLE "public".'):
@@ -2433,6 +2452,64 @@ def test_actual_attention_installer_advances_only_verified_source_states_without
         old_body = interfaces._ATTENTION_OLD_OUTBOX_SHAPES[1 if stage < 3 else 3]
         assert any(old_body in sql for sql in connection.commands if sql.startswith("CREATE TEMP"))
     assert all(name in connection.owner_selects for name in interfaces._ATTENTION_STAGE_NAMES[5])
+    # Execute the real installer and its exact source/ACL comparison. The
+    # catalog/DDL driver is doubled; this does not execute a PostgreSQL trigger.
+    bounded = interfaces.selected_protected_functions(
+        profiles, "normal_owner", (("core", None, "core_198"),)
+    )
+    attention = tuple(row for row in bounded if row.owner == "runtime_attention_outbox_owner")
+    assert attention
+    assert all(not row.executors for row in attention)
+    assert all(
+        interfaces.function_matches(connection, row, interfaces.inspect_function(connection, row))
+        for row in attention
+    )
+    guard = next(row for row in attention if row.name == "runtime_attention_outbox_guard")
+    assert (
+        "    IF TG_OP = 'DELETE' THEN\n        RETURN OLD;\n    END IF;\n    RETURN NEW;"
+        in guard.body
+    )
+    assert guard.sql.replace("%", "%%") in connection.commands
+    # The current callable consumer still receives its exact live executors;
+    # a bounded staging assertion cannot silently close the serving interface.
+    current = tuple(
+        row
+        for row in interfaces.final_functions(profiles, "normal_owner")
+        if row.owner == "runtime_attention_outbox_owner"
+    )
+    # Every explicit historical group closes its exact selected executors.
+    for group, revision in (("restore", "core_196"), ("dnd", "core_197")):
+        interfaces.install_protected_state(connection, profiles, "normal_owner", group=group)
+        identities = {
+            (row.schema, row.name, row.signature)
+            for row in interfaces.protected_group_functions(profiles, "normal_owner", (group,))
+        }
+        expected = tuple(
+            row
+            for row in interfaces.selected_protected_functions(
+                profiles, "normal_owner", (("core", None, revision),)
+            )
+            if (row.schema, row.name, row.signature) in identities
+        )
+        assert expected
+        assert all(not row.executors for row in expected)
+        assert all(
+            interfaces.function_matches(
+                connection, row, interfaces.inspect_function(connection, row)
+            )
+            for row in expected
+        )
+    # Real default full installer, not a direct call to the catalog writer.
+    interfaces.install_protected_state(connection, profiles, "normal_owner")
+    assert any(row.executors for row in current)
+    assert all(
+        interfaces.function_matches(connection, row, interfaces.inspect_function(connection, row))
+        for row in current
+    )
+    assert all(
+        interfaces.function_matches(connection, row, interfaces.inspect_function(connection, row))
+        for row in interfaces.final_functions(profiles, "normal_owner")
+    )
 
 
 def test_external_capsule_timestamp_readback_preserves_native_configuration_value():
@@ -7501,3 +7578,102 @@ def test_actual_selected_policy_convergence_keeps_preflight_refusals(fault):
             apply.converge_authority(connection, source_database="butlers", plans=model.plans)
         assert model.effects == []
         assert not model.scratch
+
+
+@pytest.mark.parametrize("finance_revision", [None, "finance_018"])
+def test_serving_deployment_preserves_source_module_prerequisites(finance_revision):
+    """Record the real source plan; physical migration/admission remains native proof."""
+    from collections import Counter
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from butlers import migrations
+    from butlers.db_authority.grants import deployment_function_plans
+    from butlers.db_authority.roles import runtime_profiles
+    from butlers.testing import migration
+
+    # These source producers are deliberately real, including the current roster.
+    chains = migrations.get_all_chains()
+    source_plans = tuple(
+        row for row in deployment_function_plans(runtime_profiles("butlers")) if row[0] in chains
+    )
+    chain_order = {chain: index for index, chain in enumerate(chains)}
+    expected = tuple(
+        (chain, schema, finance_revision if chain == "finance" else revision)
+        for chain, schema, revision in sorted(
+            source_plans, key=lambda row: (chain_order[row[0]], row[1] or "")
+        )
+    )
+    core = tuple(row for row in expected if row[0] == "core")
+    ordered = (*core, *(row for row in expected if row[0] != "core"))
+    events = []
+    held = object()
+    container = SimpleNamespace(
+        get_container_host_ip=lambda: "localhost", get_exposed_port=lambda _: 5432
+    )
+
+    class PhysicalConnection:
+        def execute(self, statement, params=None):
+            if str(statement).startswith("CREATE ROLE"):
+                events.append(("mint",))
+            return SimpleNamespace(scalar_one=lambda: True)
+
+        def exec_driver_sql(self, statement):
+            return None
+
+    @contextmanager
+    def connect():
+        yield PhysicalConnection()
+
+    @contextmanager
+    def maintenance(url, *, source_database):
+        assert url == "postgresql://selected_control@localhost/butlers"
+        assert source_database == "butlers"
+        yield held
+
+    def stage(url, *, chain, schema, revision, connection):
+        assert url == "normal-owner-url" and connection is held
+        events.append(("migration", chain, schema, revision))
+
+    async def current(url, *, chain, schema, connection):
+        stage(url, chain=chain, schema=schema, revision=None, connection=connection)
+
+    def finalize(connection, *, source_database, plans):
+        assert connection is held and source_database == "butlers"
+        events.append(("finalize", tuple(plans)))
+
+    engine = SimpleNamespace(connect=connect, dispose=Mock())
+    with (
+        patch.object(migration, "create_migration_db", return_value="normal-owner-url"),
+        patch.object(
+            migration,
+            "migration_bootstrap_db_url",
+            return_value="postgresql://selected_control@localhost/butlers",
+        ),
+        patch.object(migration, "create_engine", return_value=engine),
+        patch.object(migration, "_upgrade_chain_to_revision", side_effect=stage),
+        patch.object(migrations, "migration_session", maintenance),
+        patch.object(migrations, "run_migrations", current),
+        patch.object(migrations, "finalize_authority", finalize),
+    ):
+        with migration.serving_test_deployment(container, finance_revision=finance_revision):
+            actual = [row[1:] for row in events if row[0] == "migration"]
+            # The unchanged helper reaches this ordering assertion before the fix.
+            assert actual.index(("memory", "lifestyle", None)) < actual.index(
+                ("lifestyle", "lifestyle", None)
+            )
+            assert actual == [
+                *(("core", schema, "core_114") for _, schema, _ in core),
+                *ordered,
+            ]
+            finalized = [event[1] for event in events if event[0] == "finalize"]
+            assert finalized == [expected]
+            assert Counter(finalized[0]) == Counter(
+                (chain, schema, finance_revision if chain == "finance" else revision)
+                for chain, schema, revision in source_plans
+            )
+            assert events.index(("finalize", expected)) < next(
+                index for index, event in enumerate(events) if event[0] == "mint"
+            )
+            assert all(event[0] == "migration" for event in events[: len(actual)])
+        engine.dispose.assert_called()

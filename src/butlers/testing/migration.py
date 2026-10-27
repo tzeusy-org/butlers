@@ -999,8 +999,14 @@ def serving_test_deployment(
     try:
         migration_url = create_migration_db(postgres_container, "butlers", _owned_creation=created)
         profiles = runtime_profiles("butlers")
-        available = frozenset(get_all_chains())
-        plans = tuple(row for row in deployment_function_plans(profiles) if row[0] in available)
+        available = tuple(get_all_chains())
+        chain_order = {chain: index for index, chain in enumerate(available)}
+        plans = tuple(
+            sorted(
+                (row for row in deployment_function_plans(profiles) if row[0] in chain_order),
+                key=lambda row: (chain_order[row[0]], row[1] or ""),
+            )
+        )
         if finance_revision is not None:
             if ("finance", "finance", None) not in plans:
                 raise ValueError("Disposable Finance source plan is unavailable")
