@@ -63,6 +63,7 @@ _MACHINE_CLASS_BY_TRIGGER_SOURCE: Final[dict[str, MachineClass]] = {
     "schedule:memory_ann_observability": "maintenance",
     "schedule:memory_consolidation_backfill": "maintenance",
     "schedule:memory_catalog_backfill": "maintenance",
+    "schedule:memory_knowledge_gap_delivery": "maintenance",
 }
 
 

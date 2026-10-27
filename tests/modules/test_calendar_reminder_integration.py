@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastmcp import FastMCP
 
 from butlers.modules.calendar import (
     CalendarEvent,
@@ -23,6 +24,7 @@ from butlers.modules.calendar import (
     CalendarEventUpdate,
     CalendarProvider,
 )
+from butlers.testing.mcp import tool_fn
 
 pytestmark = [
     pytest.mark.integration,
@@ -182,20 +184,6 @@ async def reminder_pool(provisioned_postgres_pool):
         await pool.execute(_CREATE_CALENDAR_SYNC_CURSORS_SQL)
         await pool.execute(_CREATE_CALENDAR_ACTION_LOG_SQL)
         yield pool
-
-
-class _StubMCP:
-    """Minimal MCP stub that captures registered tools by function name."""
-
-    def __init__(self) -> None:
-        self.tools: dict[str, object] = {}
-
-    def tool(self):
-        def decorator(func):
-            self.tools[func.__name__] = func
-            return func
-
-        return decorator
 
 
 def _make_module(pool, *, butler_name: str = "relationship") -> object:
@@ -414,7 +402,7 @@ async def test_public_native_reminder_update_replaces_entity_links(reminder_pool
     """The public update tool writes entity links against the native event ID."""
     pool = reminder_pool
     mod = _make_module(pool, butler_name="finance")
-    mcp = _StubMCP()
+    mcp = FastMCP("calendar-test-tools")
     await mod.register_tools(
         mcp=mcp,
         config={"provider": "google"},
@@ -438,7 +426,7 @@ async def test_public_native_reminder_update_replaces_entity_links(reminder_pool
         entity_ids=[old_entity_id],
     )
 
-    result = await mcp.tools["calendar_update_butler_event"](
+    result = await (await tool_fn(mcp, "calendar_update_butler_event"))(
         event_id=str(event_id),
         title="Review subscription",
         entity_ids=[new_entity_id],
@@ -546,6 +534,107 @@ async def test_native_refresh_retains_and_dispatches_overdue_unnotified_instance
     notify = AsyncMock()
     assert await mod.tick("finance", notify_fn=notify) == 1
     notify.assert_awaited_once()
+    assert await mod.tick("finance", notify_fn=notify) == 0
+    notify.assert_awaited_once()
+
+
+@pytest.mark.pg_clock
+async def test_native_tick_suppresses_cancelled_due_recurring_instance(reminder_pool):
+    """Only a due confirmed sibling dispatches and is marked notified."""
+    pool = reminder_pool
+    mod = _make_module(pool, butler_name="finance")
+    start_at = datetime.now(UTC).replace(microsecond=0) - timedelta(minutes=1)
+    event_id, _ = await mod._insert_reminder_to_calendar_events(
+        title="Overdue renewal review",
+        body=None,
+        starts_at=start_at,
+        ends_at=start_at + timedelta(minutes=15),
+        timezone="UTC",
+        recurrence_rule="RRULE:FREQ=WEEKLY",
+        entity_ids=[],
+    )
+
+    cancelled_instance = await pool.fetchrow(
+        """
+        SELECT id, source_id, starts_at, ends_at
+        FROM calendar_event_instances
+        WHERE event_id = $1
+          AND starts_at <= now()
+          AND metadata->>'notified_at' IS NULL
+        ORDER BY starts_at
+        LIMIT 1
+        """,
+        event_id,
+    )
+    assert cancelled_instance is not None
+    cancelled_instance_id = cancelled_instance["id"]
+    await pool.execute(
+        """
+        UPDATE calendar_event_instances
+        SET status = 'cancelled'
+        WHERE id = $1
+        """,
+        cancelled_instance_id,
+    )
+
+    confirmed_instance_id = uuid.uuid4()
+    confirmed_starts_at = cancelled_instance["starts_at"] - timedelta(minutes=1)
+    confirmed_ends_at = cancelled_instance["ends_at"] - timedelta(minutes=1)
+    await pool.execute(
+        """
+        INSERT INTO calendar_event_instances (
+            id, event_id, source_id, origin_instance_ref, timezone,
+            starts_at, ends_at, status, metadata
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'confirmed', '{}'::jsonb)
+        """,
+        confirmed_instance_id,
+        event_id,
+        cancelled_instance["source_id"],
+        f"test:confirmed-sibling:{confirmed_instance_id}",
+        "UTC",
+        confirmed_starts_at,
+        confirmed_ends_at,
+    )
+
+    notify = AsyncMock()
+    assert await mod.tick("finance", notify_fn=notify) == 1
+    notify.assert_awaited_once()
+    envelope = notify.await_args.args[0]
+    assert envelope == {
+        "schema_version": "notify.v1",
+        "origin_butler": "finance",
+        "delivery": {
+            "intent": "send",
+            "message": "Reminder: Overdue renewal review",
+        },
+        "reminder_event_id": str(event_id),
+        "reminder_instance_id": str(confirmed_instance_id),
+        "due_at": confirmed_starts_at.isoformat(),
+    }
+
+    cancelled_state = await pool.fetchrow(
+        """
+        SELECT status, metadata->>'notified_at' AS notified_at
+        FROM calendar_event_instances
+        WHERE id = $1
+        """,
+        cancelled_instance_id,
+    )
+    assert cancelled_state["status"] == "cancelled"
+    assert cancelled_state["notified_at"] is None
+
+    confirmed_state = await pool.fetchrow(
+        """
+        SELECT status, metadata->>'notified_at' AS notified_at
+        FROM calendar_event_instances
+        WHERE id = $1
+        """,
+        confirmed_instance_id,
+    )
+    assert confirmed_state["status"] == "confirmed"
+    assert confirmed_state["notified_at"] is not None
+
     assert await mod.tick("finance", notify_fn=notify) == 0
     notify.assert_awaited_once()
 

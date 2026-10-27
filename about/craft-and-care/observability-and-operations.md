@@ -26,17 +26,13 @@ Add or update logs, metrics, traces, or status surfaces when a change touches:
 
 ## Logging and Telemetry Discipline
 
-- Prefer structured, actionable logs over vague summaries.
 - Include stable identifiers when available: request id, session id, butler
   name, action id, schedule id, or sync cursor.
 - Do not log secrets, raw tokens, or sensitive message bodies unless a contract
   explicitly requires a redacted form.
-- If a new failure mode is likely to recur, instrument it so operators can tell
-  which branch failed and why.
 
 ## Operability Rules
 
-- Runtime changes should not silently make the system harder to inspect.
 - If a workflow depends on a health endpoint, status API, or dashboard surface,
   keep that contract coherent with the implementation.
 - If a fallback or no-op behavior exists for backward safety, it must be
@@ -47,3 +43,18 @@ Add or update logs, metrics, traces, or status surfaces when a change touches:
 - RFC 0005 defines the observability architecture.
 - `AGENTS.md` captures repo-specific runtime and migration contracts discovered
   during implementation.
+
+## Goal-Level Evidence
+
+The [goal runtime](../legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md)
+must make one goal reconstructable across its lead, children, retries,
+escalations and replacements. Record trusted lineage, governing policy
+versions, grant scope, admission decisions, aggregate work budgets,
+cancellation fences, and durable result/effect references without leaking
+private payloads into telemetry.
+
+Verification must distinguish an accepted request from a launched invocation,
+a child result from a completed goal, and cancellation from reversal of an
+already committed effect. Recovery evidence must establish single active lead
+ownership, preserved budgets and no unproven effect replay. Per-session logs
+alone do not establish these goal-level guarantees; the goal ledger does.

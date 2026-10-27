@@ -137,7 +137,7 @@ export function DispatchTicksCell({
         e.stopPropagation();
         onOpenDrawer();
       }}
-      className="flex items-center gap-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+      className="flex items-center gap-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus focus-visible:ring-inset"
       aria-label={buildAriaLabel(renderedSessions, sessionCount)}
       data-testid="dispatch-ticks-cell"
     >

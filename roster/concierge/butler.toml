@@ -5,7 +5,8 @@ description = "System-plane read staffer: answers fleet status, spend, and sessi
 type = "staffer"
 
 [butler.permissions]
-cross_butler_access = ["*"]
+# Advisory outbound MCP scope; fleet SQL views need no MCP fan-out.
+cross_butler_access = ["qa"]
 
 [butler.runtime_seed]
 max_concurrent_sessions = 3
@@ -18,3 +19,5 @@ name = "butlers"
 schema = "concierge"
 
 [modules.dashboard_read]
+
+# RFC 0015: core always registers the error relay; no module opt-in is required.

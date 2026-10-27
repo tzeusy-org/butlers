@@ -78,7 +78,7 @@ for cache_dir in "${CACHE_DIRS[@]}"; do
     package_dir="${WORKTREE_ROOT}/$(dirname "$cache_dir")"
     package_json="${package_dir}/package.json"
     if [ -f "$package_json" ] && command -v npm >/dev/null 2>&1; then
-      echo "Falling back to a local 'npm install' for ${cache_dir} inside this worktree (gitignored, costs disk per worktree -- see AGENTS.md 'Worktree node_modules')." >&2
+      echo "Falling back to a local 'npm install' for ${cache_dir} inside this worktree (gitignored, costs disk per worktree -- see AGENTS.md 'Worktrees')." >&2
       ( cd "$package_dir" && npm install )
       FALLBACK_COUNT=$((FALLBACK_COUNT + 1))
       continue

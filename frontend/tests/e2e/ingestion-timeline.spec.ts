@@ -1,3 +1,5 @@
+import { fulfillEmptyApi } from "./fixtures/empty-api";
+import { mockJson } from "./fixtures/api-responses";
 /**
  * Playwright smoke spec — ingestion Timeline ledger and drawer (bu-y25mj.4).
  *
@@ -21,7 +23,7 @@
  * Reference: docs/redesigns/ingestion-handoff.md §1a
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import {
   makeIngestionEventSummary,
   makeIngestionSession,
@@ -42,7 +44,7 @@ const TIMEOUT_MS = 10_000;
  * afterwards take precedence over it.
  */
 async function mockIngestionApis(
-  page: Parameters<typeof test>[1] extends (...args: infer P) => unknown ? P[0] : never,
+  page: Page,
   events = [
     // Multi-session event: exercises DispatchTicksCell's populated
     // path (two ticks + trailing count), not just the em-dash
@@ -79,11 +81,8 @@ async function mockIngestionApis(
   // Catch-all FIRST (lowest priority in LIFO matching) — absorbs sidebar
   // requests for /api/butlers, /api/spend, etc. that are not explicitly mocked.
   await page.route("**/api/**", (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ data: [] }),
-    });
+    if (new URL(route.request().url()).pathname.startsWith("/api/auth/owner/")) return route.fallback();
+    return fulfillEmptyApi(route);
   });
 
   // GET /api/approvals/metrics → healthy, complete sidebar badge metric.
@@ -93,8 +92,8 @@ async function mockIngestionApis(
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        data: { total_pending: 0 },
+      body: mockJson("getApprovalMetrics", {
+        data: { total_pending: 0, total_approved_today: 0, total_rejected_today: 0, total_auto_approved_today: 0, total_expired_today: 0, auto_approval_rate: 0, rejection_rate: 0, failure_count_today: 0, active_rules_count: 0 },
         meta: {},
       }),
     });
@@ -105,7 +104,7 @@ async function mockIngestionApis(
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ data: [] }),
+      body: mockJson("getConnectorSummaries", { meta: {}, data: { connectors: [] } }),
     });
   });
 
@@ -114,7 +113,7 @@ async function mockIngestionApis(
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ data: { resolved: false, name: null, raw: null } }),
+      body: mockJson("getIngestionEventSenderContact", { meta: {}, data: { resolved: false, name: null, raw: null } }),
     });
   });
 
@@ -123,25 +122,7 @@ async function mockIngestionApis(
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ data: [] }),
-    });
-  });
-
-  // GET /api/ingestion/events/*/rollup → minimal rollup
-  await page.route("**/api/ingestion/events/*/rollup", (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        data: {
-          request_id: "aabbccdd-0000-0000-0000-000000000001",
-          total_sessions: 0,
-          total_input_tokens: 0,
-          total_output_tokens: 0,
-          total_cost: 0,
-          by_butler: {},
-        },
-      }),
+      body: mockJson("getIngestionEventReplays", { meta: {}, data: [] }),
     });
   });
 
@@ -150,7 +131,7 @@ async function mockIngestionApis(
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ data: [] }),
+      body: mockJson("getIngestionEventSessions", { meta: {}, data: [] }),
     });
   });
 
@@ -166,10 +147,7 @@ async function mockIngestionApis(
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        data: events,
-        meta: { next_cursor: null, has_more: false },
-      }),
+      body: mockJson("listIngestionEvents", { items: events, next_cursor: null, limit: 50 }),
     });
   });
 }

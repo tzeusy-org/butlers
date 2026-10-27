@@ -8,8 +8,7 @@ The Google Drive module provides MCP tools for butlers to read, write, search, a
 
 ### Requirement: GoogleDriveConfig Schema
 
-The implementation SHALL provide the behavior described by this requirement.
-Configuration is declared under `[modules.google_drive]` in `butler.toml`.
+Configuration SHALL be declared under `[modules.google_drive]` in `butler.toml`.
 
 #### Scenario: Config structure
 - **WHEN** `[modules.google_drive]` is configured in butler.toml
@@ -32,8 +31,7 @@ Configuration is declared under `[modules.google_drive]` in `butler.toml`.
 
 ### Requirement: Authentication and Scope Validation
 
-The implementation SHALL provide the behavior described by this requirement.
-The module resolves Google OAuth credentials for the configured account and validates required scopes. It reuses the existing Google OAuth infrastructure — no new auth flow is needed.
+The module SHALL resolve Google OAuth credentials for the configured account and validate required scopes. It reuses the existing Google OAuth infrastructure — no new auth flow is needed.
 
 #### Scenario: OAuth credential resolution for specific account
 - **WHEN** `on_startup` is called with `account = "work@gmail.com"` in config
@@ -64,8 +62,7 @@ The module resolves Google OAuth credentials for the configured account and vali
 
 ### Requirement: Google OAuth and Rate Limiting
 
-The implementation SHALL provide the behavior described by this requirement.
-The Google provider handles OAuth token refresh and rate-limited retries.
+The Google provider SHALL handle OAuth token refresh and rate-limited retries.
 
 #### Scenario: OAuth token refresh
 - **WHEN** the access token expires or is not cached
@@ -83,8 +80,7 @@ The Google provider handles OAuth token refresh and rate-limited retries.
 
 ### Requirement: Butler Folder Hierarchy
 
-The implementation SHALL provide the behavior described by this requirement.
-The module auto-creates a centralized folder hierarchy for butler outputs in the user's Drive.
+The module SHALL auto-create a centralized folder hierarchy for butler outputs in the user's Drive.
 
 #### Scenario: Root butler folder auto-creation
 - **WHEN** a butler calls any write tool (`drive_write_file`, `drive_create_folder`) without specifying a `folder_id`
@@ -110,8 +106,7 @@ The module auto-creates a centralized folder hierarchy for butler outputs in the
 
 ### Requirement: MCP Tool — drive_list_files
 
-The implementation SHALL provide the behavior described by this requirement.
-Lists files in a Drive folder or matching a query.
+The tool SHALL list files in a Drive folder or matching a query.
 
 #### Scenario: List files in a folder
 - **WHEN** `drive_list_files(folder_id="abc123")` is called
@@ -133,8 +128,7 @@ Lists files in a Drive folder or matching a query.
 
 ### Requirement: MCP Tool — drive_get_file_metadata
 
-The implementation SHALL provide the behavior described by this requirement.
-Returns detailed metadata for a single file without downloading content.
+The tool SHALL return detailed metadata for a single file without downloading content.
 
 #### Scenario: Get metadata for existing file
 - **WHEN** `drive_get_file_metadata(file_id="abc123")` is called
@@ -147,8 +141,7 @@ Returns detailed metadata for a single file without downloading content.
 
 ### Requirement: MCP Tool — drive_read_file
 
-The implementation SHALL provide the behavior described by this requirement.
-Downloads and returns file content for text-representable files.
+The tool SHALL download and return file content for text-representable files.
 
 #### Scenario: Read a plain text file
 - **WHEN** `drive_read_file(file_id="abc123")` is called on a text file (MIME type `text/*`)
@@ -179,8 +172,7 @@ Downloads and returns file content for text-representable files.
 
 ### Requirement: MCP Tool — drive_write_file
 
-The implementation SHALL provide the behavior described by this requirement.
-Creates or uploads a file to Google Drive.
+The tool SHALL create or upload a file to Google Drive.
 
 #### Scenario: Write text file to butler folder (default)
 - **WHEN** `drive_write_file(name="report.txt", content="Report content...", mime_type="text/plain")` is called without `folder_id`
@@ -204,8 +196,7 @@ Creates or uploads a file to Google Drive.
 
 ### Requirement: MCP Tool — drive_create_folder
 
-The implementation SHALL provide the behavior described by this requirement.
-Creates a folder in Google Drive.
+The tool SHALL create a folder in Google Drive.
 
 #### Scenario: Create folder in butler hierarchy (default)
 - **WHEN** `drive_create_folder(name="reports")` is called without `parent_id`
@@ -218,8 +209,7 @@ Creates a folder in Google Drive.
 
 ### Requirement: MCP Tool — drive_move_file
 
-The implementation SHALL provide the behavior described by this requirement.
-Moves a file from one folder to another.
+The tool SHALL move a file from one folder to another.
 
 #### Scenario: Move file to new parent
 - **WHEN** `drive_move_file(file_id="abc123", new_parent_id="xyz789")` is called
@@ -232,8 +222,7 @@ Moves a file from one folder to another.
 
 ### Requirement: MCP Tool — drive_search_files
 
-The implementation SHALL provide the behavior described by this requirement.
-Searches files across the user's Drive using Drive API's built-in full-text search.
+The tool SHALL search files across the user's Drive using Drive API's built-in full-text search.
 
 #### Scenario: Full-text search
 - **WHEN** `drive_search_files(query="tax return 2025")` is called
@@ -284,8 +273,7 @@ The module SHALL declare the sensitive arguments of its write tools through
 
 ### Requirement: Database Schema Migration
 
-The implementation SHALL provide the behavior described by this requirement.
-The module provides an Alembic migration for its butler folder registry table.
+The module SHALL provide an Alembic migration for its butler folder registry table.
 
 #### Scenario: Migration creates table
 - **WHEN** the Alembic migration runs

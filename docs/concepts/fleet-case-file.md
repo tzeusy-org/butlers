@@ -1,66 +1,32 @@
 # Fleet case file
 
-A fleet case is the durable object for one situation, not one cycle. The
-Switchboard insight broker correlates multi-butler candidate clusters, but a
-cluster on its own is cycle-scoped — recomputed and discarded every delivery
-cycle, so a situation spanning several days (a multi-day illness, a slowly
-worsening problem) is invisible to it.
+A Fleet case carries one recognized situation across delivery cycles. The insight broker’s candidate clusters remain cycle-scoped; recording a case is an explicit contributor path, not automatic clustering-to-case wiring.
 
-Butlers records a recognized situation in `public.fleet_cases`:
+The [canonical capability spec](../../openspec/specs/fleet-case-file/spec.md) defines required behavior. [RFC 0032](../../about/legends-and-lore/rfcs/0032-fleet-case-file.md) retains the durable-case and effective-role RLS decisions. This guide explains the existing component paths rather than defining another contract.
 
-- **state**: `open | watching | closing | closed`. Only `closed` is terminal.
-- **posture**: `silent | routine | active | urgent`. The Switchboard is the
-  sole arbiter of a case's posture.
-- **correlation_key**: a readable key identifying the situation (for example
-  `health:owner:respiratory-illness`), not an opaque id.
-- **outcome**: required exactly when `state = 'closed'`. A lapse sweep closes
-  a case by writing `outcome = 'lapsed'` — that is a value of `outcome`, not a
-  fifth state.
+## Components And Flow
 
-At most one non-closed case may exist per `correlation_key` — a partial
-unique index is the DB-level backstop.
+| Component | Existing role |
+| --- | --- |
+| `public.fleet_cases` | Shared durable situation identity, lifecycle and posture, written by Switchboard. |
+| `public.fleet_case_evidence` | Contributor-attributed observations inserted through each butler’s own pool. |
+| `public.fleet_case_links` | Explicit references to other ledgers, written through Switchboard. |
+| `src/butlers/core/fleet_cases.py` | Persistence, case attention, stale lapse and historical backfill helpers. |
+| `src/butlers/core_tools/_fleet_cases.py` | Group-gated tools and sanctioned forwarding to Switchboard. |
+| `roster/switchboard/api/router.py` | Read-only case list/detail endpoints. |
 
-`public.fleet_case_evidence` records one contribution per contributor per
-case; `UNIQUE(case_id, contributor, kind, ref)` makes re-reporting the same
-evidence a no-op rather than a duplicate row. Any butler role may contribute
-evidence. `public.fleet_case_links` binds a case to an entry in another
-ledger (an insight candidate, an owner condition, another case) by
-`(case_id, link_kind, ref)`.
+The `fleet_cases` core group registers seven tools: `find_open_case`, `open_case`, `contribute_case_evidence`, `propose_case_posture`, `close_case`, `record_case_link`, and `read_case`, under the governing runtime tool-surface policy. Non-Switchboard case/link mutations forward through Switchboard’s `route()` path; reads and evidence INSERT use the caller’s own pool. This does not grant direct writes to another butler’s private schema.
 
-Only `butler_switchboard_rw` may create or update a case or its links — a
-case's existence, state, posture, and ledger bindings are Switchboard-
-arbitrated, enforced by row-level security rather than by GRANT/REVOKE alone
-(see the RLS note in RFC 0032).
+Contribution can bind a reserved evidence reference through the sanctioned Switchboard link path. The S7 tool admits `insight_candidate`, `owner_condition` and `attention_record`; generic link storage remains broader. Contribution and posture proposal can link the actual attention-ledger row recorded for a case-scoped urgent bypass. Recording that row does not establish a provider send, and failed optional binding does not erase committed evidence or imply an automatic retry outbox.
 
-This schema is Slice 1 of a seven-slice rollout — see RFC 0032 for the full
-design and slice plan. Slice 2 adds a read-only API surface: `GET
-/api/switchboard/cases` (cursor-paginated list, filterable by `state` and
-`posture`) and `GET /api/switchboard/cases/{case_id}` (one case with its
-evidence and links).
+## Reading And Maintenance
 
-Slice 3 adds the six MCP contribution tools (registered fleet-wide behind
-the `fleet_cases` core group, `src/butlers/core_tools/_fleet_cases.py`):
-`find_open_case`, `open_case`, `contribute_case_evidence`,
-`propose_case_posture`, `close_case`, and `read_case`. `open_case`,
-`propose_case_posture`, and `close_case` mutate `fleet_cases`, so a call from
-any butler other than Switchboard is transparently forwarded through
-Switchboard's `route()` primitive; `find_open_case`, `contribute_case_evidence`,
-and `read_case` run directly since evidence and reads carry no such
-restriction. `EVIDENCE_KINDS` (the vocabulary `report_event_reaction` accepts
-for a domain-event reaction's evidence refs) now includes `case`, so a
-reaction can cite the fleet case it filed evidence into.
+`GET /api/switchboard/cases` provides the cursor-paginated, state/posture-filtered list. `GET /api/switchboard/cases/{case_id}` returns the case with bounded evidence and links. These existing public reads are not the separately blocked safe Situations dashboard projection.
 
-Slice 4 adds situation-scoped attention (`fleet_cases.evaluate_case_attention`):
-one quiet-hours bypass per case per quiet-hours window, keyed by the case's
-`correlation_key` rather than by the individual candidate/contribution that
-triggered it. `contribute_case_evidence` and `propose_case_posture` each
-evaluate it and return a `case_attention` field describing whether that call
-broke quiet hours. Only a non-closed case at `posture='urgent'` can trigger a
-bypass; any number of contributors reporting evidence against the same urgent
-case during one quiet-hours window collapse to at most one recorded bypass
-(a `public.attention_ledger` row) — the fix for the original problem of one
-situation independently noticed by several butlers breaking quiet hours once
-per notice. Stepping a case down from `urgent` or closing it clears the
-attention need with no separate cleanup step.
+The Switchboard-owned native `fleet_case_lapse_sweep` source is scheduled daily at 04:10 UTC. Its helper lapses stale silent/routine cases; historical backfill is a separate operator script using resolved owner-condition episodes. Current backfill also repairs missing episode links on old closed cases. These source paths do not authorize a live maintenance operation.
 
-No broker wiring or dashboard write surface exist yet.
+## Current Limits
+
+Seven source slices are present, but runtime conformance is partial. The immutable-evidence obligation is currently unfenced. The list API’s catch-all clean-empty failure response conflicts with [genuine-source honesty](../api_and_protocols/response-conventions.md); it is a known defect, not a trustworthy empty result. Existing tests do not fully prove registered transport, post-migration bootstrap replay, every role, freshness races, actual sweep dispatch, genuine remote references or old-link SQL recovery.
+
+The [archived source design](../../openspec/changes/archive/2026-10-05-document-rfc0032-fleet-case-file/design.md) records precise requirement coverage and owner allocation. Grant posture remains with `bu-yfd9v1`; paired read availability and the larger Situations feature remain with `bu-h40h2b.8`. Source publication adds no producer, UI write, activation, native Fleet backup/export or offline restore authority.

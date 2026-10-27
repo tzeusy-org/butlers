@@ -1,7 +1,7 @@
 """E2E scheduling and cron lifecycle tests.
 
-Validates timer-driven flows, cron lifecycle, and tick behavior per
-docs/tests/e2e/scheduling.md:
+Validates timer-driven flows, cron lifecycle, and tick behavior (see
+docs/testing/e2e/README.md):
 
 1. TOML schedule sync (schedules synced to scheduled_tasks table)
 2. Schedule CRUD via MCP tools

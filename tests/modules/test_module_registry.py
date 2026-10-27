@@ -36,9 +36,7 @@ def _make_module(
     _migration_label = migration_label
 
     class DynamicModule(Module):
-        @property
-        def name(self) -> str:
-            return _name
+        name = _name
 
         @property
         def config_schema(self) -> type[BaseModel]:
@@ -104,6 +102,11 @@ def test_register_duplicate_name_raises():
     reg.register(ModuleA)
     with pytest.raises(ValueError, match="already registered"):
         reg.register(_make_module("a"))
+    # Invalid class metadata must fail without constructing a legacy property.
+    for name in ("", None, property(lambda self: "legacy")):
+        invalid = type("InvalidName", (ModuleA,), {"name": name})
+        with pytest.raises(ValueError, match="non-empty class name"):
+            reg.register(invalid)
 
 
 def test_load_single_module():
@@ -154,6 +157,7 @@ def test_load_independent_modules_sorted():
     ids=["direct-cycle", "indirect-cycle", "missing-dep", "unknown-module"],
 )
 def test_load_error_cases(modules, config, match):
+    """REQ-core-modules-008, REQ-core-modules-009: invalid declarations fail closed."""
     reg = ModuleRegistry()
     for m in modules:
         reg.register(m)
@@ -204,3 +208,79 @@ def test_load_all_returns_new_instances_each_call():
     result1 = reg.load_all({})
     result2 = reg.load_all({})
     assert result1[0] is not result2[0]
+
+
+def test_explicit_discovery_and_router_load_failures_are_visible(monkeypatch, tmp_path, caplog):
+    """REQ-core-modules-004, REQ-dashboard-api-066: no partial cached success."""
+    import importlib
+    import sys
+
+    import butlers.modules.registry as registry_module
+    from butlers.api.router_discovery import _load_router_module, discover_butler_routers
+    from butlers.modules.calendar import CalendarModule
+    from butlers.modules.contacts import ContactsModule
+
+    def undeclared_constructor(self):
+        pytest.fail("Discovery or declared-only loading constructed an omitted module")
+
+    with monkeypatch.context() as constructor_guard:
+        constructor_guard.setattr(CalendarModule, "__init__", undeclared_constructor)
+        constructor_guard.setattr(ContactsModule, "__init__", undeclared_constructor)
+        discovered = registry_module.default_registry()
+        assert [m.name for m in discovered.load_from_config({"pipeline": {}})] == ["pipeline"]
+    assert {"metrics", "document_renderer"}.isdisjoint(discovered.available_modules)
+    assert {"pipeline", "calendar"}.issubset(discovered.available_modules)
+    for retired in ("metrics", "document_renderer", "self_healing"):
+        with pytest.raises(ValueError, match="Unknown module"):
+            discovered.load_from_config({retired: {}})
+
+    real_import = importlib.import_module
+    monkeypatch.setattr(
+        registry_module.pkgutil,
+        "walk_packages",
+        lambda *a, **k: [(None, "synthetic_broken", False)],
+    )
+
+    def broken(name, *args, **kwargs):
+        if name == "synthetic_broken":
+            raise RuntimeError("controlled discovery failure")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(registry_module.importlib, "import_module", broken)
+    with pytest.raises(ImportError, match="synthetic_broken"):
+        registry_module.default_registry()
+    assert "synthetic_broken" not in sys.modules
+    monkeypatch.setattr(registry_module.pkgutil, "walk_packages", lambda *a, **k: [])
+    assert "relationship" in registry_module.default_registry().available_modules
+
+    file = tmp_path / "router.py"
+    key = "controlled_failed_router"
+    monkeypatch.delitem(sys.modules, key, raising=False)
+    file.write_text("raise RuntimeError('controlled body failure')\n")
+    with pytest.raises(RuntimeError, match="controlled body failure"):
+        _load_router_module(file, key)
+    assert key not in sys.modules
+    file.write_text("from fastapi import APIRouter\nrouter=APIRouter()\n")
+    module = _load_router_module(file, key)
+    assert module.router.routes == []
+    assert _load_router_module(file, key) is module
+    other = tmp_path / "other.py"
+    other.write_text("from fastapi import APIRouter\nrouter=APIRouter()\n")
+    with pytest.raises(ImportError, match="source differs"):
+        _load_router_module(other, key)
+    monkeypatch.delitem(sys.modules, key)
+
+    # Bulk optional API policy is separate from strict direct-load policy.
+    invalid = tmp_path / "optional" / "api" / "router.py"
+    invalid.parent.mkdir(parents=True)
+    invalid.write_text("raise RuntimeError('controlled optional failure')\n")
+    healthy = tmp_path / "healthy" / "api" / "router.py"
+    healthy.parent.mkdir(parents=True)
+    healthy.write_text("from fastapi import APIRouter\nrouter=APIRouter()\n")
+    found = dict(discover_butler_routers(tmp_path))
+    assert list(found) == ["healthy"]
+    assert found["healthy"].router.routes == []
+    assert "optional" in caplog.text and "controlled optional failure" in caplog.text
+    for name in list(sys.modules):
+        if name.startswith(("healthy_api_router_", "optional_api_router_")):
+            monkeypatch.delitem(sys.modules, name)

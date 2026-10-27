@@ -189,7 +189,7 @@ export function ButlerDetailHeader({ butler, actions }: ButlerDetailHeaderProps)
                 {" · "}
                 <Link
                   to={`/butlers/${butler}?tab=system&section=schedules`}
-                  className="font-medium text-[var(--amber-text)] underline decoration-[var(--border-strong)] underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg"
+                  className="font-medium text-[var(--amber-text)] underline decoration-[var(--border-strong)] underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
                   aria-label={`Overdue ${scheduleFacts.overdue.name}, ${formatRelativeCompact(new Date(scheduleFacts.overdue.nextRunAt), nowMs)}. Open schedules.`}
                 >
                   overdue: {scheduleFacts.overdue.name}{" "}

@@ -123,7 +123,6 @@ from zoneinfo import ZoneInfo
 
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
-from butlers.api.routers import audit as audit_router
 from butlers.api.routers.secrets_v2 import (
     PROVIDER_CATALOG,
     _fetch_cli_secrets,
@@ -133,6 +132,7 @@ from butlers.api.routers.secrets_v2 import (
     _secrets_schema_absent_at_start,
     _secrets_source_schema,
 )
+from butlers.core import audit as audit_router
 from butlers.core.attention_ledger import (
     check_owner_notify_suppression,
     record_attention_event,

@@ -45,7 +45,7 @@ export function RangeToggle({ value, onChange, className, disabled = false }: Ra
               "inline-flex items-center justify-center px-2 py-1",
               "font-mono text-[10px] uppercase tabular-nums",
               "transition-colors",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-background focus-visible:ring-offset-1",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-background focus-visible:ring-offset-1",
               "disabled:pointer-events-none disabled:opacity-50",
               // Active: filled
               isActive && "bg-foreground text-background",

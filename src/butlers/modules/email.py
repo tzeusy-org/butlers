@@ -109,6 +109,8 @@ class EmailModule(Module):
     pipeline.
     """
 
+    supports_inert_link_delivery = True
+
     def __init__(self) -> None:
         self._config: EmailConfig = EmailConfig()
         self._audit_pool: Any = None
@@ -119,17 +121,11 @@ class EmailModule(Module):
         # DB pool for OAuth status queries (public.google_accounts).
         self._pool: Any = None
 
-    @property
-    def name(self) -> str:
-        return "email"
+    name = "email"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return EmailConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
 
     @property
     def credentials_env(self) -> list[str]:
@@ -139,9 +135,6 @@ class EmailModule(Module):
             envs.extend([self._config.bot.address_env, self._config.bot.password_env])
         # User-scope credentials come from owner entity_info, not butler_secrets.
         return envs
-
-    def migration_revisions(self) -> str | None:
-        return None  # No custom tables needed
 
     def tool_metadata(self) -> dict[str, ToolMeta]:
         """Declare the recipient address as a safety-critical argument.
@@ -237,9 +230,6 @@ class EmailModule(Module):
                     value = await credential_store.resolve(env_key)
                     if value is not None:
                         self._resolved_credentials[env_key] = value
-
-    async def on_shutdown(self) -> None:
-        """No persistent connections to clean up."""
 
     async def extra_status_fields(self) -> dict[str, Any]:
         """Return OAuth/credential health fields for the email module status entry.
@@ -427,7 +417,9 @@ class EmailModule(Module):
         finally:
             conn.logout()
 
-    async def _send_email(self, to: str, subject: str, body: str) -> dict:
+    async def _send_email(
+        self, to: str, subject: str, body: str, *, render_links_inert: bool = False
+    ) -> dict:
         """Send email via SMTP. Uses asyncio.to_thread for blocking SMTP calls.
 
         Permissions-matrix enforcement (public.permissions: email.send): the
@@ -435,13 +427,20 @@ class EmailModule(Module):
         on the owner's behalf. A cell flipped to granted=false blocks the send
         outright via :class:`PermissionDenied` (an authorization decision).
         Mirrors the spawn gate: consult the matrix at the decision point before
-        any SMTP traffic. require_permission fails open, so a DB error never
-        wedges delivery. Gating ``_send_email`` covers both the
+        any SMTP traffic. Unavailable permission state raises a transient error before
+        delivery. Gating ``_send_email`` covers both the
         ``email_send_message`` MCP tool and the messenger route.execute path
         (which calls ``module._send_email`` directly).
         """
         _perm_pool = self._pool or self._audit_pool
-        await require_permission(_perm_pool, self._butler_name, EMAIL_SEND_PERMISSION)
+        await require_permission(
+            _perm_pool, self._butler_name, EMAIL_SEND_PERMISSION, fail_closed=True
+        )
+        if render_links_inert:
+            from butlers.core.delivery_rendering import defang_delivery_text
+
+            subject = defang_delivery_text(subject)
+            body = defang_delivery_text(body)
         try:
             result = await asyncio.to_thread(self._smtp_send, to, subject, body)
         except Exception as exc:
@@ -468,6 +467,8 @@ class EmailModule(Module):
         thread_id: str,
         body: str,
         subject: str | None = None,
+        *,
+        render_links_inert: bool = False,
     ) -> dict:
         """Send a reply-like email payload tied to a thread identifier."""
         if not thread_id:
@@ -477,7 +478,12 @@ class EmailModule(Module):
         if not resolved_subject:
             resolved_subject = f"Re: {thread_id}"
 
-        result = await self._send_email(to, resolved_subject, body)
+        result = await self._send_email(
+            to,
+            resolved_subject,
+            body,
+            **({"render_links_inert": True} if render_links_inert else {}),
+        )
         return {**result, "thread_id": thread_id}
 
     async def _search_inbox(self, query: str) -> list[dict]:

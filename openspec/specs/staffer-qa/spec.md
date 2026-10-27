@@ -110,7 +110,7 @@ The QA Staffer SHALL ship with five discovery sources in v1.
 - **WHEN** the `infra_state` source is enabled
 - **THEN** it checks four infra health signals every patrol tick, ignoring `lookback_minutes` (each check is a point-in-time liveness/staleness comparison against a fixed cadence, not a rolling scan window):
   - **connector-offline**: queries `public.v_qa_connector_state` (sanctioned cross-schema view per RFC 0010, over `switchboard.connector_registry`) and flags a connector whose derived liveness (`butlers.core.liveness.derive_liveness`) is `"offline"` — excluding a `state = 'paused'` connector (a deliberate operator action), excluding a connector within a 15-minute grace window of its first registration, and excluding a storage-only row that has a checkpoint cursor but has never acquired either a process instance or a heartbeat
-  - **heartbeat-stale**: queries `public.v_qa_butler_heartbeat` (same migration, over `switchboard.butler_registry`) and flags a butler whose `last_seen_at` plus its own `liveness_ttl_seconds` has elapsed, or that is quarantined (`quarantined_at IS NOT NULL`) — recomputed independently of the stored `eligibility_state` column, which is only reconciled lazily on routing calls and can go stale forever for a butler nobody routes to; the TTL-liveness window is bounded against clock skew — a `last_seen_at` reported further than a 5-minute tolerance into the future is untrustworthy (clock skew / bad writer) and is treated as stale rather than allowed to keep liveness asserted indefinitely
+  - **heartbeat-stale before fleet-condition handoff**: with `BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER=1`, queries the QA-only `public.v_qa_butler_receiver_state` view from `sw_037` and flags an unavailable, stale, or non-current-boot receiver observation; an explicit failed first probe is not hidden by the never-seen grace window, and administrative policy alone is not a liveness failure. With the flag off, queries `public.v_qa_butler_heartbeat` from `sw_024` and applies the legacy `last_seen_at` TTL and `quarantined_at` checks. A receiver observation or legacy timestamp beyond the five-minute future clock-skew tolerance cannot assert health.
   - **backup-stale**: reads `BUTLERS_BACKUP_DIR`; an unset env var is a legitimate absence (no finding); a configured-but-unreachable directory, one with no backup on record, or a most-recent backup older than 36 hours produces a finding
   - **external-deadman-stale**: reads the last successful external-deadman ping recorded by `butlers.jobs.external_deadman` in `public.audit_log`; an unconfigured `EXTERNAL_DEADMAN_URL` is a legitimate absence (no finding); a last-success timestamp older than 3x the configured ping interval (or no successful ping ever) produces a finding
 - **AND** each check's finding fingerprint is derived from a stable identity (connector type/identity, butler name, or a fixed backup/deadman call-site) via the same sanitize-then-hash pattern the other sources use, so the fingerprint stays stable across patrol ticks even though the human-readable `event_summary` carries the live timestamp/age
@@ -180,7 +180,8 @@ The QA Staffer SHALL run a scheduler-driven patrol loop that executes at a confi
 - **THEN** the finding is relayed to the QA staffer via Switchboard's `route()` tool calling the QA staffer's `report_finding` tool — this is direct butler-to-staffer tool routing (bypasses user-message classification)
 - **AND** the finding is buffered in the `butler_reports` source's in-memory queue
 - **AND** it is picked up on the next patrol tick
-- **AND** if the finding's severity is 0 (critical), an immediate mini-patrol is triggered for that finding only
+- **AND** if the finding's severity is 0 (critical), an immediate mini-patrol is triggered without waiting for the next timer tick
+- **AND** that mini-patrol is a full patrol across every enabled source, recorded with `origin='scheduled'`, and counts as scheduled patrol coverage exactly as a timer-driven patrol does (a full patrol by the QA module, timer or reactive, qualifies)
 
 ### Requirement: Patrol Configuration
 The QA Staffer's patrol behavior SHALL be configurable via `butler.toml` under `[modules.qa]`.
@@ -203,9 +204,10 @@ The QA Staffer SHALL operate with a least-privilege security model: dedicated cr
 - **WHEN** the QA Staffer creates PRs
 - **THEN** it retrieves the GitHub token via `CredentialStore.resolve("BUTLERS_QA_GH_TOKEN")` which checks: (1) `qa.butler_secrets` (QA staffer's own schema), (2) shared fallback pools, (3) env fallback if configured — per RFC 0006 Tier 1 resolution order
 - **AND** the secret is provisioned in the QA staffer's own butler_secrets table with `category = "qa"`, `is_sensitive = true` — managed via the QA staffer's secrets page on the dashboard at /secrets
-- **AND** the token is scoped to: branch push, PR creation, PR labeling on `Tzeusy/butlers`
+- **AND** the token is scoped to: branch push, PR creation, PR labeling on `tzeusy-org/butlers`
 - **AND** the token SHALL NOT have merge/approve permissions — humans remain in the merge seat
 - **AND** if the secret is not found at any tier, the investigation completes but transitions to `failed` with reason `"no_gh_token"`
+- **AND** authentication or repository-authorization rejection transitions to `failed` with reason class `git_auth_failed` and content-blind remediation guidance; it does not claim the token is absent or unconfigured when GitHub authenticated an identity
 
 #### Scenario: Investigation agent sandbox
 - **WHEN** an investigation agent is spawned in a worktree
@@ -286,3 +288,63 @@ Patrol cycles SHALL be recorded in `public.qa_patrols` for observability and das
 - **WHEN** a patrol cycle completes (success or failure)
 - **THEN** the row's `completed_at`, `status`, and count fields are updated
 - **AND** if the cycle errored, `error_detail` contains a sanitized error summary
+
+### Requirement: [TARGET-STATE] QA local scheduler reads only its own operator policy
+
+Switchboard SHALL offer a read-only, no-argument projection of the exact
+`qa` administrative policy to the effective `butler_qa_rw` runtime role.
+The projection SHALL return only validated `policy_state` and
+`policy_provenance` from the current Switchboard-owned row. It SHALL NOT
+accept a caller name or expose registry, endpoint, observation, timestamp,
+actor, reason, or boot data. PUBLIC, other roles, and the role-less
+migration-login audit pool SHALL have no read authority through this seam.
+QA SHALL use its own runtime-role pool for local scheduler admission and
+SHALL NOT infer policy from remote liveness or cached positive evidence.
+The "derived staleness cannot stop QA" guarantee of `REQ-staffer-qa-006`
+remains absolute; ambiguous legacy `review_required` and typed missing,
+malformed, or unreadable policy results are distinct safety refusals, not
+derived-staleness gates or attributed owner stops. An
+`operator`-provenance `review_required` row retains its owner attribution.
+This target contract requires explicit owner adoption of the proposed Rule 3
+exception before implementation.
+
+ID: REQ-staffer-qa-009
+Source: heart-and-soul/vision.md Rule 3; RFC 0001 local scheduler amendment;
+RFC 0003 Switchboard policy ownership; proposed-rfc-0010-amendment.md;
+REQ-staffer-qa-006
+Scope: v1-mandatory
+
+#### Scenario: TTL-derived remote staleness does not stop a local patrol
+- **WHEN** QA's own runtime and database are operational, its remote observation is stale, and the fixed projection returns `active/legacy_ttl`
+- **THEN** the due local QA patrol remains eligible
+- **AND** it does not treat the legacy `eligibility_state` quarantine as an owner pause
+
+#### Scenario: Switchboard sweep keeps its separate authority
+- **WHEN** Switchboard's own policy is active but its remote observation is stale
+- **THEN** its local eligibility sweep remains eligible under the existing Switchboard runtime role
+- **AND** it does not use QA's fixed projection or acquire QA's read grant
+
+#### Scenario: Explicit and ambiguous holds remain distinct
+- **WHEN** the projection returns `paused` or `quarantined` with valid operator provenance
+- **THEN** QA suppresses new local cron/deadline dispatch while preserving due-work continuity
+- **AND** `review_required/legacy_ambiguous` suppresses dispatch as unresolved history without owner attribution, while `review_required/operator` remains an explicit owner review hold
+
+#### Scenario: Exact role and name cannot be chosen by a caller
+- **WHEN** a caller invokes the projection without effective `butler_qa_rw`, from another runtime role or the role-less audit login, or attempts to select another butler name
+- **THEN** the read is denied without another daemon's policy or a raw registry row
+- **AND** the function has no name or endpoint parameter, no PUBLIC EXECUTE, and grants no direct QA SELECT on Switchboard tables
+
+#### Scenario: Missing or malformed policy cannot authorize dispatch
+- **WHEN** the exact QA row is absent, an enum or provenance pair is inconsistent, role enforcement is missing, or the projection is unreadable
+- **THEN** QA records a typed missing, malformed, denied, or unavailable policy result and admits no new local job
+- **AND** it does not fall back to legacy eligibility, the migration-login audit pool, or a cached `active` result, nor present the refusal as an owner pause or healthy patrol
+
+#### Scenario: Owner change is rechecked before new admission
+- **WHEN** an authenticated owner pause commits after one local admission but before a later due task is admitted
+- **THEN** the later admission reads the current committed policy and does not dispatch that task
+- **AND** an already launched task is not falsely described as retroactively cancelled
+
+#### Scenario: Bootstrap and rollback preserve the authority fence
+- **WHEN** `init-db.sql` grants are replayed or code/migrations roll back
+- **THEN** the exact projection remains role-scoped and existing Switchboard RLS/owner-policy history remains effective
+- **AND** rollback does not clear a restrictive hold or reactivate a legacy fail-open scheduler path

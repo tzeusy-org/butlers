@@ -1,3 +1,4 @@
+import { clearOwnerSession, onOwnerSessionLost } from "@/api/owner-session";
 /**
  * useEventStream — WebSocket hook for the multiplexed /api/events/stream.
  *
@@ -17,7 +18,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 import { applyFleetEvent, type FleetEvent } from "@/hooks/event-cache-registry";
 
@@ -28,9 +29,6 @@ export type EventBusHealth = "healthy" | "late" | "down";
 export const EVENT_HEARTBEAT_DEADLINE_MS = 45_000;
 
 export interface UseEventStreamOptions {
-  /** Optional DASHBOARD_API_KEY for query-param auth. Leave undefined when
-   *  the server has no API key configured (dev mode). */
-  apiKey?: string;
   /** Disable the hook (no-op when false). Defaults to true. */
   enabled?: boolean;
   /** Called for every valid incoming event, including snapshot-replayed ones
@@ -40,6 +38,10 @@ export interface UseEventStreamOptions {
    *  EventBusProvider (src/lib/event-bus.tsx), the primary consumer of this
    *  distinction. */
   onEvent?: (event: FleetEvent, meta: { replayed: boolean }) => void;
+  /** Snapshot cache policy. The app's EventBusProvider supplies registry
+   * batching; direct transport consumers retain the per-event default.
+   * Event callbacks still run once per valid entry, after cache application. */
+  applySnapshot?: (qc: QueryClient, events: readonly FleetEvent[]) => void;
 }
 
 export interface UseEventStreamResult {
@@ -61,7 +63,7 @@ export interface UseEventStreamResult {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function buildWsUrl(apiKey?: string): string {
+function buildWsUrl(): string {
   const apiBase: string = (
     typeof import.meta !== "undefined" ? (import.meta.env?.VITE_API_URL ?? "/api") : "/api"
   ) as string;
@@ -80,13 +82,14 @@ function buildWsUrl(apiKey?: string): string {
   }
 
   const url = `${wsBase}/events/stream`;
-  return apiKey ? `${url}?api_key=${encodeURIComponent(apiKey)}` : url;
+  if (new URL(url).host !== window.location.host) throw new Error("Event stream must use the dashboard origin");
+  return url;
 }
 
 interface SnapshotMessage {
   type: "snapshot";
   ts: number;
-  events: FleetEvent[];
+  events: unknown[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -100,7 +103,7 @@ function isFleetEvent(payload: unknown): payload is FleetEvent {
     isRecord(payload) &&
     typeof payload.type === "string" &&
     payload.type !== "snapshot" &&
-    typeof payload.ts === "number" &&
+    typeof payload.ts === "number" && Number.isFinite(payload.ts) &&
     isRecord(payload.data)
   );
 }
@@ -109,9 +112,8 @@ function isSnapshot(payload: unknown): payload is SnapshotMessage {
   return (
     isRecord(payload) &&
     payload.type === "snapshot" &&
-    typeof payload.ts === "number" &&
-    Array.isArray(payload.events) &&
-    payload.events.every(isFleetEvent)
+    typeof payload.ts === "number" && Number.isFinite(payload.ts) &&
+    Array.isArray(payload.events)
   );
 }
 
@@ -124,9 +126,9 @@ function isFleetEnvelope(payload: unknown): payload is FleetEvent | SnapshotMess
 // ---------------------------------------------------------------------------
 
 export function useEventStream({
-  apiKey,
   enabled = true,
   onEvent,
+  applySnapshot,
 }: UseEventStreamOptions = {}): UseEventStreamResult {
   const qc = useQueryClient();
 
@@ -145,11 +147,36 @@ export function useEventStream({
   const connectedAtRef = useRef<number | null>(null);
   const currentSocketMessageAtRef = useRef<number | null>(null);
   const onEventRef = useRef(onEvent);
+  const applySnapshotRef = useRef(applySnapshot);
   const connectRef = useRef<() => void>(() => undefined);
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const ingestionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const patchEvent = useCallback((event: FleetEvent) => {
+    if (event.type !== "ingestion") {
+      applyFleetEvent(qc, event);
+      return;
+    }
+    // Fixed window rather than trailing debounce: continuous ingestion must
+    // not indefinitely postpone list freshness. The direct transport's
+    // default snapshot policy shares it; the app batches snapshots separately.
+    if (ingestionTimerRef.current !== null) return;
+    ingestionTimerRef.current = setTimeout(() => {
+      ingestionTimerRef.current = null;
+      if (mountedRef.current) applyFleetEvent(qc, event);
+    }, 250);
+  }, [qc]);
+
+  const cancelIngestion = useCallback(() => {
+    if (ingestionTimerRef.current !== null) {
+      clearTimeout(ingestionTimerRef.current);
+      ingestionTimerRef.current = null;
+    }
+  }, []);
 
   const disconnect = useCallback(() => {
     mountedRef.current = false;
+    cancelIngestion();
     if (retryTimerRef.current !== null) {
       clearTimeout(retryTimerRef.current);
       retryTimerRef.current = null;
@@ -165,11 +192,12 @@ export function useEventStream({
     }
     setStatus("closed");
     setHealth("down");
-  }, []);
+  }, [cancelIngestion]);
 
   const reconnectStaleSocket = useCallback(() => {
     const staleSocket = socketRef.current;
     if (!mountedRef.current || !staleSocket) return;
+    cancelIngestion();
 
     // A half-open socket can ignore close() and never emit onclose. Detach
     // it before creating its successor so a delayed old callback cannot
@@ -183,7 +211,7 @@ export function useEventStream({
 
     setStatus("reconnecting");
     connectRef.current();
-  }, []);
+  }, [cancelIngestion]);
 
   const connect = useCallback(() => {
     if (!mountedRef.current || !enabled) return;
@@ -195,8 +223,12 @@ export function useEventStream({
     // function being invoked — calling setState directly inside an effect
     // body (see the mount effect further down) trips
     // react-hooks/set-state-in-effect otherwise.
-    const ws = new WebSocket(buildWsUrl(apiKey));
+    const ws = new WebSocket(buildWsUrl());
     socketRef.current = ws;
+    // Listener/query-cache callbacks can synchronously deliver another frame.
+    // Finish this replay before draining those frames, preserving wire FIFO.
+    const pending: (FleetEvent | SnapshotMessage)[] = [];
+    let processing = false;
 
     ws.onopen = () => {
       if (socketRef.current !== ws) return;
@@ -219,34 +251,46 @@ export function useEventStream({
         return;
       }
       if (!isFleetEnvelope(payload)) return;
-
-      // The backend emits heartbeats only after an idle queue timeout, so a
-      // snapshot or ordinary event is equally valid evidence of freshness.
-      const receivedAt = Date.now();
-      currentSocketMessageAtRef.current = receivedAt;
-      setLastEventAt(receivedAt);
-      setHealth("healthy");
-
-      if (isSnapshot(payload)) {
-        // Replay each buffered event through the registry too — a reconnect's
-        // snapshot may carry state changes missed while the socket was down.
-        for (const replayed of payload.events) {
-          applyFleetEvent(qc, replayed);
-          onEventRef.current?.(replayed, { replayed: true });
+      pending.push(payload);
+      if (processing) return;
+      processing = true;
+      try {
+        while (pending.length && mountedRef.current && socketRef.current === ws) {
+          const next = pending.shift()!;
+          // Heartbeats follow idle timeouts, so snapshots and ordinary valid
+          // envelopes are also evidence of freshness on this current socket.
+          const receivedAt = Date.now();
+          currentSocketMessageAtRef.current = receivedAt;
+          setLastEventAt(receivedAt);
+          setHealth("healthy");
+          if (isSnapshot(next)) {
+            const events = next.events.filter(isFleetEvent);
+            const applyReplay = applySnapshotRef.current;
+            if (applyReplay) applyReplay(qc, events);
+            for (const replayed of events) {
+              if (!mountedRef.current || socketRef.current !== ws) break;
+              if (!applyReplay) patchEvent(replayed);
+              onEventRef.current?.(replayed, { replayed: true });
+            }
+          } else {
+            patchEvent(next);
+            onEventRef.current?.(next, { replayed: false });
+          }
         }
-        return;
+      } finally {
+        processing = false;
+        pending.length = 0;
       }
-
-      applyFleetEvent(qc, payload);
-      onEventRef.current?.(payload, { replayed: false });
     };
 
     ws.onerror = () => {
       // onclose will fire next and handle reconnect.
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (socketRef.current !== ws) return;
+      cancelIngestion();
+      if (event.code === 4401 || event.code === 4403) { clearOwnerSession(); return; }
       socketRef.current = null;
       if (!mountedRef.current) return;
       setStatus(everConnectedRef.current ? "reconnecting" : "connecting");
@@ -258,7 +302,9 @@ export function useEventStream({
       }, retryDelayRef.current);
       retryDelayRef.current = Math.min(retryDelayRef.current * 2, 30_000);
     };
-  }, [enabled, apiKey, qc]);
+  }, [cancelIngestion, enabled, patchEvent, qc]);
+
+  useEffect(() => onOwnerSessionLost(disconnect), [disconnect]);
 
   // Keep connectRef and onEventRef pointing at the latest callbacks.
   useEffect(() => {
@@ -268,6 +314,10 @@ export function useEventStream({
   useEffect(() => {
     onEventRef.current = onEvent;
   }, [onEvent]);
+
+  useEffect(() => {
+    applySnapshotRef.current = applySnapshot;
+  }, [applySnapshot]);
 
   useEffect(() => {
     mountedRef.current = true;

@@ -94,7 +94,6 @@ async def test_exact_corroborated_endpoint_is_forwarded_to_shared_helper(
     resolver = AsyncMock(
         return_value={
             ("email", "friend@example.com"): ResolvedContact(
-                contact_id=None,
                 name="Friend",
                 roles=[],
                 entity_id=entity_id,
@@ -170,7 +169,6 @@ async def test_healthy_sibling_cannot_replace_attested_endpoint(
         AsyncMock(
             return_value={
                 (source_channel, source_identity): ResolvedContact(
-                    contact_id=None,
                     name="Friend",
                     roles=[],
                     entity_id=entity_id,
@@ -210,7 +208,6 @@ async def test_tied_latest_endpoints_fail_closed_independent_of_row_order(
     pool = AsyncMock()
     resolver_result = {
         ("email", "friend@example.com"): ResolvedContact(
-            contact_id=None,
             name="Friend",
             roles=[],
             entity_id=entity_id,
@@ -253,7 +250,6 @@ async def test_mixed_owner_and_connector_authority_fails_closed(
         AsyncMock(
             return_value={
                 ("email", "friend@example.com"): ResolvedContact(
-                    contact_id=None,
                     name="Friend",
                     roles=[],
                     entity_id=entity_id,
@@ -293,7 +289,6 @@ async def test_latest_gmail_cannot_hide_other_active_mapped_identity(
         AsyncMock(
             return_value={
                 ("email", "friend@example.com"): ResolvedContact(
-                    contact_id=None,
                     name="Friend",
                     roles=[],
                     entity_id=entity_id,
@@ -334,7 +329,6 @@ async def test_unreadable_complete_identity_inventory_fails_closed(
         AsyncMock(
             return_value={
                 ("email", "friend@example.com"): ResolvedContact(
-                    contact_id=None,
                     name="Friend",
                     roles=[],
                     entity_id=entity_id,

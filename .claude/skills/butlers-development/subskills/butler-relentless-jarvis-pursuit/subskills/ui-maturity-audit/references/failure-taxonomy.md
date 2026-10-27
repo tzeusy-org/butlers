@@ -7,7 +7,7 @@ where real immaturity hides.
 
 ## Maintenance contract (read this first)
 
-This is a **living catalog**. The numbered *shapes* (1–8) are durable. The `e.g.` instances are
+This is a **living catalog**. The numbered *shapes* are durable. The `e.g.` instances are
 **dated, illustrative observations** from specific audits — they rot (a cited bug gets fixed; a
 path moves). Rules for consuming and maintaining it:
 
@@ -141,3 +141,54 @@ path moves). Rules for consuming and maintaining it:
     (`ButlerOverviewTab.tsx:44-46`). *Fix posture:* reconcile the FE derivation against the backend's
     actual value domain — add branches for every emitted value (especially the unhealthy ones) and
     delete the dead ones; if the spec assumes the richer vocab, fix the spec and the producer too.
+
+13. **Substrate substitution** — a packet's infrastructure plan (a rollup table, a projection, an
+    endpoint) never lands, and a *different* functioning mechanism quietly takes its place, so a QC
+    pass keyed on "does the feature work" reads as-designed while the packet's actual deliverable
+    (durability, queryability, a UI consumer of the substrate) is absent. Distinct from shape 5
+    (there nothing works; here something works, just not what was specified) and from "partial"
+    (the substitute is complete on its own terms). *Tell:* diff the packet's named tables, migrations
+    and routes against the tree (`rg` the table name in `alembic/` and the endpoint in the router);
+    if the feature works but the named substrate is missing, look for the substitute computing the
+    same answer in-request or in memory. *e.g.* (2026-09, health vitals) run-12 move 2 specified a
+    `vitals_daily` rollup + endpoint; the tree has neither, but `google_health.py:439-500` was
+    de-stubbed to aggregate in-request, so every vital tool "works" and the rollup the packet was
+    for does not exist. *Fix posture:* QC verdict is `partial` with the substitute named; either land
+    the substrate or amend the packet to bless the substitute explicitly.
+
+14. **Honesty guard permanently tripped by an expected data shape** — a degradation flag built to
+    catch a genuine inconsistency is computed over a domain that *always* contains a benign
+    exception, so the guard fires on every request and the owner learns to ignore the amber. The
+    inverse of shape 11: the guard works, the predicate is wrong. *Tell:* the degraded/`source_error`
+    flag is `true` on the live endpoint in a healthy stack; trace the predicate to a set difference or
+    equality over identifiers and check whether one side legitimately contains pseudo-identities
+    (`wa:*@lid`, synthetic butlers, staffers, system roles). *e.g.* (2026-09, `/spend`)
+    `spend.py:388-417` sets `source_error = bool(ledger_butlers - configured_butlers)`; the ledger
+    always contains WhatsApp `wa:*@lid` pseudo-butlers that are never configured, so
+    `divergence_source_error` is `true` on every load. *Fix posture:* subtract the known pseudo-identity
+    classes (or key the guard on a typed `identity_kind`) and add a test that a healthy fixture yields
+    `false`.
+
+15. **Zero-fill conflates silence with absence**: a count series is built by filling a fixed-length
+    array with zeros and dropping observed buckets into it by position, so an hour when the
+    instrument was not listening renders exactly like an hour when nothing happened, and a short
+    server result shifts every bucket away from its real time. Distinct from shape 4 (the counts are
+    real) and shape 11 (no join fails; the absence was never represented). *Tell:* `Array(n).fill(0)`
+    or `padded[n-len+i]` in a chart derivation, a server `GROUP BY bucket` with no dense time series,
+    and labels that name clock hours on a rolling window. *e.g.* (2026-10, connector detail)
+    `ConnectorDetailView.tsx:752-763` pads by position over `ingestion_connectors.py:548-575`, which
+    returns only non-empty hours; `ingestion_connectors.py:173-177,188-192` default liveness fields to
+    0. *Fix posture:* time-keyed dense buckets from the server, a per-bucket listening state distinct
+    in shape from a measured zero, and a lint ban on positional zero-fill.
+
+16. **Sibling reader left behind**: a fix moves a shared predicate (a helper, a posture, a scrub)
+    into most readers of a fact, and one sibling reader keeps the old behaviour, so the defect
+    survives in the place the QC pass did not walk. *Tell:* after a fix lands, `rg` every reader of
+    the underlying field or table, not just the ones the packet named; a reader that does not call
+    the new helper is the leak. *e.g.* (2026-10, run-15 QC) `counts_toward_owner_load` reached the
+    radar, day load, relationship job and debrief, but `jobs/context_producers.py:156` still asserts
+    'meeting' for declined events; posture reached every producer except Relationship
+    `upcoming_dates`; the bearer scrub reached submit envelopes but not
+    `filtered_event_buffer.py:296-345`. *Fix posture:* the packet's verification names a reader
+    census (every reader of the field, each with a test), not a list of the readers the author
+    remembered.

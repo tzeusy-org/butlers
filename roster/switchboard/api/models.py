@@ -11,8 +11,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from butlers.connectors.registry_roles import UNKNOWN as UNKNOWN_ROLE
-
 
 class RoutingEntry(BaseModel):
     """A single entry in the switchboard routing log."""
@@ -84,7 +82,8 @@ class SetEligibilityRequest(BaseModel):
     @field_validator("eligibility_state")
     @classmethod
     def state_valid(cls, v: str) -> str:
-        allowed = {"active", "stale", "quarantined"}
+        # "stale" remains a legacy operator alias for an explicit pause.
+        allowed = {"active", "stale", "paused", "quarantined", "review_required"}
         if v not in allowed:
             raise ValueError(f"eligibility_state must be one of {sorted(allowed)}")
         return v
@@ -99,187 +98,8 @@ class SetEligibilityResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Connector ingestion models
+# Connector ingestion aggregate models
 # ---------------------------------------------------------------------------
-
-
-class ConnectorScopeRow(BaseModel):
-    """One entry in the scopes[] block of a connector-detail response.
-
-    Spec: openspec/changes/add-connector-oauth-scope-surface/
-          specs/connector-oauth-scope-surface/spec.md §Scopes block shape
-    """
-
-    name: str
-    """Provider scope string, e.g. 'user-read-recently-played'."""
-
-    category: str
-    """'required' | 'optional' | 'sensitive' | 'extra'."""
-
-    status: str
-    """'ok' | 'missing' | 'extra'."""
-
-    sensitive_granted: bool = False
-    """True when this scope is sensitive AND currently granted."""
-
-    granted_at: str | None = None
-    """ISO8601 timestamp when the scope was first granted; NULL in v1."""
-
-    required_since: str | None = None
-    """ISO8601 timestamp when this scope became required; NULL in v1."""
-
-    serif_note: str = ""
-    """Single sentence explaining the scope's purpose (no trailing period)."""
-
-
-ConnectorAuthStatus = Literal[
-    "ok",
-    "degraded",
-    "expired",
-    "rotation-needed",
-    "needs_reauth",
-    "unsupported",
-    "unconfigured",
-]
-
-
-class ConnectorAuthBlock(BaseModel):
-    """The 'auth' block in a connector-detail response.
-
-    Spec: openspec/changes/add-connector-oauth-scope-surface/
-          specs/connector-oauth-scope-surface/spec.md §Auth block
-    """
-
-    status: ConnectorAuthStatus
-    """Canonical typed auth status, including Spotify-only needs_reauth."""
-
-    type: str
-    """'oauth' for OAuth connectors; credential model string for non-OAuth."""
-
-    note: str | None = None
-    """Provider-specific summary copy."""
-
-    expires_at: str | None = None
-    """Access token expiry (ISO8601) or null."""
-
-    required_scopes_version: int | None = None
-    """Manifest version captured at last reauth; OAuth connectors only."""
-
-    manifest_version: int | None = None
-    """Current manifest version; OAuth connectors only."""
-
-    alt_surface: dict | None = None
-    """For non-OAuth connectors: alternative credential surface block."""
-
-    recovery_reason: Literal["expired", "rotation-needed"] | None = None
-    """Original Spotify recovery cause when status is normalized to needs_reauth."""
-
-
-class ConnectorEntry(BaseModel):
-    """A connector entry from the connector_registry table.
-
-    Fields align with what is needed for Overview/Connectors tab cards and
-    health badge rows in the ingestion dashboard.
-    """
-
-    connector_type: str
-    endpoint_identity: str
-    instance_id: str | None = None
-    version: str | None = None
-    state: str = "unknown"
-    error_message: str | None = None
-    uptime_s: int | None = None
-    last_heartbeat_at: str | None = None
-    first_seen_at: str
-    registered_via: str = "self"
-    # Cumulative counters
-    counter_messages_ingested: int = 0
-    counter_messages_failed: int = 0
-    counter_source_api_calls: int = 0
-    counter_checkpoint_saves: int = 0
-    counter_dedupe_accepted: int = 0
-    # Today's aggregated stats (from connector_heartbeat_log via Prometheus)
-    today_messages_ingested: int = 0
-    today_messages_failed: int = 0
-    # Checkpoint info
-    checkpoint_cursor: str | None = None
-    checkpoint_updated_at: str | None = None
-    # Persisted operational role (bu-6jv4m.11, sw_031): `runtime_instance` for
-    # an executable connector process, `checkpoint` for a stored cursor with no
-    # process behind it, `unknown` when no producer has claimed the row. Only
-    # `runtime_instance` carries runtime-health authority; see
-    # butlers.connectors.registry_roles. `parent_endpoint_identity` names the
-    # runtime instance a checkpoint belongs to (None on runtime instances).
-    operational_role: str = UNKNOWN_ROLE
-    parent_endpoint_identity: str | None = None
-    # Runtime-configurable settings (e.g. discretion thresholds)
-    settings: dict | None = None
-    # OAuth scope surface (connector-oauth-scope-surface capability)
-    # Both fields are None when the capability data is not yet available.
-    auth: ConnectorAuthBlock | None = None
-    scopes: list[ConnectorScopeRow] | None = None
-
-
-class ConnectorSummary(BaseModel):
-    """Aggregate summary across all connectors.
-
-    Drives the summary row at the top of the Connectors tab.
-    """
-
-    # Runtime instances only (bu-6jv4m.11): stored checkpoints have no process
-    # and therefore no liveness to roll up. `unknown_count` carries the rows
-    # whose operational role is unestablished — counted apart from the
-    # online/stale/offline split rather than being guessed into either side.
-    total_connectors: int = 0
-    online_count: int = 0
-    stale_count: int = 0
-    offline_count: int = 0
-    unknown_count: int = 0
-    total_messages_ingested: int = 0
-    total_messages_failed: int = 0
-    error_rate_pct: float = 0.0
-
-
-class ConnectorStatsHourly(BaseModel):
-    """Hourly rollup stats for a single connector.
-
-    Drives volume trend charts with 24h/7d/30d period support.
-    """
-
-    connector_type: str
-    endpoint_identity: str
-    hour: str
-    messages_ingested: int = 0
-    messages_failed: int = 0
-    # Skip-aware (bu-c48im): connectors.filtered_events volume for this bucket, a
-    # DISTINCT series never folded into messages_ingested (mirrors the overview's
-    # hourly_filtered_events, bu-scyro). 0 when the connector self-persists no
-    # skips or the filtered source degraded.
-    messages_filtered: int = 0
-    heartbeat_count: int = 0
-    healthy_count: int = 0
-    degraded_count: int = 0
-    error_count: int = 0
-
-
-class ConnectorStatsDaily(BaseModel):
-    """Daily rollup stats for a single connector.
-
-    Drives volume trend charts for the 7d/30d period options.
-    """
-
-    connector_type: str
-    endpoint_identity: str
-    day: str
-    messages_ingested: int = 0
-    messages_failed: int = 0
-    # Skip-aware (bu-c48im): connectors.filtered_events volume for this bucket.
-    messages_filtered: int = 0
-    heartbeat_count: int = 0
-    healthy_count: int = 0
-    degraded_count: int = 0
-    error_count: int = 0
-    uptime_pct: float | None = None
 
 
 class FanoutRow(BaseModel):
@@ -293,25 +113,6 @@ class FanoutRow(BaseModel):
     endpoint_identity: str
     target_butler: str
     message_count: int = 0
-
-
-class IngestionOverviewStats(BaseModel):
-    """Aggregate ingestion overview statistics for the Overview tab.
-
-    Covers the stat-row cards and derived metrics needed by the Overview tab.
-    All counts are for the requested period (default 24h).
-    """
-
-    period: str = "24h"
-    total_ingested: int = 0
-    total_skipped: int = 0
-    total_metadata_only: int = 0
-    llm_calls_saved: int = 0
-    active_connectors: int = 0
-    # Tier breakdown counts (for donut chart)
-    tier1_full_count: int = 0
-    tier2_metadata_count: int = 0
-    tier3_skip_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -460,12 +261,37 @@ class ChannelIdCondition(BaseModel):
         return v
 
 
-def validate_condition(rule_type: str, condition: dict[str, Any]) -> dict[str, Any]:
+#: Per-rule opt-in stored in the condition JSONB (bu-q7vx1q.88.3): a block or skip rule passes a
+#: known contact. Stored only when true; an absent key means off.
+EXCEPT_KNOWN_CONTACTS_KEY = "except_known_contacts"
+_EXCEPT_KNOWN_CONTACTS_ACTIONS = frozenset({"block", "skip"})
+
+
+def validate_condition(
+    rule_type: str, condition: dict[str, Any], action: str | None = None
+) -> dict[str, Any]:
     """Validate condition JSONB against the rule_type schema.
 
-    Returns the validated condition dict.
+    Returns the validated condition dict, keeping the optional ``except_known_contacts`` flag
+    (a bool, true only on a block or skip ``action`` when one is given).
     Raises ValueError on schema mismatch.
     """
+    base = {k: v for k, v in condition.items() if k != EXCEPT_KNOWN_CONTACTS_KEY}
+    validated = _validate_rule_condition(rule_type, base)
+    if EXCEPT_KNOWN_CONTACTS_KEY in condition:
+        flag = condition[EXCEPT_KNOWN_CONTACTS_KEY]
+        if not isinstance(flag, bool):
+            raise ValueError(f"{EXCEPT_KNOWN_CONTACTS_KEY} must be a boolean")
+        if flag:
+            if action is not None and action not in _EXCEPT_KNOWN_CONTACTS_ACTIONS:
+                raise ValueError(
+                    f"{EXCEPT_KNOWN_CONTACTS_KEY} is only valid on block or skip rules"
+                )
+            validated[EXCEPT_KNOWN_CONTACTS_KEY] = True
+    return validated
+
+
+def _validate_rule_condition(rule_type: str, condition: dict[str, Any]) -> dict[str, Any]:
     if rule_type == "sender_domain":
         return SenderDomainCondition(**condition).model_dump()
     elif rule_type == "sender_address":
@@ -632,7 +458,7 @@ class IngestionRuleCreate(BaseModel):
             raise ValueError(str(exc)) from exc
         # Validate condition schema
         try:
-            validate_condition(self.rule_type, self.condition)
+            validate_condition(self.rule_type, self.condition, self.action)
         except (ValueError, TypeError) as exc:
             raise ValueError(f"condition invalid for rule_type={self.rule_type!r}: {exc}") from exc
         # Validate rule_type is compatible with scope
@@ -681,6 +507,9 @@ class IngestionRuleTestEnvelope(BaseModel):
     headers: dict[str, str] = {}
     mime_parts: list[str] = []
     raw_key: str = ""
+    known_contact: bool | None = None
+    """Optional: pretend the sender is (``true``) or is not (``false``) a known contact, to try
+    a rule's "except people I know" option. Omitted means unclassified, so the rule applies."""
 
 
 class IngestionRuleTestRequest(BaseModel):
@@ -718,49 +547,6 @@ class IngestionRuleTestResponse(BaseModel):
 
 _BULK_OPS = frozenset({"enable", "disable", "delete"})
 _BULK_MAX_IDS = 100
-
-
-class BulkIngestionRuleRequest(BaseModel):
-    """Request body for POST /api/switchboard/ingestion-rules/bulk.
-
-    ``op`` must be one of: enable, disable, delete.
-    ``ids`` is a list of rule UUIDs (max 100).
-    """
-
-    op: str
-    ids: list[str]
-
-    @field_validator("op")
-    @classmethod
-    def op_valid(cls, v: str) -> str:
-        if v not in _BULK_OPS:
-            raise ValueError(f"op must be one of {sorted(_BULK_OPS)!r}, got {v!r}")
-        return v
-
-    @field_validator("ids")
-    @classmethod
-    def ids_non_empty_and_capped(cls, v: list[str]) -> list[str]:
-        if not v:
-            raise ValueError("ids must not be empty")
-        if len(v) > _BULK_MAX_IDS:
-            raise ValueError(f"ids must not exceed {_BULK_MAX_IDS} entries; got {len(v)}")
-        return v
-
-
-class BulkIngestionRuleOutcome(BaseModel):
-    """Per-id outcome in a bulk operation response."""
-
-    id: str
-    outcome: str  # 'ok' | 'not_found' | 'error_reason'
-    error_reason: str | None = None
-
-
-class BulkIngestionRuleResponse(BaseModel):
-    """Response body for POST /api/switchboard/ingestion-rules/bulk."""
-
-    op: str
-    results: list[BulkIngestionRuleOutcome]
-    affected: int  # count of successfully mutated rules
 
 
 # Backfill job models
@@ -902,23 +688,6 @@ class ThreadOverrideEntry(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class EligibilitySegment(BaseModel):
-    """A single segment in the eligibility timeline."""
-
-    state: str
-    start_at: str
-    end_at: str
-
-
-class EligibilityHistoryResponse(BaseModel):
-    """24h eligibility timeline for a butler."""
-
-    butler_name: str
-    segments: list[EligibilitySegment]
-    window_start: str
-    window_end: str
-
-
 class RoutingInstruction(BaseModel):
     """A persisted routing instruction returned from the API."""
 
@@ -980,42 +749,6 @@ class RoutingInstructionUpdate(BaseModel):
         return v
 
 
-class CursorUpdateRequest(BaseModel):
-    """Request body for PATCH /connectors/{type}/{identity}/cursor."""
-
-    cursor: str
-
-    @field_validator("cursor")
-    @classmethod
-    def cursor_non_empty(cls, v: str) -> str:
-        v = v.strip()
-        if not v:
-            raise ValueError("cursor must be non-empty")
-        return v
-
-
-class ConnectorSettingsUpdateRequest(BaseModel):
-    """Request body for PATCH /connectors/{type}/{identity}/settings.
-
-    Accepts a partial JSON object that is merged into the existing settings.
-    When ``flush_interval_s`` is present it must be in [60, 7200] — consistent
-    with the frontend validation bounds.
-    """
-
-    settings: dict
-
-    @field_validator("settings")
-    @classmethod
-    def validate_flush_interval(cls, v: dict) -> dict:
-        flush = v.get("flush_interval_s")
-        if flush is not None:
-            if not isinstance(flush, int) or isinstance(flush, bool):
-                raise ValueError("flush_interval_s must be an integer")
-            if flush < 60 or flush > 7200:
-                raise ValueError("flush_interval_s must be between 60 and 7200 seconds")
-        return v
-
-
 class InsightCandidate(BaseModel):
     """A single proactive-insight candidate row from ``public.insight_candidates``.
 
@@ -1040,6 +773,20 @@ class InsightCandidate(BaseModel):
     status: str
     delivered_at: str | None = None
     delivery_attempt_count: int = 0
+    prepared_action_id: str | None = None
+
+
+class InsightFeedbackResponse(BaseModel):
+    """Content-blind result of one bounded insight-feedback decision.
+
+    The feedback store retains semantic family data so Switchboard can enforce
+    cooldowns, but an API or MCP caller receives only the outcome it requested.
+    """
+
+    status: Literal["recorded"]
+    verdict: Literal["useful", "not_now", "never"]
+    insight_id: str
+    snooze_until: str | None = None
 
 
 # ---------------------------------------------------------------------------

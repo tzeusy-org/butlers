@@ -16,6 +16,8 @@ import json
 from datetime import datetime
 from typing import Any
 
+from pydantic import StrictInt
+
 
 def _parse_metadata(metadata: str | None) -> dict[str, Any] | None:
     """Parse a JSON string into a dict, passthrough None."""
@@ -26,46 +28,25 @@ def _parse_metadata(metadata: str | None) -> dict[str, Any] | None:
 
 def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
     """Register all finance MCP tools on *mcp*, using *module* for pool access."""
-    from butlers.modules.base import group_enabled
+    from butlers.modules.base import tool_registrar
 
-    def _tool(group: str):
-        if group_enabled(config, group):
-            return mcp.tool()
-        return lambda fn: fn  # no-op — function defined but not registered
+    _tool = tool_registrar(mcp, config)
 
     # Import sub-modules (deferred to avoid import-time side effects)
-    import importlib
-
+    from butlers.tools.finance import alerts as _alerts
+    from butlers.tools.finance import anomaly_detection as _anomaly_detection
     from butlers.tools.finance import bills as _bills
+    from butlers.tools.finance import budgets as _budgets
+    from butlers.tools.finance import data_import as _data_import
     from butlers.tools.finance import facts as _facts
     from butlers.tools.finance import feed_reconciliation as _feed_reconciliation
+    from butlers.tools.finance import overview as _overview
+    from butlers.tools.finance import pattern_recognition as _pattern_recognition
     from butlers.tools.finance import reconciliation as _reconciliation
     from butlers.tools.finance import spending as _spending
     from butlers.tools.finance import subscriptions as _subscriptions
     from butlers.tools.finance import transactions as _transactions
     from butlers.tools.finance.expected_signals import runtime_signal_source
-
-    def _try_import(module_path: str) -> Any:
-        """Attempt to import a finance sub-module; return None if not yet implemented.
-
-        Only suppresses ModuleNotFoundError for the target module itself — missing
-        module means it's not yet staged.  Errors raised *inside* an existing module
-        (broken dependency, syntax error, etc.) are re-raised so they surface instead
-        of silently disabling tools.
-        """
-        try:
-            return importlib.import_module(module_path)
-        except ModuleNotFoundError as exc:
-            if exc.name == module_path:
-                return None
-            raise
-
-    _data_import = _try_import("butlers.tools.finance.data_import")
-    _pattern_recognition = _try_import("butlers.tools.finance.pattern_recognition")
-    _anomaly_detection = _try_import("butlers.tools.finance.anomaly_detection")
-    _budgets = _try_import("butlers.tools.finance.budgets")
-    _overview = _try_import("butlers.tools.finance.overview")
-    _alerts = _try_import("butlers.tools.finance.alerts")
 
     # =================================================================
     # Transaction tools
@@ -238,6 +219,21 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
             _expected_signal_source=await runtime_signal_source(pool),
         )
 
+    @_tool("subscriptions")
+    async def subscription_warning_still_relevant(
+        subject: str, selected_date: str, epoch: StrictInt
+    ) -> bool | None:
+        """Private fixed currentness read; an ordinary model invocation has no read authority."""
+        from butlers.core.finance_warning_control import lookup_owner
+
+        owner = lookup_owner(module._get_pool())
+        if owner is None:
+            return None
+        return await owner.consume_and_read(
+            {"subject": subject, "selected_date": selected_date, "epoch": epoch},
+            _subscriptions.subscription_warning_still_relevant,
+        )
+
     # =================================================================
     # Bill tools
     # =================================================================
@@ -259,6 +255,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         metadata: str | None = None,
         autopay: bool | None = None,
         predicted: bool | None = None,
+        payment_destination: str | None = None,
     ) -> dict[str, Any]:
         """Create or update a bill obligation.
 
@@ -287,9 +284,18 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         predicted: Set true only for pattern-based predictions tracked as bills.
             Prefer NOT tracking predictions (predict_bills is read-only); this keeps
             any that are tracked out of the actionable list. Omit to leave unchanged.
+        payment_destination: The account number, IBAN or payment handle the bill asks
+            the owner to pay, exactly as the bill shows it. Pass it whenever the bill
+            states one. Finance fingerprints it and keeps the raw value out of its own
+            tables, logs and the result. The bill is stamped with destination_verdict:
+            "known", "new_for_counterparty"
+            (a different destination than this payee's earlier bills; tell the owner
+            and suggest confirming by phone before paying) or "unverifiable" (first
+            destination seen for this payee, or it could not be checked). Omit when
+            the bill shows no destination.
 
         Returns: {id, payee, amount, currency, due_date, frequency, status, autopay,
-            predicted, ...}
+            predicted, destination_verdict, ...}
         """
         return await _bills.track_bill(
             module._get_pool(),
@@ -308,6 +314,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
             metadata=_parse_metadata(metadata),
             autopay=autopay,
             predicted=predicted,
+            payment_destination=payment_destination,
         )
 
     @_tool("bills")
@@ -740,724 +747,664 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
     # Transaction CRUD extensions (finance-intelligence)
     # =================================================================
 
-    if hasattr(_transactions, "update_transaction"):
+    @_tool("core")
+    async def update_transaction(
+        transaction_id: str,
+        category: str | None = None,
+        merchant: str | None = None,
+        description: str | None = None,
+        metadata: str | None = None,
+        expected_version: int | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Update fields on an existing transaction record.
 
-        @_tool("core")
-        async def update_transaction(
-            transaction_id: str,
-            category: str | None = None,
-            merchant: str | None = None,
-            description: str | None = None,
-            metadata: str | None = None,
-            expected_version: int | None = None,
-            reason: str | None = None,
-        ) -> dict[str, Any]:
-            """Update fields on an existing transaction record.
+        Only provided fields are updated; omitted fields retain their current values.
+        When category is changed, category_source is set to 'manual' and
+        is_category_locked is set to true (prevents future auto-recategorization).
+        Triggers merchant category mapping refresh when category is changed.
 
-            Only provided fields are updated; omitted fields retain their current values.
-            When category is changed, category_source is set to 'manual' and
-            is_category_locked is set to true (prevents future auto-recategorization).
-            Triggers merchant category mapping refresh when category is changed.
+        expected_version: When provided and the version column exists (finance_002),
+          the update will only succeed if the row's current version matches
+          (optimistic locking). Returns a version_conflict error on mismatch.
+        reason: Optional human-readable reason for the update, recorded in corrections.
+        """
+        return await _transactions.update_transaction(
+            module._get_pool(),
+            transaction_id=transaction_id,
+            category=category,
+            merchant=merchant,
+            description=description,
+            metadata=_parse_metadata(metadata),
+            expected_version=expected_version,
+            reason=reason,
+        )
 
-            expected_version: When provided and the version column exists (finance_002),
-              the update will only succeed if the row's current version matches
-              (optimistic locking). Returns a version_conflict error on mismatch.
-            reason: Optional human-readable reason for the update, recorded in corrections.
-            """
-            return await _transactions.update_transaction(
-                module._get_pool(),
-                transaction_id=transaction_id,
-                category=category,
-                merchant=merchant,
-                description=description,
-                metadata=_parse_metadata(metadata),
-                expected_version=expected_version,
-                reason=reason,
-            )
+    @_tool("core")
+    async def delete_transaction(
+        transaction_id: str,
+    ) -> dict[str, Any]:
+        """Soft-delete a transaction by setting deleted_at to now().
 
-    if hasattr(_transactions, "delete_transaction"):
+        Deleted transactions are excluded from all queries and analytics.
+        """
+        return await _transactions.delete_transaction(
+            module._get_pool(),
+            transaction_id=transaction_id,
+        )
 
-        @_tool("core")
-        async def delete_transaction(
-            transaction_id: str,
-        ) -> dict[str, Any]:
-            """Soft-delete a transaction by setting deleted_at to now().
-
-            Deleted transactions are excluded from all queries and analytics.
-            """
-            return await _transactions.delete_transaction(
-                module._get_pool(),
-                transaction_id=transaction_id,
-            )
-
-    if hasattr(_transactions, "merge_duplicates"):
-
-        @_tool("bulk")
-        async def merge_duplicates(
-            keep_id: str,
-            duplicate_ids: str | None = None,
-        ) -> dict[str, Any]:
-            """Merge duplicate transactions, keeping one canonical and soft-deleting the rest.
+    @_tool("bulk")
+    async def merge_duplicates(
+        keep_id: str,
+        duplicate_ids: str | None = None,
+    ) -> dict[str, Any]:
+        """Merge duplicate transactions, keeping one canonical and soft-deleting the rest.
 
 
-            keep_id: UUID of the transaction to keep (canonical record).
-            duplicate_ids: JSON string — array of transaction IDs to mark as duplicates
-              and soft-delete. Each duplicate gets is_duplicate=true and duplicate_of=keep_id
-              (when those columns exist from finance_002 migration).
+        keep_id: UUID of the transaction to keep (canonical record).
+        duplicate_ids: JSON string — array of transaction IDs to mark as duplicates
+          and soft-delete. Each duplicate gets is_duplicate=true and duplicate_of=keep_id
+          (when those columns exist from finance_002 migration).
 
-            Merges metadata from all discarded records into the kept record before deletion.
-            Records corrections in transaction_corrections for the audit trail.
-            """
-            import json as _json
+        Merges metadata from all discarded records into the kept record before deletion.
+        Records corrections in transaction_corrections for the audit trail.
+        """
+        import json as _json
 
-            parsed_duplicate_ids: list[str] | None = None
-            if duplicate_ids is not None:
-                parsed_duplicate_ids = _json.loads(duplicate_ids)
-            return await _transactions.merge_duplicates(
-                module._get_pool(),
-                keep_id=keep_id,
-                duplicate_ids=parsed_duplicate_ids,
-            )
+        parsed_duplicate_ids: list[str] | None = None
+        if duplicate_ids is not None:
+            parsed_duplicate_ids = _json.loads(duplicate_ids)
+        return await _transactions.merge_duplicates(
+            module._get_pool(),
+            keep_id=keep_id,
+            duplicate_ids=parsed_duplicate_ids,
+        )
 
-    if hasattr(_transactions, "split_transaction"):
+    @_tool("bulk")
+    async def split_transaction(
+        transaction_id: str,
+        splits: str,
+    ) -> dict[str, Any]:
+        """Split a single transaction into multiple records with different amounts/categories.
 
-        @_tool("bulk")
-        async def split_transaction(
-            transaction_id: str,
-            splits: str,
-        ) -> dict[str, Any]:
-            """Split a single transaction into multiple records with different amounts/categories.
+        splits: JSON string — array of split objects, each with:
+          - amount: decimal string (required)
+          - category: string (required)
+          - description: string (optional)
+        All split amounts must sum to the original transaction amount.
+        The original transaction is soft-deleted after splitting.
+        """
+        import json as _json
 
-            splits: JSON string — array of split objects, each with:
-              - amount: decimal string (required)
-              - category: string (required)
-              - description: string (optional)
-            All split amounts must sum to the original transaction amount.
-            The original transaction is soft-deleted after splitting.
-            """
-            import json as _json
+        parsed_splits = _json.loads(splits)
+        return await _transactions.split_transaction(
+            module._get_pool(),
+            transaction_id=transaction_id,
+            splits=parsed_splits,
+        )
 
-            parsed_splits = _json.loads(splits)
-            return await _transactions.split_transaction(
-                module._get_pool(),
-                transaction_id=transaction_id,
-                splits=parsed_splits,
-            )
+    @_tool("bulk")
+    async def bulk_recategorize(
+        merchant_pattern: str,
+        new_category: str,
+        dry_run: bool = False,
+        create_rule: bool = False,
+    ) -> dict[str, Any]:
+        """Reassign category for all transactions matching a merchant pattern (ILIKE).
 
-    if hasattr(_transactions, "bulk_recategorize"):
+        Excludes soft-deleted transactions and category-locked transactions
+        (is_category_locked=true, from finance_002 migration).
 
-        @_tool("bulk")
-        async def bulk_recategorize(
-            merchant_pattern: str,
-            new_category: str,
-            dry_run: bool = False,
-            create_rule: bool = False,
-        ) -> dict[str, Any]:
-            """Reassign category for all transactions matching a merchant pattern (ILIKE).
+        dry_run=True returns a preview of affected transactions without modifying them.
+        create_rule=True upserts a merchant_mappings rule for future auto-categorization.
 
-            Excludes soft-deleted transactions and category-locked transactions
-            (is_category_locked=true, from finance_002 migration).
-
-            dry_run=True returns a preview of affected transactions without modifying them.
-            create_rule=True upserts a merchant_mappings rule for future auto-categorization.
-
-            Returns: {matched, updated, dry_run, create_rule, sample_transactions}
-            """
-            return await _transactions.bulk_recategorize(
-                module._get_pool(),
-                merchant_pattern=merchant_pattern,
-                new_category=new_category,
-                dry_run=dry_run,
-                create_rule=create_rule,
-            )
+        Returns: {matched, updated, dry_run, create_rule, sample_transactions}
+        """
+        return await _transactions.bulk_recategorize(
+            module._get_pool(),
+            merchant_pattern=merchant_pattern,
+            new_category=new_category,
+            dry_run=dry_run,
+            create_rule=create_rule,
+        )
 
     # =================================================================
     # Historical data import (finance-intelligence)
     # =================================================================
 
-    if _data_import is not None and hasattr(_data_import, "import_transactions"):
+    @_tool("bulk")
+    async def import_transactions(
+        storage_ref: str,
+        account_id: str | None = None,
+        currency: str | None = None,
+        column_map: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Import transactions from a bank CSV export stored in blob storage.
 
-        @_tool("bulk")
-        async def import_transactions(
-            storage_ref: str,
-            account_id: str | None = None,
-            currency: str | None = None,
-            column_map: str | None = None,
-            dry_run: bool = False,
-        ) -> dict[str, Any]:
-            """Import transactions from a bank CSV export stored in blob storage.
+        Automatically detects Chase, Amex, Capital One, and generic CSV formats.
+        Normalizes dates, amounts, and merchant names before ingestion.
 
-            Automatically detects Chase, Amex, Capital One, and generic CSV formats.
-            Normalizes dates, amounts, and merchant names before ingestion.
+        storage_ref: BlobStore reference to the CSV file (e.g. 's3://bucket/path/file.csv').
+          Upload the CSV first via the dashboard or attachment ingestion flow, then pass
+          the returned storage_ref here.
+        account_id: Account to associate all imported transactions with.
+        currency: ISO-4217 currency code for the import. When omitted, the currency is
+          inferred from the linked account's currency field; falls back to USD if unknown.
+        column_map: JSON string — optional column name overrides for custom CSV formats.
+        dry_run: If true, parse and validate without inserting; returns preview of first 10.
 
-            storage_ref: BlobStore reference to the CSV file (e.g. 's3://bucket/path/file.csv').
-              Upload the CSV first via the dashboard or attachment ingestion flow, then pass
-              the returned storage_ref here.
-            account_id: Account to associate all imported transactions with.
-            currency: ISO-4217 currency code for the import. When omitted, the currency is
-              inferred from the linked account's currency field; falls back to USD if unknown.
-            column_map: JSON string — optional column name overrides for custom CSV formats.
-            dry_run: If true, parse and validate without inserting; returns preview of first 10.
+        Returns: {total, imported, skipped, errors, import_batch_id, detected_format,
+                  currency_warning (when currency fell back to USD)}
+        """
+        if module.blob_store is None:
+            return {
+                "error": "Blob storage is not configured. "
+                "Set BLOB_S3_ENDPOINT_URL, BLOB_S3_BUCKET, BLOB_S3_ACCESS_KEY_ID, "
+                "and BLOB_S3_SECRET_ACCESS_KEY in the dashboard secrets UI (/secrets) "
+                "to enable CSV import from blob storage.",
+                "status": "blob_store_not_configured",
+            }
+        return await _data_import.import_transactions(
+            module._get_pool(),
+            blob_store=module.blob_store,
+            storage_ref=storage_ref,
+            account_id=account_id,
+            currency=currency,
+            column_map=_parse_metadata(column_map),
+            dry_run=dry_run,
+            notify_fn=module.notify_fn,
+        )
 
-            Returns: {total, imported, skipped, errors, import_batch_id, detected_format,
-                      currency_warning (when currency fell back to USD)}
-            """
-            if module.blob_store is None:
-                return {
-                    "error": "Blob storage is not configured. "
-                    "Set BLOB_S3_ENDPOINT_URL, BLOB_S3_BUCKET, BLOB_S3_ACCESS_KEY_ID, "
-                    "and BLOB_S3_SECRET_ACCESS_KEY in the dashboard secrets UI (/secrets) "
-                    "to enable CSV import from blob storage.",
-                    "status": "blob_store_not_configured",
-                }
-            return await _data_import.import_transactions(
-                module._get_pool(),
-                blob_store=module.blob_store,
-                storage_ref=storage_ref,
-                account_id=account_id,
-                currency=currency,
-                column_map=_parse_metadata(column_map),
-                dry_run=dry_run,
-                notify_fn=module.notify_fn,
-            )
+    @_tool("bulk")
+    async def import_transactions_from_file(
+        file_path: str,
+        account_id: str | None = None,
+        currency: str | None = None,
+        column_map: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Import transactions from a bank CSV file on the local filesystem.
 
-    if _data_import is not None and hasattr(_data_import, "import_transactions_from_file"):
+        Automatically detects Chase, Amex, Capital One, and generic CSV formats.
+        Normalizes dates, amounts, and merchant names before ingestion.
+        Auto-applies learned merchant category mappings for uncategorized rows.
 
-        @_tool("bulk")
-        async def import_transactions_from_file(
-            file_path: str,
-            account_id: str | None = None,
-            currency: str | None = None,
-            column_map: str | None = None,
-            dry_run: bool = False,
-        ) -> dict[str, Any]:
-            """Import transactions from a bank CSV file on the local filesystem.
+        file_path: Absolute path to the CSV file on the local filesystem.
+        account_id: Account to associate all imported transactions with.
+        currency: ISO-4217 currency code for the import. When omitted, the currency is
+          inferred from the linked account's currency field; falls back to USD if unknown.
+        column_map: JSON string — optional column name overrides for custom CSV formats.
+        dry_run: If true, parse, validate, and detect duplicates without inserting;
+          returns preview of first 10 transactions with is_duplicate flags.
 
-            Automatically detects Chase, Amex, Capital One, and generic CSV formats.
-            Normalizes dates, amounts, and merchant names before ingestion.
-            Auto-applies learned merchant category mappings for uncategorized rows.
-
-            file_path: Absolute path to the CSV file on the local filesystem.
-            account_id: Account to associate all imported transactions with.
-            currency: ISO-4217 currency code for the import. When omitted, the currency is
-              inferred from the linked account's currency field; falls back to USD if unknown.
-            column_map: JSON string — optional column name overrides for custom CSV formats.
-            dry_run: If true, parse, validate, and detect duplicates without inserting;
-              returns preview of first 10 transactions with is_duplicate flags.
-
-            Returns: {total, imported, skipped, errors, import_batch_id, detected_format,
-                      merchant_mappings_applied, mv_refreshed, baselines_triggered,
-                      currency_warning (when currency fell back to USD)}
-            """
-            return await _data_import.import_transactions_from_file(
-                module._get_pool(),
-                file_path=file_path,
-                account_id=account_id,
-                currency=currency,
-                column_map=_parse_metadata(column_map),
-                dry_run=dry_run,
-                notify_fn=module.notify_fn,
-            )
+        Returns: {total, imported, skipped, errors, import_batch_id, detected_format,
+                  merchant_mappings_applied, mv_refreshed, baselines_triggered,
+                  currency_warning (when currency fell back to USD)}
+        """
+        return await _data_import.import_transactions_from_file(
+            module._get_pool(),
+            file_path=file_path,
+            account_id=account_id,
+            currency=currency,
+            column_map=_parse_metadata(column_map),
+            dry_run=dry_run,
+            notify_fn=module.notify_fn,
+        )
 
     # =================================================================
     # Merchant pattern recognition (finance-intelligence)
     # =================================================================
 
-    if _pattern_recognition is not None and hasattr(
-        _pattern_recognition, "learn_merchant_categories"
-    ):
+    @_tool("intelligence")
+    async def learn_merchant_categories() -> dict[str, Any]:
+        """Learn merchant-to-category mappings from existing transaction history.
 
-        @_tool("intelligence")
-        async def learn_merchant_categories() -> dict[str, Any]:
-            """Learn merchant-to-category mappings from existing transaction history.
+        Aggregates category assignments per merchant from finance.transactions,
+        then upserts mappings into finance.merchant_mappings with confidence scores.
+        Should be run after bulk imports to improve auto-categorization.
 
-            Aggregates category assignments per merchant from finance.transactions,
-            then upserts mappings into finance.merchant_mappings with confidence scores.
-            Should be run after bulk imports to improve auto-categorization.
+        Returns: {learned, updated, skipped, total_mappings}
+        """
+        return await _pattern_recognition.learn_merchant_categories(
+            module._get_pool(),
+        )
 
-            Returns: {learned, updated, skipped, total_mappings}
-            """
-            return await _pattern_recognition.learn_merchant_categories(
-                module._get_pool(),
-            )
+    @_tool("intelligence")
+    async def suggest_categories(
+        transaction_ids: str,
+    ) -> dict[str, Any]:
+        """Suggest categories for uncategorized transactions using learned mappings.
 
-    if _pattern_recognition is not None and hasattr(_pattern_recognition, "suggest_categories"):
+        Looks up merchants in finance.merchant_mappings via ILIKE pattern matching.
+        Returns suggestions with confidence scores for each transaction.
 
-        @_tool("intelligence")
-        async def suggest_categories(
-            transaction_ids: str,
-        ) -> dict[str, Any]:
-            """Suggest categories for uncategorized transactions using learned mappings.
+        transaction_ids: JSON string — array of transaction ID strings.
+        Returns: {suggestions: [{transaction_id, merchant, suggested_category, confidence}],
+                  unmatched_count}
+        """
+        import json as _json
 
-            Looks up merchants in finance.merchant_mappings via ILIKE pattern matching.
-            Returns suggestions with confidence scores for each transaction.
+        parsed_ids = _json.loads(transaction_ids)
+        return await _pattern_recognition.suggest_categories(
+            module._get_pool(),
+            transaction_ids=parsed_ids,
+        )
 
-            transaction_ids: JSON string — array of transaction ID strings.
-            Returns: {suggestions: [{transaction_id, merchant, suggested_category, confidence}],
-                      unmatched_count}
-            """
-            import json as _json
+    @_tool("intelligence")
+    async def recall_merchant_mappings(
+        merchant_pattern: str | None = None,
+        category: str | None = None,
+    ) -> dict[str, Any]:
+        """Query learned merchant-to-category mappings from finance.merchant_mappings.
 
-            parsed_ids = _json.loads(transaction_ids)
-            return await _pattern_recognition.suggest_categories(
-                module._get_pool(),
-                transaction_ids=parsed_ids,
-            )
+        Provides LLM-visible access to the learned mapping table for inspection
+        and manual override decisions. Both filters are optional (returns all active
+        mappings when omitted).
 
-    if _pattern_recognition is not None and hasattr(
-        _pattern_recognition, "recall_merchant_mappings"
-    ):
+        merchant_pattern: Optional ILIKE filter on raw_pattern or normalized_merchant.
+        category: Optional exact filter on the mapped category.
 
-        @_tool("intelligence")
-        async def recall_merchant_mappings(
-            merchant_pattern: str | None = None,
-            category: str | None = None,
-        ) -> dict[str, Any]:
-            """Query learned merchant-to-category mappings from finance.merchant_mappings.
+        Returns: {mappings: [{raw_pattern, normalized_merchant, category, confidence,
+                  learned_from_count, source}], total}
+        """
+        return await _pattern_recognition.recall_merchant_mappings(
+            module._get_pool(),
+            merchant_pattern=merchant_pattern,
+            category=category,
+        )
 
-            Provides LLM-visible access to the learned mapping table for inspection
-            and manual override decisions. Both filters are optional (returns all active
-            mappings when omitted).
+    @_tool("subscriptions")
+    async def detect_recurring(
+        min_occurrences: int = 3,
+    ) -> dict[str, Any]:
+        """Detect recurring charge patterns that may represent untracked subscriptions.
 
-            merchant_pattern: Optional ILIKE filter on raw_pattern or normalized_merchant.
-            category: Optional exact filter on the mapped category.
+        Scans finance.transactions for merchants with 3+ charges at regular intervals
+        and consistent amounts (within 10% variance). Detected patterns are stored
+        in finance.recurring_groups for future reference.
 
-            Returns: {mappings: [{raw_pattern, normalized_merchant, category, confidence,
-                      learned_from_count, source}], total}
-            """
-            return await _pattern_recognition.recall_merchant_mappings(
-                module._get_pool(),
-                merchant_pattern=merchant_pattern,
-                category=category,
-            )
+        min_occurrences: Minimum number of charges required to flag as recurring (default 3).
 
-    if _pattern_recognition is not None and hasattr(_pattern_recognition, "detect_recurring"):
+        Returns: {detected: [{merchant, estimated_frequency, avg_amount, currency,
+                  confidence, already_tracked, price_change_detected, occurrences}],
+                  total_detected, new_patterns, updated_patterns}
+        """
+        return await _pattern_recognition.detect_recurring(
+            module._get_pool(),
+            min_occurrences=min_occurrences,
+        )
 
-        @_tool("subscriptions")
-        async def detect_recurring(
-            min_occurrences: int = 3,
-        ) -> dict[str, Any]:
-            """Detect recurring charge patterns that may represent untracked subscriptions.
+    @_tool("bills")
+    async def predict_bills(
+        days_ahead: int = 30,
+    ) -> dict[str, Any]:
+        """Predict upcoming bill payments based on historical transaction patterns.
 
-            Scans finance.transactions for merchants with 3+ charges at regular intervals
-            and consistent amounts (within 10% variance). Detected patterns are stored
-            in finance.recurring_groups for future reference.
+        Analyzes transactions for payees with 3+ regular payments to compute
+        predicted next payment dates from median intervals.
 
-            min_occurrences: Minimum number of charges required to flag as recurring (default 3).
+        days_ahead: How many days ahead to look for predicted bills (default 30).
 
-            Returns: {detected: [{merchant, estimated_frequency, avg_amount, currency,
-                      confidence, already_tracked, price_change_detected, occurrences}],
-                      total_detected, new_patterns, updated_patterns}
-            """
-            return await _pattern_recognition.detect_recurring(
-                module._get_pool(),
-                min_occurrences=min_occurrences,
-            )
-
-    if _pattern_recognition is not None and hasattr(_pattern_recognition, "predict_bills"):
-
-        @_tool("bills")
-        async def predict_bills(
-            days_ahead: int = 30,
-        ) -> dict[str, Any]:
-            """Predict upcoming bill payments based on historical transaction patterns.
-
-            Analyzes transactions for payees with 3+ regular payments to compute
-            predicted next payment dates from median intervals.
-
-            days_ahead: How many days ahead to look for predicted bills (default 30).
-
-            Returns: {predictions: [{payee, predicted_date, predicted_amount, currency,
-                      confidence, is_tracked, amount_drift}], total}
-            """
-            return await _pattern_recognition.predict_bills(
-                module._get_pool(),
-                days_ahead=days_ahead,
-            )
+        Returns: {predictions: [{payee, predicted_date, predicted_amount, currency,
+                  confidence, is_tracked, amount_drift}], total}
+        """
+        return await _pattern_recognition.predict_bills(
+            module._get_pool(),
+            days_ahead=days_ahead,
+        )
 
     # =================================================================
     # Anomaly detection and statistical baselines (finance-intelligence)
     # =================================================================
 
-    if _anomaly_detection is not None and hasattr(_anomaly_detection, "compute_baselines"):
+    @_tool("analytics")
+    async def compute_baselines() -> dict[str, Any]:
+        """Compute statistical spending baselines from 6-month rolling history.
 
-        @_tool("analytics")
-        async def compute_baselines() -> dict[str, Any]:
-            """Compute statistical spending baselines from 6-month rolling history.
+        Calculates per-merchant (median, stddev) and per-category (weekly velocity)
+        baselines from finance.transactions. Results are stored as memory facts with
+        predicate='spending_baseline' for use by anomaly detection.
 
-            Calculates per-merchant (median, stddev) and per-category (weekly velocity)
-            baselines from finance.transactions. Results are stored as memory facts with
-            predicate='spending_baseline' for use by anomaly detection.
+        Returns: {computed_merchants, computed_categories, as_of}
+        """
+        return await _anomaly_detection.compute_baselines(
+            module._get_pool(),
+        )
 
-            Returns: {computed_merchants, computed_categories, as_of}
-            """
-            return await _anomaly_detection.compute_baselines(
-                module._get_pool(),
-            )
+    @_tool("analytics")
+    async def anomaly_scan(
+        days_back: int = 7,
+        sensitivity: float = 2.5,
+    ) -> dict[str, Any]:
+        """Scan recent transactions for anomalies against statistical baselines.
 
-    if _anomaly_detection is not None and hasattr(_anomaly_detection, "anomaly_scan"):
+        Flags amount anomalies (deviation beyond sensitivity * stddev), new merchants,
+        and category velocity anomalies. Each flagged transaction includes anomaly type,
+        severity, and a human-readable explanation.
 
-        @_tool("analytics")
-        async def anomaly_scan(
-            days_back: int = 7,
-            sensitivity: float = 2.5,
-        ) -> dict[str, Any]:
-            """Scan recent transactions for anomalies against statistical baselines.
+        days_back: Number of days back to scan (default 7).
+        sensitivity: Standard deviation multiplier for anomaly threshold (default 2.5).
 
-            Flags amount anomalies (deviation beyond sensitivity * stddev), new merchants,
-            and category velocity anomalies. Each flagged transaction includes anomaly type,
-            severity, and a human-readable explanation.
+        Returns: {anomalies: [{transaction_id, merchant, amount, anomaly_type,
+                  severity, explanation}], total, status}
+        status='insufficient_data' when baselines are not yet established.
+        """
+        return await _anomaly_detection.anomaly_scan(
+            module._get_pool(),
+            days_back=days_back,
+            sensitivity=sensitivity,
+        )
 
-            days_back: Number of days back to scan (default 7).
-            sensitivity: Standard deviation multiplier for anomaly threshold (default 2.5).
+    @_tool("analytics")
+    async def detect_duplicates(
+        days_back: int = 30,
+    ) -> dict[str, Any]:
+        """Detect potential duplicate transactions in recent history.
 
-            Returns: {anomalies: [{transaction_id, merchant, amount, anomaly_type,
-                      severity, explanation}], total, status}
-            status='insufficient_data' when baselines are not yet established.
-            """
-            return await _anomaly_detection.anomaly_scan(
-                module._get_pool(),
-                days_back=days_back,
-                sensitivity=sensitivity,
-            )
+        Finds same-merchant, same-amount transactions on the same or adjacent days.
+        Excludes known subscription charges from false-positive detection.
 
-    if _anomaly_detection is not None and hasattr(_anomaly_detection, "detect_duplicates"):
+        days_back: Number of days back to scan for duplicates (default 30).
 
-        @_tool("analytics")
-        async def detect_duplicates(
-            days_back: int = 30,
-        ) -> dict[str, Any]:
-            """Detect potential duplicate transactions in recent history.
-
-            Finds same-merchant, same-amount transactions on the same or adjacent days.
-            Excludes known subscription charges from false-positive detection.
-
-            days_back: Number of days back to scan for duplicates (default 30).
-
-            Returns: {duplicates: [{transaction_ids, merchant, amount, dates, confidence}],
-                      total}
-            """
-            return await _anomaly_detection.detect_duplicates(
-                module._get_pool(),
-                days_back=days_back,
-            )
+        Returns: {duplicates: [{transaction_ids, merchant, amount, dates, confidence}],
+                  total}
+        """
+        return await _anomaly_detection.detect_duplicates(
+            module._get_pool(),
+            days_back=days_back,
+        )
 
     # =================================================================
     # Budget management and spending analytics (finance-intelligence)
     # =================================================================
 
-    if _budgets is not None and hasattr(_budgets, "budget_set"):
+    @_tool("budgets")
+    async def budget_set(
+        category: str,
+        amount: float,
+        period: str,
+        currency: str = "USD",
+        warn_threshold: float = 0.8,
+        alert_threshold: float = 1.0,
+    ) -> dict[str, Any]:
+        """Set or update a spending budget for a category.
 
-        @_tool("budgets")
-        async def budget_set(
-            category: str,
-            amount: float,
-            period: str,
-            currency: str = "USD",
-            warn_threshold: float = 0.8,
-            alert_threshold: float = 1.0,
-        ) -> dict[str, Any]:
-            """Set or update a spending budget for a category.
+        Deactivates any existing budget for the same (category, period) combination
+        and inserts a new active row. Thresholds trigger notifications when spending
+        reaches the specified fraction of the budget amount.
 
-            Deactivates any existing budget for the same (category, period) combination
-            and inserts a new active row. Thresholds trigger notifications when spending
-            reaches the specified fraction of the budget amount.
+        category: Spending category to budget (e.g. "dining", "groceries").
+        amount: Budget limit in the given currency.
+        period: Budget period — "daily", "weekly", "monthly", "quarterly", or "yearly".
+        currency: ISO-4217 currency code (default "USD").
+        warn_threshold: Fraction of budget that triggers a warning (default 0.8 = 80%).
+        alert_threshold: Fraction of budget that triggers an alert (default 1.0 = 100%).
 
-            category: Spending category to budget (e.g. "dining", "groceries").
-            amount: Budget limit in the given currency.
-            period: Budget period — "monthly", "weekly", or "yearly".
-            currency: ISO-4217 currency code (default "USD").
-            warn_threshold: Fraction of budget that triggers a warning (default 0.8 = 80%).
-            alert_threshold: Fraction of budget that triggers an alert (default 1.0 = 100%).
+        Returns: {id, category, amount, period, currency, warn_threshold, alert_threshold}
+        """
+        return await _budgets.budget_set(
+            module._get_pool(),
+            category=category,
+            amount=amount,
+            period=period,
+            currency=currency,
+            warn_threshold=warn_threshold,
+            alert_threshold=alert_threshold,
+        )
 
-            Returns: {id, category, amount, period, currency, warn_threshold, alert_threshold}
-            """
-            return await _budgets.budget_set(
-                module._get_pool(),
-                category=category,
-                amount=amount,
-                period=period,
-                currency=currency,
-                warn_threshold=warn_threshold,
-                alert_threshold=alert_threshold,
-            )
+    @_tool("budgets")
+    async def budget_list() -> dict[str, Any]:
+        """List all active spending budgets.
 
-    if _budgets is not None and hasattr(_budgets, "budget_list"):
+        Returns all rows from finance.budgets WHERE is_active = true.
 
-        @_tool("budgets")
-        async def budget_list() -> dict[str, Any]:
-            """List all active spending budgets.
+        Returns: {budgets: [{id, category, amount, period, currency,
+                  warn_threshold, alert_threshold}], total}
+        """
+        return await _budgets.budget_list(module._get_pool())
 
-            Returns all rows from finance.budgets WHERE is_active = true.
+    @_tool("budgets")
+    async def budget_remove(
+        category: str,
+        period: str,
+    ) -> dict[str, Any]:
+        """Deactivate an existing budget for a (category, period) combination.
 
-            Returns: {budgets: [{id, category, amount, period, currency,
-                      warn_threshold, alert_threshold}], total}
-            """
-            return await _budgets.budget_list(module._get_pool())
+        Sets is_active = false on the matching row. The budget record is preserved
+        for historical reference but excluded from active checks.
 
-    if _budgets is not None and hasattr(_budgets, "budget_remove"):
+        period: "daily", "weekly", "monthly", "quarterly", or "yearly".
 
-        @_tool("budgets")
-        async def budget_remove(
-            category: str,
-            period: str,
-        ) -> dict[str, Any]:
-            """Deactivate an existing budget for a (category, period) combination.
+        Returns: {deactivated, category, period}
+        """
+        return await _budgets.budget_remove(
+            module._get_pool(),
+            category=category,
+            period=period,
+        )
 
-            Sets is_active = false on the matching row. The budget record is preserved
-            for historical reference but excluded from active checks.
+    @_tool("budgets")
+    async def budget_status() -> dict[str, Any]:
+        """Check current spending against all active budgets.
 
-            Returns: {deactivated, category, period}
-            """
-            return await _budgets.budget_remove(
-                module._get_pool(),
-                category=category,
-                period=period,
-            )
+        Joins active budgets against spending aggregated from transactions in the
+        current period. Returns per-category status with utilization percentage.
 
-    if _budgets is not None and hasattr(_budgets, "budget_status"):
+        Returns: {categories: [{category, budget_amount, spent, utilization,
+                  status, currency}], total_categories, as_of}
+        status values: "on_track" | "warning" | "exceeded"
+        """
+        return await _budgets.budget_status(module._get_pool())
 
-        @_tool("budgets")
-        async def budget_status() -> dict[str, Any]:
-            """Check current spending against all active budgets.
+    @_tool("analytics")
+    async def spending_trends(
+        comparison: str = "month_over_month",
+        months: int = 6,
+        category: str | None = None,
+    ) -> dict[str, Any]:
+        """Analyze spending trends over time with period-over-period comparisons.
 
-            Joins active budgets against spending aggregated from transactions in the
-            current period. Returns per-category status with utilization percentage.
+        comparison: "month_over_month" or "year_over_year".
+        months: Number of months of history to include (default 6).
+        category: Optional filter to a specific spending category.
 
-            Returns: {categories: [{category, budget_amount, spent, utilization,
-                      status, currency}], total_categories, as_of}
-            status values: "on_track" | "warning" | "exceeded"
-            """
-            return await _budgets.budget_status(module._get_pool())
+        Returns: {periods: [{period, amount, change_pct, direction}],
+                  trend_direction, avg_monthly_spend}
+        """
+        return await _budgets.spending_trends(
+            module._get_pool(),
+            comparison=comparison,
+            months=months,
+            category=category,
+        )
 
-    if _budgets is not None and hasattr(_budgets, "spending_trends"):
+    @_tool("analytics")
+    async def spending_forecast() -> dict[str, Any]:
+        """Forecast end-of-month spending based on current-month trajectory.
 
-        @_tool("analytics")
-        async def spending_trends(
-            comparison: str = "month_over_month",
-            months: int = 6,
-            category: str | None = None,
-        ) -> dict[str, Any]:
-            """Analyze spending trends over time with period-over-period comparisons.
+        Uses linear projection: (current_spend / days_elapsed) * days_in_month.
+        Includes per-category forecasts and comparison against budget targets where set.
+        Handles first-of-month edge case by using prior month as the basis.
 
-            comparison: "month_over_month" or "year_over_year".
-            months: Number of months of history to include (default 6).
-            category: Optional filter to a specific spending category.
-
-            Returns: {periods: [{period, amount, change_pct, direction}],
-                      trend_direction, avg_monthly_spend}
-            """
-            return await _budgets.spending_trends(
-                module._get_pool(),
-                comparison=comparison,
-                months=months,
-                category=category,
-            )
-
-    if _budgets is not None and hasattr(_budgets, "spending_forecast"):
-
-        @_tool("analytics")
-        async def spending_forecast() -> dict[str, Any]:
-            """Forecast end-of-month spending based on current-month trajectory.
-
-            Uses linear projection: (current_spend / days_elapsed) * days_in_month.
-            Includes per-category forecasts and comparison against budget targets where set.
-            Handles first-of-month edge case by using prior month as the basis.
-
-            Returns: {total_forecast, days_elapsed, days_in_month, current_spend,
-                      categories: [{category, current_spend, forecast, budget_amount,
-                      budget_status}], as_of, status}
-            status='insufficient_data' when less than 3 days of current-month data exists.
-            """
-            return await _budgets.spending_forecast(module._get_pool())
+        Returns: {total_forecast, days_elapsed, days_in_month, current_spend,
+                  categories: [{category, current_spend, forecast, budget_amount,
+                  budget_status}], as_of, status}
+        status='insufficient_data' when less than 3 days of current-month data exists.
+        """
+        return await _budgets.spending_forecast(module._get_pool())
 
     # =================================================================
     # Financial overview tools (finance-intelligence)
     # =================================================================
 
-    if _overview is not None and hasattr(_overview, "net_worth_snapshot"):
+    @_tool("analytics")
+    async def net_worth_snapshot(
+        account: str,
+        institution: str,
+        balance: float,
+        currency: str = "USD",
+        as_of_date: str | None = None,
+    ) -> dict[str, Any]:
+        """Record a point-in-time account balance snapshot.
 
-        @_tool("analytics")
-        async def net_worth_snapshot(
-            account: str,
-            institution: str,
-            balance: float,
-            currency: str = "USD",
-            as_of_date: str | None = None,
-        ) -> dict[str, Any]:
-            """Record a point-in-time account balance snapshot.
+        Upserts into finance.balance_snapshots using the (account_id, as_of_date)
+        unique constraint. Used to track net worth over time.
 
-            Upserts into finance.balance_snapshots using the (account_id, as_of_date)
-            unique constraint. Used to track net worth over time.
+        account: Account name or identifier (e.g. "Checking", "Credit Card").
+        institution: Financial institution name (e.g. "Chase", "Fidelity").
+        balance: Account balance (positive for assets, negative for liabilities).
+        currency: ISO-4217 currency code (default "USD").
+        as_of_date: ISO-8601 date string (defaults to today).
 
-            account: Account name or identifier (e.g. "Checking", "Credit Card").
-            institution: Financial institution name (e.g. "Chase", "Fidelity").
-            balance: Account balance (positive for assets, negative for liabilities).
-            currency: ISO-4217 currency code (default "USD").
-            as_of_date: ISO-8601 date string (defaults to today).
+        Returns: {id, account, institution, balance, currency, as_of_date}
+        """
+        return await _overview.net_worth_snapshot(
+            module._get_pool(),
+            account=account,
+            institution=institution,
+            balance=balance,
+            currency=currency,
+            as_of_date=as_of_date,
+        )
 
-            Returns: {id, account, institution, balance, currency, as_of_date}
-            """
-            return await _overview.net_worth_snapshot(
-                module._get_pool(),
-                account=account,
-                institution=institution,
-                balance=balance,
-                currency=currency,
-                as_of_date=as_of_date,
-            )
+    @_tool("analytics")
+    async def net_worth_history(
+        months: int = 12,
+    ) -> dict[str, Any]:
+        """Retrieve net worth history across all tracked accounts.
 
-    if _overview is not None and hasattr(_overview, "net_worth_history"):
+        Queries finance.balance_snapshots joined with finance.accounts, applying
+        carry-forward logic for months where no snapshot was recorded. Computes
+        total_assets, total_liabilities, and net_worth per month.
 
-        @_tool("analytics")
-        async def net_worth_history(
-            months: int = 12,
-        ) -> dict[str, Any]:
-            """Retrieve net worth history across all tracked accounts.
+        months: Number of months of history to return (default 12).
 
-            Queries finance.balance_snapshots joined with finance.accounts, applying
-            carry-forward logic for months where no snapshot was recorded. Computes
-            total_assets, total_liabilities, and net_worth per month.
+        Returns: {history: [{month, accounts: [{name, balance, currency}],
+                  total_assets, total_liabilities, net_worth}], as_of}
+        """
+        return await _overview.net_worth_history(
+            module._get_pool(),
+            months=months,
+        )
 
-            months: Number of months of history to return (default 12).
+    @_tool("analytics")
+    async def cash_flow(
+        period: str = "monthly",
+        months: int = 6,
+        breakdown: bool = False,
+    ) -> dict[str, Any]:
+        """Analyze cash flow by aggregating income vs. expenses over time.
 
-            Returns: {history: [{month, accounts: [{name, balance, currency}],
-                      total_assets, total_liabilities, net_worth}], as_of}
-            """
-            return await _overview.net_worth_history(
-                module._get_pool(),
-                months=months,
-            )
+        Aggregates transaction credits (income) vs. debits (expenses) by period,
+        computing net flow and savings rate. Optional category breakdown available.
 
-    if _overview is not None and hasattr(_overview, "cash_flow"):
+        period: Aggregation period — "monthly" or "weekly".
+        months: Number of months of history to include (default 6).
+        breakdown: If true, include per-category spending breakdown per period.
 
-        @_tool("analytics")
-        async def cash_flow(
-            period: str = "monthly",
-            months: int = 6,
-            breakdown: bool = False,
-        ) -> dict[str, Any]:
-            """Analyze cash flow by aggregating income vs. expenses over time.
+        Returns: {periods: [{period, income, expenses, net, savings_rate,
+                  categories (if breakdown=true)}], avg_net, avg_savings_rate, as_of}
+        """
+        return await _overview.cash_flow(
+            module._get_pool(),
+            period=period,
+            months=months,
+            breakdown=breakdown,
+        )
 
-            Aggregates transaction credits (income) vs. debits (expenses) by period,
-            computing net flow and savings rate. Optional category breakdown available.
+    @_tool("subscriptions")
+    async def subscription_audit() -> dict[str, Any]:
+        """Audit all subscriptions — tracked and auto-detected recurring charges.
 
-            period: Aggregation period — "monthly" or "weekly".
-            months: Number of months of history to include (default 6).
-            breakdown: If true, include per-category spending breakdown per period.
+        Combines explicitly tracked subscriptions with patterns detected by
+        detect_recurring(). Computes annual cost projections and identifies
+        changes (price increases, newly detected services) since the last audit.
 
-            Returns: {periods: [{period, income, expenses, net, savings_rate,
-                      categories (if breakdown=true)}], avg_net, avg_savings_rate, as_of}
-            """
-            return await _overview.cash_flow(
-                module._get_pool(),
-                period=period,
-                months=months,
-                breakdown=breakdown,
-            )
+        Returns: {tracked: [{service, amount, frequency, annual_cost, currency}],
+                  detected: [{merchant, estimated_frequency, avg_amount, annual_cost}],
+                  total_annual_cost, new_since_last_audit, changes_detected, as_of}
+        """
+        return await _overview.subscription_audit(module._get_pool())
 
-    if _overview is not None and hasattr(_overview, "subscription_audit"):
+    @_tool("intelligence")
+    async def flag_tax_deductible(
+        year: int | None = None,
+    ) -> dict[str, Any]:
+        """Identify potentially tax-deductible transactions for a given tax year.
 
-        @_tool("subscriptions")
-        async def subscription_audit() -> dict[str, Any]:
-            """Audit all subscriptions — tracked and auto-detected recurring charges.
+        Queries transactions for the specified year and cross-references against
+        categories marked is_tax_relevant in finance.categories. Returns flagged
+        transactions with their tax_category and a summary.
 
-            Combines explicitly tracked subscriptions with patterns detected by
-            detect_recurring(). Computes annual cost projections and identifies
-            changes (price increases, newly detected services) since the last audit.
+        year: Tax year to query (defaults to current year).
 
-            Returns: {tracked: [{service, amount, frequency, annual_cost, currency}],
-                      detected: [{merchant, estimated_frequency, avg_amount, annual_cost}],
-                      total_annual_cost, new_since_last_audit, changes_detected, as_of}
-            """
-            return await _overview.subscription_audit(module._get_pool())
-
-    if _overview is not None and hasattr(_overview, "flag_tax_deductible"):
-
-        @_tool("intelligence")
-        async def flag_tax_deductible(
-            year: int | None = None,
-        ) -> dict[str, Any]:
-            """Identify potentially tax-deductible transactions for a given tax year.
-
-            Queries transactions for the specified year and cross-references against
-            categories marked is_tax_relevant in finance.categories. Returns flagged
-            transactions with their tax_category and a summary.
-
-            year: Tax year to query (defaults to current year).
-
-            Returns: {transactions: [{id, merchant, amount, category, tax_category,
-                      posted_at}], total_amount, year, disclaimer}
-            """
-            return await _overview.flag_tax_deductible(
-                module._get_pool(),
-                year=year,
-            )
+        Returns: {transactions: [{id, merchant, amount, category, tax_category,
+                  posted_at}], total_amount, year, disclaimer}
+        """
+        return await _overview.flag_tax_deductible(
+            module._get_pool(),
+            year=year,
+        )
 
     # =================================================================
     # Alert system (finance-intelligence)
     # =================================================================
 
-    if _alerts is not None and hasattr(_alerts, "alert_configure"):
+    @_tool("intelligence")
+    async def alert_configure(
+        type: str,
+        threshold: float | None = None,
+        currency: str = "USD",
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        """Configure a spending alert rule.
 
-        @_tool("intelligence")
-        async def alert_configure(
-            type: str,
-            threshold: float | None = None,
-            currency: str = "USD",
-            enabled: bool = True,
-        ) -> dict[str, Any]:
-            """Configure a spending alert rule.
+        Stores alert configuration as a memory fact with predicate='alert_config'.
+        Alert types: "large_transaction" (amount threshold), "budget_exceeded",
+        "new_merchant", "price_change" (subscription price change detection).
 
-            Stores alert configuration as a memory fact with predicate='alert_config'.
-            Alert types: "large_transaction" (amount threshold), "budget_exceeded",
-            "new_merchant", "price_change" (subscription price change detection).
+        type: Alert type identifier.
+        threshold: Amount threshold for large_transaction alerts (ignored for other types).
+        currency: ISO-4217 currency code (default "USD").
+        enabled: Whether the alert is active (default true).
 
-            type: Alert type identifier.
-            threshold: Amount threshold for large_transaction alerts (ignored for other types).
-            currency: ISO-4217 currency code (default "USD").
-            enabled: Whether the alert is active (default true).
+        Returns: {type, threshold, currency, enabled, fact_id}
+        """
+        return await _alerts.alert_configure(
+            module._get_pool(),
+            type=type,
+            threshold=threshold,
+            currency=currency,
+            enabled=enabled,
+        )
 
-            Returns: {type, threshold, currency, enabled, fact_id}
-            """
-            return await _alerts.alert_configure(
-                module._get_pool(),
-                type=type,
-                threshold=threshold,
-                currency=currency,
-                enabled=enabled,
-            )
+    @_tool("intelligence")
+    async def alert_list() -> dict[str, Any]:
+        """List all configured alert rules.
 
-    if _alerts is not None and hasattr(_alerts, "alert_list"):
+        Returns all active alert configurations stored as memory facts
+        with predicate='alert_config'.
 
-        @_tool("intelligence")
-        async def alert_list() -> dict[str, Any]:
-            """List all configured alert rules.
+        Returns: {alerts: [{type, threshold, currency, enabled, fact_id}], total}
+        """
+        return await _alerts.alert_list(module._get_pool())
 
-            Returns all active alert configurations stored as memory facts
-            with predicate='alert_config'.
+    @_tool("subscriptions")
+    async def detect_price_changes(
+        days_back: int = 60,
+    ) -> dict[str, Any]:
+        """Detect price changes in tracked subscription charges.
 
-            Returns: {alerts: [{type, threshold, currency, enabled, fact_id}], total}
-            """
-            return await _alerts.alert_list(module._get_pool())
+        Compares recent charges for tracked subscription merchants against
+        their recorded amounts in finance.subscriptions. Flags changes > 5%.
 
-    if _alerts is not None and hasattr(_alerts, "detect_price_changes"):
+        days_back: How many days back to scan for charges (default 60).
 
-        @_tool("subscriptions")
-        async def detect_price_changes(
-            days_back: int = 60,
-        ) -> dict[str, Any]:
-            """Detect price changes in tracked subscription charges.
-
-            Compares recent charges for tracked subscription merchants against
-            their recorded amounts in finance.subscriptions. Flags changes > 5%.
-
-            days_back: How many days back to scan for charges (default 60).
-
-            Returns: {changes: [{service, tracked_amount, recent_charge, change_pct,
-                      direction, last_seen_at}], total}
-            """
-            return await _alerts.detect_price_changes(
-                module._get_pool(),
-                days_back=days_back,
-            )
+        Returns: {changes: [{service, tracked_amount, recent_charge, change_pct,
+                  direction, last_seen_at}], total}
+        """
+        return await _alerts.detect_price_changes(
+            module._get_pool(),
+            days_back=days_back,
+        )

@@ -24,6 +24,8 @@ Covers every acceptance criterion from bu-ojiij.2:
 from __future__ import annotations
 
 import itertools
+from dataclasses import FrozenInstanceError
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -645,6 +647,32 @@ class TestProviderAvailabilityErrorsSplitFromAuth:
         assert _eligible(dec)
         assert dec.reason.startswith("provider_unavailable"), dec.reason
 
+    def test_codex_chatgpt_account_model_incompatibility_is_eligible(self) -> None:
+        """An account/model rejection before work is provider unavailability."""
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError(
+                    "Codex CLI exited with code 1: "
+                    '{"type":"error","status":400,"error":'
+                    '{"type":"invalid_request_error","message":'
+                    "\"The 'claude-haiku-4-5-20251001' model is not supported when using "
+                    'Codex with a ChatGPT account."}}'
+                )
+            )
+        )
+
+        assert _eligible(dec), dec.reason
+        assert dec.reason.startswith("provider_unavailable"), dec.reason
+
+    def test_generic_unsupported_runtime_error_remains_default_closed(self) -> None:
+        """The narrow account marker must not admit unrelated unsupported operations."""
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError("This operation is not supported for archived records"))
+        )
+
+        assert _suppressed(dec), dec.reason
+        assert dec.reason.startswith("unknown_runtime_error"), dec.reason
+
 
 class TestApiAdapterAnthropicSdkErrorsEligible:
     """bu-qvnce.12 (PR #2936) fail-open verification: ApiAdapter wraps every
@@ -834,7 +862,96 @@ class TestRateLimitErrorsEligible:
         """
         dec = classify_failover_eligibility(_ctx(RuntimeError(msg)))
         assert _eligible(dec), f"Expected eligible for usage-limit msg={msg!r}, got: {dec.reason}"
-        assert "rate_limit" in dec.reason
+        assert dec.reason.startswith("usage_limit")
+
+    def test_codex_clock_time_reset_is_not_guessed(self) -> None:
+        """ "try again at 12:25 PM" has no date or timezone, so no reset is invented."""
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError(
+                    "Codex CLI exited with code 1: You've hit your usage limit. "
+                    "Visit https://example.invalid/usage or try again at 12:25 PM."
+                )
+            )
+        )
+        assert dec.reason.startswith("usage_limit")
+        assert dec.reset_at is None
+
+    def test_claude_usage_limit_epoch_reset_is_parsed(self) -> None:
+        reset = datetime.now(UTC) + timedelta(hours=2)
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError(f"Claude AI usage limit reached|{int(reset.timestamp())}"))
+        )
+        assert dec.reason.startswith("usage_limit")
+        assert dec.reset_at == reset.replace(microsecond=0)
+
+    def test_usage_limit_via_pre_tool_call_stderr_gate(self) -> None:
+        """The opt-in stderr gate yields the same usage_limit class, not a rate limit."""
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError("runtime exited with code 1"),
+                process_info={
+                    "is_pre_tool_call": True,
+                    "stderr": "You've hit your usage limit. resets 2099-01-01T00:00:00Z",
+                },
+            )
+        )
+        assert _eligible(dec)
+        assert dec.reason.startswith("usage_limit")
+
+    def test_plain_rate_limit_stays_a_rate_limit(self) -> None:
+        dec = classify_failover_eligibility(_ctx(RuntimeError("429 Too Many Requests")))
+        assert dec.reason.startswith("rate_limit_before_work")
+        assert dec.reset_at is None
+
+    def test_usage_limit_with_tool_calls_is_suppressed(self) -> None:
+        """Gate 1 still wins: a usage limit after work started is never failed over."""
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError("You've hit your usage limit"), tool_calls=[{"name": "x"}])
+        )
+        assert not _eligible(dec)
+
+
+class TestParseUsageLimitReset:
+    """Only unambiguous reset forms are parsed; anything else is None."""
+
+    NOW = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("usage limit reached|1791034800", datetime(2026, 10, 3, 13, 40, tzinfo=UTC)),
+            (
+                "usage limit. resets at 2026-10-03T15:10:00Z",
+                datetime(2026, 10, 3, 15, 10, tzinfo=UTC),
+            ),
+            (
+                "usage limit. resets at 2026-10-03T17:10:00+02:00",
+                datetime(2026, 10, 3, 15, 10, tzinfo=UTC),
+            ),
+            (
+                "usage limit, try again in 2 hours 5 minutes",
+                datetime(2026, 10, 3, 14, 5, tzinfo=UTC),
+            ),
+            ("usage limit, try again in 30 minutes", datetime(2026, 10, 3, 12, 30, tzinfo=UTC)),
+        ],
+    )
+    def test_parses_unambiguous_forms(self, text: str, expected: datetime) -> None:
+        assert _fc.parse_usage_limit_reset(text, now=self.NOW) == expected
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "you've hit your usage limit",
+            "usage limit, try again at 12:25 PM",
+            "usage limit. resets at 2026-10-03T11:00:00Z",  # already past
+            "usage limit. resets at 2027-10-03T11:00:00Z",  # implausibly far
+            "usage limit. resets at 2026-10-04T15:10:00",  # no offset
+            "usage limit in the morning",
+        ],
+    )
+    def test_everything_else_is_none(self, text: str) -> None:
+        assert _fc.parse_usage_limit_reset(text, now=self.NOW) is None
 
 
 # ---------------------------------------------------------------------------
@@ -940,7 +1057,7 @@ class TestFailoverDecisionContract:
     def test_decision_is_immutable(self) -> None:
         """FailoverDecision is frozen (immutable after construction)."""
         dec = FailoverDecision(eligible=True, reason="test")
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             dec.eligible = False  # type: ignore[misc]
 
     def test_eligible_true(self) -> None:
@@ -1051,12 +1168,13 @@ class TestMarkerBucketDisjointness:
             if name.endswith("_MARKERS") and isinstance(getattr(_fc, name), tuple)
         }
 
-    def test_expected_seven_marker_buckets_present(self) -> None:
+    def test_expected_eight_marker_buckets_present(self) -> None:
         """Guards against a bucket being renamed/dropped out of the invariant."""
         assert set(self._marker_buckets()) == {
             "_PROVIDER_AUTH_MARKERS",
             "_PROVIDER_AVAILABILITY_MARKERS",
             "_RATE_LIMIT_MARKERS",
+            "_USAGE_LIMIT_MARKERS",
             "_EMPTY_RESPONSE_MARKERS",
             "_MCP_DISCOVERY_MARKERS",
             "_RUNTIME_CONFIG_MARKERS",

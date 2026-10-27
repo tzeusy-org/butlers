@@ -8,11 +8,15 @@
 // ---------------------------------------------------------------------------
 
 import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-verdict";
-import { useConnectorSummaries, useConnectorSummariesWithAggregates, usePipelineStats } from "@/hooks/use-ingestion";
-import { useIngestionWindowRollup } from "@/hooks/use-ingestion-events";
+import { useConnectorSummaries, usePipelineStats } from "@/hooks/use-ingestion";
+import { useIngestionDroppedKnown, useIngestionWindowRollup } from "@/hooks/use-ingestion-events";
 import { formatCostUsd } from "@/lib/format-cost";
 import { deriveConnectorDispatchInfo } from "@/components/ingestion/connectors/connector-auth";
-import type { ConnectorSummary, PipelineStats } from "@/api/types";
+import type {
+  ConnectorSummary,
+  IngestionDroppedKnownSummary,
+  PipelineStats,
+} from "@/api/types";
 import type { IngestionRange } from "@/components/ingestion/TimelineTab";
 import { useMemo } from "react";
 
@@ -35,8 +39,9 @@ function attentionClauses(connectors: ConnectorSummary[]): VerdictClause[] {
   return connectors
     .filter(
       (connector) =>
-        deriveConnectorDispatchInfo(connector).needsAttention ||
-        Boolean(connector.operational_warnings?.length),
+        !connector.archived &&
+        (deriveConnectorDispatchInfo(connector).needsAttention ||
+          Boolean(connector.operational_warnings?.length)),
     )
     .slice(0, 3)
     .map((connector) => ({
@@ -116,7 +121,10 @@ export function IngestionTimelineVerdictOpener({ range }: { range: IngestionRang
   const window = useMemo(() => timelineWindow(range), [range]);
   const rollup = useIngestionWindowRollup(window);
   const connectors = useConnectorSummaries();
-  const connectorRows = connectors.data?.data ?? [];
+  const connectorResponse = connectors.data?.data;
+  const connectorRows = (connectorResponse?.connectors ?? []).filter(
+    (connector) => !connector.archived,
+  );
 
   return (
     <DispatchVerdict
@@ -128,7 +136,7 @@ export function IngestionTimelineVerdictOpener({ range }: { range: IngestionRang
           label: "connector registry",
           isLoading: connectors.isLoading,
           isError:
-            connectors.isError || connectors.data?.meta?.connector_registry_available === false,
+            connectors.isError || connectorResponse?.connector_registry_available === false,
         },
       ]}
       clauses={[
@@ -173,7 +181,7 @@ function connectorHealthClauses(
 
 /** Verdict above the connectors roster. */
 export function IngestionConnectorsVerdictOpener() {
-  const connectors = useConnectorSummariesWithAggregates();
+  const connectors = useConnectorSummaries();
   const response = connectors.data?.data;
   const rows = response?.connectors ?? [];
   const activeRows = rows.filter((connector) => !connector.archived);
@@ -220,9 +228,36 @@ function filtersClauses(stats: PipelineStats | undefined): VerdictClause[] {
   ];
 }
 
+/** Door to the filtered rows the owner has not yet answered. */
+const DROPPED_KNOWN_HREF = "/ingestion?statuses=filtered&range=24h";
+
+/**
+ * Harm clause for gates that dropped mail from people the owner knows. A failed
+ * or degraded read is "unknown", never zero, so it also blocks the calm line.
+ */
+function droppedKnownClauses(
+  summary: IngestionDroppedKnownSummary | undefined,
+  isError: boolean,
+): VerdictClause[] {
+  const clauses: VerdictClause[] = [];
+  if (summary?.counts_available && summary.dropped > 0) {
+    clauses.push({
+      key: "dropped-known",
+      text: `${summary.dropped.toLocaleString()} dropped from people you know`,
+      href: DROPPED_KNOWN_HREF,
+    });
+  }
+  if (isError || !summary?.available || !summary.counts_available ||
+      !summary.classification_available || summary.uncertain_drops !== 0) {
+    clauses.push({ key: "dropped-known-unknown", text: "gate harm unknown" });
+  }
+  return clauses;
+}
+
 /** Verdict above the filters pipeline. */
 export function IngestionFiltersVerdictOpener() {
   const stats = usePipelineStats("24h");
+  const droppedKnown = useIngestionDroppedKnown("24h");
   const total = stats.data ? stats.data.ingested + stats.data.filtered : 0;
 
   return (
@@ -235,8 +270,12 @@ export function IngestionFiltersVerdictOpener() {
           isLoading: stats.isLoading,
           isError: stats.isError || stats.data?.aggregates_available === false,
         },
+        { label: "known-contact drops", isLoading: droppedKnown.isLoading, isError: false },
       ]}
-      clauses={filtersClauses(stats.data)}
+      clauses={[
+        ...droppedKnownClauses(droppedKnown.data, droppedKnown.isError),
+        ...filtersClauses(stats.data),
+      ]}
       allClear={`All gates clear: ${total.toLocaleString()} signals evaluated in the last 24h`}
       className="border-b border-border/60 pb-3"
     />

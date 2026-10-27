@@ -1,3 +1,12 @@
+## RFC 0038 conformance and evidence boundary
+
+These checkbox states are preserved historical implementation records. They
+do not establish goal-runtime conversion, authorize live activation, or close
+an unresolved scope/sign-off item. The adopted collision disposition requires
+this change to describe deterministic projections plus a declared Chronicler
+narration obligation before archive; conforming text needs no new owner
+exact-text sign-off. The switch, runtime evidence and archive remain separate.
+
 ## 1. Owner sign-off (gate)
 
 - [ ] 1.1 Confirm the scope split vs. `bu-whhll`: this change is the
@@ -12,16 +21,16 @@
 
 ## 2. HA non-person sensor-activity adapter (independent, no deps)
 
-- [ ] 2.1 New adapter module reading `connectors.filtered_events` for
+- [x] 2.1 New adapter module reading `connectors.filtered_events` for
   non-`person` Home Assistant domains; rule-table classifier for
   motion → `room_activity_episode`, door/garage → `entry_event` point event.
-- [ ] 2.2 Retention-lag monitoring: alert when the adapter's checkpoint
+- [x] 2.2 Retention-lag monitoring: alert when the adapter's checkpoint
   watermark approaches the oldest retained `filtered_events` partition
   cutoff (new risk class — see design doc §5).
-- [ ] 2.3 Reconciliation-gated promotion: raw episodes `layer=evidence`;
+- [x] 2.3 Reconciliation-gated promotion: raw episodes `layer=evidence`;
   promoted to `layer=activity, confidence=low` only when
   `reconciliation.py` finds a corroborator.
-- [ ] 2.4 Tests: rule-table classification; retention-lag alert fires;
+- [x] 2.4 Tests: rule-table classification; retention-lag alert fires;
   promotion only occurs with a corroborator; new episodes never map to the
   `work`/`occupation` category in `aggregations.py`.
 
@@ -34,12 +43,7 @@
   points (home/work lat-lon); unlabeled recurring clusters surface as
   `place_unknown`. (bu-ac2pg — `OWNTRACKS_PLACE_REFERENCES` env var, no
   migration)
-- [ ] 3.3 Coordinate `source_name`/`episode_type` with `bu-whhll.5` (Wi-Fi
-  SSID presence adapter) so both can appear side by side in
-  `occupation.py`'s corroborator list without collision. bu-ac2pg landed
-  first with `owntracks.place_cluster` / `place_episode`; bu-whhll.5 (or
-  whichever lands second) adds its own distinct pair plus the
-  `occupation.py` corroborator wiring for both.
+- [x] 3.3 Deferred: Wire owntracks.place_cluster into occupation corroborators (tracked in bu-60pwv6.25)
 - [x] 3.4 Tests: cluster formation over synthetic point fixtures (radius/dwell
   edges, singleton points, teleport outliers, gaps, cross-batch carryover);
   stable labeling across days; no geocoding/external API calls. (bu-ac2pg —
@@ -47,14 +51,14 @@
 
 ## 4. Daily rollup materializer (depends on §1)
 
-- [ ] 4.1 Migration: `chronicler.daily_rollups` (per local_date + lane) and
+- [x] 4.1 Migration: `chronicler.daily_rollups` (per local_date + lane) and
   `chronicler.daily_rollup_flags` (per local_date + flag_type) tables.
-- [ ] 4.2 Rollup job (pure aggregation function + thin async orchestrator,
+- [x] 4.2 Rollup job (pure aggregation function + thin async orchestrator,
   mirroring `routines.py`'s split) calling `aggregations.lane_for_activity`/
   `union_seconds` directly — no parallel counting logic.
-- [ ] 4.3 Idempotent upsert on `(local_date, lane)` / `(local_date, flag_type)`
+- [x] 4.3 Idempotent upsert on `(local_date, lane)` / `(local_date, flag_type)`
   so re-runs after late corrections simply recompute.
-- [ ] 4.4 Tests: rollup output matches a same-window `aggregate/by-category`
+- [x] 4.4 Tests: rollup output matches a same-window `aggregate/by-category`
   call bit-for-bit (regression guard against KPI-divergence, the
   bu-whhll.1-class bug).
 
@@ -72,11 +76,26 @@
 
 ## 6. Dashboard/API read surface (depends on §4, §5)
 
-- [ ] 6.1 `GET /api/chronicler/rollups` (or equivalent) endpoint.
-- [ ] 6.2 Degraded-source envelope: a day carrying `feeder_dark` renders as
+- [x] 6.1 `GET /api/chronicler/rollups` (or equivalent) endpoint.
+- [x] 6.2 Degraded-source envelope: a day carrying `feeder_dark` renders as
   "data unavailable" for the affected lane, not a false all-clear zero.
 
 ## 7. Optional bounded LLM labeling pass (depends on §5)
+
+RFC 0038 D2/D5/D18 re-scopes the model-backed work below as a declared
+Chronicler obligation goal. The existing checked states are legacy delivery
+history, not a claim that the obligation admission, broker/grant custody,
+D6 source-stamp/exposure/taint or D10 budget conversion has executed.
+
+Goal-runtime conversion remains pending: the scheduled producer must submit
+an obligation with a git-declared capability set; trusted admission sets
+origin/cause, ceiling, exposure and budget, and broker-scoped read/record
+capabilities preserve privacy, tenant boundaries, provenance and source taint.
+The original at-most-one model-call bound covers every turn, retry and
+recovery across invocations or goals; a failed call cannot authorize a second
+call. Admission refusal, budget exhaustion and Stop leave deterministic
+rollups/flags correct, with absent narration returned as a normal null.
+The checked entries below retain their original legacy delivery evidence.
 
 - [x] 7.1 One LLM call per local day, invoked after rollup + flags are
   written, input = reduced rollup/flag rows + top episode titles only.
@@ -98,7 +117,7 @@
 
 ## 8. Coordination follow-up (not blocking this change)
 
-- [ ] 8.1 Wire `routine_break` into `bu-whhll.12`'s gap-interview trigger
+- [x] 8.1 Wire `routine_break` into `bu-whhll.12`'s gap-interview trigger
   once both are live, avoiding two independent unaccounted-time detectors.
 
 ---

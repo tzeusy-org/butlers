@@ -28,6 +28,11 @@ def _format_episodes(episodes: list[dict]) -> str:
         importance = ep.get("importance")
         episode_id = ep.get("id", "unknown")
         header = f"### Episode {i}  ({butler}, {ts}, episode_id={episode_id})"
+        # Server-held authorship: stamped from the routing context, not from content.
+        header += f"  [authority={ep.get('content_authority') or 'unknown'}"
+        if ep.get("authority_entity_id"):
+            header += f", sender_entity_id={ep['authority_entity_id']}"
+        header += "]"
         if importance is not None:
             header += f"  [importance={importance}]"
         lines.append(header)

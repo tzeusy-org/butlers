@@ -1,3 +1,5 @@
+import { fulfillEmptyApi } from "./fixtures/empty-api";
+import { mockJson } from "./fixtures/api-responses";
 /**
  * Playwright visual parity spec — ingestion redesign (bu-y25mj.6).
  *
@@ -126,8 +128,8 @@ const FIXTURE_EVENTS = [
   }),
 ];
 
-/** A minimal backend ConnectorEntry for the gmail connector (fixture). */
-const FIXTURE_CONNECTOR_BACKEND = {
+/** A minimal canonical connector-detail payload for the gmail connector. */
+const FIXTURE_CONNECTOR_DETAIL = {
   connector_type: "gmail",
   endpoint_identity: "alice@example.com",
   instance_id: "inst-001",
@@ -150,6 +152,23 @@ const FIXTURE_CONNECTOR_BACKEND = {
   settings: null,
 };
 
+/** A role-aware canonical connector summary for roster, timeline, and System. */
+const FIXTURE_CONNECTOR_SUMMARY = {
+  connector_type: "gmail",
+  endpoint_identity: "alice@example.com",
+  liveness: "online",
+  state: "healthy",
+  error_message: null,
+  version: "1.0.0",
+  uptime_s: 86400,
+  last_heartbeat_at: new Date(Date.now() - 60_000).toISOString(),
+  first_seen_at: "2026-01-01T00:00:00Z",
+  today: { messages_ingested: 42, messages_failed: 1, uptime_pct: 100 },
+  hourly_events: Array(24).fill(0),
+  operational_role: "runtime_instance",
+  checkpoints: [],
+};
+
 /**
  * Install common API mocks.
  *
@@ -162,11 +181,8 @@ const FIXTURE_CONNECTOR_BACKEND = {
 async function installCommonMocks(page: Page) {
   // 1. Catch-all — absorbs sidebar requests (/api/butlers, /api/spend, etc.)
   await page.route("**/api/**", (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ data: [] }),
-    });
+    if (new URL(route.request().url()).pathname.startsWith("/api/auth/owner/")) return route.fallback();
+    return fulfillEmptyApi(route);
   });
 
   // The globally rendered Sidebar reads this availability-bearing metric.
@@ -175,8 +191,8 @@ async function installCommonMocks(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        data: { total_pending: 0 },
+      body: mockJson("getApprovalMetrics", {
+        data: { total_pending: 0, total_approved_today: 0, total_rejected_today: 0, total_auto_approved_today: 0, total_expired_today: 0, auto_approval_rate: 0, rejection_rate: 0, failure_count_today: 0, active_rules_count: 0 },
         meta: {},
       }),
     });
@@ -187,46 +203,38 @@ async function installCommonMocks(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        data: [FIXTURE_CONNECTOR_BACKEND],
+      body: mockJson("getConnectorSummaries", { meta: {},
+        data: { connectors: [FIXTURE_CONNECTOR_SUMMARY] },
       }),
     });
   });
 
-  // 3. Switchboard connector detail for gmail/alice@example.com
+  // 3. Canonical connector detail for gmail/alice@example.com
   await page.route(
-    "**/api/switchboard/connectors/gmail/alice%40example.com/stats*",
+    "**/api/ingestion/connectors/gmail/alice%40example.com*",
     (route) => {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ data: [] }),
+        body: mockJson("getConnectorDetail", { meta: {}, data: FIXTURE_CONNECTOR_DETAIL }),
       });
     },
   );
 
-  // 4. Connector stats for gmail
+  // 4. Canonical connector stats for gmail. Registered after the detail
+  // handler so it wins under Playwright's LIFO route matching.
   await page.route(
-    "**/api/switchboard/connectors/gmail/alice%40example.com*",
+    "**/api/ingestion/connectors/gmail/alice%40example.com/stats*",
     (route) => {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ data: FIXTURE_CONNECTOR_BACKEND }),
+        body: mockJson("getConnectorStats", { meta: {}, data: [] }),
       });
     },
   );
 
-  // 5. Switchboard connector list
-  await page.route("**/api/switchboard/connectors*", (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ data: [FIXTURE_CONNECTOR_BACKEND] }),
-    });
-  });
-
-  // 5b. Connector-scoped sub-sections: events, incidents, routing-rules [bu-5ywn2]
+  // 5. Connector-scoped sub-sections: events, incidents, routing-rules [bu-5ywn2]
   //     These must be registered before the generic connectors catch-all so
   //     they win under LIFO matching. The catch-all (**/api/**) would return
   //     { data: [] } which does not match ConnectorEventsResponse shape and
@@ -237,7 +245,7 @@ async function installCommonMocks(page: Page) {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({
+        body: mockJson("getConnectorRoutingRules", {
           rules: [],
           connector_type: "gmail",
           endpoint_identity: "alice@example.com",
@@ -254,7 +262,7 @@ async function installCommonMocks(page: Page) {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({
+        body: mockJson("getConnectorIncidents", {
           incidents: [],
           connector_type: "gmail",
           endpoint_identity: "alice@example.com",
@@ -270,7 +278,7 @@ async function installCommonMocks(page: Page) {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({
+        body: mockJson("getConnectorEvents", {
           events: [],
           connector_type: "gmail",
           endpoint_identity: "alice@example.com",
@@ -285,9 +293,9 @@ async function installCommonMocks(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
+      body: mockJson("getPipelineStats", {
         window: "24h",
-        aggregates_available: true,
+        aggregates_available: true, failed_total: 0, replay_pending_total: 0, written_off_total: 0, backlog_available: true,
         ingested: 1000,
         filtered: 200,
         errored: 10,
@@ -305,7 +313,7 @@ async function installCommonMocks(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
+      body: mockJson("getIngestionRules", {
         data: [
           {
             id: "rule-001",
@@ -333,7 +341,7 @@ async function installCommonMocks(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ data: { resolved: false, name: null, raw: null } }),
+      body: mockJson("getIngestionEventSenderContact", { meta: {}, data: { resolved: false, name: null, raw: null } }),
     });
   });
 
@@ -341,24 +349,7 @@ async function installCommonMocks(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ data: [] }),
-    });
-  });
-
-  await page.route("**/api/ingestion/events/*/rollup", (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        data: {
-          request_id: "aabbccdd-0000-0000-0000-000000000001",
-          total_sessions: 0,
-          total_input_tokens: 0,
-          total_output_tokens: 0,
-          total_cost: 0,
-          by_butler: {},
-        },
-      }),
+      body: mockJson("getIngestionEventReplays", { meta: {}, data: [] }),
     });
   });
 
@@ -366,7 +357,7 @@ async function installCommonMocks(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ data: [] }),
+      body: mockJson("getIngestionEventSessions", { meta: {}, data: [] }),
     });
   });
 
@@ -377,10 +368,7 @@ async function installCommonMocks(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        data: FIXTURE_EVENTS,
-        meta: { next_cursor: null, has_more: false },
-      }),
+      body: mockJson("listIngestionEvents", { items: FIXTURE_EVENTS, next_cursor: null, limit: 50 }),
     });
   });
 }
@@ -504,7 +492,7 @@ test.describe("ingestion visual parity — route smoke", () => {
     );
 
     // The KPI strip (data-testid='kpi-strip') must be visible when the connector
-    // data loads. The mocks above return FIXTURE_CONNECTOR_BACKEND so the normal
+    // data loads. The mocks above return FIXTURE_CONNECTOR_DETAIL so the normal
     // Dispatch-language layout (ConnectorDetailView) renders.
     // Note: legacy detail-loading / detail-not-found testids were removed in
     // bu-1jh6i (Page archetype adoption); the Page shell's state elements have

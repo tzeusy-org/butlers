@@ -29,11 +29,9 @@ groups = ["core", "preferences", "entity"]
 provider = "google"
 include_other_contacts = false
 
+# Relationship is the only butler that syncs contacts (it owns entities).
 [modules.contacts.sync]
-enabled = true
-run_on_startup = true
-interval_minutes = 15
-full_sync_interval_days = 6
+enabled = false
 
 [modules.approvals]
 enabled = true
@@ -96,4 +94,14 @@ cron = "*/10 * * * *"
 dispatch_mode = "job"
 job_name = "context_producer_home_presence"
 
+# Life-safety sentinel (bu-jv1moa.6, RFC 0038 D18): deterministic, zero-LLM, read-only. Backstop
+# for the websocket edge hook; alerts on owner-declared leak/smoke/CO/gas sensors.
+[[butler.schedule]]
+name = "home-safety-sentinel"
+cron = "*/5 * * * *"
+dispatch_mode = "job"
+job_name = "home_safety_sentinel"
+
 [modules.google_drive]
+
+# RFC 0015: core always registers the error relay; no module opt-in is required.

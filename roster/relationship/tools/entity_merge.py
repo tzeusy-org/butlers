@@ -5,19 +5,36 @@ locking, conflict resolution, reference rewiring, tombstoning, and audit history
 cannot drift.  The optional locked guard is the reconciliation seam required by
 ``REQ-entity-identity-002``: it runs after both rows are locked and validated but
 before any merge write occurs.
+
+Effective time (relationship-fact-effective-time): a merge moves fact rows, it
+never re-decides what they assert. Every affected active ``entity_facts`` row is
+locked and planned before the first write. Rows are repointed with their id,
+effective occurrence and packet, evidence and lifecycle intact, and their graph
+projections follow in the same transaction. The legacy SPO-collision and
+single-cardinality collapses apply only among unknown default-occurrence rows --
+the only rows that can exist before the index cutover. A temporal-bearing row is
+never collapsed: if merging would give two active rows one final occurrence key
+and either carries effective time, the merge fails
+``temporal_occurrence_collision`` before any entity, contact, fact, evidence or
+projection write.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections import Counter
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import asyncpg
 
-from butlers.entity_fact_repoint import repoint_facts_on_conn
+from butlers.core import entity_graph_edges
+from butlers.entity_rebind import ENTITY_REBOUND_EVENT_TYPE, rebind_entity_references
+from butlers.fleet_events import publish_fleet_event
+from butlers.tools.relationship.fact_temporal import OCCURRENCE_COLLISION, temporal_bearing_sql
 from butlers.tools.relationship.merge_review import compute_merge_evidence, write_merge_review
 
 
@@ -59,6 +76,13 @@ class AuditEntityOrderError(EntityMergeError):
         super().__init__("audit_entity_order_mismatch")
 
 
+class TemporalOccurrenceCollisionError(EntityMergeError):
+    """Merging would give a temporal-bearing occurrence a duplicate final key."""
+
+    def __init__(self) -> None:
+        super().__init__(OCCURRENCE_COLLISION)
+
+
 _CLASSIFICATION_RE = re.compile(r"[a-z][a-z0-9_]*\Z")
 
 
@@ -86,9 +110,124 @@ class EntityMergeResult:
     subject_facts_rewired: int
     object_facts_rewired: int
     review_id: UUID
+    aliases_added: int = 0
+    rebind_id: UUID | None = None
+    receipts: tuple[Mapping[str, Any], ...] = ()
+    failed_schemas: tuple[str, ...] = ()
 
 
 LockedMergeGuard = Callable[[asyncpg.Connection, LockedEntityPair], Awaitable[None]]
+
+MEMORY_BEARING_SCHEMAS = (
+    "chronicler",
+    "chronicler_mem",
+    "education",
+    "finance",
+    "general",
+    "health",
+    "home",
+    "lifestyle",
+    "relationship",
+    "switchboard",
+    "travel",
+)
+
+
+#: SQL predicate over aliases ``src``/``tgt``: both rows are unknown defaults.
+_BOTH_UNKNOWN_DEFAULT = f"NOT {temporal_bearing_sql('src')} AND NOT {temporal_bearing_sql('tgt')}"
+
+
+async def _lock_and_plan_facts(
+    conn: asyncpg.Connection,
+    source_entity_id: UUID,
+    target_entity_id: UUID,
+) -> None:
+    """Lock every active fact the merge can touch and refuse temporal collisions.
+
+    Runs before the first merge write. The final occurrence key of a row is its
+    (subject, predicate, object, effective_period_id) after the source entity is
+    rewritten to the target on both the subject and the entity-object side.
+    """
+    source_text = str(source_entity_id)
+    target_text = str(target_entity_id)
+    rows = await conn.fetch(
+        f"""
+        SELECT id, subject, predicate, object, object_kind, effective_period_id,
+               {temporal_bearing_sql("ef")} AS temporal
+        FROM relationship.entity_facts ef
+        WHERE ef.validity = 'active'
+          AND (
+            ef.subject = ANY($1::uuid[])
+            OR (ef.object_kind = 'entity' AND ef.object = ANY($2::text[]))
+          )
+        ORDER BY ef.id
+        FOR UPDATE
+        """,
+        [source_entity_id, target_entity_id],
+        [source_text, target_text],
+    )
+    final_keys: dict[tuple[Any, ...], list[bool]] = {}
+    for row in rows:
+        subject = target_entity_id if row["subject"] == source_entity_id else row["subject"]
+        obj = row["object"]
+        if row["object_kind"] == "entity" and obj == source_text:
+            obj = target_text
+        key = (subject, row["predicate"], obj, row["effective_period_id"])
+        final_keys.setdefault(key, []).append(row["temporal"])
+    # Unknown defaults sharing a key keep the legacy dedup below; any collision
+    # involving effective time would have to choose one occurrence, so refuse.
+    if any(len(group) > 1 and any(group) for group in final_keys.values()):
+        raise TemporalOccurrenceCollisionError
+
+
+async def _lock_candidate_reports(conn: asyncpg.Connection, source: UUID, target: UUID) -> None:
+    """Lock held identity slots and rows before any merge write.
+
+    The caller owns both entity rows. Duplicate default/occurrence reports keep
+    the target row and preserve the losing original as superseded history.
+    """
+    from butlers.tools.relationship.identity_slots import lock_identity_slots
+
+    rows = await conn.fetch(
+        "SELECT subject,predicate,object FROM relationship.entity_facts "
+        "WHERE subject=ANY($1::uuid[]) AND validity='candidate' ORDER BY id",
+        [source, target],
+    )
+    await lock_identity_slots(
+        conn, ((row["predicate"], row["object"], row["subject"]) for row in rows)
+    )
+    await conn.fetch(
+        "SELECT id FROM relationship.entity_facts WHERE subject=ANY($1::uuid[]) "
+        "AND validity='candidate' ORDER BY id FOR UPDATE",
+        [source, target],
+    )
+
+
+async def _move_candidate_reports(conn: asyncpg.Connection, source: UUID, target: UUID) -> None:
+    """Move already locked reports; preserve target duplicates as history."""
+    await conn.execute(
+        "UPDATE relationship.entity_facts src SET validity='superseded',updated_at=now() "
+        "WHERE src.subject=$1 AND src.validity='candidate' AND EXISTS("
+        "SELECT 1 FROM relationship.entity_facts dst WHERE dst.subject=$2 "
+        "AND dst.validity='candidate' AND dst.predicate=src.predicate "
+        "AND dst.object=src.object AND dst.effective_period_id IS NOT DISTINCT FROM "
+        "src.effective_period_id)",
+        source,
+        target,
+    )
+    await conn.execute(
+        "UPDATE relationship.entity_facts SET subject=$2,updated_at=now() "
+        "WHERE subject=$1 AND validity='candidate'",
+        source,
+        target,
+    )
+
+
+def _rowcount(command_tag: Any) -> int:
+    try:
+        return int(str(command_tag).rsplit(" ", 1)[-1])
+    except (TypeError, ValueError):
+        return 0
 
 
 async def merge_entity_pair(
@@ -98,6 +237,7 @@ async def merge_entity_pair(
     target_entity_id: UUID,
     locked_guard: LockedMergeGuard | None = None,
     _audit_entity_order: tuple[UUID, UUID] | None = None,
+    target_schemas: Sequence[str] = MEMORY_BEARING_SCHEMAS,
 ) -> EntityMergeResult:
     """Atomically merge one locked entity pair and return content-blind counts."""
     if source_entity_id == target_entity_id:
@@ -112,6 +252,8 @@ async def merge_entity_pair(
     }:
         raise AuditEntityOrderError
 
+    rebind_id = uuid4()
+    receipt_rows: list[Mapping[str, Any]] = []
     async with pool.acquire() as conn:
         async with conn.transaction():
             lock_rows = await conn.fetch(
@@ -151,16 +293,71 @@ async def merge_entity_pair(
             if locked_guard is not None:
                 await locked_guard(conn, locked_pair)
 
+            await _lock_candidate_reports(conn, source_entity_id, target_entity_id)
+            await _lock_and_plan_facts(conn, source_entity_id, target_entity_id)
+            await _move_candidate_reports(conn, source_entity_id, target_entity_id)
+
             merge_evidence = await compute_merge_evidence(
                 conn,
                 audit_entity_order[0],
                 audit_entity_order[1],
             )
 
-            # Exact subject-side collisions preserve the target row and supersede
-            # the source row before the remaining active rows are moved.
+            source_aliases = list(source["aliases"] or [])
+            source_name = str(source["canonical_name"] or "").strip()
+            target_name = str(target["canonical_name"] or "").strip()
+            if source_name and source_name.casefold() != target_name.casefold():
+                source_aliases.append(source_name)
+            merged_aliases = list(target["aliases"] or [])
+            alias_keys = {str(alias).casefold() for alias in merged_aliases}
+            aliases_added = 0
+            for alias in source_aliases:
+                if str(alias).casefold() not in alias_keys:
+                    merged_aliases.append(alias)
+                    alias_keys.add(str(alias).casefold())
+                    aliases_added += 1
+            merged_roles = list(dict.fromkeys([*(target["roles"] or []), *(source["roles"] or [])]))
+            source_metadata_clean = {
+                key: value
+                for key, value in source_metadata.items()
+                if key not in {"deleted_at", "merged_into", "unidentified"}
+            }
+            # The immediate singleton index includes tombstones. Release only
+            # the source's owner role before assigning the union to the target;
+            # both locked rows and every later write share this transaction.
+            # The union above uses the original source roles, so owner is kept
+            # by the survivor and all other source roles remain on its history.
+            tombstone_metadata = {
+                **source_metadata,
+                "merged_into": str(target_entity_id),
+            }
             await conn.execute(
                 """
+                UPDATE public.entities
+                SET metadata = $1, roles = array_remove(roles, 'owner'),
+                    updated_at = now()
+                WHERE id = $2
+                """,
+                tombstone_metadata,
+                source_entity_id,
+            )
+            await conn.execute(
+                """
+                UPDATE public.entities
+                SET aliases = $1, roles = $2, metadata = $3, updated_at = now()
+                WHERE id = $4
+                """,
+                merged_aliases,
+                merged_roles,
+                {**source_metadata_clean, **target_metadata},
+                target_entity_id,
+            )
+
+            # Exact subject-side collisions preserve the target row and supersede
+            # the source row before the remaining active rows are moved. Only
+            # unknown default occurrences collapse (see _lock_and_plan_facts).
+            superseded_ids = await conn.fetch(
+                f"""
                 UPDATE relationship.entity_facts AS src
                 SET validity = 'superseded',
                     updated_at = now()
@@ -172,16 +369,20 @@ async def merge_entity_pair(
                         AND tgt.predicate = src.predicate
                         AND tgt.object = src.object
                         AND tgt.validity = 'active'
+                        AND {_BOTH_UNKNOWN_DEFAULT}
                   )
+                RETURNING id
                 """,
                 source_entity_id,
                 target_entity_id,
             )
 
             # Resolve all active rows for registry-declared single-cardinality
-            # predicates. Higher confidence wins; ties keep the target row.
-            await conn.execute(
-                """
+            # predicates. Higher confidence wins; ties keep the target row. A
+            # predicate with any temporal-bearing row is left for period-aware
+            # policy (bu-4ss0u): its occurrences are repointed, never collapsed.
+            superseded_ids += await conn.fetch(
+                f"""
                 WITH ranked AS (
                     SELECT
                         ef.id,
@@ -198,6 +399,13 @@ async def merge_entity_pair(
                     WHERE ef.subject IN ($1, $2)
                       AND ef.validity = 'active'
                       AND pr.cardinality = 'single'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM relationship.entity_facts t
+                          WHERE t.subject IN ($1, $2)
+                            AND t.predicate = ef.predicate
+                            AND t.validity = 'active'
+                            AND {temporal_bearing_sql("t")}
+                      )
                 )
                 UPDATE relationship.entity_facts AS ef
                 SET validity = 'superseded',
@@ -205,31 +413,30 @@ async def merge_entity_pair(
                 FROM ranked
                 WHERE ef.id = ranked.id
                   AND ranked.rn > 1
+                RETURNING ef.id
                 """,
                 source_entity_id,
                 target_entity_id,
             )
 
-            subject_facts_rewired = await conn.fetchval(
+            subject_rewired_ids = await conn.fetch(
                 """
-                WITH updated AS (
-                    UPDATE relationship.entity_facts
-                    SET subject = $2,
-                        updated_at = now()
-                    WHERE subject = $1
-                      AND validity = 'active'
-                    RETURNING id
-                )
-                SELECT count(*) FROM updated
+                UPDATE relationship.entity_facts
+                SET subject = $2,
+                    updated_at = now()
+                WHERE subject = $1
+                  AND validity = 'active'
+                RETURNING id
                 """,
                 source_entity_id,
                 target_entity_id,
             )
+            subject_facts_rewired = len(subject_rewired_ids)
 
             source_text = str(source_entity_id)
             target_text = str(target_entity_id)
-            await conn.execute(
-                """
+            superseded_ids += await conn.fetch(
+                f"""
                 UPDATE relationship.entity_facts AS src
                 SET validity = 'superseded',
                     updated_at = now()
@@ -243,32 +450,74 @@ async def merge_entity_pair(
                         AND tgt.object = $2
                         AND tgt.object_kind = 'entity'
                         AND tgt.validity = 'active'
+                        AND {_BOTH_UNKNOWN_DEFAULT}
                   )
+                RETURNING id
                 """,
                 source_text,
                 target_text,
             )
 
-            object_facts_rewired = await conn.fetchval(
+            object_rewired_ids = await conn.fetch(
                 """
-                WITH updated AS (
-                    UPDATE relationship.entity_facts
-                    SET object = $2,
-                        updated_at = now()
-                    WHERE object_kind = 'entity'
-                      AND object = $1
-                      AND validity = 'active'
-                    RETURNING id
-                )
-                SELECT count(*) FROM updated
+                UPDATE relationship.entity_facts
+                SET object = $2,
+                    updated_at = now()
+                WHERE object_kind = 'entity'
+                  AND object = $1
+                  AND validity = 'active'
+                RETURNING id
                 """,
                 source_text,
                 target_text,
             )
+            object_facts_rewired = len(object_rewired_ids)
 
-            await repoint_facts_on_conn(conn, source_entity_id, target_entity_id)
+            # RFC 0031 write-behind contract: the two rewires above just moved
+            # entity_facts.subject/object off the source entity, but the
+            # already-projected public.entity_graph_edges rows for those exact
+            # facts (keyed on source_id=entity_facts.id) still point at the old
+            # id until the next backfill sweep. Scope the edge update to the
+            # RETURNED ids from the rewires above -- never a blanket
+            # subject_entity_id/object_entity_id = source_entity_id filter --
+            # so a stale edge belonging to a fact that was SUPERSEDED (not
+            # rewired) by the dedup UPDATEs above is not repointed -- it is
+            # removed instead, exactly as the central writer removes the edge of
+            # any version it supersedes.
+            await entity_graph_edges.delete_entity_graph_edges(
+                conn,
+                source_schema="relationship",
+                source_table="entity_facts",
+                source_ids=[row["id"] for row in superseded_ids],
+            )
+            if subject_rewired_ids:
+                await conn.execute(
+                    """
+                    UPDATE public.entity_graph_edges
+                    SET subject_entity_id = $2,
+                        updated_at = now()
+                    WHERE source_schema = 'relationship'
+                      AND source_table = 'entity_facts'
+                      AND source_id = ANY($1::uuid[])
+                    """,
+                    [row["id"] for row in subject_rewired_ids],
+                    target_entity_id,
+                )
+            if object_rewired_ids:
+                await conn.execute(
+                    """
+                    UPDATE public.entity_graph_edges
+                    SET object_entity_id = $2,
+                        updated_at = now()
+                    WHERE source_schema = 'relationship'
+                      AND source_table = 'entity_facts'
+                      AND source_id = ANY($1::uuid[])
+                    """,
+                    [row["id"] for row in object_rewired_ids],
+                    target_entity_id,
+                )
 
-            await conn.execute(
+            contact_tag = await conn.execute(
                 """
                 UPDATE contact_entity_map
                 SET entity_id = $2
@@ -278,20 +527,30 @@ async def merge_entity_pair(
                 target_entity_id,
             )
 
-            tombstone_metadata = {
-                **source_metadata,
-                "merged_into": str(target_entity_id),
-            }
-            await conn.execute(
-                """
-                UPDATE public.entities
-                SET metadata = $1,
-                    updated_at = now()
-                WHERE id = $2
-                """,
-                tombstone_metadata,
-                source_entity_id,
-            )
+            catalog_rebound_by_schema: Counter[str] = Counter()
+            # memory_catalog is deployed by the core chain but some bounded
+            # relationship-only installations and migration harnesses omit it.
+            # RETURNING preserves ownership attribution when the shared authority
+            # performs this fleet-wide update before local handlers settle receipts.
+            try:
+                async with conn.transaction():
+                    catalog_rows = await conn.fetch(
+                        """
+                        UPDATE public.memory_catalog
+                        SET entity_id = CASE WHEN entity_id = $1 THEN $2 ELSE entity_id END,
+                            object_entity_id = CASE
+                                WHEN object_entity_id = $1 THEN $2 ELSE object_entity_id END
+                        WHERE entity_id = $1 OR object_entity_id = $1
+                        RETURNING source_schema
+                        """,
+                        source_entity_id,
+                        target_entity_id,
+                    )
+                    catalog_rebound_by_schema.update(
+                        str(row["source_schema"]) for row in catalog_rows
+                    )
+            except asyncpg.UndefinedTableError:
+                pass
 
             review_id = await write_merge_review(
                 conn,
@@ -302,10 +561,82 @@ async def merge_entity_pair(
                 outcome="merged",
             )
 
+            relationship_rebound = (
+                subject_facts_rewired + object_facts_rewired + _rowcount(contact_tag)
+            )
+            for schema in dict.fromkeys(target_schemas):
+                initial_rebound = catalog_rebound_by_schema[schema]
+                if schema == "relationship":
+                    initial_rebound += relationship_rebound
+                await conn.execute(
+                    """
+                    INSERT INTO public.entity_rebind_log (
+                        rebind_id, source_entity_id, target_entity_id, target_schema,
+                        references_rebound, status, completed_at
+                    ) VALUES ($1, $2, $3, $4, $5, 'pending', NULL)
+                    """,
+                    rebind_id,
+                    source_entity_id,
+                    target_entity_id,
+                    schema,
+                    initial_rebound,
+                )
+                receipt_rows.append(
+                    {
+                        "rebind_id": rebind_id,
+                        "target_schema": schema,
+                        "references_rebound": initial_rebound,
+                        "status": "pending",
+                        "error_class": None,
+                        "completed_at": None,
+                    }
+                )
+
+    # Relationship owns both the merge authority and memory-module tables in
+    # its own schema. Settle that receipt through the same local handler as
+    # every other daemon before claiming it is active.
+    if "relationship" in dict.fromkeys(target_schemas):
+        relationship_receipt = await rebind_entity_references(
+            pool,
+            rebind_id=rebind_id,
+            source_entity_id=source_entity_id,
+            target_entity_id=target_entity_id,
+            target_schema="relationship",
+        )
+        for index, row in enumerate(receipt_rows):
+            if row["target_schema"] == "relationship":
+                receipt_rows[index] = {
+                    "rebind_id": relationship_receipt.rebind_id,
+                    "target_schema": relationship_receipt.target_schema,
+                    "references_rebound": relationship_receipt.references_rebound,
+                    "status": relationship_receipt.status,
+                    "error_class": relationship_receipt.error_class,
+                    "completed_at": datetime.now(UTC),
+                }
+                break
+
+    # The ledger is the recovery authority. Live daemons react to this event;
+    # startup replay remains the durable recovery path for missed delivery.
+    await publish_fleet_event(
+        pool,
+        ENTITY_REBOUND_EVENT_TYPE,
+        {
+            "rebind_id": str(rebind_id),
+            "source_entity_id": str(source_entity_id),
+            "target_entity_id": str(target_entity_id),
+        },
+    )
+
     return EntityMergeResult(
         kept_entity_id=target_entity_id,
         tombstoned_entity_id=source_entity_id,
         subject_facts_rewired=int(subject_facts_rewired),
         object_facts_rewired=int(object_facts_rewired),
         review_id=review_id,
+        aliases_added=aliases_added,
+        rebind_id=rebind_id,
+        receipts=tuple(receipt_rows),
+        failed_schemas=tuple(
+            row["target_schema"] for row in receipt_rows if row["status"] == "failed"
+        ),
     )

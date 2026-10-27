@@ -9,7 +9,7 @@
  * Reference: (ingestion dispatch redesign, graduated) ingestion-filters.jsx §archived section
  */
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { IngestionRule } from '@/api/types'
 
 // ---------------------------------------------------------------------------
@@ -18,12 +18,25 @@ import type { IngestionRule } from '@/api/types'
 
 export interface ArchivedRulesSectionProps {
   rules: IngestionRule[]
+  linkedRuleId?: string | null
+  onLinkedRowReady?: (row: HTMLElement) => void
   onRestore?: (id: string) => void
   restoreError?: string | null
 }
 
-export function ArchivedRulesSection({ rules, onRestore, restoreError }: ArchivedRulesSectionProps) {
-  const [expanded, setExpanded] = useState(false)
+export function ArchivedRulesSection({ rules, linkedRuleId, onLinkedRowReady, onRestore, restoreError }: ArchivedRulesSectionProps) {
+  const linkedRowRef = useRef<HTMLDivElement>(null)
+  const archivedTarget = linkedRuleId && rules.some((rule) => rule.id === linkedRuleId) ? linkedRuleId : null
+  const [view, setView] = useState({ target: archivedTarget, expanded: archivedTarget !== null })
+  // Adjust only when the target changes. Manual collapse survives rerenders.
+  if (view.target !== archivedTarget) {
+    setView({ target: archivedTarget, expanded: archivedTarget !== null || view.expanded })
+  }
+  const expanded = view.target !== archivedTarget && archivedTarget !== null || view.expanded
+
+  useEffect(() => {
+    if (expanded && archivedTarget && linkedRowRef.current) onLinkedRowReady?.(linkedRowRef.current)
+  }, [expanded, archivedTarget, onLinkedRowReady])
 
   if (rules.length === 0) return null
 
@@ -47,7 +60,7 @@ export function ArchivedRulesSection({ rules, onRestore, restoreError }: Archive
         <button
           type="button"
           className="font-mono text-[10px] text-muted-foreground hover:text-foreground"
-          onClick={() => setExpanded((v) => !v)}
+          onClick={() => setView((v) => ({ ...v, expanded: !v.expanded }))}
           aria-expanded={expanded}
           data-testid="archived-rules-toggle"
         >
@@ -71,10 +84,17 @@ export function ArchivedRulesSection({ rules, onRestore, restoreError }: Archive
           {rules.map((rule) => (
             <div
               key={rule.id}
-              className="grid gap-3.5 py-3 border-b border-border/50 items-baseline opacity-55"
+              ref={rule.id === archivedTarget ? linkedRowRef : undefined}
+              tabIndex={rule.id === archivedTarget ? -1 : undefined}
+              role={rule.id === archivedTarget ? 'group' : undefined}
+              aria-label={rule.id === archivedTarget ? `Linked archived rule ${rule.name ?? rule.id}` : undefined}
+              data-rule-id={rule.id}
+              data-linked-rule={rule.id === archivedTarget ? 'true' : undefined}
+              className={`grid gap-3.5 py-3 border-b border-border/50 items-baseline ${rule.id === archivedTarget ? 'border-l-2 border-l-[var(--focus)] pl-3 bg-foreground/[0.03]' : 'opacity-55'}`}
               style={{ gridTemplateColumns: '12px 1fr auto' }}
               data-testid={`archived-rule-row-${rule.id}`}
             >
+              {rule.id === archivedTarget && <span className="col-span-full font-mono text-[10px] text-muted-foreground">Linked archived rule</span>}
               {/* Dot */}
               <span className="mt-1.5 inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/40" />
 

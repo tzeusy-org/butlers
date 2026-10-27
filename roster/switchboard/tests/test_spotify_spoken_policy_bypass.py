@@ -22,11 +22,11 @@ from butlers.connectors.spotify import (
 )
 from butlers.ingestion_policy import IngestionPolicyEvaluator
 from butlers.modules.pipeline import MessagePipeline
+from butlers.tools.switchboard.contracts import parse_ingest_envelope
 from butlers.tools.switchboard.ingestion.ingest import (
     _build_request_context,
     _run_policy_evaluation,
 )
-from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
 
 pytestmark = pytest.mark.unit
 
@@ -78,6 +78,16 @@ def test_spoken_prefix_pre_resolves_metadata_only_triage() -> None:
     assert decision.action == "metadata_only"
     assert decision.bypasses_llm is True
     assert decision.matched_rule_type == "substring"
+
+
+@pytest.fixture(autouse=True)
+def _unregistered_mock_pipeline_source(request: pytest.FixtureRequest):
+    """Only this synthetic pipeline owner needs unregistered source capture."""
+    if request.function is test_spoken_pre_resolved_triage_never_spawns_or_routes:
+        with patch("butlers.core.fact_authority._source_registry", None):
+            yield
+    else:
+        yield
 
 
 @pytest.mark.asyncio

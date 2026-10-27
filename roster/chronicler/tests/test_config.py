@@ -44,7 +44,8 @@ def test_chronicler_configures_own_module_plus_memory(butler_toml: dict) -> None
     routed to the dedicated private schema ``chronicler_mem`` (bu-w6jca owner
     decision) so its ``episodes`` table never collides with the domain
     ``chronicler.episodes``. It is an own-schema store, not a cross-butler
-    dependency. No other module may be configured."""
+    dependency. Error reporting is an always-registered core relay to QA;
+    no local self-healing module or investigation dispatch is configured."""
     modules = butler_toml.get("modules", {})
     assert set(modules) == {"chronicler", "memory"}
     assert modules["chronicler"] == {}

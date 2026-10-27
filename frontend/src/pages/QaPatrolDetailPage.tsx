@@ -127,7 +127,7 @@ function FindingRow({ finding }: FindingRowProps) {
 function FindingsList({ findings }: { findings: QaFindingRecord[] }) {
   if (findings.length === 0) {
     return (
-      <p className="py-6 font-[family-name:var(--font-serif,serif)] text-sm italic text-muted-foreground">
+      <p className="py-6 font-[family-name:var(--font-serif)] text-sm italic text-muted-foreground">
         No findings in this patrol.
       </p>
     );
@@ -201,7 +201,7 @@ export default function QaPatrolDetailPage() {
     return (
       <div className="space-y-4">
         <Breadcrumbs items={[{ label: "QA", href: "/qa" }]} />
-        <p className="font-[family-name:var(--font-serif,serif)] text-sm italic text-muted-foreground">
+        <p className="font-[family-name:var(--font-serif)] text-sm italic text-muted-foreground">
           Patrol not found.
         </p>
       </div>

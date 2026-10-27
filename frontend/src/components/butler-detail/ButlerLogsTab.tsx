@@ -21,7 +21,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { LogLevel } from "@/api/types";
-import { Panel } from "@/components/butler-detail/atoms";
+import { Panel } from "@/components/ui/atoms";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import { useButlerLogs } from "@/hooks/use-butler-logs";
@@ -284,7 +284,7 @@ export default function ButlerLogsTab({ butlerName }: ButlerLogsTabProps) {
       ) : (
         <ul
           ref={listRef}
-          className="max-h-[calc(100vh-22rem)] overflow-y-auto px-4"
+          className="max-h-[calc(100dvh-22rem)] overflow-y-auto px-4"
           aria-label="Log lines"
           data-testid="log-line-list"
         >

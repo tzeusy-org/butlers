@@ -8,33 +8,55 @@ import type { SpineEntry } from "./types.ts";
 
 const entries: SpineEntry[] = [
   {
-    key: "s:FIRST_SECRET",
+    key: "s:READY_SECRET",
     family: "system",
-    label: "FIRST_SECRET",
+    label: "Ready credential",
     state: "ok",
     mono: true,
     subline: "shared",
-    lastTouchOrder: 1,
   },
   {
-    key: "s:SECOND_SECRET",
+    key: "u:not-set",
+    family: "user",
+    label: "Not-set credential",
+    state: "never_set",
+    mono: false,
+    subline: "not connected",
+  },
+  {
+    key: "c:stale",
+    family: "cli",
+    label: "Stale credential",
+    state: "warn",
+    mono: false,
+    subline: "unverified",
+  },
+  {
+    key: "s:NEEDS_HAND_SECRET",
     family: "system",
-    label: "SECOND_SECRET",
-    state: "ok",
+    label: "Needs-hand credential",
+    state: "expired",
     mono: true,
-    subline: "shared",
-    lastTouchOrder: 2,
+    subline: "expired",
+  },
+  {
+    key: "c:in-progress",
+    family: "cli",
+    label: "In-progress credential",
+    state: "rotating",
+    mono: false,
+    subline: "rotating",
   },
 ];
 
-function renderSpine() {
+function renderSpine(search = "") {
   return render(
     <Spine
       entries={entries}
-      activeKey={entries[0].key}
+      activeKey=""
       onSelect={vi.fn()}
       onSortChange={vi.fn()}
-      search=""
+      search={search}
       onSearchChange={vi.fn()}
       identities={[{ id: "owner", label: "Owner", role: "owner", hue: "blue" }]}
       activeIdentityId="owner"
@@ -46,13 +68,24 @@ function renderSpine() {
 afterEach(cleanup);
 
 describe("Spine roving keyboard navigation", () => {
-  it("uses one tab stop and moves focus between credential rows with Arrow keys", () => {
+  it("follows filtered five-group order with one tab stop and omits empty groups", () => {
     const { container } = renderSpine();
     const rows = Array.from(
       container.querySelectorAll<HTMLButtonElement>('[data-spine-row="true"]'),
     );
 
-    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.dataset.state)).toEqual([
+      "expired",
+      "rotating",
+      "warn",
+      "ok",
+      "never_set",
+    ]);
+    expect(
+      Array.from(container.querySelectorAll<HTMLElement>("[data-spine-group]")).map(
+        (group) => group.dataset.spineGroup,
+      ),
+    ).toEqual(["needs-hand", "in-progress", "stale", "ready", "not-set"]);
     expect(rows[0].tabIndex).toBe(0);
     expect(rows[1].tabIndex).toBe(-1);
 
@@ -62,5 +95,21 @@ describe("Spine roving keyboard navigation", () => {
     expect(document.activeElement).toBe(rows[1]);
     expect(rows[0].tabIndex).toBe(-1);
     expect(rows[1].tabIndex).toBe(0);
+
+    for (const [search, groupId] of [
+      ["needs-hand", "needs-hand"],
+      ["in-progress", "in-progress"],
+      ["stale", "stale"],
+      ["ready", "ready"],
+      ["not-set", "not-set"],
+    ] as const) {
+      cleanup();
+      const filtered = renderSpine(search).container;
+      expect(
+        Array.from(filtered.querySelectorAll<HTMLElement>("[data-spine-group]")).map(
+          (group) => group.dataset.spineGroup,
+        ),
+      ).toEqual([groupId]);
+    }
   });
 });

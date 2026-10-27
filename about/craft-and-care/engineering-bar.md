@@ -54,11 +54,6 @@ a change:
 
 ## Cross-Pillar Discipline
 
-Before landing a change, ask four questions:
-
-1. **Doctrine**: Should this exist at all?
-2. **Design contracts**: Does it honor the RFC-level rules?
-3. **Specs**: Does the behavior match what the system promises?
-4. **Topology**: Does it live in the right place with the right boundaries?
-
-If the answer to any of those changes, the docs must change too.
+A change that alters doctrine, an RFC contract, a spec, or topology updates that
+pillar in the same change; see the traceability chain in
+[`about/README.md`](../README.md).

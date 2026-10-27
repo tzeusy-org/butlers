@@ -43,6 +43,13 @@ class SubscriptionModel(BaseModel):
     currency: str
     frequency: str
     next_renewal: str
+    renewal_source: str = "extracted"
+    price_source: str = "extracted"
+    service_source: str = "extracted"
+    date_epoch: int = 0
+    price_epoch: int = 0
+    value_revision: int = 0
+    field_claims: list[dict] = []
     status: str
     auto_renew: bool = True
     payment_method: str | None = None
@@ -92,6 +99,34 @@ class AccountModel(BaseModel):
     metadata: dict = {}
     created_at: str
     updated_at: str
+
+
+class CostClaimModel(BaseModel):
+    """One shared typed claim with Finance's latest honest verdict."""
+
+    id: str
+    claim_key: str
+    asserted_by: str
+    kind: str
+    direction: str
+    amount: str
+    currency: str
+    counterparty_entity_id: str | None = None
+    counterparty_label: str | None = None
+    expected_on: str | None = None
+    description: str
+    asserted_at: str
+    superseded_at: str | None = None
+    retracted_at: str | None = None
+    retraction_reason: str | None = None
+    state: str | None = None
+    matched_amount: str | None = None
+    matched_currency: str | None = None
+    match_refs: list[str] = []
+    unmatched_reason: str | None = None
+    unverifiable_reason: str | None = None
+    evidence_horizon_at: str | None = None
+    decided_at: str | None = None
 
 
 class SpendingGroupModel(BaseModel):

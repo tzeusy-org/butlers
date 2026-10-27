@@ -23,7 +23,7 @@ window.CONNECTOR_DETAILS = [
     filtered24h: 3204, // most HA traffic is preserved-only, never routed
     routedPct: 22,
     enabled: true,
-    config: { endpoint: 'wss://ha.parrot-hen.ts.net/api/websocket', cadence: 'event-driven', latencyMs: 14 },
+    config: { endpoint: 'wss://ha.example.ts.net/api/websocket', cadence: 'event-driven', latencyMs: 14 },
     scopes: ['states:read', 'states:subscribe', 'events:subscribe'],
     note: 'high-volume signal; most events stored without dispatch.',
   },

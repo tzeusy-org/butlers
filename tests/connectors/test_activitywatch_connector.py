@@ -239,7 +239,7 @@ def test_activity_idempotency_key_deterministic() -> None:
 def test_activity_envelope_passes_parse_ingest_envelope() -> None:
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     env = build_activity_envelope(
         machine_id=_MACHINE_ID,
@@ -717,3 +717,58 @@ async def test_retention_health_diagnostic_does_not_leak_exception_details() -> 
     assert diagnostic is not None
     assert "swordfish" not in diagnostic
     assert "traceback" not in diagnostic
+
+
+async def test_persist_activity_event_withholds_code_in_window_title() -> None:
+    """A code in the window title is replaced; an ordinary title is stored unchanged."""
+    pool = AsyncMock()
+    pool.fetchval.return_value = "event-id"
+
+    async def persist(title: str) -> None:
+        await persist_activity_event(
+            pool,
+            machine_id=_MACHINE_ID,
+            endpoint_identity=_ENDPOINT,
+            bucket_id=_BUCKET_ID,
+            ts=_TS,
+            duration_seconds=42,
+            app="Google Chrome",
+            window_title=title,
+            app_class="browser",
+            browser_domain=None,
+            is_afk=False,
+            raw_payload={},
+        )
+
+    await persist("Your verification code is 482913 - Mail")
+    assert "482913" not in pool.fetchval.await_args.args[8]
+    assert "[auth-code withheld" in pool.fetchval.await_args.args[8]
+
+    await persist("Q3 roadmap 482913 draft")
+    assert pool.fetchval.await_args.args[8] == "Q3 roadmap 482913 draft"
+
+
+async def test_persist_activity_event_skips_write_when_detector_fails(caplog) -> None:
+    from unittest.mock import patch
+
+    pool = AsyncMock()
+    with patch("butlers.connectors.activitywatch.scrub_text", side_effect=RuntimeError("482913")):
+        inserted = await persist_activity_event(
+            pool,
+            machine_id=_MACHINE_ID,
+            endpoint_identity=_ENDPOINT,
+            bucket_id=_BUCKET_ID,
+            ts=_TS,
+            duration_seconds=42,
+            app="Google Chrome",
+            window_title="Your verification code is 482913",
+            app_class="browser",
+            browser_domain=None,
+            is_afk=False,
+            raw_payload={},
+        )
+
+    assert inserted is False
+    pool.fetchval.assert_not_awaited()
+    assert "bearer scrub failed" in caplog.text
+    assert "482913" not in caplog.text and "verification code" not in caplog.text

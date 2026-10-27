@@ -14,7 +14,7 @@ Key behaviors:
 - Explicit overload handling (no silent drops)
 - Health endpoint for Kubernetes readiness/liveness probes
 
-Environment variables (see `docs/connectors/gmail.md` section 4):
+Environment variables (see `docs/connectors/gmail.md`, "Environment Variables"):
 - SWITCHBOARD_MCP_URL (required)
 - CONNECTOR_PROVIDER=gmail (required)
 - CONNECTOR_CHANNEL=email (required)
@@ -49,8 +49,10 @@ import os
 import re
 import signal
 import time
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from email.message import Message
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal
@@ -65,10 +67,12 @@ from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from butlers.connectors.db_role import connector_setup_role
+from butlers.connectors.email_spans import email_untrusted_spans
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.gmail_policy import (
     INGESTION_TIER_FULL,
     INGESTION_TIER_METADATA,
+    RULE_KNOWN_CONTACT,
     GmailPolicyEvaluator,
     LabelFilterPolicy,
     MessagePolicyResult,
@@ -89,11 +93,13 @@ from butlers.google_credentials import (
     load_google_credentials,
 )
 from butlers.identity import parse_email_sender
+from butlers.ingestion_bearer_scrub import scrub_envelope
 from butlers.ingestion_policy import (
     IngestionEnvelope,
     IngestionPolicyEvaluator,
     PolicyDecision,
 )
+from butlers.ingestion_spans import collapse_spans
 from butlers.oauth_token_payload import validate_oauth_token_payload
 from butlers.storage.blobs import BlobStore
 
@@ -171,7 +177,7 @@ _SENT_IDS_TTL = 900
 
 
 # Attachment policy: per-MIME-type size limits and fetch mode.
-# See docs/connectors/attachment_handling.md section 3 and 4.
+# See docs/connectors/attachment-handling.md.
 ATTACHMENT_POLICY: dict[str, dict[str, object]] = {
     # Images — lazy fetch, 5 MB limit
     "image/jpeg": {"max_size_bytes": 5 * 1024 * 1024, "fetch_mode": "lazy"},
@@ -288,8 +294,18 @@ def _classify_source_api_error(exc: Exception) -> tuple[bool, str]:
     response = getattr(exc, "response", None)
     google_error = _format_google_error(response) if response is not None else None
     is_auth_revocation = False
-    if response is not None:
-        is_auth_revocation = google_oauth_requires_reauthorization(response)
+    if isinstance(response, httpx.Response):
+        try:
+            request = response.request
+        except RuntimeError:
+            request = None
+        # Only the actual response's token POST can supply reauthorization proof.
+        if (
+            request is not None
+            and request.method == "POST"
+            and str(request.url) == "https://oauth2.googleapis.com/token"
+        ):
+            is_auth_revocation = google_oauth_requires_reauthorization(response)
     description = google_error or f"{get_error_type(exc)}: {exc}"
     return is_auth_revocation, description
 
@@ -340,6 +356,62 @@ def _message_header_entries(message_data: Any) -> list[dict[str, Any]]:
     return [header for header in headers if isinstance(header, dict)]
 
 
+# Observed-time sources, in the order they are tried.
+OBSERVED_AT_INTERNAL_DATE = "internal_date"
+OBSERVED_AT_DATE_HEADER = "date_header"
+OBSERVED_AT_RECEIPT_TIME = "receipt_time"
+
+# A ``Date`` header is sender-controlled, so it is only trusted inside a plausible window:
+# not before 1990 and not more than a day ahead of receipt (clock skew allowance).
+_DATE_HEADER_EARLIEST = datetime(1990, 1, 1, tzinfo=UTC)
+_DATE_HEADER_MAX_SKEW = timedelta(days=1)
+
+
+def _resolve_observed_at(
+    message_data: dict[str, Any], now: datetime | None = None
+) -> tuple[datetime, str]:
+    """Return ``(observed_at, source)`` for a Gmail message.
+
+    Order: Gmail's ``internalDate`` when it parses, else a valid ``Date`` header, else receipt
+    time. A missing and an unparseable ``internalDate`` take the same path, and the epoch is
+    never produced by a fallback. ``source`` names the one used.
+    """
+    internal_date = message_data.get("internalDate")
+    if internal_date is not None:
+        try:
+            observed_at = datetime.fromtimestamp(int(internal_date) / 1000, tz=UTC)
+        except (ValueError, TypeError, OverflowError, OSError):
+            pass
+        else:
+            return observed_at, OBSERVED_AT_INTERNAL_DATE
+
+    received_at = now if now is not None else datetime.now(UTC)
+    for header in _message_header_entries(message_data):
+        if not _header_name_is(header, "date"):
+            continue
+        try:
+            parsed = parsedate_to_datetime(_header_str_value(header))
+            if parsed.tzinfo is None:
+                break
+            parsed = parsed.astimezone(UTC)
+        except (TypeError, ValueError, IndexError, OverflowError):
+            break
+        if _DATE_HEADER_EARLIEST <= parsed <= received_at + _DATE_HEADER_MAX_SKEW:
+            return parsed, OBSERVED_AT_DATE_HEADER
+        break
+    return received_at, OBSERVED_AT_RECEIPT_TIME
+
+
+def _has_attached_message(payload: dict[str, Any], depth: int = 0) -> bool:
+    """Whether the MIME tree carries a whole message from someone else (``message/rfc822``)."""
+    if depth > 20 or not isinstance(payload, dict):
+        return False
+    if payload.get("mimeType") == "message/rfc822":
+        return True
+    parts = payload.get("parts")
+    return isinstance(parts, list) and any(_has_attached_message(part, depth + 1) for part in parts)
+
+
 class GmailConnectorConfig(BaseModel):
     """Configuration for Gmail connector runtime."""
 
@@ -374,7 +446,7 @@ class GmailConnectorConfig(BaseModel):
     gmail_pubsub_webhook_token: str | None = None  # Optional auth token for webhook
 
     # Label include/exclude policy (GMAIL_LABEL_INCLUDE, GMAIL_LABEL_EXCLUDE)
-    # Per docs/connectors/email_ingestion_policy.md §9
+    # Per docs/connectors/gmail-ingestion-policy.md, "Gmail Label Filtering"
     gmail_label_include: tuple[str, ...] = ()
     gmail_label_exclude: tuple[str, ...] = ("SPAM", "TRASH")
 
@@ -389,7 +461,8 @@ class GmailConnectorConfig(BaseModel):
     gmail_sent_lookback_days: int = 7
     gmail_sent_max_messages: int = 200
 
-    # Backfill polling protocol (docs/connectors/interface.md section 14)
+    # Backfill polling protocol (backfill.poll / backfill.progress in
+    # openspec/specs/connector-base-spec)
     # CONNECTOR_BACKFILL_ENABLED controls whether backfill polling is active.
     connector_backfill_enabled: bool = True
     # CONNECTOR_BACKFILL_POLL_INTERVAL_S: how often to poll Switchboard for pending backfill jobs.
@@ -454,13 +527,14 @@ class GmailConnectorConfig(BaseModel):
         pubsub_webhook_path = os.environ.get("GMAIL_PUBSUB_WEBHOOK_PATH", "/gmail/webhook")
         pubsub_webhook_token = os.environ.get("GMAIL_PUBSUB_WEBHOOK_TOKEN")
 
-        # Label include/exclude policy (per docs/connectors/email_ingestion_policy.md §9)
+        # Label include/exclude policy (per docs/connectors/gmail-ingestion-policy.md,
+        # "Gmail Label Filtering")
         label_include_raw = os.environ.get("GMAIL_LABEL_INCLUDE", "")
         label_exclude_raw = os.environ.get("GMAIL_LABEL_EXCLUDE", "SPAM,TRASH")
         gmail_label_include = tuple(parse_label_list(label_include_raw))
         gmail_label_exclude = tuple(parse_label_list(label_exclude_raw))
 
-        # Policy tier assignment (per docs/switchboard/email_priority_queuing.md)
+        # Policy tier assignment (per docs/architecture/email-priority-queuing.md)
         gmail_user_email = os.environ.get("GMAIL_USER_EMAIL", "")
 
         # reply_to_outbound: recent SENT-mailbox window for sent_message_ids.
@@ -480,7 +554,8 @@ class GmailConnectorConfig(BaseModel):
                 f"GMAIL_SENT_MAX_MESSAGES must be an integer, got: {sent_max_messages_str}"
             ) from exc
 
-        # Backfill polling protocol (docs/connectors/interface.md section 14)
+        # Backfill polling protocol (backfill.poll / backfill.progress in
+        # openspec/specs/connector-base-spec)
         backfill_enabled_str = os.environ.get("CONNECTOR_BACKFILL_ENABLED", "true").lower()
         connector_backfill_enabled = backfill_enabled_str not in ("false", "0", "no", "off")
 
@@ -571,7 +646,7 @@ class BackfillJob(BaseModel):
 
     Represents a pending backfill job assigned to this connector by Switchboard.
     Date-bounded traversal parameters, rate control, and server-side cursor come
-    from job params as described in docs/connectors/email_backfill.md section 4.
+    from job params as described in docs/connectors/gmail.md, "Backfill".
     """
 
     model_config = ConfigDict(extra="allow")
@@ -660,13 +735,15 @@ class GmailConnectorRuntime:
         self._heartbeat: ConnectorHeartbeat | None = None
         self._last_history_id: str | None = None
 
-        # Backfill polling (docs/connectors/interface.md section 14)
+        # Backfill polling (backfill.poll / backfill.progress in
+        # openspec/specs/connector-base-spec)
         self._backfill_task: asyncio.Task[None] | None = None
         # Track how many backfill.poll attempts have been made so we can
         # suppress the first-attempt warning when Switchboard is still starting.
         self._backfill_poll_attempts: int = 0
 
-        # Label filter policy (per docs/connectors/email_ingestion_policy.md §9)
+        # Label filter policy (per docs/connectors/gmail-ingestion-policy.md,
+        # "Gmail Label Filtering")
         self._label_filter = LabelFilterPolicy.from_lists(
             include=list(config.gmail_label_include),
             exclude=list(config.gmail_label_exclude),
@@ -678,7 +755,7 @@ class GmailConnectorRuntime:
             db_pool=db_pool,
         )
 
-        # Policy tier assigner (per docs/switchboard/email_priority_queuing.md §2).
+        # Policy tier assigner (per docs/architecture/email-priority-queuing.md).
         # Initialised with an empty known_contacts set; refreshed before each poll
         # cycle via _refresh_policy_tier_assigner().
         self._policy_tier_assigner = PolicyTierAssigner(
@@ -720,9 +797,14 @@ class GmailConnectorRuntime:
         Called before each poll cycle so that the in-memory contact set stays
         current without blocking individual message evaluations.
         """
-        known_contacts = await self._gmail_policy_evaluator.get_known_contacts()
+        snapshot = await self._gmail_policy_evaluator.get_snapshot(self._publish_known_contacts)
+        known_contacts = snapshot.contacts
         self._policy_tier_assigner.known_contacts = known_contacts
         await self._refresh_sent_message_ids()
+
+    async def _publish_known_contacts(self) -> None:
+        if self._heartbeat is not None:
+            await self._heartbeat.publish_once()
 
     async def _refresh_sent_message_ids(self) -> None:
         """Refresh PolicyTierAssigner.sent_message_ids from the owner's SENT mailbox.
@@ -988,6 +1070,7 @@ class GmailConnectorRuntime:
             get_health_state=self._get_health_state,
             get_checkpoint=self._get_checkpoint,
             get_capabilities=self._get_capabilities,
+            get_contact_snapshot=self._gmail_policy_evaluator.peek_snapshot,
         )
 
         self._heartbeat.start()
@@ -1047,7 +1130,7 @@ class GmailConnectorRuntime:
     def _get_capabilities(self) -> dict[str, object]:
         """Return connector capabilities for heartbeat advertisement.
 
-        Includes capabilities.backfill=True per docs/connectors/gmail.md section 9.5
+        Includes capabilities.backfill=True per docs/connectors/gmail.md, "Capability Advertisement"
         when backfill polling is enabled. Dashboard uses this to show/hide backfill
         controls for this connector.
         """
@@ -1063,6 +1146,8 @@ class GmailConnectorRuntime:
 
         # Start heartbeat
         self._start_heartbeat()
+        # Publish unloaded before provider work; failure never blocks ingestion.
+        await self._publish_known_contacts()
 
         # Start Pub/Sub webhook server if enabled
         if self._config.gmail_pubsub_enabled:
@@ -1273,8 +1358,8 @@ class GmailConnectorRuntime:
         Runs alongside live ingestion and never blocks it. Polls every
         CONNECTOR_BACKFILL_POLL_INTERVAL_S seconds (default 60).
 
-        Per docs/connectors/interface.md section 14 and docs/connectors/gmail.md
-        section 9.1.
+        Per openspec/specs/connector-base-spec (backfill.poll / backfill.progress) and
+        docs/connectors/gmail.md, "Backfill Loop".
         """
         logger.debug(
             "Backfill loop starting: poll_interval=%ds",
@@ -1382,7 +1467,7 @@ class GmailConnectorRuntime:
     async def _execute_backfill_job(self, job: BackfillJob) -> None:
         """Walk Gmail history for a backfill job date range, ingesting historical messages.
 
-        Implements docs/connectors/gmail.md section 9.2:
+        Implements docs/connectors/gmail.md, "History Traversal":
         - Uses users.messages.list with date-bounded query
         - Walks pages in reverse chronological order (newest first)
         - Applies tiered ingestion policy to each message
@@ -1491,21 +1576,26 @@ class GmailConnectorRuntime:
                             if not policy_result.should_ingest:
                                 rows_skipped += 1
                                 logger.info(
-                                    "[Gmail] '%s' filtered out: %s",
-                                    self._get_subject(message_data),
+                                    "[Gmail] message %s filtered out: %s",
+                                    message_data.get("id"),
                                     policy_result.filter_reason,
                                 )
                             else:
                                 # Ingestion policy gate (backfill path)
-                                _bf_envelope = self._build_ingestion_envelope(message_data)
+                                _bf_envelope = self._build_ingestion_envelope(
+                                    message_data,
+                                    known_contact=self._known_contact_signal(
+                                        self._get_from_header(message_data)
+                                    ),
+                                )
 
                                 # 1. Connector-scope rules
                                 _bf_decision = self._ingestion_policy.evaluate(_bf_envelope)
                                 if not _bf_decision.allowed:
                                     rows_skipped += 1
                                     logger.info(
-                                        "[Gmail] '%s' filtered out by connector rule: %s",
-                                        self._get_subject(message_data),
+                                        "[Gmail] message %s filtered out by connector rule: %s",
+                                        message_data.get("id"),
                                         _bf_decision.reason,
                                     )
                                 # 2. Global-scope rules
@@ -1516,8 +1606,8 @@ class GmailConnectorRuntime:
                                 ).action == "skip":
                                     rows_skipped += 1
                                     logger.info(
-                                        "[Gmail] '%s' filtered out by global rule: %s",
-                                        self._get_subject(message_data),
+                                        "[Gmail] message %s filtered out by global rule: %s",
+                                        message_data.get("id"),
                                         _bf_global.reason,
                                     )
                                 else:
@@ -1530,13 +1620,14 @@ class GmailConnectorRuntime:
                                     envelope = await self._build_ingest_envelope(
                                         message_data,
                                         policy_result=policy_result,
+                                        known_contact=_bf_envelope.known_contact,
                                     )
                                     await self._submit_to_ingest_api(envelope)
                                     rows_processed += 1
 
                                     # Estimate cost: ~0.01 cents per message as conservative proxy
                                     # Actual cost is LLM-side; connector estimates only.
-                                    # Per docs/connectors/email_backfill.md section 9.4.
+                                    # Per docs/connectors/gmail.md, "Backfill".
                                     cost_spent_cents += 1
 
                         except Exception as exc:
@@ -1721,8 +1812,8 @@ class GmailConnectorRuntime:
         Returns the authoritative status from Switchboard ('ack', 'paused',
         'cancelled', 'cost_capped'). Connector must stop if status is not 'ack'.
 
-        Per docs/connectors/interface.md section 14.2 and docs/connectors/email_backfill.md
-        section 6.2.
+        Per openspec/specs/connector-base-spec (backfill.progress) and docs/connectors/gmail.md,
+        "Backfill".
         """
         args: dict[str, Any] = {
             "job_id": job_id,
@@ -2117,7 +2208,7 @@ class GmailConnectorRuntime:
     async def _ingest_single_message(self, message_id: str) -> None:
         """Fetch and ingest a single Gmail message.
 
-        Pipeline order (per docs/connectors/email_ingestion_policy.md §8):
+        Pipeline order (per docs/connectors/gmail-ingestion-policy.md, "Tier Assignment"):
         1. Fetch message data (always needed to get labels and headers).
         2. Apply label include/exclude filter; skip if excluded.
         3. Evaluate triage rules -> ingestion tier.
@@ -2136,6 +2227,8 @@ class GmailConnectorRuntime:
         Per-message non-transient errors are logged and swallowed.
         """
         async with self._semaphore:
+            replay_spans = None
+            replay_sender = "unknown"
             try:
                 # Fetch message data (required for label/header-based policy evaluation)
                 message_data = await self._fetch_message(message_id)
@@ -2143,28 +2236,69 @@ class GmailConnectorRuntime:
                 # Extract common fields for buffer recording
                 _subject = self._get_subject(message_data)
                 _from_header = self._get_from_header(message_data)
-                _thread_id = message_data.get("threadId")
-                _internal_date = message_data.get("internalDate", "0")
+                replay_sender = _from_header
+                # Header/attachment facts do not depend on body decoding. Keep
+                # them even when malformed inline bytes take the error path.
+                replay_spans = (
+                    email_untrusted_spans(
+                        f"Subject: {html.escape(_subject)}",
+                        subject=_subject,
+                        has_attached_message=_has_attached_message(message_data.get("payload", {})),
+                    )
+                    or None
+                )
                 try:
-                    _observed_at = datetime.fromtimestamp(
-                        int(_internal_date) / 1000, tz=UTC
-                    ).isoformat()
-                except (ValueError, OSError):
-                    _observed_at = datetime.now(UTC).isoformat()
+                    replay_body, replay_quotes = self._extract_body_with_quotes(
+                        message_data.get("payload", {})
+                    )
+                except ValueError:
+                    # Policy can still select metadata-only delivery, whose
+                    # builder already tolerates malformed inline bytes. Full
+                    # delivery retains its actual decode/error behavior below.
+                    replay_body, replay_quotes = "", []
+                replay_spans = (
+                    email_untrusted_spans(
+                        f"Subject: {html.escape(_subject)}\n\n{html.escape(replay_body)}",
+                        subject=_subject,
+                        has_attached_message=_has_attached_message(message_data.get("payload", {})),
+                        body_text=replay_body,
+                        body_quote_spans=replay_quotes,
+                    )
+                    or None
+                )
+                _thread_id = message_data.get("threadId")
+                _observed_dt, _observed_source = _resolve_observed_at(message_data)
+                _observed_at = _observed_dt.isoformat()
+                self._log_observed_at_fallback(message_id, _observed_source)
+
+                # Capture query truth once, independently of provider event time.
+                _snapshot = self._gmail_policy_evaluator.peek_snapshot()
+                _classification = _snapshot.historical(datetime.now(UTC))
+                _tier_assigner = replace(
+                    self._policy_tier_assigner, known_contacts=_snapshot.contacts
+                )
 
                 # Evaluate label filter + tier policy
                 policy_result = evaluate_message_policy(
                     message_data,
                     label_filter=self._label_filter,
-                    tier_assigner=self._policy_tier_assigner,
+                    tier_assigner=_tier_assigner,
                     endpoint_identity=self._config.connector_endpoint_identity,
+                )
+
+                # A drop of mail from a known contact is marked so the dashboard can
+                # surface it instead of letting the filters verdict read all clear.
+                # Checked against the sender directly: the label-filter drop returns
+                # before tier assignment, so assignment_rule cannot carry this.
+                _important_dropped_basis = (
+                    RULE_KNOWN_CONTACT if _tier_assigner.is_known_contact(_from_header) else None
                 )
 
                 # Tier 3: skip — do not submit to Switchboard
                 if not policy_result.should_ingest:
                     logger.info(
-                        "[Gmail] '%s' filtered out: %s",
-                        _subject,
+                        "[Gmail] message %s filtered out: %s",
+                        message_id,
                         policy_result.filter_reason,
                     )
                     self._filtered_event_buffer.record(
@@ -2186,19 +2320,27 @@ class GmailConnectorRuntime:
                             # preview only; the full raw payload is NOT retained.
                             raw={},
                             policy_tier=policy_result.policy_tier,
+                            important_dropped_basis=_important_dropped_basis,
+                            classification=_classification,
+                            untrusted_spans=replay_spans,
                         ),
                     )
                     return
 
                 # Ingestion policy gate (runs after label filter, before envelope build)
-                _ip_envelope = self._build_ingestion_envelope(message_data)
+                _ip_envelope = self._build_ingestion_envelope(
+                    message_data,
+                    known_contact=_tier_assigner.is_known_contact(_from_header)
+                    if _snapshot.state == "loaded"
+                    else None,
+                )
 
                 # 1. Connector-scope rules (block/pass_through)
                 _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
                 if not _ip_decision.allowed:
                     logger.info(
-                        "[Gmail] '%s' filtered out by connector rule: %s",
-                        _subject,
+                        "[Gmail] message %s filtered out by connector rule: %s",
+                        message_id,
                         _ip_decision.reason,
                     )
                     self._filtered_event_buffer.record(
@@ -2224,6 +2366,9 @@ class GmailConnectorRuntime:
                             # preview only; the full raw payload is NOT retained.
                             raw={},
                             policy_tier=policy_result.policy_tier,
+                            important_dropped_basis=_important_dropped_basis,
+                            classification=_classification,
+                            untrusted_spans=replay_spans,
                         ),
                     )
                     return
@@ -2232,8 +2377,8 @@ class GmailConnectorRuntime:
                 _gp_decision = self._global_ingestion_policy.evaluate(_ip_envelope)
                 if _gp_decision.action == "skip":
                     logger.info(
-                        "[Gmail] '%s' filtered out by global rule: %s",
-                        _subject,
+                        "[Gmail] message %s filtered out by global rule: %s",
+                        message_id,
                         _gp_decision.reason,
                     )
                     self._filtered_event_buffer.record(
@@ -2259,6 +2404,9 @@ class GmailConnectorRuntime:
                             # preview only; the full raw payload is NOT retained.
                             raw={},
                             policy_tier=policy_result.policy_tier,
+                            important_dropped_basis=_important_dropped_basis,
+                            classification=_classification,
+                            untrusted_spans=replay_spans,
                         ),
                     )
                     return
@@ -2276,6 +2424,7 @@ class GmailConnectorRuntime:
                 envelope = await self._build_ingest_envelope(
                     message_data,
                     policy_result=policy_result,
+                    known_contact=_ip_envelope.known_contact,
                 )
 
                 # Submit to Switchboard ingest API
@@ -2315,7 +2464,7 @@ class GmailConnectorRuntime:
                 self._filtered_event_buffer.record(
                     external_message_id=message_id,
                     source_channel=self._config.connector_channel,
-                    sender_identity="unknown",
+                    sender_identity=replay_sender,
                     subject_or_preview=None,
                     filter_reason=FilteredEventBuffer.reason_submission_error(),
                     full_payload=FilteredEventBuffer.full_payload(
@@ -2325,8 +2474,9 @@ class GmailConnectorRuntime:
                         external_event_id=message_id,
                         external_thread_id=None,
                         observed_at=datetime.now(UTC).isoformat(),
-                        sender_identity="unknown",
+                        sender_identity=replay_sender,
                         raw={"message_id": message_id},
+                        untrusted_spans=replay_spans,
                     ),
                     status="error",
                     error_detail=str(exc),
@@ -2374,6 +2524,21 @@ class GmailConnectorRuntime:
         return ""
 
     @staticmethod
+    def _log_observed_at_fallback(message_id: str, source: str) -> None:
+        """Record, by identifiers only, that ``observed_at`` did not come from ``internalDate``.
+
+        The ingest.v1 envelope has no field for the timestamp source (``event`` and ``control``
+        forbid extras), so the honest record is this log line: message id and source, no content.
+        """
+        if source != OBSERVED_AT_INTERNAL_DATE:
+            logger.warning(
+                "Gmail message has no usable internalDate; observed_at taken from %s "
+                "(message_id=%s)",
+                source,
+                message_id,
+            )
+
+    @staticmethod
     def _get_subject(message_data: dict[str, Any]) -> str:
         """Extract the Subject header value from a Gmail message payload."""
         headers = _message_header_entries(message_data)
@@ -2397,6 +2562,9 @@ class GmailConnectorRuntime:
         - ``metadata_only`` -> Tier 2 (slim, metadata-only envelope)
         - ``route_to`` / ``low_priority_queue`` / ``pass_through`` -> Tier 1
 
+        An automated reply or bounce (``automated_kind``) is never upgraded: it stays
+        Tier 2 under every non-skip action.
+
         ``skip`` is handled by the caller before this point and never reaches
         here.  Returns a new ``MessagePolicyResult`` (the input is not mutated).
         """
@@ -2405,19 +2573,34 @@ class GmailConnectorRuntime:
         # pipeline's default tier untouched.
         if action == "pass_through":
             return policy_result
+        ingestion_tier = classify_ingestion_tier(action)
+        if policy_result.automated_kind and ingestion_tier == INGESTION_TIER_FULL:
+            ingestion_tier = INGESTION_TIER_METADATA
         return dataclasses.replace(
             policy_result,
-            ingestion_tier=classify_ingestion_tier(action),
+            ingestion_tier=ingestion_tier,
             triage_action=action,
         )
 
+    def _known_contact_signal(self, from_header: str) -> bool | None:
+        """Classify a sender against the current snapshot; ``None`` unless it is loaded."""
+        snapshot = self._gmail_policy_evaluator.peek_snapshot()
+        if snapshot.state != "loaded":
+            return None
+        return replace(
+            self._policy_tier_assigner, known_contacts=snapshot.contacts
+        ).is_known_contact(from_header)
+
     @staticmethod
-    def _build_ingestion_envelope(message_data: dict[str, Any]) -> IngestionEnvelope:
+    def _build_ingestion_envelope(
+        message_data: dict[str, Any], known_contact: bool | None = None
+    ) -> IngestionEnvelope:
         """Build an IngestionEnvelope from a Gmail message payload.
 
         Populates sender_address (normalized From header), headers dict,
         labels (Gmail labelIds, for label_match rules), and raw_key (raw From
-        header value) for policy evaluation.
+        header value) for policy evaluation. ``known_contact`` is the loaded-snapshot
+        classification of the sender (``None`` when classification is unknown).
         """
         raw_headers = _message_header_entries(message_data)
         headers_dict: dict[str, str] = {}
@@ -2442,6 +2625,7 @@ class GmailConnectorRuntime:
             headers=headers_dict,
             labels=list(message_data.get("labelIds") or []),
             raw_key=from_value,
+            known_contact=known_contact,
         )
 
     async def _fetch_message(self, message_id: str) -> dict[str, Any]:
@@ -2477,10 +2661,12 @@ class GmailConnectorRuntime:
         self,
         message_data: dict[str, Any],
         policy_result: MessagePolicyResult | None = None,
+        known_contact: bool | None = None,
     ) -> dict[str, Any]:
         """Build ingest.v1 envelope from Gmail message data.
 
-        Builds a tier-appropriate envelope per spec §5:
+        Builds a tier-appropriate envelope per docs/connectors/gmail-ingestion-policy.md,
+        "Envelope Contract by Tier":
         - Tier 1 (full): full normalized payload + attachments.
         - Tier 2 (metadata): slim envelope, payload.raw=null, subject-only normalized_text.
         - Tier 3 (skip): caller must not reach this method.
@@ -2492,11 +2678,14 @@ class GmailConnectorRuntime:
         policy_result:
             Result of policy evaluation (tier + policy_tier). If None, defaults to
             Tier 1 with policy_tier='default' (backward compatible).
+        known_contact:
+            The loaded-snapshot classification of the sender, carried as
+            ``control.known_contact`` so the Switchboard's global rule pass honors
+            "except people I know" too. ``None`` (snapshot not loaded) omits the field,
+            and the rule then applies. Taken from the raw From header, unauthenticated.
         """
         message_id = message_data.get("id", "unknown")
         thread_id = message_data.get("threadId")
-        internal_date = message_data.get("internalDate", "0")
-
         # Parse headers
         headers = {
             name: value
@@ -2520,21 +2709,19 @@ class GmailConnectorRuntime:
             effective_policy_tier = policy_result.policy_tier
 
         # Observed timestamp
-        try:
-            observed_timestamp_ms = int(internal_date)
-            observed_at = datetime.fromtimestamp(observed_timestamp_ms / 1000, tz=UTC)
-        except (ValueError, OSError):
-            observed_at = datetime.now(UTC)
+        observed_at, observed_source = _resolve_observed_at(message_data)
+        self._log_observed_at_fallback(message_id, observed_source)
 
         # --- Tier 2: Metadata-only envelope ---
-        # Per spec §5.2: payload.raw=null, normalized_text=subject-only, ingestion_tier=metadata
+        # Per docs/connectors/gmail-ingestion-policy.md ("Tier 2"): payload.raw=null,
+        # normalized_text=subject-only, ingestion_tier=metadata
         if effective_ingestion_tier == INGESTION_TIER_METADATA:
             idempotency_key = (
                 f"{self._config.connector_provider}:"
                 f"{self._config.connector_endpoint_identity}:"
                 f"{rfc_message_id}"
             )
-            return {
+            metadata_envelope = {
                 "schema_version": "ingest.v1",
                 "source": {
                     "channel": self._config.connector_channel,
@@ -2543,7 +2730,8 @@ class GmailConnectorRuntime:
                 },
                 "event": {
                     "external_event_id": rfc_message_id,
-                    "external_thread_id": thread_id,
+                    "external_conversation_id": thread_id,
+                    "reply_target_ref": thread_id,
                     "observed_at": observed_at.isoformat(),
                 },
                 "sender": {
@@ -2566,6 +2754,32 @@ class GmailConnectorRuntime:
                     "policy_tier": effective_policy_tier,
                 },
             }
+            if policy_result is not None and policy_result.automated_kind:
+                metadata_envelope["control"]["automated_kind"] = policy_result.automated_kind
+            if known_contact is not None:
+                metadata_envelope["control"]["known_contact"] = known_contact
+            # No attachment/body fetch at metadata tier. Preserve only known
+            # exposure kinds from already supplied provider fields, never content.
+            supplied = message_data.get("payload")
+            supplied = supplied if isinstance(supplied, dict) else {}
+            try:
+                body, quotes = self._extract_body_with_quotes(supplied)
+            except ValueError:
+                # Metadata-only delivery must not start depending on decoding
+                # malformed inline body bytes. Subject evidence still applies.
+                body, quotes = "", []
+            known = email_untrusted_spans(
+                f"Subject: {html.escape(subject)}\n\n{html.escape(body)}",
+                subject=subject,
+                has_attached_message=_has_attached_message(supplied),
+                body_text=body,
+                body_quote_spans=quotes,
+            )
+            if known:
+                metadata_envelope["payload"]["untrusted_spans"] = collapse_spans(
+                    metadata_envelope["payload"]["normalized_text"], known
+                )
+            return scrub_envelope(metadata_envelope)[0]
 
         # --- Tier 1: Full envelope ---
         # Pre-resolve body parts that use attachmentId references instead of
@@ -2582,7 +2796,7 @@ class GmailConnectorRuntime:
         await self._resolve_body_attachment_refs(message_id, payload)
 
         # Extract body
-        body = self._extract_body_from_payload(payload)
+        body, body_quotes = self._extract_body_with_quotes(payload)
 
         # Build normalized text
         normalized_text = f"Subject: {html.escape(subject)}\n\n{html.escape(body)}"
@@ -2602,7 +2816,7 @@ class GmailConnectorRuntime:
             f"{rfc_message_id}"
         )
 
-        return {
+        envelope = {
             "schema_version": "ingest.v1",
             "source": {
                 "channel": self._config.connector_channel,
@@ -2611,7 +2825,8 @@ class GmailConnectorRuntime:
             },
             "event": {
                 "external_event_id": rfc_message_id,
-                "external_thread_id": thread_id,
+                "external_conversation_id": thread_id,
+                "reply_target_ref": thread_id,
                 "observed_at": observed_at.isoformat(),
             },
             "sender": {
@@ -2633,6 +2848,21 @@ class GmailConnectorRuntime:
                 "policy_tier": effective_policy_tier,
             },
         }
+        if known_contact is not None:
+            envelope["control"]["known_contact"] = known_contact
+        # Forwarded, quoted and attached third-party content (RFC 0038 D5, bu-xmueeq).
+        untrusted_spans = email_untrusted_spans(
+            normalized_text,
+            subject=subject,
+            has_attached_message=_has_attached_message(payload),
+            body_text=body,
+            body_quote_spans=body_quotes,
+        )
+        if untrusted_spans:
+            envelope["payload"]["untrusted_spans"] = untrusted_spans
+        # Bearer material (OTP codes, reset/magic links) never leaves the connector.
+        scrubbed, _ = scrub_envelope(envelope)
+        return scrubbed
 
     # MIME types that carry cryptographic signatures rather than body content.
     # These parts must be skipped during body extraction so signatures are never
@@ -2763,6 +2993,12 @@ class GmailConnectorRuntime:
                 await self._resolve_body_attachment_refs(message_id, part, depth + 1)
 
     def _extract_body_from_payload(self, payload: dict[str, Any], depth: int = 0) -> str:
+        """Existing text-only interface; normalization also retains selected HTML quote ranges."""
+        return self._extract_body_with_quotes(payload, depth)[0]
+
+    def _extract_body_with_quotes(
+        self, payload: dict[str, Any], depth: int = 0
+    ) -> tuple[str, list[dict[str, Any]]]:
         """Recursively extract body text from Gmail message payload.
 
         Preference order: text/plain > text/html (stripped) > "(no body)".
@@ -2777,7 +3013,7 @@ class GmailConnectorRuntime:
         # Prevent stack overflow from malicious deeply nested messages
         if depth > 20:
             logger.warning("Maximum recursion depth reached in email parsing")
-            return "(body too deeply nested)"
+            return "(body too deeply nested)", []
 
         mime_type = payload.get("mimeType", "")
 
@@ -2787,7 +3023,7 @@ class GmailConnectorRuntime:
             logger.warning(
                 "S/MIME encrypted email (application/pkcs7-mime): body cannot be extracted"
             )
-            return "(S/MIME encrypted body — cannot extract)"
+            return "(S/MIME encrypted body — cannot extract)", []
 
         # Leaf node: text/plain — return immediately (highest priority)
         if mime_type == "text/plain":
@@ -2795,7 +3031,7 @@ class GmailConnectorRuntime:
             body_data = body.get("data") if isinstance(body, dict) else ""
             if isinstance(body_data, str) and body_data:
                 raw_bytes = base64.urlsafe_b64decode(body_data)
-                return self._decode_part_bytes(raw_bytes, payload)
+                return self._decode_part_bytes(raw_bytes, payload), []
 
         # Leaf node: text/html — decode and strip tags (fallback candidate)
         if mime_type == "text/html":
@@ -2804,7 +3040,7 @@ class GmailConnectorRuntime:
             if isinstance(body_data, str) and body_data:
                 raw_bytes = base64.urlsafe_b64decode(body_data)
                 raw_html = self._decode_part_bytes(raw_bytes, payload)
-                return self._strip_html(raw_html)
+                return self._strip_html_with_quotes(raw_html)
 
         # Multipart: collect plain and html candidates separately so we can
         # prefer plain regardless of part ordering in the MIME tree.
@@ -2812,8 +3048,8 @@ class GmailConnectorRuntime:
         # content part(s) contribute to the extracted body.
         parts = payload.get("parts")
         if isinstance(parts, list):
-            plain_candidate: str | None = None
-            html_candidate: str | None = None
+            plain_candidate: tuple[str, list[dict[str, Any]]] | None = None
+            html_candidate: tuple[str, list[dict[str, Any]]] | None = None
             for part in parts:
                 if not isinstance(part, dict):
                     continue
@@ -2821,8 +3057,8 @@ class GmailConnectorRuntime:
                 # Skip cryptographic signature parts — they carry no readable body.
                 if child_mime in self._SIGNATURE_MIME_TYPES:
                     continue
-                body = self._extract_body_from_payload(part, depth + 1)
-                if body in ("(no body)", "(body too deeply nested)"):
+                body = self._extract_body_with_quotes(part, depth + 1)
+                if body[0] in ("(no body)", "(body too deeply nested)"):
                     continue
                 # Classify by the child's own MIME type to preserve preference.
                 if child_mime == "text/plain" and plain_candidate is None:
@@ -2837,49 +3073,92 @@ class GmailConnectorRuntime:
             if html_candidate is not None:
                 return html_candidate
 
-        return "(no body)"
+        return "(no body)", []
 
     @staticmethod
     def _strip_html(raw_html: str) -> str:
-        """Strip HTML tags from *raw_html*, returning readable plain text.
+        return GmailConnectorRuntime._strip_html_with_quotes(raw_html)[0]
 
-        Uses stdlib ``html.parser.HTMLParser`` to skip ``<style>`` and
-        ``<script>`` blocks entirely and collect visible text nodes.
-        Collapses runs of whitespace into single spaces / newlines.
+    @staticmethod
+    def _strip_html_with_quotes(raw_html: str) -> tuple[str, list[dict[str, Any]]]:
+        """Retain citation ownership while preserving the existing visible-text transform.
+
+        Quote tags/classes are structural provider facts; quoted characters travel
+        through the same whitespace collapse as text, then through HTML escaping.
+        No hidden/script text or unselected MIME alternative becomes a body.
         """
 
         class _TextExtractor(HTMLParser):
-            """Collect visible text, skipping style/script content."""
-
             _SKIP_TAGS = frozenset({"style", "script", "head"})
+            _VOID_TAGS = frozenset({"br", "hr", "img", "input", "meta", "link", "wbr"})
 
             def __init__(self) -> None:
                 super().__init__(convert_charrefs=True)
-                self._skip_depth = 0
-                self._parts: list[str] = []
+                self.stack: list[tuple[str, bool]] = []
+                self.parts: list[str] = []
+                self.marked: list[bool] = []
+                self.quote_seen = False
 
-            def handle_starttag(self, tag: str, attrs: list) -> None:  # type: ignore[override]
-                if tag in self._SKIP_TAGS:
-                    self._skip_depth += 1
+            def handle_starttag(self, tag: str, attrs: list) -> None:
+                values = dict(attrs)
+                classes = (values.get("class") or "").split()
+                quoted = (
+                    tag == "blockquote"
+                    or (values.get("type") or "").lower() == "cite"
+                    or bool({"gmail_quote", "yahoo_quoted"}.intersection(classes))
+                )
+                if not any(t in self._SKIP_TAGS for t, _ in self.stack):
+                    self.quote_seen |= quoted
+                if tag not in self._VOID_TAGS:
+                    self.stack.append((tag, quoted))
 
-            def handle_endtag(self, tag: str) -> None:  # type: ignore[override]
-                if tag in self._SKIP_TAGS and self._skip_depth > 0:
-                    self._skip_depth -= 1
+            def handle_startendtag(self, tag: str, attrs: list) -> None:
+                self.handle_starttag(tag, attrs)
+                self.handle_endtag(tag)
+
+            def handle_endtag(self, tag: str) -> None:
+                for index in range(len(self.stack) - 1, -1, -1):
+                    if self.stack[index][0] == tag:
+                        del self.stack[index:]
+                        break
 
             def handle_data(self, data: str) -> None:
-                if self._skip_depth == 0:
-                    self._parts.append(data)
+                if not any(t in self._SKIP_TAGS for t, _ in self.stack):
+                    self.parts.append(data)
+                    self.marked.extend([any(q for _, q in self.stack)] * len(data))
 
-            def get_text(self) -> str:
-                text = "".join(self._parts)
-                # Normalise whitespace: collapse blanks, preserve paragraph breaks
-                text = re.sub(r"[ \t]+", " ", text)
-                text = re.sub(r"\n{3,}", "\n\n", text)
-                return text.strip()
+            def result(self) -> tuple[str, list[dict[str, Any]]]:
+                text, marked = "".join(self.parts), self.marked
+                for pattern, replacement in ((r"[ \t]+", " "), (r"\n{3,}", "\n\n")):
+                    pieces, flags, offset = [], [], 0
+                    for match in re.finditer(pattern, text):
+                        pieces.append(text[offset : match.start()])
+                        flags.extend(marked[offset : match.start()])
+                        pieces.append(replacement)
+                        flags.extend([any(marked[match.start() : match.end()])] * len(replacement))
+                        offset = match.end()
+                    pieces.append(text[offset:])
+                    flags.extend(marked[offset:])
+                    text, marked = "".join(pieces), flags
+                lead = len(text) - len(text.lstrip())
+                text = text.strip()
+                marked = marked[lead : lead + len(text)]
+                spans, start = [], None
+                for index, flag in enumerate(marked + [False]):
+                    if flag and start is None:
+                        start = index
+                    elif not flag and start is not None:
+                        spans.append({"kind": "quoted", "start": start, "end": index})
+                        start = None
+                text = text or "(no body)"
+                if self.quote_seen and not spans:
+                    spans = [{"kind": "quoted", "start": 0, "end": len(text)}]
+                return text, spans
 
         extractor = _TextExtractor()
         extractor.feed(raw_html)
-        return extractor.get_text() or "(no body)"
+        extractor.close()
+        return extractor.result()
 
     def _extract_attachments(self, payload: dict[str, Any], depth: int = 0) -> list[dict[str, Any]]:
         """Walk MIME parts tree, identify supported attachments.
@@ -3048,7 +3327,7 @@ class GmailConnectorRuntime:
     ) -> tuple[dict[str, Any], ...] | None:
         """Extract and handle attachments from message payload.
 
-        Implements the lazy/eager fetch model from docs/connectors/attachment_handling.md:
+        Implements the lazy/eager fetch model from docs/connectors/attachment-handling.md:
         - text/calendar (.ics): eager fetch, direct routing to calendar module.
         - all other supported types: lazy fetch — write attachment_refs row, no download.
         - Oversized or unsupported attachments are skipped; metrics are emitted.
@@ -4030,254 +4309,6 @@ class GmailConnectorManager:
             "removed": removed,
             "unchanged": unchanged,
         }
-
-
-async def _resolve_gmail_credentials_from_db() -> dict[str, str] | None:
-    """Attempt DB-first credential resolution for the Gmail connector.
-
-    Connects to one or more candidate PostgreSQL DB/schema contexts, looks up
-    Google OAuth credentials from
-    ``butler_secrets`` via :class:`~butlers.credential_store.CredentialStore`,
-    and optionally resolves the Pub/Sub webhook token from the same store.
-
-    Lookup order:
-    1. ``CONNECTOR_BUTLER_DB_NAME`` + ``CONNECTOR_BUTLER_DB_SCHEMA`` (local)
-    2. ``BUTLER_SHARED_DB_NAME`` + ``BUTLER_SHARED_DB_SCHEMA`` (shared)
-
-    Each lookup pool applies schema-scoped ``search_path`` when schema is set.
-
-    Returns a dict with keys ``client_id``, ``client_secret``,
-    ``refresh_token``, and optionally ``pubsub_webhook_token`` on success.
-
-    Returns ``None`` if:
-    - The DB is unreachable from current runtime configuration.
-    - The DB is reachable but no Google OAuth credentials have been stored yet.
-    """
-    import asyncpg
-
-    db_params = db_params_from_env()
-    local_db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "butlers").strip() or "butlers"
-    local_schema = os.environ.get("CONNECTOR_BUTLER_DB_SCHEMA")
-    shared_db_name = shared_db_name_from_env()
-    shared_schema = os.environ.get("BUTLER_SHARED_DB_SCHEMA", "public")
-
-    candidates: list[tuple[str, str, str | None]] = []
-    for source_name, db_name, schema in [
-        ("local", local_db_name, local_schema),
-        ("shared", shared_db_name, shared_schema),
-    ]:
-        normalized_db_name = db_name.strip()
-        normalized_schema = schema.strip() if schema is not None else None
-        if not normalized_db_name:
-            continue
-        candidate = (source_name, normalized_db_name, normalized_schema or None)
-        if candidate not in candidates:
-            candidates.append(candidate)
-
-    connected_pools: list[tuple[str, str, str | None, asyncpg.Pool]] = []
-    for source_name, db_name, schema in candidates:
-        pool_kwargs: dict[str, Any] = {
-            "host": db_params["host"],
-            "port": db_params["port"],
-            "user": db_params["user"],
-            "password": db_params["password"],
-            "database": db_name,
-            "min_size": 1,
-            "max_size": 2,
-            "command_timeout": 5,
-        }
-        search_path: str | None = None
-        if schema is not None:
-            try:
-                search_path = schema_search_path(schema)
-            except ValueError as exc:
-                logger.debug(
-                    "Gmail connector: invalid %s schema %r (db=%s, non-fatal): %s",
-                    source_name,
-                    schema,
-                    db_name,
-                    exc,
-                )
-                continue
-        if search_path is not None:
-            pool_kwargs["server_settings"] = {"search_path": search_path}
-
-        configured_ssl = db_params.get("ssl")
-        if configured_ssl is not None:
-            pool_kwargs["ssl"] = configured_ssl
-        pool_kwargs["setup"] = connector_setup_role
-
-        try:
-            pool = await asyncpg.create_pool(**pool_kwargs)
-        except Exception as exc:
-            should_retry_ssl_disable = should_retry_with_ssl_disable(
-                exc,
-                configured_ssl if isinstance(configured_ssl, str) else None,
-            )
-            if should_retry_ssl_disable:
-                retry_kwargs = dict(pool_kwargs)
-                retry_kwargs["ssl"] = "disable"
-                try:
-                    pool = await asyncpg.create_pool(**retry_kwargs)
-                except Exception as retry_exc:
-                    logger.debug(
-                        "DB connection failed during Gmail credential resolution "
-                        "(source=%s, db=%s, schema=%s, non-fatal): %s",
-                        source_name,
-                        db_name,
-                        schema,
-                        retry_exc,
-                    )
-                    continue
-            else:
-                logger.debug(
-                    "DB connection failed during Gmail credential resolution "
-                    "(source=%s, db=%s, schema=%s, non-fatal): %s",
-                    source_name,
-                    db_name,
-                    schema,
-                    exc,
-                )
-                continue
-
-        connected_pools.append((source_name, db_name, schema, pool))
-
-    if not connected_pools:
-        return None
-
-    primary_source, primary_db_name, primary_schema, primary_pool = connected_pools[0]
-    fallback_pools = [pool for _, _, _, pool in connected_pools[1:]]
-
-    try:
-        store = CredentialStore(primary_pool, fallback_pools=fallback_pools)
-        creds = await load_google_credentials(store, pool=primary_pool)
-        if creds is None:
-            logger.debug(
-                "Gmail connector: no credentials in DB (primary=%s db=%s schema=%s, fallbacks=%d), "
-                "connector startup will fail until credentials are stored",
-                primary_source,
-                primary_db_name,
-                primary_schema,
-                len(fallback_pools),
-            )
-            return None
-        logger.info(
-            "Gmail connector: resolved Google credentials from layered DB lookup "
-            "(primary=%s db=%s schema=%s, fallbacks=%d)",
-            primary_source,
-            primary_db_name,
-            primary_schema,
-            len(fallback_pools),
-        )
-
-        result: dict[str, str] = {
-            "client_id": creds.client_id,
-            "client_secret": creds.client_secret,
-            "refresh_token": creds.refresh_token,
-        }
-
-        # Pub/Sub token is optional: failure here must not invalidate OAuth credentials.
-        try:
-            pubsub_token = await store.resolve("GMAIL_PUBSUB_WEBHOOK_TOKEN", env_fallback=False)
-            if pubsub_token:
-                result["pubsub_webhook_token"] = pubsub_token
-                logger.info(
-                    "Gmail connector: resolved GMAIL_PUBSUB_WEBHOOK_TOKEN from layered DB lookup "
-                    "(primary=%s db=%s schema=%s, fallbacks=%d)",
-                    primary_source,
-                    primary_db_name,
-                    primary_schema,
-                    len(fallback_pools),
-                )
-        except Exception as exc:
-            logger.debug(
-                "Gmail connector: optional Pub/Sub token lookup failed (non-fatal): %s",
-                exc,
-            )
-        return result
-    except InvalidGoogleCredentialsError as exc:
-        logger.warning(
-            "Gmail connector: stored Google credentials are invalid in layered DB lookup "
-            "(primary=%s db=%s schema=%s): %s",
-            primary_source,
-            primary_db_name,
-            primary_schema,
-            exc,
-        )
-        return None
-    except Exception as exc:
-        logger.debug("Gmail connector: DB credential lookup failed (non-fatal): %s", exc)
-        return None
-    finally:
-        for _, _, _, pool in connected_pools:
-            await pool.close()
-
-
-async def resolve_gmail_endpoint_identity(
-    client_id: str,
-    client_secret: str,
-    refresh_token: str,
-    env_fallback: str,
-) -> str:
-    """Resolve the authenticated Gmail email address for use as endpoint_identity.
-
-    Makes a lightweight OAuth token refresh + profile API call to determine the
-    real email address associated with the configured credentials. Falls back to
-    ``env_fallback`` if the API call fails for any reason.
-
-    Args:
-        client_id: OAuth client ID.
-        client_secret: OAuth client secret.
-        refresh_token: OAuth refresh token.
-        env_fallback: Value to return if auto-resolution fails.
-
-    Returns:
-        Resolved identity string in the form ``gmail:user:<email>`` if successful,
-        otherwise the ``env_fallback`` value unchanged.
-    """
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            # Refresh access token
-            token_response = await client.post(
-                "https://oauth2.googleapis.com/token",
-                data={
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "refresh_token": refresh_token,
-                    "grant_type": "refresh_token",
-                },
-            )
-            token_response.raise_for_status()
-            access_token = token_response.json()["access_token"]
-
-            # Fetch Gmail profile
-            profile_response = await client.get(
-                "https://gmail.googleapis.com/gmail/v1/users/me/profile",
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
-            profile_response.raise_for_status()
-            email = profile_response.json().get("emailAddress", "")
-            if email:
-                resolved = f"gmail:user:{email}"
-                logger.info(
-                    "Gmail connector: auto-resolved endpoint_identity=%s "
-                    "from authenticated account",
-                    resolved,
-                )
-                return resolved
-            logger.warning(
-                "Gmail connector: profile response missing emailAddress; "
-                "falling back to env var endpoint_identity=%s",
-                env_fallback,
-            )
-    except Exception as exc:
-        logger.warning(
-            "Gmail connector: failed to auto-resolve endpoint_identity (%s); "
-            "falling back to env var value=%s",
-            exc,
-            env_fallback,
-        )
-    return env_fallback
 
 
 async def _create_shared_db_pool() -> asyncpg.Pool:

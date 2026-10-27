@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import quote
 
 import asyncpg
@@ -23,6 +24,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError, ProgrammingError
 
 from alembic import command
+from butlers.bootstrap_prerequisite import BootstrapPrerequisiteError, check_bootstrap_connection
 from butlers.jobs.backup_health import get_last_restore_drill
 from butlers.migrations import _build_alembic_config, run_migrations
 from butlers.testing.migration import bootstrap_extensions, migration_db_name
@@ -635,11 +637,17 @@ def test_untrusted_admin_bootstrap_cannot_supply_a_noop_core_196_installer(
         shared_engine.dispose()
 
     config = _build_alembic_config(shared_url, chains=["core"])
-    command.stamp(config, "core_195")
-    with pytest.raises(
-        Exception, match="restore-drill bootstrap installer is missing or untrusted"
-    ):
+    with pytest.raises(BootstrapPrerequisiteError):
         command.upgrade(config, "core_196")
+    # Retain the independent applied guard species under a narrowly neutralized
+    # early-admission control. This stamp is an old guard fixture, NOT historical
+    # core195 reproduction (the separate owning-node helper applies the chain).
+    with patch("butlers.bootstrap_prerequisite.check_bootstrap_connection", return_value=None):
+        command.stamp(config, "core_195")
+        with pytest.raises(
+            Exception, match="restore-drill bootstrap installer is missing or untrusted"
+        ):
+            command.upgrade(config, "core_196")
 
     for _ in range(2):
         with pytest.raises(subprocess.CalledProcessError) as bootstrap_error:
@@ -836,6 +844,8 @@ def test_normal_migration_role_temp_catalog_shadow_cannot_subvert_restore_instal
                     """
                 )
             )
+            # Qualified admission must not execute the malicious temp catalog view.
+            check_bootstrap_connection(connection)
             connection.execute(text("SELECT restore_drill_executor_admin.install_interface()"))
             gained_owner_membership = connection.execute(
                 text("SELECT pg_has_role('butlers', 'restore_drill_executor_owner', 'USAGE')")
@@ -963,7 +973,7 @@ def test_privileged_rerun_repairs_legacy_executor_interface_search_paths(
     assert [dict(row) for row in repaired_configs] == [
         {
             "proname": "is_due",
-            "function_config": "search_path=pg_catalog, public, pg_temp",
+            "function_config": "search_path=pg_catalog, pg_temp",
         },
         {
             "proname": "latest_result",
@@ -971,8 +981,161 @@ def test_privileged_rerun_repairs_legacy_executor_interface_search_paths(
         },
         {
             "proname": "record_result",
-            "function_config": "search_path=pg_catalog, public, pg_temp",
+            "function_config": "search_path=pg_catalog, pg_temp",
         },
+    ]
+
+
+def test_executor_interface_never_runs_a_public_decoy_after_rerun(
+    postgres_container, tmp_path: Path
+) -> None:
+    """bu-mzm3su.1: the migration login cannot plant code the executor owner runs.
+
+    The shared migration login can CREATE in ``public``.  A ``make_interval``
+    overload taking an integer ``secs`` beats the catalog function for the
+    unqualified call in ``is_due()``, so any definer path that still lists
+    ``public`` runs it as ``restore_drill_executor_owner``.  Today only the
+    owner's missing ``public`` USAGE hides the decoy; the pin must hold on its
+    own, so each phase drifts that ACL back in.  The same database is first
+    regressed to the pre-fix path to prove the decoy is live, then converged by
+    the real init-db rerun.
+    """
+    admin_url, shared_url, host, port, admin_user, admin_password = _bootstrap_database(
+        postgres_container
+    )
+    _run_real_core_chain_with_relationship_prerequisite(shared_url)
+    database = _database_from_url(admin_url)
+    password_file = tmp_path / "restore-drill-executor-password"
+    password_file.write_text(_EXECUTOR_PASSWORD + "\n", encoding="utf-8")
+    provisioned = _provision_executor(
+        host=host,
+        port=port,
+        admin_user=admin_user,
+        admin_password=admin_password,
+        database=database,
+        password_file=password_file,
+    )
+    assert provisioned.returncode == 0, provisioned.stderr
+
+    shared_engine = create_engine(shared_url, isolation_level="AUTOCOMMIT")
+    try:
+        with shared_engine.connect() as connection:
+            connection.execute(
+                text(
+                    """
+                    CREATE FUNCTION public.make_interval(secs integer)
+                    RETURNS interval
+                    LANGUAGE plpgsql
+                    AS $$
+                    BEGIN
+                        RAISE EXCEPTION 'hijacked as %', current_user;
+                    END;
+                    $$
+                    """
+                )
+            )
+    finally:
+        shared_engine.dispose()
+
+    def drift_owner_public_usage() -> None:
+        engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+        try:
+            with engine.connect() as connection:
+                connection.execute(
+                    text("GRANT USAGE ON SCHEMA public TO restore_drill_executor_owner")
+                )
+        finally:
+            engine.dispose()
+
+    drift_owner_public_usage()
+    admin_engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with admin_engine.connect() as connection:
+            for procedure in (
+                "restore_drill_executor.is_due(integer)",
+                "restore_drill_executor.record_result(text,text,text,integer)",
+            ):
+                connection.execute(
+                    text(
+                        f"ALTER FUNCTION {procedure} SET search_path = pg_catalog, public, pg_temp"
+                    )
+                )
+    finally:
+        admin_engine.dispose()
+
+    executor_engine = create_engine(
+        _url(
+            user="restore_drill_executor",
+            password=_EXECUTOR_PASSWORD,
+            host=host,
+            port=port,
+            database=database,
+        ),
+        isolation_level="AUTOCOMMIT",
+    )
+    try:
+        # The regressed path is the shape every database bootstrapped before
+        # this change carries: the decoy runs with the private owner's rights.
+        # is_due() only reaches make_interval() once a result exists (the
+        # empty-ledger branch short-circuits), so record one first.
+        with executor_engine.connect() as connection:
+            connection.execute(
+                text("SELECT restore_drill_executor.record_result('legacy.sql.gz', 'pass', 'x', 1)")
+            ).scalar_one()
+            with pytest.raises(DBAPIError, match="hijacked as restore_drill_executor_owner"):
+                connection.execute(text("SELECT restore_drill_executor.is_due(604800)"))
+
+        for _ in range(2):
+            _run_psql_file(
+                host=host,
+                port=port,
+                user=admin_user,
+                password=admin_password,
+                database=database,
+                file_path=_INIT_DB,
+            )
+        # The rerun revokes the drifted USAGE; restore it so only the pinned
+        # path stands between the owner and the decoy.
+        drift_owner_public_usage()
+
+        with executor_engine.connect() as connection:
+            assert (
+                connection.execute(
+                    text("SELECT restore_drill_executor.is_due(604800)")
+                ).scalar_one()
+                is False
+            )
+            result_id = connection.execute(
+                text("SELECT restore_drill_executor.record_result('decoy.sql.gz', 'fail', 'x', 1)")
+            ).scalar_one()
+            assert isinstance(result_id, int)
+            assert (
+                connection.execute(text("SELECT restore_drill_executor.is_due(1)")).scalar_one()
+                is False
+            )
+    finally:
+        executor_engine.dispose()
+
+    admin_engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with admin_engine.connect() as connection:
+            configs = connection.execute(
+                text(
+                    """
+                    SELECT p.proname, p.proconfig
+                    FROM pg_proc AS p
+                    JOIN pg_namespace AS n ON n.oid = p.pronamespace
+                    WHERE n.nspname = 'restore_drill_executor'
+                      AND p.proname IN ('is_due', 'record_result')
+                    ORDER BY p.proname
+                    """
+                )
+            ).all()
+    finally:
+        admin_engine.dispose()
+    assert [(row.proname, list(row.proconfig)) for row in configs] == [
+        ("is_due", ["search_path=pg_catalog, pg_temp"]),
+        ("record_result", ["search_path=pg_catalog, pg_temp"]),
     ]
 
 
@@ -1094,9 +1257,17 @@ def test_precreated_shared_ledger_rejects_core_migration_without_authority_hando
     finally:
         shared_engine.dispose()
 
-    with pytest.raises(
-        Exception,
-        match="restore-drill authority interface must be absent before fixed bootstrap installation",
+    with pytest.raises(BootstrapPrerequisiteError):
+        _run_real_core_chain_with_relationship_prerequisite(shared_url)
+    # The independent fixed installer still refuses shared-owned precreation
+    # when only the new early check is neutralized; preserve its exact old error.
+    with (
+        patch("butlers.migrations.check_bootstrap_database", return_value=None),
+        patch("butlers.bootstrap_prerequisite.check_bootstrap_connection", return_value=None),
+        pytest.raises(
+            Exception,
+            match="restore-drill authority interface must be absent before fixed bootstrap installation",
+        ),
     ):
         _run_real_core_chain_with_relationship_prerequisite(shared_url)
 
@@ -1215,6 +1386,11 @@ def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
     restore-drill-shaped public row must never become the scheduling or API
     authority.
     """
+    from tests.bootstrap_prerequisite_helpers import exercise_historical_bootstrap
+
+    exercise_historical_bootstrap(
+        postgres_container, tmp_path, _create_database_before_restore_bootstrap, _run_psql_file
+    )
     admin_url, shared_url, host, port, admin_user, admin_password = _bootstrap_database(
         postgres_container
     )
@@ -1486,7 +1662,7 @@ def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
         {
             "proname": "is_due",
             "owner": "restore_drill_executor_owner",
-            "function_config": "search_path=pg_catalog, public, pg_temp",
+            "function_config": "search_path=pg_catalog, pg_temp",
         },
         {
             "proname": "latest_result",
@@ -1496,7 +1672,7 @@ def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
         {
             "proname": "record_result",
             "owner": "restore_drill_executor_owner",
-            "function_config": "search_path=pg_catalog, public, pg_temp",
+            "function_config": "search_path=pg_catalog, pg_temp",
         },
     ]
     assert dict(audit_writer_boundary) == {

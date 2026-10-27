@@ -175,6 +175,16 @@ print('Max sessions:', store.max_sessions)
 # Expected: max_sessions = 20
 ```
 
+## Implementation Notes
+
+- Codex device auth creates private `.codex/log/` and `.codex/tmp/` before writing
+  `.codex/auth.json`. The staged-output policy treats only those exact roots as optional,
+  disposable scratch; `auth.json` stays required. A scratch root without auth, or any undeclared
+  sibling, fails closed, and scratch bytes never cross the persistence boundary.
+- `read_validated_staged_device_auth_output()` logs only a fixed `reason=<enum>` and keeps its
+  `bytes | None` contract. Never surface the reason in a session, API, audit, metric or trace, or
+  derive it from exception text, paths, names, modes, sizes or staged bytes.
+
 ## Related Pages
 
 - [Credential Store](../data_and_storage/credential-store.md) -- Where tokens are persisted

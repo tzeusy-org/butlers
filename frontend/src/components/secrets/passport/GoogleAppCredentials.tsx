@@ -3,7 +3,7 @@
 //
 // Surfaced on the System-credential pages for GOOGLE_OAUTH_CLIENT_ID and
 // GOOGLE_OAUTH_CLIENT_SECRET (see PageSystemConnected). Replaces the former
-// standalone /settings/owner page: the client_id + client_secret are written
+// standalone owner-settings page: the client_id + client_secret are written
 // together via PUT /api/oauth/google/credentials (which preserves any existing
 // refresh token), and the operator can (re-)authorize the Google account.
 //
@@ -95,7 +95,7 @@ function Field({
         value={value}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
-        className="font-mono text-[12px] px-2.5 py-1.5 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-40"
+        className="font-mono text-[12px] px-2.5 py-1.5 outline-none focus-visible:ring-[3px] focus-visible:ring-focus disabled:opacity-40"
         style={{
           background: "var(--bg)",
           color: "var(--fg)",
@@ -161,6 +161,10 @@ export function GoogleAppCredentials() {
 
   const canSave =
     clientId.trim().length > 0 && clientSecret.trim().length > 0 && !saveMutation.isPending;
+  // The OAuth start endpoint needs the app credentials; keep the spec guarantee
+  // that authorize is unavailable until both halves are configured.
+  const credentialsConfigured =
+    status?.client_id_configured === true && status?.client_secret_configured === true;
   const authLabel = status?.oauth_health === "connected" ? "re-authorize google" : "connect google";
 
   return (
@@ -170,7 +174,7 @@ export function GoogleAppCredentials() {
         <p
           className="mt-2"
           style={{
-            fontFamily: "var(--font-serif, 'Source Serif 4', serif)",
+            fontFamily: "var(--font-serif)",
             fontStyle: "italic",
             fontSize: 13,
             color: "var(--mfg)",
@@ -214,7 +218,7 @@ export function GoogleAppCredentials() {
             <PillBtn variant="commit" onClick={() => saveMutation.mutate()} disabled={!canSave}>
               {saveMutation.isPending ? "saving…" : "save app credentials"}
             </PillBtn>
-            <PillBtn onClick={handleReauthorize} disabled={statusPending}>
+            <PillBtn onClick={handleReauthorize} disabled={statusPending || !credentialsConfigured}>
               {authLabel}
             </PillBtn>
           </div>

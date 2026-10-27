@@ -25,7 +25,7 @@ const baseClassName = [
   "font-mono text-[11px] uppercase tracking-wider",
   "text-muted-foreground underline underline-offset-4 decoration-[var(--border-strong)]",
   "transition-colors hover:text-foreground cursor-pointer",
-  "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg",
+  "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
   "disabled:cursor-default disabled:opacity-50",
 ].join(" ")
 

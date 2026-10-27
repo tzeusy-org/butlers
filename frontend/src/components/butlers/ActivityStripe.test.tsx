@@ -226,7 +226,7 @@ describe("ActivityStripe: optional bar interaction", () => {
     expect(firstBar.className).toContain("focus-visible:ring-2")
     expect(firstBar.className).toContain("focus-visible:ring-offset-2")
     expect(firstBar.className).toContain("focus-visible:outline-1")
-    expect(firstBar.className).toContain("focus-visible:outline-foreground")
+    expect(firstBar.className).toContain("focus-visible:outline-focus")
   })
 
   it("uses the supplied window end to label interactive slots accurately", () => {

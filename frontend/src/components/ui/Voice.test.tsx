@@ -73,7 +73,7 @@ describe("Voice: typography", () => {
 
   it("applies primary foreground color token", () => {
     const html = renderToStaticMarkup(<Voice>prose</Voice>)
-    expect(html).toContain("--fg")
+    expect(html).toContain("text-fg")
   })
 })
 

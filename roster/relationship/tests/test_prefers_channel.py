@@ -22,6 +22,11 @@ import asyncpg
 import pytest
 
 from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY
+from butlers.tools.relationship.fact_temporal import (
+    MUTATOR_UNSUPPORTED,
+    PACKET_COLUMNS,
+    TemporalError,
+)
 from butlers.tools.relationship.relationship_assert_fact import (
     PREFERS_CHANNEL_PREDICATE,
     AssertOutcome,
@@ -29,7 +34,11 @@ from butlers.tools.relationship.relationship_assert_fact import (
     relationship_assert_fact,
     retract_prefers_channel,
 )
-from roster.relationship.tests.evidence_schema import apply_evidence_schema
+from roster.relationship.tests.evidence_schema import (
+    apply_evidence_schema,
+    simulate_temporal_cutover,
+)
+from roster.relationship.tests.fact_authority_fixtures import synthetic_owner
 
 pytestmark = [
     pytest.mark.integration,
@@ -53,6 +62,7 @@ async def pool(provisioned_postgres_pool):
                 canonical_name TEXT        NOT NULL DEFAULT '',
                 entity_type    TEXT        NOT NULL DEFAULT 'person',
                 roles          TEXT[]      NOT NULL DEFAULT '{}',
+                metadata       JSONB       NOT NULL DEFAULT '{}'::jsonb,
                 created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
             )
@@ -154,7 +164,10 @@ class TestAssert:
 
     async def test_assert_stores_provenance(self, pool, entity):
         await _add_channel(pool, entity, "has-email", "a@b.com")
-        result = await assert_prefers_channel(pool, entity, "email", src="dashboard", verified=True)
+        async with synthetic_owner(pool):
+            result = await assert_prefers_channel(
+                pool, entity, "email", src="dashboard", verified=True
+            )
         row = await pool.fetchrow(
             "SELECT * FROM relationship.entity_facts WHERE id = $1", result.fact_id
         )
@@ -264,3 +277,56 @@ class TestValidationDegrade:
         await _add_channel(pool, entity, "has-email", "a@b.com")
         with pytest.raises(ValueError, match="no active contact fact"):
             await assert_prefers_channel(pool, entity, "discord")
+
+
+# ---------------------------------------------------------------------------
+# Effective-time fence (relationship-fact-effective-time, bu-h3b7t.1)
+# ---------------------------------------------------------------------------
+
+
+class TestTemporalFence:
+    """The single-valued path may only replace unknown default rows (until bu-4ss0u)."""
+
+    @pytest.mark.parametrize(
+        ("current", "operation"),
+        [
+            ("temporal", "set"),
+            ("temporal", "clear"),
+            ("repeated", "set"),
+            ("repeated", "clear"),
+            ("none", "generic-temporal"),
+        ],
+    )
+    async def test_fenced_before_any_write(self, pool, entity, current, operation):
+        await simulate_temporal_cutover(pool)
+        await _add_channel(pool, entity, "has-email", "a@b.com")
+        insert = f"""
+            INSERT INTO relationship.entity_facts
+                (subject, predicate, object, object_kind, src, {PACKET_COLUMNS})
+            VALUES ($1, $2, 'email', 'literal', 't', $3, $4, $5, NULL, NULL)
+        """
+        if current == "temporal":
+            await pool.execute(insert, entity, PREFERS_CHANNEL_PREDICATE, None, None, "unbounded")
+        elif current == "repeated":
+            for period in (uuid.uuid4(), uuid.uuid4()):
+                await pool.execute(insert, entity, PREFERS_CHANNEL_PREDICATE, period, None, None)
+        before = await pool.fetch("SELECT id, validity FROM relationship.entity_facts ORDER BY id")
+
+        with pytest.raises(TemporalError) as caught:
+            if operation == "set":
+                await assert_prefers_channel(pool, entity, "email", src="dashboard")
+            elif operation == "clear":
+                await retract_prefers_channel(pool, entity)
+            else:
+                await relationship_assert_fact(
+                    pool,
+                    entity,
+                    PREFERS_CHANNEL_PREDICATE,
+                    "email",
+                    src="t",
+                    effective_to_precision="unbounded",
+                )
+
+        assert caught.value.code == MUTATOR_UNSUPPORTED
+        after = await pool.fetch("SELECT id, validity FROM relationship.entity_facts ORDER BY id")
+        assert after == before

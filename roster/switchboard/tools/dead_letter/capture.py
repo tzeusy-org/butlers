@@ -8,6 +8,26 @@ from typing import Any
 
 import asyncpg
 
+from butlers.ingestion_bearer_scrub import scrub_message_text, scrub_stored_record
+
+
+def scrub_original_payload(original_payload: dict[str, Any]) -> dict[str, Any]:
+    """Withhold bearer material from a dead-letter payload's message text.
+
+    Shared by capture and replay.  A detector failure raises, so no raw text is
+    written.  Identity subtrees (``source``, ``event``, ``sender``, ``control``)
+    are not rewritten.
+    """
+    scrubbed, _, _ = scrub_stored_record(original_payload, "")
+    message_text = original_payload.get("message_text")
+    if isinstance(message_text, str):
+        scrubbed["message_text"] = scrub_message_text(
+            message_text,
+            source=original_payload.get("source") or {},
+            sender=original_payload.get("sender") or {},
+        )
+    return scrubbed
+
 
 async def capture_to_dead_letter(
     conn: asyncpg.Connection,
@@ -41,6 +61,7 @@ async def capture_to_dead_letter(
     Returns:
         UUID of the created dead-letter entry
     """
+    original_payload = scrub_original_payload(original_payload)
     result = await conn.fetchrow(
         """
         INSERT INTO dead_letter_queue (

@@ -6,12 +6,12 @@ import { MemoryRouter } from "react-router";
 
 vi.mock("@/hooks/use-ingestion", () => ({
   useConnectorSummaries: vi.fn(),
-  useConnectorSummariesWithAggregates: vi.fn(),
   usePipelineStats: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-ingestion-events", () => ({
   useIngestionWindowRollup: vi.fn(),
+  useIngestionDroppedKnown: vi.fn(),
 }));
 
 import {
@@ -21,10 +21,9 @@ import {
 } from "@/components/ingestion/dispatch/IngestionVerdictOpeners";
 import {
   useConnectorSummaries,
-  useConnectorSummariesWithAggregates,
   usePipelineStats,
 } from "@/hooks/use-ingestion";
-import { useIngestionWindowRollup } from "@/hooks/use-ingestion-events";
+import { useIngestionDroppedKnown, useIngestionWindowRollup } from "@/hooks/use-ingestion-events";
 
 function render(ui: React.ReactElement): string {
   return renderToStaticMarkup(<MemoryRouter>{ui}</MemoryRouter>);
@@ -58,12 +57,12 @@ beforeEach(() => {
     isError: false,
   } as never);
   vi.mocked(useConnectorSummaries).mockReturnValue({
-    data: { data: [healthyConnector] },
+    data: { data: { connectors: [healthyConnector] } },
     isLoading: false,
     isError: false,
   } as never);
-  vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue({
-    data: { data: { connectors: [healthyConnector] } },
+  vi.mocked(useIngestionDroppedKnown).mockReturnValue({
+    data: { available: true, counts_available: true, classification_available: true, uncertain_drops: 0, availability_reason: "none", window: "24h", dropped: 0, episodes: 0 },
     isLoading: false,
     isError: false,
   } as never);
@@ -92,7 +91,7 @@ beforeEach(() => {
 describe("Ingestion verdict openers", () => {
   it("makes an attention connector on the timeline a real detail door", () => {
     vi.mocked(useConnectorSummaries).mockReturnValue({
-      data: { data: [offlineConnector] },
+      data: { data: { connectors: [offlineConnector] } },
       isLoading: false,
       isError: false,
     } as never);
@@ -105,7 +104,7 @@ describe("Ingestion verdict openers", () => {
   });
 
   it("names connector activity degradation instead of rendering an all-clear", () => {
-    vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue({
+    vi.mocked(useConnectorSummaries).mockReturnValue({
       data: {
         data: {
           connectors: [healthyConnector],
@@ -124,7 +123,7 @@ describe("Ingestion verdict openers", () => {
 
   it("names a registry fallback on the timeline instead of rendering an all-clear", () => {
     vi.mocked(useConnectorSummaries).mockReturnValue({
-      data: { data: [], meta: { connector_registry_available: false } },
+      data: { data: { connectors: [], connector_registry_available: false } },
       isLoading: false,
       isError: false,
     } as never);
@@ -175,7 +174,7 @@ describe("Ingestion verdict openers", () => {
   });
 
   it("names a registry fallback on the connectors roster instead of healthy zero", () => {
-    vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue({
+    vi.mocked(useConnectorSummaries).mockReturnValue({
       data: { data: { connectors: [], connector_registry_available: false } },
       isLoading: false,
       isError: false,
@@ -185,6 +184,20 @@ describe("Ingestion verdict openers", () => {
 
     expect(html).toContain("connector registry unavailable");
     expect(html).not.toContain("ingestion-connectors-verdict-all-clear");
+  });
+
+  it("excludes archived identities from timeline and roster verdict attention", () => {
+    vi.mocked(useConnectorSummaries).mockReturnValue({
+      data: { data: { connectors: [{ ...offlineConnector, archived: true }] } },
+      isLoading: false,
+      isError: false,
+    } as never);
+
+    const timeline = render(<IngestionTimelineVerdictOpener range="24h" />);
+    const roster = render(<IngestionConnectorsVerdictOpener />);
+
+    expect(timeline).not.toContain("calendar · primary needs attention");
+    expect(roster).not.toContain("calendar · primary needs attention");
   });
 
   it("reports the filters funnel drop without linking back to its current page", () => {
@@ -205,5 +218,66 @@ describe("Ingestion verdict openers", () => {
 
     expect(html).toContain("pipeline metrics unavailable");
     expect(html).not.toContain("ingestion-filters-verdict-all-clear");
+  });
+
+  it("names drops from known contacts as a door and never renders all clear over them", () => {
+    vi.mocked(useIngestionDroppedKnown).mockReturnValue({
+      data: { available: true, counts_available: true, classification_available: true, uncertain_drops: 0, availability_reason: "none", window: "24h", dropped: 3, episodes: 2 },
+      isLoading: false,
+      isError: false,
+    } as never);
+
+    const html = render(<IngestionFiltersVerdictOpener />);
+
+    expect(html).toContain("3 dropped from people you know");
+    expect(html).toContain('href="/ingestion?statuses=filtered&amp;range=24h"');
+    expect(html).not.toContain("ingestion-filters-verdict-all-clear");
+    for (const isError of [false, true]) {
+      vi.mocked(useIngestionDroppedKnown).mockReturnValue({
+        data: { available: false, counts_available: true, classification_available: false,
+          uncertain_drops: 1, availability_reason: "classification_unknown",
+          window: "24h", dropped: 3, episodes: 2 },
+        isLoading: false, isError,
+      } as never);
+      const partial = render(<IngestionFiltersVerdictOpener />);
+      expect(partial).toContain("3 dropped from people you know");
+      expect(partial).toContain("gate harm unknown");
+      expect(partial).toContain('href="/ingestion?statuses=filtered&amp;range=24h"');
+      expect(partial).not.toContain("ingestion-filters-verdict-all-clear");
+    }
+    vi.mocked(useIngestionDroppedKnown).mockReturnValue({
+      data: undefined, isLoading: true, isError: false,
+    } as never);
+    const loading = render(<IngestionFiltersVerdictOpener />);
+    expect(loading).toContain("ingestion-filters-verdict-skeleton");
+    expect(loading).not.toContain("All gates clear");
+
+  });
+
+  it.each([
+    ["the aggregate is degraded in a 200 response", { data: { available: false }, isError: false }],
+    ["the aggregate request fails", { data: undefined, isError: true }],
+  ])("says gate harm is unknown, not all clear, when %s", (_case, result) => {
+    vi.mocked(useIngestionDroppedKnown).mockReturnValue({
+      ...result,
+      isLoading: false,
+    } as never);
+
+    const html = render(<IngestionFiltersVerdictOpener />);
+
+    expect(html).toContain("gate harm unknown");
+    expect(html).not.toContain("ingestion-filters-verdict-all-clear");
+  });
+
+  it("keeps the calm line when no known-contact drops are outstanding", () => {
+    vi.mocked(usePipelineStats).mockReturnValue({
+      data: { aggregates_available: true, ingested: 100, filtered: 0 },
+      isLoading: false,
+      isError: false,
+    } as never);
+
+    const html = render(<IngestionFiltersVerdictOpener />);
+
+    expect(html).toContain("ingestion-filters-verdict-all-clear");
   });
 });

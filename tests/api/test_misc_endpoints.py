@@ -28,9 +28,10 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerNotFoundError,
     ButlerUnreachableError,
+    get_db,
 )
-from butlers.api.routers.audit import _get_db_manager as _audit_get_db
-from butlers.api.routers.sessions import _get_db_manager as _sessions_get_db
+from butlers.api.deps import get_db as _audit_get_db
+from butlers.api.deps import get_db as _sessions_get_db
 from butlers.api.routers.sse import _subscribers, broadcast
 
 pytestmark = pytest.mark.unit
@@ -232,9 +233,9 @@ async def test_notifications_status_filter_still_binds_non_retried_values():
 async def test_home_devices_503_when_pool_unavailable(app):
     db = MagicMock(spec=DatabaseManager)
     db.pool.side_effect = KeyError("no pool")
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "home" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "home":
+            app.dependency_overrides[get_db] = lambda: db
             break
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

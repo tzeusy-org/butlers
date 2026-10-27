@@ -8,7 +8,7 @@ validation boundary, backfill lifecycle (create/pause/conflict), connectors.
 from __future__ import annotations
 
 import datetime
-import importlib.util
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -18,6 +18,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -28,13 +29,8 @@ _router_path = _roster_root / "switchboard" / "api" / "router.py"
 
 def _get_db_dep():
     if _MODULE_NAME not in sys.modules:
-        spec = importlib.util.spec_from_file_location(_MODULE_NAME, _router_path)
-        if spec is None or spec.loader is None:
-            raise ValueError(f"Could not load spec from {_router_path}")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[_MODULE_NAME] = module
-        spec.loader.exec_module(module)
-    return sys.modules[_MODULE_NAME]._get_db_manager
+        importlib.import_module("butlers.api._roster.switchboard.router")
+    return get_db
 
 
 def _get_router_module():
@@ -205,7 +201,10 @@ async def test_register_missing_butler_uses_mcp_url(tmp_path):
     )
     registry_module = MagicMock()
     registry_module.register_butler = AsyncMock()
-    with patch.dict(sys.modules, {module._REGISTRY_MODULE_NAME: registry_module}):
+    with patch(
+        "butlers.tools.switchboard.registry.registry.register_butler",
+        registry_module.register_butler,
+    ):
         old = module._ROSTER_DIR
         module._ROSTER_DIR = tmp_path
         try:
@@ -213,6 +212,7 @@ async def test_register_missing_butler_uses_mcp_url(tmp_path):
         finally:
             module._ROSTER_DIR = old
     assert ok is True
+    registry_module.register_butler.assert_awaited_once()
     args = registry_module.register_butler.await_args.args
     assert args[2] == "http://localhost:41234/mcp"
 
@@ -248,6 +248,28 @@ async def test_heartbeat_stale_transitions_to_active_and_logs(app):
     assert any("butler_registry_eligibility_log" in s for s in sql_calls)
 
 
+async def test_heartbeat_cannot_report_recovery_when_policy_retains_quarantine(app):
+    """The legacy heartbeat reports the stored projection after the L1 fence."""
+    app, mock_pool = _app_with_mock(
+        app,
+        fetchrow_side_effects=[
+            {"eligibility_state": "quarantined", "last_seen_at": None},
+            {"eligibility_state": "quarantined"},  # UPDATE ... RETURNING after trigger
+            {"eligibility_state": "quarantined"},  # current projection reread
+        ],
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post("/api/switchboard/heartbeat", json={"butler_name": "health"})
+    assert resp.status_code == 200
+    assert resp.json()["eligibility_state"] == "quarantined"
+    assert not any(
+        "butler_registry_eligibility_log" in call.args[0]
+        for call in mock_pool.execute.await_args_list
+    )
+
+
 async def test_heartbeat_unknown_butler_404(app):
     _app_with_mock(app, fetchrow_result=None)
     async with httpx.AsyncClient(
@@ -266,55 +288,29 @@ async def test_heartbeat_missing_name_422(app):
     assert resp.status_code == 422
 
 
+async def test_heartbeat_rejects_invalid_names_before_roster_path_access(app):
+    module = _get_router_module()
+    roster_dir = MagicMock()
+    roster_dir.__truediv__.side_effect = AssertionError("Invalid heartbeat reached roster path")
+    with patch.object(module, "_ROSTER_DIR", roster_dir):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for name in ("../x", "/tmp/x"):
+                for row in (None, {"eligibility_state": "active", "last_seen_at": None}):
+                    _app, pool = _app_with_mock(app, fetchrow_result=row)
+                    resp = await client.post(
+                        "/api/switchboard/heartbeat", json={"butler_name": name}
+                    )
+                    assert resp.status_code == 422
+                    pool.fetchrow.assert_not_awaited()
+                    pool.execute.assert_not_awaited()
+    roster_dir.__truediv__.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Eligibility history
 # ---------------------------------------------------------------------------
-
-
-async def test_eligibility_no_transitions_single_segment(app):
-    _app_with_mock(app, fetchrow_result={"eligibility_state": "active"})
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/switchboard/registry/health/eligibility-history")
-    data = resp.json()["data"]
-    assert data["butler_name"] == "health"
-    assert len(data["segments"]) == 1
-    assert data["segments"][0]["state"] == "active"
-
-
-async def test_eligibility_transitions_correct_segments(app):
-    now = datetime.datetime.now(datetime.UTC)
-    app, mock_pool = _app_with_mock(app, fetchrow_result={"eligibility_state": "active"})
-    mock_pool.fetch = AsyncMock(
-        return_value=[
-            {
-                "previous_state": "active",
-                "new_state": "stale",
-                "observed_at": now - datetime.timedelta(hours=12),
-            },
-            {
-                "previous_state": "stale",
-                "new_state": "active",
-                "observed_at": now - datetime.timedelta(hours=6),
-            },
-        ]
-    )
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/switchboard/registry/health/eligibility-history")
-    states = [s["state"] for s in resp.json()["data"]["segments"]]
-    assert states == ["active", "stale", "active"]
-
-
-async def test_eligibility_unknown_butler_404(app):
-    _app_with_mock(app, fetchrow_result=None)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/switchboard/registry/unknown/eligibility-history")
-    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -372,15 +368,26 @@ async def test_set_eligibility_to_active_invalidates_cache(app):
     assert cache.get(owner_id) is None
 
 
-async def test_set_eligibility_to_quarantined_invalidates_cache(app):
-    """POST eligibility to 'quarantined' (unhealthy) invalidates the cache."""
+@pytest.mark.parametrize(
+    ("requested_policy", "stored_policy"),
+    [
+        ("quarantined", "quarantined"),
+        ("paused", "paused"),
+        ("review_required", "review_required"),
+        ("stale", "paused"),
+    ],
+)
+async def test_set_eligibility_to_quarantined_invalidates_cache(
+    app, requested_policy, stored_policy
+):
+    """Every restrictive owner policy uses the protected write boundary."""
     from butlers.api.briefing.cache import BriefingCache
 
     owner_id = "owner-eligibility-002"
     cache = BriefingCache(ttl_seconds=300)
     cache.set(owner_id, {"state_class": "quiet"})
 
-    app, _pool = _app_with_cache(
+    app, mock_pool = _app_with_cache(
         app,
         fetchrow_side_effects=[
             {"eligibility_state": "active", "last_seen_at": None},
@@ -388,16 +395,27 @@ async def test_set_eligibility_to_quarantined_invalidates_cache(app):
         ],
         cache=cache,
     )
+    mock_pool.fetchval.return_value = "quarantined"
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.post(
             "/api/switchboard/registry/health/eligibility",
-            json={"eligibility_state": "quarantined"},
+            json={"eligibility_state": requested_policy},
         )
 
     assert resp.status_code == 200
+    assert resp.json()["data"]["new_state"] == "quarantined"
+    assert any(
+        call.args
+        == (
+            "SELECT public.set_butler_registry_policy($1, $2)",
+            "health",
+            stored_policy,
+        )
+        for call in mock_pool.fetchval.await_args_list
+    )
     assert cache.get(owner_id) is None
 
 
@@ -853,126 +871,95 @@ async def test_backfill_pause_completed_409(app):
     assert resp.status_code == 409
 
 
-# ---------------------------------------------------------------------------
-# Connectors
-# ---------------------------------------------------------------------------
-
-_SAMPLE_CONNECTOR = {
-    "connector_type": "telegram_bot",
-    "endpoint_identity": "bot-123",
-    "instance_id": None,
-    "version": "1.0.0",
-    "state": "healthy",
-    "error_message": None,
-    "uptime_s": 3600,
-    "last_heartbeat_at": "2026-02-23T10:00:00+00:00",
-    "first_seen_at": "2026-02-01T00:00:00+00:00",
-    "registered_via": "self",
-    "counter_messages_ingested": 42,
-    "counter_messages_failed": 1,
-    "counter_source_api_calls": 150,
-    "counter_checkpoint_saves": 10,
-    "counter_dedupe_accepted": 0,
-    "today_messages_ingested": 7,
-    "today_messages_failed": 0,
-    "checkpoint_cursor": "update-12345",
-    "checkpoint_updated_at": "2026-02-23T09:55:00+00:00",
-}
-
-
-async def test_connectors_list_200(app):
-    _app_with_mock(app, fetch_rows=[])
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/switchboard/connectors")
-    assert resp.status_code == 200
-    assert resp.json()["meta"]["connector_registry_available"] is True
-
-
-async def test_connectors_list_registry_failure_names_unavailable_source(app):
-    """The legacy summary endpoint must not turn a failed registry read into an honest empty."""
-    _, pool = _app_with_mock(app)
-    pool.fetch.side_effect = RuntimeError("connector registry unavailable")
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/switchboard/connectors")
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["data"] == []
-    assert body["meta"]["connector_registry_available"] is False
-
-
-async def test_connector_detail_200(app):
-    _app_with_mock(app, fetchrow_result=_make_row(_SAMPLE_CONNECTOR))
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/switchboard/connectors/telegram_bot/bot-123")
-    assert resp.status_code == 200
-
-
-async def test_connector_detail_404(app):
-    _app_with_mock(app, fetchrow_result=None)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/switchboard/connectors/telegram_bot/nonexistent")
-    assert resp.status_code == 404
-
-
-async def test_update_connector_cursor_validates_empty_string(app):
-    _app_with_mock(app)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.patch(
-            "/api/switchboard/connectors/telegram_bot/bot-123/cursor", json={"cursor": ""}
-        )
-    assert resp.status_code == 422
-
-
-# ---------------------------------------------------------------------------
-# PATCH /connectors/{type}/{identity}/settings — flush_interval_s validation
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
-    ("flush_interval_s", "expected_status"),
+    ("operation", "status", "expected"),
     [
-        (60, 200),  # boundary minimum
-        (300, 200),  # in-range
-        (7200, 200),  # boundary maximum
-        (30, 422),  # below minimum
-        (9999, 422),  # above maximum
+        (operation, status, expected)
+        for operation, allowed, target in (
+            ("pause", {"pending", "active", "paused"}, "paused"),
+            (
+                "cancel",
+                {"pending", "active", "paused", "error", "cost_capped", "cancelled"},
+                "cancelled",
+            ),
+            ("resume", {"paused"}, "pending"),
+        )
+        for status in (
+            "pending",
+            "active",
+            "paused",
+            "completed",
+            "cancelled",
+            "error",
+            "cost_capped",
+        )
+        if (operation, status) != ("pause", "completed")  # existing owner above
+        for expected in [target if status in allowed else None]
     ],
 )
-async def test_update_connector_settings_flush_interval_range(
-    app, flush_interval_s, expected_status
-):
-    """flush_interval_s is accepted within [60, 7200] (inclusive) and rejected outside."""
-    _app_with_mock(app, fetchrow_result=_make_row(_SAMPLE_CONNECTOR))
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.patch(
-            "/api/switchboard/connectors/telegram_user_client/user-123/settings",
-            json={"settings": {"flush_interval_s": flush_interval_s}},
+async def test_backfill_lifecycle_controls(app, operation, status, expected):
+    row = {**_SAMPLE_JOB, "status": status}
+    app, pool = _app_with_mock(app)
+    pool.fetchrow = AsyncMock(side_effect=[_make_row(row), {"status": expected}])
+    with patch("switchboard_api_router.emit_dashboard_audit", new_callable=AsyncMock) as audit:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.patch(f"/api/switchboard/backfill/{_JOB_ID}/{operation}")
+    assert response.status_code == (200 if expected else 409)
+    if expected:
+        assert response.json()["data"] == {"job_id": _JOB_ID, "status": expected}
+        assert audit.await_args.kwargs["operation"] == f"backfill_job_{operation}"
+        if status != expected:
+            sql, *args = pool.fetchrow.await_args.args
+            assert "AND status" in sql
+            assert status in args[-1]
+    else:
+        audit.assert_not_awaited()
+        assert pool.fetchrow.await_count == 1
+        allowed = {
+            "pause": {"pending", "active"},
+            "cancel": {"pending", "active", "paused", "error", "cost_capped"},
+            "resume": {"paused"},
+        }[operation]
+        assert response.json()["detail"] == (
+            f"Cannot {operation} job in status '{status}'. Must be one of: {sorted(allowed)}"
         )
-    assert resp.status_code == expected_status
 
 
-async def test_update_connector_settings_non_flush_keys_not_validated(app):
-    """Arbitrary keys not named flush_interval_s pass through without range check."""
-    _app_with_mock(app, fetchrow_result=_make_row(_SAMPLE_CONNECTOR))
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.patch(
-            "/api/switchboard/connectors/telegram_user_client/user-123/settings",
-            json={"settings": {"some_other_key": 99999}},
+@pytest.mark.parametrize("failure", ["missing", "malformed", "race", "database", "database_update"])
+async def test_backfill_lifecycle_refusals(app, failure):
+    app, pool = _app_with_mock(app)
+    pool.fetchrow = AsyncMock(
+        side_effect={
+            "missing": [None],
+            "malformed": [],
+            "race": [{"id": _JOB_ID, "status": "active"}, None, None],
+            "database": RuntimeError("unavailable"),
+            "database_update": [{"id": _JOB_ID, "status": "active"}, RuntimeError("unavailable")],
+        }[failure]
+    )
+    job_id = "invalid" if failure == "malformed" else _JOB_ID
+    with patch("switchboard_api_router.emit_dashboard_audit", new_callable=AsyncMock) as audit:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.patch(f"/api/switchboard/backfill/{job_id}/pause")
+    assert (
+        response.status_code
+        == {"missing": 404, "malformed": 422, "race": 409, "database": 503, "database_update": 503}[
+            failure
+        ]
+    )
+    audit.assert_not_awaited()
+    if failure == "malformed":
+        pool.fetchrow.assert_not_awaited()
+    if failure in {"missing", "database", "database_update"}:
+        assert (
+            response.json()["detail"]
+            == {
+                "missing": f"Backfill job '{_JOB_ID}' not found",
+                "database": "Failed to fetch backfill job",
+                "database_update": "Failed to pause backfill job",
+            }[failure]
         )
-    assert resp.status_code == 200

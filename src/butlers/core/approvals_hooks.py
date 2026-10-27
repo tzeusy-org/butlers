@@ -278,7 +278,7 @@ class EmailGuardDecision:
     """
 
     allowed: bool
-    reason: str  # "owner" | "rule" | "parked" | "dossier_error"
+    reason: str  # "owner" | "rule" | "parked" | "parking_failed" | "dossier_error"
     action_id: uuid.UUID | None = None
     rule_id: uuid.UUID | None = None
     contact_desc: str | None = None
@@ -302,6 +302,7 @@ class ApprovalHooksRuntime:
     email_guard: Callable[..., Coroutine[Any, Any, Any]]
     recipient_guard: Callable[..., Coroutine[Any, Any, Any]]
     park_pending_action: Callable[..., Coroutine[Any, Any, Any]]
+    approved_execution_matches: Callable[..., bool] | None = None
 
 
 # ``butlers up`` hosts every butler daemon in one Python process.  The optional
@@ -334,6 +335,21 @@ def is_approval_parking_available(pool: Any) -> bool:
     return _resolve_pool_runtime(pool) is not None
 
 
+def is_approved_tool_execution(pool: Any, *, tool_name: str, tool_args: dict[str, Any]) -> bool:
+    """Check existing executor authority for this pool, exact task/tool/raw args.
+
+    This is a read-only dependency-inversion seam. Missing, stale or unavailable
+    approvals implementations never authorize a replay.
+    """
+    runtime = _resolve_pool_runtime(pool)
+    if runtime is None or runtime.approved_execution_matches is None:
+        return False
+    try:
+        return runtime.approved_execution_matches(tool_name=tool_name, tool_args=tool_args) is True
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Registration API (called by modules.approvals)
 # ---------------------------------------------------------------------------
@@ -345,6 +361,7 @@ def register_approval_hooks(
     email_guard: Callable[..., Coroutine[Any, Any, Any]],
     recipient_guard: Callable[..., Coroutine[Any, Any, Any]],
     park_pending_action: Callable[..., Coroutine[Any, Any, Any]],
+    approved_execution_matches: Callable[..., bool] | None = None,
 ) -> ApprovalHooksRuntime:
     """Register all production hooks atomically for one owning pool.
 
@@ -355,6 +372,7 @@ def register_approval_hooks(
         email_guard=email_guard,
         recipient_guard=recipient_guard,
         park_pending_action=park_pending_action,
+        approved_execution_matches=approved_execution_matches,
     )
     _approval_hooks_by_pool[id(pool)] = (pool, runtime)
     return runtime
@@ -402,8 +420,8 @@ async def check_email_recipient(
     ``approval_push_runtime`` (an
     ``modules.approvals.notifications.ApprovalPushRuntime`` or ``None``) is
     passed through untyped here to avoid importing the approvals module from
-    core; the registered hook applies it when parking an action so the owner
-    is actually notified (bu-mda0r).
+    core. It is retained for rolling-callsite compatibility; admission does
+    not invoke the live runtime.
     """
     runtime = _resolve_pool_runtime(pool)
     if runtime is None:
@@ -472,9 +490,9 @@ async def check_recipient(
     decision so butlers without approvals remain functional.
 
     Parameters mirror ``modules.approvals.email_guard.check_recipient``.
-    ``approval_push_runtime`` is forwarded untyped (see
-    :func:`check_email_recipient`) so a parked action is actually pushed to
-    the owner (bu-mda0r).
+    ``approval_push_runtime`` is forwarded untyped for rolling-callsite
+    compatibility. Atomic admission does not invoke it; delivery belongs to
+    the separately activated recovery worker.
     """
     runtime = _resolve_pool_runtime(pool)
     if runtime is None:
@@ -529,7 +547,7 @@ async def park_pending_action(
     approval_push_runtime: Any = None,
     deduplication_key: str | None = None,
 ) -> Any | None:
-    """Insert one PENDING ``pending_actions`` row and push it to the owner.
+    """Atomically insert one PENDING action and its durable delivery intent.
 
     Delegates to the hook registered by ``modules.approvals``
     (``modules.approvals.park.park_pending_action``, the single choke point
@@ -539,8 +557,7 @@ async def park_pending_action(
     cannot fail open: there is no safe default for "park this action" when no
     hook is registered.  A butler with no approvals module also has no
     ``pending_actions`` table to park into, so this logs a loud warning and
-    returns ``None`` (no row written, no push attempted) rather than
-    fabricating a park that never happened.
+    raises rather than fabricating a park that never happened.
     """
     runtime = _resolve_pool_runtime(pool)
     if runtime is None:
@@ -550,7 +567,7 @@ async def park_pending_action(
             action_id,
             tool_name,
         )
-        return None
+        raise RuntimeError("Approval parking is unavailable for this butler")
 
     kwargs: dict[str, Any] = {
         "action_id": action_id,
@@ -569,4 +586,8 @@ async def park_pending_action(
     }
     if deduplication_key is not None:
         kwargs["deduplication_key"] = deduplication_key
-    return await runtime.park_pending_action(pool, **kwargs)
+    result = await runtime.park_pending_action(pool, **kwargs)
+    admitted_action_id = getattr(result, "action_id", None)
+    if not isinstance(admitted_action_id, uuid.UUID):
+        raise RuntimeError("Approval parking returned no durable action")
+    return result

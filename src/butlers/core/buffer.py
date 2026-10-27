@@ -63,6 +63,11 @@ POLICY_TIER_ORDER: list[str] = [
     POLICY_TIER_DEFAULT,
 ]
 
+# Known ``PolicyTier`` values without a queue of their own; they ride the default
+# queue without a warning. ``passive`` is emitted on every Telegram and WhatsApp
+# user-client ingest. Any other unknown tier still warns.
+POLICY_TIER_DEFAULT_ALIASES: frozenset[str] = frozenset({"passive"})
+
 
 # ---------------------------------------------------------------------------
 # Message reference — lightweight envelope passed through the queue
@@ -306,7 +311,9 @@ class DurableBuffer:
         scanner will recover it — no data loss.
         """
         # Validate / normalise tier
-        if policy_tier not in self._tier_queues:
+        if policy_tier in POLICY_TIER_DEFAULT_ALIASES:
+            policy_tier = POLICY_TIER_DEFAULT
+        elif policy_tier not in self._tier_queues:
             logger.warning(
                 "Unknown policy_tier=%r for request_id=%s; falling back to 'default'",
                 policy_tier,

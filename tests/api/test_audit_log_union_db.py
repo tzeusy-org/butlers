@@ -32,6 +32,7 @@ a live-UNION-absent assertion — those negative tests were removed with the dro
 
 from __future__ import annotations
 
+import json
 import shutil
 import uuid
 from datetime import UTC, datetime
@@ -43,14 +44,16 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_db, get_mcp_manager
 from butlers.api.routers import audit as audit_module
 from butlers.api.routers import model_settings as model_settings_module
 from butlers.api.routers.audit import AuditTableNotAvailableError, log_audit_entry
 from butlers.core.state import state_set
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
+from tests.audit_helpers import clear_audit_log_for_test
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -86,7 +89,7 @@ async def pool(postgres_container, migrated_db_url: str):
         max_size=3,
         init=register_jsonb_codec,
     )
-    await p.execute("TRUNCATE TABLE public.audit_log CASCADE")
+    await clear_audit_log_for_test(p)
     yield p
     await p.close()
 
@@ -104,7 +107,7 @@ def audit_app(pool: asyncpg.Pool) -> FastAPI:
     mock_db.pool.return_value = pool
 
     application = create_app()
-    application.dependency_overrides[audit_module._get_db_manager] = lambda: mock_db
+    application.dependency_overrides[get_db] = lambda: mock_db
     return application
 
 
@@ -146,6 +149,174 @@ async def test_log_audit_entry_lands_in_canonical_audit_log(
     entry = next(e for e in body["data"] if e["action"] == "schedule.create")
     assert entry["actor"] == "qa"  # actor <- butler
     assert entry["target"] == "/api/qa/schedules"  # target <- request_summary.path
+
+
+@pytest.mark.parametrize("refused", [False, True])
+async def test_schedule_toggle_audit_attributes_owner_and_records_outcome(
+    pool: asyncpg.Pool, audit_app: FastAPI, refused: bool
+) -> None:
+    schedule_id = uuid.uuid4()
+    result = (
+        {
+            "id": str(schedule_id),
+            "status": "error",
+            "code": "SCHEDULE_MANAGED",
+            "message": "managed schedule",
+        }
+        if refused
+        else {
+            "id": str(schedule_id),
+            "name": "daily_digest",
+            "source": "db",
+            "status": "unchanged",
+            "outcome": "already_requested",
+            "requested_enabled": False,
+            "observed_enabled": False,
+            "changed": False,
+            "next_run_at": None,
+            "audit": {
+                "action": "schedule.toggle",
+                "result": "success",
+                "target": f"schedule:{schedule_id}",
+            },
+        }
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = pool
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
+    mock_client = AsyncMock()
+    mock_client.call_tool.return_value = [MagicMock(text=json.dumps(result))]
+    mock_manager = AsyncMock(spec=MCPClientManager)
+    mock_manager.get_client.return_value = mock_client
+    audit_app.dependency_overrides[get_mcp_manager] = lambda: mock_manager
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=audit_app), base_url=BASE_URL
+    ) as client:
+        response = await client.patch(
+            f"/api/butlers/atlas/schedules/{schedule_id}/toggle", json={"enabled": False}
+        )
+
+    assert response.status_code == (409 if refused else 200)
+    row = await pool.fetchrow(
+        "SELECT actor, target, metadata, result, error FROM public.audit_log "
+        "WHERE action = 'schedule.toggle'"
+    )
+    assert row is not None
+    assert row["actor"] == "owner"
+    assert row["target"] == f"schedule:{schedule_id}"
+    assert row["metadata"]["butler"] == "atlas"
+    assert row["metadata"]["schedule_id"] == str(schedule_id)
+    assert row["metadata"]["requested_enabled"] is False
+    assert row["result"] == ("error" if refused else "success")
+    assert row["error"] == ("SCHEDULE_MANAGED" if refused else None)
+    if refused:
+        assert row["metadata"]["code"] == "SCHEDULE_MANAGED"
+    else:
+        assert row["metadata"]["observed_enabled"] is False
+        assert row["metadata"]["outcome"] == "already_requested"
+
+
+@pytest.mark.parametrize(
+    ("operation", "mode"),
+    [
+        ("create", "success"),
+        ("update", "success"),
+        ("delete", "success"),
+        ("trigger", "success"),
+        ("create", "refused"),
+        ("update", "refused"),
+        ("delete", "refused"),
+        ("trigger", "refused"),
+        ("trigger", "unreachable"),
+    ],
+)
+async def test_legacy_schedule_mutation_audits_owner_and_observed_outcome(
+    pool: asyncpg.Pool, audit_app: FastAPI, operation: str, mode: str
+) -> None:
+    schedule_id = uuid.uuid4()
+    method = {"create": "POST", "update": "PUT", "delete": "DELETE", "trigger": "POST"}[operation]
+    path = (
+        "/api/butlers/atlas/schedules"
+        if operation == "create"
+        else f"/api/butlers/atlas/schedules/{schedule_id}"
+    )
+    if operation == "trigger":
+        path += "/trigger"
+    body = {
+        "create": {
+            "name": "private-schedule-name",
+            "cron": "0 9 * * *",
+            "prompt": "private-prompt",
+            "actor": "forged",
+        },
+        "update": {"prompt": "private-prompt", "actor": "forged"},
+    }.get(operation)
+    expected_status = {
+        "create": "created",
+        "update": "updated",
+        "delete": "deleted",
+        "trigger": "triggered",
+    }[operation]
+    mcp_result = (
+        {"id": str(schedule_id), "status": "error", "error": "private-provider-failure"}
+        if mode == "refused"
+        else {"id": str(schedule_id), "status": expected_status}
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = pool
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
+    mock_client = AsyncMock()
+    mock_client.call_tool.return_value = [MagicMock(text=json.dumps(mcp_result))]
+    mock_manager = AsyncMock(spec=MCPClientManager)
+    if mode == "unreachable":
+        mock_manager.get_client.side_effect = ButlerUnreachableError(
+            "atlas", cause=ConnectionRefusedError()
+        )
+    else:
+        mock_manager.get_client.return_value = mock_client
+    audit_app.dependency_overrides[get_mcp_manager] = lambda: mock_manager
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=audit_app), base_url=BASE_URL
+    ) as client:
+        response = await client.request(method, f"{path}?actor=forged", json=body)
+
+    expected_http_status = 503 if mode == "unreachable" else (201 if operation == "create" else 200)
+    assert response.status_code == expected_http_status
+    if mode != "unreachable":
+        assert response.json()["data"]["status"] == (
+            "error" if mode == "refused" else expected_status
+        )
+    row = await pool.fetchrow(
+        "SELECT actor, target, metadata, result, error FROM public.audit_log WHERE action = $1",
+        f"schedule.{operation}",
+    )
+    assert row is not None
+    assert row["actor"] == "owner"
+    expected_target = (
+        "butler:atlas/schedules"
+        if operation == "create" and mode == "refused"
+        else f"schedule:{schedule_id}"
+    )
+    assert row["target"] == expected_target
+    summary = row["metadata"]["request_summary"]
+    assert summary["butler"] == "atlas"
+    expected_observed_status = {
+        "success": expected_status,
+        "refused": "error",
+        "unreachable": "unavailable",
+    }[mode]
+    assert summary["observed_status"] == expected_observed_status
+    if operation != "create" or mode != "refused":
+        assert summary["schedule_id"] == str(schedule_id)
+    assert row["result"] == ("success" if mode == "success" else "error")
+    expected_error = {"success": None, "refused": "MCP_REFUSED", "unreachable": "MCP call failed"}[
+        mode
+    ]
+    assert row["error"] == expected_error
+    assert "private" not in json.dumps(row["metadata"])
+    assert "forged" not in json.dumps(row["metadata"])
 
 
 # NOTE: the pre-sw_026 "genuinely legacy dashboard_audit_log row not read live"
@@ -303,7 +474,11 @@ async def test_privileged_filter_is_a_consequence_allowlist(
         ("spend.ceiling", "success"),
         ("spend.rule.create", "success"),
         ("rotated", "success"),
+        ("runtime_config_patch", "success"),
+        ("PUT /api/butlers/qa/model-overrides", "success"),
         ("GET /api/health", "success"),
+        ("GET /api/butlers/qa/runtime-config", "success"),
+        ("GET /api/butlers/qa/model-overrides", "success"),
         ("butler_heartbeat", "success"),
         ("models.verify_all", "success"),
         ("runtime.heartbeat", "error"),
@@ -327,9 +502,13 @@ async def test_privileged_filter_is_a_consequence_allowlist(
         "spend.ceiling",
         "spend.rule.create",
         "rotated",
+        "runtime_config_patch",
+        "PUT /api/butlers/qa/model-overrides",
         "runtime.heartbeat",
     } <= actions
     assert "GET /api/health" not in actions
+    assert "GET /api/butlers/qa/runtime-config" not in actions
+    assert "GET /api/butlers/qa/model-overrides" not in actions
     assert "butler_heartbeat" not in actions
     assert "models.verify_all" not in actions
 
@@ -359,7 +538,7 @@ async def test_model_delete_audits_and_cascade_deletes_overrides(
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
-    audit_app.dependency_overrides[model_settings_module._get_db_manager] = lambda: mock_db
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
 
     transport = httpx.ASGITransport(app=audit_app)
     async with httpx.AsyncClient(transport=transport, base_url=BASE_URL) as client:
@@ -422,7 +601,7 @@ async def test_model_delete_impact_counts_live_overrides_without_mutation(
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
-    audit_app.dependency_overrides[model_settings_module._get_db_manager] = lambda: mock_db
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
 
     response = await _get(audit_app, f"/api/settings/models/{entry_id}/delete-impact")
 
@@ -444,7 +623,7 @@ async def test_model_create_rolls_back_when_audit_is_unavailable(
     alias = f"audit-create-rollback-{uuid.uuid4()}"
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
-    audit_app.dependency_overrides[model_settings_module._get_db_manager] = lambda: mock_db
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
 
     with patch.object(
         model_settings_module.audit,
@@ -495,7 +674,7 @@ async def test_model_delete_rolls_back_catalog_and_cascade_when_audit_is_unavail
     )
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
-    audit_app.dependency_overrides[model_settings_module._get_db_manager] = lambda: mock_db
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
 
     with patch.object(
         model_settings_module.audit,
@@ -557,3 +736,120 @@ async def test_audit_owner_timezone_day_bounds_include_the_entire_owner_day(
     ids = {entry["id"] for entry in resp.json()["data"]}
     assert {same_day_early, same_day_late} <= ids
     assert next_day not in ids
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE"])
+async def test_override_reason_audit_commits_once_and_sql_fault_rolls_back(
+    pool: asyncpg.Pool, audit_app: FastAPI, method: str
+) -> None:
+    """Real mutation/audit transaction with separate committed readbacks.
+
+    REQ-dashboard-model-settings-006. Auth uses the existing authenticated app
+    fixture; this proves database atomicity, not a live authentication ceremony.
+    """
+    entry_id = uuid.uuid4()
+    suffix = entry_id.hex
+    trigger = f"override_audit_fault_{suffix}"
+    function = f"public.{trigger}"
+    await pool.execute(
+        "INSERT INTO public.model_catalog "
+        "(id,alias,runtime_type,model_id,complexity_tier) "
+        "VALUES ($1,$2,'codex','gpt-5','workhorse')",
+        entry_id,
+        f"override-reason-{suffix}",
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = pool
+    audit_app.dependency_overrides[get_db] = lambda: mock_db
+    action = "model.override.upsert" if method == "PUT" else "model.override.delete"
+    base_path = "/api/butlers/general/model-overrides"
+
+    async def seed_override():
+        return await pool.fetchval(
+            "INSERT INTO public.butler_model_overrides "
+            "(butler_name,catalog_entry_id,enabled,priority) VALUES ('general',$1,true,7) "
+            "RETURNING id",
+            entry_id,
+        )
+
+    async def read_override():
+        # A fresh acquisition sees only committed state, not the request's TX.
+        async with pool.acquire() as observer:
+            return await observer.fetchrow(
+                "SELECT id,enabled,priority,complexity_tier "
+                "FROM public.butler_model_overrides WHERE catalog_entry_id=$1",
+                entry_id,
+            )
+
+    def body(reason):
+        result = {"reason": reason, "actor": "caller-forgery"}
+        if method == "PUT":
+            result["overrides"] = [
+                {"catalog_entry_id": str(entry_id), "enabled": False, "priority": 9}
+            ]
+        return result
+
+    try:
+        override_id = await seed_override() if method == "DELETE" else None
+        path = f"{base_path}/{override_id}" if method == "DELETE" else base_path
+        transport = httpx.ASGITransport(app=audit_app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url=BASE_URL) as client:
+            response = await client.request(method, path, json=body("  deliberate change  "))
+            assert response.status_code == 200
+            stored = await read_override()
+            if method == "PUT":
+                assert stored["enabled"] is False and stored["priority"] == 9
+            else:
+                assert stored is None
+            async with pool.acquire() as observer:
+                rows = await observer.fetch(
+                    "SELECT actor,action,note,result FROM public.audit_log ORDER BY ts"
+                )
+            assert len(rows) == 1
+            assert dict(rows[0]) == {
+                "actor": "owner",
+                "action": action,
+                "note": "deliberate change",
+                "result": "success",
+            }
+
+            if method == "DELETE":
+                override_id = await seed_override()
+                path = f"{base_path}/{override_id}"
+            before = await read_override()
+            # The real SQL fault occurs after the business mutation, inside its
+            # audit INSERT. Error telemetry may still append its separate row.
+            await pool.execute(
+                f"CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$ "
+                "BEGIN IF NEW.action IN ('model.override.upsert','model.override.delete') "
+                "AND NEW.note='force-override-audit-failure' THEN "
+                "RAISE EXCEPTION 'controlled override audit failure' USING ERRCODE='P0001'; "
+                "END IF; RETURN NEW; END $$"
+            )
+            await pool.execute(
+                f"CREATE TRIGGER {trigger} BEFORE INSERT ON public.audit_log "
+                f"FOR EACH ROW EXECUTE FUNCTION {function}()"
+            )
+            failed_body = body("force-override-audit-failure")
+            if method == "PUT":
+                failed_body["overrides"][0]["priority"] = 88
+            response = await client.request(method, path, json=failed_body)
+            assert response.status_code == 500
+            assert await read_override() == before
+            async with pool.acquire() as observer:
+                assert (
+                    await observer.fetchval(
+                        "SELECT count(*) FROM public.audit_log WHERE action=$1", action
+                    )
+                    == 1
+                )
+    finally:
+        # Always attempt each independent cleanup even when an earlier step
+        # fails; cleanup failures propagate and all objects are test-owned.
+        try:
+            await pool.execute(f"DROP TRIGGER IF EXISTS {trigger} ON public.audit_log")
+        finally:
+            try:
+                await pool.execute(f"DROP FUNCTION IF EXISTS {function}()")
+            finally:
+                await pool.execute("DELETE FROM public.model_catalog WHERE id=$1", entry_id)

@@ -222,7 +222,7 @@ describe("Page -- loading state", () => {
     expect(html).toContain("h-96");
   });
 
-  it("editor: renders default 2 CardSkeleton placeholders", () => {
+  it("editor: renders default 2 SectionSkeleton placeholders", () => {
     const html = render({
       title: "Editor",
       archetype: "editor",
@@ -230,9 +230,8 @@ describe("Page -- loading state", () => {
       children: <div>SHOULD NOT APPEAR</div>,
     });
     expect(html).not.toContain("SHOULD NOT APPEAR");
-    // CardSkeleton renders a card; there should be at least 2 card elements
-    const cardCount = (html.match(/data-slot="card"/g) ?? []).length;
-    expect(cardCount).toBeGreaterThanOrEqual(2);
+    const sectionCount = (html.match(/data-slot="section"/g) ?? []).length;
+    expect(sectionCount).toBeGreaterThanOrEqual(2);
   });
 
   it("editor: honours skeletonSectionCount prop", () => {
@@ -243,8 +242,8 @@ describe("Page -- loading state", () => {
       skeletonSectionCount: 4,
       children: <div>SHOULD NOT APPEAR</div>,
     });
-    const cardCount = (html.match(/data-slot="card"/g) ?? []).length;
-    expect(cardCount).toBeGreaterThanOrEqual(4);
+    const sectionCount = (html.match(/data-slot="section"/g) ?? []).length;
+    expect(sectionCount).toBeGreaterThanOrEqual(4);
   });
 
   it("loading wins over error when both are set", () => {
@@ -420,6 +419,21 @@ describe("Page -- archetype layout", () => {
 // ---------------------------------------------------------------------------
 
 describe("Page -- editorial archetype", () => {
+  it("inherits the shell gutter instead of adding a second responsive padding layer", () => {
+    const html = render({
+      title: "Overview",
+      archetype: "editorial",
+      children: <div data-testid="editorial-body">body</div>,
+    });
+
+    expect(html).toContain('style="max-width:1280px"');
+    expect(html).not.toContain("px-4");
+    expect(html).not.toContain("sm:px-8");
+    expect(html).not.toContain("lg:px-14");
+    expect(html).not.toContain("py-8");
+    expect(html).not.toContain("lg:py-12");
+  });
+
   it("renders children without shell h1 when no breadcrumbs or actions supplied", () => {
     const html = render({
       title: "Overview",

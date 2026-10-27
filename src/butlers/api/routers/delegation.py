@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.models.delegation import DelegationLedgerEntry
 from butlers.core.delegation_ledger import VALID_STATUSES, get_delegation, list_delegations
@@ -20,11 +21,6 @@ from butlers.core.delegation_ledger import VALID_STATUSES, get_delegation, list_
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/delegation", tags=["delegation"])
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _any_pool(db: DatabaseManager) -> object:
@@ -79,7 +75,8 @@ async def list_delegation_ledger(
     ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[DelegationLedgerEntry]:
     """List cross-butler delegated questions, most-recent first.
 
@@ -114,7 +111,8 @@ async def list_delegation_ledger(
 @router.get("/ledger/{ledger_id}", response_model=ApiResponse[DelegationLedgerEntry])
 async def get_delegation_ledger_entry(
     ledger_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[DelegationLedgerEntry]:
     """Return a single delegation-ledger entry by id."""
     pool = _any_pool(db)

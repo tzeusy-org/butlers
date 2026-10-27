@@ -71,6 +71,12 @@ class Episode(BaseModel):
     last_referenced_at: str | None = None
     expires_at: str | None = None
     metadata: dict = {}
+    # Recovery-safe lifecycle dossier. The error and reason strings are the sanitized
+    # category summaries the consolidator stores; lease columns are never exposed.
+    consolidation_attempts: int = 0
+    last_consolidation_error: str | None = None
+    dead_letter_reason: str | None = None
+    next_consolidation_retry_at: str | None = None
 
 
 class Fact(BaseModel):
@@ -94,6 +100,9 @@ class Fact(BaseModel):
     entity_name: str | None = None
     object_entity_id: str | None = None
     object_entity_name: str | None = None
+    content_authority: str | None = None
+    authority_entity_id: str | None = None
+    authority_entity_name: str | None = None
     validity: str = "active"
     scope: str = "global"
     tenant_id: str = "owner"
@@ -138,6 +147,62 @@ class Rule(BaseModel):
     last_confirmed_at: str | None = None
     tags: list[str] = []
     metadata: dict = {}
+    retired_at: str | None = None
+    # Server-derived authorship (bu-q7vx1q.1): who wrote the content this rule
+    # came from. ``held`` rules are invisible to sessions until the owner endorses.
+    content_authority: str | None = None
+    authority_entity_id: str | None = None
+    authority_entity_name: str | None = None
+    endorsed_by: str | None = None
+    endorsed_by_name: str | None = None
+    endorsed_at: str | None = None
+    held: bool = False
+
+
+class RuleEndorsement(BaseModel):
+    """Receipt for an owner endorsement of a held rule (idempotent)."""
+
+    rule_id: str
+    content_authority: str | None = None
+    endorsed_at: str | None = None
+    endorsed_by: str | None = None
+    changed: bool = False
+
+
+class MemoryGapOrigin(BaseModel):
+    """One thread an owner question was asked in."""
+
+    conversation_id: str
+    request_id: str | None = None
+    channel: str
+    asked_at: str
+    delivered_at: str | None = None
+
+
+class MemoryGap(BaseModel):
+    """An owner question this butler could not answer yet (bu-q7vx1q.9)."""
+
+    gap_id: str
+    butler: str
+    entity_id: str
+    entity_name: str | None = None
+    predicate: str
+    question: str
+    status: str
+    coverage_state: str
+    asked_at: str
+    expires_at: str
+    answered_by_ref: str | None = None
+    delivery_failed: bool = False
+    last_error: str | None = None
+    origins: list[MemoryGapOrigin] = []
+
+
+class MemoryGapDismissal(BaseModel):
+    """Receipt for an owner dismissal; ``status`` is the gap's resulting state."""
+
+    gap_id: str
+    status: str
 
 
 class MemoryStats(BaseModel):
@@ -153,6 +218,10 @@ class MemoryStats(BaseModel):
     established_rules: int = 0
     proven_rules: int = 0
     anti_pattern_rules: int = 0
+    # Retired rules (bu-6t8ix.3) are excluded from the maturity buckets above
+    # (a retired rule is not a live standing order) and counted separately
+    # here instead of being silently dropped from any total.
+    retired_rules: int = 0
     # Consolidation lifecycle (memory redesign, additive — null/0 when unknown).
     last_consolidation_at: str | None = None
     last_consolidation_facts_produced: int | None = None
@@ -207,7 +276,6 @@ class EntitySummary(BaseModel):
     aliases: list[str] = []
     roles: list[str] = []
     fact_count: int = 0
-    linked_contact_id: str | None = None
     unidentified: bool = False
     source_butler: str | None = None
     source_scope: str | None = None
@@ -229,8 +297,19 @@ class EntityInfoEntry(BaseModel):
     secured: bool = False
 
 
+class EntityRebindReceipt(BaseModel):
+    """One schema's durable outcome for an entity-merge rebind cohort."""
+
+    rebind_id: str
+    target_schema: str
+    references_rebound: int
+    status: str
+    error_class: str | None = None
+    completed_at: str | None = None
+
+
 class EntityDetail(EntitySummary):
-    """Full entity detail including recent facts and linked contact info."""
+    """Full entity detail including recent facts, entity info, and rebind receipts."""
 
     metadata: dict = {}
     recent_facts: list[Fact] = []
@@ -238,8 +317,8 @@ class EntityDetail(EntitySummary):
     recent_facts_offset: int = 0
     recent_facts_limit: int = 20
     recent_facts_has_more: bool = False
-    linked_contact_name: str | None = None
     entity_info: list[EntityInfoEntry] = []
+    rebind_receipts: list[EntityRebindReceipt] = []
 
 
 class UpdateEntityRequest(BaseModel):

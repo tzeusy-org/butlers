@@ -13,11 +13,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import subprocess
 from pathlib import Path
 
 from butlers.cli_auth.sandbox_platform import (
     BubblewrapDashboardCLIAuthSandbox,
+    ReadonlySandboxInput,
     SandboxIdentity,
     SandboxStage,
     _BubblewrapDeviceAuthHandle,
@@ -25,40 +25,11 @@ from butlers.cli_auth.sandbox_platform import (
     _outer_identity_preexec,
     _read_bubblewrap_info,
     build_bubblewrap_launch_plan,
+    resolve_shim_runtime_inputs,
 )
 
 _PROBE_PATH = "/tmp/runtime-cli-sandbox-peer-isolation-probe"
 _VICTIM_SLEEP_SECONDS = "6"
-
-
-def _shim_ldd_closure(shim_path: Path) -> tuple[Path, ...]:
-    """Resolve the PID1 shim's own dynamic-linker closure.
-
-    Production providers (codex, opencode) are themselves dynamically linked
-    against the same base-image glibc the shim needs, so their manifest
-    closures incidentally satisfy the shim's own ld.so/libc requirement. This
-    probe's payload is a static binary with no closure of its own, so the
-    shim's requirement has to be resolved and bound explicitly here -- without
-    it the kernel's own execve() of the shim fails with ENOENT for the
-    missing interpreter, which bwrap reports as though the shim itself were
-    absent.
-    """
-    result = subprocess.run(["ldd", str(shim_path)], check=False, capture_output=True, text=True)
-    if result.returncode != 0:
-        return ()
-    dependencies: list[Path] = []
-    for line in result.stdout.splitlines():
-        rendered = line.strip()
-        if not rendered or "not a dynamic executable" in rendered:
-            continue
-        if "=>" in rendered:
-            _, _, remainder = rendered.partition("=>")
-            candidate = remainder.strip().split(" ", 1)[0]
-        else:
-            candidate = rendered.split(" ", 1)[0]
-        if candidate.startswith("/"):
-            dependencies.append(Path(candidate))
-    return tuple(dependencies)
 
 
 async def _launch(
@@ -67,6 +38,7 @@ async def _launch(
     stage: SandboxStage,
     command: tuple[str, ...],
     readonly_inputs: tuple[Path, ...],
+    shim_readonly_inputs: tuple[ReadonlySandboxInput, ...],
 ) -> tuple[int, _BubblewrapDeviceAuthHandle]:
     """Run the exact production handshake up to the shim's ready line."""
     process = None
@@ -83,6 +55,7 @@ async def _launch(
             stage_home=stage.path,
             command=command,
             readonly_inputs=readonly_inputs,
+            shim_readonly_inputs=shim_readonly_inputs,
             info_fd=info_write,
             block_fd=block_read,
             shim_gate_fd=shim_gate_read,
@@ -142,8 +115,8 @@ async def _launch(
 async def _run() -> None:
     sandbox = BubblewrapDashboardCLIAuthSandbox()
     sandbox._exact_image_preflight()
-
-    readonly_inputs = (Path(_PROBE_PATH), *_shim_ldd_closure(sandbox._shim_path))
+    shim_readonly_inputs = resolve_shim_runtime_inputs(sandbox._shim_path)
+    readonly_inputs = (Path(_PROBE_PATH),)
 
     identity_b = await sandbox._identity_pool.acquire()
     identity_a = await sandbox._identity_pool.acquire()
@@ -164,6 +137,7 @@ async def _run() -> None:
             stage_b,
             (_PROBE_PATH, "victim", _VICTIM_SLEEP_SECONDS),
             readonly_inputs,
+            shim_readonly_inputs,
         )
         _, handle_a = await _launch(
             sandbox,
@@ -171,6 +145,7 @@ async def _run() -> None:
             stage_a,
             (_PROBE_PATH, "attacker", str(stage_b.path), str(peer_pid)),
             readonly_inputs,
+            shim_readonly_inputs,
         )
         output = await asyncio.wait_for(handle_a.process.stdout.read(), timeout=10)
         terminated = await handle_a.complete_readonly()

@@ -18,6 +18,7 @@ from .sync import (
     ContactBatch,
     ContactPhone,
     ContactsProvider,
+    ContactsSyncError,
     ContactsTokenRefreshError,
     ContactUsername,
     GroupBatch,
@@ -29,6 +30,7 @@ try:
     from telethon.sessions import StringSession
     from telethon.tl.functions.contacts import GetContactsRequest
     from telethon.tl.types import User
+    from telethon.tl.types.contacts import Contacts as TelegramContacts
 
     TELETHON_AVAILABLE = True
 except ImportError:
@@ -37,6 +39,7 @@ except ImportError:
     StringSession = None  # type: ignore[assignment,misc]
     GetContactsRequest = None  # type: ignore[assignment,misc]
     User = None  # type: ignore[assignment,misc]
+    TelegramContacts = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +156,13 @@ class TelegramContactsProvider(ContactsProvider):
 
         client = await self._ensure_client()
         result = await client(GetContactsRequest(hash=0))
+        if not isinstance(result, TelegramContacts):
+            raise ContactsSyncError(
+                "Telegram full fetch did not return a complete contacts response"
+            )
+        user_ids = {getattr(user, "id", None) for user in result.users}
+        if any(contact.user_id not in user_ids for contact in result.contacts):
+            raise ContactsSyncError("Telegram full fetch omitted referenced users")
 
         contacts: list[CanonicalContact] = []
         for user in result.users:
@@ -172,6 +182,7 @@ class TelegramContactsProvider(ContactsProvider):
             contacts=contacts,
             next_page_token=None,
             next_sync_cursor=cursor,
+            checkpoint={"complete_full_fetch": True},
         )
 
     async def incremental_sync(
@@ -248,33 +259,6 @@ class TelegramContactsProvider(ContactsProvider):
             except Exception:
                 logger.debug("Error disconnecting Telegram client", exc_info=True)
             self._client = None
-
-    async def enrich_chat_ids(self, pool: Any) -> dict[int, int]:
-        """Post-sync enrichment: resolve private chat IDs from dialogs.
-
-        Iterates the user's dialogs and matches by user_id to find the
-        private chat_id for each contact. Returns a mapping of
-        {user_id: chat_id} for contacts that have private chats.
-
-        This should be called after sync to populate telegram_chat_id entries
-        via ``relationship_assert_fact()`` (has-handle triples in ``relationship.entity_facts``).
-        """
-        client = await self._ensure_client()
-        user_to_chat: dict[int, int] = {}
-
-        async for dialog in client.iter_dialogs():
-            entity = dialog.entity
-            if entity is None:
-                continue
-            # Only match private user chats (not groups/channels)
-            if not getattr(entity, "is_self", False) and hasattr(entity, "id"):
-                is_user = not getattr(entity, "megagroup", False) and not getattr(
-                    entity, "broadcast", False
-                )
-                if is_user and not getattr(entity, "bot", False):
-                    user_to_chat[entity.id] = dialog.id
-
-        return user_to_chat
 
 
 def _compute_contacts_hash(contacts: list[CanonicalContact]) -> str:

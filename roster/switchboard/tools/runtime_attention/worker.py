@@ -26,15 +26,6 @@ import asyncpg
 
 from butlers.metrics_registry import get_or_create_counter
 from butlers.tools.switchboard.notification.deliver import deliver
-from butlers.tools.switchboard.routing.transport import (
-    CONFIRMED,
-    RECIPIENT_UNAVAILABLE,
-    TRANSPORT_TIMEOUT,
-    TransportOutcome,
-    TransportResult,
-    classify_transport_exception,
-    transport_result_from_envelope,
-)
 from butlers.tools.switchboard.runtime_attention.outbox import (
     MAX_TRANSPORT_ATTEMPTS,
     RETRY_BACKOFF_SECONDS,
@@ -42,6 +33,15 @@ from butlers.tools.switchboard.runtime_attention.outbox import (
     OutboxEpisode,
     RuntimeAttentionOutbox,
     ServiceLease,
+)
+from butlers.tools.switchboard.transport import (
+    CONFIRMED,
+    RECIPIENT_UNAVAILABLE,
+    TRANSPORT_TIMEOUT,
+    TransportOutcome,
+    TransportResult,
+    classify_transport_exception,
+    transport_result_from_envelope,
 )
 
 logger = logging.getLogger(__name__)
@@ -266,18 +266,37 @@ def _episode_payload(episode: OutboxEpisode) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _episode_message(episode: OutboxEpisode) -> str:
+# Fixed owner-facing copy for the control-plane condition classifications
+# (REQ-butler-control-plane-liveness-007). The text names the failure class
+# only: never a daemon, endpoint, count, or condition summary.
+_CLASSIFICATION_COPY: dict[str, str] = {
+    "fleet_control_unhealthy": (
+        "Runtime attention: butler fleet control is unhealthy; "
+        "expected daemons are not receiver-ready."
+    ),
+    "qa_patrol_overdue": (
+        "Runtime attention: no qualifying QA patrol has completed within its expected window."
+    ),
+}
+
+
+def _episode_message(episode: OutboxEpisode, *, dashboard_base_url: str | None = None) -> str:
     """Build operator-facing text from allowlisted payload fields only.
 
     ``classification`` and ``door`` are the only free-ish fields the outbox
     accepts, and the payload CHECK constraint restricts them to a fixed set at
     write time — so nothing user-supplied can reach a message body here.
+
+    The door is a dashboard-relative path, which a chat client cannot open;
+    ``dashboard_base_url`` (operator config, not payload) anchors it.
     """
     payload = _episode_payload(episode)
     classification = str(payload.get("classification", episode.source))
     door = payload.get("door")
-    text = f"Runtime attention: {classification}."
+    text = _CLASSIFICATION_COPY.get(classification, f"Runtime attention: {classification}.")
     if isinstance(door, str) and door:
+        if dashboard_base_url:
+            door = f"{dashboard_base_url.rstrip('/')}{door}"
         text = f"{text} Open {door} to review."
     return text
 
@@ -287,6 +306,7 @@ def build_messenger_transport(
     *,
     resolve_recipient: Callable[[], Awaitable[str | None]],
     channel: str = "telegram",
+    dashboard_base_url: str | None = None,
 ) -> Transport:
     """Build the Messenger-backed transport the worker sends through.
 
@@ -312,7 +332,7 @@ def build_messenger_transport(
                     "intent": "send",
                     "channel": channel,
                     "recipient": recipient,
-                    "message": _episode_message(episode),
+                    "message": _episode_message(episode, dashboard_base_url=dashboard_base_url),
                 },
             },
             source_butler="switchboard",

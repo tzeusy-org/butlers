@@ -7,12 +7,10 @@
 
 ## Summary
 
-This RFC records the disposition of two doctrine-gated egress capabilities and a
-set of open questions and future application ideas that originated in the planning
-document `docs/plans/egress-communications-enhancements.md`. Both capabilities
-involve the daemon **acting or messaging on the owner's behalf without per-event
-review**. This RFC exists so that when the planning doc is deleted, the ideas —
-and the reasons they were held back — survive in the durable RFC record.
+This RFC records the disposition of two doctrine-gated egress capabilities and
+the open questions any future egress spec must answer. Both capabilities involve
+the daemon **acting or messaging on the owner's behalf without per-event
+review**.
 
 **Dispositions (2026-06-14):**
 
@@ -142,16 +140,14 @@ manifesto — it is the general engine, not the specific behavior, that is gated
 
 ---
 
-## Open Questions (from the plan's Open Questions section)
+## Open Questions
 
-These were unresolved in the planning doc and are recorded here so they are not
-lost. Several bear on the parked capabilities above; others are general egress
+Several bear on the parked capabilities above; others are general egress
 infrastructure questions that any future egress spec must answer.
 
 1. **PDF vs. rich HTML rendering.** Should document generation target PDF
    (portable, printable), rich HTML (interactive, linkable), or both behind a
-   format parameter? (Bears on the document-renderer module — see the folded-in
-   note below.)
+   format parameter? (Bears on the document-renderer module.)
 2. **File storage: MinIO vs. cloud storage.** Is MinIO the right long-term file
    store, or should egress integrate with the owner's cloud storage (Google
    Drive, Dropbox)? **Partly answered by RFC 0016 (S3-blob-storage contract)**,
@@ -174,56 +170,54 @@ infrastructure questions that any future egress spec must answer.
 
 ---
 
-## Future Application Ideas (Tier 3–4) — Out of v1 Scope
+## Future Application Ideas
 
-The plan sketched a set of per-butler egress *applications* that depend on the
-parked capabilities above (or on external service integrations that do not yet
-exist). They are recorded here as **owning-butler-gated future vision**, explicitly
-**out of v1 scope**. Each would need its owning butler's manifesto to be amended
-to permit the action, plus the relevant doctrine decision above.
+The per-butler egress applications that depend on the parked capabilities
+(payment initiation, booking changes, delivery ordering, external contact
+enrichment, face-recognition media tagging) live in the
+[Ideas Ledger](../ideas-ledger.md#egress-owner-delegated-actions-rfc-0019), each
+with its unpark condition.
 
-- **Payment / transfer initiation (Finance, plan §3.1).** Bank/payment-API
-  transfers. `critical` risk — irreversible, money leaves the account. No standing
-  rules; mandatory per-transaction confirmation.
-- **Booking confirmations / modifications (Travel, plan §3.2).** Change or cancel
-  flights/hotels/reservations via provider APIs or email-based workflows. `high`
-  risk — fees and irreversible cancellations.
-- **Grocery / delivery ordering (new or General butler + `shopping` module,
-  plan §3.3).** Submit orders to delivery services. `high` risk — financial
-  transaction plus logistics.
-- **External contact enrichment (Relationship, plan §2.4 / §3.4 external path).**
-  Look up contacts against external social-profile APIs (LinkedIn, etc.). Privacy
-  and rate-limit sensitive; `high` risk for any external lookup.
-- **Photo / media organization with face recognition (General + `media` module,
-  plan §4.4).** Tag media by people via face recognition. Significant new
-  infrastructure; privacy-sensitive even though filing itself is reversible.
+## Proposed notify-only narrowing (2026-10-24; adoption pending)
 
-These are deferred deliberately — they are the long tail that the doctrine
-decisions above must precede, not the near-term roadmap.
+This is bu-dhloi1.19's exact review carrier for bu-nt2eda's recorded notify-only
+direction. It does not label new words already adopted, release a runtime or
+reopen calendar auto-responses. Until reserved exact-text adoption, the parked
+contract above remains current. After adoption the following is the sole
+narrow exception to “nothing else accepted / no spec or implementation” above;
+the general trigger-to-action engine and all other egress remain parked.
 
----
+The first switch SHALL provide only the minimal RFC0038 S4 evaluator interface
+for registered goal/owner/effect/time/perception conditions. M7
+bu-4c7nvp.1.5 owns the later watch consumer. A watch SHALL be explicitly
+owner-authored and owner-confirmed, notify only that owner, and have an immutable
+predicate/source/category/grant boundary, finite expiry, stable ID/version,
+delivery subject and receipt. Models may propose a bounded watch for review;
+no proposal, inferred routine, subscription or source text creates one.
+Registration is an owner action, not a grantable approval/admin bypass.
 
-## Note: Non-Doctrine-Gated Gaps Folded Into Live Specs
+The later watch consumer SHALL use the one evaluator, not text/code predicates
+or a second automation language. Cap active watches at 50, expire at 90 days
+unless the owner renews, and default to digest delivery unless the owner chose
+right-away. A useful-rule promotion suggestion may appear after 3 useful uses
+only with no “Never” in 60 days; the suggestion cannot install or broaden a
+watch. An existing rule/subscription does not acquire watch authority by being
+renamed. Every read, wake and delivery retains current grants, labels,
+availability-only/private-custody restrictions, finite quotas, deduplication,
+Stop/expiry and the owner-only delivery subject. Missing evidence remains
+unknown; no event implies absence or permission.
 
-For the record: the planning doc also contained **five egress gaps that are NOT
-doctrine-gated** — they extend infrastructure without having the daemon act on
-the owner's behalf without review. Those five have been folded into the live
-specs as `[TARGET-STATE]` requirements and are therefore **deliberately not
-parked here**:
+No watch sends to third parties, mutates an external service, spends, schedules
+an arbitrary action or activates the rejected calendar-based auto-response.
+Such behavior is outside this exception and retains its existing owner/egress
+gates. Per-event/always-per-event approval and owner-selection rules remain.
+This narrowing does not change RFC0011 attention budgets, .18 urgency/step-up
+policy or the Owner Attention Policy consolidation scope guard above.
 
-1. **`notify` media attachments** (plan §6.1) — file/image attachments on the
-   notify contract.
-2. **`notify` draft intent** (plan §6.2) — `intent="draft"` creates a draft
-   (e.g. Gmail Drafts) for owner review instead of delivering. Draft-then-review
-   is *more* conservative than the status quo, not less.
-3. **Multi-channel delivery** (plan §6.3) — `notify()` targeting multiple
-   channels in one call with per-channel formatting.
-4. **Document-renderer module** (plan §1.7) — shared Markdown/HTML→PDF and chart
-   rendering. Pure computation, no external side effects.
-5. **Telegram inline approval buttons** (plan §7.1) — approve/reject directly in
-   the notification message. This *strengthens* the per-event approval path; it
-   does not bypass it.
-
-These live in the relevant specs and need no doctrine decision. Only the
-event-driven automation rule engine and the future-application list above remain
-parked; the calendar-based auto-response idea was rejected (see above).
+Confirmed-routine storage/expect.* publication remains the separately owned
+Chronicler feeder and canonical perception registry. A routine-obligation
+suggestion uses the existing insight/dedup path at most weekly with 7-day dedup;
+only owner YES may park the corresponding administer action/card. It never
+creates an unapproved obligation. Exact RFC0014/v1 amendments and the limited
+routine/perception conformance delegation remain separately bounded; this text
+is not their blanket adoption or implementation.

@@ -31,7 +31,8 @@ The connector uses a per-chat buffering model rather than submitting messages in
 | `source.provider` | `telegram` |
 | `source.endpoint_identity` | Auto-resolved via `get_me()` (e.g., `telegram:user:@username`) |
 | `event.external_event_id` | Telegram message/update event ID |
-| `event.external_thread_id` | Chat ID / thread ID |
+| `event.external_conversation_id` | `telegram:<chat ID>` |
+| `event.reply_target_ref` | `<chat ID>:<message ID>` |
 | `event.observed_at` | Connector-observed timestamp (RFC 3339) |
 | `sender.identity` | Telegram sender ID for the message author |
 | `payload.raw` | Full provider event payload |
@@ -94,24 +95,18 @@ Store all credentials in a secret manager. Never commit to version control.
 
 ## Environment Variables
 
-| Variable | Required | Description |
-|---|---|---|
-| `SWITCHBOARD_MCP_URL` | Yes | SSE endpoint for Switchboard MCP server |
-| `CONNECTOR_PROVIDER` | Yes (default: `telegram`) | Provider name |
-| `CONNECTOR_CHANNEL` | Yes (default: `telegram_user_client`) | Channel name |
-| `CONNECTOR_MAX_INFLIGHT` | No (default: 8) | Max concurrent ingest submissions |
-| `CONNECTOR_HEALTH_PORT` | No (default: 40080) | Loopback-only health and metrics server port |
-| `CONNECTOR_BACKFILL_WINDOW_H` | No | Bounded startup replay window (hours) |
-| `CONNECTOR_BUTLER_DB_NAME` | No | Local butler DB for per-butler overrides |
-| `BUTLER_SHARED_DB_NAME` | No (default: `butlers`) | Shared credential DB |
-| `TELEGRAM_USER_FLUSH_INTERVAL_S` | No (default: 600) | Seconds between per-chat flushes |
-| `TELEGRAM_USER_HISTORY_MAX_MESSAGES` | No (default: 50) | History fetch limit per flush |
-| `TELEGRAM_USER_HISTORY_TIME_WINDOW_M` | No (default: 30) | History lookback window (minutes) |
-| `TELEGRAM_USER_BUFFER_MAX_MESSAGES` | No (default: 200) | Per-chat buffer cap before force-flush |
-| `TELEGRAM_USER_DISCRETION_WINDOW_SIZE` | No (default: 10) | Discretion context window size |
-| `TELEGRAM_USER_DISCRETION_WINDOW_SECONDS` | No (default: 300) | Discretion context window age cap |
-| `TELEGRAM_USER_DISCRETION_WEIGHT_BYPASS` | No (default: 1.0) | Weight threshold to skip LLM |
-| `TELEGRAM_USER_DISCRETION_WEIGHT_FAIL_OPEN` | No (default: 0.5) | Weight threshold for fail-open |
+Read by `TelegramUserClientConnectorConfig.from_env` (`src/butlers/connectors/telegram_user_client.py`);
+the names and defaults live there. Families: Switchboard and connector identity
+(`SWITCHBOARD_MCP_URL`, `CONNECTOR_*`, including the bounded startup replay window
+`CONNECTOR_BACKFILL_WINDOW_H` and the address keywords `CONNECTOR_ADDRESS_KEYWORDS`), per-chat
+buffering and history fetch (`TELEGRAM_USER_FLUSH_*`, `TELEGRAM_USER_HISTORY_*`,
+`TELEGRAM_USER_BUFFER_*`), and discretion tuning (`TELEGRAM_USER_DISCRETION_*`). Non-obvious
+points:
+
+- `SWITCHBOARD_MCP_URL` is the only hard-required variable.
+- `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and `TELEGRAM_USER_SESSION` are **not** read from env;
+  they resolve only from the owner entity's `entity_info` (see credentials above).
+- The health and metrics server binds to loopback only.
 
 ## Deployment
 
@@ -191,9 +186,59 @@ Because this connector ingests personal account traffic, strict safeguards apply
 - **Explicit consent** before enabling account-wide ingestion.
 - **Scope disclosure** -- clear documentation of which chats/types are included or excluded.
 - **Allow/deny lists** for chats and senders (target-state feature, not yet implemented).
-- **Content redaction** for sensitive content classes before ingest (target-state).
+- **Bearer-material scrubbing** before ingest is implemented as described below; broader sensitive-content redaction remains target-state.
 - **Retention limits** aligned with memory and ingestion policy.
 - **Audit trail** of connector start/stop/config changes.
+
+### Bearer-Material Scrubbing
+
+The Telegram user-client scrubs single-message and conversation-history batch
+`ingest.v1` envelopes before submission. The shared detector withholds one-time
+authentication codes (OTPs), password-reset links, magic links, and Telegram login
+codes. Sender identity `777000`, or a batch with that service account among its
+sender participants, enables aggressive login-code detection across message
+content.
+
+| Detected material | Replacement in message content |
+|---|---|
+| One-time authentication code, including a Telegram login code | `[auth-code withheld: <provider-domain>]` |
+| Password-reset link | `[reset-link withheld: <provider-domain>]` |
+| Magic link | `[magic-link withheld: <provider-domain>]` |
+
+Telegram codes normally use `[auth-code withheld: telegram]`; code labels use
+the sender's email domain when present, otherwise the source provider. Link
+labels use the URL hostname. Labels describe the artifact and do not authenticate
+the sender. Already-scrubbed placeholders are unchanged on repeat passes.
+
+**Known false positive:** aggressive `777000` handling withholds code-shaped
+4–8 digit numbers in message text without requiring authentication wording, so
+benign numbers of that shape can also disappear. Date/time-shaped runs are
+excluded from that aggressive numeric rule. For other senders, ordinary order
+numbers, dates, and amounts outside authentication wording or bearer links
+remain unchanged. Scrubbing removes the detected value, not the message.
+
+Only message content is rewritten. Envelope metadata is never rewritten:
+existing `source`, `event`, `sender`, and `control` identities, event IDs,
+timestamps, participants, and idempotency keys remain intact, including sender
+ID `777000`. A hit adds `control.bearer_scrubbed=true`. Switchboard scrubs again
+before inbox persistence and records `raw_payload.bearer_artifacts` with `kind`,
+`provider_domain`, and `observed_at` (plus `expires_hint` when detected), without
+storing the withheld value or changing the existing policy decision.
+
+If the Switchboard scrubber raises, the persisted row fails closed to lifecycle
+state `metadata_ref` with `raw_payload.payload.raw=null`. Both
+`raw_payload.payload.normalized_text` and `message_inbox.normalized_text` contain
+`[content withheld: bearer scrub failed]` instead of the original text.
+It sets `control.bearer_scrubbed=true` and `control.bearer_scrub_failed=true` while
+preserving envelope metadata.
+
+This is the envelope/inbox scrub required by [Bearer material never persists](../../openspec/specs/connector-telegram-user-client/spec.md#requirement-bearer-material-never-persists)
+and the [security constraints](../../about/heart-and-soul/security.md#constraints).
+It occurs after the connector's discretion step; it does not protect earlier
+prompts/logs or establish custody for every queue, replay copy, or reader. Those
+source gaps and remaining unknowns are recorded in the [custody audit](bearer-material-custody-audit.md).
+The [Gmail guide](gmail.md#bearer-material-scrubbing) describes its subject/body
+and metadata-only envelope coverage.
 
 ### Missing or invalid consent
 
@@ -297,6 +342,12 @@ psql -h localhost -U butlers -d butlers -c \
 grep -i "session.*expired\|FloodWait\|AuthKey" /var/log/butlers/telegram-user-client.log 2>/dev/null | tail -5
 # Expected: no session-expired errors in steady state; if present, remediation instructions are clear
 ```
+
+## Implementation Notes
+
+- Conversation-history batches preserve `sender.participants` / `owner_sender_id` through
+  `message_inbox.raw_payload`; durable-buffer routing derives the non-owner sender and passes
+  `source_id`, so memory facts anchor to the contact rather than the owner.
 
 ## Related Pages
 

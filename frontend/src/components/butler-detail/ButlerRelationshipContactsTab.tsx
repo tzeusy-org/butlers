@@ -8,35 +8,38 @@
 //   2. Tier distribution (span 2)  — T1–T4 rows: count + warmth bar + warmth score
 //   3. Overdue (span 2)            — names ranked by owed_days desc
 //   4. Watchlist T1+T2 (span 4)    — scrollable table: warmth, last contact, tier
-//   5. Selected thread (span 3)    — last 4 messages with selected contact
-//   6. Known facts (span 1)        — bullet facts for selected contact
+//   5. Selected thread (span 3)    — last 4 interactions with the selected entity
+//   6. Known facts (span 1)        — channels, roles and last contact for the selection
+//
+// Selection is keyed on DunbarEntry.entity_id; every per-person read is
+// entity-keyed (public.contacts is retired).
 //
 // Hooks consumed:
-//   useDunbarRanking       — tier distribution + watchlist
-//   useUpcomingDates       — upcoming dates (KPI)
-//   useContacts            — contacts list (facts panel, total count)
-//   useGroups              — group summary
-//   useContactInteractions — NEW: contact interaction thread
-//   useOverdueContacts     — NEW: overdue contacts by owed_days
+//   useDunbarRanking        — tier distribution + watchlist
+//   useRelationshipEntities — tracked count (GET /relationship/entities?has=contact)
+//   useEntityInteractions   — interaction thread (GET /relationship/entities/{id}/interactions)
+//   useEntity               — channels + roles for the known-facts panel
+//   useOverdueContacts      — overdue contacts by owed_days
 // ---------------------------------------------------------------------------
 
 import { useState } from "react";
 import type { ReactNode } from "react";
 import type {
-  ContactDetail,
   DunbarEntry,
   DunbarRankingResponse,
-  ContactInteraction,
+  EntityDetail,
+  EntityInteraction,
   OverdueContact,
 } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time, formatOwnerDateTime } from "@/components/ui/time";
 import { useTimezone } from "@/components/ui/timezone-context";
-import { KpiCell, ErrorLine } from "./atoms";
-import { useContacts, useContact, useContactInteractions, useOverdueContacts } from "@/hooks/use-contacts";
-import { useDunbarRanking } from "@/hooks/use-memory";
+import { KpiCell, ErrorLine } from "@/components/ui/atoms";
+import { useOverdueContacts } from "@/hooks/use-contacts";
+import { useEntityInteractions, useRelationshipEntities } from "@/hooks/use-entities";
+import { useDunbarRanking, useEntity } from "@/hooks/use-memory";
 
 // ---------------------------------------------------------------------------
 // Tier constants
@@ -62,7 +65,7 @@ const TRACKED_TIERS = [5, 15, 50, 150];
 function EmptyStateLine({ children }: { children: ReactNode }) {
   return (
     <p
-      className="text-sm text-muted-foreground italic font-[family-name:var(--font-serif,serif)]"
+      className="text-sm text-muted-foreground italic font-[family-name:var(--font-serif)]"
       data-testid="empty-state-line"
     >
       {children}
@@ -137,25 +140,25 @@ function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading,
 
   if (isLoading && !ranking) {
     return (
-      <Card data-testid="kpi-strip">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Relationship overview</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0 pb-4">{kpiSkeleton}</CardContent>
-      </Card>
+      <Section data-testid="kpi-strip">
+        <SectionHeader>
+          <SectionTitle>Relationship overview</SectionTitle>
+        </SectionHeader>
+        <SectionContent className="p-0 pb-4">{kpiSkeleton}</SectionContent>
+      </Section>
     );
   }
 
   if (isError) {
     return (
-      <Card data-testid="kpi-strip">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Relationship overview</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section data-testid="kpi-strip">
+        <SectionHeader>
+          <SectionTitle>Relationship overview</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <ErrorLine>Could not load relationship overview.</ErrorLine>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
@@ -172,11 +175,11 @@ function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading,
   const cadenceOkCount = trackedEntries.filter((e) => (e.warmth ?? 0) >= 0.5).length;
 
   return (
-    <Card data-testid="kpi-strip">
-      <CardHeader>
-        <CardTitle className="text-sm font-medium">Relationship overview</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section data-testid="kpi-strip">
+      <SectionHeader>
+        <SectionTitle>Relationship overview</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
           <div data-testid="kpi-item">
             <KpiCell
@@ -206,8 +209,8 @@ function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading,
             />
           </div>
         </div>
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -263,7 +266,7 @@ function TierDistributionPanel({ ranking, isLoading, isError }: TierDistribution
             {/* Warmth bar */}
             <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
               <div
-                className="h-full rounded-full bg-primary transition-all"
+                className="h-full rounded-full bg-primary"
                 style={{ width: warmthBarWidth(avgWarmth) }}
                 aria-label={`Warmth: ${fmtWarmth(avgWarmth)}`}
               />
@@ -335,11 +338,11 @@ interface WatchlistPanelProps {
   ranking: DunbarRankingResponse | undefined;
   isLoading: boolean;
   isError: boolean;
-  selectedContactId: string | null;
-  onSelectContact: (id: string, name: string) => void;
+  selectedEntityId: string | null;
+  onSelectEntry: (entry: DunbarEntry) => void;
 }
 
-function WatchlistPanel({ ranking, isLoading, isError, selectedContactId, onSelectContact }: WatchlistPanelProps) {
+function WatchlistPanel({ ranking, isLoading, isError, selectedEntityId, onSelectEntry }: WatchlistPanelProps) {
   const timezone = useTimezone();
   if (isLoading && !ranking) {
     return (
@@ -387,19 +390,19 @@ function WatchlistPanel({ ranking, isLoading, isError, selectedContactId, onSele
         </thead>
         <tbody className="divide-y">
           {sorted.map((entry) => {
-            const isSelected = entry.contact_id === selectedContactId;
+            const isSelected = entry.entity_id === selectedEntityId;
             return (
               <tr
-                key={entry.contact_id}
+                key={entry.entity_id}
                 data-testid="watchlist-row"
                 role="button"
                 tabIndex={0}
-                className={`cursor-pointer hover:bg-muted/50 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring ${isSelected ? "bg-muted" : ""}`}
-                onClick={() => onSelectContact(entry.contact_id, entry.canonical_name)}
+                className={`cursor-pointer hover:bg-muted/50 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus ${isSelected ? "bg-muted" : ""}`}
+                onClick={() => onSelectEntry(entry)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
-                    onSelectContact(entry.contact_id, entry.canonical_name);
+                    onSelectEntry(entry);
                   }
                 }}
               >
@@ -435,21 +438,27 @@ function WatchlistPanel({ ranking, isLoading, isError, selectedContactId, onSele
 // ---------------------------------------------------------------------------
 
 interface ThreadPanelProps {
-  contactId: string | null;
+  entityId: string | null;
   contactName: string | null;
   isLoading: boolean;
   isError: boolean;
-  interactions: ContactInteraction[];
+  interactions: EntityInteraction[];
 }
 
-const DIRECTION_META: Record<ContactInteraction["direction"], { label: string; tone: string }> = {
+const DIRECTION_META: Record<string, { label: string; tone: string }> = {
   in:      { label: "In",    tone: "text-primary"          },
   out:     { label: "Out",   tone: "text-[var(--green)]"      },
   drafted: { label: "Draft", tone: "text-[var(--amber-text)]"        },
 };
 
-function ThreadPanel({ contactId, contactName, isLoading, isError, interactions }: ThreadPanelProps) {
-  if (!contactId) {
+/** Unknown or absent directions still render, in a neutral style. */
+function directionMeta(direction: string | null): { label: string; tone: string } {
+  if (direction && Object.hasOwn(DIRECTION_META, direction)) return DIRECTION_META[direction];
+  return { label: direction ?? "Note", tone: "text-muted-foreground" };
+}
+
+function ThreadPanel({ entityId, contactName, isLoading, isError, interactions }: ThreadPanelProps) {
+  if (!entityId) {
     return (
       <p className="text-sm text-muted-foreground" data-testid="thread-empty-prompt">
         Select a contact from the watchlist above to see their recent messages.
@@ -466,23 +475,27 @@ function ThreadPanel({ contactId, contactName, isLoading, isError, interactions 
   }
 
   if (interactions.length === 0) {
-    return <EmptyStateLine>No recorded interactions with {contactName ?? contactId}.</EmptyStateLine>;
+    return <EmptyStateLine>No recorded interactions with {contactName ?? entityId}.</EmptyStateLine>;
   }
 
   return (
     <ol className="space-y-3" data-testid="thread-list" aria-label={`Interactions with ${contactName}`}>
       {interactions.map((ix) => {
-        const meta = DIRECTION_META[ix.direction] ?? { label: ix.direction, tone: "text-muted-foreground" };
+        const meta = directionMeta(ix.direction);
         return (
-          <li key={`${ix.ts}:${ix.direction}`} className="flex gap-2 text-sm" data-testid="thread-item">
+          <li key={ix.id} className="flex gap-2 text-sm" data-testid="thread-item">
             <span className={`shrink-0 font-mono text-xs tnum ${meta.tone}`}>
               {meta.label}
             </span>
             <div className="min-w-0">
               <p className="text-xs text-muted-foreground tnum">
-                <Time value={ix.ts} mode="absolute" precision="day" className="tnum" />
+                {ix.occurred_at ? (
+                  <Time value={ix.occurred_at} mode="absolute" precision="day" className="tnum" />
+                ) : (
+                  "—"
+                )}
               </p>
-              <p className="truncate text-sm leading-snug">{ix.text}</p>
+              <p className="truncate text-sm leading-snug">{ix.summary ?? ix.type}</p>
             </div>
           </li>
         );
@@ -496,13 +509,13 @@ function ThreadPanel({ contactId, contactName, isLoading, isError, interactions 
 // ---------------------------------------------------------------------------
 
 interface KnownFactsPanelProps {
-  contact: ContactDetail | undefined;
-  contactName: string | null;
+  entity: EntityDetail | undefined;
+  entry: DunbarEntry | null;
 }
 
-function KnownFactsPanel({ contact, contactName }: KnownFactsPanelProps) {
+function KnownFactsPanel({ entity, entry }: KnownFactsPanelProps) {
   const timezone = useTimezone();
-  if (!contactName) {
+  if (!entry) {
     return (
       <p className="text-sm text-muted-foreground" data-testid="facts-empty-prompt">
         Select a contact to see facts.
@@ -511,13 +524,13 @@ function KnownFactsPanel({ contact, contactName }: KnownFactsPanelProps) {
   }
 
   const facts: string[] = [];
-  if (contact?.email) facts.push(`Email: ${contact.email}`);
-  if (contact?.phone) facts.push(`Phone: ${contact.phone}`);
-  if (contact?.labels?.length) {
-    facts.push(`Labels: ${contact.labels.map((l) => l.name).join(", ")}`);
+  // Secured channel values arrive as null until revealed; they are not listed here.
+  for (const info of entity?.entity_info ?? []) {
+    if (info.value) facts.push(`${info.type.charAt(0).toUpperCase()}${info.type.slice(1)}: ${info.value}`);
   }
-  if (contact?.last_interaction_at) {
-    facts.push(`Last seen: ${relativeDate(contact.last_interaction_at, timezone)}`);
+  if (entity?.roles.length) facts.push(`Roles: ${entity.roles.join(", ")}`);
+  if (entry.last_interaction_at) {
+    facts.push(`Last seen: ${relativeDate(entry.last_interaction_at, timezone)}`);
   }
 
   if (facts.length === 0) {
@@ -540,34 +553,39 @@ function KnownFactsPanel({ contact, contactName }: KnownFactsPanelProps) {
 // ---------------------------------------------------------------------------
 
 export default function ButlerRelationshipContactsTab() {
-  const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
-  const [selectedContactName, setSelectedContactName] = useState<string | null>(null);
+  const [selectedEntry, setSelectedEntry] = useState<DunbarEntry | null>(null);
+  const selectedEntityId = selectedEntry?.entity_id ?? null;
+  const selectedContactName = selectedEntry?.canonical_name ?? null;
 
   // --- Panel 1 + 2 + 4: Dunbar ranking (tier distribution, watchlist, KPI warmth)
   const { data: dunbarData, isLoading: dunbarLoading, isError: dunbarError } = useDunbarRanking(true);
 
-  // --- Panel 1: KPI — total contacts count
-  const { data: contactsData, isLoading: contactsLoading, isError: contactsError } = useContacts({ limit: 1 });
+  // --- Panel 1: KPI — entities carrying contact facts (only `total` is read)
+  const {
+    data: contactsData,
+    isLoading: contactsLoading,
+    isError: contactsError,
+  } = useRelationshipEntities({ has: "contact", limit: 1 });
 
   // --- Panel 3: Overdue contacts
   const { data: overdueData, isLoading: overdueLoading, isError: overdueError } = useOverdueContacts();
 
-  // --- Panel 5: Interaction thread for selected contact
-  const { data: interactionsData, isLoading: interactionsLoading, isError: interactionsError } = useContactInteractions(
-    selectedContactId ?? undefined,
-    4,
-  );
+  // --- Panel 5: Interaction thread for the selected entity
+  const {
+    data: interactionsData,
+    isLoading: interactionsLoading,
+    isError: interactionsError,
+  } = useEntityInteractions(selectedEntityId ?? undefined, 4);
 
-  // --- Panel 6: Facts for selected contact (fetch single record; enabled only when selected)
-  const { data: selectedContact } = useContact(selectedContactId ?? undefined);
+  // --- Panel 6: Channels and roles for the selected entity
+  const { data: selectedEntity } = useEntity(selectedEntityId ?? undefined);
 
   const overdueContacts = overdueData?.contacts ?? [];
   const cadenceAvailable = overdueData?.cadence_available === true;
-  const interactions = interactionsData?.interactions ?? [];
+  const interactions = interactionsData ?? [];
 
-  function handleSelectContact(id: string, name: string) {
-    setSelectedContactId((prev) => (prev === id ? null : id));
-    setSelectedContactName((prev) => (prev === name ? null : name));
+  function handleSelectEntry(entry: DunbarEntry) {
+    setSelectedEntry((prev) => (prev?.entity_id === entry.entity_id ? null : entry));
   }
 
   const totalContacts = contactsData?.total ?? 0;
@@ -588,75 +606,75 @@ export default function ButlerRelationshipContactsTab() {
 
       {/* Panels 2–3: Tier distribution (2col) + Overdue (2col) */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        <Card className="lg:col-span-2" data-testid="tier-distribution-card">
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">Tier distribution</CardTitle>
-          </CardHeader>
-          <CardContent>
+        <Section className="lg:col-span-2" data-testid="tier-distribution-card">
+          <SectionHeader>
+            <SectionTitle>Tier distribution</SectionTitle>
+          </SectionHeader>
+          <SectionContent>
             <TierDistributionPanel ranking={dunbarData} isLoading={dunbarLoading} isError={dunbarError} />
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
 
-        <Card className="lg:col-span-2" data-testid="overdue-card">
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">Overdue · cadence-aware</CardTitle>
-          </CardHeader>
-          <CardContent>
+        <Section className="lg:col-span-2" data-testid="overdue-card">
+          <SectionHeader>
+            <SectionTitle>Overdue · cadence-aware</SectionTitle>
+          </SectionHeader>
+          <SectionContent>
             <OverduePanel
               contacts={overdueContacts}
               isLoading={overdueLoading}
               isError={overdueError}
               cadenceAvailable={cadenceAvailable}
             />
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
       </div>
 
       {/* Panel 4: Watchlist T1+T2 — full width, scrollable */}
-      <Card data-testid="watchlist-card">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Watchlist · T1 + T2</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section data-testid="watchlist-card">
+        <SectionHeader>
+          <SectionTitle>Watchlist · T1 + T2</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <WatchlistPanel
             ranking={dunbarData}
             isLoading={dunbarLoading}
             isError={dunbarError}
-            selectedContactId={selectedContactId}
-            onSelectContact={handleSelectContact}
+            selectedEntityId={selectedEntityId}
+            onSelectEntry={handleSelectEntry}
           />
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
 
       {/* Panels 5–6: Selected thread (3col) + Known facts (1col) */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        <Card className="lg:col-span-3" data-testid="thread-card">
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">
+        <Section className="lg:col-span-3" data-testid="thread-card">
+          <SectionHeader>
+            <SectionTitle>
               {selectedContactName
                 ? `Thread · ${selectedContactName}`
                 : "Thread · select a contact"}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
+            </SectionTitle>
+          </SectionHeader>
+          <SectionContent>
             <ThreadPanel
-              contactId={selectedContactId}
+              entityId={selectedEntityId}
               contactName={selectedContactName}
               isLoading={interactionsLoading}
               isError={interactionsError}
               interactions={interactions}
             />
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
 
-        <Card className="lg:col-span-1" data-testid="known-facts-card">
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">Known facts</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <KnownFactsPanel contact={selectedContact} contactName={selectedContactName} />
-          </CardContent>
-        </Card>
+        <Section className="lg:col-span-1" data-testid="known-facts-card">
+          <SectionHeader>
+            <SectionTitle>Known facts</SectionTitle>
+          </SectionHeader>
+          <SectionContent>
+            <KnownFactsPanel entity={selectedEntity?.data} entry={selectedEntry} />
+          </SectionContent>
+        </Section>
       </div>
     </div>
   );

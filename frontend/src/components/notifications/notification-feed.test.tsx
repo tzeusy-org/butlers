@@ -143,6 +143,27 @@ describe("NotificationFeed triage controls", () => {
     expect(traceLink.getAttribute("href")).toBe(
       `/ingestion?trace=${encodeURIComponent("trace-abc")}`,
     );
+    cleanup();
+    const actionId = "018f52f3-9d8a-7ef2-8f2d-9fb6b32f12aa";
+    const { rerender } = renderFeed({ notifications: [makeNotification({
+      status: "failed", effective_status: "failed",
+      approval_review: { action_id: actionId, butler: "messenger" },
+      approval_review_state: "available",
+    })] });
+    const review = screen.getByRole("link", { name: "Review approval" });
+    expect(review.getAttribute("href")).toBe(`/approvals/${actionId}?review_source=messenger`);
+    expect(review.className).toContain("focus-visible:ring-2");
+    for (const state of ["none", "unavailable"] as const) {
+      rerender(<MemoryRouter><NotificationFeed notifications={[makeNotification({
+        approval_review: { action_id: actionId, butler: "messenger" }, approval_review_state: state,
+      })]} /></MemoryRouter>);
+      expect(screen.queryByRole("link", { name: "Review approval" })).toBeNull();
+      if (state === "unavailable") expect(screen.getByText("Approval review unavailable.")).toBeDefined();
+    }
+    rerender(<MemoryRouter><NotificationFeed notifications={[makeNotification({
+      approval_review: { action_id: "../private", butler: "messenger" }, approval_review_state: "available",
+    })]} /></MemoryRouter>);
+    expect(screen.queryByRole("link", { name: "Review approval" })).toBeNull();
   });
 });
 

@@ -8,15 +8,16 @@ module state at call time.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import uuid
 from typing import Annotated, Any, Literal
 
+import asyncpg
 from pydantic import BaseModel, BeforeValidator, Field
 
 from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
-from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
+from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, tool_registrar
 from butlers.transport_identifiers import is_whatsapp_transport_identifier
 
 
@@ -77,6 +78,13 @@ _DEFAULT_MAINTENANCE_SCHEDULES: tuple[dict[str, Any], ...] = (
         "name": "memory_ann_observability",
         "cron": "25 4 * * *",
         "job_name": "memory_ann_observability",
+    },
+    # Posts the "now known" notice for answered owner knowledge gaps and expires stale
+    # ones; a cheap no-op when no gap is open (bu-q7vx1q.9).
+    {
+        "name": "memory_knowledge_gap_delivery",
+        "cron": "*/10 * * * *",
+        "job_name": "memory_knowledge_gap_delivery",
     },
     {
         "name": "memory_consolidation_backfill",
@@ -297,18 +305,13 @@ class MemoryModule(Module):
         # Opaque lifecycle token for the per-butler scheduled-maintenance runtime.
         self._maintenance_runtime: Any = None
         self._maintenance_runtime_owner: str | None = None
+        self._entity_rebind_tasks: list[asyncio.Task[None]] = []
 
-    @property
-    def name(self) -> str:
-        return "memory"
+    name = "memory"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return MemoryModuleConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
 
     def tool_metadata(self) -> dict[str, ToolMeta]:
         """Declare the full reclassification command as safety-critical."""
@@ -336,6 +339,49 @@ class MemoryModule(Module):
         # Bind the dedicated memory-schema pool (no-op unless memory_schema set).
         await self._ensure_memory_schema_pool()
 
+        # Register LISTEN before draining the durable ledger. Events committed
+        # during replay are then queued rather than lost at the startup boundary.
+        try:
+            from butlers.entity_rebind import (
+                process_pending_entity_rebinds,
+                run_entity_rebind_listener,
+            )
+
+            memory_pool = self._get_pool()
+            target_schema = await memory_pool.fetchval("SELECT current_schema()")
+
+            async def _start_rebind_consumer(pool: Any, schema: str) -> None:
+                if not isinstance(pool, asyncpg.Pool):
+                    # Lightweight test pools cannot retain a LISTEN connection.
+                    await process_pending_entity_rebinds(pool, target_schema=schema)
+                    return
+                ready = asyncio.Event()
+                task = asyncio.create_task(
+                    run_entity_rebind_listener(
+                        pool,
+                        target_schema=schema,
+                        ready_event=ready,
+                    ),
+                    name=f"entity-rebind-listener:{schema}",
+                )
+                self._entity_rebind_tasks.append(task)
+                await ready.wait()
+
+            if isinstance(target_schema, str) and target_schema:
+                await _start_rebind_consumer(memory_pool, target_schema)
+            # Chronicler deliberately keeps narrative memory in
+            # ``chronicler_mem`` while episode associations remain in its
+            # domain schema. The daemon owns both pools and settles each
+            # schema's independent receipt; no sibling-butler access occurs.
+            if getattr(self._db, "schema", None) == "chronicler" and target_schema != "chronicler":
+                chronicler_pool = await self._get_or_create_chronicler_pool()
+                if chronicler_pool is not None:
+                    await _start_rebind_consumer(chronicler_pool, "chronicler")
+        except asyncpg.UndefinedTableError:
+            logger.debug("entity_rebind_log is not installed yet; startup drain skipped")
+        except Exception:
+            logger.warning("Pending entity rebind startup drain failed", exc_info=True)
+
         # Register memory hooks so core (spawner, corrections) can call
         # memory operations without importing from modules directly
         # (dependency inversion: core owns the interface, modules supply the impl).
@@ -350,15 +396,9 @@ class MemoryModule(Module):
         from butlers.modules.memory.tools import context as _context
         from butlers.modules.memory.tools._helpers import _search as _search_helper
 
-        # NOT `from butlers.modules.memory.search import search_catalog`: that
-        # static import would make search.py's pgvector operators reachable
-        # from EVERY memory-enabled butler's transitive import graph,
-        # including relationship's deterministic-Finder endpoint
-        # (roster/relationship/tests/test_finder_no_llm_transitive.py walks
-        # ALL imports -- even function-body ones -- of every transitively
-        # visited first-party module). Reuse ``tools._helpers``'s existing
-        # runtime (non-AST-visible) module loader instead -- ``context.py``
-        # already reaches ``search.py`` the same way, for the same reason.
+        # Canonical semantic search belongs to the Memory runtime. Deterministic
+        # API channel/attribution readers use their lightweight owning modules,
+        # so they do not pull this semantic runtime into the Finder import graph.
         _search_catalog = _search_helper.search_catalog
         from butlers.modules.memory.tools import writing as _writing
         from butlers.modules.memory.tools.management import memory_forget as _memory_forget
@@ -406,6 +446,7 @@ class MemoryModule(Module):
             butler_name: str,
             session_output: str,
             session_id: Any = None,
+            routing_context: dict[str, Any] | None = None,
         ) -> bool:
             # The Spawner passes its domain pool.  Session episodes, like
             # trigger-time context and scheduled consolidation, must use the
@@ -416,8 +457,14 @@ class MemoryModule(Module):
                 session_output,
                 butler_name,
                 session_id=str(session_id) if session_id is not None else None,
+                routing_context=routing_context,
             )
             return True
+
+        async def _record_gap_hook(**gap: Any) -> dict[str, Any]:
+            from butlers.modules.memory import knowledge_gaps
+
+            return await knowledge_gaps.record_gap_result(module._get_pool(), **gap)
 
         async def _catalog_search_hook(
             pool: Any,
@@ -481,6 +528,7 @@ class MemoryModule(Module):
                 self._session_runtime_owner,
                 context=_context_hook,
                 store_episode=_store_episode_hook,
+                record_gap=_record_gap_hook,
             )
         else:
             logger.warning(
@@ -568,6 +616,12 @@ class MemoryModule(Module):
             unregister_memory_session_runtime,
         )
 
+        for task in self._entity_rebind_tasks:
+            task.cancel()
+        if self._entity_rebind_tasks:
+            await asyncio.gather(*self._entity_rebind_tasks, return_exceptions=True)
+        self._entity_rebind_tasks.clear()
+
         if self._session_runtime_owner is not None and self._session_runtime is not None:
             unregister_memory_session_runtime(
                 self._session_runtime_owner,
@@ -613,9 +667,9 @@ class MemoryModule(Module):
         own schema, so its ``episodes``/``facts``/``rules`` tables never collide
         with a same-named domain table in the butler schema (bu-93y4rt /
         bu-w6jca owner decision). Idempotent and a no-op when no override is set
-        or the override equals the butler's own schema. Mirrors the existing
-        chronicler/relationship side-pool pattern (``role`` defaults to ``None``,
-        matching those pools).
+        or the override equals the butler's own schema. The established primary
+        Database supplies the owner role; the private schema supplies only the
+        search path. Missing PostgreSQL privileges remain a startup refusal.
         """
         if self._memory_db is not None:
             return
@@ -626,17 +680,7 @@ class MemoryModule(Module):
             return
         from butlers.db import Database
 
-        mem_db = Database(
-            db_name=self._db.db_name,
-            schema=override,
-            host=self._db.host,
-            port=self._db.port,
-            user=self._db.user,
-            password=self._db.password,
-            ssl=self._db.ssl,
-            min_pool_size=self._db.min_pool_size,
-            max_pool_size=self._db.max_pool_size,
-        )
+        mem_db = Database.for_owned_schema(self._db, override)
         await mem_db.connect()
         self._memory_db = mem_db
         logger.info(
@@ -694,7 +738,8 @@ class MemoryModule(Module):
         """Return a lazily-created asyncpg pool scoped to the chronicler schema.
 
         Creates a new pool on first call using the same PostgreSQL connection
-        details as ``self._db`` but with ``search_path = chronicler, public``.
+        details and verified primary role as ``self._db``, only for the actual
+        Chronicler owner, with ``search_path = chronicler, public``.
         Returns ``None`` when the memory module is not initialised (e.g. in
         tests that do not configure a DB).
 
@@ -705,17 +750,7 @@ class MemoryModule(Module):
         if self._chronicler_pool is None:
             from butlers.db import Database
 
-            ch_db = Database(
-                db_name=self._db.db_name,
-                schema="chronicler",
-                host=self._db.host,
-                port=self._db.port,
-                user=self._db.user,
-                password=self._db.password,
-                ssl=self._db.ssl,
-                min_pool_size=self._db.min_pool_size,
-                max_pool_size=self._db.max_pool_size,
-            )
+            ch_db = Database.for_owned_schema(self._db, "chronicler")
             await ch_db.connect()
             self._chronicler_pool = ch_db.pool
         return self._chronicler_pool
@@ -727,7 +762,8 @@ class MemoryModule(Module):
         audit row so session-side merges leave history regardless of entry path
         (spec: relationship-merge-review). Created on first call using the same
         PostgreSQL connection details as ``self._db`` but with
-        ``search_path = relationship, public`` (mirrors the chronicler pool).
+        ``search_path = relationship, public``. Only the established Relationship
+        primary owner may open it; other butlers cannot assume a sibling role.
         Returns ``None`` when the memory module is not initialised (e.g. in tests
         that inject a mock pool directly into entity_merge).
 
@@ -738,17 +774,7 @@ class MemoryModule(Module):
         if self._relationship_pool is None:
             from butlers.db import Database
 
-            rel_db = Database(
-                db_name=self._db.db_name,
-                schema="relationship",
-                host=self._db.host,
-                port=self._db.port,
-                user=self._db.user,
-                password=self._db.password,
-                ssl=self._db.ssl,
-                min_pool_size=self._db.min_pool_size,
-                max_pool_size=self._db.max_pool_size,
-            )
+            rel_db = Database.for_owned_schema(self._db, "relationship")
             await rel_db.connect()
             self._relationship_pool = rel_db.pool
         return self._relationship_pool
@@ -820,12 +846,7 @@ class MemoryModule(Module):
         from butlers.modules.memory.tools import reading as _reading
         from butlers.modules.memory.tools import writing as _writing
 
-        # Build a group-aware tool decorator: returns @mcp.tool() when the
-        # group is enabled, or a no-op passthrough when disabled.
-        def _tool(group: str):
-            if group_enabled(config, group):
-                return mcp.tool()
-            return lambda fn: fn  # no-op — function defined but not registered
+        _tool = tool_registrar(mcp, config)
 
         # --- Writing tools ---
 
@@ -852,7 +873,7 @@ class MemoryModule(Module):
                     module._get_pool(),
                     content,
                     butler,
-                    embedding_engine=module._get_embedding_engine(),
+                    embedding_engine=await asyncio.to_thread(module._get_embedding_engine),
                     session_id=session_id,
                     importance=importance,
                     request_context=request_context,
@@ -1084,7 +1105,7 @@ class MemoryModule(Module):
             try:
                 return await _writing.memory_store_fact(
                     module._get_pool(),
-                    module._get_embedding_engine(),
+                    await asyncio.to_thread(module._get_embedding_engine),
                     subject,
                     predicate,
                     content,
@@ -1137,7 +1158,7 @@ class MemoryModule(Module):
             """Store a new behavioral rule as a candidate."""
             return await _writing.memory_store_rule(
                 module._get_pool(),
-                module._get_embedding_engine(),
+                await asyncio.to_thread(module._get_embedding_engine),
                 content,
                 scope=scope,
                 tags=tags,
@@ -1211,9 +1232,10 @@ class MemoryModule(Module):
               "limit": 10
             }
             """
+            read_policy = await module._catalog_read_policy()
             return await _reading.memory_search(
                 module._get_pool(),
-                module._get_embedding_engine(),
+                await asyncio.to_thread(module._get_embedding_engine),
                 query,
                 types=types,
                 scope=scope,
@@ -1221,6 +1243,7 @@ class MemoryModule(Module):
                 limit=limit,
                 min_confidence=min_confidence,
                 filters=filters,
+                read_policy=read_policy,
             )
 
         @_tool("core")
@@ -1251,14 +1274,16 @@ class MemoryModule(Module):
             ] = None,
         ) -> list[dict[str, Any]]:
             """High-level composite-scored retrieval of relevant facts and rules."""
+            read_policy = await module._catalog_read_policy()
             return await _reading.memory_recall(
                 module._get_pool(),
-                module._get_embedding_engine(),
+                await asyncio.to_thread(module._get_embedding_engine),
                 topic,
                 scope=scope,
                 limit=limit,
                 filters=filters,
                 request_context=request_context,
+                read_policy=read_policy,
             )
 
         @_tool("core")
@@ -1267,47 +1292,89 @@ class MemoryModule(Module):
             memory_id: str,
         ) -> dict[str, Any] | None:
             """Retrieve a specific memory by type and ID."""
+            read_policy = await module._catalog_read_policy()
             return await _reading.memory_get(
                 module._get_pool(),
                 memory_type,
                 memory_id,
+                read_policy=read_policy,
             )
 
         # --- Feedback tools ---
 
         @_tool("core")
         async def memory_confirm(
-            memory_type: str,
-            memory_id: str,
+            memory_type: str | None = None,
+            memory_id: str | None = None,
+            memory_ref: str | None = None,
         ) -> dict[str, Any]:
-            """Confirm a fact or rule is still accurate, resetting confidence decay."""
+            """Confirm a fact/rule by typed memory_ref or legacy type and ID."""
+            read_policy = await module._catalog_read_policy()
             return await _feedback.memory_confirm(
                 module._get_pool(),
                 memory_type,
                 memory_id,
+                memory_ref=memory_ref,
+                read_policy=read_policy,
             )
 
         @_tool("feedback")
         async def memory_mark_helpful(
-            rule_id: str,
+            rule_id: str | None = None,
+            memory_ref: str | None = None,
         ) -> dict[str, Any]:
-            """Report a rule was applied successfully."""
+            """Report helpful feedback by typed rule reference or legacy rule ID."""
+            read_policy = await module._catalog_read_policy()
             return await _feedback.memory_mark_helpful(
                 module._get_pool(),
                 rule_id,
+                memory_ref=memory_ref,
+                read_policy=read_policy,
             )
 
         @_tool("feedback")
         async def memory_mark_harmful(
-            rule_id: str,
+            rule_id: str | None = None,
             reason: str | None = None,
+            memory_ref: str | None = None,
         ) -> dict[str, Any]:
-            """Report a rule caused problems."""
+            """Report harmful feedback by typed rule reference or legacy rule ID."""
+            read_policy = await module._catalog_read_policy()
             return await _feedback.memory_mark_harmful(
                 module._get_pool(),
                 rule_id,
+                memory_ref=memory_ref,
                 reason=reason,
+                read_policy=read_policy,
             )
+
+        @_tool("core")
+        async def memory_open_gaps(
+            status: str | None = None,
+            limit: int = 20,
+        ) -> dict[str, Any]:
+            """List questions the owner asked that this butler still could not answer.
+
+            Each gap names the entity and predicate, when it was asked, its lifecycle
+            ``status`` and an honest ``coverage_state`` (``unknown``, ``absent_proven``,
+            ``unavailable``, or ``present`` once answered). Defaults to ``open`` and
+            ``answerable`` gaps; pass ``status`` for one lifecycle state.
+            """
+            from butlers.modules.memory import knowledge_gaps
+
+            statuses = ("open", "answerable") if status is None else (status,)
+            if any(s not in knowledge_gaps.STATUSES for s in statuses):
+                return {
+                    "error": f"status must be one of {list(knowledge_gaps.STATUSES)}",
+                    "gaps": [],
+                }
+            gaps = await knowledge_gaps.list_gaps(
+                module._get_pool(), statuses=statuses, limit=max(1, min(limit, 100))
+            )
+            return {
+                "gaps": [knowledge_gaps.public_view(g) for g in gaps],
+                "count": len(gaps),
+            }
 
         # --- Management tools ---
 
@@ -1426,7 +1493,7 @@ class MemoryModule(Module):
                 module._get_pool(),
                 query,
                 scope=scope,
-                embedding_engine=module._get_embedding_engine(),
+                embedding_engine=await asyncio.to_thread(module._get_embedding_engine),
             )
 
         # --- Context tool ---
@@ -1469,21 +1536,26 @@ class MemoryModule(Module):
             """Build a deterministic, sectioned memory context block for CC system prompt injection.
 
             Sections (in order, empty sections omitted):
-            - ## Profile Facts (30% of budget): owner entity facts sorted by importance
+            - ## Profile Facts (20% of budget): owner entity facts sorted by importance
             - ## Task-Relevant Facts (35% of budget): recall matches excluding profile facts
             - ## Active Rules (20% of budget): sorted by maturity rank then effectiveness
             - ## Recent Episodes (15% of budget): opt-in via include_recent_episodes=True
             - ## Fleet Knowledge (10% of budget): opt-in via include_fleet_knowledge=True,
               cross-butler facts/rules discovered via public.memory_catalog
 
+            Local fact and rule lines include a typed ``memory_ref`` accepted by
+            the existing confirm/helpful/harmful tools. Reference text counts
+            inside the same section and total budgets.
+
             Same inputs always produce identical output (deterministic section compiler).
             """
-            catalog_read_policy = None
-            if include_fleet_knowledge:
-                catalog_read_policy = await module._catalog_read_policy()
+            # Loaded unconditionally: the read ceiling now governs Profile
+            # Facts and Task-Relevant Facts (recall) in every assembly, not
+            # only the opt-in Fleet Knowledge section.
+            catalog_read_policy = await module._catalog_read_policy()
             return await _context.memory_context(
                 module._get_pool(),
-                module._get_embedding_engine(),
+                await asyncio.to_thread(module._get_embedding_engine),
                 trigger_prompt,
                 butler,
                 token_budget=token_budget,
@@ -1620,7 +1692,7 @@ class MemoryModule(Module):
             """
             return await _consolidation.run_consolidation(
                 module._get_pool(),
-                module._get_embedding_engine(),
+                await asyncio.to_thread(module._get_embedding_engine),
                 enable_shared_catalog=module._config.enable_shared_catalog,
                 source_schema=effective_catalog_source_schema,
                 retry_failed=module._allows_failed_consolidation_retry(),
@@ -1739,87 +1811,22 @@ class MemoryModule(Module):
                 str, Field(description="UUID string of the surviving entity.")
             ],
         ) -> dict[str, Any] | None:
-            """Merge source entity into target entity in the memory entity graph.
+            """Dispatch an entity merge to Relationship's single authority.
 
-            All facts referencing the source entity are re-pointed to the target.
-            Uniqueness conflicts are resolved via supersession (higher-confidence fact wins).
-            Source aliases are appended to target's alias list (deduplicated). Source metadata
-            is merged into target's (target wins on conflict). Source entity is
-            tombstoned (excluded from future entity_resolve results). An audit event
-            is emitted to memory_events.
-
-            A ``relationship.merge_reviews`` audit row is also written so this
-            session-side merge leaves history regardless of entry path (spec:
-            relationship-merge-review — "merges executed outside the dashboard flow
-            (e.g. session-side tooling) still leave history; when no compare context
-            exists, the merge endpoint computes the shared/divergent snapshot
-            server-side at merge time"). The audit write is best-effort: a failure
-            (e.g. the relationship schema is absent in a memory-only deployment)
-            never blocks the merge.
-
-            Returns the updated target entity dict, or None if target not found.
-            Raises ValueError if source entity not found or IDs are identical.
+            Per-schema memory references are rebound asynchronously from the
+            durable receipt cohort; this tool never reaches into sibling schemas.
             """
-            chronicler_pool = await module._get_or_create_chronicler_pool()
-            # chronicler_pool is None when the DB is not initialised (e.g. tests
-            # that inject a mock pool directly into entity_merge). When provided,
-            # episode_entities rows are re-pointed as part of the merge.
-
-            # Compute the shared/divergent audit evidence BEFORE the merge mutates
-            # rows so the snapshot reflects the pre-merge state (matches the API
-            # merge endpoint). The relationship pool is None in memory-only
-            # deployments / tests with no DB — then we skip the audit row.
-            relationship_pool = await module._get_or_create_relationship_pool()
-            merge_evidence = None
-            if relationship_pool is not None:
-                try:
-                    from butlers.tools.relationship.merge_review import compute_merge_evidence
-
-                    merge_evidence = await compute_merge_evidence(
-                        relationship_pool,
-                        uuid.UUID(str(source_entity_id)),
-                        uuid.UUID(str(target_entity_id)),
-                    )
-                except Exception:
-                    logger.warning(
-                        "memory_entity_merge: failed to compute merge-review evidence "
-                        "(source=%s target=%s) — audit row will be skipped",
-                        source_entity_id,
-                        target_entity_id,
-                        exc_info=True,
-                    )
-
-            result = await _entities.entity_merge(
-                module._get_pool(),
+            if getattr(module._db, "schema", None) == "relationship":
+                relationship_pool = module._get_pool()
+            else:
+                relationship_pool = await module._get_or_create_relationship_pool()
+            if relationship_pool is None:
+                raise RuntimeError("Relationship merge authority is unavailable.")
+            return await _entities.entity_merge(
+                relationship_pool,
                 source_entity_id,
                 target_entity_id,
-                chronicler_pool=chronicler_pool,
             )
-
-            # Write the merge_reviews audit row regardless of entry path. Best-effort:
-            # never block or fail the (already-committed) merge on an audit failure.
-            if relationship_pool is not None and merge_evidence is not None:
-                try:
-                    from butlers.tools.relationship.merge_review import write_merge_review
-
-                    await write_merge_review(
-                        relationship_pool,
-                        entity_a=uuid.UUID(str(source_entity_id)),
-                        entity_b=uuid.UUID(str(target_entity_id)),
-                        shared_facts=merge_evidence["shared"],
-                        divergent_facts=merge_evidence["divergent"],
-                        outcome="merged",
-                    )
-                except Exception:
-                    logger.warning(
-                        "memory_entity_merge: failed to write merge_reviews audit row "
-                        "(source=%s target=%s) — merge already committed",
-                        source_entity_id,
-                        target_entity_id,
-                        exc_info=True,
-                    )
-
-            return result
 
         # --- Cross-butler catalog search tool ---
 
@@ -1864,7 +1871,7 @@ class MemoryModule(Module):
             read_policy = await module._catalog_read_policy()
             return await _reading.memory_catalog_search(
                 module._get_pool(),
-                module._get_embedding_engine(),
+                await asyncio.to_thread(module._get_embedding_engine),
                 query,
                 memory_type=memory_type,
                 limit=limit,
@@ -1951,7 +1958,7 @@ class MemoryModule(Module):
                     module._get_pool(),
                     predicate,
                     value,
-                    embedding_engine=module._get_embedding_engine(),
+                    embedding_engine=await asyncio.to_thread(module._get_embedding_engine),
                     permanence=permanence,
                     importance=importance,
                     metadata=metadata,
@@ -2093,7 +2100,7 @@ class MemoryModule(Module):
             try:
                 result = await _reembedding.run(
                     module._get_pool(),
-                    module._get_embedding_engine(),
+                    await asyncio.to_thread(module._get_embedding_engine),
                     dry_run=dry_run,
                     tiers=tiers,
                     batch_size=batch_size,
@@ -2130,7 +2137,7 @@ class MemoryModule(Module):
                 - ``counts`` (dict): stale row count per tier
                 - ``total`` (int): sum across all tiers
             """
-            current_model = module._get_embedding_engine().model_name
+            current_model = (await asyncio.to_thread(module._get_embedding_engine)).model_name
             try:
                 tier_arg: str | None = None
                 if tiers is not None and len(tiers) == 1:

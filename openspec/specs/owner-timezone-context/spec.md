@@ -152,4 +152,3 @@ alias.
 - Non-Negotiable Rule #4 (Time is a typed primitive) — `about/heart-and-soul/design-language.md`
 - RFC 0007 (Dashboard and API surface) — `about/legends-and-lore/rfcs/0007-dashboard-and-api-surface.md`
 - `openspec/specs/user-preferences/spec.md` — `preferences:general_timezone` predicate
-- Implemented under bead bu-ldj6y (commit 11c01dc51)

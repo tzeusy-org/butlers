@@ -27,9 +27,9 @@ import asyncpg
 import httpx
 import pytest
 
-from butlers.api.app import create_app
-from butlers.api.routers.memory import _get_db_manager
+from butlers.api.deps import get_db
 from butlers.modules.memory.tools.entities import entity_neighbors, entity_resolve
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = [
     pytest.mark.integration,
@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS public.entities (
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS facts (
+    content_authority TEXT, authority_entity_id UUID,
     id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     entity_id        UUID,
     object_entity_id UUID,
@@ -120,7 +121,7 @@ class _SinglePoolDB:
 @asynccontextmanager
 async def _app_client(db: object):
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:

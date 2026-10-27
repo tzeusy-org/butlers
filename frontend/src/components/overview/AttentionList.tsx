@@ -15,6 +15,8 @@ import type { CSSProperties } from "react";
 import { Link } from "react-router";
 import { RowLink } from "@/components/ui/RowLink";
 
+type FeedbackState = "pending" | "saved" | "error";
+
 export interface AttentionListItem {
   id: string;
   severity: string;
@@ -61,6 +63,12 @@ export interface AttentionListItem {
   pendingDecisionLabel?: string | null;
   /** Cancels the scheduled decision described by `pendingDecisionLabel`. */
   onUndoDecision?: () => void;
+  onUseful?: () => void;
+  onNotNow?: () => void;
+  onNever?: () => void;
+  feedbackPending?: boolean;
+  feedbackState?: FeedbackState;
+  onRetryFeedback?: () => void;
 }
 
 interface AttentionListProps {
@@ -134,7 +142,13 @@ export function AttentionList({ items, selectedId = null }: AttentionListProps) 
         // every other href row becomes a full-row RowLink (bu-86c4c.4 --
         // drill-down sweep: the entire row is the target, not a 16px glyph).
         const hasInlineActions = Boolean(
-          item.onApprove || item.onDeny || item.onDefer || item.pendingDecisionLabel,
+          item.onApprove ||
+            item.onDeny ||
+            item.onDefer ||
+            item.pendingDecisionLabel ||
+            item.onUseful ||
+            item.onNotNow ||
+            item.onNever,
         );
         const isSelected = selectedId != null && item.id === selectedId;
         const rowGridStyle: CSSProperties = {
@@ -255,6 +269,65 @@ export function AttentionList({ items, selectedId = null }: AttentionListProps) 
                         style={inlineVerbButtonStyle}
                       >
                         {item.deferPending ? "Deferring…" : "Defer"}
+                      </button>
+                    )}
+                    {item.onUseful && (
+                      <button
+                        type="button"
+                        onClick={item.onUseful}
+                        disabled={item.feedbackPending}
+                        style={inlineVerbButtonStyle}
+                      >
+                        Useful
+                      </button>
+                    )}
+                    {item.onNotNow && (
+                      <button
+                        type="button"
+                        onClick={item.onNotNow}
+                        disabled={item.feedbackPending}
+                        style={inlineVerbButtonStyle}
+                      >
+                        Not now
+                      </button>
+                    )}
+                    {item.onNever && (
+                      <button
+                        type="button"
+                        onClick={item.onNever}
+                        disabled={item.feedbackPending}
+                        style={inlineVerbButtonStyle}
+                      >
+                        Never
+                      </button>
+                    )}
+                    {item.feedbackState && (
+                      <span
+                        role={item.feedbackState === "error" ? "alert" : "status"}
+                        style={{
+                          fontFamily: "var(--font-mono)",
+                          fontSize: "11px",
+                          color:
+                            item.feedbackState === "error"
+                              ? "var(--destructive)"
+                              : "var(--muted-foreground)",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {item.feedbackState === "pending"
+                          ? "Saving feedback…"
+                          : item.feedbackState === "saved"
+                            ? "Feedback saved."
+                            : "Could not save feedback."}
+                      </span>
+                    )}
+                    {item.feedbackState === "error" && item.onRetryFeedback && (
+                      <button
+                        type="button"
+                        onClick={item.onRetryFeedback}
+                        style={inlineVerbButtonStyle}
+                      >
+                        Retry feedback
                       </button>
                     )}
                   </>

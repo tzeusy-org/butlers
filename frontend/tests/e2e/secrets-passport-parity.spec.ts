@@ -1,3 +1,4 @@
+import { mockJson, type ResponseOf } from "./fixtures/api-responses";
 // Secrets Passport -- full capability parity E2E tests [bu-ayp6v.13]
 //
 // Coverage: every capability from the secrets-parity reconciliation (point-in-time report, retired) §1
@@ -48,12 +49,13 @@
 //   POST /relationship/entities/{id}/info    - user credential create success
 
 import { test, expect, type Page } from "@playwright/test";
+import type { OwnTracksConfigResponse, OwnTracksStatusResponse } from "../../src/api/types";
 
 // ---------------------------------------------------------------------------
 // Mock inventory (raw API shape)
 // ---------------------------------------------------------------------------
 
-const MOCK_INVENTORY_RESPONSE = {
+const MOCK_INVENTORY_RESPONSE: ResponseOf<"getSecretsInventory"> = {
   data: {
     user: [
       {
@@ -78,8 +80,6 @@ const MOCK_INVENTORY_RESPONSE = {
     system: [
       {
         key: "BUTLER_TELEGRAM_TOKEN",
-        category: "messaging",
-        description: "Bot token for Telegram.",
         state: "ok",
         fingerprint: "sha256:ab12cd34",
         last_verified: "14:01 today",
@@ -90,8 +90,6 @@ const MOCK_INVENTORY_RESPONSE = {
     cli: [
       {
         key: "claude-cli",
-        category: "runtime",
-        description: "Claude Code",
         state: "ok",
         fingerprint: "sha256:11a47cd2",
         last_verified: "14:15 today",
@@ -125,23 +123,22 @@ const MOCK_INVENTORY_RESPONSE = {
     unverified_count: 0,
     failing_count_by_family: { cli: 0, system: 0, user: 1 },
     unverified_count_by_family: { cli: 0, system: 0, user: 0 },
-    owner_entity_id: "tze",
   },
 };
 
-const MOCK_GOOGLE_ACCOUNTS = [
+const MOCK_GOOGLE_ACCOUNTS: ResponseOf<"getGoogleAccounts"> = [
   {
     id: "gacct-primary",
     email: "owner@gmail.com",
     is_primary: true,
-    status: "active",
+    status: "active", display_name: null, connected_at: "2026-01-01T00:00:00Z", last_token_refresh_at: null,
     granted_scopes: ["openid", "email", "profile", "https://www.googleapis.com/auth/calendar"],
   },
   {
     id: "gacct-secondary",
     email: "work@example.com",
     is_primary: false,
-    status: "active",
+    status: "active", display_name: null, connected_at: "2026-01-01T00:00:00Z", last_token_refresh_at: null,
     granted_scopes: ["openid", "email", "profile"],
   },
 ];
@@ -153,45 +150,45 @@ const MOCK_GOOGLE_ACCOUNTS = [
 async function mockAllSecretRoutes(page: Page) {
   // Inventory
   await page.route("**/api/secrets/inventory**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(MOCK_INVENTORY_RESPONSE) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSecretsInventory", MOCK_INVENTORY_RESPONSE) })
   );
   // Breaks catalogue
   await page.route("**/api/secrets/breaks-catalogue**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ breaks: [] }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getBreaksCatalogue", { data: [], meta: { catalogue_available: true } }) })
   );
   // User secret mutations
   await page.route("**/api/secrets/user/*/probe**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: { ok: true, code: 200, at: "just now" }, meta: {} }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("probeUserCredential", { data: { ok: true, code: 200, at: "just now", message: null }, meta: {} }) })
   );
   await page.route("**/api/secrets/user/*/rotate**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: { state: "ok" }, meta: {} }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("rotateUserCredential", { data: { state: "ok", id: "u-google-tze", entity_id: "tze", provider: "google", fingerprint: null, issued: null, expires: null, last_verified: null, capabilities_required: [], capabilities_granted: [], test: null, audit: [], capabilities: [] }, meta: {} }) })
   );
   await page.route("**/api/secrets/user/*/disconnect**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: { disconnected: true }, meta: {} }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("disconnectUserCredential", { data: { status: "disconnected" }, meta: {} }) })
   );
   await page.route("**/api/secrets/user/*/reauthorize**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: { redirect_url: "https://accounts.google.com/oauth/mock" }, meta: {} }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("reauthorizeUserCredential", { data: { redirect_url: "https://accounts.google.com/oauth/mock" }, meta: {} }) })
   );
   // System secret mutations
   await page.route("**/api/secrets/system/*/probe**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: { ok: true, code: 200, at: "just now" }, meta: {} }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("probeSystemCredential", { data: { ok: true, code: 200, at: "just now", message: null }, meta: {} }) })
   );
   await page.route("**/api/secrets/system/**", (route) => {
     const method = route.request().method();
     if (method === "POST") {
-      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: { key: "BUTLER_TELEGRAM_TOKEN", state: "ok" }, meta: {} }) });
+      return route.fulfill({ status: 200, contentType: "application/json", body: mockJson("setSystemCredential", { data: { key: "BUTLER_TELEGRAM_TOKEN", state: "ok", category: "messaging", description: null, fingerprint: null, row_state: "shared", source: null, target: null, last_verified: null, used_by: [], test: null, audit: [], butler: "messenger" }, meta: {} }) });
     }
     if (method === "DELETE") {
-      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: { deleted: true }, meta: {} }) });
+      return route.fulfill({ status: 200, contentType: "application/json", body: mockJson("deleteSystemCredential", { data: { status: "disconnected" }, meta: {} }) });
     }
     route.continue();
   });
   // CLI mutations
   await page.route("**/api/secrets/cli/*/rotate**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: { fingerprint: "sha256:new1234", value: "new-rotated-token-value" }, meta: {} }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("rotateCliCredential", { data: { fingerprint: "sha256:new1234", value: "new-rotated-token-value" }, meta: {} }) })
   );
   await page.route("**/api/secrets/cli/*/revoke**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: { revoked: true }, meta: {} }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("revokeCliCredential", { data: { status: "revoked" }, meta: {} }) })
   );
   // CLI re-authorize (audited endpoint) -- device_code branch.
   // Re-auth now routes through POST /api/secrets/cli/{id}/reauthorize (bu-3wg2l);
@@ -200,7 +197,7 @@ async function mockAllSecretRoutes(page: Page) {
   await page.route("**/api/secrets/cli/*/reauthorize**", (route) =>
     route.fulfill({
       status: 200, contentType: "application/json",
-      body: JSON.stringify({
+      body: mockJson("reauthorizeCliCredential", {
         data: {
           auth_mode: "device_code",
           provider: "github",
@@ -216,27 +213,27 @@ async function mockAllSecretRoutes(page: Page) {
   );
   // Butler list (for override picker)
   await page.route("**/api/butlers", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [{ name: "switchboard", state: "running" }, { name: "tze", state: "running" }], meta: {} }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getButlers", { data: [{ name: "switchboard", status: "running", port: 0, type: "butler", sessions_24h: 0 }, { name: "tze", status: "running", port: 0, type: "butler", sessions_24h: 0 }], meta: {} }) })
   );
   // Google accounts list (GET only -- sub-paths handled separately below)
   await page.route((url) => url.pathname === "/api/oauth/google/accounts" && url.search === "", (route) => {
     if (route.request().method() === "GET") {
-      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(MOCK_GOOGLE_ACCOUNTS) });
+      return route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getGoogleAccounts", MOCK_GOOGLE_ACCOUNTS) });
     }
     route.continue();
   });
   await page.route("**/api/oauth/google/accounts/*/primary**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ account_id: "gacct-secondary", is_primary: true }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("setPrimaryAccount", { success: true, account: { ...MOCK_GOOGLE_ACCOUNTS[1], is_primary: true } }) })
   );
   await page.route("**/api/oauth/google/accounts/**", (route) => {
     if (route.request().method() === "DELETE") {
-      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ disconnected: true }) });
+      return route.fulfill({ status: 200, contentType: "application/json", body: mockJson("disconnectAccount", { success: true, message: "Disconnected", auto_promoted_id: null }) });
     }
     route.continue();
   });
   // Google Health disconnect
   await page.route("**/api/connectors/google-health/disconnect**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ disconnected: true }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("disconnectGoogleHealth", { success: true, message: "Disconnected", scopes_removed: [] }) })
   );
   // CLI auth providers list (needed for useCliDeviceAuth to determine auth mode)
   // Note: "generic-token" is intentionally NOT listed here so it gets
@@ -244,86 +241,104 @@ async function mockAllSecretRoutes(page: Page) {
   await page.route("**/api/cli-auth/providers**", (route) =>
     route.fulfill({
       status: 200, contentType: "application/json",
-      body: JSON.stringify([
-        { name: "claude-cli", display_name: "Claude Code", runtime: "claude", auth_mode: "api_key", authenticated: true, health: "ok", health_detail: null, token_path: null, env_var: "ANTHROPIC_API_KEY" },
+      body: mockJson("listCLIAuthProviders", [
+        { name: "claude-cli", display_name: "Claude Code", runtime: "claude", auth_mode: "api_key", authenticated: true, health: "authenticated", health_detail: null, token_path: null, env_var: "ANTHROPIC_API_KEY" },
         { name: "github-cli", display_name: "GitHub CLI", runtime: "github", auth_mode: "device_code", authenticated: false, health: null, health_detail: null, token_path: null, env_var: null },
-        { name: "github-cli2", display_name: "GitHub CLI 2", runtime: "github", auth_mode: "device_code", authenticated: true, health: "ok", health_detail: null, token_path: null, env_var: null },
+        { name: "github-cli2", display_name: "GitHub CLI 2", runtime: "github", auth_mode: "device_code", authenticated: true, health: "authenticated", health_detail: null, token_path: null, env_var: null },
       ]),
     })
   );
   // CLI auth (device code, api-key, test)
   await page.route("**/api/cli-auth/*/start**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session_id: "sess-001", auth_url: "https://example.com/activate", device_code: "ABCD-1234", state: "awaiting_auth" }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("startCLIAuth", { session_id: "sess-001", auth_url: "https://example.com/activate", device_code: "ABCD-1234", state: "awaiting_auth", message: null }) })
   );
   await page.route("**/api/cli-auth/sessions/**", (route) => {
     if (route.request().method() === "DELETE") {
-      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cancelled: true }) });
+      return route.fulfill({ status: 200, contentType: "application/json", body: mockJson("cancelCLIAuthSession", { status: "cancelled" }) });
     }
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session_id: "sess-001", state: "awaiting_auth" }) });
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getCLIAuthSession", { session_id: "sess-001", state: "awaiting_auth", auth_url: null, device_code: null, message: null, provider: "github" }) });
   });
   await page.route("**/api/cli-auth/*/test**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, provider: "github", latency_ms: 42 }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("testCLIAuthApiKey", { success: true, provider: "github", detail: null }) })
   );
   await page.route("**/api/cli-auth/*/api-key**", (route) => {
     const method = route.request().method();
-    if (method === "PUT") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
-    if (method === "DELETE") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ deleted: true }) });
+    if (method === "PUT") return route.fulfill({ status: 200, contentType: "application/json", body: mockJson("saveCLIAuthApiKey", { provider: "github", stored: true, message: null }) });
+    if (method === "DELETE") return route.fulfill({ status: 200, contentType: "application/json", body: mockJson("deleteCLIAuthApiKey", { status: "deleted" }) });
     route.continue();
   });
   // Home Assistant
   await page.route("**/api/settings/home-assistant**", (route) => {
     const method = route.request().method();
-    if (method === "GET") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ connected: false, url: null }) });
-    if (method === "POST") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ connected: true, url: "http://homeassistant.local:8123" }) });
-    if (method === "DELETE") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ disconnected: true }) });
+    if (method === "GET") return route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getHomeAssistantStatus", { state: "not_configured", url_configured: false, token_configured: false, masked_url: null }) });
+    if (method === "POST") return route.fulfill({ status: 200, contentType: "application/json", body: mockJson("configureHomeAssistant", { success: true, message: "Configured", masked_url: "http://homeassistant.local:8123" }) });
+    if (method === "DELETE") return route.fulfill({ status: 200, contentType: "application/json", body: mockJson("deleteHomeAssistantConfig", { success: true, message: "Disconnected" }) });
     route.continue();
   });
-  // OwnTracks
+  // OwnTracks: use the connector API contract, not the inventory state shape.
+  const ownTracksStatus = {
+    state: "connected",
+    token_configured: true,
+    last_event_at: "2026-01-15T14:01:00Z",
+    events_today: 42,
+  } satisfies OwnTracksStatusResponse;
+  const ownTracksConfig = {
+    webhook_url: "https://butlers.example.com/owntracks/webhook",
+    token_masked: "abcd...wxyz",
+    setup_instructions: {
+      mode: "HTTP",
+      url_field: "URL",
+      auth_type: "Bearer token",
+      steps_ios: ["Set the webhook URL in OwnTracks for iOS."],
+      steps_android: ["Set the webhook URL in OwnTracks for Android."],
+      troubleshooting_hint: "Check app permissions and webhook reachability.",
+    },
+  } satisfies OwnTracksConfigResponse;
   await page.route("**/api/connectors/owntracks/status**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ connected: true, last_event_at: "14:01 today", event_count: 42 }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getOwnTracksStatus", ownTracksStatus) })
   );
   await page.route("**/api/connectors/owntracks/config**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ webhook_url: "https://butlers.example.com/api/connectors/owntracks/ingest", token_set: true }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getOwnTracksConfig", ownTracksConfig) })
   );
   await page.route("**/api/connectors/owntracks/token/generate**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ token: "new-owntracks-token-abc123" }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("generateOwnTracksToken", { token: "new-owntracks-token-abc123" }) })
   );
   // Steam
   await page.route("**/api/steam/accounts**", (route) => {
-    if (route.request().method() === "GET") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [{ id: "steam-1", steam_id: "76561198000001", display_name: "SteamUser1", status: "active" }], meta: {} }) });
-    if (route.request().method() === "POST") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: { id: "steam-2", steam_id: "76561198000002" }, meta: {} }) });
+    if (route.request().method() === "GET") return route.fulfill({ status: 200, contentType: "application/json", body: mockJson("listSteamAccounts", { accounts: [{ id: "steam-1", steam_id: "76561198000001", display_name: "SteamUser1", profile_url: null, avatar_url: null, is_primary: false, status: "active", connected_at: "2026-01-01T00:00:00Z", last_poll_at: null }] }) });
+    if (route.request().method() === "POST") return route.fulfill({ status: 200, contentType: "application/json", body: mockJson("connectSteamAccount", { success: true, message: "Connected", account: { id: "steam-2", steam_id: "76561198000002", display_name: null, profile_url: null, avatar_url: null, is_primary: false, status: "active", connected_at: "2026-01-01T00:00:00Z", last_poll_at: null } }) });
     route.continue();
   });
   await page.route("**/api/steam/accounts/**", (route) => {
-    if (route.request().method() === "DELETE") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: { disconnected: true }, meta: {} }) });
+    if (route.request().method() === "DELETE") return route.fulfill({ status: 200, contentType: "application/json", body: mockJson("disconnectSteamAccount", { success: true, message: "Disconnected" }) });
     route.continue();
   });
   // Spotify
   await page.route("**/api/connectors/spotify/status**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ connected: false, state: "needs_reauth", capability_categories: ["listening-history"] }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSpotifyStatus", { connected: false, state: "needs_reauth", capability_categories: ["listening-history"] }) })
   );
   await page.route("**/api/connectors/spotify/config**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("saveSpotifyConfig", { configured: true }) })
   );
   await page.route("**/api/connectors/spotify/oauth/start**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ authorization_url: "https://accounts.spotify.com/authorize?mock=1", state: "opaque-csrf-state" }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("startSpotifyOAuth", { authorization_url: "https://accounts.spotify.com/authorize?mock=1", state: "opaque-csrf-state" }) })
   );
   await page.route("**/api/connectors/spotify/disconnect**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ disconnected: true }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("disconnectSpotify", { disconnected: true }) })
   );
   // WhatsApp
   await page.route("**/api/connectors/whatsapp/status**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ connected: false, state: "disconnected" }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getWhatsAppStatus", { state: "disconnected", phone: null, paired_at: null, last_sync_at: null, bridge_running: false }) })
   );
   await page.route("**/api/connectors/whatsapp/pair/start**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session_id: "wa-sess-001", qr_url: "data:image/png;base64,abc", state: "waiting_scan" }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("startWhatsAppPairing", { qr_data_uri: "data:image/png;base64,abc", expires_at: "2026-10-24T04:00:00Z" }) })
   );
   await page.route("**/api/connectors/whatsapp/disconnect**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ disconnected: true }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("disconnectWhatsApp", { success: true, message: "Disconnected" }) })
   );
   // User credential creation (entity_info)
   await page.route("**/relationship/entities/*/info**", (route) => {
-    if (route.request().method() === "POST") return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ id: "info-123", type: "github_token", value: "***" }) });
+    if (route.request().method() === "POST") return route.fulfill({ status: 201, contentType: "application/json", body: mockJson("createEntityInfo", { id: "info-123", entity_id: "tze", type: "github_token", value: "***", label: null, is_primary: false, secured: true }) });
     route.continue();
   });
 }
@@ -426,8 +441,8 @@ test.describe("PageUser (C10–C15)", () => {
   test("C11: Spotify recovery action starts the connector OAuth flow", async ({ page }) => {
     // Spotify authorizes through the connector PKCE flow, so the deterministic
     // assertion is the POST to /api/connectors/spotify/oauth/start (not the
-    // generalized /api/secrets/user/spotify/reauthorize, whose app credentials
-    // were never provisioned). We assert on the network request rather than
+    // generic /api/secrets/user/spotify/reauthorize route). We assert on the
+    // network request rather than
     // transient "redirecting" text; the success handler sets
     // window.location.href to the provider URL, so abort that target to keep
     // the test page put.
@@ -606,18 +621,16 @@ test.describe("PageCli (C22–C28)", () => {
     // so useCliDeviceAuth returns supported=false, isApiKeyMode=false.
     // In that mode PageCli renders rotate/test/reveal/revoke (direct rotate flow).
     await mockAllSecretRoutes(page);
-    const inventoryWithGeneric = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
+    const inventoryWithGeneric = structuredClone(MOCK_INVENTORY_RESPONSE);
     inventoryWithGeneric.data.cli.push({
       key: "generic-token",
-      category: "runtime",
-      description: "Generic token runtime",
       state: "ok",
       fingerprint: "sha256:gentoken",
       last_verified: "13:00 today",
       test: { ok: true, code: 200, at: "13:00 today" },
     });
     await page.route("**/api/secrets/inventory**", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(inventoryWithGeneric) })
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSecretsInventory", inventoryWithGeneric) })
     );
     await page.goto("/secrets?focus=c:generic-token", { timeout: 15_000 });
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
@@ -646,18 +659,16 @@ test.describe("PageCli (C22–C28)", () => {
     // this id, so device-code/api-key detection also misses -- the only
     // rotation path offered must be paste ("update token"), never generate.
     await mockAllSecretRoutes(page);
-    const inventoryWithMirror = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
+    const inventoryWithMirror = structuredClone(MOCK_INVENTORY_RESPONSE);
     inventoryWithMirror.data.cli.push({
       key: "cli-auth/orphan-provider",
-      category: "cli-auth",
-      description: "Orphaned CLI auth mirror",
       state: "ok",
       fingerprint: "sha256:orphan01",
       last_verified: "13:00 today",
       test: { ok: true, code: 200, at: "13:00 today" },
     });
     await page.route("**/api/secrets/inventory**", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(inventoryWithMirror) })
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSecretsInventory", inventoryWithMirror) })
     );
     await page.goto("/secrets?focus=c:cli-auth/orphan-provider", { timeout: 15_000 });
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
@@ -673,18 +684,16 @@ test.describe("PageCli (C22–C28)", () => {
     // but revoke renders for non-api_key-mode: !isApiKeyMode check at pages.tsx:2403)
     // Use generic-token (no provider entry) so isApiKeyMode=false and revoke shows.
     await mockAllSecretRoutes(page);
-    const inventoryWithGeneric = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
+    const inventoryWithGeneric = structuredClone(MOCK_INVENTORY_RESPONSE);
     inventoryWithGeneric.data.cli.push({
       key: "generic-token",
-      category: "runtime",
-      description: "Generic token runtime",
       state: "ok",
       fingerprint: "sha256:gentoken",
       last_verified: "13:00 today",
       test: { ok: true, code: 200, at: "13:00 today" },
     });
     await page.route("**/api/secrets/inventory**", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(inventoryWithGeneric) })
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSecretsInventory", inventoryWithGeneric) })
     );
     await page.goto("/secrets?focus=c:generic-token", { timeout: 15_000 });
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
@@ -749,23 +758,21 @@ test.describe("PageCli (C22–C28)", () => {
     // Covers C27 -- device-code connect/re-auth
     // Inject a device-code CLI credential
     await mockAllSecretRoutes(page);
-    const inventoryWithDevice = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
+    const inventoryWithDevice = structuredClone(MOCK_INVENTORY_RESPONSE);
     inventoryWithDevice.data.cli.push({
       key: "github-cli",
-      category: "runtime",
-      description: "GitHub CLI",
       state: "never_set",
       fingerprint: null,
       last_verified: null,
       test: null,
     });
     await page.route("**/api/secrets/inventory**", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(inventoryWithDevice) })
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSecretsInventory", inventoryWithDevice) })
     );
     // Override providers mock to mark github-cli as device_code
     // CLIAuthProvider shape: { name, display_name, runtime, auth_mode, authenticated, ... }
     await page.route("**/api/cli-auth/providers**", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("listCLIAuthProviders", [
         { name: "github-cli", display_name: "GitHub CLI", runtime: "github", auth_mode: "device_code", authenticated: false, health: null, health_detail: null, token_path: null, env_var: null },
       ]) })
     );
@@ -785,22 +792,20 @@ test.describe("PageCli (C22–C28)", () => {
   test("C27: CLI device-code cancel -- cancel button hides auth panel", async ({ page }) => {
     // Covers C27 -- cancel device-code flow
     await mockAllSecretRoutes(page);
-    const inventoryWithDevice = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
+    const inventoryWithDevice = structuredClone(MOCK_INVENTORY_RESPONSE);
     inventoryWithDevice.data.cli.push({
       key: "github-cli2",
-      category: "runtime",
-      description: "GitHub CLI 2",
       state: "ok",
       fingerprint: "sha256:ghcli2",
       last_verified: "12:00 today",
       test: { ok: true, code: 200, at: "12:00 today" },
     });
     await page.route("**/api/secrets/inventory**", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(inventoryWithDevice) })
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSecretsInventory", inventoryWithDevice) })
     );
     await page.route("**/api/cli-auth/providers**", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([
-        { name: "github-cli2", display_name: "GitHub CLI 2", runtime: "github", auth_mode: "device_code", authenticated: true, health: "ok", health_detail: null, token_path: null, env_var: null },
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("listCLIAuthProviders", [
+        { name: "github-cli2", display_name: "GitHub CLI 2", runtime: "github", auth_mode: "device_code", authenticated: true, health: "authenticated", health_detail: null, token_path: null, env_var: null },
       ]) })
     );
     await page.goto("/secrets?focus=c:github-cli2", { timeout: 15_000 });
@@ -923,7 +928,7 @@ test.describe("PageGoogleAccounts (C29–C31)", () => {
     ];
     await page.route((url) => url.pathname === "/api/oauth/google/accounts" && url.search === "", (route) => {
       if (route.request().method() === "GET") {
-        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(accountsWithHealth) });
+        return route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getGoogleAccounts", accountsWithHealth) });
       }
       route.continue();
     });
@@ -999,7 +1004,7 @@ test.describe("Provider drawers (C32-C36)", () => {
 
     // Add owntracks to the inventory mock and navigate to it
     await mockAllSecretRoutes(page);
-    const inventoryWithOT = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
+    const inventoryWithOT = structuredClone(MOCK_INVENTORY_RESPONSE);
     inventoryWithOT.data.user.push({
       id: "u-owntracks-tze",
       entity_id: "tze",
@@ -1009,13 +1014,13 @@ test.describe("Provider drawers (C32-C36)", () => {
       last_verified: "11:00 today",
       test: { ok: true, code: 200, at: "11:00 today" },
     });
-    inventoryWithOT.data.providers.owntracks = {
+    (inventoryWithOT.data.providers ??= {}).owntracks = {
       id: "owntracks", label: "OwnTracks", glyph: "O", kind: "webhook",
       authority: "owntracks.local", brief: "Location tracking.",
       cadence: "push",
     };
     await page.route("**/api/secrets/inventory**", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(inventoryWithOT) })
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSecretsInventory", inventoryWithOT) })
     );
     await page.goto("/secrets?focus=u:owntracks", { timeout: 15_000 });
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
@@ -1025,17 +1030,19 @@ test.describe("Provider drawers (C32-C36)", () => {
     await expect(otDrawer).toBeAttached({ timeout: 8_000 });
 
     // Webhook URL present
-    await expect(page.locator('[data-owntracks-webhook-url="true"]')).toBeAttached({ timeout: 3_000 });
+    await expect(page.locator('[data-owntracks-webhook-url="true"]')).toHaveText("https://butlers.example.com/owntracks/webhook");
+    await expect(otDrawer.getByRole("img", { name: "OwnTracks: connected" })).toBeVisible();
+    await expect(otDrawer.getByText("42 events today", { exact: true })).toBeVisible();
 
     // Generate token button present
     const generateBtn = page.locator('button', { hasText: /generate|regenerate/i });
     await expect(generateBtn.first()).toBeAttached({ timeout: 3_000 });
   });
 
-  test("C33: OwnTracks generate token -- fires generate mutation, shows token", async ({ page }) => {
-    // Covers C33 -- generate token
+  test("C33: OwnTracks regenerate token -- confirms, fires mutation, shows token", async ({ page }) => {
+    // Covers C33 -- replacing a configured token requires confirmation.
     await mockAllSecretRoutes(page);
-    const inventoryWithOT = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
+    const inventoryWithOT = structuredClone(MOCK_INVENTORY_RESPONSE);
     inventoryWithOT.data.user.push({
       id: "u-owntracks-tze",
       entity_id: "tze",
@@ -1045,34 +1052,45 @@ test.describe("Provider drawers (C32-C36)", () => {
       last_verified: "11:00 today",
       test: { ok: true, code: 200, at: "11:00 today" },
     });
-    inventoryWithOT.data.providers.owntracks = {
+    (inventoryWithOT.data.providers ??= {}).owntracks = {
       id: "owntracks", label: "OwnTracks", glyph: "O", kind: "webhook",
       authority: "owntracks.local", brief: "Location tracking.", cadence: "push",
     };
     await page.route("**/api/secrets/inventory**", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(inventoryWithOT) })
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSecretsInventory", inventoryWithOT) })
     );
     await page.goto("/secrets?focus=u:owntracks", { timeout: 15_000 });
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
     await page.locator('[data-owntracks-drawer-content="true"]').waitFor({ timeout: 8_000 });
 
-    // Click generate / regenerate
-    const generateBtn = page.locator('[data-owntracks-drawer-content="true"] button', { hasText: /generate|regenerate/i }).first();
+    const tokenRequests: string[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === "/api/connectors/owntracks/token/generate") {
+        tokenRequests.push(request.method());
+      }
+    });
+    const generateBtn = page.locator('[data-owntracks-drawer-content="true"]').getByRole("button", { name: "regenerate token", exact: true });
     await generateBtn.click();
 
-    // If there is no existing token, the token should appear.
-    // With existing token, a confirm panel appears first.
-    // Either the token value appears or a regenerate confirm appears.
-    const tokenValue = page.locator('[data-owntracks-token-value="true"]');
     const tokenPanel = page.locator('[data-owntracks-token-panel="true"]');
+    const tokenValue = tokenPanel.getByText("new-owntracks-token-abc123", { exact: true });
     const regenerateConfirm = page.locator('[data-owntracks-regenerate-confirm="true"]');
-    await expect(tokenValue.or(tokenPanel).or(regenerateConfirm)).toBeAttached({ timeout: 5_000 });
+    await expect(regenerateConfirm).toBeVisible();
+    await expect(tokenValue).not.toBeAttached();
+    expect(tokenRequests).toEqual([]);
+
+    await regenerateConfirm.getByRole("button", { name: "yes, regenerate", exact: true }).click();
+    await expect(tokenValue).toHaveText("new-owntracks-token-abc123");
+    expect(tokenRequests).toEqual(["POST"]);
+    await expect(regenerateConfirm).not.toBeAttached();
+    await tokenPanel.getByRole("button", { name: "dismiss", exact: true }).click();
+    await expect(tokenPanel).not.toBeAttached();
   });
 
   test("C34: Steam drawer -- renders accounts list and connect panel (click to open)", async ({ page }) => {
     // Covers C34 -- Steam drawer: connect SteamID / API key, disconnect accounts
     await mockAllSecretRoutes(page);
-    const inventoryWithSteam = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
+    const inventoryWithSteam = structuredClone(MOCK_INVENTORY_RESPONSE);
     inventoryWithSteam.data.user.push({
       id: "u-steam-tze",
       entity_id: "tze",
@@ -1082,12 +1100,12 @@ test.describe("Provider drawers (C32-C36)", () => {
       last_verified: "10:00 today",
       test: { ok: true, code: 200, at: "10:00 today" },
     });
-    inventoryWithSteam.data.providers.steam = {
-      id: "steam", label: "Steam", glyph: "S", kind: "api_key",
+    (inventoryWithSteam.data.providers ??= {}).steam = {
+      id: "steam", label: "Steam", glyph: "S", kind: "apikey",
       authority: "api.steampowered.com", brief: "Gaming data.", cadence: "poll",
     };
     await page.route("**/api/secrets/inventory**", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(inventoryWithSteam) })
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSecretsInventory", inventoryWithSteam) })
     );
     await page.goto("/secrets?focus=u:steam", { timeout: 15_000 });
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
@@ -1109,13 +1127,13 @@ test.describe("Provider drawers (C32-C36)", () => {
   test("C35: Spotify drawer -- renders configure panel + OAuth connect button", async ({ page }) => {
     // Covers C35 -- Spotify drawer: configure client_id, OAuth PKCE start, disconnect
     await mockAllSecretRoutes(page);
-    const inventoryWithSpotify = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
-    inventoryWithSpotify.data.providers.spotify = {
+    const inventoryWithSpotify = structuredClone(MOCK_INVENTORY_RESPONSE);
+    (inventoryWithSpotify.data.providers ??= {}).spotify = {
       id: "spotify", label: "Spotify", glyph: "S", kind: "oauth",
       authority: "accounts.spotify.com", brief: "Music streaming.", cadence: "poll · 15m",
     };
     await page.route("**/api/secrets/inventory**", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(inventoryWithSpotify) })
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSecretsInventory", inventoryWithSpotify) })
     );
     await page.goto("/secrets?focus=u:spotify", { timeout: 15_000 });
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
@@ -1137,7 +1155,7 @@ test.describe("Provider drawers (C32-C36)", () => {
   test("C36: WhatsApp drawer -- renders status, pair button", async ({ page }) => {
     // Covers C36 -- WhatsApp drawer: QR pairing start/poll/cancel, disconnect
     await mockAllSecretRoutes(page);
-    const inventoryWithWA = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
+    const inventoryWithWA = structuredClone(MOCK_INVENTORY_RESPONSE);
     inventoryWithWA.data.user.push({
       id: "u-whatsapp-tze",
       entity_id: "tze",
@@ -1147,12 +1165,12 @@ test.describe("Provider drawers (C32-C36)", () => {
       last_verified: "09:00 today",
       test: { ok: true, code: 200, at: "09:00 today" },
     });
-    inventoryWithWA.data.providers.whatsapp = {
-      id: "whatsapp", label: "WhatsApp", glyph: "W", kind: "qr_session",
+    (inventoryWithWA.data.providers ??= {}).whatsapp = {
+      id: "whatsapp", label: "WhatsApp", glyph: "W", kind: "token",
       authority: "web.whatsapp.com", brief: "Messaging.", cadence: "push",
     };
     await page.route("**/api/secrets/inventory**", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(inventoryWithWA) })
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSecretsInventory", inventoryWithWA) })
     );
     await page.goto("/secrets?focus=u:whatsapp", { timeout: 15_000 });
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
@@ -1371,7 +1389,7 @@ test.describe("Error / edge paths", () => {
         return route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "internal server error" }) });
       }
       if (route.request().method() === "DELETE") {
-        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: { deleted: true }, meta: {} }) });
+        return route.fulfill({ status: 200, contentType: "application/json", body: mockJson("deleteSystemCredential", { data: { status: "disconnected" }, meta: {} }) });
       }
       route.continue();
     });
@@ -1418,18 +1436,16 @@ test.describe("Error / edge paths", () => {
     await page.route("**/api/secrets/cli/*/revoke**", (route) =>
       route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "revoke failed" }) })
     );
-    const inventoryWithGeneric = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
+    const inventoryWithGeneric = structuredClone(MOCK_INVENTORY_RESPONSE);
     inventoryWithGeneric.data.cli.push({
       key: "generic-token",
-      category: "runtime",
-      description: "Generic token runtime",
       state: "ok",
       fingerprint: "sha256:gentoken",
       last_verified: "13:00 today",
       test: { ok: true, code: 200, at: "13:00 today" },
     });
     await page.route("**/api/secrets/inventory**", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(inventoryWithGeneric) })
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSecretsInventory", inventoryWithGeneric) })
     );
     await page.goto("/secrets?focus=c:generic-token", { timeout: 15_000 });
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
@@ -1483,11 +1499,9 @@ test.describe("No-dead-control assertion", () => {
   test("every commit-pill on system page triggers a visible response", async ({ page }) => {
     // Commit pill on missing system credential is "set value"
     await mockAllSecretRoutes(page);
-    const inventoryMissing = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
+    const inventoryMissing = structuredClone(MOCK_INVENTORY_RESPONSE);
     inventoryMissing.data.system = [{
       key: "MISSING_KEY",
-      category: "general",
-      description: "A missing key.",
       state: "missing",
       fingerprint: null,
       last_verified: null,
@@ -1495,7 +1509,7 @@ test.describe("No-dead-control assertion", () => {
       test: null,
     }];
     await page.route("**/api/secrets/inventory**", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(inventoryMissing) })
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSecretsInventory", inventoryMissing) })
     );
     await page.goto("/secrets?focus=s:MISSING_KEY", { timeout: 15_000 });
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
@@ -1511,18 +1525,16 @@ test.describe("No-dead-control assertion", () => {
 
   test("every commit-pill on CLI page (missing) triggers a visible response", async ({ page }) => {
     await mockAllSecretRoutes(page);
-    const inventoryMissingCli = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
+    const inventoryMissingCli = structuredClone(MOCK_INVENTORY_RESPONSE);
     inventoryMissingCli.data.cli = [{
       key: "missing-cli",
-      category: "runtime",
-      description: "Missing CLI token",
       state: "never_set",
       fingerprint: null,
       last_verified: null,
       test: null,
     }];
     await page.route("**/api/secrets/inventory**", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(inventoryMissingCli) })
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSecretsInventory", inventoryMissingCli) })
     );
     await page.goto("/secrets?focus=c:missing-cli", { timeout: 15_000 });
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });

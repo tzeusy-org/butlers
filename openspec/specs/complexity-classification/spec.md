@@ -7,7 +7,7 @@ Defines the complexity classification system used for dynamic model routing. Com
 ## Requirements
 
 ### Requirement: Complexity Enum
-The system SHALL define a complexity classification enum with six canonical tiers representing model capability and resource requirements. The legacy four-tier vocabulary (`trivial`, `medium`, `high`, `extra_high`) plus `discretion` and `self_healing` was retired in migration `core_093`. Callers that still emit a legacy value are remapped with a loud deprecation warning by `_check_deprecated_tier()` in `src/butlers/core/model_routing.py`.
+The system SHALL define a complexity classification enum with six canonical tiers representing model capability and resource requirements. This requirement is the single definition of the tier vocabulary and its order; other specs reference it rather than restating it. Callers that still emit a retired tier value SHALL be remapped with a loud deprecation warning.
 
 #### Scenario: Enum values
 - **WHEN** a complexity classification is assigned
@@ -74,7 +74,7 @@ The manual trigger API SHALL accept an optional complexity parameter for operato
 The `tick` and `classification` trigger sources cover two distinct internal paths, each of which SHALL resolve its own complexity tier as described below. The system SHALL NOT apply a single fixed low-cost tier to every tick/classification-triggered session.
 
 1. The scheduler tick handler (`tick()` in `src/butlers/core/scheduler.py`) dispatches each due scheduled task at that task's own configured complexity, defaulting to `workhorse` (`_DEFAULT_COMPLEXITY`) when the row specifies none or an unrecognized value. These sessions carry a `schedule:<name>` or `deadline:<name>` trigger source, not a fixed low-cost tier.
-2. The Switchboard routing-classification spawn (`src/butlers/modules/pipeline.py`) is the only session literally tagged `trigger_source="classification"` (bu-qvnce.12 renamed this from the historical `"tick"` — spend rules and QA/chronicler consumers that key off the classification call site now match both values so historical rows keep resolving correctly); it uses the `cheap` tier for its lightweight routing-LLM decision.
+2. The Switchboard routing-classification spawn (`src/butlers/modules/pipeline.py`) is the only session literally tagged `trigger_source="classification"` (historical rows carry `"tick"` for this call site, so spend rules and QA/chronicler consumers that key off it SHALL match both values); it uses the `cheap` tier for its lightweight routing-LLM decision.
 
 #### Scenario: Scheduler tick uses each task's complexity, default workhorse
 - **WHEN** the scheduler tick handler dispatches a due cron, deadline, or event-chain task

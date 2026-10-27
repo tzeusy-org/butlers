@@ -28,7 +28,7 @@
 import * as React from "react"
 
 import { cn, composeHandlers } from "@/lib/utils"
-import { usePrefetchOnIntent } from "@/hooks/use-prefetch-on-intent"
+import { useNavIntent } from "@/hooks/use-nav-intent"
 
 export interface DisclosureRowProps
   extends Omit<React.HTMLAttributes<HTMLDivElement>, "onToggle"> {
@@ -85,12 +85,12 @@ export const DisclosureRow = React.forwardRef<HTMLDivElement, DisclosureRowProps
     },
     ref,
   ) {
-    const prefetch = usePrefetchOnIntent(prefetchTo)
+    const prefetch = useNavIntent(prefetchTo)
 
     function handleClick(e: React.MouseEvent<HTMLDivElement>) {
       onClick?.(e)
       if (e.defaultPrevented || disabled) return
-      prefetch.onActivate?.()
+      prefetch.onActivate()
       onToggle()
     }
 
@@ -102,7 +102,7 @@ export const DisclosureRow = React.forwardRef<HTMLDivElement, DisclosureRowProps
       if (e.target !== e.currentTarget) return
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault()
-        prefetch.onActivate?.()
+        prefetch.onActivate()
         onToggle()
       }
     }
@@ -116,7 +116,7 @@ export const DisclosureRow = React.forwardRef<HTMLDivElement, DisclosureRowProps
         aria-controls={controlsId}
         aria-disabled={disabled || undefined}
         className={cn(
-          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
+          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus focus-visible:ring-inset",
           disabled ? "cursor-default" : "cursor-pointer",
           className,
         )}

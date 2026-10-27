@@ -20,6 +20,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp import FastMCP
 
 from butlers.config import (
     ApprovalConfig,
@@ -32,8 +33,21 @@ from butlers.modules.approvals.gate import apply_approval_gates
 from butlers.modules.email import EmailConfig, EmailModule
 from butlers.modules.telegram import TelegramModule
 from butlers.modules.whatsapp import WhatsAppModule
+from butlers.testing.approval_parking_fake import record_pending_action
+from butlers.testing.mcp import tool_fn
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _available_permission_for_owner_resolution(request, monkeypatch):
+    """Identity controls use a grant and configured self-route origin; availability is separate."""
+    monkeypatch.setenv("DASHBOARD_URL", "https://dashboard.example.test")
+    if request.node.name == "test_send_to_secondary_owner_email_is_allowed_cross_schema":
+        monkeypatch.setattr(
+            "butlers.modules.email.require_permission", AsyncMock(return_value=None)
+        )
+
 
 # ---------------------------------------------------------------------------
 # Shared test data
@@ -42,6 +56,7 @@ pytestmark = pytest.mark.unit
 OWNER_CONTACT_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 OWNER_ENTITY_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaab")
 OWNER_EMAIL = "owner@real.com"
+SECONDARY_OWNER_EMAIL = "owner-secondary@real.com"
 
 KNOWN_NON_OWNER_CONTACT_ID = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 KNOWN_NON_OWNER_ENTITY_ID = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbc")
@@ -68,7 +83,7 @@ _ROUTE_NON_OWNER_DOSSIER = {
 
 def _owner_contact() -> ResolvedContact:
     return ResolvedContact(
-        contact_id=None,  # bead 7: entity_id is the authoritative key
+        # bead 7: entity_id is the authoritative key
         name="Owner",
         roles=["owner"],
         entity_id=OWNER_ENTITY_ID,
@@ -77,7 +92,7 @@ def _owner_contact() -> ResolvedContact:
 
 def _non_owner_contact() -> ResolvedContact:
     return ResolvedContact(
-        contact_id=None,  # bead 7: entity_id is the authoritative key
+        # bead 7: entity_id is the authoritative key
         name="Friend",
         roles=["friend"],
         entity_id=KNOWN_NON_OWNER_ENTITY_ID,
@@ -97,14 +112,11 @@ class _MockPool:
         self.approval_rules: list[dict[str, Any]] = []
         self.approval_events: list[dict[str, Any]] = []
         self._contact_info: dict[tuple[str, str], ResolvedContact] = {}
-        self._contacts_by_id: dict[uuid.UUID, ResolvedContact] = {}
 
     def register_contact(
         self, channel_type: str, channel_value: str, contact: ResolvedContact
     ) -> None:
         self._contact_info[(channel_type, channel_value)] = contact
-        if contact.contact_id is not None:
-            self._contacts_by_id[contact.contact_id] = contact
 
     async def execute(self, query: str, *args: Any) -> None:
         if "INSERT INTO pending_actions" in query:
@@ -145,14 +157,6 @@ class _MockPool:
             return dict(row) if row else None
 
         if "relationship.entity_facts" in query and args:
-            if '"primary"' in query and len(args) == 3:
-                # is_primary_contact query (bead 7): SELECT "primary" FROM relationship.entity_facts
-                # WHERE subject=$1 AND predicate=$2 AND object=$3
-                channel_value = str(args[2])
-                found = any(ci_val == channel_value for (ci_type, ci_val) in self._contact_info)
-                if not found:
-                    return None
-                return {"primary": True}
             if "ef.subject" in query and "entity_facts ef" in query and len(args) >= 2:
                 # resolve_contact_by_channel: SELECT ef.subject AS entity_id, e.canonical_name, ...
                 # WHERE ef.predicate=$1 AND ef.object=$2 AND ef.validity='active'
@@ -174,31 +178,16 @@ class _MockPool:
                 }
 
         if "public.contact_info" in query and args:
-            # Channel-resolution query: SELECT contact_id, name... WHERE type=$1 AND value=$2
+            # Legacy channel-resolution query: SELECT name... WHERE type=$1 AND value=$2
             if len(args) >= 2:
                 contact = self._contact_info.get((str(args[0]), str(args[1])))
                 if contact is None:
                     return None
                 return {
-                    "contact_id": contact.contact_id,
                     "name": contact.name,
                     "roles": contact.roles,
                     "entity_id": contact.entity_id,
                 }
-        if "public.contacts" in query and "WHERE id" in query and args:
-            try:
-                cid = uuid.UUID(str(args[0]))
-            except (ValueError, AttributeError):
-                return None
-            contact = self._contacts_by_id.get(cid)
-            if contact is None:
-                return None
-            return {
-                "contact_id": contact.contact_id,
-                "name": contact.name,
-                "roles": contact.roles,
-                "entity_id": contact.entity_id,
-            }
         return None
 
     async def fetchval(self, query: str, *args: Any) -> Any:
@@ -312,7 +301,7 @@ def _make_daemon_patches() -> dict[str, Any]:
 
     mock_adapter = MagicMock()
     mock_adapter.binary_name = "claude"
-    mock_adapter_cls = MagicMock(return_value=mock_adapter)
+    mock_adapter_builder = MagicMock(return_value=mock_adapter)
 
     # Mock RuntimeConfigAccessor so phase 9b doesn't hit the real DB.
     from butlers.core.runtime_config import RuntimeConfig as DBRuntimeConfig
@@ -348,7 +337,9 @@ def _make_daemon_patches() -> dict[str, Any]:
         "recover_route_inbox": patch.object(
             ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
         ),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
+        ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "RuntimeConfigAccessor": patch(
             "butlers.core.runtime_config.RuntimeConfigAccessor",
@@ -360,30 +351,7 @@ def _make_daemon_patches() -> dict[str, Any]:
 async def _boot_daemon_with_notify(butler_dir: Path) -> tuple[Any, Any]:
     """Boot a daemon and extract the notify tool function."""
     patches = _make_daemon_patches()
-    notify_fn = None
-    mock_mcp = MagicMock()
-    registered: dict[str, Any] = {}
-
-    class _FakeTool:
-        def __init__(self, name: str, fn: Any):
-            self.name = name
-            self.fn = fn
-
-    def tool_decorator(*_decorator_args, **_decorator_kwargs):
-        def decorator(fn):
-            nonlocal notify_fn
-            if fn.__name__ == "notify":
-                notify_fn = fn
-            registered[fn.__name__] = _FakeTool(fn.__name__, fn)
-            return fn
-
-        return decorator
-
-    async def list_tools() -> list[Any]:
-        return list(registered.values())
-
-    mock_mcp.tool = tool_decorator
-    mock_mcp.list_tools = list_tools
+    runtime_mcp = FastMCP("email-outbound-notify")
 
     with (
         patches["db_from_env"],
@@ -393,19 +361,21 @@ async def _boot_daemon_with_notify(butler_dir: Path) -> tuple[Any, Any]:
         patches["init_telemetry"],
         patches["configure_logging"],
         patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
+        patch("butlers.lifecycle.FastMCP", return_value=runtime_mcp),
         patches["Spawner"],
         patches["start_mcp_server"],
         patches["connect_switchboard"],
         patches["create_audit_pool"],
         patches["recover_route_inbox"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["RuntimeConfigAccessor"],
     ):
         daemon = ButlerDaemon(butler_dir)
         await daemon.start()
-        return daemon, notify_fn
+        notify_tool = await runtime_mcp.get_tool("notify")
+        assert notify_tool is not None
+        return daemon, notify_tool.fn
 
 
 def _mock_switchboard_client() -> Any:
@@ -418,12 +388,29 @@ def _mock_switchboard_client() -> Any:
     return client
 
 
+@pytest.fixture(autouse=True)
+def _use_mock_pool_park_recorder(monkeypatch: pytest.MonkeyPatch):
+    """Keep mocked transport tests focused on producer decision semantics."""
+    monkeypatch.setattr(
+        "butlers.modules.approvals.email_guard.park_pending_action",
+        record_pending_action,
+    )
+    monkeypatch.setattr(
+        "butlers.modules.approvals.gate.park_pending_action",
+        record_pending_action,
+    )
+
+
 @pytest.fixture
 def registered_email_approval_hooks(monkeypatch: pytest.MonkeyPatch):
     """Register the real email guard for each daemon pool started by a test."""
     import butlers.core.approvals_hooks as _hooks
     from butlers.modules.approvals.email_guard import check_email_recipient
-    from butlers.modules.approvals.park import park_pending_action
+
+    monkeypatch.setattr(
+        "butlers.modules.approvals.email_guard.park_pending_action",
+        record_pending_action,
+    )
 
     async def _allow_non_email_recipient(*_args, **_kwargs):
         return _hooks.EmailGuardDecision(allowed=True, reason="email_guard_only")
@@ -438,7 +425,7 @@ def registered_email_approval_hooks(monkeypatch: pytest.MonkeyPatch):
             pool,
             email_guard=check_email_recipient,
             recipient_guard=_allow_non_email_recipient,
-            park_pending_action=park_pending_action,
+            park_pending_action=record_pending_action,
         )
         registrations.append((pool, runtime))
         return daemon, notify_fn
@@ -457,7 +444,11 @@ def registered_approval_hooks(monkeypatch: pytest.MonkeyPatch):
         check_email_recipient,
         check_recipient,
     )
-    from butlers.modules.approvals.park import park_pending_action
+
+    monkeypatch.setattr(
+        "butlers.modules.approvals.email_guard.park_pending_action",
+        record_pending_action,
+    )
 
     original_boot = _boot_daemon_with_notify
     registrations = []
@@ -469,7 +460,7 @@ def registered_approval_hooks(monkeypatch: pytest.MonkeyPatch):
             pool,
             email_guard=check_email_recipient,
             recipient_guard=check_recipient,
-            park_pending_action=park_pending_action,
+            park_pending_action=record_pending_action,
         )
         registrations.append((pool, runtime))
         return daemon, notify_fn
@@ -540,9 +531,16 @@ class TestNotifyRecipientValidation:
 
         daemon.switchboard_client = _mock_switchboard_client()
 
-        with patch(
-            "butlers.identity.resolve_contact_by_channel",
-            new=AsyncMock(return_value=_owner_contact()),
+        owner = _owner_contact()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=owner),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, True)),
+            ),
         ):
             result = await notify_fn(
                 channel="email",
@@ -562,6 +560,7 @@ class TestNotifyRecipientValidation:
         assert notify_fn is not None
 
         daemon.switchboard_client = _mock_switchboard_client()
+        park = AsyncMock(side_effect=record_pending_action)
 
         with (
             patch(
@@ -572,6 +571,7 @@ class TestNotifyRecipientValidation:
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
             ),
+            patch("butlers.modules.approvals.email_guard.park_pending_action", new=park),
         ):
             result = await notify_fn(
                 channel="email",
@@ -584,6 +584,7 @@ class TestNotifyRecipientValidation:
             f"Known non-owner email '{KNOWN_NON_OWNER_EMAIL}' MUST be blocked "
             f"without a standing rule, got status={result.get('status')}"
         )
+        assert park.await_args.kwargs["origin_butler"] == "test-butler"
 
     async def test_standing_rule_permits_known_non_owner_email(self, butler_dir: Path) -> None:
         """A known non-owner contact WITH a matching standing rule MUST be allowed."""
@@ -744,9 +745,17 @@ class TestNotifyTelegramRecipientValidation:
 
         daemon.switchboard_client = _mock_switchboard_client()
 
-        with patch(
-            "butlers.identity.resolve_contact_by_channel",
-            new=AsyncMock(return_value=_owner_contact()),
+        owner = _owner_contact()
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=owner),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, False)),
+            ),
         ):
             result = await notify_fn(
                 channel="telegram",
@@ -915,9 +924,23 @@ class TestNotifyTelegramRecipientValidation:
 
         daemon.switchboard_client = _mock_switchboard_client()
 
-        with patch(
-            "butlers.identity.resolve_contact_by_channel",
-            new=AsyncMock(return_value=_owner_contact()),
+        owner = _owner_contact()
+
+        async def resolve_owner_directly_except_email(
+            _pool: Any, channel_type: str, _channel_value: str
+        ) -> ResolvedContact | None:
+            return None if channel_type == "email" else owner
+
+        owner_fallback = AsyncMock(return_value=(owner, False))
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=resolve_owner_directly_except_email,
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=owner_fallback,
+            ),
         ):
             tg_result = await notify_fn(
                 channel="telegram",
@@ -933,41 +956,12 @@ class TestNotifyTelegramRecipientValidation:
         assert tg_result["status"] == "ok", f"telegram owner send: {tg_result}"
         assert email_result["status"] == "ok", f"email owner send: {email_result}"
         assert daemon.switchboard_client.call_tool.await_count == 2
+        owner_fallback.assert_any_await(daemon.db.pool, "email", OWNER_EMAIL)
 
 
 # ---------------------------------------------------------------------------
 # Layer 3: Messenger approval gate on email tools
 # ---------------------------------------------------------------------------
-
-
-def _make_mock_mcp() -> MagicMock:
-    """Create a mock FastMCP server with tool registration."""
-    mock_mcp = MagicMock()
-    _tools: dict[str, Any] = {}
-
-    class FakeTool:
-        def __init__(self, name: str, fn: Any):
-            self.name = name
-            self.fn = fn
-
-    async def get_tool(name: str) -> Any:
-        return _tools.get(name)
-
-    async def list_tools() -> list[Any]:
-        return list(_tools.values())
-
-    mock_mcp.get_tool = get_tool
-    mock_mcp.list_tools = list_tools
-
-    def tool_decorator(*_a, **_kw):
-        def dec(fn):
-            _tools[fn.__name__] = FakeTool(fn.__name__, fn)
-            return fn
-
-        return dec
-
-    mock_mcp.tool = tool_decorator
-    return mock_mcp
 
 
 @pytest.mark.asyncio
@@ -980,7 +974,7 @@ class TestMessengerApprovalGate:
         pool.register_contact("email", OWNER_EMAIL, _owner_contact())
         # UNKNOWN_EMAIL is NOT registered
 
-        mcp = _make_mock_mcp()
+        mcp = FastMCP("email-approval-gate")
 
         # Register the tool on the mock MCP
         @mcp.tool()
@@ -997,8 +991,8 @@ class TestMessengerApprovalGate:
         await apply_approval_gates(mcp, config, pool)
 
         # Now call the gated tool with an unknown email
-        tool = await mcp.get_tool("email_send_message")
-        result = await tool.fn(
+        tool = await tool_fn(mcp, "email_send_message")
+        result = await tool(
             to=UNKNOWN_EMAIL,
             subject="Test",
             body="Hello",
@@ -1015,7 +1009,7 @@ class TestMessengerApprovalGate:
         pool = _MockPool()
         pool.register_contact("email", OWNER_EMAIL, _owner_contact())
 
-        mcp = _make_mock_mcp()
+        mcp = FastMCP("email-approval-gate")
 
         @mcp.tool()
         async def email_send_message(to: str, subject: str, body: str) -> dict:
@@ -1030,8 +1024,12 @@ class TestMessengerApprovalGate:
 
         await apply_approval_gates(mcp, config, pool)
 
-        tool = await mcp.get_tool("email_send_message")
-        result = await tool.fn(to=OWNER_EMAIL, subject="Report", body="Weekly summary")
+        tool = await tool_fn(mcp, "email_send_message")
+        with patch(
+            "butlers.identity.resolve_owner_channel_via_definer",
+            new=AsyncMock(return_value=(_owner_contact(), True)),
+        ):
+            result = await tool(to=OWNER_EMAIL, subject="Report", body="Weekly summary")
 
         assert result.get("status") == "sent", (
             f"email_send_message to owner MUST be auto-approved, got: {result}"
@@ -1043,7 +1041,7 @@ class TestMessengerApprovalGate:
         pool = _MockPool()
         # Register only owner, leave unknown addresses unregistered
 
-        mcp = _make_mock_mcp()
+        mcp = FastMCP("email-approval-gate")
 
         @mcp.tool()
         async def email_reply_to_thread(
@@ -1060,8 +1058,8 @@ class TestMessengerApprovalGate:
 
         await apply_approval_gates(mcp, config, pool)
 
-        tool = await mcp.get_tool("email_reply_to_thread")
-        result = await tool.fn(
+        tool = await tool_fn(mcp, "email_reply_to_thread")
+        result = await tool(
             to="notification-thealbatrossfile@nlb.gov.sg",
             thread_id="thread-abc",
             body="I've recorded your booking",
@@ -1080,7 +1078,7 @@ class TestMessengerApprovalGate:
         pool.register_contact("email", OWNER_EMAIL, _owner_contact())
         pool.register_contact("email", KNOWN_NON_OWNER_EMAIL, _non_owner_contact())
 
-        mcp = _make_mock_mcp()
+        mcp = FastMCP("email-approval-gate")
 
         @mcp.tool()
         async def email_send_message(to: str, subject: str, body: str) -> dict:
@@ -1095,8 +1093,8 @@ class TestMessengerApprovalGate:
 
         await apply_approval_gates(mcp, config, pool)
 
-        tool = await mcp.get_tool("email_send_message")
-        result = await tool.fn(
+        tool = await tool_fn(mcp, "email_send_message")
+        result = await tool(
             to=KNOWN_NON_OWNER_EMAIL,
             subject="Hi",
             body="Hello friend",
@@ -1189,7 +1187,7 @@ class TestIncidentReplay:
         pool = _MockPool()
         pool.register_contact("email", OWNER_EMAIL, _owner_contact())
 
-        mcp = _make_mock_mcp()
+        mcp = FastMCP("email-approval-gate")
 
         @mcp.tool()
         async def email_reply_to_thread(
@@ -1206,8 +1204,8 @@ class TestIncidentReplay:
 
         await apply_approval_gates(mcp, config, pool)
 
-        tool = await mcp.get_tool("email_reply_to_thread")
-        result = await tool.fn(
+        tool = await tool_fn(mcp, "email_reply_to_thread")
+        result = await tool(
             to="notification-thealbatrossfile@nlb.gov.sg",
             thread_id="thread-albatross",
             body=(
@@ -1235,7 +1233,6 @@ TEMP_ENTITY_ID = uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
 def _temp_contact() -> ResolvedContact:
     """Temp contact created during email ingestion (no owner role)."""
     return ResolvedContact(
-        contact_id=None,
         name="Unknown (email ibanking.alert@dbs.com)",
         roles=[],
         entity_id=TEMP_ENTITY_ID,
@@ -1325,34 +1322,7 @@ async def _boot_messenger_with_route_execute(
 ) -> tuple[Any, Any]:
     """Boot a messenger daemon and extract the route_execute tool function."""
     patches = _make_daemon_patches()
-    route_execute_fn = None
-    mock_mcp = MagicMock()
-    registered_names: set[str] = set()
-
-    class _FakeTool:
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-    def tool_decorator(*_decorator_args, **_decorator_kwargs):
-        def decorator(fn):
-            nonlocal route_execute_fn
-            name = _decorator_kwargs.get("name") or getattr(fn, "__name__", "")
-            if name:
-                registered_names.add(name)
-            if getattr(fn, "__name__", "") == "route_execute" or (
-                _decorator_kwargs.get("name") == "route.execute"
-            ):
-                route_execute_fn = fn
-            return fn
-
-        return decorator
-
-    async def list_tools() -> list[Any]:
-        return [_FakeTool(name) for name in registered_names]
-
-    mock_mcp.tool = tool_decorator
-    mock_mcp.get_tool = AsyncMock(return_value=None)
-    mock_mcp.list_tools = list_tools
+    runtime_mcp = FastMCP("email-outbound-route-execute")
 
     with (
         patches["db_from_env"],
@@ -1362,19 +1332,21 @@ async def _boot_messenger_with_route_execute(
         patches["init_telemetry"],
         patches["configure_logging"],
         patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
+        patch("butlers.lifecycle.FastMCP", return_value=runtime_mcp),
         patches["Spawner"],
         patches["start_mcp_server"],
         patches["connect_switchboard"],
         patches["create_audit_pool"],
         patches["recover_route_inbox"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["RuntimeConfigAccessor"],
     ):
         daemon = ButlerDaemon(butler_dir)
         await daemon.start()
-        return daemon, route_execute_fn
+        route_execute_tool = await runtime_mcp.get_tool("route.execute")
+        assert route_execute_tool is not None
+        return daemon, route_execute_tool.fn
 
 
 def _make_route_envelope(
@@ -1445,7 +1417,7 @@ def _make_route_envelope(
 
 
 def _parked_route_command(daemon: Any) -> tuple[str, dict[str, Any]]:
-    """Return the single native command captured by the pending-action insert."""
+    """Return the single stored command captured by the pending-action insert."""
     pending_inserts = [
         call
         for call in daemon.db.pool.execute.await_args_list
@@ -1478,6 +1450,7 @@ class TestRouteExecuteApprovalGate:
             message="I received the DBS Card Transaction Alert but the body was empty.",
             decision_dossier=_ROUTE_NON_OWNER_DOSSIER,
         )
+        reply_spy = AsyncMock(return_value={"status": "sent"})
 
         with (
             patch(
@@ -1487,7 +1460,8 @@ class TestRouteExecuteApprovalGate:
             patch(
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
-            ),
+            ) as rules,
+            patch.object(EmailModule, "_reply_to_thread", new=reply_spy),
         ):
             result = await route_execute_fn(**envelope)
 
@@ -1501,7 +1475,8 @@ class TestRouteExecuteApprovalGate:
         thread_id = envelope["input"]["context"]["notify_request"]["request_context"][
             "source_thread_identity"
         ]
-        assert _parked_route_command(daemon) == (
+        rules.assert_awaited_once_with(
+            daemon.db.pool,
             "email_reply_to_thread",
             {
                 "to": DBS_ALERT_EMAIL,
@@ -1510,9 +1485,13 @@ class TestRouteExecuteApprovalGate:
                 "subject": "[relationship] Notification",
             },
         )
+        assert _parked_route_command(daemon) == ("route.execute", envelope)
+        reply_spy.assert_not_awaited()
 
-    async def test_send_to_owner_email_is_allowed(self, tmp_path: Path) -> None:
-        """route.execute send to owner email → MUST be allowed through."""
+    async def test_send_to_secondary_owner_email_is_allowed_cross_schema(
+        self, tmp_path: Path
+    ) -> None:
+        """route.execute authorizes a secondary owner email through the definer."""
         messenger_dir = _messenger_dir(tmp_path)
         daemon, route_execute_fn = await _boot_messenger_with_route_execute(messenger_dir)
         assert route_execute_fn is not None
@@ -1520,21 +1499,33 @@ class TestRouteExecuteApprovalGate:
         envelope = _make_route_envelope(
             channel="email",
             intent="send",
-            recipient=OWNER_EMAIL,
+            recipient=SECONDARY_OWNER_EMAIL,
             message="Your weekly report",
             origin_butler="finance",
         )
 
+        owner = _owner_contact()
+        smtp_send = MagicMock(
+            return_value={
+                "status": "sent",
+                "to": SECONDARY_OWNER_EMAIL,
+                "subject": "test",
+            }
+        )
         with (
             patch(
                 "butlers.identity.resolve_contact_by_channel",
-                new=AsyncMock(return_value=_owner_contact()),
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, False)),
             ),
             # Mock SMTP to prevent real email delivery
             patch.object(
                 EmailModule,
                 "_smtp_send",
-                return_value={"status": "sent", "to": OWNER_EMAIL, "subject": "test"},
+                new=smtp_send,
             ),
         ):
             result = await route_execute_fn(**envelope)
@@ -1542,6 +1533,8 @@ class TestRouteExecuteApprovalGate:
         assert result.get("status") == "ok", (
             f"route.execute send to owner email MUST succeed, got: {result}"
         )
+        assert smtp_send.call_count == 1
+        assert smtp_send.call_args.args[0] == SECONDARY_OWNER_EMAIL
 
     async def test_send_to_non_owner_without_rule_is_blocked(self, tmp_path: Path) -> None:
         """route.execute send to known non-owner without standing rule → blocked."""
@@ -1557,6 +1550,8 @@ class TestRouteExecuteApprovalGate:
             origin_butler="relationship",
             decision_dossier=_ROUTE_NON_OWNER_DOSSIER,
         )
+        park = AsyncMock(side_effect=record_pending_action)
+        send_spy = AsyncMock(return_value={"status": "sent"})
 
         with (
             patch(
@@ -1566,7 +1561,9 @@ class TestRouteExecuteApprovalGate:
             patch(
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
-            ),
+            ) as rules,
+            patch("butlers.modules.approvals.email_guard.park_pending_action", new=park),
+            patch.object(EmailModule, "_send_email", new=send_spy),
         ):
             result = await route_execute_fn(**envelope)
 
@@ -1575,7 +1572,9 @@ class TestRouteExecuteApprovalGate:
         )
         assert "blocked" in result["error"]["message"].lower()
         assert result["error"]["retryable"] is False
-        assert _parked_route_command(daemon) == (
+        assert park.await_args.kwargs["origin_butler"] == "messenger"
+        rules.assert_awaited_once_with(
+            daemon.db.pool,
             "email_send_message",
             {
                 "to": KNOWN_NON_OWNER_EMAIL,
@@ -1583,6 +1582,8 @@ class TestRouteExecuteApprovalGate:
                 "body": "Hello friend",
             },
         )
+        assert _parked_route_command(daemon) == ("route.execute", envelope)
+        send_spy.assert_not_awaited()
 
     async def test_reply_without_provider_thread_identity_fails_before_parking(
         self, tmp_path: Path
@@ -1699,6 +1700,7 @@ class TestRouteExecuteTelegramApprovalGate:
 
         # Spy on the real delivery method to prove it is NEVER reached when blocked.
         send_spy = AsyncMock(return_value={"status": "sent"})
+        park = AsyncMock(side_effect=record_pending_action)
 
         with (
             patch(
@@ -1708,8 +1710,9 @@ class TestRouteExecuteTelegramApprovalGate:
             patch(
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
-            ),
+            ) as rules,
             patch.object(TelegramModule, "_send_message", new=send_spy),
+            patch("butlers.modules.approvals.email_guard.park_pending_action", new=park),
         ):
             result = await route_execute_fn(**envelope)
 
@@ -1721,19 +1724,22 @@ class TestRouteExecuteTelegramApprovalGate:
         error_message = error_obj.get("message", "") if isinstance(error_obj, dict) else ""
         assert "blocked" in error_message.lower(), f"Error must describe the block: {result}"
         assert result["error"]["retryable"] is False
+        assert park.await_args.kwargs["origin_butler"] == "messenger"
         pending_inserts = [
             call
             for call in daemon.db.pool.execute.await_args_list
             if "INSERT INTO pending_actions" in call.args[0]
         ]
         assert len(pending_inserts) == 1
-        assert _parked_route_command(daemon) == (
+        rules.assert_awaited_once_with(
+            daemon.db.pool,
             "telegram_send_message",
             {
                 "chat_id": KNOWN_NON_OWNER_TELEGRAM,
                 "text": "[relationship] Hello friend",
             },
         )
+        assert _parked_route_command(daemon) == ("route.execute", envelope)
         send_spy.assert_not_awaited()
 
     async def test_send_to_owner_telegram_is_allowed(self, tmp_path: Path) -> None:
@@ -1752,10 +1758,15 @@ class TestRouteExecuteTelegramApprovalGate:
 
         send_spy = AsyncMock(return_value={"status": "sent", "message_id": 1})
 
+        owner = _owner_contact()
         with (
             patch(
                 "butlers.identity.resolve_contact_by_channel",
-                new=AsyncMock(return_value=_owner_contact()),
+                new=AsyncMock(return_value=owner),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, False)),
             ),
             patch.object(TelegramModule, "_send_message", new=send_spy),
         ):
@@ -1831,7 +1842,7 @@ class TestRouteExecuteTelegramApprovalGate:
             patch(
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
-            ),
+            ) as rules,
             patch.object(TelegramModule, "_send_message", new=send_spy),
         ):
             result = await route_execute_fn(**envelope)
@@ -1843,13 +1854,15 @@ class TestRouteExecuteTelegramApprovalGate:
         error_obj = result.get("error", {})
         error_message = error_obj.get("message", "") if isinstance(error_obj, dict) else ""
         assert "blocked" in error_message.lower(), f"Error must describe the block: {result}"
-        assert _parked_route_command(daemon) == (
+        rules.assert_awaited_once_with(
+            daemon.db.pool,
             "telegram_send_message",
             {
                 "chat_id": KNOWN_NON_OWNER_TELEGRAM,
                 "text": "[relationship] Hello friend",
             },
         )
+        assert _parked_route_command(daemon) == ("route.execute", envelope)
         send_spy.assert_not_awaited()
 
     async def test_reply_to_non_owner_telegram_parks_native_reply_command(
@@ -1878,13 +1891,14 @@ class TestRouteExecuteTelegramApprovalGate:
             patch(
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
-            ),
+            ) as rules,
             patch.object(TelegramModule, "_reply_to_message", new=reply_spy),
         ):
             result = await route_execute_fn(**envelope)
 
         assert result["status"] == "error"
-        assert _parked_route_command(daemon) == (
+        rules.assert_awaited_once_with(
+            daemon.db.pool,
             "telegram_reply_to_message",
             {
                 "chat_id": KNOWN_NON_OWNER_TELEGRAM,
@@ -1892,6 +1906,7 @@ class TestRouteExecuteTelegramApprovalGate:
                 "text": "[relationship] Reply in place",
             },
         )
+        assert _parked_route_command(daemon) == ("route.execute", envelope)
         reply_spy.assert_not_awaited()
 
 
@@ -1910,10 +1925,15 @@ class TestRouteExecuteWhatsAppApprovalGate:
         )
         send_spy = AsyncMock(return_value={"status": "sent"})
 
+        owner = _owner_contact()
         with (
             patch(
                 "butlers.identity.resolve_contact_by_channel",
-                new=AsyncMock(return_value=_owner_contact()),
+                new=AsyncMock(return_value=owner),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, False)),
             ),
             patch.object(WhatsAppModule, "_send_message", new=send_spy),
         ):
@@ -1945,16 +1965,18 @@ class TestRouteExecuteWhatsAppApprovalGate:
             patch(
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
-            ),
+            ) as rules,
             patch.object(WhatsAppModule, "_send_message", new=send_spy),
         ):
             result = await route_execute_fn(**envelope)
 
         assert result["status"] == "error"
-        assert _parked_route_command(daemon) == (
+        rules.assert_awaited_once_with(
+            daemon.db.pool,
             "whatsapp_send_message",
             {"recipient": recipient, "text": "[relationship] Hello friend"},
         )
+        assert _parked_route_command(daemon) == ("route.execute", envelope)
         send_spy.assert_not_awaited()
 
     async def test_reply_parks_current_native_send_semantics(self, tmp_path: Path) -> None:
@@ -1980,16 +2002,18 @@ class TestRouteExecuteWhatsAppApprovalGate:
             patch(
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
-            ),
+            ) as rules,
             patch.object(WhatsAppModule, "_send_message", new=send_spy),
         ):
             result = await route_execute_fn(**envelope)
 
         assert result["status"] == "error"
-        assert _parked_route_command(daemon) == (
+        rules.assert_awaited_once_with(
+            daemon.db.pool,
             "whatsapp_send_message",
             {"recipient": thread_identity, "text": "[relationship] Reply in place"},
         )
+        assert _parked_route_command(daemon) == ("route.execute", envelope)
         send_spy.assert_not_awaited()
 
 
@@ -1998,21 +2022,21 @@ class TestRouteExecuteWhatsAppApprovalGate:
 # ---------------------------------------------------------------------------
 
 
-def _approval_request_actions() -> list[dict[str, str]]:
+def _approval_request_actions() -> list[dict[str, Any]]:
     """Return typed affordances representative of a parked action push."""
-    dashboard_url = "https://dashboard.example.test/approvals/aaaaaaaa-aaaa-aaaaa-aaaa-aaaaaaaaaaaa"
     return [
         {
             "verb": "approve",
             "callback_token": "apr1:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:a:0123456789abcdef",
-            "dashboard_url": dashboard_url,
         },
         {
             "verb": "reject",
             "callback_token": "apr1:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:r:0123456789abcdef",
-            "dashboard_url": dashboard_url,
         },
-        {"verb": "open_dashboard", "dashboard_url": dashboard_url},
+        {
+            "verb": "open_dashboard",
+            "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+        },
     ]
 
 
@@ -2062,8 +2086,8 @@ class TestApprovalRequestDelivery:
                 ],
                 [
                     {
-                        "text": "Open dashboard",
-                        "url": "https://dashboard.example.test/approvals/aaaaaaaa-aaaa-aaaaa-aaaa-aaaaaaaaaaaa",
+                        "text": "Open dashboard.example.test (dashboard)",
+                        "url": "https://dashboard.example.test/approvals",
                     }
                 ],
             ]
@@ -2264,3 +2288,108 @@ class TestDBSIncidentReplay:
             f"Got: {result}"
         )
         assert "blocked" in result["error"]["message"].lower()
+
+
+@pytest.fixture
+def messenger_replay_db_url(postgres_container):
+    """Migrate before entering the owning asynchronous test loop."""
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
+
+    return create_migrated_test_db(
+        postgres_container, migration_db_name(), chains=["core", "approvals"]
+    )
+
+
+@pytest.mark.integration
+async def test_registered_messenger_park_has_durable_exact_envelope_and_once_replay(
+    messenger_replay_db_url, tmp_path, monkeypatch
+):
+    """Real SQL storage/readback; provider calls remain an owned software boundary."""
+    import copy
+
+    import asyncpg
+
+    from butlers.db import register_jsonb_codec
+    from butlers.modules.approvals.module import ApprovalsModule
+
+    pool = await asyncpg.create_pool(
+        messenger_replay_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+    )
+    daemon = None
+    approvals = ApprovalsModule()
+    original_pool = None
+    try:
+        daemon, registered_route = await _boot_messenger_with_route_execute(
+            _messenger_dir(tmp_path)
+        )
+        original_pool = daemon.db.pool
+        daemon.db.pool = pool
+        await approvals.on_startup({}, pool)
+        monkeypatch.setattr(
+            "butlers.identity.resolve_channel_contact_with_owner_corroboration",
+            AsyncMock(return_value=None),
+        )
+        send = AsyncMock(return_value={"message_id": "synthetic-provider-reference"})
+        email = next(module for module in daemon._modules if module.name == "email")
+        monkeypatch.setattr(email, "_send_email", send)
+        envelope = _make_route_envelope(
+            channel="email",
+            intent="send",
+            recipient="non-owner@example.test",
+            message="Original https://example.test",
+            decision_dossier=_ROUTE_NON_OWNER_DOSSIER,
+        )
+        envelope["input"]["context"]["notify_request"]["render_links_inert"] = True
+        expected = copy.deepcopy(envelope)
+        refusal = await registered_route(**envelope)
+        assert refusal["status"] == "error"
+        send.assert_not_awaited()
+        # A separate acquisition witnesses the committed original JSON, rather
+        # than a recorder or the connection that admitted the pending action.
+        async with pool.acquire() as readback:
+            rows = await readback.fetch(
+                "SELECT id, tool_name, tool_args, status FROM pending_actions"
+            )
+        assert len(rows) == 1
+        action = rows[0]
+        assert (action["tool_name"], action["tool_args"], action["status"]) == (
+            "route.execute",
+            expected,
+            "pending",
+        )
+        envelope["input"]["context"]["notify_request"]["delivery"]["message"] = "Later caller edit"
+        replayed = []
+
+        async def execute(name, arguments):
+            assert name == "route.execute"
+            replayed.append(copy.deepcopy(arguments))
+            return await registered_route(**arguments)
+
+        approvals.set_tool_executor(execute)
+        # This invokes the existing trusted internal owner-decision boundary;
+        # HTTP authentication and live owner credentials are not exercised here.
+        approved = await approvals._approve_action(
+            str(action["id"]), actor={"type": "human", "id": "owner", "authenticated": True}
+        )
+        assert "error" not in approved
+        assert replayed == [expected]
+        send.assert_awaited_once_with(
+            "non-owner@example.test",
+            "[relationship] Notification",
+            "Original https://example.test",
+            render_links_inert=True,
+        )
+        async with pool.acquire() as readback:
+            final = await readback.fetchrow(
+                "SELECT status, tool_args FROM pending_actions WHERE id=$1", action["id"]
+            )
+        assert (final["status"], final["tool_args"]) == ("executed", expected)
+        await approvals._dispatch_approved_action_by_id(str(action["id"]))
+        assert send.await_count == 1
+        assert replayed == [expected]
+    finally:
+        await approvals.on_shutdown()
+        if daemon is not None:
+            daemon.db.pool = original_pool
+            await daemon.shutdown()
+        await pool.close()

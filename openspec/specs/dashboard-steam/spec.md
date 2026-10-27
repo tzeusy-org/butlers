@@ -129,49 +129,45 @@ connector's own health endpoint.
 
 ### Requirement: Steam Connector Configuration
 
-The dashboard SHALL provide a configuration section for Steam connector settings at `/butlers/settings` under the Steam card. No environment variables — all configuration is managed through the dashboard.
+The dashboard API SHALL expose the Steam connector's configuration through `GET` and `PATCH /api/steam/connector/config`, stored in the connector registry's settings rather than in environment variables. There is no dashboard form for these settings.
 
 #### Scenario: Connector configuration fields
 
-- **WHEN** a Steam account is connected and the user expands the Steam settings section
-- **THEN** the dashboard SHALL display configurable fields:
-  - **Account rescan interval** (default 300 seconds) — how often the connector checks for new/revoked accounts
-  - **Heartbeat interval** (default 60 seconds) — how often the connector sends liveness heartbeats
-  - **Max tracked games** (default 10) — maximum games tracked for achievement polling
-  - **Poll intervals** per data type with defaults: recently played (300s), online status (300s), achievements (900s), friends (3600s), game library (86400s)
-- **AND** changes SHALL be persisted to the connector's configuration store (not environment variables)
-- **AND** the connector SHALL pick up configuration changes on the next rescan cycle
+- **WHEN** `GET /api/steam/connector/config` is called
+- **THEN** the response SHALL carry the effective value of each field — the stored setting when present, otherwise the connector default:
+  - `account_rescan_s` (default 300 seconds) — how often the connector checks for new/revoked accounts
+  - `heartbeat_interval_s` (default 60 seconds) — how often the connector sends liveness heartbeats
+  - `max_tracked_games` (default 10) — maximum games tracked for achievement polling
+  - `poll_intervals` per data type with defaults: recently played (300s), online status (300s), achievements (900s), friends (3600s), game library (86400s)
+- **AND** a `source` field SHALL read `dashboard` when any stored setting is active and `defaults` otherwise
+- **AND** `PATCH` SHALL shallow-merge only the supplied fields, rejecting values outside their bounds (`account_rescan_s` 1–86400, `heartbeat_interval_s` 1–3600, `max_tracked_games` 1–100, poll intervals > 0)
+- **AND** the connector SHALL pick up configuration changes on its next rescan cycle without a restart
+- **AND** both methods SHALL return 503 when the connector registry is unavailable
 
 #### Scenario: Per-account overrides
 
-- **WHEN** the user clicks "Configure" on a specific Steam account
-- **THEN** the dashboard SHALL allow overriding poll intervals and tracked games for that account
+- **WHEN** `GET` or `PATCH /api/steam/accounts/{account_id}/config` is called
+- **THEN** the API SHALL read or update that account's overrides of poll intervals and tracked games
 - **AND** overrides SHALL be stored in the account's `metadata` JSONB column
 
-### Requirement: Dashboard UI Components
+### Requirement: Steam Credentials in the Secrets Passport
 
-The dashboard SHALL present Steam connection management in the settings
-Integrations section, and MAY surface gaming activity on relevant domain
-pages.
+The dashboard SHALL manage Steam account connections from the Steam provider drawer on the Secrets passport (`/secrets`), using `GET`, `POST`, and `DELETE /api/steam/accounts`.
 
-#### Scenario: Steam integration card on settings page
+#### Scenario: Connected accounts listed in the drawer
 
-- **WHEN** the user navigates to `/butlers/settings`
-- **THEN** a "Steam" card SHALL appear in the Integrations section
-- **AND** it SHALL show connection status, connected accounts, and a "Connect Steam Account" button
-- **AND** connected accounts SHALL show avatar, display name, SteamID, primary badge, and disconnect button
+- **WHEN** the owner opens the Steam provider drawer
+- **THEN** each connected account SHALL show its display name (or SteamID when unnamed), its SteamID, and a status dot coloured by account status
+- **AND** each account SHALL offer a disconnect action
 
-#### Scenario: Connect form
+#### Scenario: Disconnect confirms before acting
 
-- **WHEN** the user clicks "Connect Steam Account"
-- **THEN** a form SHALL appear with:
-  - Link to `https://steamcommunity.com/dev/apikey` with instructions to register a key
-  - SteamID input field (with link to SteamID lookup tools)
-  - API Key input field (masked)
-  - "Validate & Connect" button
+- **WHEN** the owner chooses disconnect on an account
+- **THEN** an inline confirmation SHALL state that syncing stops while the account and its stored API key are retained for reconnection
+- **AND** the account SHALL be disconnected only after the owner confirms
 
-#### Scenario: Activity overview on domain page
+#### Scenario: Connect panel
 
-- **WHEN** a Steam account is connected and playtime data exists
-- **THEN** the dashboard MAY show a gaming activity widget on relevant domain pages (e.g., general, lifestyle)
-- **AND** the widget SHALL display: recent games played, hours this week, and a simple daily playtime chart
+- **WHEN** the owner opens the connect panel
+- **THEN** it SHALL offer a masked Steam Web API key input and a SteamID64 input
+- **AND** submitting SHALL call `POST /api/steam/accounts`

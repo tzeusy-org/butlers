@@ -48,6 +48,11 @@ from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
+from butlers.connectors.telegram_spans import bot_in_reply_to_ref, bot_message_spans
+from butlers.conversation_identity import (
+    telegram_bot_message_identity,
+    telegram_bot_update_identity,
+)
 from butlers.core.approval_callbacks import (
     APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER,
     APPROVAL_CALLBACK_CONNECTOR_TOKEN_KEY,
@@ -64,6 +69,7 @@ from butlers.credential_store import (
 from butlers.db import db_params_from_env
 from butlers.identity import resolve_owner_channel_via_definer
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.storage import BlobStorageStartupError, BlobStore, S3BlobStore
 from butlers.telegram_api import edit_telegram_message_text, remove_telegram_inline_keyboard
 
 logger = logging.getLogger(__name__)
@@ -114,6 +120,9 @@ _APPROVAL_CALLBACK_RESOLVED_TEXT = {
     "executed": "✅ Approved",
     "rejected": "❌ Rejected",
     "expired": "⏰ Expired",
+    "changed_since_shown": (
+        "⚠️ Changed since shown. Nothing was executed; open the dashboard to review the new call."
+    ),
 }
 
 
@@ -130,19 +139,24 @@ def _gap_interview_toast(data: dict[str, Any], answer: str) -> str:
 
 
 _MEDIA_TYPE_LABELS: dict[str, str] = {
-    "photo": "Photo",
     "sticker": "Sticker",
     "voice": "Voice message",
     "video_note": "Video message",
     "video": "Video",
     "animation": "GIF",
-    "document": "Document",
     "audio": "Audio",
     "location": "Location",
     "contact": "Contact",
     "poll": "Poll",
     "dice": "Dice",
 }
+
+# Media types materialized as an IngestAttachment blob (bu-2jtfw.7): the
+# butler sees the actual image/document, so normalized_text is the caption
+# (or "" when none) rather than a synthesized descriptor like "[Photo]" — a
+# fabricated label would let a caption-less photo masquerade as content the
+# butler already understood. See _materialize_attachments().
+_ATTACHMENT_MEDIA_KEYS: tuple[str, ...] = ("photo", "document")
 
 
 def _extract_normalized_text(msg: dict[str, Any]) -> str | None:
@@ -151,8 +165,9 @@ def _extract_normalized_text(msg: dict[str, Any]) -> str | None:
     Returns the best available text representation using a tiered strategy:
     1. text — standard text messages
     2. caption — media messages with captions
-    3. Media type descriptor — synthesized tag like [Photo], [Sticker: 😀]
-    4. None — service messages with no user content
+    3. "" — photo/document with no caption (attachment carries the content)
+    4. Media type descriptor — synthesized tag like [Sticker: 😀]
+    5. None — service messages with no user content
     """
     # Tier 1: explicit text field
     if msg.get("text"):
@@ -162,7 +177,13 @@ def _extract_normalized_text(msg: dict[str, Any]) -> str | None:
     if msg.get("caption"):
         return msg["caption"]
 
-    # Tier 3: media type descriptor
+    # Tier 3: photo/document without a caption — the attachment is the
+    # content; never synthesize a placeholder like "[Photo]".
+    for media_key in _ATTACHMENT_MEDIA_KEYS:
+        if media_key in msg:
+            return ""
+
+    # Tier 4: media type descriptor
     for media_key, label in _MEDIA_TYPE_LABELS.items():
         if media_key not in msg:
             continue
@@ -188,7 +209,7 @@ def _extract_normalized_text(msg: dict[str, Any]) -> str | None:
 
         return f"[{label}]"
 
-    # Tier 4: no extractable content (service messages like new_chat_members, etc.)
+    # Tier 5: no extractable content (service messages like new_chat_members, etc.)
     return None
 
 
@@ -281,6 +302,16 @@ class TelegramBotConnectorConfig:
         )
 
 
+def _replay_message_metadata(update: dict[str, Any]) -> dict[str, Any]:
+    """Provider exposure facts without retaining a filtered message's body."""
+    for key in ("message", "edited_message", "channel_post"):
+        msg = update.get(key)
+        if isinstance(msg, dict):
+            spans = bot_message_spans(msg, _extract_normalized_text(msg) or "")
+            return {"untrusted_spans": spans or None, "in_reply_to_ref": bot_in_reply_to_ref(msg)}
+    return {}
+
+
 class TelegramBotConnector:
     """Telegram bot connector runtime for transport-only ingestion.
 
@@ -302,6 +333,7 @@ class TelegramBotConnector:
         config: TelegramBotConnectorConfig,
         db_pool: asyncpg.Pool | None = None,
         cursor_pool: asyncpg.Pool | None = None,
+        blob_store: BlobStore | None = None,
     ) -> None:
         self._config = config
         self._http_client = httpx.AsyncClient(timeout=30.0)
@@ -315,6 +347,18 @@ class TelegramBotConnector:
 
         # DB pool for filtered event persistence (may be None if DB unavailable).
         self._db_pool = db_pool
+
+        # BlobStore for photo/document attachment materialization (bu-2jtfw.7).
+        # None degrades gracefully: attachments are recorded as unavailable and
+        # the caption-only message is still ingested (see _materialize_media).
+        self._blob_store = blob_store
+
+        # Process-local idempotency cache for materialized media, keyed by
+        # (endpoint_identity, external_message_id, media_id). Checked before
+        # the DB-backed switchboard.media_refs ledger (mirrors gmail.py's
+        # fetch_attachment pre-put existence check) so a replayed update never
+        # re-puts a blob, even without a DB pool.
+        self._media_ref_cache: dict[tuple[str, str, str], dict[str, Any]] = {}
 
         # Metrics
         self._metrics = ConnectorMetrics(
@@ -849,6 +893,8 @@ class TelegramBotConnector:
         """
         async with self._semaphore:
             update_id = str(update.get("update_id", "unknown"))
+            _conversation_id, _reply_target_ref = telegram_bot_update_identity(update)
+            envelope = None
             try:
                 # Approval callbacks are control-plane decisions, never
                 # ingest.v1 events. Keep the older chronicler ``cgi:`` callback
@@ -860,7 +906,7 @@ class TelegramBotConnector:
                 if await self._maybe_ack_unhandled_callback(update):
                     return
 
-                envelope = self._normalize_to_ingest_v1(update)
+                envelope = await self._normalize_to_ingest_v1(update)
                 if envelope is None:
                     return  # Nothing to ingest
 
@@ -893,13 +939,16 @@ class TelegramBotConnector:
                             provider=self._config.provider,
                             endpoint_identity=self._config.endpoint_identity,
                             external_event_id=update_id,
-                            external_thread_id=self._extract_chat_id(update),
+                            external_thread_id=None,
+                            external_conversation_id=_conversation_id,
+                            reply_target_ref=_reply_target_ref,
                             observed_at=datetime.now(UTC).isoformat(),
                             sender_identity=self._extract_sender_identity(update),
                             # Filtered-content privacy tier (bu-glbjx): content
                             # the connector chose not to submit persists a bounded
                             # preview only; the full raw payload is NOT retained.
                             raw={},
+                            **_replay_message_metadata(update),
                         ),
                     )
                     return
@@ -927,13 +976,16 @@ class TelegramBotConnector:
                             provider=self._config.provider,
                             endpoint_identity=self._config.endpoint_identity,
                             external_event_id=update_id,
-                            external_thread_id=self._extract_chat_id(update),
+                            external_thread_id=None,
+                            external_conversation_id=_conversation_id,
+                            reply_target_ref=_reply_target_ref,
                             observed_at=datetime.now(UTC).isoformat(),
                             sender_identity=self._extract_sender_identity(update),
                             # Filtered-content privacy tier (bu-glbjx): content
                             # the connector chose not to submit persists a bounded
                             # preview only; the full raw payload is NOT retained.
                             raw={},
+                            **_replay_message_metadata(update),
                         ),
                     )
                     return
@@ -955,7 +1007,7 @@ class TelegramBotConnector:
                 self._filtered_event_buffer.record(
                     external_message_id=update_id,
                     source_channel=self._config.channel,
-                    sender_identity="unknown",
+                    sender_identity=self._extract_sender_identity(update),
                     subject_or_preview=None,
                     filter_reason=FilteredEventBuffer.reason_submission_error(),
                     full_payload=FilteredEventBuffer.full_payload(
@@ -963,10 +1015,25 @@ class TelegramBotConnector:
                         provider=self._config.provider,
                         endpoint_identity=self._config.endpoint_identity,
                         external_event_id=update_id,
-                        external_thread_id=self._extract_chat_id(update),
+                        external_thread_id=None,
+                        external_conversation_id=_conversation_id,
+                        reply_target_ref=_reply_target_ref,
                         observed_at=datetime.now(UTC).isoformat(),
-                        sender_identity="unknown",
+                        sender_identity=self._extract_sender_identity(update),
                         raw=update,
+                        normalized_text=(
+                            envelope["payload"].get("normalized_text") if envelope else None
+                        ),
+                        untrusted_spans=(
+                            envelope["payload"].get("untrusted_spans")
+                            if envelope
+                            else _replay_message_metadata(update).get("untrusted_spans")
+                        ),
+                        in_reply_to_ref=(
+                            envelope["event"].get("in_reply_to_ref")
+                            if envelope
+                            else _replay_message_metadata(update).get("in_reply_to_ref")
+                        ),
                     ),
                     status="error",
                     error_detail=str(exc),
@@ -1094,6 +1161,16 @@ class TelegramBotConnector:
         await self._edit_approval_callback_message(callback_query, resolved_status)
         return True
 
+    async def _is_primary_owner_callback(self, callback_query: dict[str, Any]) -> bool:
+        sender = callback_query.get("from")
+        sender_id = sender.get("id") if isinstance(sender, dict) else None
+        if self._db_pool is None or sender_id is None:
+            return False
+        owner_channel = await resolve_owner_channel_via_definer(
+            self._db_pool, "telegram_bot", str(sender_id)
+        )
+        return owner_channel is not None and owner_channel[1]
+
     async def _maybe_ack_unhandled_callback(self, update: dict[str, Any]) -> bool:
         """Clear the Telegram spinner for foreign/unsupported button callbacks."""
         callback_query = update.get("callback_query")
@@ -1168,6 +1245,8 @@ class TelegramBotConnector:
                     APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: connector_token,
                 },
             )
+            if response.status_code == 409 and "changed since shown" in response.text:
+                return "changed_since_shown"
             if response.status_code >= 400:
                 return None
             payload = response.json()
@@ -1300,7 +1379,282 @@ class TelegramBotConnector:
             raw_key=chat_id,
         )
 
-    def _normalize_to_ingest_v1(self, update: dict[str, Any]) -> dict[str, Any] | None:
+    def _media_ref_cache_key(self, external_message_id: str, media_id: str) -> tuple[str, str, str]:
+        """Build the process-local idempotency cache key for one media item.
+
+        Mirrors owntracks.py's ``build_idempotency_key`` base+suffix shape:
+        (endpoint_identity, external_message_id, media_id).
+        """
+        return (self._config.endpoint_identity, external_message_id, media_id)
+
+    async def _check_media_ref(
+        self, external_message_id: str, media_id: str
+    ) -> dict[str, Any] | None:
+        """Return a previously materialized attachment dict, if any.
+
+        Checks the process-local cache first, then (if available) the
+        durable ``switchboard.media_refs`` ledger — mirroring the pre-put
+        existence check gmail.py's ``fetch_attachment`` does against
+        ``attachment_refs`` (reuse the prior storage_ref instead of
+        re-fetching/re-putting). Only successful materializations are cached
+        or persisted; a prior failure is retried on replay.
+        """
+        cache_key = self._media_ref_cache_key(external_message_id, media_id)
+        cached = self._media_ref_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        if self._db_pool is None:
+            return None
+        try:
+            async with self._db_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT media_type, storage_ref, size_bytes, width, height
+                    FROM switchboard.media_refs
+                    WHERE connector_type = $1
+                      AND endpoint_identity = $2
+                      AND external_message_id = $3
+                      AND media_id = $4
+                      AND fetched = TRUE
+                    """,
+                    "telegram_bot",
+                    self._config.endpoint_identity,
+                    external_message_id,
+                    media_id,
+                )
+        except Exception as exc:
+            logger.warning(
+                "media_refs lookup failed (endpoint=%s, message=%s, media=%s): %s",
+                self._config.endpoint_identity,
+                external_message_id,
+                media_id,
+                exc,
+            )
+            return None
+
+        if row is None or not row["storage_ref"]:
+            return None
+        attachment = {
+            "media_type": row["media_type"],
+            "storage_ref": row["storage_ref"],
+            "size_bytes": row["size_bytes"],
+            "width": row["width"],
+            "height": row["height"],
+        }
+        self._media_ref_cache[cache_key] = attachment
+        return attachment
+
+    async def _persist_media_ref(
+        self, external_message_id: str, media_id: str, attachment: dict[str, Any]
+    ) -> None:
+        """Record a successful materialization in the durable ledger (best-effort)."""
+        if self._db_pool is None:
+            return
+        try:
+            async with self._db_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO switchboard.media_refs
+                        (connector_type, endpoint_identity, external_message_id, media_id,
+                         media_type, storage_ref, size_bytes, width, height, fetched)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
+                    ON CONFLICT (connector_type, endpoint_identity, external_message_id, media_id)
+                    DO UPDATE SET
+                        storage_ref = EXCLUDED.storage_ref,
+                        size_bytes = EXCLUDED.size_bytes,
+                        width = EXCLUDED.width,
+                        height = EXCLUDED.height,
+                        fetched = TRUE
+                    """,
+                    "telegram_bot",
+                    self._config.endpoint_identity,
+                    external_message_id,
+                    media_id,
+                    attachment["media_type"],
+                    attachment["storage_ref"],
+                    attachment.get("size_bytes"),
+                    attachment.get("width"),
+                    attachment.get("height"),
+                )
+        except Exception as exc:
+            logger.warning(
+                "media_refs persist failed (endpoint=%s, message=%s, media=%s): %s",
+                self._config.endpoint_identity,
+                external_message_id,
+                media_id,
+                exc,
+            )
+
+    async def _get_telegram_file_path(self, file_id: str) -> str:
+        """Resolve a Telegram file_id to a downloadable file_path via getFile."""
+        token = self._config.telegram_token
+        response = await self._http_client.get(
+            f"https://api.telegram.org/bot{token}/getFile",
+            params={"file_id": file_id},
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not data.get("ok"):
+            raise RuntimeError(f"getFile failed for {file_id}: {data}")
+        file_path = (data.get("result") or {}).get("file_path")
+        if not file_path:
+            raise RuntimeError(f"getFile response missing file_path for {file_id}")
+        return file_path
+
+    async def _download_telegram_file(self, file_path: str) -> bytes:
+        """Download file bytes from Telegram's file API."""
+        token = self._config.telegram_token
+        response = await self._http_client.get(
+            f"https://api.telegram.org/file/bot{token}/{file_path}",
+        )
+        response.raise_for_status()
+        return response.content
+
+    async def _materialize_media(
+        self,
+        *,
+        external_message_id: str,
+        file_id: str,
+        media_type_hint: str,
+        width: int | None,
+        height: int | None,
+        filename: str | None,
+    ) -> dict[str, Any]:
+        """Fetch one Telegram media item via getFile and store it as a blob.
+
+        Idempotent per (endpoint_identity, external_message_id, file_id): a
+        replayed update reuses the cached/persisted storage_ref rather than
+        re-fetching and re-putting. Never raises — a fetch/store failure
+        returns an "unavailable" attachment dict with storage_ref=None so the
+        caller can still ingest the message with its caption preserved.
+        """
+        cached = await self._check_media_ref(external_message_id, file_id)
+        if cached is not None:
+            return cached
+
+        if self._blob_store is None:
+            return {
+                "media_type": media_type_hint,
+                "storage_ref": None,
+                "size_bytes": 0,
+                "width": width,
+                "height": height,
+                "unavailable": True,
+                "reason": "blob_store_unavailable",
+            }
+
+        try:
+            file_path = await self._get_telegram_file_path(file_id)
+            data = await self._download_telegram_file(file_path)
+        except Exception as exc:
+            logger.warning(
+                "Telegram media fetch failed for file_id=%s (message=%s): %s",
+                file_id,
+                external_message_id,
+                exc,
+            )
+            return {
+                "media_type": media_type_hint,
+                "storage_ref": None,
+                "size_bytes": 0,
+                "width": width,
+                "height": height,
+                "unavailable": True,
+                "reason": "media_fetch_failed",
+                "error_detail": str(exc),
+            }
+
+        try:
+            storage_ref = await self._blob_store.put(
+                data, content_type=media_type_hint, filename=filename
+            )
+        except Exception as exc:
+            logger.warning(
+                "Blob store put failed for file_id=%s (message=%s): %s",
+                file_id,
+                external_message_id,
+                exc,
+            )
+            return {
+                "media_type": media_type_hint,
+                "storage_ref": None,
+                "size_bytes": 0,
+                "width": width,
+                "height": height,
+                "unavailable": True,
+                "reason": "media_fetch_failed",
+                "error_detail": str(exc),
+            }
+
+        attachment: dict[str, Any] = {
+            "media_type": media_type_hint,
+            "storage_ref": storage_ref,
+            "size_bytes": len(data),
+            "width": width,
+            "height": height,
+        }
+        self._media_ref_cache[self._media_ref_cache_key(external_message_id, file_id)] = attachment
+        await self._persist_media_ref(external_message_id, file_id, attachment)
+        return attachment
+
+    async def _materialize_attachments(
+        self, msg: dict[str, Any], external_message_id: str
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Materialize photo/document attachments on a Telegram message.
+
+        Returns ``(attachments, failure_reason)``. ``attachments`` always
+        includes an entry for every photo/document present, even an
+        unavailable one (``storage_ref=None``) — so the ATTACHMENTS prompt
+        block can say so honestly. ``failure_reason`` is set whenever any
+        attachment could not be materialized (fetch failure or no blob store
+        configured), so the caller can record a filtered_events audit row via
+        ``FilteredEventBuffer.reason_media_fetch_failed()`` while still
+        ingesting the message with its caption preserved.
+        """
+        attachments: list[dict[str, Any]] = []
+        failure_reason: str | None = None
+
+        photo_sizes = msg.get("photo")
+        if isinstance(photo_sizes, list) and photo_sizes:
+            # Telegram returns PhotoSize entries ascending by resolution;
+            # the largest (last) is the best available image.
+            largest = photo_sizes[-1]
+            file_id = largest.get("file_id")
+            if isinstance(file_id, str) and file_id:
+                att = await self._materialize_media(
+                    external_message_id=external_message_id,
+                    file_id=file_id,
+                    media_type_hint="image/jpeg",
+                    width=largest.get("width"),
+                    height=largest.get("height"),
+                    filename=None,
+                )
+                if att.pop("unavailable", False):
+                    failure_reason = att.pop("reason", "media_fetch_failed")
+                    att.pop("error_detail", None)
+                attachments.append(att)
+
+        document = msg.get("document")
+        if isinstance(document, dict):
+            file_id = document.get("file_id")
+            if isinstance(file_id, str) and file_id:
+                att = await self._materialize_media(
+                    external_message_id=external_message_id,
+                    file_id=file_id,
+                    media_type_hint=document.get("mime_type") or "application/octet-stream",
+                    width=None,
+                    height=None,
+                    filename=document.get("file_name"),
+                )
+                if att.pop("unavailable", False):
+                    failure_reason = att.pop("reason", "media_fetch_failed")
+                    att.pop("error_detail", None)
+                attachments.append(att)
+
+        return attachments, failure_reason
+
+    async def _normalize_to_ingest_v1(self, update: dict[str, Any]) -> dict[str, Any] | None:
         """Normalize Telegram update to canonical ingest.v1 format.
 
         Returns None when the update has no usable content (service messages,
@@ -1311,11 +1665,14 @@ class TelegramBotConnector:
         - source.provider: "telegram"
         - source.endpoint_identity: receiving bot identity
         - event.external_event_id: update_id
-        - event.external_thread_id: chat.id:message_id (fallback: chat.id)
+        - event.external_conversation_id: stable Telegram chat/topic identity
+        - event.reply_target_ref: chat.id:message_id
         - event.observed_at: current timestamp (RFC3339)
         - sender.identity: message.from.id
         - payload.raw: full Telegram update JSON
-        - payload.normalized_text: extracted text
+        - payload.normalized_text: extracted text (the caption for photo/document,
+          possibly "" — see _extract_normalized_text)
+        - payload.attachments: materialized photo/document blobs, if any
         - control.idempotency_key: tg:<chat_id>:<message_id> (canonical across connectors)
         """
         update_id = str(update.get("update_id", "unknown"))
@@ -1347,11 +1704,7 @@ class TelegramBotConnector:
             sender_id = str(msg["from"].get("id", "unknown"))
 
         message_id = msg.get("message_id")
-
-        # Build thread identity as chat_id:message_id for reply targeting
-        thread_identity = (
-            f"{chat_id}:{message_id}" if chat_id and message_id is not None else chat_id
-        )
+        external_conversation_id, reply_target_ref = telegram_bot_message_identity(msg)
 
         # Canonical idempotency key: tg:<chat_id>:<message_id>
         # Uses chat_id + message_id (unique per chat) so that bot and user-client
@@ -1362,6 +1715,57 @@ class TelegramBotConnector:
             else f"telegram:{self._config.endpoint_identity}:{update_id}"
         )
 
+        attachments: list[dict[str, Any]] = []
+        if "photo" in msg or "document" in msg:
+            attachments, media_failure_reason = await self._materialize_attachments(
+                msg, external_message_id=update_id
+            )
+            if media_failure_reason is not None:
+                self._filtered_event_buffer.record(
+                    external_message_id=update_id,
+                    source_channel=self._config.channel,
+                    sender_identity=sender_id,
+                    subject_or_preview=self._extract_preview(update),
+                    filter_reason=FilteredEventBuffer.reason_media_fetch_failed(),
+                    full_payload=FilteredEventBuffer.full_payload(
+                        channel=self._config.channel,
+                        provider=self._config.provider,
+                        endpoint_identity=self._config.endpoint_identity,
+                        external_event_id=update_id,
+                        external_thread_id=None,
+                        external_conversation_id=external_conversation_id,
+                        reply_target_ref=reply_target_ref,
+                        observed_at=datetime.now(UTC).isoformat(),
+                        sender_identity=sender_id,
+                        raw={},
+                        **_replay_message_metadata(update),
+                    ),
+                    status="error",
+                    error_detail=media_failure_reason,
+                )
+
+        payload: dict[str, Any] = {
+            "raw": update,
+            "normalized_text": normalized_text,
+        }
+        if attachments:
+            payload["attachments"] = attachments
+        # Forwarded and quoted third-party text (RFC 0038 D5). The forwarding owner stays the
+        # sender; the span is what starts the goal exposed at admission.
+        untrusted_spans = bot_message_spans(msg, normalized_text)
+        if untrusted_spans:
+            payload["untrusted_spans"] = untrusted_spans
+
+        event: dict[str, Any] = {
+            "external_event_id": update_id,
+            "external_conversation_id": external_conversation_id,
+            "reply_target_ref": reply_target_ref,
+            "observed_at": datetime.now(UTC).isoformat(),
+        }
+        in_reply_to_ref = bot_in_reply_to_ref(msg)
+        if in_reply_to_ref is not None:
+            event["in_reply_to_ref"] = in_reply_to_ref
+
         # Build ingest.v1 envelope
         return {
             "schema_version": "ingest.v1",
@@ -1370,18 +1774,11 @@ class TelegramBotConnector:
                 "provider": self._config.provider,
                 "endpoint_identity": self._config.endpoint_identity,
             },
-            "event": {
-                "external_event_id": update_id,
-                "external_thread_id": thread_identity,
-                "observed_at": datetime.now(UTC).isoformat(),
-            },
+            "event": event,
             "sender": {
                 "identity": sender_id,
             },
-            "payload": {
-                "raw": update,
-                "normalized_text": normalized_text,
-            },
+            "payload": payload,
             "control": {
                 "idempotency_key": idem_key,
                 "policy_tier": "interactive",
@@ -1438,17 +1835,6 @@ class TelegramBotConnector:
     # -------------------------------------------------------------------------
     # Internal: FilteredEventBuffer helpers
     # -------------------------------------------------------------------------
-
-    @staticmethod
-    def _extract_chat_id(update: dict[str, Any]) -> str | None:
-        """Extract chat ID string from a Telegram update, or None if absent."""
-        for msg_key in ("message", "edited_message", "channel_post"):
-            msg = update.get(msg_key)
-            if isinstance(msg, dict):
-                chat = msg.get("chat")
-                if isinstance(chat, dict) and "id" in chat:
-                    return str(chat["id"])
-        return None
 
     @staticmethod
     def _extract_sender_identity(update: dict[str, Any]) -> str:
@@ -1637,6 +2023,110 @@ async def _resolve_telegram_bot_token_from_db() -> str | None:
     return await _resolve_telegram_bot_system_credential_from_db("BUTLER_TELEGRAM_TOKEN")
 
 
+async def _resolve_telegram_blob_store() -> BlobStore | None:
+    """Resolve the connector-owned S3 blob store for photo/document attachments.
+
+    Mirrors ``lifecycle.py``'s daemon-side blob store construction, adapted for
+    a standalone connector process (no ``daemon`` object to hang state on):
+    BLOB_S3_* secrets are resolved via the same short-lived-pool +
+    CredentialStore pattern the other Tier-1 Telegram connector credentials
+    use. Returns ``None`` (attachments degrade to "unavailable", caption still
+    ingested) if the DB is unreachable, secrets are missing, or the S3
+    endpoint fails its startup check — never raises.
+    """
+    import asyncpg
+
+    db_params = db_params_from_env()
+    local_db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "").strip()
+    shared_db_name = shared_db_name_from_env()
+    candidate_db_names: list[str] = []
+    for name in [local_db_name, shared_db_name]:
+        if name and name not in candidate_db_names:
+            candidate_db_names.append(name)
+
+    connected_pools: list[tuple[str, asyncpg.Pool]] = []
+    for db_name in candidate_db_names:
+        try:
+            pool = await asyncpg.create_pool(
+                host=db_params["host"],
+                port=db_params["port"],
+                user=db_params["user"],
+                password=db_params["password"],
+                database=db_name,
+                ssl=db_params.get("ssl"),  # type: ignore[arg-type]
+                min_size=1,
+                max_size=2,
+                command_timeout=5,
+                server_settings={"search_path": "public"},
+                setup=connector_setup_role,
+            )
+            connected_pools.append((db_name, pool))
+        except Exception as exc:
+            logger.debug(
+                "DB connection failed during Telegram blob store credential resolution "
+                "(db=%s, non-fatal): %s",
+                db_name,
+                exc,
+            )
+
+    if not connected_pools:
+        logger.warning(
+            "Telegram bot connector: no DB reachable for blob store credentials; "
+            "photo/document attachments will be recorded as unavailable."
+        )
+        return None
+
+    primary_db_name, primary_pool = connected_pools[0]
+    fallback_pools = [pool for _, pool in connected_pools[1:]]
+    store = CredentialStore(primary_pool, fallback_pools=fallback_pools)
+
+    try:
+        s3_endpoint = await store.resolve("BLOB_S3_ENDPOINT_URL", env_fallback=False)
+        s3_bucket = await store.resolve("BLOB_S3_BUCKET", env_fallback=False)
+        s3_region = await store.resolve("BLOB_S3_REGION", env_fallback=False)
+        s3_access_key = await store.resolve("BLOB_S3_ACCESS_KEY_ID", env_fallback=False)
+        s3_secret_key = await store.resolve("BLOB_S3_SECRET_ACCESS_KEY", env_fallback=False)
+    except Exception as exc:
+        logger.warning(
+            "Telegram bot connector: BLOB_S3_* credential resolution failed (non-fatal): %s",
+            exc,
+        )
+        return None
+    finally:
+        for _, pool in connected_pools:
+            await pool.close()
+
+    if not s3_endpoint or not s3_bucket:
+        logger.warning(
+            "Telegram bot connector: S3 blob storage not configured (missing "
+            "BLOB_S3_ENDPOINT_URL / BLOB_S3_BUCKET); photo/document attachments will be "
+            "recorded as unavailable. Configure via the dashboard secrets UI (/secrets)."
+        )
+        return None
+
+    blob_store = S3BlobStore(
+        bucket=s3_bucket,
+        # Connector-owned blobs belong to no single butler's schema — they are
+        # routing-layer input materialized before any butler is chosen — so
+        # the S3 key prefix names the connector, not a butler.
+        butler_name="connectors",
+        endpoint_url=s3_endpoint,
+        access_key_id=s3_access_key,
+        secret_access_key=s3_secret_key,
+        region=s3_region or "us-east-1",
+    )
+    try:
+        await blob_store.startup_check()
+    except BlobStorageStartupError as exc:
+        logger.warning(
+            "Telegram bot connector: S3 blob storage unavailable; photo/document "
+            "attachments will be recorded as unavailable: %s",
+            exc,
+        )
+        return None
+    return blob_store
+
+
 async def resolve_telegram_endpoint_identity(token: str) -> str:
     """Resolve the bot identity from the Telegram Bot API via ``getMe``.
 
@@ -1732,7 +2222,13 @@ async def run_telegram_bot_connector() -> None:
     cursor_pool = await create_cursor_pool_from_env()
     logger.info("Telegram bot connector: cursor pool created for DB-backed checkpoints")
 
-    connector = TelegramBotConnector(config, db_pool=cursor_pool, cursor_pool=cursor_pool)
+    blob_store = await _resolve_telegram_blob_store()
+    if blob_store is not None:
+        logger.info("Telegram bot connector: S3 blob storage ready for photo/document capture")
+
+    connector = TelegramBotConnector(
+        config, db_pool=cursor_pool, cursor_pool=cursor_pool, blob_store=blob_store
+    )
 
     # Determine mode based on config
     try:

@@ -23,12 +23,13 @@ import { MemoryRouter, useLocation } from "react-router";
 
 import EpisodesRegister from "@/components/memory/EpisodesRegister";
 import { AppTimezoneProvider } from "@/components/ui/timezone-context";
-import { useEpisodes } from "@/hooks/use-memory";
+import { useEpisodes, useRetryEpisodeConsolidation } from "@/hooks/use-memory";
 import { groupEpisodesByDay } from "@/lib/memory-derived";
 import type { Episode } from "@/api/types";
 
 vi.mock("@/hooks/use-memory", () => ({
   useEpisodes: vi.fn(),
+  useRetryEpisodeConsolidation: vi.fn(),
 }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -53,8 +54,26 @@ function makeEpisode(overrides: Partial<Episode> = {}): Episode {
     last_referenced_at: null,
     expires_at: null,
     metadata: {},
+    consolidation_attempts: 0,
+    last_consolidation_error: null,
+    dead_letter_reason: null,
+    next_consolidation_retry_at: null,
     ...overrides,
   };
+}
+
+type UseRetryEpisodeConsolidationResult = ReturnType<typeof useRetryEpisodeConsolidation>;
+
+/** Default stub: idle mutation. Individual tests override pending/error state. */
+function stubRetryMutation(
+  overrides: Partial<{ mutate: (...args: unknown[]) => void; isPending: boolean; isError: boolean }> = {},
+) {
+  vi.mocked(useRetryEpisodeConsolidation).mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+    ...overrides,
+  } as unknown as UseRetryEpisodeConsolidationResult);
 }
 
 let lastEpisodeParams: unknown;
@@ -158,6 +177,7 @@ describe("EpisodesRegister — the daybook", () => {
     vi.resetAllMocks();
     lastEpisodeParams = undefined;
     lastSearch = "";
+    stubRetryMutation();
   });
 
   afterEach(() => {
@@ -252,8 +272,8 @@ describe("EpisodesRegister — the daybook", () => {
       (c.textContent ?? "").includes("07:08"),
     ) as HTMLElement | undefined;
     expect(timeCell).toBeDefined();
-    // Mono full-fg variant uses --fg; the muted variant uses --mfg.
-    expect(timeCell!.className).toContain("--fg");
+    // Mono full-fg variant uses the foreground utility; the muted variant uses --mfg.
+    expect(timeCell!.className).toContain("text-fg");
     expect(timeCell!.className).not.toContain("--mfg");
   });
 
@@ -274,9 +294,9 @@ describe("EpisodesRegister — the daybook", () => {
     const mark = mounted.container.querySelector('[aria-label="health"]');
     expect(mark).not.toBeNull();
     expect(mark!.textContent).toBe("H");
-    // It carries a category hue via inline style (color or background).
+    // It carries its identity hue via inline style (color or background).
     const style = (mark as HTMLElement).getAttribute("style") ?? "";
-    expect(style).toContain("category");
+    expect(style).toContain("light-dark(oklch(");
   });
 
   it("keeps an initial-only episode row's full butler identity available on hover", () => {
@@ -315,13 +335,25 @@ describe("EpisodesRegister — the daybook", () => {
     expect(openLink!.textContent).toContain("open");
   });
 
-  it("animates expansion via a height (max-height) transition, not opacity/scale", () => {
-    setEpisodes([makeEpisode()]);
+  it("expands full content instantly through click and keyboard without a layout tween", () => {
+    const content = "Full episode content.\n".repeat(200);
+    setEpisodes([makeEpisode({ content })]);
     mounted = renderRegister();
-    const html = mounted.container.innerHTML;
-    expect(html).toContain("transition-[max-height]");
-    expect(html).toContain("duration-[120ms]");
-    expect(html).not.toContain("transition-opacity");
+    const row = mounted.container.querySelector<HTMLElement>('[role="button"]')!;
+    const text = row.querySelector<HTMLElement>(".whitespace-pre-wrap")!;
+    expect(row.getAttribute("aria-expanded")).toBe("false");
+    expect(text.className).toContain("line-clamp-2");
+    act(() => row.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    expect(text.textContent).toBe(content);
+    expect(text.className).not.toContain("line-clamp-2");
+    expect(text.parentElement!.className).not.toMatch(/max-h-|transition/);
+    expect(mounted.container.innerHTML).not.toContain("transition-" + "opacity");
+    for (const key of ["Enter", " "]) {
+      act(() => row.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })));
+      expect(row.getAttribute("aria-expanded")).toBe(key === "Enter" ? "false" : "true");
+    }
+    expect(row.querySelector('a[href^="/memory/episodes/"]')).not.toBeNull();
   });
 
   it("navigates to the episode detail when the open link is clicked", () => {
@@ -339,6 +371,68 @@ describe("EpisodesRegister — the daybook", () => {
     });
     // Navigation does not throw and the row link points at the detail route.
     expect(openLink.getAttribute("href")).toBe("/memory/episodes/ep-nav");
+  });
+
+  it("does not show a retry verb for a non-dead_letter expanded row", () => {
+    setEpisodes([makeEpisode({ id: "ok", consolidation_status: "consolidated" })]);
+    mounted = renderRegister();
+    const row = mounted.container.querySelector<HTMLElement>('[role="button"]')!;
+    act(() => {
+      row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mounted.container.textContent).not.toContain("retry");
+  });
+
+  it("shows the retry verb for an expanded dead_letter row and calls the mutation on click", () => {
+    setEpisodes([
+      makeEpisode({ id: "dead-1", butler: "atlas", consolidation_status: "dead_letter" }),
+    ]);
+    const mutate = vi.fn();
+    stubRetryMutation({ mutate });
+    mounted = renderRegister();
+
+    const row = mounted.container.querySelector<HTMLElement>('[role="button"]')!;
+    act(() => {
+      row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const retryButton = Array.from(
+      mounted.container.querySelectorAll("button"),
+    ).find((b) => b.textContent === "retry ↺") as HTMLButtonElement | undefined;
+    expect(retryButton).toBeDefined();
+
+    act(() => {
+      retryButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mutate).toHaveBeenCalledWith({ episodeId: "dead-1" });
+    // The row stays expanded — the click must not bubble into the row toggle.
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("disables the retry verb and reads 'retrying…' while the mutation is pending", () => {
+    setEpisodes([makeEpisode({ id: "dead-2", consolidation_status: "dead_letter" })]);
+    stubRetryMutation({ isPending: true });
+    mounted = renderRegister();
+    const row = mounted.container.querySelector<HTMLElement>('[role="button"]')!;
+    act(() => {
+      row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const retryButton = Array.from(
+      mounted.container.querySelectorAll("button"),
+    ).find((b) => b.textContent === "retrying…") as HTMLButtonElement | undefined;
+    expect(retryButton).toBeDefined();
+    expect(retryButton!.disabled).toBe(true);
+  });
+
+  it("shows an inline failure message when the retry mutation errors", () => {
+    setEpisodes([makeEpisode({ id: "dead-3", consolidation_status: "dead_letter" })]);
+    stubRetryMutation({ isError: true });
+    mounted = renderRegister();
+    const row = mounted.container.querySelector<HTMLElement>('[role="button"]')!;
+    act(() => {
+      row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mounted.container.textContent).toContain("Retry failed");
   });
 
   it("renders the four status pills with all selected by default", () => {

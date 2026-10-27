@@ -7,12 +7,13 @@
 // ---------------------------------------------------------------------------
 
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+  Tile,
+  TileContent,
+  TileDescription,
+  TileHeader,
+  TileTitle,
+} from "@/components/ui/Tile"
+import { QueryTile } from "@/components/ui/query-tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
 import { useInstanceFacts } from "@/hooks/use-system"
@@ -23,34 +24,18 @@ import { useInstanceFacts } from "@/hooks/use-system"
 
 function TileSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Version</CardTitle>
-        <CardDescription>Software version</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile loading>
+      <TileHeader>
+        <TileTitle>Version</TileTitle>
+        <TileDescription>Software version</TileDescription>
+      </TileHeader>
+      <TileContent>
         <div data-testid="version-tile-skeleton" className="space-y-2">
           <Skeleton className="h-8 w-32" />
           <Skeleton className="h-4 w-48" />
         </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-function TileError() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Version</CardTitle>
-        <CardDescription>Software version</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <p data-testid="version-tile-error" className="text-destructive text-sm">
-          Could not load version info.
-        </p>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
@@ -66,28 +51,36 @@ function TileError() {
  * so started_at is a close proxy.
  */
 export function VersionTile() {
-  const { data: response, isPending, isError } = useInstanceFacts()
-
-  if (isPending) return <TileSkeleton />
-  if (isError) return <TileError />
-
-  const facts = response?.data
+  const q = useInstanceFacts()
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Version</CardTitle>
-        <CardDescription>Software version</CardDescription>
-      </CardHeader>
-      <CardContent data-testid="version-tile-content">
+    <QueryTile q={q} title="Version" description="Software version"
+      errorMessage="Could not load version info." errorTestId="version-tile-error" loadingFallback={<TileSkeleton />}>
+      {(response) => <VersionContent response={response} />}
+    </QueryTile>
+  )
+}
+
+function VersionContent({ response }: {
+  response: NonNullable<ReturnType<typeof useInstanceFacts>["data"]>
+}) {
+  const facts = response.data
+
+  return (
+    <Tile>
+      <TileHeader>
+        <TileTitle>Version</TileTitle>
+        <TileDescription>Software version</TileDescription>
+      </TileHeader>
+      <TileContent data-testid="version-tile-content">
         <dl className="space-y-3 text-sm">
           <div>
             <dt className="text-muted-foreground text-xs">Package version</dt>
             <dd className="font-mono text-lg font-semibold tabular-nums">
-              {facts?.version || "unknown"}
+              {facts.version || "unknown"}
             </dd>
           </div>
-          {facts?.started_at && (
+          {facts.started_at && (
             <div>
               <dt className="text-muted-foreground text-xs">Last deploy</dt>
               <dd>
@@ -96,7 +89,7 @@ export function VersionTile() {
             </div>
           )}
         </dl>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }

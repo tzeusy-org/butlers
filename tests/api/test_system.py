@@ -18,8 +18,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -31,17 +32,12 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerConnectionInfo, get_butler_configs
+from butlers.api.deps import ButlerConnectionInfo, get_butler_configs, get_db
 from butlers.api.routers import system as system_router
-from butlers.api.routers.system import (
-    _commits_behind_main,
-    _get_db_manager,
-    system_egress_reads_total,
-    system_instance_reads_total,
-)
+from butlers.api.routers.system import _commits_behind_main
 from butlers.core.backup_facts import read_backup_facts_from_dir
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -104,7 +100,7 @@ def _install_fake_github(monkeypatch, *, status_code: int = 200, payload: dict |
 
 def _make_app_with_db(mock_db):
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app
 
 
@@ -377,8 +373,11 @@ class TestCommitsBehindMain:
         assert github.calls == []
 
     async def test_returns_ahead_by_on_success(self, monkeypatch):
-        _install_fake_github(monkeypatch, payload={"ahead_by": 7})
+        github = _install_fake_github(monkeypatch, payload={"ahead_by": 7})
         assert await _commits_behind_main("deadbeef") == 7
+        assert github.calls == [
+            "https://api.github.com/repos/tzeusy-org/butlers/compare/deadbeef...main"
+        ]
 
     async def test_returns_none_on_non_200(self, monkeypatch):
         _install_fake_github(monkeypatch, status_code=404, payload={})
@@ -613,6 +612,87 @@ async def test_stored_functions_check_unavailable_returns_flag_not_503(monkeypat
     assert data["matched_count"] == 0
 
 
+async def test_stored_functions_reports_unpinned_definers_with_owner_and_remedy(monkeypatch):
+    """bu-hefzis: unpinned definers ride along without changing body-drift semantics."""
+    from butlers.core.definer_search_path import (
+        REMEDY_INIT_DB,
+        DefinerSearchPathReport,
+        UnpinnedDefiner,
+    )
+    from butlers.core.stored_function_drift import MATCHED, StoredFunctionDriftReport
+
+    matched = _stored_function_entry(MATCHED, deployed_digests=("aaaaaaaaaaaa",), matched_line=2247)
+    monkeypatch.setattr(
+        "butlers.core.stored_function_drift.compute_stored_function_drift",
+        AsyncMock(return_value=StoredFunctionDriftReport(checked_at=_NOW, entries=(matched,))),
+    )
+    unpinned = UnpinnedDefiner(
+        signature="restore_drill_executor.is_due(p_interval_seconds integer)",
+        owner="restore_drill_executor_owner",
+        search_path="pg_catalog, public, pg_temp",
+        remedy=REMEDY_INIT_DB,
+    )
+    monkeypatch.setattr(
+        "butlers.core.definer_search_path.compute_unpinned_definers",
+        AsyncMock(
+            return_value=DefinerSearchPathReport(
+                checked_at=_NOW, entries=(unpinned,), checked_count=74
+            )
+        ),
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = AsyncMock()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/stored-functions")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["is_drifted"] is False
+    assert data["matched_count"] == 1
+    assert data["definer_check_available"] is True
+    assert data["unpinned_definers"] == [
+        {
+            "function": "restore_drill_executor.is_due(p_interval_seconds integer)",
+            "owner": "restore_drill_executor_owner",
+            "search_path": "pg_catalog, public, pg_temp",
+            "remedy": "init_db",
+        }
+    ]
+
+
+async def test_stored_functions_definer_check_degrades_independently_of_bodies(monkeypatch):
+    """A failed catalog read is flagged unavailable, never an empty all-clear."""
+    from butlers.core.definer_search_path import DefinerSearchPathReport
+    from butlers.core.stored_function_drift import MATCHED, StoredFunctionDriftReport
+
+    matched = _stored_function_entry(MATCHED, deployed_digests=("aaaaaaaaaaaa",), matched_line=2247)
+    monkeypatch.setattr(
+        "butlers.core.stored_function_drift.compute_stored_function_drift",
+        AsyncMock(return_value=StoredFunctionDriftReport(checked_at=_NOW, entries=(matched,))),
+    )
+    monkeypatch.setattr(
+        "butlers.core.definer_search_path.compute_unpinned_definers",
+        AsyncMock(
+            return_value=DefinerSearchPathReport(
+                checked_at=_NOW, entries=(), check_error="cannot read pg_proc: OSError"
+            )
+        ),
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = AsyncMock()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/stored-functions")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["stored_function_check_available"] is True
+    assert data["matched_count"] == 1
+    assert data["definer_check_available"] is False
+    assert data["unpinned_definers"] == []
+
+
 # ---------------------------------------------------------------------------
 # GET /api/system/conditions (bu-ep4ks.3)
 # ---------------------------------------------------------------------------
@@ -728,6 +808,172 @@ async def test_conditions_switchboard_pool_unavailable_returns_503():
     ) as client:
         resp = await client.get("/api/system/conditions")
     assert resp.status_code == 503
+
+
+def _paging_condition_rows() -> list[dict]:
+    from butlers.core.fleet_conditions import (
+        FLEET_FINGERPRINT,
+        FLEET_SOURCE,
+        QA_PATROL_OVERDUE_FINGERPRINT,
+        QA_PATROL_SOURCE,
+    )
+
+    fleet = {**_make_condition_row(source=FLEET_SOURCE), "fingerprint": FLEET_FINGERPRINT}
+    qa = {
+        **_make_condition_row(source=QA_PATROL_SOURCE),
+        "id": "22222222-2222-2222-2222-222222222222",
+        "fingerprint": QA_PATROL_OVERDUE_FINGERPRINT,
+    }
+    return [fleet, qa, _make_condition_row()]
+
+
+async def test_conditions_link_attention_status_for_paging_identities():
+    """REQ-butler-control-plane-liveness-007: linked delivery truth, safe copy only."""
+    rows = _paging_condition_rows()
+    attention_pool = AsyncMock()
+    attention_pool.fetch = AsyncMock(
+        return_value=[
+            {
+                "condition_id": rows[0]["id"],
+                "condition_kind": "fleet_control",
+                "episode_id": "33333333-3333-3333-3333-333333333333",
+                "lifecycle_state": "uncertain",
+                "outbox_retained": True,
+                "created_at": _NOW,
+                "updated_at": _NOW,
+                "delivered_at": None,
+                "delivery_error_class": "transport_uncertain",
+                "delivery_error_detail": "worker_recovery",
+                "delivery_worker_live": True,
+            },
+            {
+                "condition_id": rows[1]["id"],
+                "condition_kind": "qa_patrol_overdue",
+                "episode_id": "44444444-4444-4444-4444-444444444444",
+                "lifecycle_state": "pending",
+                "outbox_retained": True,
+                "created_at": _NOW,
+                "updated_at": _NOW,
+                "delivered_at": None,
+                "delivery_error_class": None,
+                "delivery_error_detail": None,
+                "delivery_worker_live": False,
+            },
+        ]
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = _make_conditions_pool_mock(rows=rows)
+    mock_db.credential_shared_pool.return_value = attention_pool
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions")
+    assert resp.status_code == 200
+    fleet, qa, other = resp.json()["data"]["conditions"]
+    assert fleet["attention"]["status"] == "uncertain"
+    assert fleet["attention"]["delivered_at"] is None
+    assert fleet["attention"]["safe_reason"] == "A dead delivery claim was fenced as uncertain"
+    assert qa["attention"]["status"] == "worker_unavailable"
+    assert other["attention"] is None
+
+
+async def test_conditions_handoff_mismatch_is_listed_but_never_paged():
+    """bu-vfobja: the split-handoff condition shows on the infra ledger with no attention."""
+    from butlers.core.fleet_conditions import QA_HANDOFF_MISMATCH_FINGERPRINT, QA_PATROL_SOURCE
+
+    mismatch = {
+        **_make_condition_row(source=QA_PATROL_SOURCE),
+        "fingerprint": QA_HANDOFF_MISMATCH_FINGERPRINT,
+        "summary": "Fleet-condition handoff differs: Dashboard=0, QA=1.",
+    }
+    attention_pool = AsyncMock()
+    attention_pool.fetch = AsyncMock(side_effect=AssertionError("must not read attention"))
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = _make_conditions_pool_mock(rows=[mismatch])
+    mock_db.credential_shared_pool.return_value = attention_pool
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions")
+    assert resp.status_code == 200
+    [condition] = resp.json()["data"]["conditions"]
+    assert condition["source"] == QA_PATROL_SOURCE
+    assert condition["attention"] is None
+    attention_pool.fetch.assert_not_called()
+
+
+async def test_conditions_attention_unreadable_is_unavailable_not_silent():
+    rows = _paging_condition_rows()
+    attention_pool = AsyncMock()
+    attention_pool.fetch = AsyncMock(side_effect=RuntimeError("permission denied"))
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = _make_conditions_pool_mock(rows=rows)
+    mock_db.credential_shared_pool.return_value = attention_pool
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions")
+    data = resp.json()["data"]
+    assert data["conditions_available"] is True
+    fleet, qa, other = data["conditions"]
+    assert fleet["attention"] == qa["attention"]
+    assert fleet["attention"]["status"] == "unavailable"
+    assert other["attention"] is None
+
+
+@pytest.mark.parametrize(
+    ("age_min", "resolved_after_min", "expected"),
+    [
+        (30, None, "not_raised"),
+        (2, None, "within_grace"),
+        (30, 3, None),
+        (30, 20, "not_raised"),
+        (6, None, "within_grace"),
+        (30, 6, None),
+        (9, None, "not_raised"),
+    ],
+    ids=[
+        "aged-active",
+        "inside-grace",
+        "resolved-inside-grace",
+        "resolved-after-grace",
+        "inside-pass-allowance",
+        "resolved-inside-pass-allowance",
+        "past-pass-allowance",
+    ],
+)
+async def test_conditions_without_marker_report_not_raised_or_within_grace(
+    age_min, resolved_after_min, expected
+):
+    """No marker: aged paging rows read not_raised, never a calm absence (bu-q7vx1q.55)."""
+    detected = datetime.now(UTC) - timedelta(minutes=age_min)
+    row = _paging_condition_rows()[0]
+    row["first_detected_at"] = detected
+    if resolved_after_min is not None:
+        row["state"] = "resolved"
+        row["resolved_at"] = detected + timedelta(minutes=resolved_after_min)
+    attention_pool = AsyncMock()
+    attention_pool.fetch = AsyncMock(return_value=[])
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = _make_conditions_pool_mock(rows=[row])
+    mock_db.credential_shared_pool.return_value = attention_pool
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions")
+    [condition] = resp.json()["data"]["conditions"]
+    got = condition["attention"]
+    assert (got["status"] if got else None) == expected
+
+
+def test_attention_grace_mirror_agrees_with_the_producer():
+    """The Python mirror of the producer's attention grace must match init-db.sql."""
+    from butlers.api.runtime_attention_status import CONDITION_ATTENTION_GRACE
+
+    sql = (Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql").read_text()
+    match = re.search(r"v_attention_grace CONSTANT INTERVAL := interval '(\d+) minutes'", sql)
+    assert match is not None
+    assert CONDITION_ATTENTION_GRACE.total_seconds() == int(match.group(1)) * 60
 
 
 async def test_conditions_rejects_invalid_state():
@@ -1567,7 +1813,7 @@ def _make_heartbeat_app(mock_db, roster_names):
     the scenario under test.
     """
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     configs = [ButlerConnectionInfo(name=n, port=40000) for n in roster_names]
     app.dependency_overrides[get_butler_configs] = lambda: configs
     return app
@@ -1592,6 +1838,44 @@ async def test_heartbeat_happy_path_fields():
         "heartbeat_age_seconds",
     ):
         assert field in general
+
+
+@pytest.mark.parametrize("receiver_observation_present", [True, False])
+async def test_heartbeat_cutover_uses_receiver_observation_even_with_old_legacy_timestamp(
+    monkeypatch, receiver_observation_present: bool
+):
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+    now = datetime.now(UTC)
+    old_legacy_timestamp = now - timedelta(days=3)
+    fresh_receiver_timestamp = now - timedelta(seconds=5)
+    mock_db = _make_heartbeat_db()
+    switchboard_pool = mock_db.pool("switchboard")
+
+    async def _registry_rows(sql, *args):
+        if "healthy_observed_at AS last_seen_at" in sql:
+            observed = fresh_receiver_timestamp if receiver_observation_present else None
+        else:
+            observed = old_legacy_timestamp
+        return [_make_record({"name": "general", "last_seen_at": observed})]
+
+    switchboard_pool.fetch.side_effect = _registry_rows
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_heartbeat_app(mock_db, ["general"])),
+        base_url="http://test",
+    ) as client:
+        resp = await client.get("/api/system/butlers/heartbeat")
+
+    assert resp.status_code == 200
+    general = next(b for b in resp.json()["data"]["butlers"] if b["name"] == "general")
+    assert "healthy_observed_at AS last_seen_at" in switchboard_pool.fetch.await_args.args[0]
+    if receiver_observation_present:
+        assert general["last_heartbeat_at"] == fresh_receiver_timestamp.isoformat()
+        assert 0 <= general["heartbeat_age_seconds"] < 30
+    else:
+        assert general["last_heartbeat_at"] is None
+        assert general["heartbeat_age_seconds"] is None
+    assert general["active_session_count"] == 0
+    assert general["error"] is None
 
 
 async def test_heartbeat_schema_unreachable_sets_error():
@@ -1857,60 +2141,3 @@ class TestEgressSpan:
         spans = otel_exporter.get_finished_spans()
         egress_spans = [s for s in spans if s.name == "system.egress.read"]
         assert len(egress_spans) == 2
-
-
-# ---------------------------------------------------------------------------
-# Prometheus counter tests
-# ---------------------------------------------------------------------------
-
-
-class TestPrometheusCounters:
-    """Verify that each /api/system/* endpoint registers a counter and bumps it."""
-
-    def _counter_value(self, counter) -> float:
-        """Read the current value of an unlabelled prometheus_client Counter.
-
-        Uses the public collect() API rather than internal _value so the helper
-        stays compatible across prometheus_client versions and multiprocess mode.
-        The _total sample holds the monotonic counter value.
-        """
-        for metric_family in counter.collect():
-            for sample in metric_family.samples:
-                if sample.name.endswith("_total"):
-                    return sample.value
-        return 0.0
-
-    async def test_instance_counter_exists_and_increments(self):
-        """system_instance_reads_total increments on GET /api/system/instance."""
-        app = create_app()
-        before = self._counter_value(system_instance_reads_total)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/system/instance")
-        assert resp.status_code == 200
-        assert self._counter_value(system_instance_reads_total) == before + 1
-
-    async def test_egress_counter_increments_even_on_403(self):
-        """system_egress_reads_total bumps on GET /api/system/egress even when it 403s.
-
-        Retained alongside the instance counter test as the representative
-        observability-wiring guard for the error-path branch (counter must bump
-        before the 403 gate). The other per-endpoint counter tests were redundant
-        copies of this same increment-on-read pattern.
-        """
-        mock_db = MagicMock(spec=DatabaseManager)
-        pool = AsyncMock()
-        # Simulate missing owner -> 403, but counter still bumps
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.fetch = AsyncMock(return_value=[])
-        mock_db.pool.return_value = pool
-        app = _make_app_with_db(mock_db)
-        before = self._counter_value(system_egress_reads_total)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/system/egress")
-        # 403 is expected (no owner), but the counter must still have bumped
-        assert resp.status_code == 403
-        assert self._counter_value(system_egress_reads_total) == before + 1

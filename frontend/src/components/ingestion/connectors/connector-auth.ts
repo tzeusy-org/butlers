@@ -25,6 +25,8 @@
  * - liveness "unclassified" (operational_role unknown)            → auth "unconfigured",        health "unclassified"
  * - liveness "online"  + state "healthy"                          → auth "ok",                  health "ok"
  * - liveness "online"  + state "degraded" (no auth error_message) → auth "ok",                  health "degraded"
+ * - liveness "online"  + state "paused"                        → auth "ok",                  health "degraded"
+ * - liveness "online"  + state "unknown"/unrecognized          → auth "ok",                  health "degraded"
  * - liveness "online"  + state "degraded" + "api_forbidden"       → auth "needs_reauth",         health "degraded"
  * - liveness "online"  + state "degraded" + "no_primary_account"  → auth "needs_primary_account",health "degraded"
  * - liveness "stale"   + state "healthy"                          → auth "ok",                  health "degraded"
@@ -40,6 +42,7 @@
 
 import { getProviderOAuthStartUrl } from '@/api/client'
 import type { ConnectorSummary } from '@/api/types'
+import { stateTextColorVar } from '@/lib/visual-token-roles'
 
 /** Derived auth status — maps onto the Dispatch design language. */
 export type DerivedAuthStatus =
@@ -133,6 +136,44 @@ export function deriveConnectorDispatchInfo(c: ConnectorSummary): ConnectorDispa
     }
   }
 
+  // `paused` is an explicit operator lifecycle state. A fresh heartbeat is
+  // evidence that the process is reachable, not that its deliberately paused
+  // work is healthy. Keep the lifecycle state visible without turning it into
+  // a credential failure.
+  if (c.state === 'paused') {
+    return {
+      authStatus: 'ok',
+      health: 'degraded',
+      needsAttention: true,
+      authNote: 'connector paused · resume when ready',
+    }
+  }
+
+  // An online heartbeat alone cannot make an unknown runtime state healthy.
+  // Keep the established degraded health vocabulary and make the uncertainty
+  // explicit in the note rather than granting a green authorization signal.
+  if (c.state === 'unknown') {
+    return {
+      authStatus: 'ok',
+      health: 'degraded',
+      needsAttention: true,
+      authNote: 'connector state unknown · check connector',
+    }
+  }
+
+  // The API intentionally keeps `state` open-ended. Only the explicit
+  // `healthy` runtime state may present as green; an unfamiliar value needs
+  // operator attention until its semantics are understood. Do this before the
+  // liveness fallback so a stale heartbeat cannot mask the unknown state.
+  if (c.state !== 'healthy' && c.state !== 'degraded') {
+    return {
+      authStatus: 'ok',
+      health: 'degraded',
+      needsAttention: true,
+      authNote: 'connector state unrecognized · check connector',
+    }
+  }
+
   // Stale: heartbeat missed but not failed
   if (c.liveness === 'stale') {
     return {
@@ -214,51 +255,68 @@ export function authStatusLabel(status: DerivedAuthStatus): string {
   }
 }
 
-/** Maps auth status to a Tailwind color token. */
+/** Maps auth status to an AA-safe Tailwind foreground role. */
 export function authStatusColor(status: DerivedAuthStatus): string {
   switch (status) {
     case 'ok':
-      return 'text-[color:var(--green,oklch(0.72_0.17_150))]'
+      return stateTextColorVar('ok')
     case 'expiring':
-      return 'text-[color:var(--amber,oklch(0.72_0.12_70))]'
+      return stateTextColorVar('degraded')
     case 'needs_reauth':
-      return 'text-[color:var(--red,oklch(0.62_0.20_25))]'
+      return stateTextColorVar('error')
     case 'needs_primary_account':
-      return 'text-[color:var(--amber,oklch(0.72_0.12_70))]'
+      return stateTextColorVar('degraded')
     case 'unconfigured':
-      return 'text-muted-foreground'
+      return stateTextColorVar('waiting')
   }
 }
 
-/** Maps health to a Tailwind background color for the health dot. */
-export function healthDotColor(health: DerivedHealth): string {
+/** Maps derived connector health to the canonical StateDot state. */
+export function healthDotState(health: DerivedHealth): 'ok' | 'degraded' | 'error' | 'waiting' {
   switch (health) {
     case 'ok':
-      return 'bg-[color:var(--green,oklch(0.72_0.17_150))]'
+      return 'ok'
     case 'degraded':
-      return 'bg-[color:var(--amber,oklch(0.72_0.12_70))]'
+      return 'degraded'
     case 'error':
-      return 'bg-[color:var(--red,oklch(0.62_0.20_25))]'
+      return 'error'
     case 'off':
-      return 'bg-muted-foreground/40'
+      return 'waiting'
     case 'unclassified':
-      return 'bg-[color:var(--amber,oklch(0.72_0.12_70))]'
+      return 'waiting'
   }
 }
 
-/** Maps health to a Tailwind foreground text color — same palette as {@link healthDotColor}. */
+/** Maps health to the same semantic token consumed by StateDot. */
 export function healthTextColor(health: DerivedHealth): string {
-  switch (health) {
-    case 'ok':
-      return 'text-[color:var(--green,oklch(0.72_0.17_150))]'
-    case 'degraded':
-      return 'text-[color:var(--amber,oklch(0.72_0.12_70))]'
-    case 'error':
-      return 'text-[color:var(--red,oklch(0.62_0.20_25))]'
-    case 'off':
-      return 'text-muted-foreground/40'
-    case 'unclassified':
-      return 'text-[color:var(--amber,oklch(0.72_0.12_70))]'
+  return stateTextColorVar(healthDotState(health))
+}
+
+/** The visible auth label and semantic foreground tone for roster surfaces. */
+export interface AuthStatusPresentation {
+  label: string
+  color: string
+}
+
+/**
+ * Resolve the auth representation shown alongside connector health.
+ *
+ * A valid credential is not an all-clear unless the runtime is explicitly
+ * healthy. Offline, stale, degraded, paused, and unrecognized runtime states
+ * use their health note and health tone instead. Actionable auth failures
+ * retain their own label and tone even when health is unhealthy.
+ */
+export function authStatusPresentation(info: ConnectorDispatchInfo): AuthStatusPresentation {
+  if (info.authStatus === 'ok' && info.health !== 'ok') {
+    return {
+      label: info.authNote,
+      color: healthTextColor(info.health),
+    }
+  }
+
+  return {
+    label: authStatusLabel(info.authStatus),
+    color: authStatusColor(info.authStatus),
   }
 }
 
@@ -274,6 +332,7 @@ export function healthTextColor(health: DerivedHealth): string {
  */
 export function healthVerdictWord(c: ConnectorSummary, info: ConnectorDispatchInfo): string {
   if (info.health === 'unclassified') return 'unclassified'
+  if (c.state === 'paused' && info.health === 'degraded') return 'paused'
   if (info.health === 'error') return c.liveness === 'offline' ? 'offline' : 'error'
   if (info.health === 'degraded') return c.liveness === 'stale' ? 'stale' : 'degraded'
   if (info.health === 'off') return 'offline'
@@ -346,11 +405,9 @@ export function resolveConnectorRecovery(
   // Spotify authorizes through the connector PKCE flow
   // (POST /api/connectors/spotify/oauth/start — client_id only, no client
   // secret), which is what the registered Spotify app's redirect URIs point at.
-  // The generalized router does carry a `spotify` registry entry, but it is a
-  // confidential-client flow whose SPOTIFY_OAUTH_CLIENT_ID/SECRET were never
-  // provisioned, so linking there produced a recovery button that could only
-  // fail. /secrets?focus=u:spotify lands on the card whose drawer drives the
-  // real flow — same shape as the WhatsApp recovery below.
+  // Spotify is deliberately absent from the generalized OAuth registry.
+  // /secrets?focus=u:spotify lands on the card whose drawer drives the
+  // connector-owned flow — same shape as the WhatsApp recovery below.
   if (connectorType === 'spotify') {
     return { kind: 'passport', to: '/secrets?focus=u:spotify', action: 'reauthorize' }
   }

@@ -35,7 +35,6 @@ Test conventions:
 from __future__ import annotations
 
 import hashlib
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -45,9 +44,11 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
+from butlers.testing.fake_pool import AsyncCtx
 from butlers.tools.relationship.relationship_assert_fact import AssertOutcome
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -216,9 +217,8 @@ def _wire_app(mock_pool: AsyncMock) -> FastAPI:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
     app = create_app()
-    router_module = _relationship_router_module(app)
-    if hasattr(router_module, "_get_db_manager"):
-        app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    _relationship_router_module(app)
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app
 
 
@@ -654,14 +654,10 @@ class TestCreateEntity:
         mock_txn.__aexit__ = AsyncMock(return_value=False)
         mock_conn.transaction = MagicMock(return_value=mock_txn)
 
-        @asynccontextmanager
-        async def _acquire():
-            yield mock_conn
-
         mock_pool = AsyncMock()
         owner_row = _make_owner_row() if owner_exists else None
         mock_pool.fetchrow = AsyncMock(return_value=owner_row)
-        mock_pool.acquire = MagicMock(return_value=_acquire())
+        mock_pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(mock_conn))
         return _wire_app(mock_pool)
 
     async def test_happy_path_returns_201_on_create(self):
@@ -714,6 +710,7 @@ class TestEntityContacts:
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = MagicMock(side_effect=data.get)
         return row
 
     def _make_get_app(
@@ -777,6 +774,7 @@ class TestEntityContacts:
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = MagicMock(side_effect=data.get)
         return row
 
     _WRITER_PATCH = "butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact"
@@ -884,6 +882,7 @@ class TestEntityContactsTelegramAndOwnerSelf:
             "primary": True,
         }
         fact_row.__getitem__ = MagicMock(side_effect=lambda k: _data[k])
+        fact_row.get = MagicMock(side_effect=_data.get)
 
         mock_pool = AsyncMock()
         mock_pool.fetchrow = AsyncMock(side_effect=[owner_row, fact_row])
@@ -1121,13 +1120,9 @@ class TestForgetEntity:
         mock_txn.__aexit__ = AsyncMock(return_value=False)
         mock_conn.transaction = MagicMock(return_value=mock_txn)
 
-        @asynccontextmanager
-        async def _acquire():
-            yield mock_conn
-
         mock_pool = AsyncMock()
         mock_pool.fetchrow = AsyncMock(side_effect=[owner_row, entity_row])
-        mock_pool.acquire = MagicMock(return_value=_acquire())
+        mock_pool.acquire = MagicMock(return_value=AsyncCtx(mock_conn))
         return _wire_app(mock_pool), mock_pool
 
     async def test_happy_path_returns_204(self):
@@ -1154,15 +1149,24 @@ class TestForgetEntity:
 # ===========================================================================
 
 
+def _make_merge_lock_row(entity_id: UUID, metadata: dict | None = None) -> MagicMock:
+    """Build the production-shaped row returned by the merge authority's lock query."""
+    data = {
+        "id": entity_id,
+        "canonical_name": "Opaque entity",
+        "entity_type": "person",
+        "aliases": [],
+        "metadata": metadata or {},
+        "roles": [],
+        "updated_at": None,
+    }
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    return row
+
+
 class TestMergeEntities:
     """POST /entities/{id}/merge — §9.9."""
-
-    def _make_lock_row(self, entity_id: UUID, metadata: dict | None = None) -> MagicMock:
-        """Build a MagicMock for the FOR UPDATE lock SELECT row in the merge transaction."""
-        data = {"id": entity_id, "metadata": metadata or {}}
-        row = MagicMock()
-        row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
-        return row
 
     def _make_app(
         self,
@@ -1187,9 +1191,9 @@ class TestMergeEntities:
         # Build the lock rows (conn.fetch returns a list of rows ordered by id)
         lock_rows: list = []
         if entity_a_exists:
-            lock_rows.append(self._make_lock_row(_ENT_ID))
+            lock_rows.append(_make_merge_lock_row(_ENT_ID))
         if entity_b_exists:
-            lock_rows.append(self._make_lock_row(_ENT_ID_B))
+            lock_rows.append(_make_merge_lock_row(_ENT_ID_B))
         # Sort by id ascending (mimics ORDER BY id in the query)
         lock_rows.sort(key=lambda r: r["id"])
 
@@ -1200,20 +1204,39 @@ class TestMergeEntities:
         # entity rows; the facts scans return [] so the per-row repoint loops do
         # not run against the lock MagicMocks (which lack a ``valid_at`` key).
         async def _conn_fetch(query, *args):
-            return lock_rows if "FOR UPDATE" in query else []
+            return lock_rows if "FOR UPDATE" in query and "public.entities" in query else []
 
         mock_conn.fetch = AsyncMock(side_effect=_conn_fetch)
         mock_conn.execute = AsyncMock(return_value="UPDATE 1")
         mock_conn.fetchval = AsyncMock(return_value=0)  # moved row count
 
+        async def _conn_fetchrow(query, *args):
+            if "FROM public.entity_rebind_log" in query:
+                return {
+                    "rebind_id": args[0],
+                    "source_entity_id": _ENT_ID,
+                    "target_entity_id": _ENT_ID_B,
+                    "target_schema": "relationship",
+                    "references_rebound": 3,
+                    "status": "pending",
+                    "error_class": None,
+                }
+            if "UPDATE public.entity_rebind_log" in query:
+                return {
+                    "rebind_id": args[0],
+                    "target_schema": "relationship",
+                    "references_rebound": args[4],
+                    "status": args[5],
+                    "error_class": args[6],
+                }
+            return None
+
+        mock_conn.fetchrow = AsyncMock(side_effect=_conn_fetchrow)
+
         mock_txn = AsyncMock()
         mock_txn.__aenter__ = AsyncMock(return_value=None)
         mock_txn.__aexit__ = AsyncMock(return_value=False)
         mock_conn.transaction = MagicMock(return_value=mock_txn)
-
-        @asynccontextmanager
-        async def _acquire():
-            yield mock_conn
 
         mock_pool = AsyncMock()
         # merge_entities computes the pre-transaction merge-review snapshot, which
@@ -1234,7 +1257,7 @@ class TestMergeEntities:
         )
         mock_pool.fetch = AsyncMock(side_effect=[[], [], [], [], []])
         mock_pool.fetchval = AsyncMock(return_value=uuid4())
-        mock_pool.acquire = MagicMock(return_value=_acquire())
+        mock_pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(mock_conn))
         return _wire_app(mock_pool), mock_pool
 
     async def test_happy_path_returns_200_with_merge_response(self):
@@ -1468,11 +1491,14 @@ class TestEntityActivity:
         data = {
             "id": uuid4(),
             "predicate": predicate,
+            "object": "identity value",
+            "observed_at": None,
             "last_seen": last_seen or _NOW,
             "created_at": _NOW,
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = data.get
         return row
 
     def _make_mcp_result(self, episodes: list[dict]) -> MagicMock:
@@ -1502,7 +1528,7 @@ class TestEntityActivity:
         entity_val = 1 if entity_exists else None
         mock_pool.fetchrow = AsyncMock(return_value=owner_row)
         mock_pool.fetchval = AsyncMock(return_value=entity_val)
-        mock_pool.fetch = AsyncMock(return_value=fact_rows or [])
+        mock_pool.fetch = AsyncMock(side_effect=[[], fact_rows or []])
 
         mock_mcp_manager = MagicMock()
         if chronicler_unreachable:
@@ -1547,9 +1573,12 @@ class TestEntityActivity:
         fact_row = self._make_fact_row(last_seen=_NOW)
         app, pool = self._make_app(fact_rows=[fact_row], chronicler_episodes=[])
         await _get(app, _ACTIVITY_PATH)
-        fetch_call_sql = pool.fetch.call_args_list[0][0][0]
+        narrative_sql = pool.fetch.call_args_list[0][0][0]
+        fetch_call_sql = pool.fetch.call_args_list[1][0][0]
+        assert "FROM facts" in narrative_sql
+        assert "entity_facts" not in narrative_sql
         assert "relationship.entity_facts" in fetch_call_sql
-        assert "relationship.facts" not in fetch_call_sql
+        assert "FROM facts" not in fetch_call_sql
 
     async def test_chronicler_unreachable_is_explicitly_degraded(self):
         """A failed Chronicler read cannot impersonate complete activity."""
@@ -1863,6 +1892,7 @@ class TestEntityFacts:
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = MagicMock(side_effect=data.get)
         return row
 
     def _make_app(
@@ -1893,18 +1923,17 @@ class TestEntityFacts:
         return _wire_app(mock_pool), mock_pool
 
     async def test_happy_path_returns_200_with_keyset_envelope(self):
-        """Default call returns the keyset envelope {items, next_cursor, has_more}."""
+        """Default call returns the Page envelope {items, next_cursor, limit}."""
         rows = [self._make_fact_row()]
         app, _ = self._make_app(fact_rows=rows)
         resp = await _get(app, _FACTS_PATH)
         assert resp.status_code == 200
         body = resp.json()
-        assert "items" in body
-        assert "next_cursor" in body
-        assert body["has_more"] is False
-        # No legacy offset/total fields.
-        assert "total" not in body
-        assert "offset" not in body
+        assert body["next_cursor"] is None
+        assert body["limit"] == 20
+        assert len(body["items"]) == 1
+        # No legacy offset/total/has_more fields.
+        assert not {"total", "offset", "has_more"} & body.keys()
 
     async def test_response_shape_includes_provenance_and_staleness(self):
         """Each row carries full provenance + staleness_band + store label."""
@@ -1993,12 +2022,10 @@ class TestEntityFacts:
         body = resp.json()
         assert body["items"] == []
         assert body["next_cursor"] is None
-        assert body["has_more"] is False
 
     async def test_keyset_has_more_and_cursor_round_trip(self):
-        """A full page yields has_more + a cursor that decodes to the last row's key."""
-        import base64
-        import json as _json
+        """A full page yields a cursor that decodes to the last row's key."""
+        from butlers.api.pagination import decode_cursor
 
         # limit defaults to 20; return 21 rows so the handler trims to a page + cursor.
         base = _NOW
@@ -2014,12 +2041,10 @@ class TestEntityFacts:
         assert resp.status_code == 200
         body = resp.json()
         assert len(body["items"]) == 20
-        assert body["has_more"] is True
         assert body["next_cursor"] is not None
         # Cursor must decode to the (created_at, id) of the last returned row.
-        payload = _json.loads(base64.urlsafe_b64decode(body["next_cursor"].encode()))
-        last = body["items"][-1]
-        assert payload["id"] == last["id"]
+        _created_at, last_id = decode_cursor(body["next_cursor"], scope="relationship-facts")
+        assert str(last_id) == body["items"][-1]["id"]
 
         # Feeding the cursor back must add a keyset predicate bound to the values.
         app2, pool2 = self._make_app(fact_rows=[])
@@ -2028,10 +2053,10 @@ class TestEntityFacts:
         assert "<" in sql2  # keyset comparison present
 
     async def test_malformed_cursor_rejected(self):
-        """A malformed cursor is a 422 (decode failure surfaces as bad request)."""
+        """A malformed cursor is a 400 (decode failure surfaces as bad request)."""
         app, _ = self._make_app(fact_rows=[])
         resp = await _get(app, _FACTS_PATH, cursor="!!!not-base64!!!")
-        assert resp.status_code == 422
+        assert resp.status_code == 400
 
     async def test_sql_uses_entity_facts_not_facts_table(self):
         """Default GET /entities/{id}/facts SQL must use relationship.entity_facts."""
@@ -2059,11 +2084,14 @@ class TestEntityActivityBinning:
         data = {
             "id": uuid4(),
             "predicate": "contact_note",
+            "object": "identity value",
+            "observed_at": None,
             "last_seen": last_seen,
             "created_at": last_seen,
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = data.get
         return row
 
     def _make_mcp_result(self, episodes: list[dict]) -> MagicMock:
@@ -2090,7 +2118,7 @@ class TestEntityActivityBinning:
         mock_pool = AsyncMock()
         mock_pool.fetchrow = AsyncMock(return_value=_make_owner_row() if owner_exists else None)
         mock_pool.fetchval = AsyncMock(return_value=1 if entity_exists else None)
-        mock_pool.fetch = AsyncMock(return_value=fact_rows or [])
+        mock_pool.fetch = AsyncMock(side_effect=[[], fact_rows or []])
 
         mock_mcp = MagicMock()
         mock_client = AsyncMock()
@@ -2313,6 +2341,7 @@ class TestEntityDeltaFacts:
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = data.get
         return row
 
     def _make_app(
@@ -2423,6 +2452,7 @@ class TestEntityCoreDates:
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = data.get
         return row
 
     def _make_app(
@@ -2461,6 +2491,9 @@ class TestEntityCoreDates:
         assert row["conf"] == 1.0
         assert row["verified"] is True
         assert row["staleness_band"] == "fresh"
+        assert row["confirmation_status"] == "legacy_verified"
+        assert row["confirmed_at"] is None
+        assert row["reported_by"] is None
 
     async def test_partial_date_without_year_supported(self):
         """A --MM-DD partial date (year unknown) still yields a next occurrence."""
@@ -2593,6 +2626,7 @@ def _make_identity_compare_row(
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+    row.get = MagicMock(side_effect=data.get)
     return row
 
 
@@ -2623,6 +2657,7 @@ def _make_narrative_compare_row(
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+    row.get = MagicMock(side_effect=data.get)
     return row
 
 
@@ -2913,12 +2948,6 @@ class TestDismissPair:
 class TestMergeWritesAuditRow:
     """POST /entities/{id}/merge writes a merge_reviews row regardless of entry path."""
 
-    def _make_lock_row(self, entity_id: UUID, metadata: dict | None = None) -> MagicMock:
-        data = {"id": entity_id, "metadata": metadata or {}}
-        row = MagicMock()
-        row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
-        return row
-
     async def test_merge_writes_merged_audit_row(self):
         """A successful merge writes a merge_reviews row with outcome='merged'."""
         owner_row = _make_owner_row()
@@ -2937,7 +2966,7 @@ class TestMergeWritesAuditRow:
         mock_pool.fetch = AsyncMock(side_effect=[[], [], [], [], []])
 
         lock_rows = sorted(
-            [self._make_lock_row(_ENT_ID), self._make_lock_row(_ENT_ID_B)],
+            [_make_merge_lock_row(_ENT_ID), _make_merge_lock_row(_ENT_ID_B)],
             key=lambda r: r["id"],
         )
         mock_conn = AsyncMock()
@@ -2946,7 +2975,7 @@ class TestMergeWritesAuditRow:
         # ``facts`` repoint scans (bu-j820n.1); only the lock returns entity rows,
         # the facts scans return [] (no narrative facts in this audit-row test).
         async def _conn_fetch(query, *args):
-            return lock_rows if "FOR UPDATE" in query else []
+            return lock_rows if "FOR UPDATE" in query and "public.entities" in query else []
 
         mock_conn.fetch = AsyncMock(side_effect=_conn_fetch)
         mock_conn.execute = AsyncMock(return_value="UPDATE 1")
@@ -2954,16 +2983,35 @@ class TestMergeWritesAuditRow:
         # object-rewire count, then the merge_reviews INSERT ... RETURNING id.
         # The two counts are ints; the audit row returns a UUID review id.
         mock_conn.fetchval = AsyncMock(side_effect=[0, 0, uuid4()])
+
+        async def _conn_fetchrow(query, *args):
+            if "FROM public.entity_rebind_log" in query:
+                return {
+                    "rebind_id": args[0],
+                    "source_entity_id": _ENT_ID,
+                    "target_entity_id": _ENT_ID_B,
+                    "target_schema": "relationship",
+                    "references_rebound": 1,
+                    "status": "pending",
+                    "error_class": None,
+                }
+            if "UPDATE public.entity_rebind_log" in query:
+                return {
+                    "rebind_id": args[0],
+                    "target_schema": "relationship",
+                    "references_rebound": args[4],
+                    "status": args[5],
+                    "error_class": args[6],
+                }
+            return None
+
+        mock_conn.fetchrow = AsyncMock(side_effect=_conn_fetchrow)
         mock_txn = AsyncMock()
         mock_txn.__aenter__ = AsyncMock(return_value=None)
         mock_txn.__aexit__ = AsyncMock(return_value=False)
         mock_conn.transaction = MagicMock(return_value=mock_txn)
 
-        @asynccontextmanager
-        async def _acquire():
-            yield mock_conn
-
-        mock_pool.acquire = MagicMock(return_value=_acquire())
+        mock_pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(mock_conn))
 
         app = _wire_app(mock_pool)
         resp = await _post(

@@ -103,6 +103,13 @@ The Lifestyle butler SHALL maintain a domain-specific memory taxonomy distinguis
 - **THEN** enduring preferences (genre, artist, cuisine, favorite restaurants, recipes, hobbies, dietary patterns, routines) SHALL default to `stable` permanence
 - **AND** current consumption state (what the user is currently watching, reading, playing, or listening to) SHALL default to `volatile` permanence
 
+#### Scenario: Lifestyle predicates are registry-bound
+
+- **WHEN** a caller attempts to store a fact with `scope='lifestyle'`
+- **THEN** its predicate SHALL already exist in `predicate_registry`
+- **AND** an unregistered predicate SHALL be rejected before the fact is written rather than stored with a fuzzy suggestion
+- **AND** every predicate declared by the Lifestyle memory-taxonomy skill SHALL be seeded in the registry
+
 ### Requirement: Scheduled Task Shape
 
 The Lifestyle butler SHALL run the standard memory maintenance job set shared across butler-typed agents, plus at least one domain-specific periodic task that surfaces taste highlights.
@@ -113,6 +120,79 @@ The Lifestyle butler SHALL run the standard memory maintenance job set shared ac
 - **THEN** it SHALL schedule the standard memory maintenance jobs shared by butler-typed agents
 - **AND** it SHALL schedule at least one domain-specific recurring task whose current shape is a weekly taste digest
 - **AND** the exact cron expressions and dispatch modes live in `roster/lifestyle/butler.toml`
+
+#### Scenario: Connector evidence is projected without an LLM
+
+- **WHEN** Spotify session or closed-play evidence is waiting in the connector ledger
+- **THEN** a deterministic scheduled job SHALL project it into Lifestyle works and taste signals
+- **AND** repeated or concurrent job runs SHALL converge without duplicate signals or orphan works
+- **AND** when a same-endpoint per-play row covers a named track occurrence inside a listening session, the URI-bearing per-play evidence SHALL take precedence and the occurrence SHALL produce exactly one work and one play signal
+- **AND** the projection SHALL NOT depend on an LLM session or operator tool invocation
+
+#### Scenario: Ledger downgrade preserves owner verdicts
+
+- **WHEN** the Lifestyle ledger is downgraded while directly-created owner verdicts exist
+- **THEN** every such verdict SHALL be exported as a backward-readable lifestyle fact before the ledger tables are dropped
+- **AND** the exported fact SHALL preserve the verdict text, predicate, provenance, and linked work metadata
+
+### Requirement: Taste Ledger Summary Read Honesty
+
+The Lifestyle taste-summary read surface SHALL preserve the truth available
+from independent ledger queries and SHALL distinguish a successful empty
+ledger from unavailable evidence.
+
+#### Scenario: Complete empty ledger remains a genuine empty result
+
+- **WHEN** every taste-summary query succeeds and the ledger contains no rows
+- **THEN** the response SHALL report availability = complete and
+  ledger_available = true
+- **AND** every query_availability entry SHALL report
+  state = available with no failure reason
+- **AND** zero counts and empty groups SHALL be rendered as a genuine empty
+  ledger, not as unavailable data
+
+#### Scenario: One failed summary query preserves successful sections
+
+- **WHEN** one taste-summary query fails for a reason other than an expected
+  missing pre-migration ledger table
+- **THEN** successful sibling query sections SHALL retain their returned counts
+  or groups
+- **AND** only the failed section SHALL use its compatibility zero or empty
+  group
+- **AND** the response SHALL report availability = partial and
+  ledger_available = true
+- **AND** query_availability SHALL include one stable entry for every
+  summary query, with the failed entry reporting
+  state = unavailable and reason = query_failed
+
+#### Scenario: All summary queries unavailable never become a genuine empty ledger
+
+- **WHEN** every taste-summary query fails
+- **THEN** the response SHALL report availability = unavailable and
+  ledger_available = false
+- **AND** every query_availability entry SHALL report
+  state = unavailable and reason = query_failed
+- **AND** the response SHALL never claim that zero counts or empty groups are
+  a genuine empty ledger
+
+#### Scenario: Cached summary remains honestly stale after a refetch failure
+
+- **WHEN** the dashboard retains a last successful taste summary while a
+  background refetch fails
+- **THEN** it SHALL identify the displayed summary as stale and direct the
+  owner to refresh for confirmation
+- **AND** it SHALL not present the cached values as current, initial absence,
+  or a genuine empty ledger
+
+#### Scenario: Summary degradation is content-blind at the dashboard boundary
+
+- **WHEN** a taste-summary query is unavailable
+- **THEN** the API SHALL expose only its stable query name, closed state, and
+  fixed failure reason
+- **AND** the API SHALL NOT expose SQL, raw exception text, credentials, or
+  source payloads
+- **AND** the Lifestyle Taste dashboard SHALL render a failed KPI section as
+  unavailable while retaining successful sibling values
 
 ### Requirement: Cross-Butler Briefing Contribution
 

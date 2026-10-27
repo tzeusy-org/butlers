@@ -58,13 +58,20 @@ describe("fuzzyFilter", () => {
   ];
 
   it("returns items unfiltered (capped at limit) for an empty query", () => {
-    expect(fuzzyFilter("", items, { getLabel: (i) => i.label })).toEqual(items);
-    expect(fuzzyFilter("", items, { getLabel: (i) => i.label, limit: 2 })).toEqual(items.slice(0, 2));
+    expect(fuzzyFilter("", items, { getLabel: (i) => i.label })).toEqual({
+      items,
+      total: items.length,
+    });
+    expect(fuzzyFilter("", items, { getLabel: (i) => i.label, limit: 2 })).toEqual({
+      items: items.slice(0, 2),
+      total: items.length,
+    });
   });
 
   it("filters out items that don't match at all", () => {
     const result = fuzzyFilter("cal", items, { getLabel: (i) => i.label });
-    expect(result.map((i) => i.label)).toEqual(["Calendar"]);
+    expect(result.items.map((i) => i.label)).toEqual(["Calendar"]);
+    expect(result.total).toBe(1);
   });
 
   it("ranks a prefix match ahead of a weaker match", () => {
@@ -73,7 +80,7 @@ describe("fuzzyFilter", () => {
       { label: "Issues", path: "/issues" },
     ];
     const result = fuzzyFilter("iss", withNotif, { getLabel: (i) => i.label });
-    expect(result[0].label).toBe("Issues");
+    expect(result.items[0].label).toBe("Issues");
   });
 
   it("matches on keywords when the label itself doesn't match", () => {
@@ -87,8 +94,8 @@ describe("fuzzyFilter", () => {
       getLabel: (i) => i.label,
       getKeywords: (i) => [i.path],
     });
-    expect(result.map((i) => i.label)).toContain("Notifications");
-    expect(keywordOnly.map((i) => i.label)).toEqual(["Open items"]);
+    expect(result.items.map((i) => i.label)).toContain("Notifications");
+    expect(keywordOnly.items.map((i) => i.label)).toEqual(["Open items"]);
   });
 
   it("respects the limit after sorting", () => {
@@ -97,6 +104,7 @@ describe("fuzzyFilter", () => {
       path: `/calendar/${i}`,
     }));
     const result = fuzzyFilter("cal", many, { getLabel: (i) => i.label, limit: 3 });
-    expect(result.length).toBe(3);
+    expect(result.items.length).toBe(3);
+    expect(result.total).toBe(10);
   });
 });

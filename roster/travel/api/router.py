@@ -7,50 +7,42 @@ butler's PostgreSQL database via asyncpg.
 
 from __future__ import annotations
 
-import importlib.util
 import logging
-import sys
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import PaginatedResponse, PaginationMeta
+from butlers.roster_imports import roster_module
 from butlers.tools.travel._helpers import _row_to_dict
+from butlers.tools.travel.connections import connection_reason
 
 # Dynamically load models module from the same directory
-_models_path = Path(__file__).parent / "models.py"
-_spec = importlib.util.spec_from_file_location("travel_api_models", _models_path)
-if _spec is not None and _spec.loader is not None:
-    _models = importlib.util.module_from_spec(_spec)
-    sys.modules["travel_api_models"] = _models
-    _spec.loader.exec_module(_models)
+_models = roster_module("travel", "api/models", api_source=__file__)
 
-    AccommodationModel = _models.AccommodationModel
-    AlertModel = _models.AlertModel
-    DocumentModel = _models.DocumentModel
-    ExpiringDocumentModel = _models.ExpiringDocumentModel
-    ExpiringDocumentsResponse = _models.ExpiringDocumentsResponse
-    LegModel = _models.LegModel
-    PreTripActionModel = _models.PreTripActionModel
-    ReservationModel = _models.ReservationModel
-    TimelineEntryModel = _models.TimelineEntryModel
-    TripModel = _models.TripModel
-    TripSummaryModel = _models.TripSummaryModel
-    UpcomingTravelModel = _models.UpcomingTravelModel
-    UpcomingTripModel = _models.UpcomingTripModel
+AccommodationModel = _models.AccommodationModel
+AlertModel = _models.AlertModel
+ConnectionModel = _models.ConnectionModel
+DocumentModel = _models.DocumentModel
+ExpiringDocumentModel = _models.ExpiringDocumentModel
+ExpiringDocumentsResponse = _models.ExpiringDocumentsResponse
+LegModel = _models.LegModel
+PreTripActionModel = _models.PreTripActionModel
+ReservationModel = _models.ReservationModel
+TimelineEntryModel = _models.TimelineEntryModel
+TripModel = _models.TripModel
+TripSummaryModel = _models.TripSummaryModel
+TravellerModel = _models.TravellerModel
+UpcomingTravelModel = _models.UpcomingTravelModel
+UpcomingTripModel = _models.UpcomingTripModel
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/travel", tags=["travel"])
 
 BUTLER_DB = "travel"
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _pool(db: DatabaseManager):
@@ -60,11 +52,11 @@ def _pool(db: DatabaseManager):
     """
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Travel butler database is not available",
-        )
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +84,38 @@ def _row_to_document(r: dict) -> DocumentModel:
     return DocumentModel(**_row_to_dict(r))
 
 
+def _row_to_connection(r: dict) -> ConnectionModel:
+    d = _row_to_dict(r)
+    for extra in ("id", "trip_id", "created_at", "updated_at"):
+        d.pop(extra, None)
+    return ConnectionModel(**d)
+
+
+def _row_to_traveller(r: dict) -> TravellerModel:
+    return TravellerModel(**_row_to_dict(r))
+
+
+def _rows_to_models(rows: list, converter, entity_label: str) -> tuple[list, list[str]]:
+    """Convert rows to models, excluding-and-disclosing any that fail to convert.
+
+    Mirrors /upcoming's per-row degraded-mode pattern: a single corrupt row
+    (e.g. unparseable metadata) must not fail the whole sub-collection.
+    Returns (converted_models, unreadable_row_ids).
+    """
+    models = []
+    unreadable_ids: list[str] = []
+    for r in rows:
+        raw_id = str(r["id"])
+        try:
+            models.append(converter(dict(r)))
+        except Exception:
+            logger.warning(
+                "get_trip_summary: excluding unreadable %s %s", entity_label, raw_id, exc_info=True
+            )
+            unreadable_ids.append(raw_id)
+    return models, unreadable_ids
+
+
 # ---------------------------------------------------------------------------
 # GET /trips — filtered, paginated trip listing
 # ---------------------------------------------------------------------------
@@ -110,7 +134,8 @@ async def list_trips(
     ),
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[TripModel]:
     """List trips with optional status and date range filters."""
     pool = _pool(db)
@@ -156,11 +181,27 @@ async def list_trips(
         limit,
     )
 
-    data = [_row_to_trip(dict(r)) for r in rows]
+    data: list[TripModel] = []
+    unreadable_trip_ids: list[str] = []
+    for r in rows:
+        raw_trip_id = str(r["id"])
+        try:
+            data.append(_row_to_trip(dict(r)))
+        except Exception:
+            # A single unreadable trip (e.g. corrupt metadata) must not 500 the
+            # whole list; exclude it and disclose the id, mirroring /upcoming's
+            # degraded-mode envelope.
+            logger.warning("list_trips: excluding unreadable trip %s", raw_trip_id, exc_info=True)
+            unreadable_trip_ids.append(raw_trip_id)
 
     return PaginatedResponse[TripModel](
         data=data,
-        meta=PaginationMeta(total=total, offset=offset, limit=limit),
+        meta=PaginationMeta(
+            total=total,
+            offset=offset,
+            limit=limit,
+            unreadable_trip_ids=unreadable_trip_ids,
+        ),
     )
 
 
@@ -174,7 +215,8 @@ async def get_trip_summary(
     trip_id: str,
     include_documents: bool = Query(True, description="Include document pointers"),
     include_timeline: bool = Query(True, description="Include chronological timeline"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> TripSummaryModel:
     """Return full trip summary with all linked entities."""
     pool = _pool(db)
@@ -188,7 +230,19 @@ async def get_trip_summary(
     if trip_row is None:
         raise HTTPException(status_code=404, detail=f"Trip not found: {trip_id}")
 
-    trip = _row_to_trip(dict(trip_row))
+    try:
+        trip = _row_to_trip(dict(trip_row))
+    except Exception as exc:
+        # The top-level trip row is the entire response's subject -- there is
+        # no sub-collection to exclude-and-continue over. Fail with an honest,
+        # documented error instead of an unhandled 500.
+        logger.warning(
+            "get_trip_summary: trip %s row is corrupt and unreadable", trip_id, exc_info=True
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Trip {trip_id} data is corrupt and could not be read",
+        ) from exc
 
     legs_rows = await pool.fetch(
         "SELECT id, trip_id, type, carrier, departure_airport_station, departure_city,"
@@ -197,7 +251,7 @@ async def get_trip_summary(
         " FROM travel.legs WHERE trip_id = $1::uuid ORDER BY departure_at ASC",
         trip_id,
     )
-    legs = [_row_to_leg(dict(r)) for r in legs_rows]
+    legs, unreadable_leg_ids = _rows_to_models(legs_rows, _row_to_leg, "leg")
 
     acc_rows = await pool.fetch(
         "SELECT id, trip_id, type, name, address, check_in, check_out,"
@@ -205,7 +259,9 @@ async def get_trip_summary(
         " FROM travel.accommodations WHERE trip_id = $1::uuid ORDER BY check_in ASC",
         trip_id,
     )
-    accommodations = [_row_to_accommodation(dict(r)) for r in acc_rows]
+    accommodations, unreadable_accommodation_ids = _rows_to_models(
+        acc_rows, _row_to_accommodation, "accommodation"
+    )
 
     res_rows = await pool.fetch(
         "SELECT id, trip_id, type, provider, datetime, confirmation_number,"
@@ -213,16 +269,19 @@ async def get_trip_summary(
         " FROM travel.reservations WHERE trip_id = $1::uuid ORDER BY datetime ASC",
         trip_id,
     )
-    reservations = [_row_to_reservation(dict(r)) for r in res_rows]
+    reservations, unreadable_reservation_ids = _rows_to_models(
+        res_rows, _row_to_reservation, "reservation"
+    )
 
     documents: list[DocumentModel] = []
+    unreadable_document_ids: list[str] = []
     if include_documents:
         doc_rows = await pool.fetch(
             "SELECT id, trip_id, type, blob_ref, expiry_date, metadata, created_at"
             " FROM travel.documents WHERE trip_id = $1::uuid ORDER BY created_at ASC",
             trip_id,
         )
-        documents = [_row_to_document(dict(r)) for r in doc_rows]
+        documents, unreadable_document_ids = _rows_to_models(doc_rows, _row_to_document, "document")
 
     # Build timeline
     timeline: list[TimelineEntryModel] = []
@@ -269,6 +328,23 @@ async def get_trip_summary(
     # Compute alerts
     alerts = _compute_alerts(legs, documents)
 
+    party_rows = await pool.fetch(
+        "SELECT id, entity_id, display_name FROM travel.travellers "
+        "WHERE trip_id = $1::uuid ORDER BY display_name NULLS LAST, id",
+        trip_id,
+    )
+    party, unreadable_party_ids = _rows_to_models(party_rows, _row_to_traveller, "traveller")
+
+    connection_rows = await pool.fetch(
+        "SELECT id, inbound_leg_id, outbound_leg_id, verdict, available_minutes,"
+        " evidence, computed_at"
+        " FROM travel.connections WHERE trip_id = $1::uuid ORDER BY computed_at ASC",
+        trip_id,
+    )
+    connections, unreadable_connection_ids = _rows_to_models(
+        connection_rows, _row_to_connection, "connection"
+    )
+
     return TripSummaryModel(
         trip=trip,
         legs=legs,
@@ -277,6 +353,19 @@ async def get_trip_summary(
         documents=documents,
         timeline=timeline,
         alerts=alerts,
+        party=party,
+        connections=connections,
+        connection_reason=connection_reason(
+            trip.metadata,
+            has_connections=bool(connections),
+            has_unreadable_connections=bool(unreadable_connection_ids),
+        ),
+        unreadable_leg_ids=unreadable_leg_ids,
+        unreadable_accommodation_ids=unreadable_accommodation_ids,
+        unreadable_reservation_ids=unreadable_reservation_ids,
+        unreadable_document_ids=unreadable_document_ids,
+        unreadable_party_ids=unreadable_party_ids,
+        unreadable_connection_ids=unreadable_connection_ids,
     )
 
 
@@ -378,7 +467,8 @@ def _compute_alerts(legs: list[LegModel], documents: list[DocumentModel]) -> lis
 @router.get("/trips/{trip_id}/legs", response_model=list[LegModel])
 async def list_trip_legs(
     trip_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[LegModel]:
     """List all transport legs for a specific trip."""
     pool = _pool(db)
@@ -409,7 +499,8 @@ async def list_trip_legs(
 @router.get("/trips/{trip_id}/accommodations", response_model=list[AccommodationModel])
 async def list_trip_accommodations(
     trip_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[AccommodationModel]:
     """List all accommodations for a specific trip."""
     pool = _pool(db)
@@ -438,7 +529,8 @@ async def list_trip_accommodations(
 @router.get("/trips/{trip_id}/reservations", response_model=list[ReservationModel])
 async def list_trip_reservations(
     trip_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[ReservationModel]:
     """List all reservations for a specific trip."""
     pool = _pool(db)
@@ -467,7 +559,8 @@ async def list_trip_reservations(
 @router.get("/trips/{trip_id}/documents", response_model=list[DocumentModel])
 async def list_trip_documents(
     trip_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[DocumentModel]:
     """List all documents attached to a specific trip."""
     pool = _pool(db)
@@ -496,7 +589,8 @@ async def list_trip_documents(
 async def get_upcoming_travel(
     within_days: int = Query(14, ge=1, le=365, description="Look-ahead window in days"),
     include_pretrip_actions: bool = Query(True, description="Include pre-trip action items"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> UpcomingTravelModel:
     """List upcoming trips with urgency-ranked pre-trip action items."""
     pool = _pool(db)
@@ -633,7 +727,8 @@ async def get_expiring_documents(
         180,
         description=("Look-ahead window in days. Allowed values: 30, 60, 90, 180, 365."),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ExpiringDocumentsResponse:
     """Return documents expiring within the given look-ahead window, sorted by expiry_date asc.
 

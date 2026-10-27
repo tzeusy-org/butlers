@@ -312,13 +312,8 @@ describe("PassportAddPanel: OAuth connect guard — undefined ownerEntityId", ()
   });
 
   it("routes spotify to its connector drawer, not the generalized OAuth dance", () => {
-    // Reverses bu-5gliy. Spotify has two OAuth implementations: the connector
-    // PKCE flow (/api/connectors/spotify/oauth/*, client_id only) that the
-    // drawer drives and the registered Spotify app's redirect URIs point at,
-    // and the generalized confidential-client flow whose
-    // SPOTIFY_OAUTH_CLIENT_ID/SECRET were never provisioned. bu-5gliy pointed
-    // this pill at the latter, giving Spotify a connect button that could only
-    // fail. The drawer owns the control.
+    // Spotify has one authorization authority: the connector PKCE flow
+    // (/api/connectors/spotify/oauth/*, client_id only) driven by this drawer.
     renderAddPanel("entity-uuid-123");
     fireEvent.click(screen.getByText("connect provider"));
 

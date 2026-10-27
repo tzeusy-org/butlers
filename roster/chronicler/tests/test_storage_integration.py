@@ -19,8 +19,8 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.chronicler.adapters.sessions import (
     EPISODE_TYPE_WORK,
     EVENT_TYPE_SESSION_COMPLETED,
@@ -61,6 +61,7 @@ from butlers.chronicler.storage import (
     upsert_episode,
     upsert_point_event,
 )
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 _inline_ddl_spec = _importlib_util.spec_from_file_location(
     "_inline_ddl",
@@ -1358,9 +1359,9 @@ def _build_chronicler_api(pool) -> httpx.ASGITransport:
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
     app = create_app(api_key="")
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "chronicler" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "chronicler":
+            app.dependency_overrides[get_db] = lambda: db
             break
     else:  # pragma: no cover — defensive
         raise AssertionError("chronicler router not registered on the app")

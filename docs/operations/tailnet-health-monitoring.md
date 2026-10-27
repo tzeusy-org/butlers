@@ -15,11 +15,16 @@ https://<TAILNET_DNS_NAME>/butlers-api/api/health
 
 This route is derived from checked-in configuration, not from a live probe:
 
-- Production mode in `scripts/compose.sh` sets `API_PREFIX="butlers-api"`.
-- Its Tailscale Serve mapping proxies `/${API_PREFIX}` to the loopback dashboard
-  API target `http://localhost:${DASHBOARD_HOST_PORT}`.
-- The dashboard application exposes `GET /api/health`; the proxy strips the
-  `/butlers-api` mount prefix before the request reaches that route.
+- The Helm chart's shared `publicUrl.apiPrefix` is `butlers-api`; dev overrides
+  it with `butlers-dev-api` in `values.dev.yaml`.
+- The host Tailscale Serve mapping targets the dashboard NodePort: `31200` in
+  checked-in production values, `32200` in dev. The mapping is documented in
+  [Kubernetes Deployment](kubernetes-deployment.md#ingress); the chart does not
+  configure Tailscale Serve itself.
+- The dashboard application exposes `GET /api/health`; Serve strips the public
+  mount prefix before the request reaches that route.
+- Retained Compose production mode also selects `API_PREFIX="butlers-api"`,
+  but uses its loopback-published API port instead of a NodePort.
 
 The source proof deliberately does not claim that a particular host, certificate,
 or running Serve state is currently healthy. Those are live facts requiring a
@@ -28,8 +33,8 @@ separately authorized observation.
 ### Monitor the stack that is actually running
 
 "Canonical" above describes the production *route derivation*, not an instruction
-to monitor production on a host where production is not up. `scripts/compose.sh`
-selects the prefix by mode, so the dev stack's equivalent route is:
+to monitor production on a host where production is not up. The dev chart values
+select the `butlers-dev-api` prefix, so the dev stack's equivalent route is:
 
 ```text
 https://<TAILNET_DNS_NAME>/butlers-dev-api/api/health
@@ -41,8 +46,9 @@ which trains the operator to ignore the alert and is worse than no monitor at al
 Confirm which stack is running before configuring, and substitute the matching
 prefix into the prompt below.
 
-Owner decision 2026-08-16: on the current host the dev stack is the running one,
-so the configured monitor targets `/butlers-dev-api/api/health`.
+The current dev workflow targets the k3s `butlers-dev` release, so its monitor
+route is `/butlers-dev-api/api/health`. This documentation does not verify a
+running release or the current monitor configuration.
 
 ## Health response contract
 
@@ -87,8 +93,9 @@ monitor; do not alter Tailscale Serve, certificates, host networking, deployment
 or runtime state.
 
 If TLS validation, hostname validation, or the route/path fails, stop. Capture
-only sanitized evidence and route the failure to bu-ln1v7; do not infer a
-mapping-level repair or attempt a full Serve reconstruction.
+only sanitized evidence and hand it to the host operator who owns Tailscale
+Serve; do not infer a mapping-level repair or attempt a full Serve
+reconstruction.
 ```
 
 ## Handoff boundary
@@ -96,12 +103,28 @@ mapping-level repair or attempt a full Serve reconstruction.
 The prompt above is intentionally operationally narrow. A failure establishes
 only that the required monitor contract was not observed. It does not authorize
 changing the route, TLS posture, Serve configuration, host, deployment, or
-notification route. Preserve the failure evidence and hand it to `bu-ln1v7` for
-the separately authorized diagnosis-first path.
+notification route. Preserve the failure evidence and hand it to the host
+operator who owns Tailscale Serve for a separately authorized, diagnosis-first
+investigation.
+
+### Probe from off-host
+
+Run the monitor, and any manual check, from a separate tailnet node. On the
+Butlers host itself, a request to the host's own tailnet name or IP never
+traverses the tailnet: it stays on the local netfilter path, where a
+Docker/Traefik DNAT can intercept `:443` and present a default certificate or a
+404. That is a false failure; peer traffic arrives over WireGuard on
+`tailscale0` and reaches `tailscaled` directly. Confirm any strict-TLS failure
+from another node before treating it as a Serve or certificate fault.
 
 ## Related sources
 
-- [`scripts/compose.sh`](../../scripts/compose.sh) — production prefix and
+- [`values.dev.yaml`](../../deploy/helm/butlers/values.dev.yaml) and
+  [`values.prod.yaml`](../../deploy/helm/butlers/values.prod.yaml) — chart prefixes
+  and dashboard NodePorts.
+- [Kubernetes Deployment](kubernetes-deployment.md#ingress) — current host Serve
+  mappings and NetworkPolicy boundary.
+- [`scripts/compose.sh`](../../scripts/compose.sh) — retained Compose prefix and
   loopback Tailscale Serve mapping.
 - [`src/butlers/api/app.py`](../../src/butlers/api/app.py) — readiness status
   semantics for `GET /api/health`.

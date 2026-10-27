@@ -33,6 +33,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from butlers.core.fleet_conditions import fleet_condition_handoff_enabled
 from butlers.core.healing import reap_stale_worktrees, recover_stale_attempts
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.core.qa.dispatch import (
@@ -46,6 +47,12 @@ from butlers.core.qa.dispatch import (
 from butlers.core.qa.findings import get_dispatch_queued_findings
 from butlers.core.qa.journal import record_patrol_tick_events
 from butlers.core.qa.models import QaFinding
+from butlers.core.qa.patrol_provenance import (
+    DEFAULT_ENABLED_SOURCES,
+    DEFAULT_PATROL_INTERVAL_MINUTES,
+    enabled_sources_digest,
+    enabled_sources_snapshot,
+)
 from butlers.core.qa.patrol_status import QaPatrolStatus, require_patrol_status
 from butlers.core.qa.repo_clone import ManagedRepoClone
 from butlers.core.qa.repo_whitelist import RepoWhitelist
@@ -211,7 +218,7 @@ _qa_investigation_duration_seconds = _get_qa_investigation_duration_seconds()
 # ---------------------------------------------------------------------------
 
 #: Default patrol interval in minutes.
-_DEFAULT_PATROL_INTERVAL = 10
+_DEFAULT_PATROL_INTERVAL = DEFAULT_PATROL_INTERVAL_MINUTES
 
 #: Default log lookback window in minutes.
 _DEFAULT_LOG_LOOKBACK = 15
@@ -313,13 +320,7 @@ class QaConfig(BaseModel):
     log_lookback_minutes: int = _DEFAULT_LOG_LOOKBACK
     max_concurrent_investigations: int = _DEFAULT_MAX_CONCURRENT
     severity_threshold: int = _DEFAULT_SEVERITY_THRESHOLD
-    enabled_sources: list[str] = [
-        "log_scanner",
-        "session_records",
-        "butler_reports",
-        "tool_call_failures",
-        "infra_state",
-    ]
+    enabled_sources: list[str] = list(DEFAULT_ENABLED_SOURCES)
     max_reactive_buffer: int = _DEFAULT_MAX_REACTIVE_BUFFER
     log_scanner_max_entries: int = 10_000
     log_scanner_max_findings: int = 100
@@ -466,22 +467,11 @@ class QaModule(Module):
     # Module ABC
     # ------------------------------------------------------------------
 
-    @property
-    def name(self) -> str:
-        return "qa"
+    name = "qa"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return QaConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        # QA tables (qa_patrols, qa_findings, qa_dismissals) are in the public
-        # schema and managed by the core migration chain (core_051–core_055).
-        return None
 
     # ------------------------------------------------------------------
     # Sensitivity metadata
@@ -1565,20 +1555,36 @@ class QaModule(Module):
     # Patrol DB helpers
     # ------------------------------------------------------------------
 
+    def _enabled_sources_snapshot(self) -> list[str]:
+        """The configured enabled set this cycle must complete (REQ-staffer-qa-008)."""
+        return enabled_sources_snapshot(self._config.enabled_sources)
+
     async def _create_patrol_record(self, pool: Any) -> uuid.UUID:
-        """Insert a new 'running' patrol record and return its UUID."""
+        """Insert a new 'running' scheduled patrol record and return its UUID.
+
+        Records the enabled-source snapshot and digest up front; completion
+        alone decides ``discovery_complete``. Also records the fleet-condition
+        handoff mode this process runs with, so the Dashboard's controller can
+        detect a split configuration (bu-vfobja).
+        """
         initial_status = require_patrol_status("running")
+        snapshot = self._enabled_sources_snapshot()
         patrol_id = await pool.fetchval(
             """
             INSERT INTO public.qa_patrols (
-                status, log_lookback_minutes, sources_polled
+                status, log_lookback_minutes, sources_polled, origin,
+                enabled_sources_snapshot, enabled_sources_config_digest, discovery_complete,
+                fleet_condition_handoff
             )
-            VALUES ($1, $2, $3)
+            VALUES ($1, $2, $3, 'scheduled', $4, $5, false, $6)
             RETURNING id
             """,
             initial_status,
             self._config.log_lookback_minutes,
             [],
+            snapshot,
+            enabled_sources_digest(snapshot),
+            fleet_condition_handoff_enabled(),
         )
         return patrol_id
 
@@ -1595,6 +1601,8 @@ class QaModule(Module):
     ) -> None:
         """Update the patrol record with final outcome."""
         status = require_patrol_status(status)
+        # Complete only when every source in the row's own captured snapshot
+        # ran and no source or cycle error was recorded.
         await pool.execute(
             """
             UPDATE public.qa_patrols
@@ -1604,7 +1612,13 @@ class QaModule(Module):
                 novel_count = $4,
                 dispatched_count = $5,
                 sources_polled = $6,
-                error_detail = $7
+                error_detail = $7,
+                discovery_complete = COALESCE(
+                    $7::text IS NULL AND $2 <> 'error'
+                    AND enabled_sources_snapshot <@ $6::text[]
+                    AND enabled_sources_snapshot @> $6::text[],
+                    false
+                )
             WHERE id = $1
             """,
             patrol_id,
@@ -1623,12 +1637,17 @@ class QaModule(Module):
             await pool.execute(
                 """
                 INSERT INTO public.qa_patrols (
-                    status, completed_at, log_lookback_minutes, sources_polled
+                    status, completed_at, log_lookback_minutes, sources_polled, origin,
+                    enabled_sources_snapshot, enabled_sources_config_digest,
+                    discovery_complete, fleet_condition_handoff
                 )
-                VALUES ($1, now(), $2, '{}')
+                VALUES ($1, now(), $2, '{}', 'scheduled', $3, $4, false, $5)
                 """,
                 skipped_status,
                 self._config.log_lookback_minutes,
+                self._enabled_sources_snapshot(),
+                enabled_sources_digest(self._enabled_sources_snapshot()),
+                fleet_condition_handoff_enabled(),
             )
         except Exception:
             logger.debug("QaModule: failed to record skipped_overlap patrol", exc_info=True)

@@ -22,6 +22,7 @@ import json
 import os
 import shutil
 import sys
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,8 @@ import pytest
 from butlers.api.fleet_events_bridge import run_fleet_events_listener
 from butlers.fleet_events import publish_fleet_event
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+
+_THIS_FILE = Path(__file__).resolve()
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -136,7 +139,7 @@ async def _run_external_producer(producer: str, shared_db_url: str) -> int:
 
     environment = dict(os.environ)
     environment["BUTLERS_FLEET_EVENTS_TEST_DATABASE_URL"] = shared_db_url
-    repository_root = Path(__file__).resolve().parents[2]
+    repository_root = _THIS_FILE.parents[2]
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
@@ -210,7 +213,20 @@ async def test_external_producer_reaps_child_on_caller_cancellation(
             await process.wait()
 
 
+# Spec: REQ-core-fleet-events-001, REQ-core-fleet-events-007
 async def test_event_published_on_one_pool_arrives_via_the_other(shared_db_url):
+    class FailedNotifyConnection(asyncpg.Connection):
+        async def execute(self, query, *args, **kwargs):
+            if query == "SELECT pg_notify($1, $2)":
+                # A real server-side SQL error aborts the current transaction;
+                # only a real savepoint rollback can recover it.
+                return await super().execute("SELECT 1 / 0", **kwargs)
+            return await super().execute(query, *args, **kwargs)
+
+    failed_notify_pool = await asyncpg.create_pool(
+        shared_db_url, min_size=1, max_size=1, connection_class=FailedNotifyConnection
+    )
+    business_table = f"fleet_publish_business_{uuid.uuid4().hex}"
     daemon_pool = await asyncpg.create_pool(shared_db_url, min_size=1, max_size=2)
     api_pool = await asyncpg.create_pool(shared_db_url, min_size=1, max_size=1)
 
@@ -248,15 +264,39 @@ async def test_event_published_on_one_pool_arrives_via_the_other(shared_db_url):
             "session_id": "two-pool-test",
             "butler": "general",
         }
+        # A caller-owned transaction must stay usable after failed publication,
+        # and its business writes must actually commit for another connection.
+        await daemon_pool.execute(f"CREATE TABLE {business_table} (value integer)")
+        async with failed_notify_pool.acquire() as owner:
+            async with owner.transaction():
+                await owner.execute(f"INSERT INTO {business_table} VALUES (1)")
+                assert await publish_fleet_event(owner, "session", {"phase": "failed"}) is False
+                await owner.execute(f"INSERT INTO {business_table} VALUES (2)")
+        async with daemon_pool.acquire() as reader:
+            assert await reader.fetchval(f"SELECT sum(value) FROM {business_table}") == 3
+        assert len(_events_ring) == 1
+
+        # Successful NOTIFY on a borrowed connection is deferred to the owner's
+        # commit, as PostgreSQL requires; it does not commit business work early.
+        async with daemon_pool.acquire() as owner:
+            async with owner.transaction():
+                assert await publish_fleet_event(owner, "session", {"phase": "committed"}) is True
+                await asyncio.sleep(0.05)
+                assert len(_events_ring) == 1
+        await _wait_until(lambda: len(_events_ring) == 2)
+        assert _events_ring[-1]["data"] == {"phase": "committed"}
     finally:
         listener_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await listener_task
+        await daemon_pool.execute(f"DROP TABLE IF EXISTS {business_table}")
+        await failed_notify_pool.close()
         await daemon_pool.close()
         await api_pool.close()
 
 
 @pytest.mark.timeout(30)
+# Spec: REQ-core-fleet-events-004, REQ-core-fleet-events-011, REQ-core-fleet-events-012
 async def test_calendar_and_chronicler_child_processes_reach_websocket(
     shared_db_url, monkeypatch: pytest.MonkeyPatch
 ):
@@ -272,17 +312,24 @@ async def test_calendar_and_chronicler_child_processes_reach_websocket(
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
+    from butlers.api.owner_auth.config import OwnerAuthConfig
+    from butlers.api.owner_auth.http import OwnerAuthMiddleware
     from butlers.api.routers.events import router
+    from tests.api.auth_helpers import _DomainOwnerState
 
     dashboard_app = FastAPI(lifespan=_dashboard_events_lifespan(shared_db_url))
     dashboard_app.include_router(router)
     dashboard_process_id = os.getpid()
     dashboard_api_key = "fleet-events-test-api-key"
     monkeypatch.setenv("DASHBOARD_API_KEY", dashboard_api_key)
+    dashboard_app.state.owner_auth_service = _DomainOwnerState(dashboard_api_key)
+    dashboard_app.add_middleware(
+        OwnerAuthMiddleware, config=OwnerAuthConfig(None, None, dashboard_api_key)
+    )
 
     with TestClient(dashboard_app) as client:
         with client.websocket_connect(
-            f"/api/events/stream?api_key={dashboard_api_key}"
+            "/api/events/stream", headers={"X-API-Key": dashboard_api_key}
         ) as websocket:
             snapshot = json.loads(websocket.receive_text())
             assert snapshot["type"] == "snapshot"
@@ -319,6 +366,7 @@ async def test_calendar_and_chronicler_child_processes_reach_websocket(
         "point_events": 1,
         "episodes_opened": 0,
         "episodes_closed": 0,
+        "episodes_promoted": 0,
     }
 
 
@@ -363,6 +411,7 @@ async def test_multiple_events_across_types_all_arrive_in_order(shared_db_url):
         await api_pool.close()
 
 
+# Spec: REQ-core-fleet-events-006
 async def test_listener_reconnects_and_keeps_delivering_after_connection_drop(shared_db_url):
     """Regression guard: a killed LISTEN connection must not permanently
     silence the bridge (that would recreate the exact "Live indicator shows

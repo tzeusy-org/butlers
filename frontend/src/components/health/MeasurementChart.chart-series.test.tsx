@@ -33,6 +33,7 @@ vi.mock("recharts", () => {
     CartesianGrid: () => null,
     Line,
     LineChart,
+    ReferenceArea: () => null,
     ResponsiveContainer,
     Tooltip: () => null,
     XAxis: () => null,

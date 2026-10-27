@@ -17,6 +17,7 @@ from pydantic import Field
 
 from butlers.config import ButlerType
 from butlers.core.attention_ledger import get_suppressing_context, record_attention_event
+from butlers.core.entity_posture import EGRESS_BLOCKED_POSTURES, fetch_entity_posture
 from butlers.core.permissions import NOTIFY_PERMISSION, check_permission
 from butlers.core.scheduler import schedule_create as _schedule_create
 from butlers.core.telemetry import tool_span
@@ -74,6 +75,61 @@ def _coerce_request_context(value: Any) -> tuple[dict[str, Any] | None, str | No
         f"request_context must be an object/dict, got {type(value).__name__}. "
         f"{_REQUEST_CONTEXT_KEYS_HINT}"
     )
+
+
+async def _recipient_posture_refusal(
+    pool: Any,
+    *,
+    entity_id: uuid.UUID,
+    butler_name: str,
+    channel: str,
+    intent: str,
+    priority: str,
+    session_id: str | None,
+) -> dict[str, Any] | None:
+    """Return a ``recipient_posture`` refusal when the owner forbids sending to the entity.
+
+    Memorial and no_contact recipients are refused before any identifier lookup,
+    approval parking or delivery row exists. A failed posture read refuses too:
+    "unknown" is never read as "active". The refusal and the ledger row carry no
+    posture value, only the code.
+    """
+    reason = "recipient_posture"
+    try:
+        if pool is None:
+            raise RuntimeError("no database pool to read recipient posture")
+        posture = await fetch_entity_posture(pool, entity_id)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "notify() could not read recipient posture; refusing delivery (entity_id=%s)",
+            entity_id,
+            exc_info=True,
+        )
+        reason = "recipient_posture_unreadable"
+    else:
+        if posture not in EGRESS_BLOCKED_POSTURES:
+            return None
+    await record_attention_event(
+        pool,
+        origin_butler=butler_name,
+        source="notify",
+        outcome="failed",
+        channel=channel,
+        intent=intent,
+        priority=priority,
+        reason=reason,
+        metadata={"entity_id": str(entity_id), "retryable": False},
+        session_id=session_id,
+    )
+    return {
+        "status": "error",
+        "code": "recipient_posture",
+        "error": (
+            f"Cannot deliver to entity {entity_id}: the owner's contact posture for this "
+            "person does not allow outbound messages (or could not be verified). "
+            "Nothing was queued, parked for approval or sent. Do not retry or route around it."
+        ),
+    }
 
 
 def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
@@ -221,7 +277,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
     # notify is non-STAFFER only
     if butler_type != ButlerType.STAFFER:
 
-        @_core_tool("notifications")
+        @_core_tool("notifications", exclude_args=["priority"])
         @tool_span("notify", butler_name=butler_name)
         async def notify(
             channel: Annotated[
@@ -293,7 +349,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     description=(
                         "Notification priority for quiet-hours enforcement. "
                         "Allowed values: high | medium | low. Default: medium. "
-                        "high — always delivers immediately (bypasses quiet hours). "
+                        "high — does not establish authority to bypass owner attention policy. "
                         "medium — deferred during quiet hours. "
                         "low — deferred during quiet hours."
                     )
@@ -361,6 +417,9 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
               parking is available for this butler, the notification is parked as a pending_action
               and `{"status": "pending_missing_identifier"}` is returned. Otherwise notify()
               fails closed without creating a pending action or owner notification.
+              If the owner has marked the entity memorial or no_contact (or the posture cannot
+              be read), notify() returns `{"status": "error", "code": "recipient_posture"}`
+              before any identifier lookup, approval parking or delivery.
             - `subject` (string)
             - `intent` (string enum): `send` | `reply` | `react` | `insight`
             - `emoji` (string): required when `intent="react"`
@@ -372,7 +431,8 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             - `request_context` (dict, NOT a JSON string): required for `reply`/`react` and must
               include `request_id`, `source_channel`, `source_endpoint_identity`,
               `source_sender_identity` plus `source_thread_identity` for
-              telegram `reply`/`react`.
+              telegram `reply`/`react`. Preserve `external_conversation_id`
+              when present so outbound replies remain in stable history.
               Pass an object value, not a quoted placeholder string.
 
             Recipient resolution priority:
@@ -396,7 +456,8 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 "source_channel": "telegram_bot",
                 "source_endpoint_identity": "switchboard",
                 "source_sender_identity": "health",
-                "source_thread_identity": "12345"
+                "source_thread_identity": "12345:678",
+                "external_conversation_id": "telegram:12345"
               }
             }
             """
@@ -540,6 +601,28 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 }
 
             _notify_pool = daemon.db.pool if daemon.db is not None else None
+            from butlers.core.attention_urgency import evaluate_interruption
+
+            _quiet_cause = await evaluate_interruption(_notify_pool, gate="quiet_hours")
+            _context_cause = await evaluate_interruption(_notify_pool, gate="context")
+            # The hidden legacy Python argument is accepted only for source
+            # compatibility/validation. Neither it nor owner content authority
+            # can establish an interruption. It is absent from the MCP schema.
+            from butlers.core.attention_urgency import _model_urgency_requested
+
+            _untrusted_high = priority == "high" or _model_urgency_requested.get()
+
+            async def _record_cause_event(*args: Any, **kwargs: Any) -> Any:
+                cause = _context_cause if _context_cause.interrupts else _quiet_cause
+                evidence = {"attention_cause": cause.cause}
+                if cause.ref:
+                    evidence["cause_ref"] = cause.ref
+                if _untrusted_high and not cause.interrupts:
+                    evidence["downgrade"] = "unverified_urgency"
+                kwargs["metadata"] = {**(kwargs.get("metadata") or {}), **evidence}
+                return await record_attention_event(*args, **kwargs)
+
+            priority = "high" if _quiet_cause.interrupts else "medium"
             client = daemon.switchboard_client
 
             # Resolution priority:
@@ -548,6 +631,17 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             # (2) recipient string → use as-is (inside _resolve_default_notify_recipient)
             # (3) neither → resolve owner entity's channel identifier (default path)
             if entity_id is not None:
+                posture_refusal = await _recipient_posture_refusal(
+                    _notify_pool,
+                    entity_id=entity_id,
+                    butler_name=butler_name,
+                    channel=channel,
+                    intent=intent,
+                    priority=priority,
+                    session_id=_ledger_session_id,
+                )
+                if posture_refusal is not None:
+                    return posture_refusal
                 entity_identifier = await daemon._resolve_entity_channel_identifier(
                     entity_id=entity_id,
                     channel=channel,
@@ -668,28 +762,42 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             default=str,
                         )
                     )
-                    # park_pending_action is the single choke point for
-                    # PENDING inserts: it writes the row AND attempts the
-                    # owner-facing push in one call, replacing the ad hoc
-                    # owner-alert deliver() this site used to build by hand
-                    # (which had no reservation, no quiet-hours deferral, and
-                    # no Approve/Reject affordance -- see bu-mda0r).
-                    await park_pending_action(
-                        pool,
-                        action_id=action_id,
-                        tool_name="notify",
-                        tool_args=safe_park_tool_args,
-                        agent_summary=agent_summary,
-                        requested_at=now,
-                        expires_at=expires_at,
-                        session_id=get_current_runtime_session_id(),
-                        why=dossier.why,
-                        evidence=dossier.evidence,
-                        blast_radius=dossier.blast_radius,
-                        reversibility=dossier.reversibility,
-                        origin_butler=butler_name,
-                        approval_push_runtime=daemon._approval_push_runtime,
-                    )
+                    # The atomic admission helper commits the action and its
+                    # recoverable presentation together. This storage-only
+                    # slice performs no direct owner delivery.
+                    try:
+                        admission = await park_pending_action(
+                            pool,
+                            action_id=action_id,
+                            tool_name="notify",
+                            tool_args=safe_park_tool_args,
+                            agent_summary=agent_summary,
+                            requested_at=now,
+                            expires_at=expires_at,
+                            session_id=get_current_runtime_session_id(),
+                            why=dossier.why,
+                            evidence=dossier.evidence,
+                            blast_radius=dossier.blast_radius,
+                            reversibility=dossier.reversibility,
+                            origin_butler=butler_name,
+                            approval_push_runtime=daemon._approval_push_runtime,
+                        )
+                        if admission is None or not isinstance(admission.action_id, uuid.UUID):
+                            raise RuntimeError("Approval parking returned no durable action")
+                        action_id = admission.action_id
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "notify() failed to atomically park missing-identifier action"
+                        )
+                        return {
+                            "status": "error",
+                            "error": (
+                                "Delivery remains blocked because approval parking failed. "
+                                "No pending action was created; recover the approvals subsystem "
+                                "and retry."
+                            ),
+                            "retryable": False,
+                        }
                     logger.warning(
                         "notify() parked as pending_missing_identifier: "
                         "entity_id=%s has no %r entity_facts triple (action=%s)",
@@ -721,6 +829,11 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     "status": "error",
                     "error": _NO_TELEGRAM_CHAT_CONFIGURED_ERROR,
                 }
+
+            # An explicit owner address/entity is still owner-directed. A model
+            # cannot avoid owner attention policy by spelling out the recipient.
+            # Independent non-owner approval decisions remain unchanged.
+            _attention_owner_target = entity_id is None and recipient is None
 
             # Validate email recipients against known contacts.
             # This prevents LLM-hallucinated addresses from reaching delivery.
@@ -758,11 +871,25 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         blast_radius=_blast_radius,
                         reversibility=_reversibility,
                         enforce_dossier=True,
+                        butler_name=butler_name,
                         approval_push_runtime=daemon._approval_push_runtime,
+                    )
+                    _attention_owner_target = _attention_owner_target or (
+                        _decision.allowed and _decision.reason == "owner"
                     )
                     if _decision.dossier_error is not None:
                         return _decision.dossier_error
                     if not _decision.allowed:
+                        if _decision.reason == "parking_failed":
+                            return {
+                                "status": "error",
+                                "error": (
+                                    "Delivery remains blocked because approval parking failed. "
+                                    "No pending action was created; recover the approvals "
+                                    "subsystem and retry."
+                                ),
+                                "retryable": False,
+                            }
                         return {
                             "status": "pending_approval",
                             "error": (
@@ -777,11 +904,11 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         }
 
             # Channel-general role-based approval gating for non-email channels
-            # (telegram, and any future channel).  Owner-directed sends auto-approve
-            # on any active verified owner channel; non-owner recipients require a
-            # standing rule or are parked (fail-closed).  Email is gated above by
-            # check_email_recipient, which additionally enforces the email-only
-            # channel-primacy / context-conflict incident behaviour.
+            # (telegram, and any future channel). Owner-directed sends auto-approve
+            # on any active uniquely verified owner channel; non-owner recipients
+            # require a standing rule or are parked (fail-closed). Email is gated
+            # above by check_email_recipient so non-owner context conflicts retain
+            # their established behavior; owner authorization is channel-uniform.
             if (
                 channel != "email"
                 and resolved_recipient is not None
@@ -818,9 +945,22 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         enforce_dossier=True,
                         approval_push_runtime=daemon._approval_push_runtime,
                     )
+                    _attention_owner_target = _attention_owner_target or (
+                        _decision.allowed and _decision.reason == "owner"
+                    )
                     if _decision.dossier_error is not None:
                         return _decision.dossier_error
                     if not _decision.allowed:
+                        if _decision.reason == "parking_failed":
+                            return {
+                                "status": "error",
+                                "error": (
+                                    "Delivery remains blocked because approval parking failed. "
+                                    "No pending action was created; recover the approvals "
+                                    "subsystem and retry."
+                                ),
+                                "retryable": False,
+                            }
                         return {
                             "status": "pending_approval",
                             "error": (
@@ -921,7 +1061,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                                 priority,
                                 _deliver_at.isoformat(),
                             )
-                            await record_attention_event(
+                            await _record_cause_event(
                                 _notify_pool,
                                 origin_butler=butler_name,
                                 source="notify",
@@ -946,17 +1086,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                                 "notify() failed to defer notification; delivering immediately"
                             )
 
-            # Approval-policy and context-bus gates apply only to routine,
-            # implicit-owner notifications.  They intentionally remain after
-            # delivery-preference deferral so the latter retains its existing
-            # per-butler behaviour unchanged.
-            if (
-                _notify_pool is not None
-                and entity_id is None
-                and recipient is None
-                and intent in {"send", "insight"}
-                and priority != "high"
-            ):
+            # Every owner-directed routine send uses the same quiet/sleep
+            # gate, including explicit owner recipients and resolved entities.
+            # Reply/react targeting and non-owner approval retain their rules.
+            if _attention_owner_target and intent in {"send", "insight"}:
                 from datetime import UTC as _PUTC
                 from datetime import datetime as _pdatetime
 
@@ -972,33 +1105,39 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 try:
                     _policy = await get_approvals_policy_quiet_hours(_notify_pool)
                 except Exception:
-                    logger.debug(
-                        "notify() failed to fetch approvals_policy; failing open",
-                        exc_info=True,
-                    )
-                    _policy = None
+                    return {
+                        "status": "error",
+                        "error": {"code": "attention_policy_unavailable", "retryable": True},
+                        "retryable": True,
+                    }
 
                 _policy_deliver_at = None
-                if _policy is not None:
+                if _policy is not None and not _quiet_cause.interrupts:
                     try:
                         _policy_deliver_at = policy_quiet_hours_deliver_at(
                             _policy, now=_deferred_at
                         )
                     except Exception:
-                        logger.debug(
-                            "notify() could not calculate approvals-policy delivery time; "
-                            "failing open",
-                            exc_info=True,
-                        )
+                        return {
+                            "status": "error",
+                            "error": {"code": "attention_policy_unavailable", "retryable": True},
+                            "retryable": True,
+                        }
 
                 try:
-                    _context_suppression = await get_suppressing_context(_notify_pool)
-                except Exception:
-                    logger.debug(
-                        "notify() failed to fetch suppressing context; failing open",
-                        exc_info=True,
+                    _context_suppression = (
+                        None
+                        if _context_cause.interrupts
+                        else await get_suppressing_context(_notify_pool)
                     )
-                    _context_suppression = None
+                except Exception:
+                    # No finite anchor was confirmed for this attempt. Refuse
+                    # without sending, inventing a wake time, or dropping work.
+                    return {
+                        "status": "error",
+                        "error": {"code": "attention_context_unavailable", "retryable": True},
+                        "retryable": True,
+                    }
 
                 _context_deliver_at = (
                     _context_suppression.expires_at if _context_suppression is not None else None
@@ -1044,7 +1183,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             butler_name,
                         )
                         try:
-                            await record_attention_event(
+                            await _record_cause_event(
                                 _notify_pool,
                                 origin_butler=butler_name,
                                 source="notify",
@@ -1083,7 +1222,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         butler_name,
                     )
                     try:
-                        await record_attention_event(
+                        await _record_cause_event(
                             _notify_pool,
                             origin_butler=butler_name,
                             source="notify",
@@ -1136,6 +1275,29 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     "retryable": True,
                 }
 
+            # Revocation/definition changes after an awaited recipient or gate
+            # lookup cannot survive as a cached bypass at provider dispatch.
+            for gate, cause in (("quiet_hours", _quiet_cause), ("context", _context_cause)):
+                if (
+                    cause.interrupts
+                    and not (await evaluate_interruption(_notify_pool, gate=gate)).interrupts
+                ):
+                    await _record_cause_event(
+                        _notify_pool,
+                        origin_butler=butler_name,
+                        source="notify",
+                        outcome="failed",
+                        channel=channel,
+                        intent=intent,
+                        priority="medium",
+                        reason="attention_cause_changed",
+                        session_id=_ledger_session_id,
+                    )
+                    return {
+                        "status": "error",
+                        "error": {"code": "attention_cause_changed", "retryable": True},
+                        "retryable": True,
+                    }
             deliver_args: dict[str, Any] = {
                 "source_butler": butler_name,
                 "notify_request": notify_request,
@@ -1192,7 +1354,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 no-ops when the pool is absent, so a ledger-write hiccup can never
                 mask the original notify() error being returned.
                 """
-                await record_attention_event(
+                await _record_cause_event(
                     _notify_pool,
                     origin_butler=butler_name,
                     source="notify",
@@ -1239,7 +1401,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             "error": result.get("error", "Delivery failed"),
                         }
                     await _emit_notification_event()
-                    await record_attention_event(
+                    await _record_cause_event(
                         pool,
                         origin_butler=butler_name,
                         source="notify",
@@ -1291,7 +1453,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         "notification_id": data.get("notification_id"),
                     }
                 await _emit_notification_event()
-                await record_attention_event(
+                await _record_cause_event(
                     daemon.db.pool if daemon.db is not None else None,
                     origin_butler=butler_name,
                     source="notify",

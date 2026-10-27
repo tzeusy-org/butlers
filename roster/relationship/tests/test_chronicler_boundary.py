@@ -200,3 +200,23 @@ def test_binning_path_has_no_chronicler_boundary_violation() -> None:
         "The activity binning host file crosses the chronicler boundary:\n"
         + "\n".join(f"  router.py:{ln}: [{lbl}] {txt!r}" for ln, lbl, txt in violations)
     )
+
+
+def test_activity_local_stores_are_read_by_separate_helpers() -> None:
+    """Narrative and identity SQL must never become one cross-store join."""
+    _, text = _activity_binning_source()
+    narrative = text[
+        text.index("async def _fetch_narrative_activity") : text.index(
+            "async def _fetch_identity_activity"
+        )
+    ]
+    identity = text[
+        text.index("async def _fetch_identity_activity") : text.index(
+            "async def _fetch_chronicler_activity"
+        )
+    ]
+
+    assert "FROM facts" in narrative
+    assert "entity_facts" not in narrative
+    assert "relationship.entity_facts" in identity
+    assert "FROM facts" not in identity

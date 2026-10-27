@@ -16,18 +16,26 @@ test_gemini_adapter.py.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from butlers.config import ButlerConfig, RuntimeSeedConfig
 from butlers.core.dashboard_turns import DashboardTurnResult
+from butlers.core.dispatch_intent import FitCode, FitFinding
+from butlers.core.model_routing import (
+    CandidateOutcome,
+    CandidateRecord,
+    DispatchResolution,
+    SpendRoutingResult,
+)
 from butlers.core.route_inbox import RouteInboxLeaseLost, route_inbox_wait_while_claimed
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
@@ -40,7 +48,8 @@ from butlers.core.spawner import (
     _merge_tool_call_records,
 )
 
-pytestmark = pytest.mark.unit
+pytest_plugins = ("tests.core.spawner_fixtures",)
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("spawner_catalog_candidate")]
 
 # Fake catalog entry UUID used in resolve_model mock return values (4-tuple)
 _FAKE_CATALOG_ID = uuid.UUID("00000000-0000-0000-0000-000000000099")
@@ -173,6 +182,7 @@ class MockAdapter(RuntimeAdapter):
     def binary_name(self) -> str:
         return "mock"
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -233,6 +243,7 @@ class SequenceMockAdapter(MockAdapter):
         self._sequence = sequence
         self._call_index = 0
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -261,6 +272,7 @@ class TrackingMockAdapter(MockAdapter):
         super().__init__()
         self.execution_log: list[tuple[str, str]] = []
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -296,6 +308,7 @@ class WorkerFactoryMockAdapter(RuntimeAdapter):
         self.created_worker_ids.append(worker_id)
         return _WorkerAdapter(worker_id=worker_id, factory=self)
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -333,6 +346,7 @@ class _WorkerAdapter(RuntimeAdapter):
     def binary_name(self) -> str:
         return "worker-mock"
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -538,6 +552,7 @@ class TestSpawnerInvocation:
             def binary_name(self) -> str:
                 return "runtime-args-capture"
 
+            @override
             async def invoke(
                 self,
                 prompt: str,
@@ -595,7 +610,6 @@ class TestSpawnerInvocation:
                     limit_30d=None,
                 ),
             ),
-            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
             result = await spawner.trigger("hello", "tick")
@@ -606,7 +620,7 @@ class TestSpawnerInvocation:
     async def test_session_timeout_forwarded_to_runtime_invoke(self, tmp_path: Path):
         """Hard-coded fallback session timeout is forwarded when neither catalog nor
         override is set."""
-        from butlers.core.spawner import _FALLBACK_SESSION_TIMEOUT_S
+        from butlers.core.spawner import _DEFAULT_SESSION_TIMEOUT_S
 
         config_dir = tmp_path / "config"
         config_dir.mkdir()
@@ -619,6 +633,7 @@ class TestSpawnerInvocation:
             def binary_name(self) -> str:
                 return "runtime-timeout-capture"
 
+            @override
             async def invoke(
                 self,
                 prompt: str,
@@ -651,10 +666,10 @@ class TestSpawnerInvocation:
         result = await spawner.trigger("hello", "tick")
 
         assert result.success is True
-        assert captured["timeout"] == _FALLBACK_SESSION_TIMEOUT_S
+        assert captured["timeout"] == _DEFAULT_SESSION_TIMEOUT_S
 
     async def test_timeout_override_takes_precedence(self, tmp_path: Path):
-        """timeout_override overrides both the catalog and the hard-coded fallback."""
+        """timeout_override wins over both catalog and pool-free direct defaults."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
@@ -666,6 +681,7 @@ class TestSpawnerInvocation:
             def binary_name(self) -> str:
                 return "runtime-timeout-capture"
 
+            @override
             async def invoke(
                 self,
                 prompt: str,
@@ -743,6 +759,7 @@ class TestSpawnerInvocation:
             def binary_name(self) -> str:
                 return "adapter-managed-timeout"
 
+            @override
             async def invoke(
                 self,
                 prompt: str,
@@ -780,25 +797,36 @@ class TestSpawnerInvocation:
         assert adapter.reset_calls == 1
 
     async def test_error_wrapping_and_reset_behavior(self, tmp_path: Path):
-        """Adapter error is wrapped in result with reset called; pre-invoke failure skips reset."""
+        """Adapter error is wrapped in result with reset called; pre-invoke failure skips reset. REQ-core-spawner-005"""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
 
         # Adapter error wrapped in result; reset called once
         adapter = MockAdapter(error="adapter connection failed")
-        result = await Spawner(config=config, config_dir=config_dir, runtime=adapter).trigger(
-            "fail", "tick"
-        )
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+        with patch(
+            "butlers.core.qa.dispatch.dispatch_qa_investigation", new_callable=AsyncMock
+        ) as local_dispatch:
+            result = await spawner.trigger("fail", "tick")
+            local_dispatch.assert_not_awaited()
         assert result.error is not None
         assert "RuntimeError" in result.error and "adapter connection failed" in result.error
         assert result.output is None and result.duration_ms >= 0
         assert adapter.reset_calls == 1
+        # A subsequent real invocation proves ordinary concurrency/finally release.
+        adapter._error = None
+        adapter._result_text = "recovered ordinary output"
+        recovered = await spawner.trigger("recovered ordinary work", "tick")
+        assert recovered.success is True
 
         # Pre-invoke failure (before runtime invocation) → reset not called
         adapter2 = MockAdapter()
         spawner2 = Spawner(config=config, config_dir=config_dir, runtime=adapter2)
-        with patch("butlers.core.spawner.read_system_prompt", side_effect=RuntimeError("boom")):
+        with patch(
+            "butlers.core.spawner.read_system_prompt_with_sources",
+            side_effect=RuntimeError("boom"),
+        ):
             result2 = await spawner2.trigger("hi", "tick")
         assert result2.success is False and "RuntimeError: boom" in result2.error
         assert adapter2.calls == [] and adapter2.reset_calls == 0
@@ -1090,67 +1118,120 @@ class TestCredentialPassthrough:
     # Env-only path (no credential_store — backwards compatibility)
     # ------------------------------------------------------------------
 
-    async def test_env_path_passthrough_and_optional_exclusion(self):
-        """PATH and declared required/optional vars passed; undeclared not leaked;
-        optional absent → excluded; module credentials included."""
-        config = _make_config(env_required=["MY_SECRET"], env_optional=["OPT_VAR"])
-        with patch.dict(
-            os.environ,
-            {
-                "PATH": "/tmp/node-bin",
-                "MY_SECRET": "s3cret",
-                "OPT_VAR": "opt-val",
-                "UNDECLARED_SECRET": "should-not-leak",
-            },
-            clear=False,
+    async def test_env_path_passthrough_and_optional_exclusion(self, tmp_path: Path):
+        """Declared env and tracing survive; daemon channel credentials do not."""
+        config = _make_config(
+            env_required=["MY_SECRET", "DASHBOARD_API_KEY", "DATABASE_URL"],
+            env_optional=["OPT_VAR", "DASHBOARD_AUTH_DB_PASSWORD", "POSTGRES_PASSWORD"],
+        )
+        channel_credentials = {
+            "TELEGRAM_BOT_TOKEN": "synthetic-telegram",
+            "SMTP_PASSWORD": "pw123",
+            "IMAP_TOKEN": "tok456",
+        }
+        trace = {"TRACEPARENT": "00-00000000000000000000000000000001-0000000000000001-01"}
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "PATH": "/tmp/node-bin",
+                    "MY_SECRET": "s3cret",
+                    "DASHBOARD_API_KEY": "synthetic-dashboard-key",
+                    "DASHBOARD_AUTH_DB_PASSWORD": "synthetic-auth-db-password",
+                    "DATABASE_URL": "postgresql://synthetic:synthetic@invalid.test/test",
+                    "POSTGRES_PASSWORD": "synthetic-host-password",
+                    "OPT_VAR": "opt-val",
+                    "UNDECLARED_SECRET": "should-not-leak",
+                    "GH_TOKEN": "synthetic-healing-token",
+                    **channel_credentials,
+                },
+                clear=True,
+            ),
+            patch("butlers.core.spawner_env.get_traceparent_env", return_value=trace),
+            patch("butlers.core.spawner.get_traceparent_env", return_value=trace),
         ):
             env = await _build_env(config)
             assert env["PATH"] == "/tmp/node-bin"
             assert env["MY_SECRET"] == "s3cret"
             assert env["OPT_VAR"] == "opt-val"
             assert "UNDECLARED_SECRET" not in env
+            assert "DASHBOARD_API_KEY" not in env
+            assert "DASHBOARD_AUTH_DB_PASSWORD" not in env
+            assert "DATABASE_URL" not in env
+            assert "POSTGRES_PASSWORD" not in env
+            assert not channel_credentials.keys() & env.keys()
+            assert env["TRACEPARENT"] == trace["TRACEPARENT"]
 
-        # Optional absent → excluded
-        config2 = _make_config(env_optional=["MISSING_OPT"])
-        os.environ.pop("MISSING_OPT", None)
-        env2 = await _build_env(config2)
-        assert "MISSING_OPT" not in env2
+            # Optional absent → excluded, without mutating the ambient environment.
+            config2 = _make_config(env_optional=["MISSING_OPT"])
+            env2 = await _build_env(config2)
+            assert "MISSING_OPT" not in env2
 
-        # Module credentials included
-        config3 = _make_config()
-        with patch.dict(
-            os.environ, {"SMTP_PASSWORD": "pw123", "IMAP_TOKEN": "tok456"}, clear=False
-        ):
-            env3 = await _build_env(
-                config3, module_credentials_env={"email": ["SMTP_PASSWORD", "IMAP_TOKEN"]}
-            )
-            assert env3["SMTP_PASSWORD"] == "pw123"
-            assert env3["IMAP_TOKEN"] == "tok456"
+            # The real Spawner consumer must keep credentials in the daemon.
+            config3 = _make_config()
+            adapter = MockAdapter(result_text="ok", capture=True)
+            spawner = Spawner(config=config3, config_dir=tmp_path, runtime=adapter)
+            result = await spawner.trigger("check isolation", "tick")
+            assert result.error is None
+            env3 = adapter.calls[0]["env"]
+            assert "SMTP_PASSWORD" not in env3
+            assert "IMAP_TOKEN" not in env3
+            assert "TELEGRAM_BOT_TOKEN" not in env3
+            assert env3 == {"PATH": "/tmp/node-bin", **trace}
+
+            # An explicit butler declaration remains operator-authorized.
+            declared = await _build_env(_make_config(env_required=["SMTP_PASSWORD"]))
+            assert declared["SMTP_PASSWORD"] == "pw123"
+
+            healing = await spawner.trigger("repair", "healing")
+            assert healing.error is None
+            assert adapter.calls[1]["env"] == {
+                "PATH": "/tmp/node-bin",
+                "GH_TOKEN": "synthetic-healing-token",
+                **trace,
+            }
+            assert adapter.calls[1]["mcp_servers"] == {}
 
     async def test_db_credential_resolution(self):
-        """DB-first path: module and butler creds resolved; missing key excluded."""
-        config = _make_config(env_required=["MY_SECRET"])
+        """DB-first declared credentials survive without resolving module-only keys."""
+        config = _make_config(env_required=["MY_SECRET", "DASHBOARD_API_KEY", "DATABASE_URL"])
         store = AsyncMock()
         resolved = {
             "SMTP_PASSWORD": "db-smtp-pw",
             "IMAP_TOKEN": "db-imap-tok",
+            "TELEGRAM_BOT_TOKEN": "synthetic-db-telegram",
             "MY_SECRET": "db-secret-value",
+            "DASHBOARD_API_KEY": "synthetic-db-dashboard-key",
+            "DASHBOARD_AUTH_DB_PASSWORD": "synthetic-db-auth-password",
+            "DATABASE_URL": "postgresql://synthetic:synthetic@invalid.test/test",
+            "POSTGRES_PASSWORD": "synthetic-db-host-password",
         }
         store.resolve = AsyncMock(side_effect=lambda key: resolved.get(key))
-        env = await _build_env(
-            config,
-            module_credentials_env={"email": ["SMTP_PASSWORD", "IMAP_TOKEN"]},
-            credential_store=store,
-        )
-        assert env["SMTP_PASSWORD"] == "db-smtp-pw"
-        assert env["IMAP_TOKEN"] == "db-imap-tok"
+        with patch.dict(os.environ, {"MY_SECRET": "ambient-must-not-win"}, clear=True):
+            env = await _build_env(config, credential_store=store)
+        assert "SMTP_PASSWORD" not in env
+        assert "IMAP_TOKEN" not in env
+        assert "TELEGRAM_BOT_TOKEN" not in env
         assert env["MY_SECRET"] == "db-secret-value"
+        assert "DASHBOARD_API_KEY" not in env
+        assert "DASHBOARD_AUTH_DB_PASSWORD" not in env
+        assert "DATABASE_URL" not in env
+        assert "POSTGRES_PASSWORD" not in env
+        assert [call.args[0] for call in store.resolve.await_args_list] == config.env_required
 
-        # Missing key excluded
+        # Explicitly declared overlap uses the store, not the ambient environment.
+        with patch.dict(os.environ, {"SMTP_PASSWORD": "ambient-must-not-win"}, clear=True):
+            declared = await _build_env(
+                _make_config(env_optional=["SMTP_PASSWORD"]), credential_store=store
+            )
+        assert declared["SMTP_PASSWORD"] == "db-smtp-pw"
+
+        # Missing key excluded, with no environment fallback.
         config2 = _make_config(env_required=["MISSING_KEY"])
         store2 = AsyncMock()
         store2.resolve = AsyncMock(return_value=None)
-        env2 = await _build_env(config2, credential_store=store2)
+        with patch.dict(os.environ, {"MISSING_KEY": "ambient-must-not-win"}, clear=True):
+            env2 = await _build_env(config2, credential_store=store2)
         assert "MISSING_KEY" not in env2
 
     async def test_env_and_db_creds_passed_to_adapter(self, tmp_path: Path):
@@ -1290,6 +1371,7 @@ class TestSemaphoreConcurrencyPool:
         ready = asyncio.Event()
 
         class ConcurrentTrackingAdapter(MockAdapter):
+            @override
             async def invoke(
                 self,
                 prompt,
@@ -1440,32 +1522,53 @@ class TestSessionLogging:
         config = _make_config()
         mock_pool = AsyncMock()
 
-        # Success path
-        from butlers.core.spawner import _FALLBACK_MODEL_ID
-
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=None,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "test-model",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    1800,
+                    "workhorse",
+                ),
             ),
         ):
             fake_session_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
             mock_create.return_value = fake_session_id
+            adapter = MockAdapter(result_text="Hello from mock!", capture=True)
             await Spawner(
                 config=config,
                 config_dir=config_dir,
                 pool=mock_pool,
-                runtime=MockAdapter(result_text="Hello from mock!"),
+                runtime=adapter,
             ).trigger("log me", "schedule")
             mock_create.assert_called_once()
             create_args, create_kwargs = mock_create.call_args
             assert create_args[0] is mock_pool
             assert create_args[1] == "log me"
             assert create_args[2] == "schedule"
-            assert create_kwargs.get("model") == _FALLBACK_MODEL_ID
+            assert create_kwargs.get("model") == "test-model"
+            effective_prompt = create_kwargs["effective_system_prompt"]
+            assert adapter.calls[0]["system_prompt"] == effective_prompt
+            assert (
+                create_kwargs["prompt_digest"]
+                == hashlib.sha256(effective_prompt.encode("utf-8")).hexdigest()
+            )
+            provenance = create_kwargs["prompt_provenance"]
+            sources = [entry["source"] for entry in provenance]
+            assert sources[:2] == ["roster:config/CLAUDE.md", "generated_default"]
+            assert sources[-5:] == [
+                "general_settings",
+                "situational_context",
+                "blind_spot_disclosure",
+                "switchboard_routing_instructions",
+                "memory_context",
+            ]
             mock_complete.assert_called_once()
             args, kwargs = mock_complete.call_args
             assert args[0] is mock_pool and args[1] == fake_session_id
@@ -1564,18 +1667,16 @@ class CapturingMockAdapter(MockAdapter):
 
 
 class TestModelPassthrough:
-    """Model string resolved by the catalog (or the static fallback) is passed
+    """The catalog model (or runtime-owned default) is passed
     through to ``invoke()`` kwargs and surfaced on :class:`SpawnerResult`."""
 
     async def test_model_passed_to_invoke_and_result(self, tmp_path: Path):
-        """Without a pool, the hard-coded fallback model is forwarded to invoke();
-        error results surface the same fallback model."""
-        from butlers.core.spawner import _FALLBACK_MODEL_ID
+        """Without a pool, the runtime chooses its account-compatible default."""
 
         config_dir = tmp_path / "config"
         config_dir.mkdir()
 
-        # No pool → catalog is skipped, spawner falls back to the constant
+        # No pool → catalog is skipped and no explicit model is forced.
         adapter = CapturingMockAdapter(result_text="ok")
         spawner = Spawner(
             config=_make_config(),
@@ -1583,10 +1684,10 @@ class TestModelPassthrough:
             runtime=adapter,
         )
         result = await spawner.trigger("test default", "tick")
-        assert adapter.captured_models[0] == _FALLBACK_MODEL_ID
-        assert result.model == _FALLBACK_MODEL_ID
+        assert adapter.captured_models[0] is None
+        assert result.model is None
 
-        # Error path still surfaces the fallback model
+        # Error path also reports that no explicit model was forced.
         spawner3 = Spawner(
             config=_make_config(),
             config_dir=config_dir,
@@ -1594,7 +1695,7 @@ class TestModelPassthrough:
         )
         result3 = await spawner3.trigger("fail", "tick")
         assert result3.error is not None
-        assert result3.model == _FALLBACK_MODEL_ID
+        assert result3.model is None
 
 
 # ---------------------------------------------------------------------------
@@ -1925,7 +2026,7 @@ class TestCatalogModelResolution:
 
     Covers:
     - Catalog resolution path (resolve_model returns a valid result)
-    - TOML fallback when catalog has no matching entries
+    - Fail-closed behavior when a live catalog has no matching entries
     - Complexity parameter propagated to resolve_model
     - extra_args merging: TOML args first, catalog args appended
     - Adapter pool lazy instantiation for new runtime types
@@ -1933,9 +2034,8 @@ class TestCatalogModelResolution:
     - Graceful fallback on catalog resolution errors
     """
 
-    async def test_catalog_and_static_fallback_model_selection(self, tmp_path: Path):
-        """Catalog model used when available; static constant used when catalog returns None."""
-        from butlers.core.spawner import _FALLBACK_MODEL_ID
+    async def test_catalog_selection_and_empty_catalog_refusal(self, tmp_path: Path):
+        """A catalog model wins; a live empty catalog fails before invocation."""
 
         config_dir = tmp_path / "config"
         config_dir.mkdir()
@@ -1944,6 +2044,7 @@ class TestCatalogModelResolution:
         captured: dict = {}
 
         class CapturingAdapter(MockAdapter):
+            @override
             async def invoke(
                 self,
                 prompt,
@@ -1989,7 +2090,7 @@ class TestCatalogModelResolution:
         assert captured["timeout"] == 2400
         assert result.model == "claude-opus-4-20250514"
 
-        # Catalog returns None → static fallback constant
+        # Catalog returns None with a live pool → no catalog-keyed gates can run.
         captured.clear()
         adapter2 = CapturingAdapter()
         spawner2 = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter2)
@@ -2004,9 +2105,282 @@ class TestCatalogModelResolution:
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
             result2 = await spawner2.trigger("prompt", "tick")
-        assert result2.success is True
-        assert captured["model"] == _FALLBACK_MODEL_ID
-        assert result2.model == _FALLBACK_MODEL_ID
+        assert result2.success is False
+        assert result2.error == "ModelResolutionError: no_eligible_catalog_entries"
+        assert captured == {}
+        assert result2.model is None
+
+    async def test_image_route_without_vision_candidate_fails_before_runtime(
+        self, tmp_path: Path
+    ) -> None:
+        """A populated catalog's no-fit receipt must not fall through to any adapter."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        candidate_id = uuid.uuid4()
+        long_detail = "vision" + ("x" * 5000)
+        adapter = MockAdapter(result_text="must not run", capture=True)
+        mock_pool = AsyncMock()
+
+        async def _resolve_no_fit(*_args, intent, receipt_sink, **_kwargs):
+            receipt_sink.append(
+                DispatchResolution(
+                    policy_version="test-policy",
+                    requested_intent=intent,
+                    effective_intent=intent,
+                    candidates=(
+                        CandidateRecord(
+                            catalog_entry_id=candidate_id,
+                            runtime_type=DEFAULT_RUNTIME_TYPE,
+                            model_id="gpt-test",
+                            effective_tier="workhorse",
+                            effective_priority=10,
+                            outcome=CandidateOutcome.EXCLUDED_HARD_FIT,
+                            exclusions=(FitFinding(FitCode.CAPABILITY_UNKNOWN, long_detail),),
+                        ),
+                    ),
+                )
+            )
+            return None
+
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                side_effect=_resolve_no_fit,
+            ),
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+        ):
+            result = await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            ).trigger(
+                "inspect the attachment",
+                "route",
+                attachments=[{"media_type": "image/png", "storage_ref": "blob:test"}],
+            )
+
+        assert result.success is False
+        assert result.error is not None
+        assert result.error.startswith("ModelResolutionError: no_fitting_candidate")
+        assert "vision" in result.error
+        assert len(result.error) <= len("ModelResolutionError: ") + 1024
+        assert result.model is None
+        assert result.resolution_receipt is not None
+        assert result.resolution_receipt["candidates"][0]["exclusions"][0]["detail"] == (
+            long_detail
+        )
+        assert adapter.calls == []
+        create.assert_not_awaited()
+
+    async def test_pool_free_image_route_requires_proven_direct_runtime_vision(
+        self, tmp_path: Path
+    ) -> None:
+        """Pool-free harness mode must not assume its adapter can consume images."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        adapter = MockAdapter(result_text="must not run", capture=True)
+
+        result = await Spawner(
+            config=_make_config(),
+            config_dir=config_dir,
+            pool=None,
+            runtime=adapter,
+        ).trigger(
+            "inspect the attachment",
+            "route",
+            attachments=[{"media_type": "image/png", "storage_ref": "blob:test"}],
+        )
+
+        assert result.success is False
+        assert result.error is not None
+        assert result.error.startswith("ModelResolutionError: direct_runtime_unfit")
+        assert "vision" in result.error
+        assert result.model is None
+        assert adapter.calls == []
+
+    async def test_spend_rule_breaker_override_cannot_bypass_original_vision_fit(
+        self, tmp_path: Path
+    ) -> None:
+        """Breaker precedence cannot hide a target's retained hard-fit exclusions."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        selected_id = uuid.uuid4()
+        unfit_id = uuid.uuid4()
+        adapter = MockAdapter(result_text="must not run", capture=True)
+        spawner = Spawner(
+            config=_make_config(),
+            config_dir=config_dir,
+            pool=AsyncMock(),
+            runtime=adapter,
+        )
+
+        async def _resolve_with_unfit_override_target(*_args, intent, receipt_sink, **_kwargs):
+            resolution = DispatchResolution(
+                policy_version="test-policy",
+                requested_intent=intent,
+                effective_intent=intent,
+                candidates=(
+                    CandidateRecord(
+                        catalog_entry_id=selected_id,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="vision-model",
+                        effective_tier="workhorse",
+                        effective_priority=20,
+                        outcome=CandidateOutcome.SELECTED,
+                    ),
+                    CandidateRecord(
+                        catalog_entry_id=unfit_id,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="unproven-vision-model",
+                        effective_tier="workhorse",
+                        effective_priority=10,
+                        outcome=CandidateOutcome.EXCLUDED_BREAKER,
+                        exclusions=(FitFinding(FitCode.CAPABILITY_UNKNOWN, "vision"),),
+                    ),
+                ),
+                selection=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "vision-model",
+                    [],
+                    selected_id,
+                    1800,
+                    "workhorse",
+                ),
+                winner_reason="sole_candidate",
+            )
+            receipt_sink.append(resolution)
+            return resolution.selection
+
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                side_effect=_resolve_with_unfit_override_target,
+            ),
+            patch(
+                "butlers.core.spawner.apply_spend_routing_rules",
+                new_callable=AsyncMock,
+                return_value=SpendRoutingResult(
+                    resolved=(
+                        DEFAULT_RUNTIME_TYPE,
+                        "unproven-vision-model",
+                        [],
+                        unfit_id,
+                        1800,
+                    ),
+                    matched_rule_id=uuid.uuid4(),
+                ),
+            ),
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch.object(spawner, "_fire_speculative_prewarm") as prewarm,
+        ):
+            result = await spawner.trigger(
+                "inspect the attachment",
+                "route",
+                attachments=[{"media_type": "image/png", "storage_ref": "blob:test"}],
+            )
+
+        assert result.success is False
+        assert result.error is not None
+        assert result.error.startswith("ModelResolutionError: post_resolution_selection_unfit")
+        assert result.model == "unproven-vision-model"
+        assert result.resolution_receipt is not None
+        rejected = next(
+            candidate
+            for candidate in result.resolution_receipt["candidates"]
+            if candidate["catalog_entry_id"] == str(unfit_id)
+        )
+        assert rejected["outcome"] == "excluded_breaker"
+        assert rejected["exclusions"] == [{"code": "capability_unknown", "detail": "vision"}]
+        assert adapter.calls == []
+        create.assert_not_awaited()
+        prewarm.assert_not_called()
+
+    async def test_private_routing_context_uses_normal_catalog_selection(
+        self, tmp_path: Path
+    ) -> None:
+        """A trusted WhatsApp source records provenance without replacing the winner."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        remote_id = uuid.uuid4()
+        remote = (
+            DEFAULT_RUNTIME_TYPE,
+            "remote-model",
+            [],
+            remote_id,
+            120,
+            "specialty",
+        )
+        adapter = MockAdapter(result_text="ok", capture=True)
+        spawner = Spawner(config=config, config_dir=config_dir, pool=AsyncMock(), runtime=adapter)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner._capture_pipeline_routing_context",
+                return_value={"request_context": {"source_channel": "whatsapp_user_client"}},
+            ),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=remote,
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=SimpleNamespace(
+                    allowed=True,
+                    usage_24h=0,
+                    usage_30d=0,
+                    limit_24h=None,
+                    limit_30d=None,
+                ),
+            ),
+            patch.object(spawner, "_get_or_create_adapter", return_value=adapter),
+            patch.object(spawner, "_fire_speculative_prewarm"),
+        ):
+            create.return_value = uuid.uuid4()
+            result = await spawner.trigger("synthetic prompt", "route")
+
+        assert result.success is True
+        assert result.model == "remote-model"
+        assert create.await_args.kwargs["purpose_lane"] == "private_content"
+
+    async def test_private_routing_context_refuses_live_catalog_miss(self, tmp_path: Path) -> None:
+        """A catalog miss cannot silently send private content to any runtime."""
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        spawner = Spawner(
+            config=_make_config(),
+            config_dir=config_dir,
+            pool=AsyncMock(),
+            runtime=MockAdapter(result_text="must not run", capture=True),
+        )
+
+        with (
+            patch(
+                "butlers.core.spawner._capture_pipeline_routing_context",
+                return_value={"request_context": {"source_channel": "telegram_bot"}},
+            ),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("butlers.core.spawner.write_audit_entry", new_callable=AsyncMock) as audit,
+            patch.object(spawner, "_get_or_create_adapter") as get_adapter,
+            patch.object(spawner, "_fire_speculative_prewarm") as prewarm,
+        ):
+            result = await spawner.trigger("synthetic prompt", "route")
+
+        assert result.success is False
+        assert result.error == "ModelResolutionError: no_eligible_catalog_entries"
+        get_adapter.assert_not_called()
+        prewarm.assert_not_called()
+        audit.assert_not_awaited()
 
     async def test_complexity_routing(self, tmp_path: Path):
         """Without pool: resolve_model not called. With pool: complexity forwarded."""
@@ -2074,6 +2448,7 @@ class TestCatalogModelResolution:
         captured: dict = {}
 
         class CapturingAdapter(MockAdapter):
+            @override
             async def invoke(
                 self,
                 prompt,
@@ -2121,6 +2496,7 @@ class TestCatalogModelResolution:
         captured2: dict = {}
 
         class CapturingAdapter2(MockAdapter):
+            @override
             async def invoke(
                 self,
                 prompt,
@@ -2164,56 +2540,56 @@ class TestCatalogModelResolution:
         assert captured2["runtime_args"] is None
         assert captured2["timeout"] == 2400
 
-    async def test_catalog_error_and_unknown_runtime_fall_back_to_static(self, tmp_path: Path):
-        """Both catalog errors and unknown runtime types fall back to the static default."""
-        from butlers.core.spawner import _FALLBACK_MODEL_ID
-
+    async def test_catalog_error_and_unknown_runtime_fail_before_invocation(
+        self, tmp_path: Path
+    ) -> None:
+        """Catalog outage and a bad catalog runtime both fail closed."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
         mock_pool = AsyncMock()
 
-        for side_effect, return_value in [
-            (Exception("DB connection error"), None),
-            (None, ("nonexistent-runtime", "some-model", [], _FAKE_CATALOG_ID, 2400, "workhorse")),
-        ]:
-            captured: dict = {}
+        adapter = CapturingMockAdapter(result_text="must not run")
+        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                side_effect=Exception("DB connection error"),
+            ),
+        ):
+            result = await spawner.trigger("prompt", "tick")
+        assert result.success is False
+        assert result.error == "ModelResolutionError: catalog_unavailable"
+        assert adapter.captured_models == []
+        assert result.model is None
+        create.assert_not_awaited()
 
-            class CapturingAdapter(MockAdapter):
-                async def invoke(
-                    self,
-                    prompt,
-                    system_prompt,
-                    mcp_servers,
-                    env,
-                    max_turns=20,
-                    model=None,
-                    runtime_args=None,
-                    cwd=None,
-                    timeout=None,
-                ):
-                    captured["model"] = model
-                    return "ok", [], None
-
-            adapter = CapturingAdapter()
-            spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
-            resolve_kwargs = (
-                {"side_effect": side_effect} if side_effect else {"return_value": return_value}
-            )
-            with (
-                patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
-                patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
-                patch(
-                    "butlers.core.spawner.resolve_model_with_effective_tier",
-                    new_callable=AsyncMock,
-                    **resolve_kwargs,
+        unknown = Spawner(
+            config=config, config_dir=config_dir, pool=mock_pool, runtime=MockAdapter()
+        )
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=(
+                    "nonexistent-runtime",
+                    "some-model",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    2400,
+                    "workhorse",
                 ),
-            ):
-                mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
-                result = await spawner.trigger("prompt", "tick")
-            assert result.success is True
-            assert captured["model"] == _FALLBACK_MODEL_ID
-            assert result.model == _FALLBACK_MODEL_ID
+            ),
+        ):
+            refused = await unknown.trigger("prompt", "tick")
+        assert refused.success is False
+        assert refused.error is not None
+        assert refused.error.startswith("ModelResolutionError: unregistered_runtime_type")
+        create.assert_not_awaited()
 
     async def test_audit_log_resolution_metadata(self, tmp_path: Path):
         """Audit log includes model, runtime_type, complexity, resolution_source."""
@@ -2262,37 +2638,27 @@ class TestCatalogModelResolution:
         assert session_entry["data"]["runtime_type"] == DEFAULT_RUNTIME_TYPE
         assert session_entry["data"]["complexity"] == "reasoning"
         assert session_entry["data"]["resolution_source"] == "catalog"
-        assert llm_entry["data"]["provider"] == "anthropic"
+        assert llm_entry["data"]["provider"] == "openai"
         assert llm_entry["data"]["model"] == "claude-opus-4-20250514"
 
-        # Also verify the static_fallback source
-        from butlers.core.spawner import _FALLBACK_MODEL_ID
-
+        # Also verify explicit pool-free direct-adapter mode.
         audit_entries.clear()
         spawner2 = Spawner(
             config=_make_config(),
             config_dir=config_dir,
-            pool=mock_pool,
             runtime=MockAdapter(result_text="ok"),
+            audit_pool=mock_pool,
         )
         with (
-            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
-            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch("butlers.core.spawner.write_audit_entry", side_effect=fake_write_audit),
-            patch(
-                "butlers.core.spawner.resolve_model_with_effective_tier",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
         ):
-            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
             await spawner2.trigger("prompt", "tick")
         assert len(audit_entries) == 2
         session_entry2 = next(e for e in audit_entries if e["data"].get("resolution_source"))
         llm_entry2 = next(e for e in audit_entries if "provider" in e["data"])
-        assert session_entry2["data"]["model"] == _FALLBACK_MODEL_ID
-        assert session_entry2["data"]["resolution_source"] == "static_fallback"
-        assert llm_entry2["data"]["provider"] == "anthropic"
+        assert session_entry2["data"]["model"] is None
+        assert session_entry2["data"]["resolution_source"] == "direct_runtime"
+        assert llm_entry2["data"]["provider"] == "openai"
 
 
 # ---------------------------------------------------------------------------
@@ -2596,7 +2962,14 @@ class TestIngestionEventIdPropagation:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=None,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "test-model",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    1800,
+                    "workhorse",
+                ),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -2672,7 +3045,6 @@ class TestSpendEventBusWiring:
                     limit_30d=None,
                 ),
             ),
-            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
             patch(
                 "butlers.fleet_events.publish_fleet_event",
                 new=mock_publish,
@@ -2742,7 +3114,6 @@ class TestSpendEventBusWiring:
                     limit_30d=None,
                 ),
             ),
-            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
             patch("butlers.fleet_events.publish_fleet_event", new=mock_publish),
         ):
             mock_create.return_value = session_uuid
@@ -2776,7 +3147,7 @@ class TestSpendEventBusWiring:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=None,  # static fallback — no catalog_entry_id
+                return_value=None,  # pool-free direct runtime — no catalog_entry_id
             ),
             patch(
                 "butlers.fleet_events.publish_fleet_event",
@@ -2831,7 +3202,6 @@ class TestSpendEventBusWiring:
                     limit_30d=None,
                 ),
             ),
-            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
             patch(
                 "butlers.fleet_events.publish_fleet_event",
                 new=AsyncMock(side_effect=RuntimeError("broker exploded")),
@@ -2954,20 +3324,18 @@ class TestCancelSession:
         reached_window = asyncio.Event()
         proceed = asyncio.Event()
 
-        async def _blocking_prompt_override(*args: Any, **kwargs: Any) -> None:
-            # Fires after session_create() (and _pending_invoke_sessions
-            # registration) but before invoke_task is ever created --
-            # exactly the pre-invocation window the review flagged.
+        async def _blocking_mcp_warmup(*args: Any, **kwargs: Any) -> None:
+            # Prompt receipt persistence now happens at session_create(), then
+            # MCP warmup remains a pre-invocation window in which Stop must win.
             reached_window.set()
             await proceed.wait()
-            return None
 
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
             patch(
-                "butlers.core.spawner.fetch_system_prompt_override",
-                side_effect=_blocking_prompt_override,
+                "butlers.core.spawner.Spawner._ensure_mcp_endpoints_warmed",
+                side_effect=_blocking_mcp_warmup,
             ),
         ):
             fake_session_id = uuid.UUID("00000000-0000-0000-0000-0000000000cd")
@@ -3329,14 +3697,13 @@ class TestCancelSession:
         cancelled = _dashboard_turn_result(
             "cancelled", message_id=message_id, request_id=request_id
         )
-        prompt_fetch_started = asyncio.Event()
-        allow_prompt_fetch = asyncio.Event()
+        warmup_started = asyncio.Event()
+        allow_warmup = asyncio.Event()
         adapter = MockAdapter(result_text="must not run", capture=True)
 
         async def _block_after_registration(*_args: Any, **_kwargs: Any) -> None:
-            prompt_fetch_started.set()
-            await allow_prompt_fetch.wait()
-            return None
+            warmup_started.set()
+            await allow_warmup.wait()
 
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
@@ -3347,7 +3714,7 @@ class TestCancelSession:
                 return_value=active,
             ),
             patch(
-                "butlers.core.spawner.fetch_system_prompt_override",
+                "butlers.core.spawner.Spawner._ensure_mcp_endpoints_warmed",
                 side_effect=_block_after_registration,
             ),
             patch(
@@ -3377,18 +3744,18 @@ class TestCancelSession:
                 )
             )
             try:
-                await asyncio.wait_for(prompt_fetch_started.wait(), timeout=5.0)
+                await asyncio.wait_for(warmup_started.wait(), timeout=5.0)
                 stop_task = asyncio.create_task(
                     spawner.cancel_session_and_wait(str(fake_session_id), timeout_s=5.0)
                 )
                 await asyncio.sleep(0)
                 assert not stop_task.done(), "Stop woke before durable cancellation completed"
 
-                allow_prompt_fetch.set()
+                allow_warmup.set()
                 assert await asyncio.wait_for(stop_task, timeout=5.0) is True
                 result = await asyncio.wait_for(trigger_task, timeout=5.0)
             finally:
-                allow_prompt_fetch.set()
+                allow_warmup.set()
                 if not trigger_task.done():
                     trigger_task.cancel()
 
@@ -3482,11 +3849,13 @@ class TestCancelSession:
 
             def __init__(self, unwind_delay: float) -> None:
                 super().__init__(delay=100, capture=True)
+                self.invoke_entered = asyncio.Event()
                 self.cancel_received = asyncio.Event()
                 self._unwind_delay = unwind_delay
 
             async def invoke(self, *args: Any, **kwargs: Any) -> Any:
                 try:
+                    self.invoke_entered.set()
                     return await super().invoke(*args, **kwargs)
                 except asyncio.CancelledError:
                     self.cancel_received.set()
@@ -3511,6 +3880,9 @@ class TestCancelSession:
                     await asyncio.sleep(0.01)
                 else:
                     pytest.fail("invoke_task never registered for session_id")
+
+                # Registration can precede the adapter's cancellation handler.
+                await asyncio.wait_for(adapter.invoke_entered.wait(), timeout=5.0)
 
                 # Owner-initiated Stop: cancels invoke_task, but the adapter
                 # takes its time (unwind_delay) to actually unwind.

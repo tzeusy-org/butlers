@@ -27,7 +27,7 @@
  *     use their deterministic 30s/60s intervals from use-health.ts
  *
  * Design contracts:
- *   - Health hue (--category-5 / "health" slot) ONLY on ButlerMark
+ *   - Health identity hue is owned by ButlerMark and appears ONLY on that mark
  *   - No Card shells, no shadcn Card chrome
  *   - Display-500 headline (font-medium, not font-bold)
  *   - Absent readings render "—", never a fake number
@@ -42,7 +42,7 @@
 import { useMemo } from "react";
 
 import { useHealthBriefing } from "@/hooks/use-health-briefing.ts";
-import { useInsights } from "@/hooks/use-insights.ts";
+import { useInsightFeedback, useInsights } from "@/hooks/use-insights.ts";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import { healthInsightSeverity } from "@/lib/health-insight-priority";
 import {
@@ -53,8 +53,11 @@ import {
 import { insightHref } from "@/lib/health-insight-links";
 import {
   chartableMeasurementTypes,
+  CORE_KPI_SLOTS,
   selectKpiMeasurementSlots,
 } from "@/lib/measurement-vocabulary";
+import { isMeasurementUnreachable, type MeasurementSignalRead } from "@/lib/measurement-acquisition";
+import { MeasurementSignalHealthNote } from "@/components/health/MeasurementSignalHealthNote";
 import type { LatestMeasurementEntry, MeasurementSource, MeasurementTypeInfo } from "@/api/types.ts";
 import type { InsightCandidate } from "@/api/types.ts";
 
@@ -65,7 +68,7 @@ import { BriefingStatus } from "@/components/overview/BriefingStatus.tsx";
 import { DateEyebrow } from "@/components/overview/DateEyebrow.tsx";
 import { Elaboration } from "@/components/overview/Elaboration.tsx";
 import { KpiStrip } from "@/components/overview/KpiStrip.tsx";
-import { Section } from "@/components/overview/Section.tsx";
+import { Section } from "@/components/ui/Section.tsx";
 import { ButlerMark } from "@/components/ui/ButlerMark.tsx";
 import { Display } from "@/components/ui/Display.tsx";
 import { SourceDegradedNote } from "@/components/ui/query-boundary.tsx";
@@ -262,14 +265,43 @@ function FreshnessChips({ sources }: FreshnessChipsProps) {
 function toAttentionItems(
   candidates: InsightCandidate[],
   chartEligibleTypes: ReadonlySet<string>,
+  feedback: ReturnType<typeof useInsightFeedback>,
 ): AttentionListItem[] {
-  return candidates.map((c) => ({
-    id: c.id,
-    severity: healthInsightSeverity(c.priority),
-    title: c.message,
-    detail: null,
-    href: insightHref(c, chartEligibleTypes),
-  }));
+  return candidates.map((c) => {
+    const feedbackVariables = feedback.variables;
+    const isFeedbackTarget = feedbackVariables?.insightId === c.id;
+    const feedbackState = !isFeedbackTarget
+      ? undefined
+      : feedback.isPending
+        ? "pending"
+        : feedback.isError
+          ? "error"
+          : feedback.isSuccess
+            ? "saved"
+            : undefined;
+
+    return {
+      id: c.id,
+      severity: healthInsightSeverity(c.priority),
+      title: c.message,
+      detail: null,
+      href: insightHref(c, chartEligibleTypes),
+      onUseful: () => feedback.mutate({ insightId: c.id, verdict: "useful" }),
+      onNotNow: () =>
+        feedback.mutate({
+          insightId: c.id,
+          verdict: "not_now",
+          snoozeUntil: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        }),
+      onNever: () => feedback.mutate({ insightId: c.id, verdict: "never" }),
+      feedbackPending: feedbackState === "pending",
+      feedbackState,
+      onRetryFeedback:
+        feedbackState === "error" && feedbackVariables
+          ? () => feedback.mutate(feedbackVariables)
+          : undefined,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -279,7 +311,7 @@ function toAttentionItems(
 const INSIGHT_PARAMS = { butler: "health", status: "pending" };
 const EMPTY_MEASUREMENT_TYPES: readonly MeasurementTypeInfo[] = [];
 
-export default function HealthOverviewPage() {
+export default function HealthOverviewPage({ expectedSignals }: { expectedSignals?: MeasurementSignalRead }) {
   // --- Voice briefing (no refetchInterval — LLM cost guard) ---
   const {
     data: briefing,
@@ -322,6 +354,7 @@ export default function HealthOverviewPage() {
   // --- Insight candidates (no refetchInterval — manual refresh via pill) ---
   const { data: insights, isError: insightsError, refetch: refetchInsights } =
     useInsights(INSIGHT_PARAMS);
+  const insightFeedback = useInsightFeedback();
   const attentionItems: AttentionListItem[] = insightsError
     ? [
         {
@@ -334,7 +367,7 @@ export default function HealthOverviewPage() {
           onRetry: () => void refetchInsights(),
         },
       ]
-    : toAttentionItems(insights ?? [], chartEligibleTypes);
+    : toAttentionItems(insights ?? [], chartEligibleTypes, insightFeedback);
 
   // --- Derived briefing values with safe fallbacks. A failed briefing fetch
   // must never render the indefinite "Health overview loading…" copy forever
@@ -355,10 +388,15 @@ export default function HealthOverviewPage() {
   // an alternate type KPI-eligible, the pure slot selector fills only an
   // absent core position, preserving the structural four-cell strip.
   const kpiLoading = measurementTypesLoading || latestMeasurementsLoading;
-  const kpiCells = kpiSlots.map((slot) => {
+  const kpiCells = kpiSlots.map((slot, index) => {
     const entry = slot.type ? measurements[slot.type] ?? null : null;
     const value = slot.type === "blood_pressure" ? fmtBloodPressure(entry) : fmtScalar(entry);
     const cell = buildVitalCell(slot.label, slot.type ?? "", value, entry);
+    if (!kpiLoading && !measurementTypesError && !latestMeasurementsError && !entry &&
+      isMeasurementUnreachable(expectedSignals, slot.type ?? CORE_KPI_SLOTS[index].type)) {
+      return { ...cell, delta: "Unreachable", deltaTone: "amber" as const,
+        title: "Instrument unavailable; owner-behavior nudges paused." };
+    }
     return kpiLoading ? { ...cell, delta: "Loading…" } : cell;
   }) as [
     ReturnType<typeof buildVitalCell>,
@@ -408,7 +446,7 @@ export default function HealthOverviewPage() {
           {/* Butler identity mark + date eyebrow + briefing status pill */}
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             {/*
-             * Health hue (--category-5) appears ONLY on ButlerMark.
+             * Health identity hue is owned by and appears ONLY on ButlerMark.
              * No other chrome element uses the health category hue.
              */}
             <ButlerMark name="health" tone="fill" size={16} />
@@ -460,6 +498,7 @@ export default function HealthOverviewPage() {
               "no data logged". */}
           <Section eyebrow="Vitals">
             <KpiStrip cells={kpiCells} />
+            <MeasurementSignalHealthNote read={expectedSignals} />
             {measurementTypesError && (
               <SourceDegradedNote
                 label="Vitals"

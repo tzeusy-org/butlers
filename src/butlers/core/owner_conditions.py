@@ -86,6 +86,7 @@ from butlers.core.condition_ledger import list_conditions as _list_conditions
 from butlers.core.condition_ledger import reconcile_snapshot as _reconcile_snapshot
 from butlers.core.condition_ledger import resolve_condition as _resolve_condition
 from butlers.core.condition_ledger import row_to_dict as row_to_dict
+from butlers.core.insight_premise import enqueue_premise_amendments
 
 __all__ = [
     "ESCALATION_LEVELS",
@@ -122,6 +123,7 @@ async def reconcile_snapshot(
     initial_grace_seconds: float,
     post_write: Callable[[asyncpg.Connection, list[ConditionTransition]], Awaitable[None]]
     | None = None,
+    transaction_connection: asyncpg.Connection | None = None,
 ) -> list[ConditionTransition]:
     """Atomically reconcile one producer check-in against the owner condition ledger.
 
@@ -138,7 +140,24 @@ async def reconcile_snapshot(
     reconciliation writes (see the engine's docstring) — used by
     ``butlers.core.commitments`` to project a commitment's counterparty onto
     ``public.entity_graph_edges`` atomically with the ledger write.
+    ``transaction_connection`` forwards an internal caller's active transaction
+    to the same engine; otherwise the existing pool-owned transaction is used.
     """
+
+    async def _chained_post_write(
+        conn: asyncpg.Connection, transitions: list[ConditionTransition]
+    ) -> None:
+        if post_write is not None:
+            await post_write(conn, transitions)
+        # bu-q7vx1q.5: a resolved condition amends the delivered insights whose
+        # premise it was, atomically with the resolution itself.
+        await enqueue_premise_amendments(conn, transitions)
+
+    connection_kwargs = (
+        {"transaction_connection": transaction_connection}
+        if transaction_connection is not None
+        else {}
+    )
     return await _reconcile_snapshot(
         pool,
         table=_TABLE,
@@ -146,7 +165,8 @@ async def reconcile_snapshot(
         observations=observations,
         snapshot_complete=snapshot_complete,
         initial_grace_seconds=initial_grace_seconds,
-        post_write=post_write,
+        post_write=_chained_post_write,
+        **connection_kwargs,
     )
 
 

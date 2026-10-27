@@ -13,8 +13,9 @@
  * (butler-agnostic) — the runtime priority set is shared, not per-butler.
  *
  * The "+ add" affordance opens an inline contact picker (backed by the
- * relationship contacts list); selecting a contact POSTs a new priority
- * contact. Removal DELETEs it.
+ * relationship entity list filtered to entities with contact facts);
+ * selecting one POSTs its entity id as the priority contact id. Removal
+ * DELETEs it.
  *
  * Mutations (add/remove) surface errors visibly via inline error state.
  * Errors are never silently swallowed.
@@ -25,7 +26,7 @@
 
 import { useState } from 'react'
 
-import type { ContactSummary, PriorityContactEntry } from '@/api/types'
+import type { PriorityContactEntry, RelationshipEntitySummary } from '@/api/types'
 import { Time } from '@/components/ui/time'
 
 // ---------------------------------------------------------------------------
@@ -57,9 +58,11 @@ export interface PrioritySendersBlockProps {
    * Candidate contacts for the add picker. Already-assigned contacts may be
    * included; the picker surfaces them all and the backend rejects duplicates.
    */
-  addCandidates?: ContactSummary[]
+  addCandidates?: RelationshipEntitySummary[]
   /** Whether the add-candidate list is still loading. */
   candidatesLoading?: boolean
+  /** Whether the add-candidate list failed to load. */
+  candidatesError?: boolean
   /** Add a priority contact by contact id. */
   onAdd?: (contactId: string) => void
   /** Remove a priority contact by contact id. */
@@ -73,6 +76,7 @@ export function PrioritySendersBlock({
   mutationError,
   addCandidates = [],
   candidatesLoading = false,
+  candidatesError = false,
   onAdd,
   onRemove,
 }: PrioritySendersBlockProps) {
@@ -117,24 +121,33 @@ export function PrioritySendersBlock({
           >
             contact
           </label>
-          <select
-            id="priority-sender-contact-select"
-            className="font-mono text-[11px] bg-transparent border border-foreground/30 px-2 py-1 flex-1 min-w-0"
-            defaultValue=""
-            disabled={candidatesLoading}
-            onChange={(e) => handleSelectCandidate(e.target.value)}
-            data-testid="priority-senders-contact-select"
-          >
-            <option value="" disabled>
-              {candidatesLoading ? 'loading contacts…' : 'select a contact…'}
-            </option>
-            {addCandidates.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.full_name}
-                {c.email ? ` · ${c.email}` : ''}
+          {candidatesError ? (
+            <p
+              className="font-mono text-[11px] text-[var(--red-text)]"
+              role="alert"
+              data-testid="priority-senders-candidates-error"
+            >
+              Contacts unavailable. Reload to try again.
+            </p>
+          ) : (
+            <select
+              id="priority-sender-contact-select"
+              className="font-mono text-[11px] bg-transparent border border-foreground/30 px-2 py-1 flex-1 min-w-0"
+              defaultValue=""
+              disabled={candidatesLoading}
+              onChange={(e) => handleSelectCandidate(e.target.value)}
+              data-testid="priority-senders-contact-select"
+            >
+              <option value="" disabled>
+                {candidatesLoading ? 'loading contacts…' : 'select a contact…'}
               </option>
-            ))}
-          </select>
+              {addCandidates.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.canonical_name}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
       )}
 

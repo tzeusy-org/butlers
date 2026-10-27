@@ -281,6 +281,30 @@ describe("AttentionList -- inline approve/deny/defer verbs (bu-86c4c.14)", () =>
     expect(html).not.toContain(">Approve<");
     expect(html).toContain('href="/approvals"');
   });
+
+  it("calls the bounded proactive-insight feedback verbs from a row", () => {
+    const onUseful = vi.fn();
+    const onNotNow = vi.fn();
+    const onNever = vi.fn();
+    renderLive([
+      {
+        id: "insight:health",
+        severity: "medium",
+        title: "Health signal",
+        onUseful,
+        onNotNow,
+        onNever,
+      },
+    ]);
+
+    act(() => findButton("Useful")!.click());
+    act(() => findButton("Not now")!.click());
+    act(() => findButton("Never")!.click());
+
+    expect(onUseful).toHaveBeenCalledOnce();
+    expect(onNotNow).toHaveBeenCalledOnce();
+    expect(onNever).toHaveBeenCalledOnce();
+  });
 });
 
 // ---------------------------------------------------------------------------

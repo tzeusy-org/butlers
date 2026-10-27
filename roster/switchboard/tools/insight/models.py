@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 
+from butlers.core.insight_premise import normalize_premise
+
 # Compiled regex for dedup_key format validation:
 #   {segment}:{segment}:{segment}          (3 segments)
 #   {segment}:{segment}:{segment}:{segment} (4 segments)
@@ -61,6 +63,10 @@ class InsightCandidate:
         Optional preferred delivery channel (e.g. "telegram", "email").
     metadata:
         Optional butler-specific structured data.
+    premise:
+        Optional typed fact this insight asserts (see
+        ``butlers.core.insight_premise``). The broker re-checks it before
+        delivery and withdraws the candidate unsent if it is false.
     """
 
     priority: int
@@ -71,6 +77,7 @@ class InsightCandidate:
     cooldown_days: int | None = None
     channel: str | None = None
     metadata: dict | None = None
+    premise: dict | None = None
 
     def __post_init__(self) -> None:
         if not (1 <= self.priority <= 100):
@@ -78,6 +85,7 @@ class InsightCandidate:
         if not self.message:
             raise ValueError("message must be non-empty")
         _validate_dedup_key(self.dedup_key)
+        self.premise = normalize_premise(self.premise)
 
     def to_mcp_args(self) -> dict:
         """Return a dict suitable for passing to ``propose_insight_candidate()``."""
@@ -94,4 +102,6 @@ class InsightCandidate:
             args["channel"] = self.channel
         if self.metadata is not None:
             args["metadata"] = self.metadata
+        if self.premise is not None:
+            args["premise"] = self.premise
         return args

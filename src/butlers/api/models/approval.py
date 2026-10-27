@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class TargetContact(BaseModel):
@@ -47,6 +47,49 @@ class ApprovalEvidence(BaseModel):
     note: str
 
 
+DeliveryPresentationState = Literal[
+    "ready",
+    "claimed",
+    "handoff_started",
+    "retry_wait",
+    "delivered",
+    "collapsed",
+    "cancelled",
+    "superseded",
+    "ambiguous",
+]
+
+
+class ApprovalDeliveryCohort(BaseModel):
+    """Safe state of the shared digest associated with one action."""
+
+    eligible: bool
+    state: DeliveryPresentationState | None = None
+    generation: int | None = None
+    attempt_count: int = 0
+    next_eligible_at: datetime | None = None
+    stuck: bool = False
+    ambiguous: bool = False
+
+
+class ApprovalDeliveryTruth(BaseModel):
+    """Content-blind durable or legacy notification evidence."""
+
+    source: Literal["durable", "legacy", "unknown"]
+    state: DeliveryPresentationState | None = None
+    mode: Literal["single", "burst_digest", "collapsed"] | None = None
+    generation: int | None = None
+    last_reason_code: str | None = None
+    attempt_count: int = 0
+    next_eligible_at: datetime | None = None
+    stuck: bool = False
+    ambiguous: bool = False
+    legacy_outcome: Literal["delivered", "deferred", "collapsed", "duplicate", "failed"] | None = (
+        None
+    )
+    cohort: ApprovalDeliveryCohort | None = None
+
+
 class ApprovalAction(BaseModel):
     """Approval action representation for dashboard API.
 
@@ -72,6 +115,13 @@ class ApprovalAction(BaseModel):
     evidence: list[ApprovalEvidence] = Field(default_factory=list)
     blast_radius: Literal["none", "self", "contact", "external"] | None = None
     reversibility: Literal["reversible", "compensable", "irreversible"] | None = None
+    origin: Literal["prepared"] | None = Field(
+        default=None,
+        description=(
+            "Exact stored 'prepared' classification; null means origin unknown. "
+            "Origin is independent from notification and execution evidence."
+        ),
+    )
     dispatched: bool = Field(
         default=False,
         description=(
@@ -99,6 +149,7 @@ class ApprovalAction(BaseModel):
             "action (bu-mda0r)."
         ),
     )
+    delivery: ApprovalDeliveryTruth | None = None
 
 
 class ApprovalDetail(BaseModel):
@@ -120,6 +171,7 @@ class ApprovalDetail(BaseModel):
     blast_radius: Literal["none", "self", "contact", "external"] | None = None
     reversibility: Literal["reversible", "compensable", "irreversible"] | None = None
     proposed_action: dict[str, Any]
+    call_preview: ApprovalCallPreview | None = None
     status: str
     decided_by: str | None = None
     decided_at: datetime | None = None
@@ -142,6 +194,10 @@ class ApprovalDetail(BaseModel):
             "fact references (e.g. subject/object of relationship_assert_fact)."
         ),
     )
+    origin: Literal["prepared"] | None = Field(
+        default=None,
+        description="Exact stored 'prepared' classification, or null for unknown origin.",
+    )
     push_outcome: Literal["delivered", "deferred", "collapsed", "duplicate", "failed"] | None = (
         Field(
             default=None,
@@ -158,6 +214,7 @@ class ApprovalDetail(BaseModel):
             "notified. Never fabricate calm (bu-mda0r)."
         ),
     )
+    delivery: ApprovalDeliveryTruth | None = None
 
 
 class ApprovalAbandonRequest(BaseModel):
@@ -186,6 +243,10 @@ class ApprovalSummary(BaseModel):
     execution_result: dict[str, Any] | None = None
     blast_radius: Literal["none", "self", "contact", "external"] | None = None
     reversibility: Literal["reversible", "compensable", "irreversible"] | None = None
+    origin: Literal["prepared"] | None = Field(
+        default=None,
+        description="Exact stored 'prepared' classification, or null for unknown origin.",
+    )
     push_outcome: Literal["delivered", "deferred", "collapsed", "duplicate", "failed"] | None = (
         Field(
             default=None,
@@ -202,6 +263,24 @@ class ApprovalSummary(BaseModel):
             "notified. Never fabricate calm (bu-mda0r)."
         ),
     )
+    delivery: ApprovalDeliveryTruth | None = None
+
+
+class UnroutableAttentionItem(BaseModel):
+    """Replayable dashboard routing failure shown on the Command surface."""
+
+    id: str
+    question: str
+    failure_reason: str
+    created_at: datetime
+
+
+class UnroutableRetryResult(BaseModel):
+    """Durable result of re-enqueueing one unroutable dashboard message."""
+
+    dead_letter_id: str
+    replayed_request_id: str
+    status: Literal["queued"] = "queued"
 
 
 class ApprovalsPolicy(BaseModel):
@@ -227,10 +306,27 @@ class ApprovalsPolicyUpdate(ApprovalsPolicy):
         return self
 
 
+class DisplayedApprovalCall(BaseModel):
+    """The call shown to the owner; never a source of actor authority."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    tool_name: str = Field(min_length=1)
+    args_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ApprovalCallPreview(BaseModel):
+    """Complete deterministic facts of a call safe for one-tap approval."""
+
+    title: str
+    facts: list[dict[str, str]]
+    displayed_call: DisplayedApprovalCall
+
+
 class ApprovalApproveRequest(BaseModel):
     """Request body for POST /api/approvals/{id}/approve."""
 
     edits: dict[str, Any] | None = Field(default=None, description="Optional edits to tool args")
+    displayed_call: DisplayedApprovalCall | None = None
 
 
 class ApprovalDenyRequest(BaseModel):
@@ -316,12 +412,22 @@ class ApprovalMetrics(BaseModel):
             "when this could not be determined (e.g. no approvals pool available)."
         ),
     )
+    delivery_due_count: int = 0
+    delivery_retry_wait_count: int = 0
+    delivery_expired_lease_count: int = 0
+    delivery_ambiguous_count: int = 0
+    delivery_stuck_count: int = 0
+    delivery_oldest_due_age_seconds: float | None = None
+    delivery_by_state: dict[str, int] = Field(default_factory=dict)
+    delivery_by_reason: dict[str, int] = Field(default_factory=dict)
+    delivery_sources_complete: bool = False
 
 
 class ApprovalActionApproveRequest(BaseModel):
     """Request body for approving an action."""
 
     create_rule: bool = Field(default=False, description="Create a standing rule from this action")
+    displayed_call: DisplayedApprovalCall | None = None
 
 
 class ApprovalActionRejectRequest(BaseModel):
@@ -333,6 +439,7 @@ class ApprovalActionRejectRequest(BaseModel):
 class ApprovalRuleCreateRequest(BaseModel):
     """Request body for creating a new approval rule."""
 
+    butler: str
     tool_name: str
     arg_constraints: dict[str, Any]
     description: str
@@ -395,3 +502,10 @@ class AutonomySuggestionDismissRequest(BaseModel):
 
     reason: str | None = Field(default=None, description="Optional reason for dismissal")
     cooldown_days: int = Field(default=30, ge=0, description="Days before suggestion can reappear")
+
+
+class ApprovalStepUpOptionsRequest(BaseModel):
+    """Only existing standing-rule consumers; future D13 consumers stay dark."""
+
+    kind: Literal["create", "from_action", "approve_with_rule", "promotion"]
+    parameters: dict[str, Any]

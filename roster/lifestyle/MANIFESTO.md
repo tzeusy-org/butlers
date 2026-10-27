@@ -14,6 +14,8 @@ We don't rank your choices or optimize your preferences toward some external ide
 
 **Memory.** The butler remembers your preferences without you having to maintain them. Tell it you loved a restaurant, that you're not into a particular genre, that you're currently obsessed with a show, and it holds that. When you need it later, it's there.
 
+We remember works, not sentences: the track, book, show, meal, or place remains a durable thing, while observations and your own verdicts accumulate around it without being mistaken for one another.
+
 **Pattern.** Tastes shift subtly over time. The butler notices when your listening habits change, when you keep returning to the same kind of food, when a hobby has quietly become a big part of your week. It reflects your patterns back to you, not as a judgment, but as a mirror.
 
 **Discovery.** A digest at the end of each week captures what you've been into: the music, the meals, the entertainment, the hobbies. It's a small ritual that makes the week feel examined, not just survived.

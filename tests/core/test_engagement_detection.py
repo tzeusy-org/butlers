@@ -110,8 +110,8 @@ _MOCK_BUTLERS = [{"name": "general", "description": "General purpose butler."}]
 
 # bu-tdd4k.5: the engagement gate resolves the ingress sender before deciding
 # whether to touch insight_engagement / the daily rollup at all.
-_OWNER_CONTACT = ResolvedContact(contact_id=None, name="Owner", roles=["owner"], entity_id=None)
-_NON_OWNER_CONTACT = ResolvedContact(contact_id=None, name="Chloe", roles=[], entity_id=None)
+_OWNER_CONTACT = ResolvedContact(name="Owner", roles=["owner"], entity_id=None)
+_NON_OWNER_CONTACT = ResolvedContact(name="Chloe", roles=[], entity_id=None)
 
 # All pipeline.process() calls below pass an explicit channel + sender id so
 # the engagement gate's resolve_contact_by_channel(source, sender_value) call

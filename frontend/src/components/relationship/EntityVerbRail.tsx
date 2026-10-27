@@ -1,26 +1,28 @@
 /**
- * EntityVerbRail: the three entity operator verbs, inline on the record.
+ * EntityVerbRail: the entity operator verbs, inline on the record.
  *
  * bu-6t8ix.4. Entity detail and Plex used to expose notes, interactions, and
- * gifts as read-only lists, so "log an interaction", "capture a gift idea",
- * and "draft a reach-out" had nowhere to write and bu-86c4c.15 (PR #2894)
- * shipped none of them rather than wire a button to nothing. Each verb here
- * calls a real endpoint that writes a real fact into the relationship
- * butler's own store.
+ * gifts as read-only lists, so "log an interaction" and "capture a gift idea"
+ * had nowhere to write and bu-86c4c.15 (PR #2894) shipped none of them rather
+ * than wire a button to nothing. A third verb, "draft a reach-out", shipped
+ * alongside these and was retired in bu-2jtfw.11 (replaced by the
+ * prepared-action mechanism, surfaced on the insight digest rather than this
+ * rail). Each remaining verb here calls a real endpoint that writes a real
+ * fact into the relationship butler's own store.
  *
  * Honesty rules this component keeps:
  *   - Every affordance is HONEST-PENDING. Nothing renders as saved until the
  *     server confirms, because each of these is a durable assertion about a
  *     relationship, not a reversible toggle.
- *   - "Draft" means drafted. The reach-out verb stores text and stops there.
- *     There is no send endpoint behind it and no channel is contacted; the
- *     channel field records who the owner meant to use, not a delivery.
  *   - A duplicate is reported as a duplicate. The backend answers 409 rather
  *     than writing the same record twice, and the form says so instead of
  *     showing a generic failure.
  */
 
 import { useState } from "react";
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
+import { DraftDismissBoundary } from "@/components/ui/draft-dismiss";
 
 import { verbErrorMessage } from "@/components/relationship/verb-error-message";
 import { Button } from "@/components/ui/button";
@@ -37,14 +39,10 @@ import {
   useCreateEntityGift,
   useCreateEntityInteraction,
   useCreateEntityNote,
-  useCreateEntityReachOutDraft,
 } from "@/hooks/use-entities";
 
 /** Interaction types offered by the log-interaction verb. */
 const INTERACTION_TYPES = ["call", "message", "email", "meeting", "visit"] as const;
-
-/** Channels the draft-reach-out verb can record as intent. Nothing is sent. */
-const REACH_OUT_CHANNELS = ["telegram", "email", "sms", "in person"] as const;
 
 /** Shared status line: pending, saved, or the reason nothing was saved. */
 function VerbStatus({
@@ -90,24 +88,29 @@ function VerbStatus({
 function LogInteractionForm({ entityId }: { entityId: string }) {
   const [type, setType] = useState<string>(INTERACTION_TYPES[0]);
   const [summary, setSummary] = useState("");
+  const draft = useDraft("relationship.interaction", [entityId], { type, summary }, (v) => { setType(v.type); setSummary(v.summary); });
   const logInteraction = useCreateEntityInteraction();
 
-  const canSubmit = !logInteraction.isPending;
+  const canSubmit = !logInteraction.isPending && !draft.session?.presentation.submitting && !draft.session?.presentation.cleanup;
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
     logInteraction.mutate(
       {
         entityId,
         request: { type, summary: summary.trim() || null },
       },
-      { onSuccess: () => setSummary("") },
+      { onSuccess: () => { void draft.submitted(submission, () => setSummary("")); }, onSettled: draft.finish },
     );
   }
 
   return (
     <form className="space-y-2" onSubmit={handleSubmit} aria-label="Log an interaction">
+      <DraftNotice session={draft.session} />
       <div className="flex gap-2">
         <Select value={type} onValueChange={setType}>
           <SelectTrigger
@@ -151,30 +154,33 @@ function LogInteractionForm({ entityId }: { entityId: string }) {
 function GiftIdeaForm({ entityId }: { entityId: string }) {
   const [description, setDescription] = useState("");
   const [occasion, setOccasion] = useState("");
+  const draft = useDraft("relationship.gift", [entityId], { description, occasion }, (v) => { setDescription(v.description); setOccasion(v.occasion); });
   const addGift = useCreateEntityGift();
 
   const trimmed = description.trim();
-  const canSubmit = trimmed.length > 0 && !addGift.isPending;
+  const canSubmit = trimmed.length > 0 && !addGift.isPending && !draft.session?.presentation.submitting && !draft.session?.presentation.cleanup;
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
     addGift.mutate(
       {
         entityId,
         request: { description: trimmed, occasion: occasion.trim() || null },
       },
       {
-        onSuccess: () => {
-          setDescription("");
-          setOccasion("");
-        },
+        onSuccess: () => { void draft.submitted(submission, () => { setDescription(""); setOccasion(""); }); },
+        onSettled: draft.finish,
       },
     );
   }
 
   return (
     <form className="space-y-2" onSubmit={handleSubmit} aria-label="Capture a gift idea">
+      <DraftNotice session={draft.session} />
       <div className="flex gap-2">
         <Input
           aria-label="Gift idea"
@@ -205,88 +211,30 @@ function GiftIdeaForm({ entityId }: { entityId: string }) {
   );
 }
 
-/** Draft a reach-out. Drafted, never sent. */
-function DraftReachOutForm({ entityId }: { entityId: string }) {
-  const [message, setMessage] = useState("");
-  const [channel, setChannel] = useState<string>(REACH_OUT_CHANNELS[0]);
-  const draftReachOut = useCreateEntityReachOutDraft();
-
-  const trimmed = message.trim();
-  const canSubmit = trimmed.length > 0 && !draftReachOut.isPending;
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!canSubmit) return;
-    draftReachOut.mutate(
-      { entityId, request: { message: trimmed, channel } },
-      { onSuccess: () => setMessage("") },
-    );
-  }
-
-  return (
-    <form className="space-y-2" onSubmit={handleSubmit} aria-label="Draft a reach-out">
-      <Textarea
-        aria-label="Draft message"
-        value={message}
-        onChange={(e) => setMessage(e.target.value)}
-        placeholder="What do you want to say?"
-        rows={2}
-      />
-      <div className="flex items-center gap-2">
-        <Select value={channel} onValueChange={setChannel}>
-          <SelectTrigger
-            id={`draft-reach-out-channel-${entityId}`}
-            aria-label="Channel"
-            className="w-32"
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {REACH_OUT_CHANNELS.map((c) => (
-              <SelectItem key={c} value={c}>
-                {c}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Button type="submit" variant="outline" size="sm" disabled={!canSubmit}>
-          Save draft
-        </Button>
-      </div>
-      <p className="text-muted-foreground text-xs" data-testid="draft-reach-out-inert-note">
-        Saved as a draft only. Nothing is sent.
-      </p>
-      <VerbStatus
-        testId="draft-reach-out"
-        isPending={draftReachOut.isPending}
-        isSuccess={draftReachOut.isSuccess}
-        successText="Draft saved. Nothing was sent."
-        error={draftReachOut.error}
-        alreadyExists="You already drafted that message."
-      />
-    </form>
-  );
-}
-
 /** Record a note about the entity. */
 function NoteForm({ entityId }: { entityId: string }) {
   const [content, setContent] = useState("");
+  const draft = useDraft("relationship.note", [entityId], { content }, (v) => setContent(v.content));
   const addNote = useCreateEntityNote();
 
   const trimmed = content.trim();
-  const canSubmit = trimmed.length > 0 && !addNote.isPending;
+  const canSubmit = trimmed.length > 0 && !addNote.isPending && !draft.session?.presentation.submitting && !draft.session?.presentation.cleanup;
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
     addNote.mutate(
       { entityId, request: { content: trimmed } },
-      { onSuccess: () => setContent("") },
+      { onSuccess: () => { void draft.submitted(submission, () => setContent("")); }, onSettled: draft.finish },
     );
   }
 
   return (
     <form className="space-y-2" onSubmit={handleSubmit} aria-label="Add a note">
+      <DraftNotice session={draft.session} />
       <Textarea
         aria-label="Note"
         value={content}
@@ -312,14 +260,13 @@ function NoteForm({ entityId }: { entityId: string }) {
 const VERBS = [
   { key: "log-interaction", label: "Log interaction" },
   { key: "gift-idea", label: "Gift idea" },
-  { key: "draft-reach-out", label: "Draft reach-out" },
   { key: "note", label: "Note" },
 ] as const;
 
 type VerbKey = (typeof VERBS)[number]["key"];
 
 /**
- * The verb rail: four chips, one open form at a time.
+ * The verb rail: three chips, one open form at a time.
  *
  * Collapsed by default so the record still reads as a record. `compact` drops
  * the section heading for the Plex dossier, where the surrounding rail already
@@ -335,7 +282,7 @@ export function EntityVerbRail({
   const [open, setOpen] = useState<VerbKey | null>(null);
 
   return (
-    <section className="space-y-2" data-testid="entity-verb-rail">
+    <DraftDismissBoundary>{(dismiss) => <section className="space-y-2" data-testid="entity-verb-rail">
       {!compact && (
         <h3 className="text-sm font-semibold uppercase tracking-wide">Record something</h3>
       )}
@@ -348,16 +295,15 @@ export function EntityVerbRail({
             size="sm"
             aria-expanded={open === verb.key}
             data-testid={`verb-chip-${verb.key}`}
-            onClick={() => setOpen((current) => (current === verb.key ? null : verb.key))}
+            onClick={() => dismiss(() => setOpen((current) => (current === verb.key ? null : verb.key)))}
           >
             {verb.label}
           </Button>
         ))}
       </div>
-      {open === "log-interaction" && <LogInteractionForm entityId={entityId} />}
-      {open === "gift-idea" && <GiftIdeaForm entityId={entityId} />}
-      {open === "draft-reach-out" && <DraftReachOutForm entityId={entityId} />}
-      {open === "note" && <NoteForm entityId={entityId} />}
-    </section>
+      {open === "log-interaction" && <LogInteractionForm key={entityId} entityId={entityId} />}
+      {open === "gift-idea" && <GiftIdeaForm key={entityId} entityId={entityId} />}
+      {open === "note" && <NoteForm key={entityId} entityId={entityId} />}
+    </section>}</DraftDismissBoundary>
   );
 }

@@ -16,21 +16,23 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field, StrictBool, StrictStr, field_validator
 
 import butlers.api.routers.audit as audit
-from butlers.api.audit_emit import authenticated_principal
+from butlers.api.audit_emit import IgnoresCallerAssertedActor, authenticated_principal
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_pricing
+from butlers.api.deps import Db, get_pricing
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.owner_control import require_dashboard_owner_control
+from butlers.core.model_capabilities import CapabilityDescriptorError, parse_capability_descriptor
 from butlers.core.model_routing import (
     RoutingScore,
     get_breaker_states,
@@ -40,7 +42,6 @@ from butlers.core.model_routing import (
 from butlers.core.pricing import ModelPricing, PricingConfig, PricingTier, TieredModelPricing
 from butlers.core.runtime_probe_control.activation import probe_client
 from butlers.core.runtime_probe_control.coordinator import HTTP_STATUS, ProbeResult, ProbeStatus
-from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
 
@@ -61,17 +62,6 @@ _VERIFY_ALL_CONCURRENCY = 8
 # long-running verification sweep.
 _verify_all_in_flight = False
 
-model_attention_operator_total = get_or_create_counter(
-    "model_attention_operator_total",
-    "Sanitized Models runtime-attention observation and manual-reissue outcomes.",
-    labelnames=["operation", "outcome"],
-)
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub -- overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
-
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -84,6 +74,7 @@ class ModelCatalogEntry(BaseModel):
     id: UUID
     alias: str
     runtime_type: str
+    allowance_account: str | None = None
     model_id: str
     extra_args: list[str] = Field(default_factory=list)
     complexity_tier: str
@@ -120,6 +111,10 @@ class ModelCatalogEntry(BaseModel):
     routing_success_rate: float | None = None
     routing_p95_duration_ms: float | None = None
     routing_sample_count: int = 0
+    # Per-entry capability overrides (core_204) layered over the adapter
+    # baseline. An absent feature is *unknown*, not unsupported -- e.g. an
+    # image-bearing dispatch excludes every entry without ``vision: true``.
+    capabilities: dict[str, bool] = Field(default_factory=dict)
 
 
 class ModelPriorityDelta(BaseModel):
@@ -179,9 +174,24 @@ class DispatchAttemptEntry(BaseModel):
     session_id: str | None = None
     logical_session_id: str | None = None
     duration_ms: int | None = None
+    purpose_lane: str | None = None
+    resolution_receipt: dict[str, Any] | None = None
 
 
-class ModelCatalogCreate(BaseModel):
+class _AllowanceAccountInput(BaseModel):
+    """Labels group allowance state; they never select runtime credentials."""
+
+    allowance_account: StrictStr | None = None
+
+    @field_validator("allowance_account")
+    @classmethod
+    def validate_allowance_account(cls, value: str | None) -> str | None:
+        if value is not None and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", value) is None:
+            raise ValueError("Use 1-64 lowercase letters, digits, underscores or hyphens")
+        return value
+
+
+class ModelCatalogCreate(_AllowanceAccountInput):
     """Request body for creating a catalog entry."""
 
     alias: str
@@ -192,9 +202,10 @@ class ModelCatalogCreate(BaseModel):
     enabled: bool = True
     priority: int = 0
     session_timeout_s: int = Field(default=1800, gt=0)
+    capabilities: dict[str, bool] = Field(default_factory=dict)
 
 
-class ModelCatalogUpdate(BaseModel):
+class ModelCatalogUpdate(_AllowanceAccountInput):
     """Request body for updating a catalog entry (all fields optional)."""
 
     alias: str | None = None
@@ -205,6 +216,10 @@ class ModelCatalogUpdate(BaseModel):
     enabled: bool | None = None
     priority: int | None = None
     session_timeout_s: int | None = Field(default=None, gt=0)
+    # Replaces the whole envelope when provided. ``vision: true`` must be backed
+    # by an exact-path probe (docs/runtime/model-routing.md, "Vision is an
+    # exact-path claim").
+    capabilities: dict[str, bool] | None = None
 
 
 class ButlerModelOverride(BaseModel):
@@ -226,6 +241,26 @@ class ButlerModelOverrideUpsert(BaseModel):
     enabled: bool = True
     priority: int | None = None
     complexity_tier: str | None = None
+
+
+class ButlerModelOverrideReason(IgnoresCallerAssertedActor):
+    """One request-level reason, never caller-asserted audit attribution."""
+
+    reason: StrictStr = Field(min_length=1, max_length=2000)
+    # Presentation evidence only, explicitly labelled as client-reported in audit.
+    price_preview_unavailable: StrictBool = False
+
+    @field_validator("reason")
+    @classmethod
+    def nonblank_reason(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("A reason is required")
+        return value
+
+
+class ButlerModelOverridesWrite(ButlerModelOverrideReason):
+    overrides: list[ButlerModelOverrideUpsert]
 
 
 class ResolveModelResponse(BaseModel):
@@ -325,6 +360,32 @@ class ModelAttentionObservation(BaseModel):
     episodes: dict[UUID, ModelAttentionEpisode] = Field(default_factory=dict)
 
 
+class AllowanceEntry(BaseModel):
+    """One catalog entry that shares a provider allowance account."""
+
+    id: UUID
+    alias: str
+
+
+class AllowanceAccount(BaseModel):
+    """Content-blind projection of one ``public.provider_allowance_states`` row."""
+
+    account_key: str
+    state: str
+    reset_at: datetime | None = None
+    reset_source: str
+    first_seen_at: datetime
+    updated_at: datetime
+    entries: list[AllowanceEntry] = Field(default_factory=list)
+
+
+class AllowanceObservation(BaseModel):
+    """Allowance state per account, distinct from a proven empty result."""
+
+    available: bool
+    accounts: list[AllowanceAccount] = Field(default_factory=list)
+
+
 class ModelAttentionReissueResult(BaseModel):
     """The one atomic successor result returned for an original episode."""
 
@@ -412,6 +473,7 @@ def _row_to_catalog_entry(row: Any) -> ModelCatalogEntry:
         id=row["id"],
         alias=row["alias"],
         runtime_type=row["runtime_type"],
+        allowance_account=_row_value(row, "allowance_account", None),
         model_id=row["model_id"],
         extra_args=_coerce_extra_args(_row_value(row, "extra_args")),
         complexity_tier=row["complexity_tier"],
@@ -428,7 +490,29 @@ def _row_to_catalog_entry(row: Any) -> ModelCatalogEntry:
         last_verified_error=_row_value(row, "last_verified_error", None),
         breaker_open=bool(_row_value(row, "breaker_open", False)),
         breaker_consecutive_failures=int(_row_value(row, "breaker_consecutive_failures", 0) or 0),
+        capabilities=_coerce_capabilities(_row_value(row, "capabilities")),
     )
+
+
+def _coerce_capabilities(raw: Any) -> dict[str, bool]:
+    """Render a stored envelope for display; an unparseable one shows as empty."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): v for k, v in raw.items() if isinstance(v, bool)}
+
+
+def _validate_capabilities(capabilities: dict[str, bool]) -> dict[str, bool]:
+    """Reject an envelope outside the ``ModelFeature`` vocabulary with a 422."""
+    try:
+        parse_capability_descriptor(capabilities)
+    except CapabilityDescriptorError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    return capabilities
 
 
 def _row_to_override(row: Any) -> ButlerModelOverride:
@@ -450,11 +534,11 @@ def _shared_pool(db: DatabaseManager):
     """Return the shared credential pool, raising 503 if unavailable."""
     try:
         return db.credential_shared_pool()
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Shared database pool is not available",
-        )
+        ) from exc
 
 
 _ATTENTION_REASON_COPY = {
@@ -499,19 +583,6 @@ def _attention_episode(row: Any) -> ModelAttentionEpisode:
     )
 
 
-def _attention_metric(operation: str, outcome: str) -> None:
-    """Best-effort categorical counter; never alter an operator outcome."""
-    try:
-        model_attention_operator_total.labels(operation=operation, outcome=outcome).inc()
-    except Exception:
-        logger.debug(
-            "Models attention counter unavailable operation=%s outcome=%s",
-            operation,
-            outcome,
-            exc_info=True,
-        )
-
-
 # ---------------------------------------------------------------------------
 # GET /api/settings/models — list catalog entries
 # ---------------------------------------------------------------------------
@@ -519,7 +590,8 @@ def _attention_metric(operation: str, outcome: str) -> None:
 
 @catalog_router.get("", response_model=ApiResponse[list[ModelCatalogEntry]])
 async def list_catalog_entries(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ModelCatalogEntry]]:
     """Return all catalog entries ordered by complexity_tier, priority, alias.
 
@@ -552,7 +624,7 @@ async def list_catalog_entries(
             mc.id, mc.alias, mc.runtime_type, mc.model_id, mc.extra_args,
             mc.complexity_tier, mc.enabled, mc.priority, mc.session_timeout_s,
             mc.last_verified_at, mc.last_verified_latency_ms, mc.last_verified_ok,
-            mc.last_verified_error,
+            mc.last_verified_error, mc.capabilities, mc.allowance_account,
             COALESCE(ua.usage_24h, 0) AS usage_24h,
             COALESCE(ua.usage_30d, 0) AS usage_30d,
             tl.limit_24h,
@@ -603,7 +675,8 @@ async def list_catalog_entries(
 @catalog_router.get("/attention", response_model=ApiResponse[ModelAttentionObservation])
 async def observe_model_attention(
     _owner: str = Depends(require_dashboard_owner_control),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelAttentionObservation]:
     """Return the latest sanitized episode for each model in one batch.
 
@@ -616,15 +689,68 @@ async def observe_model_attention(
         rows = await pool.fetch("SELECT * FROM public.observe_runtime_attention_models()")
     except Exception:
         logger.warning("Models runtime-attention observation unavailable")
-        _attention_metric("observe", "unavailable")
         return ApiResponse[ModelAttentionObservation](
             data=ModelAttentionObservation(available=False)
         )
 
     episodes = {row["catalog_entry_id"]: _attention_episode(row) for row in rows}
-    _attention_metric("observe", "present" if episodes else "empty")
     return ApiResponse[ModelAttentionObservation](
         data=ModelAttentionObservation(available=True, episodes=episodes)
+    )
+
+
+@catalog_router.get("/allowance", response_model=ApiResponse[AllowanceObservation])
+async def observe_model_allowance(
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
+) -> ApiResponse[AllowanceObservation]:
+    """Return every provider allowance account with the catalog entries on it.
+
+    Account membership is ``COALESCE(model_catalog.allowance_account, runtime_type)``. The
+    labels are non-secret grouping labels; no credentials or provider prose are exposed.
+    A read failure is a successful response with ``available=false`` so the Models tab
+    and the System verdict say "allowance unknown" rather than "all accounts available".
+    """
+    pool = _shared_pool(db)
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT s.account_key, s.state, s.reset_at, s.reset_source,
+                   s.first_seen_at, s.updated_at,
+                   COALESCE(array_agg(c.id::text ORDER BY c.alias)
+                            FILTER (WHERE c.id IS NOT NULL), ARRAY[]::text[]) AS entry_ids,
+                   COALESCE(array_agg(c.alias ORDER BY c.alias)
+                            FILTER (WHERE c.id IS NOT NULL), ARRAY[]::text[]) AS entry_aliases
+            FROM public.provider_allowance_states s
+            LEFT JOIN public.model_catalog c
+                   ON COALESCE(c.allowance_account, c.runtime_type) = s.account_key
+            GROUP BY s.account_key, s.state, s.reset_at, s.reset_source,
+                     s.first_seen_at, s.updated_at
+            ORDER BY s.account_key
+            """
+        )
+    except Exception:
+        logger.warning("Models allowance observation unavailable")
+        return ApiResponse[AllowanceObservation](data=AllowanceObservation(available=False))
+
+    accounts = [
+        AllowanceAccount(
+            account_key=row["account_key"],
+            state=row["state"],
+            reset_at=row["reset_at"],
+            reset_source=row["reset_source"],
+            first_seen_at=row["first_seen_at"],
+            updated_at=row["updated_at"],
+            entries=[
+                AllowanceEntry(id=UUID(entry_id), alias=alias)
+                for entry_id, alias in zip(row["entry_ids"], row["entry_aliases"], strict=True)
+            ],
+        )
+        for row in rows
+    ]
+    return ApiResponse[AllowanceObservation](
+        data=AllowanceObservation(available=True, accounts=accounts)
     )
 
 
@@ -635,7 +761,8 @@ async def observe_model_attention(
 async def reissue_model_attention(
     episode_id: UUID,
     _owner: str = Depends(require_dashboard_owner_control),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelAttentionReissueResult]:
     """Create or return the one pending successor for an uncertain episode."""
     pool = _shared_pool(db)
@@ -645,26 +772,20 @@ async def reissue_model_attention(
         )
     except asyncpg.PostgresError as exc:
         if exc.sqlstate in {"55000", "23514"}:
-            _attention_metric("reissue", "ineligible")
             raise HTTPException(
                 status_code=409, detail="Attention episode is not eligible for reissue"
             ) from None
         if exc.sqlstate == "P0002":
-            _attention_metric("reissue", "not_found")
             raise HTTPException(status_code=404, detail="Attention episode not found") from None
         logger.warning("Models attention reissue database operation unavailable")
-        _attention_metric("reissue", "unavailable")
         raise HTTPException(status_code=503, detail="Attention reissue is unavailable") from None
     except (asyncpg.InterfaceError, OSError, RuntimeError, TimeoutError):
         logger.warning("Models attention reissue database connection unavailable")
-        _attention_metric("reissue", "unavailable")
         raise HTTPException(status_code=503, detail="Attention reissue is unavailable") from None
 
     if row is None:
-        _attention_metric("reissue", "unavailable")
         raise HTTPException(status_code=503, detail="Attention reissue is unavailable")
     result = ModelAttentionReissueResult(**dict(row))
-    _attention_metric("reissue", "created" if result.created else "existing")
     logger.info(
         "Models attention reissue completed outcome=%s",
         "created" if result.created else "existing",
@@ -680,10 +801,12 @@ async def reissue_model_attention(
 @catalog_router.post("", response_model=ApiResponse[ModelCatalogEntry], status_code=201)
 async def create_catalog_entry(
     body: ModelCatalogCreate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelCatalogEntry]:
     """Create a new catalog entry. Returns 409 on duplicate alias."""
     _validate_complexity_tier(body.complexity_tier)
+    capabilities = _validate_capabilities(body.capabilities)
     pool = _shared_pool(db)
 
     async with pool.acquire() as connection, connection.transaction():
@@ -693,11 +816,12 @@ async def create_catalog_entry(
                 INSERT INTO public.model_catalog
                     (
                         alias, runtime_type, model_id, extra_args, complexity_tier,
-                        enabled, priority, session_timeout_s
+                        enabled, priority, session_timeout_s, capabilities, allowance_account
                     )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
                 RETURNING id, alias, runtime_type, model_id, extra_args,
-                          complexity_tier, enabled, priority, session_timeout_s
+                          complexity_tier, enabled, priority, session_timeout_s,
+                          capabilities, allowance_account
                 """,
                 body.alias,
                 body.runtime_type,
@@ -707,15 +831,17 @@ async def create_catalog_entry(
                 body.enabled,
                 body.priority,
                 body.session_timeout_s,
+                capabilities,
+                body.allowance_account,
             )
-        except asyncpg.UniqueViolationError:
+        except asyncpg.UniqueViolationError as exc:
             raise HTTPException(
                 status_code=409,
                 detail=f"Catalog entry with alias '{body.alias}' already exists",
-            )
+            ) from exc
         except Exception as exc:
             logger.error("Failed to create catalog entry: %s", exc)
-            raise HTTPException(status_code=500, detail="Failed to create catalog entry")
+            raise HTTPException(status_code=500, detail="Failed to create catalog entry") from exc
 
         if row is None:
             raise HTTPException(status_code=500, detail="Insert returned no row")
@@ -741,13 +867,16 @@ async def create_catalog_entry(
 async def update_catalog_entry(
     entry_id: UUID,
     body: ModelCatalogUpdate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelCatalogEntry]:
     """Update a catalog entry by ID. Only provided fields are changed."""
     if body.complexity_tier is not None:
         _validate_complexity_tier(body.complexity_tier)
 
     updates = body.model_dump(exclude_none=True)
+    if "allowance_account" in body.model_fields_set:
+        updates["allowance_account"] = body.allowance_account
     if not updates:
         raise HTTPException(status_code=422, detail="No fields provided to update")
 
@@ -762,6 +891,9 @@ async def update_catalog_entry(
         if field == "extra_args":
             set_parts.append(f"extra_args = ${idx}")
             params.append(value)
+        elif field == "capabilities":
+            set_parts.append(f"capabilities = ${idx}::jsonb")
+            params.append(_validate_capabilities(value))
         else:
             set_parts.append(f"{field} = ${idx}")
             params.append(value)
@@ -774,20 +906,20 @@ async def update_catalog_entry(
         f"UPDATE public.model_catalog SET {', '.join(set_parts)} "
         f"WHERE id = ${idx} "
         "RETURNING id, alias, runtime_type, model_id, extra_args, "
-        "complexity_tier, enabled, priority, session_timeout_s, "
+        "complexity_tier, enabled, priority, session_timeout_s, capabilities, allowance_account, "
         "last_verified_at, last_verified_latency_ms, last_verified_ok, last_verified_error"
     )
 
     try:
         row = await pool.fetchrow(sql, *params)
-    except asyncpg.UniqueViolationError:
+    except asyncpg.UniqueViolationError as exc:
         raise HTTPException(
             status_code=409,
             detail=f"Catalog entry with alias '{updates.get('alias')}' already exists",
-        )
+        ) from exc
     except Exception as exc:
         logger.error("Failed to update catalog entry %s: %s", entry_id, exc)
-        raise HTTPException(status_code=500, detail="Failed to update catalog entry")
+        raise HTTPException(status_code=500, detail="Failed to update catalog entry") from exc
 
     if row is None:
         raise HTTPException(status_code=404, detail=f"Catalog entry not found: {entry_id}")
@@ -813,7 +945,8 @@ async def update_catalog_entry(
 @catalog_router.get("/{entry_id}/delete-impact", response_model=ApiResponse[ModelDeleteImpact])
 async def get_catalog_delete_impact(
     entry_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelDeleteImpact]:
     """Return the current server-owned count of overrides a delete would cascade."""
     pool = _shared_pool(db)
@@ -838,7 +971,8 @@ async def get_catalog_delete_impact(
 @catalog_router.delete("/{entry_id}", response_model=ApiResponse[dict])
 async def delete_catalog_entry(
     entry_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Delete a catalog entry by ID. Cascades to butler_model_overrides."""
     pool = _shared_pool(db)
@@ -887,7 +1021,8 @@ async def delete_catalog_entry(
 async def update_model_priority(
     entry_id: UUID,
     body: ModelPriorityDelta,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelCatalogEntry]:
     """Adjust a model's priority by ``delta``.
 
@@ -905,7 +1040,7 @@ async def update_model_priority(
         RETURNING id, alias, runtime_type, model_id, extra_args,
                   complexity_tier, enabled, priority, session_timeout_s,
                   last_verified_at, last_verified_latency_ms, last_verified_ok,
-                  last_verified_error
+                  last_verified_error, allowance_account
         """,
         body.delta,
         entry_id,
@@ -961,11 +1096,11 @@ async def run_verify_all_models(
     audit_actor: str = "owner",
     caller: str = DASHBOARD_CALLER,
 ) -> VerifyAllResult:
-    """Probe every enabled model in parallel through the signed control plane.
+    """Probe every enabled model through the signed control plane.
 
-    Bounded concurrency = ``_VERIFY_ALL_CONCURRENCY``, matching the
-    coordinator's own global limit so a full sweep does not shed its own
-    requests.  Each entry's outcome falls into exactly one bucket:
+    Rows sharing a (runtime, allowance account) are probed serially; groups run in parallel,
+    bounded by ``_VERIFY_ALL_CONCURRENCY``, matching the coordinator's own global limit so a
+    full sweep does not shed its own requests.  Each entry's outcome falls into exactly one bucket:
 
     * ``ok`` --- the probe ran and the model answered;
     * ``failed`` --- the probe ran and the model did not;
@@ -984,7 +1119,7 @@ async def run_verify_all_models(
     """
     rows = await pool.fetch(
         """
-        SELECT id
+        SELECT id, runtime_type, allowance_account
         FROM public.model_catalog
         WHERE enabled = true
         """
@@ -997,11 +1132,26 @@ async def run_verify_all_models(
     client = _probe_client(caller)
     sem = asyncio.Semaphore(_VERIFY_ALL_CONCURRENCY)
 
-    async def _verify_one(row: Any) -> ProbeResult:
-        async with sem:
-            return await client.probe(row["id"])
+    # Rows that draw on one allowance account are probed one after another, so a sweep never
+    # bursts a single account into a 429.  The account is the repo identity
+    # ``COALESCE(allowance_account, runtime_type)`` (``ALLOWANCE_ACCOUNT_KEY_SQL`` in
+    # ``core.model_routing``): a label reused across runtimes shares one allowance, and a row
+    # without a label belongs to the account named like its runtime.
+    groups: dict[Any, list[Any]] = {}
+    for row in rows:
+        account = _row_value(row, "allowance_account")
+        key = account if account is not None else _row_value(row, "runtime_type")
+        groups.setdefault(key, []).append(row)
 
-    results = await asyncio.gather(*[_verify_one(row) for row in rows])
+    async def _verify_group(group: list[Any]) -> list[ProbeResult]:
+        async with sem:
+            return [await client.probe(row["id"]) for row in group]
+
+    results = [
+        result
+        for group_results in await asyncio.gather(*[_verify_group(g) for g in groups.values()])
+        for result in group_results
+    ]
 
     completed = [result for result in results if result.status is ProbeStatus.COMPLETED]
     ok_count = sum(1 for result in completed if result.ok)
@@ -1042,7 +1192,9 @@ async def run_verify_all_models(
 
 @catalog_router.post("/verify-all", response_model=ApiResponse[VerifyAllResult])
 async def verify_all_models(
-    db: DatabaseManager = Depends(_get_db_manager),
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
 ) -> ApiResponse[VerifyAllResult]:
     """Request a signed Switchboard runtime probe for every enabled model in parallel.
 
@@ -1089,7 +1241,8 @@ async def get_model_failures(
         description="Lookback window. Accepts '24h', '7d', '30d', or an ISO-8601 timestamp.",
     ),
     limit: int = Query(50, ge=1, le=500, description="Max records to return"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[FailureEntry]:
     """Return recent failure entries for a model catalog entry.
 
@@ -1120,11 +1273,11 @@ async def get_model_failures(
     else:
         try:
             since_ts = datetime.fromisoformat(since)
-        except ValueError:
+        except ValueError as exc:
             raise HTTPException(
                 status_code=422,
                 detail=f"Invalid 'since' value '{since}'. Use '24h', '7d', '30d', or ISO-8601.",
-            )
+            ) from exc
 
     try:
         rows = await pool.fetch(
@@ -1186,7 +1339,8 @@ async def get_model_attempts(
         description="Lookback window. Accepts '24h', '7d', '30d', or an ISO-8601 timestamp.",
     ),
     limit: int = Query(50, ge=1, le=500, description="Max records to return"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[DispatchAttemptEntry]:
     """Return failover attempt provenance for a model catalog entry.
 
@@ -1221,18 +1375,19 @@ async def get_model_attempts(
     else:
         try:
             since_ts = datetime.fromisoformat(since)
-        except ValueError:
+        except ValueError as exc:
             raise HTTPException(
                 status_code=422,
                 detail=f"Invalid 'since' value '{since}'. Use '24h', '7d', '30d', or ISO-8601.",
-            )
+            ) from exc
 
     try:
         rows = await pool.fetch(
             """
             SELECT ts, butler, outcome, attempt_index,
                    failure_reason, error_code, error_message,
-                   tool_call_count, session_id, logical_session_id, duration_ms
+                   tool_call_count, session_id, logical_session_id, duration_ms, purpose_lane,
+                   resolution_receipt
             FROM public.model_dispatch_attempts
             WHERE catalog_entry_id = $1
               AND ts >= $2
@@ -1269,6 +1424,8 @@ async def get_model_attempts(
             session_id=str(row["session_id"]) if row["session_id"] else None,
             logical_session_id=row["logical_session_id"],
             duration_ms=_row_value(row, "duration_ms"),
+            purpose_lane=_row_value(row, "purpose_lane"),
+            resolution_receipt=_row_value(row, "resolution_receipt"),
         )
         for row in rows
     ]
@@ -1288,7 +1445,8 @@ async def get_model_attempts(
 async def upsert_token_limits(
     entry_id: UUID,
     body: TokenLimitsRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TokenLimitsResponse]:
     """Set or update 24h/30d token limits for a catalog entry.
 
@@ -1354,7 +1512,8 @@ async def upsert_token_limits(
 async def reset_token_usage(
     entry_id: UUID,
     body: ResetUsageRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Reset the 24h, 30d, or both usage windows for a catalog entry.
 
@@ -1412,7 +1571,8 @@ async def reset_token_usage(
 @catalog_router.get("/{entry_id}/usage", response_model=ApiResponse[TokenUsageResponse])
 async def get_token_usage(
     entry_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TokenUsageResponse]:
     """Return detailed token usage for a single catalog entry.
 
@@ -1511,7 +1671,8 @@ async def get_token_usage(
 )
 async def list_butler_model_overrides(
     name: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ButlerModelOverride]]:
     """Return all model overrides for a butler, joined with catalog alias."""
     pool = _shared_pool(db)
@@ -1541,18 +1702,17 @@ async def list_butler_model_overrides(
 )
 async def upsert_butler_model_overrides(
     name: str,
-    body: list[ButlerModelOverrideUpsert],
-    db: DatabaseManager = Depends(_get_db_manager),
+    body: ButlerModelOverridesWrite,
+    request: Request,
+    *,
+    db: Db,
 ) -> ApiResponse[list[ButlerModelOverride]]:
     """Batch upsert model overrides for a butler.
 
     Each item is upserted by (butler_name, catalog_entry_id).
     Returns the full list of updated override rows.
     """
-    if not body:
-        raise HTTPException(status_code=422, detail="Request body must contain at least one item")
-
-    for item in body:
+    for item in body.overrides:
         if item.complexity_tier is not None:
             _validate_complexity_tier(item.complexity_tier)
 
@@ -1561,7 +1721,7 @@ async def upsert_butler_model_overrides(
     upserted_ids: list[UUID] = []
     async with pool.acquire() as conn:
         async with conn.transaction():
-            for item in body:
+            for item in body.overrides:
                 row = await conn.fetchrow(
                     """
                     INSERT INTO public.butler_model_overrides
@@ -1581,6 +1741,22 @@ async def upsert_butler_model_overrides(
                 )
                 if row is not None:
                     upserted_ids.append(row["id"])
+
+            await audit.append(
+                conn,
+                authenticated_principal(),
+                "model.override.upsert",
+                target=f"butler:{name}",
+                note=body.reason,
+                metadata={
+                    "catalog_entry_ids": [str(item.catalog_entry_id) for item in body.overrides],
+                    "client_price_preview_unavailable": body.price_preview_unavailable,
+                },
+                result="success",
+            )
+
+    # Only a committed owning receipt suppresses the middleware's secondary row.
+    request.state.model_override_audit_committed = True
 
     if not upserted_ids:
         return ApiResponse[list[ButlerModelOverride]](data=[])
@@ -1611,21 +1787,35 @@ async def upsert_butler_model_overrides(
 async def delete_butler_model_override(
     name: str,
     override_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    body: ButlerModelOverrideReason,
+    request: Request,
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Remove a single butler model override by ID."""
     pool = _shared_pool(db)
-    result = await pool.execute(
-        "DELETE FROM public.butler_model_overrides WHERE id = $1 AND butler_name = $2",
-        override_id,
-        name,
-    )
-    deleted = int(result.split()[-1]) if result else 0
-    if deleted == 0:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Override not found: {override_id} for butler '{name}'",
+    async with pool.acquire() as conn, conn.transaction():
+        result = await conn.execute(
+            "DELETE FROM public.butler_model_overrides WHERE id = $1 AND butler_name = $2",
+            override_id,
+            name,
         )
+        deleted = int(result.split()[-1]) if result else 0
+        if deleted == 0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Override not found: {override_id} for butler '{name}'",
+            )
+        await audit.append(
+            conn,
+            authenticated_principal(),
+            "model.override.delete",
+            target=f"butler:{name}/model-override:{override_id}",
+            note=body.reason,
+            metadata={"client_price_preview_unavailable": body.price_preview_unavailable},
+            result="success",
+        )
+    request.state.model_override_audit_committed = True
     return ApiResponse[dict](data={"deleted": True, "id": str(override_id)})
 
 
@@ -1641,7 +1831,8 @@ async def delete_butler_model_override(
 async def resolve_model_preview(
     name: str,
     complexity: str = Query(default="workhorse", description="Complexity tier to resolve"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ResolveModelResponse]:
     """Preview which model would be selected for a butler + complexity tier.
 
@@ -1768,7 +1959,9 @@ _TEST_UNAVAILABLE_DETAIL = {
 )
 async def test_catalog_entry(
     entry_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
 ) -> ApiResponse[ModelTestResult]:
     """Probe one catalog entry through the signed runtime-probe control plane.
 
@@ -1907,7 +2100,8 @@ async def get_dispatch_attempts(
         description="Only valid with 'outcome'. Sort direction for ts ('asc' or 'desc').",
     ),
     limit: int = Query(100, ge=1, le=500, description="Max records to return"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[DispatchAttemptEntry]:
     """Return failover attempt provenance rows.
 
@@ -1973,7 +2167,8 @@ async def get_dispatch_attempts(
                 f"""
                 SELECT ts, butler, outcome, attempt_index,
                        failure_reason, error_code, error_message,
-                       tool_call_count, session_id, logical_session_id, duration_ms
+                       tool_call_count, session_id, logical_session_id, duration_ms, purpose_lane,
+                       resolution_receipt
                 FROM public.model_dispatch_attempts
                 WHERE {where_sql}
                 ORDER BY ts {order_sql}, id {order_sql}
@@ -1991,7 +2186,8 @@ async def get_dispatch_attempts(
                 """
                 SELECT ts, butler, outcome, attempt_index,
                        failure_reason, error_code, error_message,
-                       tool_call_count, session_id, logical_session_id, duration_ms
+                       tool_call_count, session_id, logical_session_id, duration_ms, purpose_lane,
+                       resolution_receipt
                 FROM public.model_dispatch_attempts
                 WHERE session_id = $1::uuid
                    OR logical_session_id = $2
@@ -2013,7 +2209,8 @@ async def get_dispatch_attempts(
                 """
                 SELECT ts, butler, outcome, attempt_index,
                        failure_reason, error_code, error_message,
-                       tool_call_count, session_id, logical_session_id, duration_ms
+                       tool_call_count, session_id, logical_session_id, duration_ms, purpose_lane,
+                       resolution_receipt
                 FROM public.model_dispatch_attempts
                 WHERE session_id = $1::uuid
                 ORDER BY attempt_index ASC, ts ASC, id ASC
@@ -2031,7 +2228,8 @@ async def get_dispatch_attempts(
                 """
                 SELECT ts, butler, outcome, attempt_index,
                        failure_reason, error_code, error_message,
-                       tool_call_count, session_id, logical_session_id, duration_ms
+                       tool_call_count, session_id, logical_session_id, duration_ms, purpose_lane,
+                       resolution_receipt
                 FROM public.model_dispatch_attempts
                 WHERE logical_session_id = $1
                 ORDER BY attempt_index ASC, ts ASC, id ASC
@@ -2063,6 +2261,8 @@ async def get_dispatch_attempts(
             session_id=str(row["session_id"]) if row["session_id"] else None,
             logical_session_id=row["logical_session_id"],
             duration_ms=_row_value(row, "duration_ms"),
+            purpose_lane=_row_value(row, "purpose_lane"),
+            resolution_receipt=_row_value(row, "resolution_receipt"),
         )
         for row in rows
     ]

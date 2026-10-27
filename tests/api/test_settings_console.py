@@ -21,17 +21,18 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 import butlers.api.routers.settings_console as console_mod
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
     MCPClientManager,
     get_butler_configs,
+    get_db_optional,
     get_mcp_manager,
     get_pricing,
 )
 from butlers.core.model_routing import check_monthly_ceiling
 from butlers.core.pricing import ModelPricing, PricingConfig
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -82,7 +83,7 @@ def _make_app(
     app.dependency_overrides[get_butler_configs] = lambda: _BUTLER_CONFIG
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     app.dependency_overrides[get_pricing] = lambda: _PRICING
-    app.dependency_overrides[console_mod._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db_optional] = lambda: db
 
     return app
 

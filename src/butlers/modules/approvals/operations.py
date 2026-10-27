@@ -31,10 +31,12 @@ from butlers.modules.approvals.autonomy_tracker import (
     record_approval as _record_approval,
 )
 from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
+from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import _approval_write_transaction
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.approvals.sensitivity import suggest_constraints
+from butlers.modules.approvals.stepup import descriptive_savepoint, remember_rule, run_rule_write
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,73 @@ def _decision_event_actor(actor_id: str) -> str:
     if actor_id == _TELEGRAM_CALLBACK_ACTOR:
         return f"human:{actor_id}"
     return f"user:{actor_id}"
+
+
+async def create_approval_rule(
+    pool: Any,
+    tool_name: str,
+    arg_constraints: dict[str, Any],
+    description: str,
+    expires_at: str | None = None,
+    max_uses: int | None = None,
+    actor_id: str = "dashboard:rest-api",
+    decision_memory_writer: DecisionMemoryWriter | None = None,
+) -> dict[str, Any]:
+    """Create only with a current action-bound independent dashboard factor."""
+    parameters = dict(
+        tool_name=tool_name,
+        arg_constraints=arg_constraints,
+        description=description,
+        expires_at=expires_at,
+        max_uses=max_uses,
+    )
+    result = await run_rule_write(
+        pool,
+        "create",
+        parameters,
+        lambda conn: _create_approval_rule_write(conn, **parameters, actor_id=actor_id),
+    )
+    await remember_rule(decision_memory_writer, result)
+    return result
+
+
+async def create_rule_from_action(
+    pool: Any,
+    action_id: str,
+    constraint_overrides: dict[str, Any] | None = None,
+    actor_id: str = "dashboard:rest-api",
+    decision_memory_writer: DecisionMemoryWriter | None = None,
+) -> dict[str, Any]:
+    """Create from the locked current action with one consumed confirmation."""
+    parameters = dict(action_id=action_id, constraint_overrides=constraint_overrides)
+    result = await run_rule_write(
+        pool,
+        "from_action",
+        parameters,
+        lambda conn: _create_rule_from_action_write(conn, **parameters, actor_id=actor_id),
+    )
+    await remember_rule(decision_memory_writer, result)
+    return result
+
+
+async def approve_action(
+    pool: Any,
+    action_id: str,
+    actor_id: str = "dashboard:rest-api",
+    create_rule: bool = False,
+    decision_memory_writer: DecisionMemoryWriter | None = None,
+) -> dict[str, Any]:
+    """Ordinary approvals stay one-tap; combined authority changes commit once."""
+    if not create_rule:
+        return await _approve_action_write(pool, action_id, actor_id, False, decision_memory_writer)
+    result = await run_rule_write(
+        pool,
+        "approve_with_rule",
+        dict(action_id=action_id),
+        lambda conn: _approve_action_write(conn, action_id, actor_id, True, None),
+    )
+    await remember_rule(decision_memory_writer, result)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -76,26 +145,17 @@ async def expire_pending_action_if_stale(
     if expires_at >= effective_now:
         return None
 
-    expired_row = await pool.fetchrow(
-        "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
-        "WHERE id = $4 AND status = $5 "
-        "RETURNING *",
-        ActionStatus.EXPIRED.value,
-        "system:expiry",
-        effective_now,
-        action.id,
-        ActionStatus.PENDING.value,
+    transition = await transition_pending_action(
+        pool,
+        action_id=action.id,
+        target_status=ActionStatus.EXPIRED,
+        decided_by="system:expiry",
+        event_actor="system:expiry",
+        event_reason="approval window elapsed",
+        event_metadata={"tool_name": action.tool_name},
+        now=effective_now,
     )
-    if expired_row is not None:
-        await record_approval_event(
-            pool,
-            ApprovalEventType.ACTION_EXPIRED,
-            actor="system:expiry",
-            action_id=action.id,
-            reason="approval window elapsed",
-            metadata={"tool_name": action.tool_name},
-            occurred_at=effective_now,
-        )
+    if transition.changed:
         return {
             "error": (
                 f"Action {action.id} expired at {expires_at.isoformat()} "
@@ -103,14 +163,59 @@ async def expire_pending_action_if_stale(
             )
         }
 
-    latest_row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", action.id)
-    if latest_row is None:
+    if transition.action is None:
         return {"error": f"Action not found: {action.id}"}
-    latest_action = PendingAction.from_row(latest_row)
-    return {"error": f"Cannot transition from '{latest_action.status.value}' to '{target_action}'"}
+    return {
+        "error": (f"Cannot transition from '{transition.action.status.value}' to '{target_action}'")
+    }
 
 
-async def approve_action(
+async def sweep_orphaned_prepared_actions(
+    pool: Any,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Expire every stale ``origin='prepared'`` pending action.
+
+    bu-2jtfw.11: a prepared action is parked silently (no owner push) and
+    surfaces only through the insight candidate that referenced it. If that
+    candidate's insert fails after the action was successfully parked, the
+    action is orphaned -- nothing will ever render its door, and nothing will
+    ever approve it. This sweep is the failure-mode-(a) backstop: it never
+    executes an orphaned action, it only expires it once ``expires_at`` has
+    passed, exactly like the existing ``pending -> expired`` transition
+    ``expire_pending_action_if_stale`` already performs for one action at a
+    time. Scoped to ``origin='prepared'`` only -- ordinary gated actions are
+    unaffected and keep their existing (on-touch) expiry path.
+    """
+    effective_now = now or datetime.now(UTC)
+    rows = await pool.fetch(
+        "SELECT id, tool_name FROM pending_actions "
+        "WHERE origin = 'prepared' AND status = $1 "
+        "AND expires_at IS NOT NULL AND expires_at < $2",
+        ActionStatus.PENDING.value,
+        effective_now,
+    )
+
+    expired_ids: list[str] = []
+    for row in rows:
+        transition = await transition_pending_action(
+            pool,
+            action_id=row["id"],
+            target_status=ActionStatus.EXPIRED,
+            decided_by="system:prepared_action_sweep",
+            event_actor="system:prepared_action_sweep",
+            event_reason="prepared action expired unactioned",
+            event_metadata={"tool_name": row["tool_name"]},
+            now=effective_now,
+        )
+        if transition.changed:
+            expired_ids.append(str(row["id"]))
+
+    return {"expired_count": len(expired_ids), "expired_ids": expired_ids}
+
+
+async def _approve_action_write(
     pool: Any,
     action_id: str,
     actor_id: str = "dashboard:rest-api",
@@ -156,63 +261,50 @@ async def approve_action(
     if action.status != ActionStatus.PENDING:
         return {"error": f"Cannot transition from '{action.status.value}' to 'approved'"}
 
-    now = datetime.now(UTC)
-    expired_result = await expire_pending_action_if_stale(pool, action, now=now)
-    if expired_result is not None:
-        return expired_result
-
     decided_by = f"human:{actor_id}"
-
-    # CAS update: pending → approved
-    approved_row = await pool.fetchrow(
-        "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
-        "WHERE id = $4 AND status = $5 "
-        "RETURNING *",
-        ActionStatus.APPROVED.value,
-        decided_by,
-        now,
-        parsed_id,
-        ActionStatus.PENDING.value,
-    )
-    if approved_row is None:
-        latest_row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
-        if latest_row is None:
-            return {"error": f"Action not found: {action_id}"}
-        latest_action = PendingAction.from_row(latest_row)
-        return {"error": (f"Cannot transition from '{latest_action.status.value}' to 'approved'")}
-
-    action = PendingAction.from_row(approved_row)
-
-    await record_approval_event(
+    transition = await transition_pending_action(
         pool,
-        ApprovalEventType.ACTION_APPROVED,
-        actor=_decision_event_actor(actor_id),
         action_id=parsed_id,
-        reason="approved via REST API",
-        metadata={"tool_name": action.tool_name},
-        occurred_at=now,
+        target_status=ActionStatus.APPROVED,
+        decided_by=decided_by,
+        event_actor=_decision_event_actor(actor_id),
+        event_reason="approved via REST API",
+        event_metadata={"tool_name": action.tool_name},
     )
+    if not transition.changed:
+        if transition.action is None:
+            return {"error": f"Action not found: {action_id}"}
+        return {
+            "error": (f"Cannot transition from '{transition.action.status.value}' to 'approved'")
+        }
+    if transition.expired_instead:
+        return {"error": f"Action {action_id} expired and cannot be approved"}
+    action = transition.action
+    assert action is not None
 
     # Post-approval autonomy tracker hook (task 7.1)
     # Wrap in try/except so tracker failure doesn't block approval
     try:
-        # Re-read to get decided_at
-        updated_row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
-        if updated_row is not None:
-            updated_action = PendingAction.from_row(updated_row)
-            await _record_approval(pool, updated_action)
-            # Use a minimal config namespace with defaults (no module import needed)
-            _default_config = type(
-                "_Config", (), {"promotion_threshold": 5, "suggestion_cooldown_days": 30}
-            )()
-            await _check_promotion_threshold(
-                pool=pool,
-                pattern_fingerprint=_compute_fingerprint(action.tool_name, action.tool_args),
-                tool_name=action.tool_name,
-                tool_args=action.tool_args,
-                config=_default_config,
-                action_id=updated_action.id,
+        async with descriptive_savepoint(pool) as tracker_connection:
+            # Re-read to get decided_at
+            updated_row = await tracker_connection.fetchrow(
+                "SELECT * FROM pending_actions WHERE id = $1", parsed_id
             )
+            if updated_row is not None:
+                updated_action = PendingAction.from_row(updated_row)
+                await _record_approval(tracker_connection, updated_action)
+                # Use a minimal config namespace with defaults (no module import needed)
+                _default_config = type(
+                    "_Config", (), {"promotion_threshold": 5, "suggestion_cooldown_days": 30}
+                )()
+                await _check_promotion_threshold(
+                    pool=tracker_connection,
+                    pattern_fingerprint=_compute_fingerprint(action.tool_name, action.tool_args),
+                    tool_name=action.tool_name,
+                    tool_args=action.tool_args,
+                    config=_default_config,
+                    action_id=updated_action.id,
+                )
     except Exception:
         logger.exception(
             "Autonomy tracker hook failed for action %s — approval not blocked", action_id
@@ -221,14 +313,15 @@ async def approve_action(
     # Optionally create a standing rule
     rule_dict: dict[str, Any] | None = None
     if create_rule:
-        rule_result = await create_rule_from_action(
+        rule_result = await _create_rule_from_action_write(
             pool,
             action_id=action_id,
             actor_id=actor_id,
             decision_memory_writer=decision_memory_writer,
         )
-        if "error" not in rule_result:
-            rule_dict = rule_result
+        if "error" in rule_result:
+            return rule_result
+        rule_dict = rule_result
 
     # Return the approved (not yet executed) state.
     # Callers with access to a tool executor should dispatch execution
@@ -379,55 +472,34 @@ async def reject_action(
     if action.status != ActionStatus.PENDING:
         return {"error": f"Cannot transition from '{action.status.value}' to 'rejected'"}
 
-    now = datetime.now(UTC)
-    expired_result = await expire_pending_action_if_stale(
-        pool,
-        action,
-        now=now,
-        target_action=ActionStatus.REJECTED.value,
-    )
-    if expired_result is not None:
-        return expired_result
-
     escaped_reason = html.escape(reason, quote=True) if reason else None
     decided_by = f"human:{actor_id}"
     if escaped_reason:
         decided_by = f"{decided_by} (reason: {escaped_reason})"
 
-    rejected_row = await pool.fetchrow(
-        "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
-        "WHERE id = $4 AND status = $5 "
-        "RETURNING *",
-        ActionStatus.REJECTED.value,
-        decided_by,
-        now,
-        parsed_id,
-        ActionStatus.PENDING.value,
-    )
-    if rejected_row is None:
-        latest_row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
-        if latest_row is None:
-            return {"error": f"Action not found: {action_id}"}
-        latest_action = PendingAction.from_row(latest_row)
-        return {"error": (f"Cannot transition from '{latest_action.status.value}' to 'rejected'")}
-
-    await record_approval_event(
+    transition = await transition_pending_action(
         pool,
-        ApprovalEventType.ACTION_REJECTED,
-        actor=_decision_event_actor(actor_id),
         action_id=parsed_id,
-        reason=reason or "rejected via REST API",
-        metadata={"tool_name": action.tool_name},
-        occurred_at=now,
+        target_status=ActionStatus.REJECTED,
+        decided_by=decided_by,
+        event_actor=_decision_event_actor(actor_id),
+        event_reason=reason or "rejected via REST API",
+        event_metadata={"tool_name": action.tool_name},
     )
+    if not transition.changed:
+        if transition.action is None:
+            return {"error": f"Action not found: {action_id}"}
+        return {
+            "error": (f"Cannot transition from '{transition.action.status.value}' to 'rejected'")
+        }
+    if transition.expired_instead:
+        return {"error": f"Action {action_id} expired and cannot be rejected"}
+    rejected_action = transition.action
+    assert rejected_action is not None
 
     if decision_memory_writer is not None:
-        await decision_memory_writer.record_terminal_decision(
-            PendingAction.from_row(rejected_row), "rejected"
-        )
-
-    final_row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
-    return PendingAction.from_row(final_row).to_dict()
+        await decision_memory_writer.record_terminal_decision(rejected_action, "rejected")
+    return rejected_action.to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -525,7 +597,7 @@ async def abandon_approved_action(
 # ---------------------------------------------------------------------------
 
 
-async def create_approval_rule(
+async def _create_approval_rule_write(
     pool: Any,
     tool_name: str,
     arg_constraints: dict[str, Any],
@@ -611,16 +683,21 @@ async def create_approval_rule(
         occurred_at=now,
     )
 
+    if rule.tool_name == "relationship_assert_fact":
+        from butlers.tools.relationship.fact_authority import record_admitted_rule
+
+        await record_admitted_rule(pool, rule.id)
     if decision_memory_writer is not None:
         await decision_memory_writer.record_standing_rule(rule, active=True)
 
     # Rule-creation supersede hook (task 7.3)
     try:
-        await _supersede_matching_suggestions(
-            pool=pool,
-            tool_name=tool_name,
-            arg_constraints=arg_constraints,
-        )
+        async with _approval_write_transaction(pool) as hook_connection:
+            await _supersede_matching_suggestions(
+                pool=hook_connection,
+                tool_name=tool_name,
+                arg_constraints=arg_constraints,
+            )
     except Exception:
         logger.exception("Supersede hook failed for rule %s — rule creation not blocked", rule.id)
 
@@ -632,7 +709,7 @@ async def create_approval_rule(
 # ---------------------------------------------------------------------------
 
 
-async def create_rule_from_action(
+async def _create_rule_from_action_write(
     pool: Any,
     action_id: str,
     constraint_overrides: dict[str, Any] | None = None,
@@ -718,16 +795,21 @@ async def create_rule_from_action(
         occurred_at=now,
     )
 
+    if rule.tool_name == "relationship_assert_fact":
+        from butlers.tools.relationship.fact_authority import record_admitted_rule
+
+        await record_admitted_rule(pool, rule.id)
     if decision_memory_writer is not None:
         await decision_memory_writer.record_standing_rule(rule, active=True)
 
     # Rule-creation supersede hook (task 7.3)
     try:
-        await _supersede_matching_suggestions(
-            pool=pool,
-            tool_name=action.tool_name,
-            arg_constraints=suggested,
-        )
+        async with _approval_write_transaction(pool) as hook_connection:
+            await _supersede_matching_suggestions(
+                pool=hook_connection,
+                tool_name=action.tool_name,
+                arg_constraints=suggested,
+            )
     except Exception:
         logger.exception("Supersede hook failed for rule %s — rule creation not blocked", rule.id)
 

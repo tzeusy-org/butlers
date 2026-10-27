@@ -17,6 +17,8 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import uuid
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
@@ -24,6 +26,7 @@ import pytest
 from butlers.core.condition_ledger import resolve_condition as resolve_ledger_condition
 from butlers.core.infra_conditions import Observation as InfraObservation
 from butlers.core.infra_conditions import reconcile_snapshot as infra_reconcile_snapshot
+from butlers.core.insight_premise import enqueue_premise_amendments, owner_condition_premise
 from butlers.core.owner_conditions import (
     Observation,
     compute_fingerprint,
@@ -34,6 +37,7 @@ from butlers.core.owner_conditions import (
 )
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.tools.switchboard.insight.broker import propose_insight_candidate
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -58,7 +62,7 @@ async def pool(migrated_db_url: str) -> asyncpg.Pool:
 @pytest.fixture
 async def codec_pool(migrated_db_url: str) -> asyncpg.Pool:
     p = await asyncpg.create_pool(
-        migrated_db_url, min_size=2, max_size=10, init=register_jsonb_codec
+        migrated_db_url, min_size=1, max_size=1, init=register_jsonb_codec
     )
     yield p
     await p.close()
@@ -69,12 +73,24 @@ def _fp(name: str) -> str:
 
 
 class TestOwnerConditionLifecycle:
-    async def test_open_confirm_escalate_resolve_reopen(self, pool: asyncpg.Pool) -> None:
-        fp = _fp("payee-utility-co")
+    @pytest.mark.parametrize("mode", ["pool", "caller-commit", "caller-rollback"])
+    async def test_open_confirm_escalate_resolve_reopen(
+        self, codec_pool: asyncpg.Pool, mode
+    ) -> None:
+        pool = codec_pool
+        source = f"finance:bill-overdue-{uuid.uuid4().hex}"
+        fp = compute_fingerprint(source, 1, {"bill_id": "payee-utility-co"})
 
-        opened = await reconcile_snapshot(
-            pool,
-            source="finance:bill-overdue",
+        async def check_in(**kwargs):
+            if mode == "pool":
+                return await reconcile_snapshot(pool, **kwargs)
+            async with asyncio.timeout(15), pool.acquire() as conn, conn.transaction():
+                result = await reconcile_snapshot(pool, **kwargs, transaction_connection=conn)
+                assert conn.is_in_transaction()
+                return result
+
+        opened = await check_in(
+            source=source,
             observations=[Observation(fingerprint=fp, summary="Utility Co bill overdue")],
             snapshot_complete=True,
             initial_grace_seconds=0,
@@ -85,9 +101,8 @@ class TestOwnerConditionLifecycle:
 
         # Confirming while still due immediately claims the L0->L1 escalation
         # (initial_grace_seconds=0 makes it due right away).
-        escalated = await reconcile_snapshot(
-            pool,
-            source="finance:bill-overdue",
+        escalated = await check_in(
+            source=source,
             observations=[Observation(fingerprint=fp, summary="still overdue")],
             snapshot_complete=True,
             initial_grace_seconds=3600,
@@ -96,28 +111,104 @@ class TestOwnerConditionLifecycle:
         assert escalated[0].escalation_level == "L1"
         assert escalated[0].state == "aging"
 
-        active = await get_active_condition(pool, source="finance:bill-overdue", fingerprint=fp)
+        active = await get_active_condition(pool, source=source, fingerprint=fp)
         assert active["summary"] == "still overdue"
 
-        # The bill is paid: the next complete snapshot no longer observes it.
-        resolved = await reconcile_snapshot(
+        # A real broker insert on the migrated shape, with a synthetic delivered
+        # eligibility state. This is no provider delivery or runtime-role proof.
+        dedup_key = f"finance:bill:{uuid.uuid4().hex}:synthetic"
+        proposed = await propose_insight_candidate(
             pool,
-            source="finance:bill-overdue",
-            observations=[],
-            snapshot_complete=True,
-            initial_grace_seconds=3600,
+            origin_butler="finance",
+            priority=50,
+            category="bill-due",
+            dedup_key=dedup_key,
+            message="Synthetic utility bill remains overdue",
+            expires_at=datetime.now(UTC) + timedelta(days=1),
+            premise=owner_condition_premise(source, fp),
+        )
+        assert proposed["status"] == "accepted"
+        candidate_id = await pool.fetchval(
+            "UPDATE public.insight_candidates SET status = 'delivered', delivered_at = now() "
+            "WHERE dedup_key = $1 RETURNING id",
+            dedup_key,
+        )
+        assert candidate_id is not None
+        before_resolution = await pool.fetchrow(
+            "SELECT * FROM public.owner_conditions WHERE source = $1 AND fingerprint = $2",
+            source,
+            fp,
+        )
+
+        async def resolve_in_caller(*, roll_back=False):
+            async with asyncio.timeout(15), pool.acquire() as conn, conn.transaction():
+                result = await reconcile_snapshot(
+                    pool,
+                    source=source,
+                    observations=[],
+                    snapshot_complete=True,
+                    initial_grace_seconds=3600,
+                    transaction_connection=conn,
+                )
+                assert result[0].transition == "resolved"
+                assert (
+                    await conn.fetchval(
+                        "SELECT count(*) FROM public.insight_amendments WHERE candidate_id = $1",
+                        candidate_id,
+                    )
+                    == 1
+                ), "actual installed conditional enqueue must have written before rollback"
+                assert await enqueue_premise_amendments(conn, result) == 0
+                assert conn.is_in_transaction()
+                if roll_back:
+                    raise RuntimeError("after actual premise enqueue")
+                return result
+
+        # The bill is paid: complete-snapshot omission resolves it. The caller
+        # modes verify the actual definer effect, rather than creation's absent hook.
+        if mode == "caller-rollback":
+            with pytest.raises(RuntimeError, match="after actual premise enqueue"):
+                await resolve_in_caller(roll_back=True)
+            assert (
+                await pool.fetchrow(
+                    "SELECT * FROM public.owner_conditions WHERE source = $1 AND fingerprint = $2",
+                    source,
+                    fp,
+                )
+                == before_resolution
+            )
+            assert (
+                await pool.fetchval(
+                    "SELECT count(*) FROM public.insight_amendments WHERE candidate_id = $1",
+                    candidate_id,
+                )
+                == 0
+            )
+            resolved = await resolve_in_caller()
+        elif mode == "caller-commit":
+            resolved = await resolve_in_caller()
+        else:
+            resolved = await check_in(
+                source=source,
+                observations=[],
+                snapshot_complete=True,
+                initial_grace_seconds=3600,
+            )
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM public.insight_amendments WHERE candidate_id = $1",
+                candidate_id,
+            )
+            == 1
         )
         assert resolved[0].transition == "resolved"
         assert resolved[0].recovered_after_s >= 0
-        assert (
-            await get_active_condition(pool, source="finance:bill-overdue", fingerprint=fp) is None
-        )
+        assert await get_active_condition(pool, source=source, fingerprint=fp) is None
 
         # Recurrence (e.g. the same bill goes overdue again next cycle)
         # creates episode 2 and preserves episode 1's resolved history.
-        reopened = await reconcile_snapshot(
-            pool,
-            source="finance:bill-overdue",
+        reopened = await check_in(
+            source=source,
             observations=[Observation(fingerprint=fp)],
             snapshot_complete=True,
             initial_grace_seconds=3600,
@@ -125,7 +216,7 @@ class TestOwnerConditionLifecycle:
         assert reopened[0].transition == "reopened"
         assert reopened[0].episode == 2
 
-        total, rows = await list_conditions(pool, source="finance:bill-overdue")
+        total, rows = await list_conditions(pool, source=source)
         episodes = sorted((r["episode"], r["state"]) for r in rows if r["fingerprint"] == fp)
         assert episodes == [(1, "resolved"), (2, "open")]
 

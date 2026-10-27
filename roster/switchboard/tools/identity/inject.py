@@ -119,6 +119,7 @@ async def resolve_and_inject_identity(
     display_name: str | None = None,
     notify_owner_fn: Callable[[str], Awaitable[None]] | None = None,
     state_pool: asyncpg.Pool | None = None,
+    resolver: Any = None,
 ) -> IdentityResolutionResult:
     """Resolve sender identity and build the preamble for the routed prompt.
 
@@ -161,8 +162,8 @@ async def resolve_and_inject_identity(
         return IdentityResolutionResult()
 
     # Step 1: Attempt to resolve from relationship.entity_facts (migration bead 7).
-    resolved: ResolvedContact | None = await resolve_contact_by_channel(
-        pool, channel_type, channel_value
+    resolved: ResolvedContact | None = await (resolver or resolve_contact_by_channel)(
+        pool, channel_type, channel_value, **({"raise_on_error": True} if resolver else {})
     )
 
     if resolved is not None:
@@ -176,6 +177,7 @@ async def resolve_and_inject_identity(
         display_name=display_name,
         notify_owner_fn=notify_owner_fn,
         state_pool=state_pool,
+        resolver=resolver,
     )
 
 
@@ -189,6 +191,7 @@ async def _inject_unknown_identity(
     notify_owner_fn: Callable[[str], Awaitable[None]] | None,
     state_pool: asyncpg.Pool | None,
     strict_reservation: bool = False,
+    resolver: Any = None,
 ) -> IdentityResolutionResult:
     """Reserve and inject an already-confirmed unresolved sender.
 
@@ -206,6 +209,7 @@ async def _inject_unknown_identity(
             f"{_TEMP_ENTITY_STATE_KEY_PREFIX}{source_channel_type}:{channel_value}"
         ),
         raise_on_error=strict_reservation,
+        **({"resolver": resolver} if resolver else {}),
     )
     if temp_contact is not None and not temp_contact.is_unidentified:
         return _result_from_resolved_contact(temp_contact, source_channel_type)
@@ -225,13 +229,11 @@ async def _inject_unknown_identity(
     preamble = build_identity_preamble(
         None,
         source_channel_type,
-        temp_contact_id=temp_contact.contact_id if temp_contact else None,
         temp_entity_id=temp_contact.entity_id if temp_contact else None,
     )
 
     result = IdentityResolutionResult(
         preamble=preamble,
-        contact_id=temp_contact.contact_id if temp_contact else None,
         entity_id=temp_contact.entity_id if temp_contact else None,
         sender_roles=None,
         is_owner=False,
@@ -277,10 +279,8 @@ def _result_from_resolved_contact(
             preamble=build_identity_preamble(
                 None,
                 channel_type,
-                temp_contact_id=resolved.contact_id,
                 temp_entity_id=resolved.entity_id,
             ),
-            contact_id=resolved.contact_id,
             entity_id=resolved.entity_id,
             sender_roles=None,
             is_owner=False,
@@ -292,7 +292,6 @@ def _result_from_resolved_contact(
     is_owner = "owner" in resolved.roles
     return IdentityResolutionResult(
         preamble=build_identity_preamble(resolved, channel_type),
-        contact_id=resolved.contact_id,
         entity_id=resolved.entity_id,
         sender_roles=resolved.roles or None,
         is_owner=is_owner,
@@ -309,6 +308,8 @@ async def resolve_sender_identities(
     *,
     notify_owner_fn: Callable[[str], Awaitable[None]] | None = None,
     state_pool: asyncpg.Pool | None = None,
+    resolver: Any = None,
+    bulk_resolver: Any = None,
 ) -> dict[str, IdentityResolutionResult]:
     """Resolve each distinct batch speaker through one strict bulk lookup.
 
@@ -332,11 +333,15 @@ async def resolve_sender_identities(
 
     identity_channel = canonical_identity_channel_type(channel_type)
     pairs = [(identity_channel, value) for value in distinct_values]
-    bulk_results = await resolve_contacts_by_channel_bulk(
-        pool,
-        pairs,
-        raise_on_error=True,
-    )
+    if bulk_resolver is not None:
+        remote = await bulk_resolver(identity_channel, distinct_values)
+        bulk_results = {(identity_channel, value): remote[value] for value in distinct_values}
+    else:
+        bulk_results = await resolve_contacts_by_channel_bulk(
+            pool,
+            pairs,
+            raise_on_error=True,
+        )
 
     results: dict[str, IdentityResolutionResult] = {}
     for channel_value in distinct_values:
@@ -358,6 +363,7 @@ async def resolve_sender_identities(
                 notify_owner_fn=notify_owner_fn,
                 state_pool=state_pool,
                 strict_reservation=True,
+                resolver=resolver,
             )
         except Exception as exc:  # noqa: BLE001
             failure_class = getattr(exc, "failure_class", type(exc).__name__)

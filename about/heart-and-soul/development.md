@@ -1,255 +1,55 @@
 # Development Principles
 
-How work gets done on this project. These are workflow constraints, not
-aspirations.
+Four workflow constraints that are doctrine. Everything operational (test
+ladder, quality gates, worktree and merge route, environment setup) lives in
+[craft-and-care](../craft-and-care/README.md), the root `CLAUDE.md`, and
+`AGENTS.md`; this file does not repeat it.
 
-## Test-Driven Development
+## Test First
 
-Write the failing test first. Then write the code that makes it pass.
+Write the failing test, then the code that makes it pass. A failing test is a
+precise specification of "done"; tests written afterwards test what the code
+does, not what it should do. New features carry tests before merge; bug fixes
+carry a reproducing test before the fix.
 
-**Why this matters:**
+## Spec Before Code, RFC Before Exception
 
-- Tests written after implementation tend to test what the code does, not what
-  it should do. Writing the test first forces you to think about the interface
-  before the implementation.
-- A failing test is a precise specification. It eliminates ambiguity about what
-  "done" means.
-- It prevents the "I'll add tests later" pattern, which in practice means tests
-  never get added.
+Significant work starts from an OpenSpec change (proposal, design, delta
+specs): new modules, changes
+to core infrastructure (state store, scheduler, spawner, session log), new
+roster entries, cross-butler protocol changes, and schema changes that cross
+butlers. Bug fixes, behavior-preserving refactors, documentation, tests, and
+single-butler tool additions inside a module boundary do not need one. An
+implementation that changes observable behavior amends its governing spec in
+the same change.
 
-**Constraints:**
-
-- New features must have tests before the implementation is merged.
-- Bug fixes must include a test that reproduces the bug before the fix is
-  applied.
-- Test scope should be gradual: start with targeted unit tests during
-  development, expand to integration tests during stabilization, run the full
-  suite only for final pre-merge validation.
-
-**Test infrastructure:**
-
-- pytest with pytest-asyncio (asyncio_mode = "auto"). Default `addopts` use
-  importlib import mode and exclude the `nightly`, `bench`, and `perf` markers.
-- Tests are separated by marker, not by a single file. The relevant markers are
-  `unit`, `smoke`, `integration`, `db`, `e2e`, `nightly`, `bench`, and
-  `contract` (architectural invariants from this doctrine and key RFCs).
-  Database and migration tests live under `tests/migrations/`, `tests/config/`,
-  and `tests/core/` and carry the `integration`/`db`/`nightly` markers, so they
-  are selected or skipped by marker rather than by ignoring named files.
-- E2E test suite with benchmark scoring for routing accuracy and session
-  reliability. E2E tests require `ANTHROPIC_API_KEY`, the `claude` binary, and
-  Docker; they are not part of the default CI pipeline and run via
-  `make test-e2e` (validate mode) or `make test-e2e-benchmark` (model
-  scorecards). A separate frontend Playwright e2e suite does run in CI (see the
-  `frontend-e2e` job below) and locally via `make test-e2e-frontend`.
-
-## OpenSpec-Driven Development
-
-Significant features start with a specification before code is written. The
-spec captures the problem, the proposed design, alternatives considered, and
-the migration path.
-
-**Why specs before code:**
-
-- They force clarity about what problem is being solved and why this particular
-  approach was chosen.
-- They create a reviewable artifact that is cheaper to change than code.
-- They document the "why" that commit messages and code comments rarely capture.
-
-**When a spec is required:**
-
-- New modules.
-- Changes to core infrastructure (state store, scheduler, spawner, session log).
-- New butler additions to the roster.
-- Cross-butler protocol changes.
-- Database schema changes that affect multiple butlers.
-
-**When a spec is NOT required:**
-
-- Bug fixes.
-- Refactoring that does not change behavior.
-- Documentation.
-- Test improvements.
-- Single-butler tool additions that stay within the module boundary.
-
-**When an RFC is required:**
-
-Architectural constraints documented in `vision.md` are non-negotiable by
-default. Any proposed exception --- such as cross-schema data access that
-bypasses MCP-only inter-butler communication --- requires a dedicated RFC with
-explicit guardrails, reuse criteria, and cost justification. The RFC must
-define both when the exception pattern MAY be reused and when it MUST NOT
-(see RFC 0010 as the template).
+The architectural constraints in [vision.md](vision.md) are non-negotiable by
+default. A proposed exception (for example cross-schema access that bypasses
+MCP-only inter-butler communication) needs a dedicated RFC with explicit
+guardrails, reuse criteria, and cost justification, stating when the pattern
+MAY be reused and when it MUST NOT (RFC 0010 is the template). An exception is
+never precedent for unconstrained reuse.
 
 ## Manifesto-Driven Design
 
-Every butler has a `MANIFESTO.md` that defines its identity, purpose, and
-boundaries. The manifesto is not aspirational marketing copy. It is a binding
-contract that governs what features, tools, and interactions belong to that
-butler.
+Every butler's `MANIFESTO.md` is a binding contract, not marketing copy. Check
+it before adding a tool; amend it before expanding scope, and let the code
+follow the manifesto rather than the reverse. When two butlers could own a
+capability, the manifestos decide. A feature that contradicts its manifesto
+does not ship.
 
-**How to use manifestos:**
+## Work Exists Only in Beads
 
-- Before adding a tool to a butler, check whether the manifesto supports it.
-  If the tool does not align with what the butler promises, it belongs elsewhere.
-- Before expanding a butler's scope, update the manifesto first and get
-  alignment. The code change follows the manifesto change, not the other way
-  around.
-- When two butlers could plausibly own a capability, the manifestos resolve the
-  dispute. Whichever butler's manifesto more naturally encompasses the capability
-  gets it.
-
-**Constraint:** A feature that contradicts its butler's manifesto must not ship.
-
-## Issue Tracking with Beads
-
-All work tracking uses `bd` (beads). Not markdown TODOs. Not external issue
-trackers. Not task lists in comments.
-
-**Why beads:**
-
-- Dependency-aware: blockers and relationships between issues are first-class.
-- Dolt-backed: issues live in a Dolt database, not in git or SQLite.
-- Agent-optimized: JSON output, ready work detection, discovered-from links.
-
-**Backend (how the data actually lives):** `bd` v1.0.x is backed by the shared
-Dolt server on `dolt.parrot-hen.ts.net:3307` (database `butlers`), discovered via
-`.beads/metadata.json` (`dolt_mode: server`). Writes auto-commit to Dolt
-history; there is no `bd sync` step (that subcommand does not exist in this bd
-version). To refresh the git-tracked JSONL mirror, run
-`bd export -o .beads/issues.export.jsonl`. Never create `.beads/issues.jsonl`:
-on bd 1.0.4 server mode its presence triggers a full-file re-import on every
-write that can wedge bd town-wide. The mirror lives at
-`.beads/issues.export.jsonl` (see `export.path` in `.beads/config.yaml`).
-
-**Workflow:**
-
-1. Check `bd ready` for unblocked work.
-2. Claim a task with `bd update <id> --claim`.
-3. Do the work.
-4. If you discover new work, create a linked issue with `--deps discovered-from:<parent-id>`.
-5. Close with `bd close <id> --reason "Done"`.
-
-**Constraint:** Work that is not tracked in beads does not exist for planning
-purposes.
-
-**Epic-close constraint:** An epic is not closed until its shipped OpenSpec
-change(s) are archived and the affected specs are synced — in the same
-delivery as the close, not a follow-up. Run the change through `/opsx:archive`
-before calling `bd close` on the epic; the archive step must not lag behind the
-close. This pairs with the
-[v1-status refresh rule](v1-status.md#refresh-rule): an epic close that touches
-a success criterion should land the OpenSpec archive and the v1-status refresh
-in the same delivery.
-
-## Code Quality
-
-**Linting:** Ruff with target py312, line-length 100, rules E/F/I/UP.
-
-**Formatting:** Ruff format. No debates about style.
-
-**Quality gate before merge:**
-
-```bash
-make lint                                                  # ruff check src/ tests/
-uv run ruff format --check src/ tests/ roster/ conftest.py -q
-make check-for-update-joins                                # SQL safety: FOR UPDATE + outer joins
-```
-
-All must pass. No exceptions, no "I'll fix the lint later." The
-`check-for-update-joins` gate is structural: PostgreSQL rejects `FOR UPDATE` on
-the nullable side of an outer join at runtime, and mock-based tests silently
-bypass it, so it is enforced statically.
-
-**CI pipeline** (GitHub Actions, runs automatically on push/PR). The core
-Python gate is a duration-balanced fan-out/fan-in:
-
-1. `check-preflight` runs the lock, lint, format, SQL-safety, exact-shard
-   verification, and smoke/release-evidence checks once.
-2. Five `check-unit-N` jobs and five `check-integration-N` jobs start on
-   independent runners. Each keeps whole test files together with xdist's
-   `--dist loadfile`; the integration shards retain Docker/testcontainers.
-3. `check` always evaluates every preflight/shard result, including a
-   cancellation result, fails on any non-success, then combines all ten
-   coverage artifacts and updates the main-push badge.
-
-The checked-in file manifests live in `.github/ci-test-shards/`. The sole
-selector, `scripts/check_ci_test_shards.py`, owns the exact current unit and
-integration marker expressions. Its `verify` command derives pytest's actual
-selected node IDs and refuses a stale manifest, missing file/node, duplicate
-within a lane, or zero-selected shard. A file can correctly appear once in
-each independent lane when it contains both unit and integration items.
-
-`coverage combine` runs only in the fan-in job because runners do not share a
-filesystem. The local `make test-ci-*` targets remain sequential convenience
-commands and therefore use `--cov-append` within their single worktree.
-
-Each shard emits a unique non-hidden coverage artifact plus runner-local raw
-JUnit input. CI derives retained timing evidence from that input, but uploads
-only the sanitized JUnit metadata and top-duration table; it never uploads raw
-JUnit or test logs. Each named artifact is overwrite-safe so rerunning a failed
-job within one workflow run can recover instead of colliding with an immutable
-v4 artifact.
-
-`frontend` (Node 24, `frontend/`) runs `npm ci`, `npm run lint`
-   (`eslint .`), `npm run build` (`tsc -b && vite build`), and `npm run test`
-   (`vitest run`).
-
-`frontend-e2e` (Node 24, `frontend/`) installs Playwright browsers, builds,
-   and runs `npm run test:e2e`.
-
-Longer-running schema-matrix and migration tests run separately in the nightly
-workflow (`-m "(nightly or integration) and not bench and not perf"`), not on
-every push.
-
-The local quality-gate shortcut (`make test-qg`) runs the unit-test scope in
-parallel (`-n auto --dist loadfile`); `make test-qg-serial` is the serial
-fallback for order-dependent debugging.
-
-## Git Workflow
-
-- Butler configurations (roster/) are git-tracked. Changes to butler identity,
-  personality, schedules, or module selection go through git.
-- Commits should explain why, not what. The diff shows what changed.
-- Work is not complete until it is pushed to the remote. Local-only commits are
-  unreliable artifacts.
-
-**Repo-root discipline (non-negotiable):** never move the main repo root
-(`~/gt/butlers`) off `main`. Agents and humans both rely on the root checkout
-staying on `main` at all times.
-
-- Every tracked change uses a dedicated git worktree branched off `origin/main`,
-  with commits, pushes, and PRs all coming from the worktree. Open PRs against
-  `--base main`; never push a change directly to `main`.
-- After review and the PR-head gates complete, enqueue the PR with
-  `gh pr merge <n> --squash --auto`. The non-strict `main-merge-queue` ruleset
-  runs required `check`, `guards`, and `frontend` contexts on the current
-  `merge_group` tree. Do not rebase a clean PR merely to refresh it; rebase only
-  to resolve a real conflict or when review requires it.
-
-See the root `CLAUDE.md` for the exact worktree commands and the full discipline.
-
-## Development Environment
-
-- **Package manager:** uv (not pip, not poetry, not conda).
-- **Python:** 3.12+
-- **Database:** PostgreSQL with JSONB support.
-- **Containers:** Docker Compose for the full stack; testcontainers for
-  integration tests.
-- **Frontend:** Node 24 with Vite for the dashboard; ESLint for linting, Vitest
-  for unit tests, Playwright for e2e.
+All work tracking is `bd` (beads): dependency-aware, Dolt-backed, agent
+readable. Not markdown TODOs, inline TODOs, or external trackers. Work that is
+not in beads does not exist for planning. An epic closes only after its shipped
+OpenSpec change is archived (`/opsx:archive` runs before `bd close`) and the
+affected specs are synced, in the same delivery.
 
 ## Anti-Patterns
 
-- Writing code before writing the test.
-- Skipping specs for features that touch core infrastructure.
-- Adding tools to a butler without checking its manifesto.
-- Tracking work in markdown files, inline TODOs, or external systems instead
-  of beads.
-- Running the full test suite on every change instead of targeted tests during
-  development.
-- Committing code that fails lint or format checks.
-- Leaving work pushed only locally with "I'll push later."
-- Using pip to install dependencies instead of uv.
-- Treating architectural rule exceptions as precedent for unconstrained reuse
-  without evaluating the specific guardrails and reuse criteria.
+- Code before its test.
+- Core-infrastructure changes without a spec; doctrine exceptions without an RFC.
+- Tools added to a butler without checking its manifesto.
+- Work tracked anywhere but beads.
+- Treating a granted exception as precedent.

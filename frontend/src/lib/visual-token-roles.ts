@@ -7,18 +7,50 @@
  * ButlerMark.
  */
 
+export type StateColorRole =
+  | "healthy"
+  | "ok"
+  | "degraded"
+  | "error"
+  | "waiting"
+  | "unidentified"
+  | "duplicate-candidate"
+  | "stale"
+  | "archived";
+
+export type StateTextColorRole = "ok" | "degraded" | "error" | "waiting";
+
+const STATE_COLORS: Record<StateColorRole, string> = {
+  healthy: "var(--green)",
+  ok: "var(--green)",
+  degraded: "var(--amber)",
+  error: "var(--red)",
+  waiting: "var(--dim)",
+  unidentified: "var(--state-unidentified)",
+  "duplicate-candidate": "var(--amber)",
+  stale: "var(--red)",
+  archived: "var(--muted-foreground)",
+};
+
+const STATE_TEXT_COLORS: Record<StateTextColorRole, string> = {
+  ok: "var(--green)",
+  degraded: "var(--amber-text)",
+  error: "var(--red-text)",
+  waiting: "var(--dim)",
+};
+
 const STATE_TOKENS = [
   "--red",
+  "--red-text",
   "--amber",
+  "--amber-text",
   "--green",
   "--dim",
   "--state-unidentified",
   "--muted-foreground",
 ] as const;
 
-// Keep semantic role values literal. The visual-role guard deliberately
-// rejects dynamically assembled var(...) references outside ButlerMark, even
-// when their eventual property is a semantic role.
+// Keep semantic role values literal so each role's token family stays greppable.
 const LOCAL_CATEGORY_VALUES = [
   "var(--categorical-1)",
   "var(--categorical-2)",
@@ -48,18 +80,20 @@ export const VISUAL_TOKEN_ROLE_REGISTRY = {
   "butler-identity": {
     specRole: "Butler identity",
     resolver: "ButlerMark (private)",
-    tokenFamily: "--category-1..12",
+    tokenFamily: "ButlerMark palette map (no CSS variable)",
     requiredSignal: "letter-mark only",
     slotCount: 12,
     legendRequired: false,
   },
   state: {
     specRole: "Operational state",
-    resolver: "StateDot / stateColorVar",
+    resolver: "StateDot / stateColorVar / stateTextColorVar",
     tokenFamily:
-      "--red, --amber, --green, --dim, --state-unidentified, --muted-foreground",
+      "--red, --red-text, --amber, --amber-text, --green, --dim, --state-unidentified, --muted-foreground",
     requiredSignal: "state affordance",
     tokens: STATE_TOKENS,
+    values: STATE_COLORS,
+    textValues: STATE_TEXT_COLORS,
     legendRequired: false,
   },
   "local-category": {
@@ -96,17 +130,6 @@ export const VISUAL_TOKEN_ROLE_REGISTRY = {
   },
 } as const;
 
-export type StateColorRole =
-  | "healthy"
-  | "ok"
-  | "degraded"
-  | "error"
-  | "waiting"
-  | "unidentified"
-  | "duplicate-candidate"
-  | "stale"
-  | "archived";
-
 export type CategoricalColor = string & {
   readonly __visualRole: "local-category";
 };
@@ -125,18 +148,6 @@ export interface LabelFillColors {
 const CATEGORICAL_FILL_FOREGROUND = "var(--categorical-fill-foreground)";
 const LABEL_FILL_FOREGROUND_ON_LIGHT = "var(--label-fill-foreground-on-light)";
 const LABEL_FILL_FOREGROUND_ON_DARK = "var(--label-fill-foreground-on-dark)";
-
-const STATE_COLORS: Record<StateColorRole, string> = {
-  healthy: "var(--green)",
-  ok: "var(--green)",
-  degraded: "var(--amber)",
-  error: "var(--red)",
-  waiting: "var(--dim)",
-  unidentified: "var(--state-unidentified)",
-  "duplicate-candidate": "var(--amber)",
-  stale: "var(--red)",
-  archived: "var(--muted-foreground)",
-};
 
 function hashName(name: string): number {
   let hash = 0;
@@ -168,7 +179,14 @@ export function categoricalColor(index: number): CategoricalColor {
 
 /** Resolve a state through the three-state semantic palette. */
 export function stateColorVar(state: StateColorRole): string {
-  return STATE_COLORS[state];
+  return VISUAL_TOKEN_ROLE_REGISTRY.state.values[state];
+}
+
+/** Resolve a Dispatch state to a theme-safe foreground token. */
+export function stateTextColorVar(
+  state: StateTextColorRole,
+): string {
+  return VISUAL_TOKEN_ROLE_REGISTRY.state.textValues[state];
 }
 
 /**

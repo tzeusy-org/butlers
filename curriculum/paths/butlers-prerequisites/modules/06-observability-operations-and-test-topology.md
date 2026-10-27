@@ -72,7 +72,6 @@ Operational changes require understanding which logs are authoritative, which en
 - `Dockerfile`
 - `Dockerfile.base`
 - `scripts/compose.sh`
-- `scripts/dev.sh`
 - `scripts/egress-firewall.sh`
 - `docs/operations/`
 

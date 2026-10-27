@@ -29,14 +29,14 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
-from butlers.api.app import create_app
+from butlers.api.app import create_app as create_guarded_app
 from butlers.api.briefing.cache import BriefingCache
 from butlers.api.briefing.classify import classify, headline_for, time_of_day
 from butlers.api.briefing.fallback import elaborate_fallback
 from butlers.api.briefing.lint import voice_lint_passes
 from butlers.api.briefing.prompts import _build_user_message, elaborate_llm
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_butler_configs, get_mcp_manager, get_pricing
+from butlers.api.deps import get_butler_configs, get_db, get_mcp_manager, get_pricing
 from butlers.api.routers.dashboard_briefing import (
     _fetch_approvals_state,
     _fetch_audit_issues,
@@ -44,7 +44,6 @@ from butlers.api.routers.dashboard_briefing import (
     _fetch_dashboard_state,
     _fetch_notifications_state,
     _fetch_qa_state,
-    _get_db_manager,
     _is_missing_relation_error,
     _map_board_rows,
     _owner_local_now,
@@ -53,6 +52,8 @@ from butlers.api.routers.dashboard_briefing import (
     get_dashboard_briefing,
 )
 from butlers.core.model_routing import Complexity
+from tests.api.auth_helpers import _DomainOwnerState
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -162,7 +163,7 @@ def _make_app(pool: AsyncMock, cache: BriefingCache | None = None) -> object:
     mock_db.credential_shared_pool.return_value = pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_butler_configs] = lambda: []
     app.dependency_overrides[get_mcp_manager] = lambda: MagicMock()
     app.dependency_overrides[get_pricing] = lambda: MagicMock()
@@ -1877,7 +1878,7 @@ class TestNonOwnerAccess:
 
 
 class TestUnauthenticated:
-    async def test_401_when_api_key_required_and_missing(self):
+    async def test_401_when_api_key_required_and_missing(self, monkeypatch):
         """ApiKeyMiddleware returns 401 when DASHBOARD_API_KEY is set
         and the request lacks the X-API-Key header."""
         pool = _make_owner_pool()
@@ -1885,15 +1886,19 @@ class TestUnauthenticated:
         mock_db.pool.return_value = pool
 
         # Create app with an explicit API key to enable auth.
-        app = create_app(api_key="test-secret-key")
-        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        monkeypatch.setenv("DASHBOARD_AUTH_ORIGIN", "https://owner.test.invalid")
+        monkeypatch.setenv("DASHBOARD_AUTH_RP_ID", "owner.test.invalid")
+        app = create_guarded_app(api_key="test-secret-key")
+        app.state.owner_auth_service = _DomainOwnerState("test-secret-key")
+        app.dependency_overrides[get_db] = lambda: mock_db
 
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
+            transport=httpx.ASGITransport(app=app), base_url="https://owner.test.invalid"
         ) as client:
             resp = await client.get("/api/dashboard/briefing")  # no X-API-Key header
 
         assert resp.status_code == 401
+        mock_db.pool.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

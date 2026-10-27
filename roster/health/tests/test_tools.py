@@ -863,15 +863,36 @@ async def test_symptom_search_no_matches(pool):
 
 
 async def test_symptom_update_edits_in_place(pool):
-    """symptom_update edits the existing temporal fact in place (same id)."""
+    """symptom_update edits in place and repairs legacy catalog exposure."""
     from butlers.tools.health import symptom_log, symptom_search, symptom_update
 
     sym = await symptom_log(pool, "UpdSym", 4, notes="mild")
+    source_schema = await pool.fetchval("SELECT current_schema()")
+    await pool.execute("UPDATE facts SET sensitivity = 'normal' WHERE id = $1", sym["id"])
+    await pool.execute(
+        "INSERT INTO public.memory_catalog"
+        " (source_schema, source_table, source_id, summary, sensitivity)"
+        " VALUES ($1, 'facts', $2, 'legacy symptom summary', 'normal')",
+        source_schema,
+        sym["id"],
+    )
+
     updated = await symptom_update(pool, str(sym["id"]), severity=8, notes="worse now")
     # Same identity — temporal facts are not superseded.
     assert updated["id"] == sym["id"]
     assert updated["severity"] == 8
     assert updated["notes"] == "worse now"
+
+    sensitivity = await pool.fetchval("SELECT sensitivity FROM facts WHERE id = $1", sym["id"])
+    assert sensitivity == "confidential"
+    catalog_visible = await pool.fetchval(
+        "SELECT count(*) FROM public.memory_catalog"
+        " WHERE source_schema = $1 AND source_table = 'facts' AND source_id = $2"
+        " AND invalid_at IS NULL",
+        source_schema,
+        sym["id"],
+    )
+    assert catalog_visible == 0
 
     # Exactly one active entry remains (no duplicate coexisting symptom).
     matches = [s for s in await symptom_search(pool, name="UpdSym")]
@@ -2031,3 +2052,76 @@ async def test_meal_delete_not_found(pool):
 
     with pytest.raises(ValueError, match="not found"):
         await meal_delete(pool, str(uuid.uuid4()))
+
+
+# ------------------------------------------------------------------
+# Sensitivity classification (bu-2jtfw.3)
+#
+# Diagnosis/treatment facts (condition, symptom, medication, dose log) must
+# be born 'confidential' so storage.py's write-time catalog exclusion
+# (_is_catalog_write_excluded) actually skips them -- omitting `sensitivity`
+# entirely used to default to store_fact's own 'normal', which is NOT
+# excluded. Reproduction: before the fix, every assertion below failed
+# (sensitivity read back as 'normal').
+# ------------------------------------------------------------------
+
+
+async def test_condition_add_is_confidential(pool):
+    from butlers.tools.health import condition_add
+
+    cond = await condition_add(pool, "AorticValveRegurgitation")
+    sensitivity = await pool.fetchval("SELECT sensitivity FROM facts WHERE id = $1", cond["id"])
+    assert sensitivity == "confidential"
+
+
+async def test_condition_update_stays_confidential(pool):
+    from butlers.tools.health import condition_add, condition_update
+
+    cond = await condition_add(pool, "UpdateSensitivityCond")
+    updated = await condition_update(pool, str(cond["id"]), status="managed")
+    sensitivity = await pool.fetchval("SELECT sensitivity FROM facts WHERE id = $1", updated["id"])
+    assert sensitivity == "confidential"
+
+
+async def test_symptom_log_is_confidential(pool):
+    from butlers.tools.health import symptom_log
+
+    symptom = await symptom_log(pool, "Chest pain", severity=7)
+    sensitivity = await pool.fetchval("SELECT sensitivity FROM facts WHERE id = $1", symptom["id"])
+    assert sensitivity == "confidential"
+
+
+async def test_medication_add_is_confidential(pool):
+    from butlers.tools.health import medication_add
+
+    med = await medication_add(pool, "SensitivityMed", "10mg", "daily")
+    sensitivity = await pool.fetchval("SELECT sensitivity FROM facts WHERE id = $1", med["id"])
+    assert sensitivity == "confidential"
+
+
+async def test_medication_update_stays_confidential(pool):
+    from butlers.tools.health import medication_add, medication_update
+
+    med = await medication_add(pool, "SensitivityUpdateMed", "10mg", "daily")
+    updated = await medication_update(pool, str(med["id"]), dosage="20mg")
+    sensitivity = await pool.fetchval("SELECT sensitivity FROM facts WHERE id = $1", updated["id"])
+    assert sensitivity == "confidential"
+
+
+async def test_medication_log_dose_is_confidential(pool):
+    from butlers.tools.health import medication_add, medication_log_dose
+
+    med = await medication_add(pool, "SensitivityDoseMed", "10mg", "daily")
+    dose = await medication_log_dose(pool, str(med["id"]))
+    sensitivity = await pool.fetchval("SELECT sensitivity FROM facts WHERE id = $1", dose["id"])
+    assert sensitivity == "confidential"
+
+
+async def test_measurement_log_stays_normal(pool):
+    """Control case: measurements are deliberately NOT reclassified -- they
+    remain fleet-discoverable trend data at store_fact's 'normal' default."""
+    from butlers.tools.health import measurement_log
+
+    m = await measurement_log(pool, "weight", 70.5)
+    sensitivity = await pool.fetchval("SELECT sensitivity FROM facts WHERE id = $1", m["id"])
+    assert sensitivity == "normal"

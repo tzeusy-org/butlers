@@ -17,12 +17,9 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     """Register all relationship MCP tools as closures over *module*."""
 
     from butlers.core.tool_call_capture import get_current_runtime_session_id
-    from butlers.modules.base import group_enabled
+    from butlers.modules.base import tool_registrar
 
-    def _tool(group: str):
-        if group_enabled(config, group):
-            return mcp.tool()
-        return lambda fn: fn
+    _tool = tool_registrar(mcp, config)
 
     # Import sub-modules (deferred to avoid import-time side effects)
     from butlers.tools.relationship import addresses as _addr
@@ -39,7 +36,9 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     from butlers.tools.relationship import labels as _labels
     from butlers.tools.relationship import life_events as _life
     from butlers.tools.relationship import loans as _loans
+    from butlers.tools.relationship import meeting_debrief as _debrief
     from butlers.tools.relationship import notes as _notes
+    from butlers.tools.relationship import posture as _posture
     from butlers.tools.relationship import relationships as _rels
     from butlers.tools.relationship import resolve as _resolve
     from butlers.tools.relationship import stay_in_touch as _sit
@@ -178,6 +177,109 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         Uses ILIKE for case-insensitive partial matching.
         """
         return await _ci.channel_search(module._get_pool(), value, type=type)
+
+    @_tool("contacts")
+    async def identity_resolve_channels(
+        channel_type: str,
+        channel_values: list[str],
+    ) -> dict[str, Any]:
+        """Resolve exact channel identifiers through eligible active facts.
+
+        This read-only owning-role boundary uses the canonical resolver's
+        normalization and ambiguity rules. Candidate reports never resolve.
+        Returned identities do not authenticate transport or grant authority.
+        """
+        if not channel_type or len(channel_type) > 64 or len(channel_values) > 256:
+            raise ValueError("invalid identity lookup batch")
+        if any(not value or len(value) > 1024 for value in channel_values):
+            raise ValueError("invalid channel identifier")
+        from dataclasses import asdict
+
+        from butlers.identity import resolve_contacts_by_channel_bulk
+
+        pairs = [(channel_type, value) for value in dict.fromkeys(channel_values)]
+        resolved = await resolve_contacts_by_channel_bulk(
+            module._get_pool(), pairs, raise_on_error=True
+        )
+        return {
+            value: asdict(resolved[(channel_type, value)])
+            if resolved[(channel_type, value)] is not None
+            else None
+            for _, value in pairs
+        }
+
+    @_tool("contacts")
+    async def identity_assert_sender_channel(
+        entity_id: uuid.UUID,
+        channel_type: str,
+        channel_value: str,
+    ) -> dict[str, Any]:
+        """Record a temporary sender's canonical channel on the owning role.
+
+        Only a current unidentified entity is eligible. This does not adopt a
+        known person's reported channel or supply verified content authority.
+        Unsupported channels and unavailable writes return recorded=false;
+        callers preserve ingress and its durable temporary-entity reservation.
+        """
+        pool = module._get_pool()
+        async with pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT metadata FROM public.entities WHERE id=$1 FOR KEY SHARE",
+                entity_id,
+            )
+            if (
+                row is None
+                or not (row["metadata"] or {}).get("unidentified")
+                or any((row["metadata"] or {}).get(key) for key in ("deleted_at", "merged_into"))
+            ):
+                return {"recorded": False}
+            from butlers.tools.relationship.relationship_assert_fact import (
+                assert_sender_channel_fact,
+            )
+
+            result = await assert_sender_channel_fact(
+                pool,
+                entity_id,
+                channel_type,
+                channel_value,
+                conn=conn,
+            )
+            return {"recorded": result is not None}
+
+    @_tool("contacts_ingress")
+    async def contacts_report_channel(
+        subject: uuid.UUID,
+        channel_type: str,
+        channel_value: str,
+        primary: bool = False,
+        trace_context: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Report one Contacts channel with target-fixed third-party provenance.
+
+        Candidate and pending_approval are incomplete outcomes. This exposes no
+        trusted source, reporter, confirmation or approved-executor parameter.
+        """
+        from butlers.tools.relationship.contacts_ingress import report_channel
+
+        return await report_channel(
+            module._get_pool(), subject, channel_type, channel_value, primary
+        )
+
+    @_tool("contacts_ingress")
+    async def contacts_resolve_channel(
+        channel_type: str,
+        channel_value: str,
+        request_id: uuid.UUID,
+        trace_context: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Return unique/empty/ambiguous/unavailable for a complete Contacts lookup.
+
+        A request id correlates the response; it is not an authority token.
+        Generic identity resolution keeps its existing normalization and API.
+        """
+        from butlers.tools.relationship.contacts_ingress import resolve_channel
+
+        return await resolve_channel(module._get_pool(), channel_type, channel_value, request_id)
 
     # =================================================================
     # Contact tools (group: contacts)
@@ -615,6 +717,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
 
     @_tool("tracking")
     async def loan_create(
+        currency: str,
         contact_id: uuid.UUID | None = None,
         amount: Decimal | None = None,
         direction: str | None = None,
@@ -622,7 +725,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         lender_contact_id: uuid.UUID | None = None,
         borrower_contact_id: uuid.UUID | None = None,
         amount_cents: int | None = None,
-        currency: str = "USD",
     ) -> dict[str, Any]:
         """Create a loan record with legacy + spec-compatible fields."""
         return await _loans.loan_create(
@@ -919,6 +1021,45 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         )
 
     # =================================================================
+    # Meeting debrief tools (group: tracking)
+    # =================================================================
+    # bu-q7vx1q.12: the owner's answer to the end-of-day "anything agreed?" prompt.
+    # See the `meeting-debrief` skill.
+
+    @_tool("tracking")
+    async def meeting_debrief_pending() -> dict[str, Any]:
+        """List the meeting debriefs the owner was asked about and has not answered.
+
+        Each entry has a ``debrief_id``, the ``number`` shown in the prompt, the meeting
+        title and start, and the people who were there.
+        """
+        return await _debrief.meeting_debrief_pending(module._get_pool())
+
+    @_tool("tracking")
+    async def meeting_debrief_answer(
+        debrief_id: str,
+        commitments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Record the owner's answer to one meeting debrief.
+
+        Omit ``commitments`` (or pass an empty list) when the owner says nothing was
+        agreed. Otherwise pass one item per thing the owner says was agreed:
+        ``{"summary": "Send Sam the deck", "counterparty_entity_id": "<attendee uuid>",
+        "deadline": "2026-10-09", "kind": "promise", "direction": "owner_to_other",
+        "sphere": "work"}``. Only ``summary`` is required; the counterparty must be someone
+        listed on that debrief.
+
+        Returns ``{"status": "captured"|"none_agreed"|"already_answered"|"not_found"|
+        "invalid"}``. Answering twice creates nothing the second time.
+        """
+        return await _debrief.meeting_debrief_answer(
+            module._get_pool(),
+            debrief_id=debrief_id,
+            commitments=commitments,
+            session_id=get_current_runtime_session_id(),
+        )
+
+    # =================================================================
     # vCard tools (group: contacts_extended)
     # =================================================================
 
@@ -1006,7 +1147,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             entity_id,
         )
 
-    @_tool("entity")
+    @_tool("entity_write")
     async def entity_update(
         entity_id: str,
         canonical_name: str | None = None,
@@ -1021,6 +1162,20 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             aliases=aliases,
             metadata=metadata,
         )
+
+    @_tool("entity_write")
+    async def entity_set_posture(entity_id: str, posture: str) -> dict[str, Any]:
+        """Record how the owner wants a person treated: active, memorial, quiet or no_contact.
+
+        Call ONLY when the owner says so ("Sam passed away", "do not contact X",
+        "leave Y alone for now"); never infer it. memorial = has died, quiet =
+        leave alone for now, no_contact = must not be contacted, active = normal.
+        Birthday highlights, gift asks, reconnection nudges and outbound notify()
+        change or stop for any posture other than active. Nothing is deleted:
+        setting active restores everything. Setting the current posture again is a
+        no-op.
+        """
+        return await _posture.entity_set_posture(module._get_pool(), entity_id, posture)
 
     @_tool("entity")
     async def entity_neighbors(
@@ -1049,7 +1204,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         )
 
     # =================================================================
-    # Facts triple-store tools (group: entity — central writer)
+    # Facts triple-store tools (unconditional central writer)
     # =================================================================
 
     # Import the library WRITER FUNCTION directly. Note ``butlers.tools.
@@ -1080,10 +1235,15 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         conf: float = 1.0,
         last_seen: datetime | None = None,
         weight: int | None = None,
-        verified: bool = False,
         primary: bool | None = None,
         evidence: list[dict[str, str]] | None = None,
         approval_action_id: uuid.UUID | None = None,
+        effective_period_id: uuid.UUID | None = None,
+        effective_from: str | None = None,
+        effective_from_precision: str | None = None,
+        effective_to: str | None = None,
+        effective_to_precision: str | None = None,
+        corrects_fact_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
         """Assert a fact triple in relationship.entity_facts (central writer).
 
@@ -1102,7 +1262,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             conf: Confidence in [0.0, 1.0] (default 1.0).
             last_seen: Timestamp of the most recent observation (nullable).
             weight: Relational aggregation weight (nullable).
-            verified: Owner-confirmed flag (default False).
             primary: Primary-of-kind flag for multi-valued contact predicates.
             evidence: Ordered typed references justifying the assertion, each
                 {"type": "fact"|"entity"|"url"|"text", "ref": ..., "note": ...}.
@@ -1111,6 +1270,25 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
                 rejects copied source content.
             approval_action_id: Set only by approval dispatch, which replays the
                 stored tool_args of an approved pending_actions row.
+            effective_period_id: Optional stable non-zero UUID naming a repeated
+                occurrence of the same triple; omit for the default occurrence.
+            effective_from: When the relationship started holding (inclusive).
+                'instant' needs an ISO timestamp with 'Z' or an offset; 'day',
+                'month', 'year' take 'YYYY-MM-DD', 'YYYY-MM', 'YYYY'.
+            effective_from_precision: instant | day | month | year | unbounded
+                (unbounded = explicitly no start; omit both for unknown).
+            effective_to: When it stopped holding (exclusive; a coarse value
+                covers its whole unit). Same forms as effective_from.
+            effective_to_precision: instant | day | month | year | unbounded.
+            corrects_fact_id: Id of the ACTIVE fact version whose effective time
+                this call replaces with the complete packet given here (all
+                omitted = unknown). Omit for an ordinary assertion, which keeps
+                any effective time already stored.
+
+        Effective time is when the relationship held in the world -- never the
+        assertion, observation or confidence time. Until the entity_facts index
+        cutover lands, every effective-time argument is refused with
+        ``temporal_cutover_pending``; omit them all.
 
         Returns:
             Dict with keys: outcome ('inserted' | 'unchanged' | 'superseded' |
@@ -1153,10 +1331,15 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             conf=conf,
             last_seen=last_seen,
             weight=weight,
-            verified=verified,
             primary=primary,
             evidence=evidence,
             approval_action_id=approval_action_id,
+            effective_period_id=effective_period_id,
+            effective_from=effective_from,
+            effective_from_precision=effective_from_precision,
+            effective_to=effective_to,
+            effective_to_precision=effective_to_precision,
+            corrects_fact_id=corrects_fact_id,
         )
         return result.as_dict()
 
@@ -1228,7 +1411,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         """
         return await _predicate_coverage(module._get_pool(), entity_id, predicates)
 
-    @_tool("entity")
+    @_tool("entity_write")
     async def relationship_record_coverage(
         entity_id: uuid.UUID,
         predicate: str,

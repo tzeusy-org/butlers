@@ -11,13 +11,13 @@
  * Design language: Dispatch. No card chrome, no word-badges — state is a
  * {dot, glyph, colour} only. Display weight 500 (never 700). Numerals are
  * tabular. Mirrors SettingsConsolePage / SettingsModelsPage and the shared
- * atoms in components/butler-detail/atoms.tsx.
+ * atoms in components/ui/atoms.tsx.
  *
  * CSS: .attention-row[data-tone="red"] from frontend/src/index.css — the only
  * state-color-on-background pattern, reserved here for the data-wipe danger zone.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ExternalLink, Loader2 } from "lucide-react";
 
@@ -63,20 +63,20 @@ import { cn } from "@/lib/utils";
 // Types
 // ---------------------------------------------------------------------------
 
-interface PermissionCell {
+export interface PermissionCell {
   granted: boolean;
   reason: string | null;
   updated_at: string | null;
   inherited: boolean;
 }
 
-interface PermissionsMatrix {
+export interface PermissionsMatrix {
   butlers: string[];
   permissions: string[];
   cells: Record<string, Record<string, PermissionCell>>;
 }
 
-interface WebhookRow {
+export interface WebhookRow {
   id: string;
   endpoint: string;
   events: string[];
@@ -128,10 +128,12 @@ function Section({
 // ---------------------------------------------------------------------------
 
 async function fetchPermissions(): Promise<PermissionsMatrix> {
-  const resp = await fetch("/api/permissions");
-  if (!resp.ok) throw new Error(`GET /api/permissions failed: ${resp.status}`);
-  const body = await resp.json();
-  return body.data as PermissionsMatrix;
+  try {
+    const body = await apiFetch<{ data: PermissionsMatrix }>("/permissions");
+    return body.data as PermissionsMatrix;
+  } catch (err) {
+    rethrowLegacyHttpError(err, (status) => `GET /api/permissions failed: ${status}`);
+  }
 }
 
 async function putPermission(
@@ -140,34 +142,48 @@ async function putPermission(
   granted: boolean,
   reason: string,
 ): Promise<void> {
-  const resp = await fetch(`/api/permissions/${encodeURIComponent(butler)}/${encodeURIComponent(perm)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ granted, reason }),
-  });
-  if (!resp.ok) {
-    const body = await resp.json().catch(() => ({}));
-    throw new Error(body?.detail?.error ?? `PUT failed: ${resp.status}`);
+  try {
+    await apiFetch<void>(
+      `/permissions/${encodeURIComponent(butler)}/${encodeURIComponent(perm)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ granted, reason }),
+      },
+    );
+  } catch (err) {
+    rethrowLegacyMutationError(err, (status) => `PUT failed: ${status}`);
   }
 }
 
 async function fetchWebhooks(): Promise<WebhookRow[]> {
-  const resp = await fetch("/api/webhooks");
-  if (!resp.ok) throw new Error(`GET /api/webhooks failed: ${resp.status}`);
-  const body = await resp.json();
-  return body.data as WebhookRow[];
+  try {
+    const body = await apiFetch<{ data: WebhookRow[] }>("/webhooks");
+    return body.data as WebhookRow[];
+  } catch (err) {
+    rethrowLegacyHttpError(err, (status) => `GET /api/webhooks failed: ${status}`);
+  }
 }
 
 async function deleteWebhook(id: string): Promise<void> {
-  const resp = await fetch(`/api/webhooks/${id}`, { method: "DELETE" });
-  if (!resp.ok) throw new Error(`DELETE /api/webhooks/${id} failed: ${resp.status}`);
+  try {
+    await apiFetch<void>(`/webhooks/${id}`, { method: "DELETE" });
+  } catch (err) {
+    rethrowLegacyHttpError(err, (status) => `DELETE /api/webhooks/${id} failed: ${status}`);
+  }
 }
 
-async function testWebhook(id: string): Promise<{ ok: boolean; status_code: number | null; latency_ms: number | null }> {
-  const resp = await fetch(`/api/webhooks/${id}/test`, { method: "POST" });
-  if (!resp.ok) throw new Error(`POST /api/webhooks/${id}/test failed: ${resp.status}`);
-  const body = await resp.json();
-  return body.data;
+export type WebhookTestResult = { ok: boolean; status_code: number | null; latency_ms: number | null };
+
+async function testWebhook(id: string): Promise<WebhookTestResult> {
+  try {
+    const body = await apiFetch<{
+      data: WebhookTestResult;
+    }>(`/webhooks/${id}/test`, { method: "POST" });
+    return body.data;
+  } catch (err) {
+    rethrowLegacyHttpError(err, (status) => `POST /api/webhooks/${id}/test failed: ${status}`);
+  }
 }
 
 async function postExport(scope: ExportScope): Promise<{ signed_url: string; expires_at: string }> {
@@ -186,14 +202,16 @@ async function createWebhook(
   events: string[],
 ): Promise<WebhookWithSecret> {
   // The signing secret is generated server-side and returned ONCE here.
-  const resp = await fetch("/api/webhooks", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ endpoint, events }),
-  });
-  if (!resp.ok) throw new Error(`POST /api/webhooks failed: ${resp.status}`);
-  const body = await resp.json();
-  return body.data as WebhookWithSecret;
+  try {
+    const body = await apiFetch<{ data: WebhookWithSecret }>("/webhooks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint, events }),
+    });
+    return body.data as WebhookWithSecret;
+  } catch (err) {
+    rethrowLegacyHttpError(err, (status) => `POST /api/webhooks failed: ${status}`);
+  }
 }
 
 // PUT /api/webhooks/{id} — partial update. Only the supplied fields change.
@@ -211,19 +229,156 @@ async function updateWebhook(
   id: string,
   payload: WebhookUpdatePayload,
 ): Promise<WebhookWithSecret> {
-  const resp = await fetch(`/api/webhooks/${id}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!resp.ok) {
-    const body = await resp.json().catch(() => ({}));
-    throw new Error(
-      body?.detail?.error ?? body?.detail ?? `PUT /api/webhooks/${id} failed: ${resp.status}`,
+  try {
+    const body = await apiFetch<{ data: WebhookWithSecret }>(`/webhooks/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return body.data as WebhookWithSecret;
+  } catch (err) {
+    rethrowLegacyWebhookMutationError(
+      err,
+      (status) => `PUT /api/webhooks/${id} failed: ${status}`,
     );
   }
-  const body = await resp.json();
-  return body.data as WebhookWithSecret;
+}
+
+interface HttpApiError {
+  status: number;
+  detail?: unknown;
+}
+
+const HTTP_STATUS_TEXT: Readonly<Record<number, string>> = {
+  400: "Bad Request",
+  401: "Unauthorized",
+  403: "Forbidden",
+  404: "Not Found",
+  405: "Method Not Allowed",
+  408: "Request Timeout",
+  409: "Conflict",
+  413: "Payload Too Large",
+  415: "Unsupported Media Type",
+  422: "Unprocessable Entity",
+  429: "Too Many Requests",
+  500: "Internal Server Error",
+  501: "Not Implemented",
+  502: "Bad Gateway",
+  503: "Service Unavailable",
+  504: "Gateway Timeout",
+};
+
+function isHttpApiError(error: unknown): error is HttpApiError {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    typeof error.status === "number" &&
+    Number.isFinite(error.status) &&
+    error.status > 0
+  );
+}
+
+function rethrowLegacyHttpError(
+  error: unknown,
+  message: (status: number) => string,
+): never {
+  if (isHttpApiError(error)) throw new Error(message(error.status));
+  throw error;
+}
+
+function rethrowLegacyMutationError(
+  error: unknown,
+  fallback: (status: number) => string,
+): never {
+  if (isHttpApiError(error)) {
+    const detail = error.detail;
+    if (typeof detail === "object" && detail !== null && !Array.isArray(detail)) {
+      const detailError = (detail as { error?: unknown }).error;
+      if (typeof detailError === "string") throw new Error(detailError);
+    }
+    throw new Error(fallback(error.status));
+  }
+  throw error;
+}
+
+function rethrowLegacyWebhookMutationError(
+  error: unknown,
+  fallback: (status: number) => string,
+): never {
+  if (
+    isHttpApiError(error) &&
+    error.detail === undefined &&
+    error instanceof Error &&
+    error.message.trim() &&
+    !isGenericApiErrorMessage(error)
+  ) {
+    throw new Error(error.message);
+  }
+  rethrowLegacyMutationError(error, fallback);
+}
+
+// apiFetch keeps primitive/array detail only in Error.message, but uses the
+// response status text (or a generic fallback) when the body has no usable detail.
+// Do not turn those transport defaults into a page-specific error message.
+function isGenericApiErrorMessage(error: HttpApiError & Error): boolean {
+  const message = error.message.trim();
+  return (
+    message === "Request failed" ||
+    message.startsWith("Request failed:") ||
+    message === "Error" ||
+    message === HTTP_STATUS_TEXT[error.status]
+  );
+}
+
+interface WebhookConfirmDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: string;
+  description: React.ReactNode;
+  confirmLabel: string;
+  pendingLabel: string;
+  pending: boolean;
+  onConfirm: () => void;
+  onCloseAutoFocus?: (event: Event) => void;
+  testId: string;
+}
+
+function WebhookConfirmDialog({
+  open,
+  onOpenChange,
+  title,
+  description,
+  confirmLabel,
+  pendingLabel,
+  pending,
+  onConfirm,
+  onCloseAutoFocus,
+  testId,
+}: WebhookConfirmDialogProps) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent data-testid={testId} onCloseAutoFocus={onCloseAutoFocus}>
+        <DialogHeader>
+          <DialogTitle className="font-medium">{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            data-testid={`${testId}-confirm`}
+            onClick={onConfirm}
+            disabled={pending}
+          >
+            {pending ? pendingLabel : confirmLabel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -380,7 +535,7 @@ function PermissionsMatrixSection({ matrix, onCellFlip }: PermissionsMatrixSecti
                     <button
                       onClick={() => onCellFlip(butler, perm, granted)}
                       className={cn(
-                        "inline-flex h-6 w-6 items-center justify-center rounded-full font-mono text-xs leading-none transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/50",
+                        "inline-flex h-6 w-6 items-center justify-center rounded-full font-mono text-xs leading-none transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
                         inherited
                           ? "opacity-60 hover:opacity-100 hover:bg-muted/40"
                           : granted
@@ -486,7 +641,7 @@ function AuditReelSection() {
 // ---------------------------------------------------------------------------
 
 const EXPORT_SCOPE_LABEL: Record<ExportScope, string> = {
-  all: "all data",
+  all: "all data (supported scopes)",
   memory: "memory",
   audit: "audit log",
   config: "config",
@@ -536,20 +691,27 @@ function DataOpsSection() {
         <div className="flex flex-col gap-1.5">
           <Eyebrow as="p">Export data</Eyebrow>
           <p className="text-xs text-muted-foreground leading-relaxed" data-testid="export-description">
-            Download an AES-256-GCM encrypted export of your data. Decrypt using{" "}
+            Download an AES-256-GCM encrypted export of supported scopes. Decrypt using{" "}
             <span className="font-mono">DASHBOARD_EXPORT_ENCRYPTION_KEY</span>.
           </p>
         </div>
-        <div className="flex gap-2">
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          All data (supported scopes) includes memory facts, rules and episodes from every
+          configured memory butler; per-butler runtime config; the audit log, model catalog
+          and permissions. Other domain records, other brain tables, sessions, schedules
+          and credential stores are excluded. This export is not a full backup or a
+          consistent global snapshot.
+        </p>
+        <div className="flex flex-wrap gap-2">
           <Select
             value={exportScope}
             onValueChange={(v) => setExportScope(v as ExportScope)}
           >
-            <SelectTrigger className="w-36" aria-label="Export scope">
+            <SelectTrigger className="w-full sm:w-72" aria-label="Export scope">
               <SelectValue placeholder="Export scope" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All data</SelectItem>
+              <SelectItem value="all">All data (supported scopes)</SelectItem>
               <SelectItem value="memory">Memory</SelectItem>
               <SelectItem value="audit">Audit log</SelectItem>
               <SelectItem value="config">Config</SelectItem>
@@ -750,6 +912,9 @@ function EditWebhookModal({ webhook, onClose, onSaved }: EditWebhookModalProps) 
   const [backoffSeconds, setBackoffSeconds] = useState("2");
   const [submitting, setSubmitting] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  const [regenerateConfirmOpen, setRegenerateConfirmOpen] = useState(false);
+  const regenerateTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const editDialogContentRef = useRef<HTMLDivElement | null>(null);
   // One-time plaintext secret from a regenerate. While set, the modal shows the
   // reveal view instead of the form — it is never recoverable afterwards.
   const [revealedSecret, setRevealedSecret] = useState<string | null>(null);
@@ -795,7 +960,7 @@ function EditWebhookModal({ webhook, onClose, onSaved }: EditWebhookModalProps) 
     }
   }
 
-  async function handleRegenerate() {
+  async function handleRegenerateConfirmed() {
     if (!webhook) return;
     setRegenerating(true);
     try {
@@ -809,7 +974,18 @@ function EditWebhookModal({ webhook, onClose, onSaved }: EditWebhookModalProps) 
       toast.error(`Regenerate failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setRegenerating(false);
+      setRegenerateConfirmOpen(false);
     }
+  }
+
+  function restoreRegenerateTriggerFocus(event: Event) {
+    const trigger = regenerateTriggerRef.current;
+    regenerateTriggerRef.current = null;
+    const focusTarget =
+      trigger && document.contains(trigger) ? trigger : editDialogContentRef.current;
+    if (!focusTarget || !document.contains(focusTarget)) return;
+    event.preventDefault();
+    focusTarget.focus();
   }
 
   async function handleCopy() {
@@ -827,7 +1003,7 @@ function EditWebhookModal({ webhook, onClose, onSaved }: EditWebhookModalProps) 
 
   return (
     <Dialog open={webhook !== null} onOpenChange={onClose}>
-      <DialogContent>
+      <DialogContent ref={editDialogContentRef}>
         {revealedSecret ? (
           <>
             <DialogHeader>
@@ -928,7 +1104,10 @@ function EditWebhookModal({ webhook, onClose, onSaved }: EditWebhookModalProps) 
                   size="sm"
                   data-testid="webhook-regenerate-secret"
                   disabled={regenerating || submitting}
-                  onClick={handleRegenerate}
+                  onClick={(event) => {
+                    regenerateTriggerRef.current = event.currentTarget;
+                    setRegenerateConfirmOpen(true);
+                  }}
                 >
                   {regenerating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                   Regenerate secret
@@ -951,6 +1130,25 @@ function EditWebhookModal({ webhook, onClose, onSaved }: EditWebhookModalProps) 
           </>
         )}
       </DialogContent>
+      <WebhookConfirmDialog
+        open={regenerateConfirmOpen && webhook !== null}
+        onOpenChange={(open) => {
+          if (!open && !regenerating) setRegenerateConfirmOpen(false);
+        }}
+        title="Regenerate signing secret?"
+        description={
+          <>
+            The current signing secret for <span className="font-mono">{webhook?.endpoint}</span>{" "}
+            stops working immediately. The new secret is shown once.
+          </>
+        }
+        confirmLabel="Regenerate secret"
+        pendingLabel="Regenerating…"
+        pending={regenerating}
+        onConfirm={() => void handleRegenerateConfirmed()}
+        onCloseAutoFocus={restoreRegenerateTriggerFocus}
+        testId="webhook-regenerate-confirm-dialog"
+      />
     </Dialog>
   );
 }
@@ -964,6 +1162,24 @@ function WebhooksSection() {
   const [testingId, setTestingId] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<WebhookRow | null>(null);
+  const deleteTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const webhooksRegionRef = useRef<HTMLDivElement | null>(null);
+
+  function requestDelete(webhook: WebhookRow, trigger: HTMLButtonElement) {
+    deleteTriggerRef.current = trigger;
+    setPendingDelete(webhook);
+  }
+
+  function restoreDeleteTriggerFocus(event: Event) {
+    const trigger = deleteTriggerRef.current;
+    deleteTriggerRef.current = null;
+    const focusTarget =
+      trigger && document.contains(trigger) ? trigger : webhooksRegionRef.current;
+    if (!focusTarget || !document.contains(focusTarget)) return;
+    event.preventDefault();
+    focusTarget.focus();
+  }
 
   async function reload() {
     try {
@@ -1040,7 +1256,9 @@ function WebhooksSection() {
     }
   }
 
-  async function handleDelete(id: string) {
+  async function handleDeleteConfirmed() {
+    if (!pendingDelete) return;
+    const { id } = pendingDelete;
     setDeletingId(id);
     try {
       await deleteWebhook(id);
@@ -1050,11 +1268,18 @@ function WebhooksSection() {
       toast.error(`Delete failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setDeletingId(null);
+      setPendingDelete(null);
     }
   }
 
   return (
-    <div className="flex flex-col gap-3">
+    <div
+      ref={webhooksRegionRef}
+      role="region"
+      aria-label="Webhooks"
+      tabIndex={-1}
+      className="flex flex-col gap-3 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+    >
       <div className="flex justify-end">
         <InlineActionLink
           onClick={() => setAddOpen(true)}
@@ -1208,7 +1433,7 @@ function WebhooksSection() {
                         {testingId === wh.id ? "Testing…" : "Test →"}
                       </InlineActionLink>
                       <InlineActionLink
-                        onClick={() => handleDelete(wh.id)}
+                        onClick={(event) => requestDelete(wh, event.currentTarget)}
                         disabled={deletingId === wh.id}
                         title="Delete webhook"
                         data-testid={`webhook-delete-${wh.id}`}
@@ -1236,6 +1461,28 @@ function WebhooksSection() {
         onClose={() => setEditing(null)}
         onSaved={reload}
       />
+
+      {pendingDelete && (
+        <WebhookConfirmDialog
+          open
+          onOpenChange={(open) => {
+            if (!open && !deletingId) setPendingDelete(null);
+          }}
+          title="Delete webhook?"
+          description={
+            <>
+              Delete <span className="font-mono">{pendingDelete.endpoint}</span>? This action
+              cannot be undone.
+            </>
+          }
+          confirmLabel="Delete webhook"
+          pendingLabel="Deleting…"
+          pending={deletingId === pendingDelete.id}
+          onConfirm={() => void handleDeleteConfirmed()}
+          onCloseAutoFocus={restoreDeleteTriggerFocus}
+          testId="webhook-delete-confirm-dialog"
+        />
+      )}
     </div>
   );
 }

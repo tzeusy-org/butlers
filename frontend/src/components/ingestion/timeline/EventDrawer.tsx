@@ -30,9 +30,9 @@ import { Check, Copy, Download, Loader2, RotateCw, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Time } from '@/components/ui/time'
-import { categoricalFillForeground, categoricalHueVar } from '@/lib/visual-token-roles'
+import { categoricalFillForeground, categoricalHueVar, stateTextColorVar } from '@/lib/visual-token-roles'
 import {
-  useIngestionEventLineage,
+  useIngestionEventSessions,
   useIngestionEventReplays,
   useIngestionEventPayload,
   useIngestionEventDetail,
@@ -151,7 +151,7 @@ function CopyButton({ value, label }: { value: string; label?: string }) {
       >
         <span className="truncate max-w-[160px]">{label ?? value}</span>
         {copied ? (
-          <Check className="size-3 text-[var(--green,theme(colors.emerald.500))] shrink-0" />
+          <Check className="size-3 text-[var(--green)] shrink-0" />
         ) : (
           <Copy className="size-3 shrink-0" />
         )}
@@ -190,7 +190,7 @@ function DrawerSessionsTab({
   event: IngestionEventSummary
   decompositionOutput: Record<string, unknown> | null
 }) {
-  const { sessions } = useIngestionEventLineage(requestId, { enabled: true })
+  const sessions = useIngestionEventSessions(requestId, { enabled: true })
   const sessionList = sessions.data?.data ?? []
 
   if (sessions.isLoading) {
@@ -430,7 +430,7 @@ function DrawerRawTab({
       <div className="flex items-center gap-3 font-mono text-[11px] text-muted-foreground">
         {payload.channel && <span>{payload.channel}</span>}
         <span>{payload.bytes.toLocaleString()} bytes</span>
-        {payload.truncated && <span className="text-[var(--amber,theme(colors.amber.500))]">truncated</span>}
+        {payload.truncated && <span style={{ color: stateTextColorVar('degraded') }}>truncated</span>}
         <button
           type="button"
           className="ml-auto hover:text-foreground transition-colors flex items-center gap-1"
@@ -627,7 +627,7 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
   const { data: detailData } = useIngestionEventDetail(event.id, { enabled: true })
   const detail = detailData?.data ?? null
 
-  const { sessions } = useIngestionEventLineage(event.id, { enabled: true })
+  const sessions = useIngestionEventSessions(event.id, { enabled: true })
   const sessionList = sessions.data?.data ?? []
   // Stable primitive: true once session data has loaded (avoids a new [] reference on each render
   // during the loading state, which would cause the scroll effect to fire on every render).
@@ -691,7 +691,7 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
       {/* Focus lands here on open (tabIndex=-1: programmatically focusable,
           not a Tab stop); visually hidden since StatusBadge + timestamp
           already carry the same information for sighted users. */}
-      <h2 ref={headingRef} tabIndex={-1} className="sr-only focus:outline-none">
+      <h2 ref={headingRef} tabIndex={-1} className="sr-only">
         Event detail: {event.source_channel ?? 'unknown channel'}, {event.status}
       </h2>
       {/* Polite live-region announcement — screen-reader users hear the
@@ -785,10 +785,10 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
             <KVRow label="tier" value={event.policy_tier ?? event.ingestion_tier ?? '—'} />
             <KVRow label="sender" value={event.source_sender_identity ?? '—'} />
             {event.filter_reason && (
-              <KVRow label="filtered" value={<span className="text-[var(--amber,theme(colors.amber.600))]">{event.filter_reason}</span>} />
+              <KVRow label="filtered" value={<span style={{ color: stateTextColorVar('degraded') }}>{event.filter_reason}</span>} />
             )}
             {event.error_detail && (
-              <KVRow label="error" value={<span className="text-[var(--red,theme(colors.red.600))]">{event.error_detail}</span>} />
+              <KVRow label="error" value={<span style={{ color: stateTextColorVar('error') }}>{event.error_detail}</span>} />
             )}
             {detail?.lifecycle_state && (
               <KVRow label="lifecycle" value={detail.lifecycle_state} />

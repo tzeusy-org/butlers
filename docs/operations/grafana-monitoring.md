@@ -2,32 +2,56 @@
 
 > **Purpose:** Document the observability stack: OpenTelemetry instrumentation, trace propagation, span architecture, and Grafana integration.
 > **Audience:** Operators monitoring Butlers in production, developers debugging performance issues.
-> **Prerequisites:** [Docker Deployment](docker-deployment.md), [Environment Config](environment-config.md).
+> **Prerequisites:** [Kubernetes Deployment](kubernetes-deployment.md) for live dev; [Docker Deployment](docker-deployment.md) for legacy/local Compose.
 
 ## Overview
 
-Butlers uses OpenTelemetry (OTel) for distributed tracing and metrics, with a Grafana LGTM stack (Loki, Grafana, Tempo, Mimir) as the observability backend. When `OTEL_EXPORTER_OTLP_ENDPOINT` is configured, all butler daemons and the dashboard API emit traces via OTLP HTTP to a Grafana Alloy collector (port 4318), which forwards them to Grafana Tempo. When unset, telemetry falls back to no-op providers with zero overhead.
+Butlers uses OpenTelemetry (OTel) for distributed tracing and metrics, with Tempo, Prometheus and Grafana as the observability backend. When `OTEL_EXPORTER_OTLP_ENDPOINT` is configured, all butler daemons and the dashboard API emit traces and metrics via OTLP HTTP to an OpenTelemetry Collector (`otel-collector`, port 4318), which forwards traces to Grafana Tempo and metrics to Prometheus via `remote_write`. When unset, telemetry falls back to no-op providers with zero overhead.
 
-## Local Development Observability Stack
+## Current Dev Observability (Kubernetes)
 
-For local development, a self-contained observability stack is provided via `docker-compose.observability.yml`. This stack includes all components needed to collect and visualize telemetry without external dependencies.
+The live `butlers-dev` release sends OTLP HTTP to the cluster's existing LGTM
+stack; the Butlers chart does not install Grafana, Tempo, Prometheus or a
+collector. `commonEnv.OTEL_EXPORTER_OTLP_ENDPOINT` is applied to the API, daemon
+and connectors. `scripts/k8s/site-helm-args.sh` supplies its site-specific value
+from `BUTLERS_OTLP_ENDPOINT`; the checked-in `http://otel.invalid:4318` is a
+placeholder, not a usable collector.
+
+Use the site's existing Grafana endpoint and access policy. Compose's
+The Compose `--observability` flag and its local Grafana settings do not configure the cluster LGTM
+stack. See [Kubernetes Deployment](kubernetes-deployment.md#deploy) for the
+committed-image workflow and site configuration. This source description does
+not attest live collector reachability or dashboard provisioning.
+
+## Legacy/Local Compose Observability Stack
+
+For an isolated Compose deployment against a non-live database,
+`docker-compose.observability.yml` provides a self-contained observability stack.
+The commands in this section are Compose procedures, not the k3s dev workflow.
+Do not start a second Compose fleet against a database owned by Kubernetes or
+use direct Compose to bypass the launcher's ownership guard.
 
 ### Starting the Stack
 
-Use `scripts/compose.sh` with the `--observability` flag:
+`scripts/compose.sh --observability` includes `docker-compose.observability.yml`
+and enables the `observability` profile, selecting the collector, Tempo,
+Prometheus and Grafana alongside the launcher's other selected services. Without
+the flag, the launcher omits that fragment. Restore-drill selection, hotreload
+and deployment posture retain their existing behavior.
+
+The launcher still sets `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`;
+container-local loopback does not address the separate collector container, and
+the dashboard API currently does not receive that variable from the base file.
+Service selection alone does not establish end-to-end telemetry delivery.
+
+To start the isolated stack with those services, include both files explicitly. Replace
+`/path/to/non-live.env` with its environment configuration (including
+`POSTGRES_HOST` and `POSTGRES_PASSWORD` for the non-live database). Use the same
+project, environment file, Compose files and profiles when stopping it:
 
 ```bash
-./scripts/compose.sh --observability
-```
-
-This enables the `observability` profile in Docker Compose, which automatically:
-- Sets `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`
-- Starts all observability services (otel-collector, Tempo, Prometheus, Grafana)
-
-Alternatively, start the stack directly with Docker Compose:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.observability.yml \
+docker compose --env-file /path/to/non-live.env -p butlers-local \
+  -f docker-compose.yml -f docker-compose.observability.yml \
   --profile observability up -d
 ```
 
@@ -35,7 +59,8 @@ If using direct Docker Compose, set the OTLP endpoint environment variable:
 
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 \
-  docker compose -f docker-compose.yml -f docker-compose.observability.yml \
+  docker compose --env-file /path/to/non-live.env -p butlers-local \
+  -f docker-compose.yml -f docker-compose.observability.yml \
   --profile observability up -d
 ```
 
@@ -108,13 +133,23 @@ The local stack is configured by:
 
 ### Stopping the Stack
 
-```bash
-./scripts/compose.sh --observability
-# Then: docker compose down
+For the direct-start examples above, stop the same isolated project with the
+same environment configuration and the `observability` profile:
 
-# Or directly:
-docker compose -f docker-compose.yml -f docker-compose.observability.yml down
+```bash
+docker compose --env-file /path/to/non-live.env -p butlers-local \
+  -f docker-compose.yml -f docker-compose.observability.yml \
+  --profile observability down
 ```
+
+For a stack started by `scripts/compose.sh`, match that launcher's actual
+configuration instead: dev uses project `butlers-dev` and `.env.dev`, production
+uses `butlers` and `.env.prod`; both enable `dev`, and selected flags add profiles
+such as `hotreload`, `audio` and `observability`. Include the protected
+`docker-compose.restore-drill.yml` fragment if that launch selected it. The
+launcher exports its environment inside its own process, so the parent shell
+still needs the explicit matching `--env-file`. These are isolated/off-cluster
+Compose procedures; they do not stop the k3s dev release.
 
 ## Telemetry Initialization
 
@@ -175,65 +210,22 @@ When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, the dashboard API automatically instr
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | -- | OTLP HTTP endpoint (e.g., `http://alloy:4318`). When unset, all telemetry is no-op. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | -- | OTLP HTTP endpoint (e.g., `http://otel-collector:4318`). When unset, all telemetry is no-op. |
 
 In Docker Compose, butler services use:
 ```yaml
-OTEL_EXPORTER_OTLP_ENDPOINT: http://otel.parrot-hen.ts.net:4318
+OTEL_EXPORTER_OTLP_ENDPOINT: http://otel.example.ts.net:4318
 ```
 
-## Dashboard API Prometheus Metrics
+## Dashboard API Metrics
 
-Several dashboard API endpoints expose `prometheus_client` counters (text format, scraped by
-the Prometheus scrape job that already collects connector health endpoints). These cover error
-paths that historically went undetected for extended periods.
+The dashboard API exports no Prometheus metrics. It mounts no Prometheus
+`/metrics` route and has no scrape job in `observability/prometheus/prometheus.yml`;
+connector processes are the ones that serve `prometheus_client` text for scraping.
+Its telemetry reaches Grafana only through OTLP, via `OTEL_EXPORTER_OTLP_ENDPOINT`
+above.
 
-### `ingestion_bulk_replay_errors_total`
-
-**Source:** `src/butlers/api/routers/ingestion_events.py`
-**Type:** Counter
-**Labels:** `code` (HTTP status code string, e.g. `"503"`)
-
-Incremented on every 5xx response from `POST /api/ingestion/events/replay/bulk`. All four
-error paths in the handler are instrumented:
-
-1. Shared database pool unavailable (pool key lookup fails → HTTP 503)
-2. Phase 1 row-lock failure (FOR UPDATE SKIP LOCKED query exception → HTTP 503)
-3. Phase 3 UPDATE failure (replay_pending marking exception → HTTP 503)
-4. Catch-all unexpected exception (any other unhandled error → HTTP 503)
-
-**Why this counter exists:** In 2026-05-20 a structural SQL incompatibility (FOR UPDATE +
-LEFT JOIN) caused every call to this endpoint to return 503. Without a counter, the failure
-was undetected for an entire production day. The counter enables Prometheus alerts and
-Grafana dashboards that surface these failures within minutes.
-
-**Recommended alert rule (Prometheus alerting):**
-
-```yaml
-- alert: BulkReplay503sElevated
-  expr: increase(ingestion_bulk_replay_errors_total{code="503"}[5m]) > 2
-  for: 2m
-  labels:
-    severity: warning
-  annotations:
-    summary: "bulk_replay endpoint returning 503s"
-    description: >
-      POST /api/ingestion/events/replay/bulk has returned
-      {{ $value | printf "%.0f" }} HTTP 503 responses in the last 5 minutes.
-      Check server logs for DB connectivity or SQL errors.
-```
-
-**Grafana PromQL examples:**
-
-```promql
-# Total 503s in the last hour
-increase(ingestion_bulk_replay_errors_total{code="503"}[1h])
-
-# Rate of 503s over 5-minute windows
-rate(ingestion_bulk_replay_errors_total{code="503"}[5m])
-```
-
-### Durable domain-event delivery failures
+## Durable Domain-Event Delivery Failures
 
 `butlers.domain_event.delivery_failed_permanent_total` is an OTel counter for a
 newly durable `failed_permanent` domain-event delivery. It has only

@@ -1,0 +1,24 @@
+# Rendered by the nginx image's envsubst entrypoint (BASE_PATH has slashes on
+# both ends). The host's `tailscale serve` forwards /<prefix> unchanged.
+server {
+    listen 8080;
+    # Relative Location headers: the public host/port belong to tailscale serve.
+    absolute_redirect off;
+    root /usr/share/nginx/html;
+
+    location = /healthz { access_log off; return 200 "ok\n"; }
+
+    # Bare base path without trailing slash -> canonical form.
+    location = ${BASE_PATH_NOSLASH} { return 301 ${BASE_PATH}$is_args$args; }
+
+    location ${BASE_PATH}assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files $uri =404;
+    }
+
+    # SPA fallback: client-side routes resolve to index.html.
+    location ${BASE_PATH} {
+        add_header Cache-Control "no-cache";
+        try_files $uri $uri/ ${BASE_PATH}index.html;
+    }
+}

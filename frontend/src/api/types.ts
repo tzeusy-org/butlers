@@ -50,7 +50,21 @@ export interface PaginatedResponse<T> {
 }
 
 /**
- * Keyset (cursor) pagination metadata for the cross-butler session list.
+ * The one cursor-paginated list envelope (`Page[T]` in `src/butlers/api/pagination.py`).
+ * `next_cursor` is opaque and null on the last page: "is there more" is
+ * `next_cursor !== null`. `sources_degraded` names fan-out sources that failed
+ * for this page (absent when every source answered).
+ */
+export interface CursorPage<T> {
+  items: T[];
+  next_cursor: string | null;
+  limit: number;
+  sources_degraded?: string[] | null;
+}
+
+/**
+ * Keyset (cursor) pagination metadata for the cross-butler session list, the
+ * one cursor list still off {@link CursorPage} (it retires at the RFC 0038 D19 switch).
  * Drops the expensive `count(*)` total in favour of an opaque forward cursor.
  * `next_cursor` is base64url-encoded and opaque to the client; pass it back as
  * the `cursor` query param to fetch the next (older) page.
@@ -230,6 +244,7 @@ export interface SessionSummary {
   cancelled_by_owner: boolean;
   model?: string | null;
   complexity?: string | null;
+  purpose_lane?: "standard" | "private_content" | null;
   /**
    * Best-effort per-session USD cost, estimated server-side from model +
    * token counts (bu-ptaub — sessions pinning + dollar column). Optional so
@@ -261,6 +276,9 @@ export interface SessionDetail {
   parent_session_id: string | null;
   complexity?: string | null;
   resolution_source?: string | null;
+  purpose_lane?: "standard" | "private_content" | null;
+  /** Durable, prompt-free explanation of the model selected for this attempt. */
+  resolution_receipt?: ModelResolutionReceipt | null;
   /** The dashboard chat message this session was invoked from, if any. */
   linked_message?: {
     conversation_id: string;
@@ -275,6 +293,51 @@ export interface SessionDetail {
     created_at?: string | null;
     expires_at?: string | null;
   } | null;
+}
+
+export interface ModelResolutionCandidate {
+  catalog_entry_id: string;
+  runtime_type: string;
+  model_id: string;
+  effective_tier: string;
+  outcome: string;
+  exclusion?: string | null;
+}
+
+export interface ModelResolutionReceipt {
+  policy_version?: string;
+  winner?: {
+    catalog_entry_id: string;
+    runtime_type: string;
+    model_id: string;
+    effective_tier: string | null;
+    reason: string | null;
+  } | null;
+  candidates?: ModelResolutionCandidate[];
+  attempt_index?: number;
+  failover?: {
+    from_attempt_index: number;
+    failure_class: string;
+  };
+  truncated?: boolean;
+  candidate_count?: number;
+}
+
+export interface PromptProvenanceEntry {
+  source: string;
+  status: "present" | "shadowed" | "unavailable";
+  bytes: number;
+  sha: string | null;
+}
+
+export interface SessionPromptReceipt {
+  id: string;
+  butler: string;
+  status: "captured" | "legacy_unavailable" | "corrupt";
+  effective_prompt: string | null;
+  prompt_digest: string | null;
+  prompt_provenance: PromptProvenanceEntry[];
+  total_bytes: number | null;
 }
 
 /** One per-butler count bucket in a session aggregate, sorted by count desc. */
@@ -344,12 +407,17 @@ export interface NotificationSummary {
   session_id: string | null;
   trace_id: string | null;
   created_at: string;
+  approval_review?: { action_id: string; butler: "messenger" } | null;
+  approval_review_state?: "available" | "none" | "unavailable";
 }
 
 /** Health-check response. */
 /** Security-posture booleans from GET /api/health. Values are NEVER secret material. */
 export interface HealthAuthPosture {
-  /** True when ApiKeyMiddleware is active (DASHBOARD_API_KEY is configured). */
+  /** Missing legacy fields are treated as unavailable, never as verified protection. */
+  owner_auth_enabled?: boolean;
+  owner_auth_available?: boolean;
+  /** True when configured-key automation mode is selected. */
   api_key_auth_enabled: boolean;
   /** True when DASHBOARD_EXPORT_SECRET is absent (export signer uses insecure fallback or refuses). */
   export_secret_insecure_default: boolean;
@@ -477,6 +545,8 @@ export interface AttentionSourceSummary {
    * a benign hold that resolves on its own.
    */
   failed: number;
+  /** Candidates that expired before ever being delivered. */
+  expired_unseen: number;
   total: number;
   suppressed_never_delivered: boolean;
 }
@@ -688,10 +758,78 @@ export interface TimelineResponse {
 /** Query parameters for the timeline endpoint. */
 export interface TimelineParams {
   limit?: number;
+  /** Resolve this persisted identifier independently of head-page pagination. */
+  event?: string;
   butler?: string[];
   event_type?: string[];
   before?: string;
   /** Filter sessions and trace-attributed notifications by OpenTelemetry trace ID. */
+  trace?: string;
+  /** Inclusive UTC minute bound; must be paired with until. */
+  since?: string;
+  /** Exclusive UTC minute bound; must be paired with since. */
+  until?: string;
+}
+
+export interface TimelineHistogramBucket {
+  start: string;
+  end: string;
+  count: number;
+}
+
+export interface TimelineHistogramMeta {
+  since: string;
+  until: string;
+  bucket_seconds: 60;
+  availability: "complete" | "partial" | "unavailable";
+  expected_sources: number;
+  healthy_sources: number;
+  degraded_sources: string[];
+  degraded_butlers: string[];
+}
+
+export interface TimelineHistogramResponse {
+  data: TimelineHistogramBucket[];
+  meta: TimelineHistogramMeta;
+}
+
+export interface TimelineHistogramParams {
+  since: string;
+  until: string;
+  butler?: string[];
+  event_type?: string[];
+  trace?: string;
+}
+
+/** A content-blind recent record currently marked failed. */
+export interface TimelineAttentionItem {
+  id: string;
+  kind: "session" | "notification";
+  butler: string;
+  timestamp: string;
+}
+
+export interface TimelineAttentionMeta {
+  since: string;
+  until: string;
+  failed_sessions: number;
+  failed_notifications: number;
+  total: number;
+  has_more: boolean;
+  availability: "complete" | "partial" | "unavailable";
+  expected_sources: number;
+  healthy_sources: number;
+  degraded_sources: string[];
+  degraded_butlers: string[];
+}
+
+export interface TimelineAttentionResponse {
+  data: TimelineAttentionItem[];
+  meta: TimelineAttentionMeta;
+}
+
+export interface TimelineAttentionParams {
+  butler?: string[];
   trace?: string;
 }
 
@@ -721,6 +859,10 @@ export interface SpendDivergence {
 /** Aggregate spend summary across all butlers. */
 export interface SpendSummary {
   total_cost_usd: number;
+  /** Priced subtotal from attempts with parseable provider usage. */
+  measured_usd?: number;
+  /** Invoked attempts whose provider usage could not be parsed. */
+  unmeasurable_attempts?: number;
   total_sessions: number;
   /** Uncached input tokens only -- see `total_cached_input_tokens`. */
   total_input_tokens: number;
@@ -791,6 +933,7 @@ export interface TopSession {
   output_tokens: number;
   model: string;
   started_at: string;
+  purpose_lane?: "standard" | "private_content" | null;
 }
 
 /**
@@ -871,7 +1014,8 @@ export interface ScheduleCostsResponse {
  * A single failover/quota-skip provenance row. `outcome` is one of
  * `quota_skip` (candidate skipped before invocation -- either a routine
  * same-tier token-quota failover, or a monthly spend-ceiling hard block;
- * distinguish via `failure_reason`), `runtime_failure`, `suppressed`,
+ * distinguish via `failure_reason`), `runtime_failure`, `allowance_exhausted`
+ * (provider plan usage-limit; the breaker ignores it), `suppressed`,
  * `exhausted`, or `success`.
  */
 export interface DispatchAttemptEntry {
@@ -886,6 +1030,7 @@ export interface DispatchAttemptEntry {
   /** Null for pre-session denials (e.g. a ceiling quota_skip before any session row exists). */
   session_id: string | null;
   logical_session_id: string | null;
+  resolution_receipt?: ModelResolutionReceipt | null;
 }
 
 /** Identifies one logical dispatch cycle by either or both session selectors. */
@@ -995,6 +1140,29 @@ export interface ScheduleUpdate {
   job_args?: ScheduleJobArgs | null;
   complexity?: string | null;
   enabled?: boolean;
+}
+
+/** Explicit desired state sent to the idempotent schedule-toggle action. */
+export interface ScheduleToggleRequest {
+  enabled: boolean;
+}
+
+/** Server-observed receipt returned by a successful schedule toggle. */
+export interface ScheduleToggleResult {
+  id: string;
+  name: string;
+  source: string;
+  status: "updated" | "unchanged";
+  outcome: "applied" | "already_requested";
+  requested_enabled: boolean;
+  observed_enabled: boolean;
+  changed: boolean;
+  next_run_at: string | null;
+  audit: {
+    action: "schedule.toggle";
+    result: "success";
+    target: string;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1155,36 +1323,6 @@ export interface CalendarAuditParams {
   butler?: string;
 }
 
-/**
- * Audit action types that have a reconstructable inverse mutation and can be
- * reversed via POST /api/calendar/workspace/undo/{action_id}. Mirrors the
- * backend ``_UNDO_INVERSE_TOOL`` map in
- * ``api/routers/calendar_workspace.py`` — user-lane create/update/delete only.
- */
-export const CALENDAR_UNDOABLE_ACTION_TYPES: ReadonlySet<string> = new Set([
-  "workspace_user_create",
-  "workspace_user_update",
-  "workspace_user_delete",
-]);
-
-/**
- * Response payload for POST /api/calendar/workspace/undo/{action_id}.
- *
- * The endpoint synthesizes and dispatches the inverse mutation server-side
- * with a freshly generated ``request_id`` (``undo-<uuid>``) — the client sends
- * no body and does not supply the request_id; it is returned here so the UI can
- * surface/audit the reversal. ``undone`` is ``true`` only when the inverse
- * dispatch succeeded and the original action was marked undone.
- */
-export interface CalendarUndoResponse {
-  action_id: string;
-  action_type: string;
-  inverse_tool: string;
-  request_id: string;
-  undone: boolean;
-  result: Record<string, unknown>;
-}
-
 /** Source-level freshness metadata for workspace rendering. */
 export interface CalendarWorkspaceSourceFreshness {
   source_id: string;
@@ -1268,65 +1406,6 @@ export interface CalendarWorkspaceReadResponse {
   entries_source_available?: boolean;
 }
 
-/** Cross-source dedup match strategy. Mirrors the backend `match_strategy` enum. */
-export type CalendarDedupMatchStrategy = "exact" | "balanced" | "aggressive";
-
-/**
- * The active cross-source dedup rules (workspace-global).
- *
- * `match_strategy` selects which collapse passes run; `noisy_threshold` is the
- * minimum cluster size for a cluster to be surfaced on the review panel.
- */
-export interface CalendarDedupRulesModel {
-  match_strategy: CalendarDedupMatchStrategy;
-  noisy_threshold: number;
-}
-
-/** PATCH body for the dedup rules; omitted fields are left unchanged. */
-export interface CalendarDedupRulesUpdateRequest {
-  match_strategy?: CalendarDedupMatchStrategy;
-  noisy_threshold?: number;
-}
-
-/**
- * One collapsed cross-source duplicate cluster surfaced for review.
- *
- * `kept_entry` is the survivor the read keeps; `duplicate_entries` are the
- * copies the dedup collapses away. When `keep_separate` is true the user has
- * pinned this cluster so the read does NOT collapse it.
- */
-export interface CalendarDuplicateCluster {
-  cluster_key: string;
-  match_pass: "origin_ref" | "title";
-  member_count: number;
-  keep_separate: boolean;
-  kept_entry: UnifiedCalendarEntry;
-  duplicate_entries: UnifiedCalendarEntry[];
-}
-
-/**
- * Response payload for GET /api/calendar/workspace/duplicates.
- *
- * `available` is `false` only when the underlying read could not run; an empty
- * `clusters` list with `available=true` genuinely means no duplicates were
- * collapsed in the window.
- */
-export interface CalendarDuplicatesResponse {
-  clusters: CalendarDuplicateCluster[];
-  rules: CalendarDedupRulesModel;
-  available: boolean;
-}
-
-/** Query params for GET /api/calendar/workspace/duplicates. */
-export interface CalendarDuplicatesParams {
-  view: "user" | "butler";
-  start: string;
-  end: string;
-  timezone?: string;
-  butlers?: string[];
-  sources?: string[];
-}
-
 // ---------------------------------------------------------------------------
 // Conflict & overcommitment radar — GET /api/calendar/workspace/conflicts
 // ---------------------------------------------------------------------------
@@ -1378,18 +1457,50 @@ export interface ConflictScanParams {
   overloaded_day_hours?: number;
 }
 
-/** Body to pin/unpin a duplicate cluster as keep-separate. */
-export interface CalendarKeepSeparateRequest {
-  cluster_key: string;
-  keep_separate: boolean;
-  match_pass?: "origin_ref" | "title";
-  label?: string;
+export interface CalendarInvitationEntry {
+  entry_id: string;
+  title: string;
+  start_at: string;
+  end_at: string;
+  timezone: string;
+  organizer: string | null;
+  organizer_source: "event" | "attendee" | "unknown";
+  butler_name: string | null;
+  conflict_issues: ConflictIssue[];
+  response_configured?: boolean;
 }
 
-/** Result of a keep-separate toggle. */
-export interface CalendarKeepSeparateResponse {
-  cluster_key: string;
-  keep_separate: boolean;
+export interface CalendarResponseRequest {
+  entry_id: string;
+  request_id: string;
+  response_status: "accepted" | "declined" | "tentative";
+  send_updates: "none" | "all" | "externalOnly";
+}
+
+export interface CalendarResponseReceipt {
+  status: "pending_approval" | "approved" | "rejected" | "uncertain" | "noop" | "applied" | "failed";
+  command_id: string | null;
+  approval_id: string | null;
+  source_butler: string;
+  projection_available: boolean;
+  reason: string | null;
+}
+
+export interface CalendarInvitationsResponse {
+  entries: CalendarInvitationEntry[];
+  issues_available: boolean;
+  conflicts_available: boolean;
+  sources_degraded: string[];
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+export interface CalendarInvitationsParams {
+  start: string;
+  end: string;
+  timezone?: string;
+  limit?: number;
+  cursor?: string;
 }
 
 /** One `kind` bucket inside a day-briefing butler group (e.g. `bill_due`). */
@@ -1448,6 +1559,9 @@ export type CalendarPrepCommitmentKind =
 /** Direction of the obligation represented by a prep-rail commitment. */
 export type CalendarPrepCommitmentDirection = "owner_to_other" | "other_to_owner" | "self";
 
+/** Condition-ledger escalation label accepted by the meeting-prep contract. */
+export type CalendarPrepCommitmentEscalationLevel = "L0" | "L1" | "L2" | "L3";
+
 /** An active owner commitment contributed to a meeting-prep attendee. */
 export interface CalendarPrepCommitment {
   kind: CalendarPrepCommitmentKind;
@@ -1455,8 +1569,8 @@ export interface CalendarPrepCommitment {
   summary: string;
   /** ISO-8601 deadline, or `null` when this commitment has no deadline. */
   deadline: string | null;
-  /** Condition-ledger escalation label, currently `L0` through `L3`. */
-  escalation_level: string;
+  /** Condition-ledger escalation label. */
+  escalation_level: CalendarPrepCommitmentEscalationLevel;
   /** Stable commitment identity, useful to future interactive surfaces. */
   fingerprint: string;
 }
@@ -1568,34 +1682,6 @@ export interface CalendarWorkspaceMetaResponse {
   // freshness plaque must not read "fresh". Optional/default-healthy: read as
   // `sources_available !== false` so older payloads observe the prior shape.
   sources_available?: boolean;
-}
-
-/** Query parameters for GET /api/calendar/export/ics (one-shot .ics download). */
-export interface CalendarIcsExportParams {
-  view: CalendarWorkspaceView;
-  /** Inclusive ISO-8601 range start. */
-  start: string;
-  /** Exclusive ISO-8601 range end. */
-  end: string;
-  butlers?: string[];
-  sources?: string[];
-  status?: CalendarWorkspaceStatusFacet;
-  source_type?: UnifiedCalendarSourceType;
-}
-
-/** One event created from an imported .ics payload. */
-export interface CalendarIcsImportedEvent {
-  title: string;
-  start_at: string;
-  all_day: boolean;
-}
-
-/** Result of POST /api/calendar/import/ics (import-with-dedup). */
-export interface CalendarIcsImportResponse {
-  parsed: number;
-  imported: number;
-  skipped_duplicates: number;
-  imported_events: CalendarIcsImportedEvent[];
 }
 
 /** Per-account Google Calendar connector health state. */
@@ -1745,20 +1831,15 @@ export interface CalendarWorkspaceSyncResponse {
   triggered_count: number;
 }
 
-/** Allowed mutation actions for user-view calendar events. */
-export type CalendarWorkspaceUserMutationAction =
-  "create" | "update" | "delete";
+/** The only user-view calendar mutation the dashboard issues (operator view). */
+export type CalendarWorkspaceUserMutationAction = "create";
 
 /** Allowed actions for butler-lane event mutations. */
 export type CalendarWorkspaceButlerMutationAction =
   "create" | "update" | "delete" | "toggle" | "dismiss" | "snooze";
 
 /**
- * Request payload for POST /api/calendar/workspace/user-events.
- *
- * For an update, linked people use `entity_ids` as a replacement set. Sending
- * `entity_ids: []` together with `clear_entity_ids: true` deliberately removes
- * every link; omitted or empty IDs without that flag preserve existing links.
+ * Request payload for POST /api/calendar/workspace/user-events (create only).
  */
 export interface CalendarWorkspaceUserMutationRequest {
   butler_name: string;
@@ -1781,44 +1862,6 @@ export interface CalendarSuggestedSlot {
   start_at: string; // ISO 8601
   end_at: string; // ISO 8601
   timezone: string;
-}
-
-/** Part-of-day bucket for the free-slot finder's soft ranking constraints. */
-export type CalendarFindTimePartOfDay = "morning" | "afternoon" | "evening";
-
-/** Structured (pre-parsed) constraints for POST /api/calendar/workspace/find-time. */
-export interface CalendarFindTimeConstraints {
-  part_of_day?: CalendarFindTimePartOfDay | null;
-  /** iCal weekday codes (MO…SU) to rank lower. */
-  avoid_weekdays?: string[];
-}
-
-/** Request payload for POST /api/calendar/workspace/find-time. */
-export interface CalendarWorkspaceFindTimeRequest {
-  butler_name: string;
-  duration_minutes: number;
-  search_start: string; // ISO 8601
-  search_end: string; // ISO 8601
-  calendar_ids?: string[] | null;
-  constraints?: CalendarFindTimeConstraints | null;
-  limit?: number;
-}
-
-/** Response payload for POST /api/calendar/workspace/find-time. */
-export interface CalendarWorkspaceFindTimeResponse {
-  /** Ranked open slots, earliest-first with constraint matches preferred. */
-  slots: CalendarSuggestedSlot[];
-  duration_minutes: number;
-  calendar_ids: string[];
-  /**
-   * Honest degraded signal (fail-open). `false` when the cross-source free/busy
-   * lookup could not run (butler unreachable); `slots` is then empty because
-   * nothing was checked — NOT because the calendar is open. Render "free/busy
-   * unavailable" with `reason`, not "no open slots".
-   */
-  available: boolean;
-  /** Human-readable explanation when `available` is `false`. */
-  reason: string | null;
 }
 
 /** Response payload for calendar workspace mutation endpoints. */
@@ -2086,29 +2129,11 @@ export interface Label {
   color: string | null;
 }
 
-/** Lightweight contact representation for list views. */
-export interface ContactSummary {
-  id: string;
-  full_name: string;
-  first_name: string | null;
-  last_name: string | null;
-  nickname: string | null;
-  email: string | null;
-  phone: string | null;
-  labels: Label[];
-  last_interaction_at: string | null;
-  warmth?: number | null;
-  /** Linked memory-graph entity; null for legacy/unlinked contacts.
-   * Surfaced so contacts-merge surfaces can route through the audited
-   * entity-merge compare view (bu-f0i4w). */
-  entity_id: string | null;
-}
-
 /** A single contact_info entry (phone, email, address, etc.).
  * When secured=true and value is null, the value is masked.
  * Use GET /relationship/entities/{entityId}/secrets/{infoId} to retrieve the real value.
  */
-export interface ContactInfoEntry {
+export interface ContactInfoEntry extends FactAttribution {
   id: string;
   type: string;
   value: string | null; // null when secured=true and not yet revealed
@@ -2132,44 +2157,9 @@ export interface ContactInfoEntry {
   verified?: boolean;
 }
 
-/** Full contact detail with all fields including identity fields. */
-export interface ContactDetail extends ContactSummary {
-  notes: string | null;
-  birthday: string | null;
-  company: string | null;
-  job_title: string | null;
-  address: string | null;
-  metadata: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-  // Identity fields (entity_id is inherited from ContactSummary)
-  roles: string[];
-  contact_info: ContactInfoEntry[];
-}
-
-/** Request body for PATCH /contacts/{id}.
- *
- * `preferred_channel` is NOT writable here — it is an entity-level preference
- * written via PUT/DELETE /entities/{id}/preferred-channel (the entity-keyed
- * `prefers-channel` fact), see setEntityPreferredChannel / clearEntityPreferredChannel.
- */
-export interface ContactPatchRequest {
-  full_name?: string | null;
-  first_name?: string | null;
-  last_name?: string | null;
-  nickname?: string | null;
-  company?: string | null;
-  job_title?: string | null;
-  roles?: string[] | null;
-}
-
 /** Response for GET /owner/setup-status. */
 export interface OwnerSetupStatus {
   entity_id: string | null;
-  has_name: boolean;
-  has_telegram: boolean;
-  has_telegram_chat_id: boolean;
-  has_email: boolean;
 }
 
 /** A contact group. */
@@ -2227,25 +2217,10 @@ export interface UpcomingDate {
   days_until: number;
 }
 
-/** Paginated contact list response. */
-export interface ContactListResponse {
-  contacts: ContactSummary[];
-  total: number;
-}
-
 /** Paginated group list response. */
 export interface GroupListResponse {
   groups: Group[];
   total: number;
-}
-
-/** Query parameters for the contacts list endpoint. */
-export interface ContactParams {
-  q?: string;
-  label?: string;
-  archived?: boolean;
-  offset?: number;
-  limit?: number;
 }
 
 /** Query parameters for the groups list endpoint. */
@@ -2277,6 +2252,10 @@ export interface Medication {
   schedule: unknown[];
   active: boolean;
   notes: string | null;
+  /** Owner-recorded count in the current supply; null means unknown. */
+  quantity: number | null;
+  /** When the current quantity was recorded (initial fill or refill). */
+  quantity_updated_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -2523,6 +2502,26 @@ export interface ExpectedSignal {
   evaluated_at: string;
 }
 
+export interface HealthBaseline {
+  metric_key: string;
+  state: "ready" | "insufficient_history" | "unmeasurable" | "stale" | "no_baseline";
+  band: { low: number; high: number } | null;
+  center: number | null;
+  unit: string | null;
+  n_observed: number;
+  n_expected: number;
+  coverage: number;
+  computed_at: string | null;
+  stale: boolean;
+  method_version: string | null;
+}
+
+export interface HealthBaselinesResponse {
+  baselines: HealthBaseline[] | null;
+  available: boolean;
+  degraded_reason: string | null;
+}
+
 export interface ExpectedSignalsResponse {
   signals: ExpectedSignal[] | null;
   available: boolean;
@@ -2582,6 +2581,8 @@ export interface MedicationCreateRequest {
   frequency: string;
   schedule?: string[];
   notes?: string | null;
+  /** Positive whole-number supply count; omit when the supply is unknown. */
+  quantity?: number;
 }
 
 /**
@@ -2595,6 +2596,8 @@ export interface MedicationUpdateRequest {
   schedule?: string[];
   active?: boolean;
   notes?: string | null;
+  /** Positive whole-number current supply/refill count; omit to preserve it. */
+  quantity?: number;
 }
 
 /** Request body for creating a condition (POST /health/conditions). */
@@ -2853,6 +2856,15 @@ export interface Episode {
   last_referenced_at: string | null;
   expires_at: string | null;
   metadata: Record<string, unknown>;
+  /**
+   * Recovery-safe lifecycle dossier (bu-kqnum.14.3). The error and reason strings are the
+   * sanitized category summaries the consolidator stores; worker lease internals are never
+   * exposed. The API always returns all four.
+   */
+  consolidation_attempts: number;
+  last_consolidation_error: string | null;
+  dead_letter_reason: string | null;
+  next_consolidation_retry_at: string | null;
 }
 
 /** Availability of a durable reference to an episode source. */
@@ -2876,6 +2888,9 @@ export interface Fact {
   supersedes_id: string | null;
   /** Reverse supersession lookup (bu-awo8k.8): id of the fact that supersedes this one. */
   superseded_by?: string | null;
+  content_authority?: "owner" | "owner_device" | "third_party" | "system" | "mixed" | null;
+  authority_entity_id?: string | null;
+  authority_entity_name?: string | null;
   entity_id: string | null;
   entity_name: string | null;
   object_entity_id: string | null;
@@ -2912,6 +2927,18 @@ export interface MemoryRule {
   last_evaluated_at: string | null;
   tags: string[];
   metadata: Record<string, unknown>;
+  /** Set when the rule has been retired (stops firing, kept for reference). */
+  retired_at: string | null;
+  /** Server-derived authorship of the content this rule came from (null on legacy rows). */
+  content_authority?: "owner" | "owner_device" | "third_party" | "system" | "mixed" | null;
+  authority_entity_id?: string | null;
+  authority_entity_name?: string | null;
+  endorsed_by?: string | null;
+  endorsed_by_name?: string | null;
+  /** Set when the owner endorsed a held rule. */
+  endorsed_at?: string | null;
+  /** True while the rule is invisible to sessions, awaiting owner endorsement. */
+  held?: boolean;
 }
 
 /** Aggregated statistics across all memory tiers. */
@@ -2926,6 +2953,8 @@ export interface MemoryStats {
   established_rules: number;
   proven_rules: number;
   anti_pattern_rules: number;
+  /** Retired rules (bu-6t8ix.3), excluded from the maturity buckets above. */
+  retired_rules: number;
   /**
    * Consolidation lifecycle (memory redesign, additive — null/0 when unknown).
    * Mirrors src/butlers/api/models/memory.py::MemoryStats.
@@ -2968,6 +2997,24 @@ export interface GraphHealthPoolCoverage {
 export interface GraphHealthCoverage {
   coverage: "complete" | "incomplete" | "unknown";
   pools: GraphHealthPoolCoverage[];
+}
+
+/**
+ * Pagination metadata for the memory list routes (episodes, facts, rules,
+ * inspect). Each fans out across butler pools and, when one pool errors, drops
+ * it and names it in `pools_failed` rather than failing the request, so a page
+ * (including an empty one) may be incomplete. Absent or empty means every
+ * queried pool answered.
+ */
+export interface MemoryPaginationMeta extends PaginationMeta {
+  /** Names of memory pools whose query failed and were dropped from the page and total. */
+  pools_failed?: string[];
+}
+
+/** Paginated memory list response carrying the degraded-pool meta. */
+export interface MemoryPaginatedResponse<T> {
+  data: T[];
+  meta: MemoryPaginationMeta;
 }
 
 /**
@@ -3124,6 +3171,8 @@ export interface FactParams {
 
 /** Query parameters for rule list endpoints. */
 export interface RuleParams {
+  /** Restrict the register to unendorsed held guidance. */
+  held?: boolean;
   q?: string;
   scope?: string;
   maturity?: string;
@@ -3149,7 +3198,6 @@ export interface EntitySummary {
   aliases: string[];
   roles: string[];
   fact_count: number;
-  linked_contact_id: string | null;
   unidentified: boolean;
   source_butler: string | null;
   source_scope: string | null;
@@ -3207,8 +3255,17 @@ export interface EntityDetail extends EntitySummary {
   recent_facts_offset: number;
   recent_facts_limit: number;
   recent_facts_has_more: boolean;
-  linked_contact_name: string | null;
   entity_info: EntityInfoEntry[];
+  rebind_receipts?: EntityRebindReceipt[];
+}
+
+export interface EntityRebindReceipt {
+  rebind_id: string;
+  target_schema: string;
+  references_rebound: number;
+  status: "active" | "failed" | "pending" | "skipped_no_table";
+  error_class: string | null;
+  completed_at: string | null;
 }
 
 /** Query parameters for entity detail endpoints. */
@@ -3263,6 +3320,41 @@ export type ApprovalReversibility =
 export type ApprovalPushOutcome =
   "delivered" | "deferred" | "collapsed" | "duplicate" | "failed";
 
+export type ApprovalDeliveryState =
+  | "ready"
+  | "claimed"
+  | "handoff_started"
+  | "retry_wait"
+  | "delivered"
+  | "collapsed"
+  | "cancelled"
+  | "superseded"
+  | "ambiguous";
+
+export interface ApprovalDeliveryCohort {
+  eligible: boolean;
+  state: ApprovalDeliveryState | null;
+  generation: number | null;
+  attempt_count: number;
+  next_eligible_at: string | null;
+  stuck: boolean;
+  ambiguous: boolean;
+}
+
+export interface ApprovalDeliveryTruth {
+  source: "durable" | "legacy" | "unknown";
+  state: ApprovalDeliveryState | null;
+  mode: "single" | "burst_digest" | "collapsed" | null;
+  generation: number | null;
+  last_reason_code: string | null;
+  attempt_count: number;
+  next_eligible_at: string | null;
+  stuck: boolean;
+  ambiguous: boolean;
+  legacy_outcome: ApprovalPushOutcome | null;
+  cohort: ApprovalDeliveryCohort | null;
+}
+
 export interface ApprovalAction {
   id: string;
   butler: string;
@@ -3273,6 +3365,8 @@ export interface ApprovalAction {
   agent_summary?: string | null;
   session_id?: string | null;
   expires_at?: string | null;
+  /** Exact server-stored classification; absent or null means origin unknown. */
+  origin?: "prepared" | null;
   decided_by?: string | null;
   decided_at?: string | null;
   execution_result?: Record<string, unknown> | null;
@@ -3302,6 +3396,7 @@ export interface ApprovalAction {
    * action (bu-mda0r, bu-p5sg6).
    */
   push_failed?: boolean;
+  delivery?: ApprovalDeliveryTruth | null;
 }
 
 /**
@@ -3327,6 +3422,8 @@ export interface ApprovalSummary {
   status: string;
   created_at: string;
   expires_at?: string | null;
+  /** Exact server-stored classification; absent or null means origin unknown. */
+  origin?: "prepared" | null;
   why?: string | null;
   /** Durable execution evidence used to distinguish eligible stalled rows. */
   execution_result?: Record<string, unknown> | null;
@@ -3342,6 +3439,21 @@ export interface ApprovalSummary {
    * notified. Never fabricate calm (bu-mda0r, bu-p5sg6).
    */
   push_failed?: boolean;
+  delivery?: ApprovalDeliveryTruth | null;
+}
+
+/** Replayable dashboard routing failure shown on the Approvals/Command surface. */
+export interface UnroutableAttentionItem {
+  id: string;
+  question: string;
+  failure_reason: string;
+  created_at: string;
+}
+
+export interface UnroutableRetryResult {
+  dead_letter_id: string;
+  replayed_request_id: string;
+  status: "queued";
 }
 
 /**
@@ -3382,12 +3494,26 @@ export interface ApprovalsFlatListResponse {
 }
 
 /** Full dossier for GET /api/approvals/{id}. */
+export interface DisplayedApprovalCall {
+  tool_name: string;
+  args_digest: string;
+}
+
+export interface ApprovalCallPreview {
+  title: string;
+  facts: { label: string; value: string }[];
+  displayed_call: DisplayedApprovalCall;
+}
+
 export interface ApprovalDetail {
+  call_preview?: ApprovalCallPreview | null;
   id: string;
   title: string;
   butler: string;
   created_at: string;
   expires_at?: string | null;
+  /** Exact server-stored classification; absent or null means origin unknown. */
+  origin?: "prepared" | null;
   why?: string | null;
   evidence?: ApprovalEvidence[];
   blast_radius?: ApprovalBlastRadius | null;
@@ -3425,6 +3551,7 @@ export interface ApprovalDetail {
    * notified. Never fabricate calm (bu-mda0r, bu-p5sg6).
    */
   push_failed?: boolean;
+  delivery?: ApprovalDeliveryTruth | null;
 }
 
 export interface ApprovalAbandonRequest {
@@ -3439,6 +3566,7 @@ export interface ApprovalsPolicy {
 }
 
 export interface ApprovalApproveRequest {
+  displayed_call?: DisplayedApprovalCall | null;
   edits?: Record<string, unknown> | null;
 }
 
@@ -3496,8 +3624,17 @@ export interface ApprovalMetrics {
    * attempt will resolve "failed") until it is provisioned. Null when this
    * could not be determined (e.g. no approvals pool available) -- never
    * treat null as a false all-clear.
-   */
+  */
   callback_secret_configured?: boolean | null;
+  delivery_due_count?: number;
+  delivery_retry_wait_count?: number;
+  delivery_expired_lease_count?: number;
+  delivery_ambiguous_count?: number;
+  delivery_stuck_count?: number;
+  delivery_oldest_due_age_seconds?: number | null;
+  delivery_by_state?: Record<string, number>;
+  delivery_by_reason?: Record<string, number>;
+  delivery_sources_complete?: boolean;
 }
 
 /** Availability metadata for the independently aggregated approvals metric families. */
@@ -3532,6 +3669,8 @@ export interface ApprovalRuleParams {
 }
 
 export interface ApprovalRuleCreateRequest {
+  /** Butler whose schema owns the rule (required by POST /approvals/rules). */
+  butler: string;
   tool_name: string;
   arg_constraints: Record<string, unknown>;
   description: string;
@@ -3728,36 +3867,6 @@ export interface SecretTemplate {
 }
 
 // ---------------------------------------------------------------------------
-// Backfill job types (switchboard ingestion history)
-// ---------------------------------------------------------------------------
-
-/** A connector entry from the connector_registry table. */
-/** @public knip mis-traces this type's import (used by a live consumer); remove when bu-9jvhm fixes the tracing gap. */
-export interface ConnectorEntry {
-  connector_type: string;
-  endpoint_identity: string;
-  instance_id: string | null;
-  version: string | null;
-  state: string;
-  error_message: string | null;
-  uptime_s: number | null;
-  last_heartbeat_at: string | null;
-  first_seen_at: string;
-  registered_via: string;
-  counter_messages_ingested: number;
-  counter_messages_failed: number;
-  counter_source_api_calls: number;
-  counter_checkpoint_saves: number;
-  counter_dedupe_accepted: number;
-  checkpoint_cursor: string | null;
-  checkpoint_updated_at: string | null;
-}
-
-// ---------------------------------------------------------------------------
-// Thread affinity types
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Connector statistics and analytics types (docs/connectors/statistics.md)
 // ---------------------------------------------------------------------------
 
@@ -3811,7 +3920,7 @@ export interface ConnectorCheckpointRecord {
   archived: boolean;
 }
 
-/** A connector with current liveness and today's stats (GET /api/connectors). */
+/** A connector with current liveness and today's stats (GET /api/ingestion/connectors/summaries). */
 export interface ConnectorSummary {
   connector_type: string;
   endpoint_identity: string;
@@ -3901,18 +4010,6 @@ export interface ConnectorSummary {
   checkpoints?: ConnectorCheckpointRecord[];
 }
 
-/** Metadata for the legacy GET /api/switchboard/connectors roster endpoint. */
-export interface ConnectorSummariesMeta extends ApiMeta {
-  /** False only when the connector registry query failed; absent means available. */
-  connector_registry_available?: boolean;
-}
-
-/** Legacy connector roster response with explicit registry availability. */
-export interface ConnectorSummariesListResponse {
-  data: ConnectorSummary[];
-  meta: ConnectorSummariesMeta;
-}
-
 /** One OAuth scope entry from connector-oauth-scope-surface backend. */
 export interface ConnectorScopeEntry {
   name: string;
@@ -3948,7 +4045,7 @@ export interface ConnectorAuthBlock {
   recovery_reason?: "expired" | "rotation-needed" | null;
 }
 
-/** Full connector detail (GET /api/connectors/:type/:identity). */
+/** Client view model projected from the canonical flat connector-detail response. */
 export interface ConnectorDetail extends ConnectorSummary {
   instance_id: string | null;
   registered_via: string;
@@ -3999,7 +4096,7 @@ export interface ConnectorStatsSummary {
   avg_messages_per_hour: number;
 }
 
-/** Full stats response for a single connector (GET /api/connectors/:type/:identity/stats). */
+/** Client view model projected from canonical connector stats rows. */
 export interface ConnectorStats {
   connector_type: string;
   endpoint_identity: string;
@@ -4020,9 +4117,13 @@ export interface ConnectorStats {
  * Pipeline funnel statistics (GET /api/ingestion/pipeline?window=24h).
  * Sourced from Prometheus via PromQL with 60s TTL cache.
  * aggregates_available=false means Prometheus is unreachable — all numeric
- * fields are zero in that case.
+ * funnel fields are zero in that case; scrub and backlog flags are independent.
  */
 export interface PipelineStats {
+  /** Fresh Switchboard scrub-operation estimates, including attempts; absent on older servers. */
+  bearer_scrub_counts?: { auth_code: number; reset_link: number; magic_link: number } | null;
+  /** Independent Prometheus availability; only true makes scrub zeros measured values. */
+  bearer_scrub_available?: boolean;
   window: string;
   aggregates_available: boolean;
   ingested: number;
@@ -4051,6 +4152,29 @@ export interface PipelineStats {
    * When false, every backlog count is null rather than a fabricated zero.
    */
   backlog_available: boolean;
+}
+
+/** One measured connector-to-butler route in the fanout distribution. */
+export interface ConnectorFanoutRow {
+  connector_type: string;
+  endpoint_identity: string;
+  target_butler: string;
+  message_count: number;
+}
+
+/** Availability authority for the Prometheus-backed routing distribution. */
+export interface ConnectorFanoutMeta extends ApiMeta {
+  /**
+   * True only when Prometheus supplied a readable routing aggregate. False
+   * means the rows, if any, are a degraded fallback and must not be rendered
+   * as a confirmed routing distribution.
+   */
+  aggregates_available: boolean;
+}
+
+/** GET /api/switchboard/ingestion/fanout?period=7d. */
+export interface ConnectorFanoutResponse extends ApiResponse<ConnectorFanoutRow[]> {
+  meta: ConnectorFanoutMeta;
 }
 
 /**
@@ -4264,46 +4388,6 @@ export interface IngestionEventSession {
   model: string | null;
 }
 
-/** Per-butler breakdown within an IngestionEventRollup. */
-export interface ButlerRollupEntry {
-  sessions: number;
-  input_tokens: number;
-  output_tokens: number;
-  /** Known-priced subtotal for this butler, if any. */
-  cost: number | null;
-  /** Token-using sessions omitted from cost because their price is unavailable. */
-  unpriced_session_count?: number;
-  /** Sessions with no token or stored-cost evidence. */
-  no_usage_session_count?: number;
-}
-
-/** Aggregate cost/token totals for all sessions linked to one ingestion event. */
-export interface IngestionEventRollup {
-  request_id: string;
-  total_sessions: number;
-  total_input_tokens: number;
-  total_output_tokens: number;
-  /** Known-priced subtotal across all sessions, if any. */
-  total_cost: number | null;
-  /** Token-using sessions omitted from total_cost because their price is unavailable. */
-  unpriced_session_count?: number;
-  /** Sessions with no token or stored-cost evidence. */
-  no_usage_session_count?: number;
-  by_butler: Record<string, ButlerRollupEntry>;
-}
-
-/** Cursor pagination metadata returned by keyset-paginated endpoints. */
-export interface CursorPaginationMeta {
-  next_cursor: string | null;
-  has_more: boolean;
-}
-
-/** API response wrapper for cursor-paginated list endpoints. */
-export interface CursorPaginatedResponse<T> {
-  data: T[];
-  meta: CursorPaginationMeta;
-}
-
 /** Query parameters for GET /api/ingestion/events (cursor-paginated). */
 export interface IngestionEventsParams {
   limit?: number;
@@ -4450,6 +4534,25 @@ export interface IngestionHistogramBucket {
 export interface IngestionHistogramResponse {
   buckets: IngestionHistogramBucket[];
   bucket: IngestionHistogramBucketSize;
+}
+
+/**
+ * Response from GET /api/ingestion/events/dropped-known.
+ *
+ * `available=false` means complete classification is unknown. Positive counts
+ * remain a lower bound only with counts_available; failed-read zeros are placeholders.
+ */
+export interface IngestionDroppedKnownSummary {
+  available: boolean;
+  window: string;
+  /** Messages from known contacts dropped by a gate and not yet replayed. */
+  dropped: number;
+  /** Distinct (rule, sender) cases behind `dropped`. */
+  episodes: number;
+  counts_available: boolean;
+  classification_available: boolean;
+  uncertain_drops: number | null;
+  availability_reason: "none" | "counts_unavailable" | "registry_unavailable" | "classification_unknown" | "historical_uncertainty";
 }
 
 /** One replay attempt entry from public.audit_log. */
@@ -5056,6 +5159,9 @@ export interface ModelCatalogEntry {
   /** Count of trailing consecutive runtime_failure dispatch attempts feeding
    *  the breaker (capped at the breaker's own threshold). */
   breaker_consecutive_failures: number;
+  /** Per-entry capability overrides (core_204). An absent feature is unknown,
+   *  not unsupported: image-bearing dispatches need `vision: true`. */
+  capabilities?: Record<string, boolean>;
   /** Evidence-based routing score (bu-ep4ks.13), fully derived from recent
    *  model_dispatch_attempts. Null whenever routing_score_insufficient_data
    *  is true -- render "insufficient data", never a fabricated 0. */
@@ -5073,6 +5179,8 @@ export interface ModelCatalogEntry {
   /** Number of qualifying (success + runtime_failure) attempts in the
    *  evidence window, regardless of whether that met the min-samples bar. */
   routing_sample_count: number;
+  /** Global allowance grouping label; null uses the runtime default. */
+  allowance_account?: string | null;
 }
 
 /** Current server-owned cascade impact for one catalog deletion. */
@@ -5103,6 +5211,29 @@ export interface ModelAttentionEpisode {
 export interface ModelAttentionObservation {
   available: boolean;
   episodes: Record<string, ModelAttentionEpisode>;
+}
+
+export interface AllowanceEntry {
+  id: string;
+  alias: string;
+}
+
+export type AllowanceState = "available" | "exhausted" | "unknown";
+export type AllowanceResetSource = "parsed" | "default_window" | "unknown";
+
+export interface AllowanceAccount {
+  account_key: string;
+  state: AllowanceState;
+  reset_at: string | null;
+  reset_source: AllowanceResetSource;
+  first_seen_at: string;
+  updated_at: string;
+  entries: AllowanceEntry[];
+}
+
+export interface AllowanceObservation {
+  available: boolean;
+  accounts: AllowanceAccount[];
 }
 
 export interface ModelAttentionReissueResult {
@@ -5152,6 +5283,8 @@ export interface ModelCatalogCreate {
   enabled?: boolean;
   priority?: number;
   session_timeout_s?: number;
+  /** Global allowance grouping label; null uses the runtime default. */
+  allowance_account?: string | null;
 }
 
 /** Request body for updating a catalog entry (all fields optional). */
@@ -5164,6 +5297,8 @@ export interface ModelCatalogUpdate {
   enabled?: boolean;
   priority?: number;
   session_timeout_s?: number;
+  /** Global allowance grouping label; null uses the runtime default. */
+  allowance_account?: string | null;
 }
 
 /** A single per-butler model override joined with catalog alias. */
@@ -5183,6 +5318,16 @@ export interface ButlerModelOverrideUpsert {
   enabled?: boolean;
   priority?: number | null;
   complexity_tier?: ComplexityTier | null;
+}
+
+/** Required request-level explanation for a consequential override mutation. */
+export interface ButlerModelOverrideReason {
+  reason: string;
+  price_preview_unavailable?: boolean;
+}
+
+export interface ButlerModelOverridesWrite extends ButlerModelOverrideReason {
+  overrides: ButlerModelOverrideUpsert[];
 }
 
 /** Response from the model test endpoint. */
@@ -5363,8 +5508,17 @@ export interface OwnTracksStatusResponse {
 export interface OwnTracksConfigResponse {
   /** The full webhook URL the OwnTracks app should POST to. */
   webhook_url: string;
-  /** Host portion only (for display). */
-  host: string;
+  /** Masked bearer token preview, or null when no token is configured. */
+  token_masked: string | null;
+  /** App configuration guidance returned by the connector API. */
+  setup_instructions: {
+    mode: string;
+    url_field: string;
+    auth_type: string;
+    steps_ios: string[];
+    steps_android: string[];
+    troubleshooting_hint: string;
+  };
 }
 
 /** Response from POST /api/connectors/owntracks/token/generate */
@@ -5414,6 +5568,21 @@ export interface HomeAssistantDeleteResponse {
   message: string;
 }
 
+export interface HomePersonMappingInput {
+  ha_person_id: string;
+  entity_id: string;
+}
+
+export interface HomePersonMappingReceipt {
+  receipt: string;
+  complete: boolean;
+  received_count: number;
+  created_count: number;
+  unchanged_count: number;
+  conflict_count: number;
+  invalid_reference_count: number;
+}
+
 // ---------------------------------------------------------------------------
 // Dunbar tier ranking
 // ---------------------------------------------------------------------------
@@ -5443,23 +5612,6 @@ export interface DunbarRankingResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Contact interactions (bu-iuol4.22)
-// ---------------------------------------------------------------------------
-
-/** A single interaction event for a contact (GET /contacts/{id}/interactions). */
-export interface ContactInteraction {
-  ts: string;
-  direction: "in" | "out" | "drafted";
-  text: string;
-}
-
-/** Response from GET /api/relationship/contacts/{contact_id}/interactions?limit=N */
-export interface ContactInteractionsResponse {
-  contact_id: string;
-  interactions: ContactInteraction[];
-}
-
-// ---------------------------------------------------------------------------
 // Overdue contacts (bu-iuol4.22)
 // ---------------------------------------------------------------------------
 
@@ -5481,6 +5633,32 @@ export interface OverdueContactsResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Pending meeting debriefs (bu-q7vx1q.63)
+// ---------------------------------------------------------------------------
+
+export interface PendingDebriefAttendee {
+  entity_id: string | null;
+  name: string | null;
+  email: string | null;
+}
+
+export interface PendingDebrief {
+  debrief_id: string;
+  /** The batch number the Telegram prompt shows; the reply is prefixed with it. */
+  number: number | null;
+  event_title: string | null;
+  occurrence_start: string;
+  prompted_at: string;
+  attendees: PendingDebriefAttendee[];
+}
+
+/** Response from GET /api/relationship/meeting-debriefs/pending */
+export interface PendingDebriefsResponse {
+  debriefs: PendingDebrief[];
+  debriefs_available: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Dashboard conversations
 // ---------------------------------------------------------------------------
 
@@ -5492,6 +5670,12 @@ export interface MessageToolCall {
   result?: unknown;
 }
 
+export interface Citation {
+  label: string;
+  target: string | null;
+  kind: "internal" | "external" | "unlinked";
+}
+
 /** A single message in a dashboard conversation. */
 export interface Message {
   id: string;
@@ -5500,12 +5684,21 @@ export interface Message {
   content: string;
   tool_calls: MessageToolCall[] | null;
   error: string | null;
-  model: string | null;
+  /** Canonical API field. */
+  model_name?: string | null;
+  /** Deprecated frontend-only alias retained while optimistic fixtures migrate. */
+  model?: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
   duration_ms: number | null;
   session_id: string | null;
   request_id: string | null;
+  /** Deprecated string-only compatibility projection during the rollout window. */
+  sources?: string[];
+  /** Canonical server-normalized navigation citations. */
+  citations?: Citation[];
+  /** Server-derived author of this assistant message; null for unknown/legacy rows. */
+  routed_butler?: string | null;
   created_at: string;
   /** Compact page-context snapshot captured with this user message, or null. */
   page_context?: PageContext | null;
@@ -5673,6 +5866,7 @@ export interface ConversationCancelResponse {
 export type ConversationSseEventType =
   | "conversation_created"
   | "dispatch_accepted"
+  | "phase"
   | "token"
   | "message_complete"
   | "error"
@@ -5682,6 +5876,33 @@ export type ConversationSseEventType =
 export interface ConversationSseEvent {
   event: ConversationSseEventType;
   data: unknown;
+}
+
+export interface ConversationSseMessageCompleteData {
+  message_id: string;
+  session_id: string | null;
+  model_name: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  duration_ms: number | null;
+  tool_calls: MessageToolCall[];
+  sources: string[];
+  citations: Citation[];
+  routed_butler: string | null;
+}
+
+/**
+ * Shape of the `data` payload on a `phase` SSE event (bu-0ynlk.7) — real-time
+ * processing status, never fabricated: a phase is only emitted when the
+ * backend can truthfully observe it (see
+ * `src/butlers/api/routers/conversations.py` module docstring).
+ */
+export interface ConversationSsePhaseData {
+  phase: "classifying" | "routed" | "starting_session" | "thinking" | "writing" | string;
+  /** The butler handling this turn (`routed`/`starting_session`). */
+  target?: string | null;
+  /** The tool call in progress (`thinking` only). */
+  tool?: string | null;
 }
 
 /**
@@ -6077,6 +6298,10 @@ export interface QaCaseDossier {
   case: QaCaseSummary;
   state_track_stage:
     "detect" | "diagnose" | "pr" | "landed" | "escalated" | "failed";
+  /** Whether a committed proposal was published as a PR, retained locally after publication failure, or absent. */
+  proposal_state: "none" | "unpublished" | "published";
+  /** Retained commit diff, projected independently so malformed narrative notes cannot hide a real local proposal. */
+  proposal_diff_snapshot: QaInvestigationNotes["diff_snapshot"];
   /** Finding fingerprint for dismiss/undismiss actions. Null when no finding is linked yet. */
   fingerprint: string | null;
   dismissal: QaActiveDismissal | null;
@@ -6231,12 +6456,31 @@ export interface QaAllowedRepoPatch {
 // Runtime Config
 // ---------------------------------------------------------------------------
 
+/** Accepted tool_exposure_policy values — closed to eager_filtered|auto. */
+export type ToolExposurePolicy = "eager_filtered" | "auto";
+
 /** Response from GET /api/butlers/{name}/runtime-config. */
 export interface RuntimeConfigResponse {
   butler_name: string;
   core_groups: string[] | null;
+  declared_core_groups: string[] | null;
+  effective_core_groups: string[] | null;
+  core_groups_source: "git" | "runtime_narrowing";
+  core_groups_narrowing_reason: string | null;
+  declared_tool_names: string[] | null;
+  effective_tool_names: string[] | null;
+  registered_tool_names: string[] | null;
+  tool_registration_failures: Array<{
+    tool_name: string;
+    module_name: string;
+    error_type: string;
+  }> | null;
+  tool_declaration_complete: boolean | null;
+  tool_snapshot_status: "available" | "unavailable";
+  catalog_read_sensitivity: "normal" | "internal" | "confidential";
   max_concurrent: number;
   max_queued: number;
+  tool_exposure_policy: ToolExposurePolicy;
   seeded_at: string | null;
   updated_at: string | null;
   field_tiers: Record<string, "hot" | "cold">;
@@ -6245,8 +6489,11 @@ export interface RuntimeConfigResponse {
 /** Request body for PATCH /api/butlers/{name}/runtime-config. */
 export interface RuntimeConfigPatch {
   core_groups?: string[] | null;
+  core_groups_narrowing_reason?: string | null;
+  catalog_read_sensitivity?: "normal" | "internal" | "confidential";
   max_concurrent?: number;
   max_queued?: number;
+  tool_exposure_policy?: ToolExposurePolicy;
 }
 
 /** Response from PATCH /api/butlers/{name}/runtime-config. */
@@ -7036,21 +7283,6 @@ export interface EntityInteraction {
   direction: string | null;
 }
 
-/**
- * A drafted reach-out for a relationship entity (predicate='reach_out_draft').
- *
- * A draft is drafted, never sent: there is no send endpoint behind this
- * surface, and `channel` records the channel the owner had in mind rather
- * than a delivery attempt. `status` is always "draft" today.
- */
-export interface EntityReachOutDraft {
-  id: string;
-  message: string | null;
-  channel: string | null;
-  status: string;
-  created_at: string | null;
-}
-
 /** Request body for POST /api/relationship/entities/{id}/notes. */
 export interface CreateEntityNoteRequest {
   content: string;
@@ -7076,12 +7308,6 @@ export interface CreateEntityInteractionRequest {
 export interface CreateEntityGiftRequest {
   description: string;
   occasion?: string | null;
-}
-
-/** Request body for POST /api/relationship/entities/{id}/reach-out-drafts. */
-export interface CreateEntityReachOutDraftRequest {
-  message: string;
-  channel?: string | null;
 }
 
 /** A gift fact for a relationship entity (predicate='gift'). */
@@ -7113,6 +7339,16 @@ export interface EntityTimelineItem {
   valid_at: string | null;
   predicate: string;
   metadata: Record<string, unknown> | null;
+}
+
+/** Completeness-tagged interaction evidence for a rolling cadence window. */
+export interface EntityCadenceResponse {
+  window_days: number;
+  window_started_at: string;
+  window_ended_at: string;
+  interaction_count: number;
+  completeness: "complete" | "incomplete";
+  has_more: boolean;
 }
 
 /** A contact linked to an entity, for the entity detail page.
@@ -7276,6 +7512,9 @@ export interface MergeRelationshipEntitiesResponse {
   tombstoned_entity_id: string;
   subject_facts_rewired: number;
   object_facts_rewired: number;
+  rebind_id: string | null;
+  receipts: EntityRebindReceipt[];
+  failed_schemas: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -7296,7 +7535,7 @@ export interface CompareEntitiesRequest {
  * row belongs to so the two-column diff can place it. ``last_seen`` is null on
  * narrative-store rows (no ``last_seen`` column).
  */
-export interface CompareFact {
+export interface CompareFact extends FactAttribution {
   id: string;
   entity_id: string;
   predicate: string;
@@ -7537,6 +7776,60 @@ export interface DriftFacts {
 }
 
 /**
+ * One deployed stored function whose body left the committed definition
+ * (bu-bi5an). Digests only -- never a body -- since a stored body can hold
+ * operator-supplied literals.
+ */
+export interface StoredFunctionEntry {
+  function: string;
+  /** init-db.sql line(s) of the committed variant(s), for locating the source. */
+  committed_lines: number[];
+  committed_digests: string[];
+  deployed_digests: string[];
+}
+
+/**
+ * Deployed stored-function bodies vs the configured bootstrap source
+ * (bu-bi5an, bu-uoctv).
+ *
+ * `not_deployed` is a legitimate state, not drift: a function only exists
+ * once its migration chain has run the bootstrap installer. `is_drifted`
+ * reflects `drifted` only -- never treat `not_deployed` as an alarm.
+ * `stored_function_check_available: false` means the comparison itself
+ * failed -- per the fleet-wide degraded-envelope convention, never render
+ * this as a truthful all-clear.
+ */
+export interface StoredFunctionFacts {
+  checked_at: string;
+  is_drifted: boolean;
+  drifted: StoredFunctionEntry[];
+  not_deployed: string[];
+  matched_count: number;
+  stored_function_check_available: boolean;
+  /**
+   * SECURITY DEFINER functions whose search_path is not exactly
+   * `pg_catalog, pg_temp` (bu-hefzis). Independent of `is_drifted`.
+   */
+  unpinned_definers: UnpinnedDefinerEntry[];
+  /** `false` means the definer catalog read failed -- never an all-clear. */
+  definer_check_available: boolean;
+}
+
+/**
+ * One SECURITY DEFINER with an unpinned search_path (bu-hefzis).
+ *
+ * `remedy` is `migrations` when the migration login owns the function, and
+ * `init_db` (re-run scripts/init-db.sql as a cluster superuser) otherwise.
+ */
+export interface UnpinnedDefinerEntry {
+  function: string;
+  owner: string;
+  /** Deployed search_path, or null when none is set. */
+  search_path: string | null;
+  remedy: "migrations" | "init_db";
+}
+
+/**
  * One episode row from public.infra_conditions or public.owner_conditions
  * (bu-27dxl.6.2 / bu-ep4ks.3 / bu-ep4ks.6).
  *
@@ -7565,6 +7858,23 @@ export interface ConditionEntry {
   recovered_after_s: number | null;
   summary: string | null;
   metadata: Record<string, unknown> | null;
+  /** Linked owner attention; only fleet-control and overdue-QA conditions carry it. */
+  attention?: ConditionAttention | null;
+}
+
+/**
+ * Linked runtime-attention delivery for a fleet or overdue-QA condition
+ * (REQ-butler-control-plane-liveness-007). Only "sent" means delivered;
+ * "sending" and "uncertain" never do, and nothing here can resend.
+ */
+export interface ConditionAttention {
+  /** "pending" | "worker_unavailable" | "sending" | "sent" | "failed" | "uncertain" | "unavailable" | "not_raised" | "within_grace" */
+  status: string;
+  episode_id: string | null;
+  created_at: string | null;
+  delivered_at: string | null;
+  safe_reason: string | null;
+  outbox_retained: boolean | null;
 }
 
 /**
@@ -8101,6 +8411,23 @@ export interface TravelAlert {
   severity: "high" | "medium" | "low";
 }
 
+/** A traveller in the trip party, linked to the shared person identity spine. */
+export interface TravelTraveller {
+  id: string;
+  entity_id: string | null;
+  display_name: string | null;
+}
+
+/** Derived integrity verdict for one adjacent-leg connection. */
+export interface TravelConnection {
+  inbound_leg_id: string;
+  outbound_leg_id: string;
+  verdict: "holds" | "tight" | "broken" | "unknown";
+  available_minutes: number | null;
+  evidence: Record<string, unknown>;
+  computed_at: string;
+}
+
 /** Full trip summary with all linked entities and timeline. */
 export interface TravelTripSummary {
   trip: TravelTrip;
@@ -8110,6 +8437,21 @@ export interface TravelTripSummary {
   documents: TravelDocument[];
   timeline: TravelTimelineEntry[];
   alerts: TravelAlert[];
+  party: TravelTraveller[];
+  connections: TravelConnection[];
+  connection_reason: "no_connection_on_journey" | null;
+  /** Leg ids excluded from `legs` because their row could not be normalized. */
+  unreadable_leg_ids: string[];
+  /** Accommodation ids excluded from `accommodations` because their row could not be normalized. */
+  unreadable_accommodation_ids: string[];
+  /** Reservation ids excluded from `reservations` because their row could not be normalized. */
+  unreadable_reservation_ids: string[];
+  /** Document ids excluded from `documents` because their row could not be normalized. */
+  unreadable_document_ids: string[];
+  /** Traveller ids excluded from `party` because their row could not be normalized. */
+  unreadable_party_ids: string[];
+  /** Connection ids excluded because their derived row could not be normalized. */
+  unreadable_connection_ids: string[];
 }
 
 /** An upcoming trip with legs, accommodations, and days until departure. */
@@ -8147,6 +8489,17 @@ export interface TravelTripsParams {
   to_date?: string;
   offset?: number;
   limit?: number;
+}
+
+/** Pagination metadata for GET /api/travel/trips, plus per-row degraded-mode disclosure. */
+export interface TravelTripsMeta extends PaginationMeta {
+  /** Trip ids excluded from `data` because their row could not be normalized. */
+  unreadable_trip_ids: string[];
+}
+
+/** Paginated trips list response, with per-row degraded-mode disclosure. */
+export interface TravelTripsResponse extends PaginatedResponse<TravelTrip> {
+  meta: TravelTripsMeta;
 }
 
 /** A document expiring within the requested look-ahead window. */
@@ -8462,6 +8815,19 @@ export interface PromptVersion {
   updated_by: string | null;
 }
 
+export interface ButlerEffectivePrompt {
+  butler_name: string;
+  status: "captured" | "preview" | "legacy_unavailable" | "unavailable" | "corrupt";
+  effective_prompt: string | null;
+  prompt_digest: string | null;
+  prompt_provenance: PromptProvenanceEntry[];
+  total_bytes: number | null;
+  roster_digest: string | null;
+  drift_status: "matches_git" | "drifted" | "unknown";
+  drifted_since: string | null;
+  changed_sources: string[];
+}
+
 /**
  * Request body for PUT /api/butlers/{name}/prompt. Carries no `actor`: the
  * server derives attribution from the authenticated principal and ignores any
@@ -8469,14 +8835,6 @@ export interface PromptVersion {
  */
 export interface PromptUpdateRequest {
   prompt: string;
-}
-
-/** A tool grant entry for a butler. */
-export interface ButlerTool {
-  name: string;
-  description: string | null;
-  allowed: boolean;
-  scope: string | null;
 }
 
 /** Memory tier access metadata for a butler. */
@@ -8768,7 +9126,7 @@ export type EntityFactStalenessBand = "fresh" | "aging" | "stale";
  * Note: ``source_event_id`` is not yet a column in relationship.entity_facts.
  * Use ``src`` for source attribution until that column is added.
  */
-export interface EntityFact {
+export interface EntityFact extends FactAttribution {
   id: string;
   subject: string;
   predicate: string;
@@ -8786,19 +9144,6 @@ export interface EntityFact {
   store: EntityFactStore;
   /** Read-time staleness band (``"fresh"`` / ``"aging"`` / ``"stale"``). */
   staleness_band: EntityFactStalenessBand;
-}
-
-/**
- * Keyset (cursor) response envelope for
- * GET /api/butlers/relationship/entities/{id}/facts.
- *
- * Ordered ``created_at DESC, id DESC`` per the repo cursor convention; there is
- * no ``total`` field. ``next_cursor`` is null on the last page.
- */
-export interface EntityFactsResponse {
-  items: EntityFact[];
-  next_cursor: string | null;
-  has_more: boolean;
 }
 
 /** Validity filter for the facts drill (active rows vs. superseded history). */
@@ -8843,6 +9188,29 @@ export interface ActivityBin {
   count: number;
 }
 
+/** One canonical row in the merged entity activity stream. */
+export interface EntityActivityItem extends FactAttribution {
+  id: string;
+  ts: string | null;
+  kind: string;
+  src: "relationship" | "chronicler";
+  store: "narrative" | "identity" | null;
+  predicate: string | null;
+  episode_id: string | null;
+  /** Exact server-normalized narrative, identity value, or Chronicle title. */
+  summary: string | null;
+}
+
+/** Response for GET /api/relationship/entities/{id}/activity. */
+export interface EntityActivityResponse {
+  items: EntityActivityItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  degraded: boolean;
+  degraded_reason: "chronicler_activity_unavailable" | null;
+}
+
 /**
  * Response for GET /api/butlers/relationship/entities/{id}/activity when
  * ``bins_only=true``.
@@ -8877,7 +9245,7 @@ export type DeltaFactStore = "identity" | "narrative";
  * narrative origin; ``changed_at`` is the per-store change timestamp that beat
  * the view mark.
  */
-export interface DeltaFactEntry {
+export interface DeltaFactEntry extends FactAttribution {
   id: string;
   subject: string;
   predicate: string;
@@ -8913,7 +9281,7 @@ export interface DeltaFactsResponse {
  * ``next_occurrence`` is the next calendar occurrence of (month, day) on or
  * after the request date; ``days_until`` is the integer day count to it.
  */
-export interface CoreDateEntry {
+export interface CoreDateEntry extends FactAttribution {
   id: string;
   predicate: string;
   value: string;
@@ -9051,13 +9419,13 @@ export interface SecretsProbeAllResponse {
  * A CLI runtime token row as returned by GET /api/secrets/inventory.
  *
  * Maps to CliRuntimeSummary in the backend secrets_v2 router — the published
- * projection of CliRuntime. The probe's free-text `message` and the cached
- * `last_test_message` are not on the wire (bu-iph56); do not add them back.
+ * projection of CliRuntime. The inventory keeps the raw `key` but omits the
+ * operator-authored `category` and `description` labels (bu-y5uq4). The
+ * probe's free-text `message` and the cached `last_test_message` are not on
+ * the wire (bu-iph56); do not add them back.
  */
 export interface SecretsCliRaw {
   key: string;
-  category: string;
-  description: string | null;
   state: string;
   fingerprint: string | null;
   /** butler_secrets.created_at (real; bu-6v1hx). */
@@ -9073,13 +9441,12 @@ export interface SecretsCliRaw {
  *
  * Maps to SystemSecretSummary in the backend secrets_v2 router — the published
  * projection of SystemSecret. Probe messages and audit note free text are not
- * on the wire (bu-iph56); `key` / `category` / `description` are
- * operator-authored labels and deliberately still are.
+ * on the wire (bu-iph56); the raw `key` survives for operator identification,
+ * while the operator-authored `category` and `description` labels are omitted
+ * from this inventory projection (bu-y5uq4).
  */
 export interface SecretsSystemRaw {
   key: string;
-  category: string;
-  description: string | null;
   state: string;
   fingerprint: string | null;
   last_verified: string | null;
@@ -9564,7 +9931,7 @@ export interface SecretsAuditParams {
  * `object` is the fact value (e.g. "alice@example.com").
  * `value_hash` is SHA-256[:16] of the object, used as the DELETE path segment.
  */
-export interface ContactFact {
+export interface ContactFact extends FactAttribution {
   id: string;
   predicate: string;
   object: string;
@@ -9743,118 +10110,7 @@ export interface InsightCandidatesParams {
   limit?: number;
 }
 
-// ---------------------------------------------------------------------------
-// Owner Decision Desk -- Decisions lane (bu-ckkpz.2, epic bu-ckkpz)
-// Read from GET /api/decisions
-// ---------------------------------------------------------------------------
-
-/**
- * One open, decision-marked bead, oldest-first (mirrors
- * `butlers.jobs.decision_review.DecisionBead` / `EscalationHit`).
- *
- * Detection is resolved server-side: only open, non-epic beads carrying the
- * `decision` label appear. Title text never classifies a decision. This
- * The digest projects source-authored context when it is valid: description,
- * ordered options, default, and due-at. It deliberately omits mutation
- * controls: this remains a read-only source view.
- */
-export interface DecisionBeadSummary {
-  id: string;
-  title: string;
-  priority: number | null;
-  created_at: string;
-  age_hours: number;
-  /** Source-authored Bead description, when present. */
-  description: string | null;
-  /** Source-authored decision options, preserved in Bead metadata order. */
-  options: string[] | null;
-  /** Source-authored default option, when valid. */
-  default: string | null;
-  /** Source-authored due timestamp, when present and parseable. */
-  due_at: string | null;
-  /** Whether all structured decision metadata projected without degradation. */
-  structured_details_available: boolean;
-  /** A machine-readable reason when structured detail is partial or unavailable. */
-  structured_details_unavailable_reason: string | null;
-  /** True when this decision has blocked a P1 bug or a deploy-marked bead for >48h. */
-  escalated: boolean;
-  escalated_blocked_id?: string | null;
-  escalated_blocked_title?: string | null;
-  /** "p1_bug" | "deploy" */
-  escalated_blocked_kind?: string | null;
-  escalated_block_hours?: number | null;
-}
-
-/**
- * Metadata for GET /api/decisions. `decisions_available: false` means the
- * beads-export digest could not be read (missing/stale/unreadable) -- the
- * empty `data` MUST NOT be rendered as "no decisions waiting" (fleet-wide
- * degraded-envelope convention -- see CLAUDE.md API Conventions). A genuine
- * zero (export readable, zero decision-marked beads open) reports
- * `decisions_available: true` with an empty list.
- */
-export interface DecisionsListMeta extends ApiMeta {
-  decisions_available: boolean;
-  unavailable_reason?: string | null;
-  /**
-   * ISO timestamp of the beads export file's own mtime, whenever known
-   * (bu-hmdqz.6) -- lets the frontend render an honest "as of" plaque
-   * instead of trusting hour-precision computed ages against a single-file
-   * bind-mount that tolerates up to 14 days of staleness before
-   * `decisions_available` flips to `false`. `null`/absent only when the
-   * export was never reached (e.g. missing file).
-   */
-  export_as_of?: string | null;
-}
-
-/** GET /api/decisions response: open decision beads + digest-availability meta. */
-export interface DecisionsListResponse {
-  data: DecisionBeadSummary[];
-  meta: DecisionsListMeta;
-}
-
-// ---------------------------------------------------------------------------
-// Snapshot-backed Bead detail -- GET /api/beads/{id}
-// ---------------------------------------------------------------------------
-
-/** One bounded direct dependency summary; never a raw snapshot edge. */
-export interface BeadDependencySummary {
-  id: string;
-  title: string | null;
-  status: string | null;
-  priority: number | null;
-  type: string | null;
-}
-
-/** Strict allowlist returned by GET /api/beads/{id}. */
-export interface BeadDetail {
-  id: string;
-  title: string | null;
-  status: string | null;
-  priority: number | null;
-  type: string | null;
-  description: string | null;
-  design: string | null;
-  acceptance_criteria: string | null;
-  labels: string[];
-  created_at: string | null;
-  updated_at: string | null;
-  started_at: string | null;
-  closed_at: string | null;
-  due_at: string | null;
-  dependencies: BeadDependencySummary[];
-  /** Display-only source text; never use it as a navigation target. */
-  external_ref: string | null;
-}
-
-export interface BeadDetailMeta extends ApiMeta {
-  export_as_of: string | null;
-}
-
-export interface BeadDetailResponse {
-  data: BeadDetail;
-  meta: BeadDetailMeta;
-}
+export type InsightFeedbackVerdict = "useful" | "not_now" | "never";
 
 // ---------------------------------------------------------------------------
 // Rule-promotion approvals surface (bu-o62bc, bead 4)
@@ -10006,6 +10262,28 @@ export interface ReactionEntry {
 }
 
 /**
+ * One materialized publisher-owned event contract from
+ * public.domain_event_contracts (bu-6jv4m.8) -- each butler's published copy
+ * of its own `roster/<butler>/domain_events.toml` declaration, refreshed at
+ * startup. Read surface only: the TOML is the source of truth.
+ */
+export interface ContractEntry {
+  event_type: string;
+  publisher: string;
+  schema_version: number;
+  summary: string;
+  /** "standard" | "minimized-derived" */
+  retention_policy: string;
+  /** "expected" | "optional" */
+  reaction_expectation: string;
+  reaction_contract: string;
+  permitted_subscribers: string[];
+  required_fields: string[];
+  optional_fields: string[];
+  materialized_at: string;
+}
+
+/**
  * One public.domain_event_deliveries row joined with its event -- a fan-out
  * delivery attempt to (or from) a butler on the domain-event bus (bu-317s5).
  */
@@ -10032,4 +10310,91 @@ export interface DeliveryEntry {
    * "delivered" means the wake was scheduled, never that anyone acted.
    */
   reaction: ReactionSummary | null;
+}
+
+// ---------------------------------------------------------------------------
+// Lifestyle taste ledger (bu-2jtfw.10)
+// ---------------------------------------------------------------------------
+
+/** Ledger-wide taste counts. GET /api/lifestyle/taste/summary. */
+export type TasteSummaryQueryName =
+  | "total_works"
+  | "total_signals"
+  | "total_verdicts"
+  | "recent_signals_7d"
+  | "works_by_kind"
+  | "signals_by_kind";
+
+export interface TasteSummaryQueryAvailability {
+  query: TasteSummaryQueryName;
+  state: "available" | "unavailable";
+  /** Fixed content-blind classifier; no upstream exception text crosses the API. */
+  reason: "query_failed" | null;
+}
+
+export interface TasteSummary {
+  total_works: number;
+  total_signals: number;
+  total_verdicts: number;
+  recent_signals_7d: number;
+  works_by_kind: Record<string, number>;
+  signals_by_kind: Record<string, number>;
+  /**
+   * Complete, partial, or wholly unavailable summary coverage. The field is
+   * additive: cached or rolling-deploy responses produced before the status
+   * ledger remain usable as complete data.
+   */
+  availability?: "complete" | "partial" | "unavailable";
+  /** Stable content-blind status for every summary query section, when present. */
+  query_availability?: TasteSummaryQueryAvailability[];
+  /** False only when every summary query failed, never for a genuine empty ledger. */
+  ledger_available: boolean;
+}
+
+/** One work (track, artist, ...) in the taste ledger. */
+export interface TasteWork {
+  id: string;
+  kind: string;
+  title: string | null;
+  external_ids: Record<string, unknown>;
+  created_at: string;
+}
+
+/** One owner-asserted taste verdict, optionally tied to a work. */
+export interface TasteVerdict {
+  id: string;
+  work_id: string | null;
+  predicate: string;
+  verdict_text: string;
+  source: string;
+  created_at: string;
+}
+
+export interface TasteWorksParams {
+  kind?: string;
+  offset?: number;
+  limit?: number;
+}
+
+export interface TasteVerdictsParams {
+  offset?: number;
+  limit?: number;
+}
+
+export interface FactAttribution {
+  verified?: boolean;
+  confirmation_status?: "owner_asserted" | "owner_confirmed" | "legacy_verified" | "unconfirmed";
+  content_authority?: "owner" | "owner_device" | "third_party" | "system" | "mixed" | null;
+  reported_by?: {
+    entity_id: string | null;
+    name: string | null;
+    availability: "available" | "unavailable" | "deleted" | "forgotten" | "merged" | "unresolved" | "legacy_unknown" | "system";
+  } | null;
+  confirmed_at?: string | null;
+  confirmed_by_entity_id?: string | null;
+  confirmation_source?: string | null;
+}
+
+export interface CandidateIdentityFact extends ContactFact {
+  validity: "candidate";
 }

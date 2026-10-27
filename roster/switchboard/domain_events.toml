@@ -1,0 +1,18 @@
+# Publisher-owned domain-event contracts for the Switchboard butler (bu-q7vx1q.10).
+# See roster/travel/domain_events.toml for the format and the ownership rule.
+
+[[event]]
+type = "switchboard.security_event"
+schema_version = 1
+summary = "A first-party identity provider sent an account-security alert (sign-in, password, 2-step, recovery, deletion)."
+retention_policy = "minimized-derived"
+reaction_expectation = "optional"
+reaction_contract = """
+Typed from sender and subject metadata only by a deterministic classifier that promoted \
+ingestion rules cannot suppress. The payload names the provider, the alert kind, whether the \
+sender authentication was confirmed, and the source request id; no message text, code, link, \
+or mailbox address crosses the bus. Only an `authenticated` event warrants interrupting the \
+owner; an `unverified` one is a quiet record."""
+permitted_subscribers = []
+required_fields = ["kind", "provider", "sender_verification", "source_request_id"]
+optional_fields = ["provider_domain", "observed_at", "external_event_id"]

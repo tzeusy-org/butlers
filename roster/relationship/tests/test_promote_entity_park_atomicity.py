@@ -25,7 +25,7 @@ one.
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import shutil
 import sys
 import uuid
@@ -38,7 +38,13 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 
-from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY, PENDING_ACTIONS
+from butlers.testing.approval_delivery_schema import install_approval_delivery_schema
+from butlers.testing.schema_standins import (
+    APPROVAL_EVENTS,
+    APPROVAL_RULES,
+    ENTITY_PREDICATE_REGISTRY,
+    PENDING_ACTIONS,
+)
 from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 pytestmark = [
@@ -63,14 +69,9 @@ def _load_relationship_api_router() -> ModuleType:
     module_name = "relationship_api_router"
     if module_name in sys.modules:
         return sys.modules[module_name]
-    router_path = (
-        Path(__file__).parents[1] / "api" / "router.py"
-    )  # roster/relationship/api/router.py
-    spec = importlib.util.spec_from_file_location(module_name, router_path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    (Path(__file__).parents[1] / "api" / "router.py")  # roster/relationship/api/router.py
+    module = importlib.import_module("butlers.api._roster.relationship.router")
+    assert module.__spec__ is not None and module.__spec__.loader is not None
     return module
 
 
@@ -134,6 +135,9 @@ async def pool(provisioned_postgres_pool):
                 WHERE validity = 'active'
         """)
         await p.execute(PENDING_ACTIONS.ddl())
+        await p.execute(APPROVAL_RULES.ddl())
+        await p.execute(APPROVAL_EVENTS.ddl())
+        await install_approval_delivery_schema(p)
         # rel_034: the central writer persists evidence and a coverage receipt in
         # the same transaction as the fact, so this schema is not optional.
         await apply_evidence_schema(p)

@@ -47,6 +47,7 @@ When `webhook_url` is configured, the module calls the Telegram `setWebhook` API
 | `telegram_send_message` | Send a message to a chat by chat ID |
 | `telegram_reply_to_message` | Reply to a specific message by chat ID and message ID |
 | `telegram_react_to_message` | React to a message with an arbitrary emoji |
+| `telegram_edit_message_text` | Edit the text of a message the bot already sent; a Telegram 400 returns `{"edited": false, "error_code": 400}` instead of raising |
 
 ## Markdown Conversion
 
@@ -70,7 +71,7 @@ The module defines three reaction constants used by the daemon's ingest pipeline
 | `REACTION_SUCCESS` | Thumbs up | Pipeline completed successfully |
 | `REACTION_FAILURE` | Space invader | Pipeline error |
 
-The `react_for_ingest()` method parses `external_thread_id` (format: `"<chat_id>:<message_id>"`) from the ingest envelope and sets the appropriate reaction. Failures are silently logged -- reaction errors never block message processing.
+The `react_for_ingest()` method parses the envelope's reply target (`event.reply_target_ref`, format `"<chat_id>:<message_id>"`; its parameter keeps the historical name `external_thread_id`) and sets the appropriate reaction. Failures are silently logged -- reaction errors never block message processing.
 
 ## Implementation Details
 
@@ -91,4 +92,4 @@ None.
 - [Module System](module-system.md)
 - [Approvals Module](approvals.md) -- telegram send tools should be listed in `gated_tools`
 - [Pipeline Module](pipeline.md) -- telegram ingestion flows through the pipeline
-- [Contacts Module](contacts.md) -- Telegram contact sync and chat ID enrichment
+- [Contacts Module](contacts.md) -- Telegram contact sync

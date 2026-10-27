@@ -3,7 +3,7 @@
 // (bu-dl98i.1.4, bu-dl98i.6.3, bu-zxxyo)
 //
 // Data source: useHealthPosture -> GET /api/health
-// Fields used: auth.api_key_auth_enabled, auth.export_secret_insecure_default
+// Fields used: auth.owner_auth_enabled, auth.owner_auth_available, auth.export_secret_insecure_default
 //              security.insecure_infra_defaults
 //              security.role_enforcement_disabled
 //
@@ -12,13 +12,14 @@
 // ---------------------------------------------------------------------------
 
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+  Tile,
+  TileContent,
+  TileDescription,
+  TileHeader,
+  TileTitle,
+} from "@/components/ui/Tile"
 import { Badge } from "@/components/ui/badge"
+import { QueryTile } from "@/components/ui/query-tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useHealthPosture } from "@/hooks/use-system"
 
@@ -28,34 +29,18 @@ import { useHealthPosture } from "@/hooks/use-system"
 
 function TileSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Security Posture</CardTitle>
-        <CardDescription>Auth and secrets configuration</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile loading>
+      <TileHeader>
+        <TileTitle>Security Posture</TileTitle>
+        <TileDescription>Auth and secrets configuration</TileDescription>
+      </TileHeader>
+      <TileContent>
         <div data-testid="security-posture-tile-skeleton" className="space-y-2">
           <Skeleton className="h-5 w-48" />
           <Skeleton className="h-5 w-56" />
         </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-function TileError() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Security Posture</CardTitle>
-        <CardDescription>Auth and secrets configuration</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <p data-testid="security-posture-tile-error" className="text-destructive text-sm">
-          Could not load security posture.
-        </p>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
@@ -97,7 +82,7 @@ function PostureRow({ label, secure, secureLabel, insecureLabel, testId }: Postu
  * Displays security-posture booleans from the health endpoint.
  *
  * Indicators:
- *   - API key auth: whether the dashboard requires an X-API-Key header
+ *   - Owner authentication: whether the mandatory boundary is enabled and available
  *   - Export secret: whether DASHBOARD_EXPORT_SECRET is explicitly configured
  *   - Infra defaults: whether any infra credential is at its known default or
  *     Grafana anonymous access is enabled outside dev posture
@@ -107,28 +92,36 @@ function PostureRow({ label, secure, secureLabel, insecureLabel, testId }: Postu
  * Values are booleans only — no secret material is displayed or fetched.
  */
 export function SecurityPostureTile() {
-  const { data: response, isPending, isError } = useHealthPosture()
-
-  if (isPending) return <TileSkeleton />
-  if (isError) return <TileError />
-
-  const posture = response?.auth
-  const security = response?.security
+  const q = useHealthPosture()
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Security Posture</CardTitle>
-        <CardDescription>Auth and secrets configuration</CardDescription>
-      </CardHeader>
-      <CardContent data-testid="security-posture-tile-content">
+    <QueryTile q={q} title="Security Posture" description="Auth and secrets configuration"
+      errorMessage="Could not load security posture." errorTestId="security-posture-tile-error" loadingFallback={<TileSkeleton />}>
+      {(response) => <SecurityPostureContent response={response} />}
+    </QueryTile>
+  )
+}
+
+function SecurityPostureContent({ response }: {
+  response: NonNullable<ReturnType<typeof useHealthPosture>["data"]>
+}) {
+  const posture = response.auth
+  const security = response.security
+
+  return (
+    <Tile>
+      <TileHeader>
+        <TileTitle>Security Posture</TileTitle>
+        <TileDescription>Auth and secrets configuration</TileDescription>
+      </TileHeader>
+      <TileContent data-testid="security-posture-tile-content">
         <dl className="divide-y divide-border">
           <PostureRow
-            label="API key auth"
-            secure={posture?.api_key_auth_enabled ?? false}
+            label="Owner authentication"
+            secure={Boolean(posture?.owner_auth_enabled && posture?.owner_auth_available)}
             secureLabel="Enabled"
-            insecureLabel="Disabled (network-only)"
-            testId="posture-api-key-auth"
+            insecureLabel="Unavailable"
+            testId="posture-owner-auth"
           />
           <PostureRow
             label="Export secret"
@@ -152,7 +145,7 @@ export function SecurityPostureTile() {
             testId="posture-role-enforcement"
           />
         </dl>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }

@@ -21,6 +21,8 @@ export interface ForecastData {
   days_in_month: number
   days_elapsed: number
   mtd_usd: number
+  measured_usd?: number
+  unmeasurable_attempts?: number
   ceiling_usd: number | null
   projection_confidence: "low" | "normal"
   // True when pricing MTD from public.token_usage_ledger (the same source

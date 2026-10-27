@@ -1,4 +1,4 @@
-import { Card, CardContent } from "@/components/ui/card";
+import { Section, SectionContent } from "@/components/ui/Section";
 import { useMasterySummary, useMindMapAnalytics } from "@/hooks/use-education";
 
 interface MasterySummaryCardsProps {
@@ -15,11 +15,11 @@ export default function MasterySummaryCards({ mindMapId }: MasterySummaryCardsPr
     return (
       <div className="grid gap-4 sm:grid-cols-4">
         {[1, 2, 3, 4].map((i) => (
-          <Card key={i}>
-            <CardContent className="flex h-20 items-center justify-center text-center text-sm text-destructive">
+          <Section key={i}>
+            <SectionContent className="flex h-20 items-center justify-center text-center text-sm text-destructive">
               Couldn't load mastery summary.
-            </CardContent>
-          </Card>
+            </SectionContent>
+          </Section>
         ))}
       </div>
     );
@@ -29,11 +29,11 @@ export default function MasterySummaryCards({ mindMapId }: MasterySummaryCardsPr
     return (
       <div className="grid gap-4 sm:grid-cols-4">
         {[1, 2, 3, 4].map((i) => (
-          <Card key={i}>
-            <CardContent className="flex h-20 items-center justify-center text-muted-foreground">
+          <Section key={i}>
+            <SectionContent className="flex h-20 items-center justify-center text-muted-foreground">
               --
-            </CardContent>
-          </Card>
+            </SectionContent>
+          </Section>
         ))}
       </div>
     );
@@ -55,12 +55,12 @@ export default function MasterySummaryCards({ mindMapId }: MasterySummaryCardsPr
   return (
     <div className="grid gap-4 sm:grid-cols-4">
       {cards.map((card) => (
-        <Card key={card.label}>
-          <CardContent className="pt-4">
+        <Section key={card.label}>
+          <SectionContent className="pt-4">
             <p className="text-sm text-muted-foreground">{card.label}</p>
             <p className="text-2xl font-bold">{card.value}</p>
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
       ))}
     </div>
   );

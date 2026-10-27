@@ -18,8 +18,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 
+from butlers.api.deps import OptionalDb
 from butlers.api.models.cli_auth import (
     CLIAuthApiKeyRequest,
     CLIAuthApiKeyResponse,
@@ -57,11 +58,6 @@ router = APIRouter(prefix="/api/cli-auth", tags=["cli-auth"])
 # ---------------------------------------------------------------------------
 # DB dependency (same pattern as oauth.py)
 # ---------------------------------------------------------------------------
-
-
-def _get_db_manager() -> Any:
-    """Stub replaced at startup by wire_db_dependencies()."""
-    return None
 
 
 def _make_credential_store(db_manager: Any) -> CredentialStore | None:
@@ -167,7 +163,8 @@ def _build_on_success(db_manager: Any):
     summary="List CLI auth providers and their status",
 )
 async def list_providers(
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> list[CLIAuthProvider]:
     """List all registered CLI auth providers with current auth status.
 
@@ -215,7 +212,8 @@ async def list_providers(
 )
 async def start_auth(
     provider: str,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> CLIAuthStartResponse:
     """Spawn a CLI login subprocess and return the device code for authorization.
 
@@ -259,7 +257,7 @@ async def start_auth(
     await session.start()
 
     # Wait briefly for the device code to appear in stdout
-    await session.wait(timeout=10.0)
+    await session.wait(timeout_s=10.0)
 
     return CLIAuthStartResponse(
         session_id=session.id,
@@ -318,7 +316,8 @@ async def cancel_session(session_id: str) -> dict[str, str]:
 async def save_api_key(
     provider: str,
     body: CLIAuthApiKeyRequest,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> CLIAuthApiKeyResponse:
     """Save an API key: write to the CLI's auth file and persist to DB."""
     import json
@@ -348,9 +347,9 @@ async def save_api_key(
             provider_def.token_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
             provider_def.token_path.chmod(0o600)
             logger.info("CLI auth: wrote API key to %s", provider_def.token_path)
-        except OSError:
+        except OSError as exc:
             logger.exception("CLI auth: failed to write auth file for %s", provider_def.name)
-            raise HTTPException(status_code=500, detail="Failed to write auth file.")
+            raise HTTPException(status_code=500, detail="Failed to write auth file.") from exc
 
     # Also persist to DB for K8s restarts
     store = _make_credential_store(db_manager)
@@ -379,7 +378,8 @@ async def save_api_key(
 )
 async def delete_api_key(
     provider: str,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> dict[str, str]:
     """Remove an API key from the auth file and credential store."""
     import json
@@ -642,7 +642,8 @@ def _codex_test_authority_still_matches(
 )
 async def test_api_key(
     provider: str,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> CLIAuthTestResponse:
     """Validate a provider's stored credential.
 

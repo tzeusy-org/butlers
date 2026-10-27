@@ -8,8 +8,7 @@ The Steam module provides read-only MCP tools for querying the Steam Web API. It
 
 ### Requirement: Steam Module Configuration
 
-The implementation SHALL provide the behavior described by this requirement.
-The module is configured via `[modules.steam]` in `butler.toml`.
+The module SHALL be configured via `[modules.steam]` in `butler.toml`.
 
 #### Scenario: Config structure
 
@@ -27,8 +26,7 @@ The module is configured via `[modules.steam]` in `butler.toml`.
 
 ### Requirement: Credential Resolution
 
-The implementation SHALL provide the behavior described by this requirement.
-The module resolves Steam API keys at startup from the account registry.
+The module SHALL resolve Steam API keys at startup from the account registry.
 
 #### Scenario: Startup credential resolution
 

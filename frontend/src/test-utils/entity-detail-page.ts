@@ -27,8 +27,6 @@ export const ENTITY: EntityDetail = {
   aliases: [],
   roles: [],
   fact_count: 0,
-  linked_contact_id: null,
-  linked_contact_name: null,
   unidentified: false,
   source_butler: null,
   source_scope: null,
@@ -44,6 +42,7 @@ export const ENTITY: EntityDetail = {
   recent_facts_limit: 20,
   recent_facts_has_more: false,
   entity_info: [],
+  rebind_receipts: [],
 };
 
 // ---------------------------------------------------------------------------

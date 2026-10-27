@@ -76,7 +76,8 @@ def test_runbook_pins_tailnet_strict_tls_pull_monitor_contract() -> None:
         "10 seconds",
         "two retries",
         "owner-supplied notification route",
-        "bu-ln1v7",
+        "host operator who owns Tailscale",
+        "separate tailnet node",
     )
     for fragment in required_fragments:
         assert fragment in text, f"Runbook must retain {fragment!r}."

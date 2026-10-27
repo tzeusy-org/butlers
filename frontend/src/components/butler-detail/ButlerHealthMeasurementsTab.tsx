@@ -22,17 +22,11 @@
 
 import { useMemo } from "react";
 import { Link } from "react-router";
-import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-} from "recharts";
 
 import type {
   LatestMeasurementEntry,
+  HealthBaseline,
+  HealthBaselinesResponse,
   ExpectedSignal,
   Measurement,
   MeasurementSource,
@@ -40,22 +34,26 @@ import type {
   HealthCondition,
   SleepLatestResponse,
 } from "@/api/index.ts";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Time } from "@/components/ui/time";
+import { TimeSeriesChart, TooltipDate } from "@/components/ui/TimeSeriesChart";
 import {
   useMeasurementsLatest,
   useSleepLatest,
   useMeasurementSources,
   useExpectedSignals,
+  useHealthBaselines,
   useMeasurements,
   useMedications,
   useConditions,
 } from "@/hooks/use-health";
+import { useTickingNow } from "@/hooks/use-ticking-now";
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { useGoogleHealthStatus } from "@/hooks/use-google-health";
 import { chartColor } from "@/lib/chart-colors";
+import { DAY_MS, buildTimeSeries } from "@/lib/time-series";
 import { GoogleHealthStatusCard } from "./GoogleHealthStatusCard";
 
 // ---------------------------------------------------------------------------
@@ -134,8 +132,8 @@ interface KpiCellProps {
 
 function KpiCell({ label, value, unit, isLoading }: KpiCellProps) {
   return (
-    <Card data-testid="kpi-cell">
-      <CardContent className="pt-4">
+    <Section data-testid="kpi-cell">
+      <SectionContent className="pt-4">
         <p className="text-xs text-muted-foreground">{label}</p>
         <p className="text-2xl font-bold font-mono tnum truncate" data-testid="kpi-value">
           {isLoading ? "…" : value}
@@ -143,8 +141,8 @@ function KpiCell({ label, value, unit, isLoading }: KpiCellProps) {
         {unit && !isLoading && value !== "—" && (
           <p className="text-xs text-muted-foreground">{unit}</p>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -226,10 +224,12 @@ function fourteenDayWindow(): { since: string; until: string } {
 
 /** Shape of a chart data point for the trend sparkline. */
 interface TrendPoint {
-  ts: string;    // ISO timestamp (XAxis dataKey)
+  ts: string;    // ISO timestamp
   value: number; // numeric reading
-  label: string; // formatted display value for tooltip
+  label: string; // formatted display value for the KPI
 }
+
+const TREND_WINDOW_DAYS = 14;
 
 /**
  * Custom tooltip styled with design tokens.
@@ -241,7 +241,7 @@ function TrendTooltip({
   unit,
 }: {
   active?: boolean;
-  payload?: Array<{ value: number; payload: TrendPoint }>;
+  payload?: Array<{ value: number; payload: { x: number; value: number } }>;
   unit?: string;
 }) {
   if (!active || !payload?.length) return null;
@@ -251,9 +251,11 @@ function TrendTooltip({
       className="rounded border border-border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-sm"
       data-testid="trend-tooltip"
     >
-      <p className="text-muted-foreground">{point.ts.slice(0, 10)}</p>
+      <p className="text-muted-foreground">
+        <TooltipDate x={point.x} />
+      </p>
       <p className="font-mono tnum font-medium">
-        {point.label}
+        {point.value}
         {unit ? <span className="ml-1 text-muted-foreground">{unit}</span> : null}
       </p>
     </div>
@@ -271,6 +273,7 @@ function TrendSparkline({
   label,
   valueKey,
   unit,
+  band,
 }: {
   measurements: Measurement[];
   isLoading: boolean;
@@ -278,9 +281,10 @@ function TrendSparkline({
   label: string;
   valueKey?: string;
   unit?: string;
+  band?: HealthBaseline["band"];
 }) {
   const prefersReducedMotion = usePrefersReducedMotion();
-  const chartData = useMemo(() => {
+  const points = useMemo(() => {
     const sorted = measurements
       .slice()
       .sort((a, b) => new Date(a.measured_at).getTime() - new Date(b.measured_at).getTime());
@@ -298,6 +302,18 @@ function TrendSparkline({
 
     return points;
   }, [measurements, valueKey]);
+  const windowEnd = useTickingNow(60_000);
+  const series = useMemo(() => {
+    return buildTimeSeries(
+      points.map((p) => ({ at: p.ts, values: { value: p.value } })),
+      ["value"],
+      {
+        windowStart: windowEnd - TREND_WINDOW_DAYS * DAY_MS,
+        windowEnd,
+        maxGapMs: 3 * DAY_MS,
+      },
+    );
+  }, [points, windowEnd]);
 
   if (isLoading) {
     return <LoadingLine />;
@@ -307,13 +323,13 @@ function TrendSparkline({
     return <EmptyLine>{`Could not load ${label.toLowerCase()} trend.`}</EmptyLine>;
   }
 
-  if (chartData.length === 0) {
+  if (series.observationCount === 0) {
     return <EmptyLine>No readings in window</EmptyLine>;
   }
 
   // Derive latest value from the last valid chartData point so the KPI always
   // matches the chart (the unfiltered sorted array may end on a non-numeric reading).
-  const lastPoint = chartData[chartData.length - 1];
+  const lastPoint = points.filter((p) => new Date(p.ts).getTime() === series.lastReadingAt).at(-1);
   const latestValue = lastPoint?.label ?? "—";
 
   return (
@@ -328,28 +344,19 @@ function TrendSparkline({
         )}
       </div>
       {/* Sparkline */}
-      <div data-testid="trend-sparkline">
-        <ResponsiveContainer width="100%" height={80}>
-          <LineChart data={chartData} margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
-            <XAxis dataKey="ts" hide />
-            <YAxis hide domain={["auto", "auto"]} />
-            <Tooltip
-              content={<TrendTooltip unit={unit} />}
-              isAnimationActive={!prefersReducedMotion}
-            />
-            <Line
-              dataKey="value"
-              type="monotone"
-              stroke={chartColor()}
-              dot={false}
-              strokeWidth={1.5}
-              isAnimationActive={!prefersReducedMotion}
-            />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
+      <TimeSeriesChart
+        testId="trend-sparkline"
+        series={series}
+        lines={[{ key: "value", name: label, stroke: chartColor() }]}
+        height={80}
+        compact
+        yDomain={["auto", "auto"]}
+        band={band ?? undefined}
+        tooltip={<TrendTooltip unit={unit} />}
+        animate={!prefersReducedMotion}
+      />
       {/* Screen-reader text alternative for the decorative chart */}
-      <p className="sr-only">{`${label} trend · ${chartData.length} readings over 14 days`}</p>
+      <p className="sr-only">{`${label} trend · ${series.observationCount} readings over ${TREND_WINDOW_DAYS} days`}</p>
     </div>
   );
 }
@@ -364,40 +371,43 @@ function TrendPanel({
   valueKey,
   unit,
   drilldownLink,
+  baseline,
 }: {
   title: string;
   type: string;
   valueKey?: string;
   unit?: string;
   drilldownLink?: string;
+  baseline?: HealthBaseline;
 }) {
   const { since, until } = useMemo(() => fourteenDayWindow(), []);
   const { data, isLoading, isError } = useMeasurements({ type, since, until, limit: 50 });
   const measurements = data?.data ?? [];
 
   return (
-    <Card data-testid={`trend-panel-${type}`}>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium flex items-center justify-between">
+    <Section data-testid={`trend-panel-${type}`}>
+      <SectionHeader className="pb-2">
+        <SectionTitle className="flex items-center justify-between">
           {title} · 14d
           {drilldownLink && (
             <Button variant="ghost" size="sm" asChild className="text-xs text-muted-foreground">
               <Link to={drilldownLink}>View all</Link>
             </Button>
           )}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
+        </SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         <TrendSparkline
           measurements={measurements}
           isLoading={isLoading}
           isError={isError}
           label={title}
+          band={baseline?.state === "ready" ? baseline.band : null}
           valueKey={valueKey}
           unit={unit}
         />
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -417,18 +427,18 @@ function SleepStagesPanel({ sleep, isLoading }: { sleep: SleepLatestResponse | u
   const totalMinutes = stages.reduce((sum, s) => sum + s.duration_minutes, 0);
 
   return (
-    <Card data-testid="sleep-stages-panel">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium">
+    <Section data-testid="sleep-stages-panel">
+      <SectionHeader className="pb-2">
+        <SectionTitle>
           Sleep stages
           {sleep?.session_date ? (
             <span className="ml-2 text-xs font-normal text-muted-foreground">
               <Time value={sleep.session_date} mode="absolute" precision="day" compact />
             </span>
           ) : null}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
+        </SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         {isLoading ? (
           <LoadingLine />
         ) : stages.length === 0 ? (
@@ -478,8 +488,8 @@ function SleepStagesPanel({ sleep, isLoading }: { sleep: SleepLatestResponse | u
             </ul>
           </div>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -497,11 +507,11 @@ function SourcesPanel({
   isError: boolean;
 }) {
   return (
-    <Card data-testid="sources-panel">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium">Measurement sources</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section data-testid="sources-panel">
+      <SectionHeader className="pb-2">
+        <SectionTitle>Measurement sources</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         {isLoading ? (
           <LoadingLine />
         ) : isError ? (
@@ -533,8 +543,8 @@ function SourcesPanel({
             ))}
           </ul>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -550,11 +560,11 @@ function ExpectedSignalsPanel({
   isError: boolean;
 }) {
   return (
-    <Card data-testid="expected-signals-panel">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium">Expected measurements</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section data-testid="expected-signals-panel">
+      <SectionHeader className="pb-2">
+        <SectionTitle>Expected measurements</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         {isLoading ? (
           <LoadingLine testId="expected-signals-loading" />
         ) : isError || !available ? (
@@ -605,8 +615,8 @@ function ExpectedSignalsPanel({
             })}
           </ul>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -624,16 +634,16 @@ function ActiveMedicationsPanel({
   const active = medications.filter((m) => m.active);
 
   return (
-    <Card data-testid="active-medications-panel">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium flex items-center justify-between">
+    <Section data-testid="active-medications-panel">
+      <SectionHeader className="pb-2">
+        <SectionTitle className="flex items-center justify-between">
           Active medications
           <Button variant="ghost" size="sm" asChild className="text-xs text-muted-foreground">
             <Link to="/health/medications">View all</Link>
           </Button>
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
+        </SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         {isLoading ? (
           <LoadingLine />
         ) : active.length === 0 ? (
@@ -650,8 +660,8 @@ function ActiveMedicationsPanel({
             ))}
           </ul>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -673,16 +683,16 @@ function RecentConditionsPanel({
   isLoading: boolean;
 }) {
   return (
-    <Card data-testid="recent-conditions-panel">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium flex items-center justify-between">
+    <Section data-testid="recent-conditions-panel">
+      <SectionHeader className="pb-2">
+        <SectionTitle className="flex items-center justify-between">
           Recent conditions
           <Button variant="ghost" size="sm" asChild className="text-xs text-muted-foreground">
             <Link to="/health/conditions">View all</Link>
           </Button>
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
+        </SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         {isLoading ? (
           <LoadingLine />
         ) : conditions.length === 0 ? (
@@ -713,18 +723,98 @@ function RecentConditionsPanel({
             ))}
           </ul>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
 // ---------------------------------------------------------------------------
+// Baseline display uses only the scorer's three declared metrics. Generic heart_rate
+// is intentionally separate from resting_hr and never receives its range.
+const BASELINE_LABELS = [
+  ["resting_hr", "Resting heart rate usual range"],
+  ["hrv", "HRV usual range"],
+  ["sleep_duration", "Sleep duration usual range"],
+] as const;
+
+const BASELINE_REASONS: Record<HealthBaseline["state"], string> = {
+  ready: "No usual range yet",
+  insufficient_history: "Not enough history",
+  unmeasurable: "Measurement source unavailable",
+  stale: "Usual range is out of date",
+  no_baseline: "No usual range yet",
+};
+
+function BaselinesPanel({ data, isLoading, isError }: {
+  data?: HealthBaselinesResponse;
+  isLoading: boolean;
+  isError: boolean;
+}) {
+  if (isLoading) return <LoadingLine testId="baselines-loading" />;
+
+  return (
+    <Section>
+      <SectionHeader>
+        <SectionTitle>Your usual ranges</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
+        {isError || !data?.available ? (
+          <EmptyLine>Usual ranges unavailable</EmptyLine>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            {BASELINE_LABELS.map(([key, label]) => {
+              const reading = data.baselines?.find((b) => b.metric_key === key);
+              const band = reading?.state === "ready" ? reading.band : null;
+              const reason = BASELINE_REASONS[reading?.state ?? "no_baseline"];
+              return (
+                <div key={key} data-testid={`baseline-${key}`} className="space-y-1">
+                  <p className="text-xs text-muted-foreground">{label}</p>
+                  {band ? (
+                    <>
+                      <p className="font-mono tnum text-sm">
+                        {band.low.toFixed(1).replace(/\.0$/, "")}–{band.high.toFixed(1).replace(/\.0$/, "")} {reading?.unit}
+                      </p>
+                      <div
+                        role="img"
+                        aria-label={`${label}: ${band.low} to ${band.high} ${reading?.unit}`}
+                        className="h-1.5 rounded bg-chart-1/20"
+                      />
+                    </>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">{reason}</p>
+                  )}
+                  {reading && reading.n_expected > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      {reading.n_observed} of {reading.n_expected} days
+                    </p>
+                  )}
+                  {reading?.state === "stale" && reading.computed_at && (
+                    <p className="text-xs text-muted-foreground">
+                      Computed <Time value={reading.computed_at} />
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </SectionContent>
+    </Section>
+  );
+}
+
 // ButlerHealthMeasurementsTab — composed entry point
 // ---------------------------------------------------------------------------
 
 export default function ButlerHealthMeasurementsTab() {
   // Google Health connector status (for the per-account status card)
   const { data: googleHealthStatus } = useGoogleHealthStatus();
+
+  const baselineQuery = useHealthBaselines();
+  const hrvBaseline =
+    !baselineQuery.isLoading && !baselineQuery.isError && baselineQuery.data?.available
+      ? baselineQuery.data.baselines?.find((b) => b.metric_key === "hrv")
+      : undefined;
 
   // Row 1: KPI quartet
   const { data: latestData, isLoading: latestLoading } = useMeasurementsLatest([
@@ -775,6 +865,12 @@ export default function ButlerHealthMeasurementsTab() {
         isLoading={kpiLoading}
       />
 
+      <BaselinesPanel
+        data={baselineQuery.data}
+        isLoading={baselineQuery.isLoading}
+        isError={baselineQuery.isError}
+      />
+
       {/* Row 2: Glucose trend + Heart rate trend */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <TrendPanel
@@ -795,6 +891,7 @@ export default function ButlerHealthMeasurementsTab() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <TrendPanel
           title="HRV"
+          baseline={hrvBaseline}
           type="hrv"
           unit="ms"
           drilldownLink="/health/measurements"

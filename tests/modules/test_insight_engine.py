@@ -10,11 +10,9 @@ Covers per bu-e38f:
 7. Digest formatting with multiple butlers
 8. dedup_key format validation errors
 
-These tests are unit-level (no Docker required) — they use in-process asyncpg
-mocks or an in-memory SQLite-style fixture via inline table creation on a real
-Postgres container fixture when available. For CI portability we use the
-``provisioned_postgres_pool`` session fixture for DB-backed scenarios, but
-mark Docker-requiring tests so they are skipped when Docker is unavailable.
+Unit cases use in-process mocks without Docker. DB-backed scenarios use a
+core-migrated PostgreSQL database with per-test Insight state cleanup, and are
+marked as requiring Docker.
 
 Issue: bu-e38f
 """
@@ -25,9 +23,14 @@ import shutil
 import sys
 import uuid
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
+import asyncpg
 import pytest
+
+from butlers.db import register_jsonb_codec
+from butlers.testing.clock import FakeClock
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 _docker_available = shutil.which("docker") is not None
 
@@ -43,11 +46,11 @@ pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
 # The instant handed to every broker call below that takes ``now=``. The broker
-# derives its whole window from the instant it is given — compute_effective_budget
-# looks back ``window_days``, check_total_disengagement_auto_off truncates to
-# midnight and counts fourteen day buckets, delivery_cycle asks the Owner
-# Attention Policy whether this hour is quiet — so naming the instant is what
-# makes those windows mean the same thing on a 03:00 run and a 23:00 one.
+# derives its whole window from the instant it is given —
+# check_total_disengagement_auto_off truncates to midnight and counts fourteen
+# day buckets, delivery_cycle asks the Owner Attention Policy whether this hour
+# is quiet — so naming the instant is what makes those windows mean the same
+# thing on a 03:00 run and a 23:00 one.
 #
 # 12:00 UTC is 20:00 in Asia/Singapore, comfortably outside the quiet window the
 # ``insight_pool`` fixture seeds below, so a cycle run at this instant is awake.
@@ -57,15 +60,11 @@ _PINNED_NOW = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
 # default core_160 writes into ``public.approvals_policy`` for this single-owner
 # (Asia/Singapore) deployment.
 #
-# Seeding it is what gives ``_PINNED_NOW`` something to be quiet or loud
-# *relative to*. Without the row the table does not exist at all, so
-# ``get_approvals_policy_quiet_hours`` catches the UndefinedTableError, returns
-# ``None``, and ``is_policy_quiet_now`` reports every hour of every day as
-# awake: the quiet-hours branch of ``delivery_cycle`` was unreachable and a
-# cycle that omitted ``now=`` could not observe suppression however loud the
-# wall clock got. With the row present the window is real — 23:00-08:00 SGT is
-# 15:00-24:00 UTC — so a cycle handed the wall clock is suppressed for nine
-# hours of every day, and every call site has to name its own instant.
+# Seeding it gives ``_PINNED_NOW`` a real quiet window to evaluate. The migrated
+# schema also supplies user_context, so an empty context read succeeds rather
+# than being confused with an unavailable table. Missing/unreadable attention
+# state must hold routine delivery, not authorize it. The real 23:00-08:00 SGT
+# window is 15:00-24:00 UTC; each cycle still names its own instant.
 _DEFAULT_QUIET_START_HOUR = 23
 _DEFAULT_QUIET_END_HOUR = 8
 _DEFAULT_QUIET_TIMEZONE = "Asia/Singapore"
@@ -98,11 +97,12 @@ class TestInsightExpiryHelpers:
     async def test_expiry_helpers_ignore_far_wall_clock(self, monkeypatch, helper, expected):
         """Expiry fixtures must remain relative to the delivery-cycle instant."""
         real_datetime = datetime
+        far_clock = FakeClock(real_datetime(2040, 1, 1, tzinfo=UTC))
 
         class FarWallClockDatetime(real_datetime):
             @classmethod
             def now(cls, tz=None):
-                return real_datetime(2040, 1, 1, tzinfo=tz or UTC)
+                return far_clock.now().replace(tzinfo=tz or UTC)
 
         monkeypatch.setattr(sys.modules[__name__], "datetime", FarWallClockDatetime)
 
@@ -114,19 +114,32 @@ class TestInsightExpiryHelpers:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-async def insight_pool(provisioned_postgres_pool):
-    """Provision a fresh database with insight tables and the owner policy.
+@pytest.fixture(scope="module")
+def migrated_db_url(postgres_container) -> str:
+    """Provision the actual shared context/policy schema once for this module."""
+    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
 
-    The Owner Attention Policy is part of the schema every one of these tests
-    runs against in production, so it is seeded here with its production
-    default. A test that is *about* suppression overrides it with
-    :func:`_set_owner_attention_policy`.
-    """
+
+@pytest.fixture
+async def insight_pool(migrated_db_url: str):
+    """Reset test-owned Insight state on the migrated core schema."""
     from butlers.tools.switchboard.insight.broker import create_insight_tables
 
-    async with provisioned_postgres_pool() as pool:
+    pool = await asyncpg.create_pool(
+        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+    )
+    try:
         await create_insight_tables(pool)
+        await pool.execute("""
+            TRUNCATE insight_amendments, insight_feedback, insight_engagement,
+                insight_candidates, insight_cooldowns, insight_settings,
+                attention_daily_rollup
+        """)
+        await pool.execute("""
+            UPDATE public.user_context
+            SET superseded_at = now()
+            WHERE signal_type <> 'dnd' AND superseded_at IS NULL
+        """)
         await _set_owner_attention_policy(
             pool,
             quiet_start_hour=_DEFAULT_QUIET_START_HOUR,
@@ -134,6 +147,39 @@ async def insight_pool(provisioned_postgres_pool):
             timezone=_DEFAULT_QUIET_TIMEZONE,
         )
         yield pool
+    finally:
+        await pool.close()
+
+
+async def _insert_history_candidate(
+    pool,
+    *,
+    delivered_at: datetime,
+    category: str = "history",
+    origin_butler: str = "health",
+) -> str:
+    """Create a real terminal parent for an independent engagement-history row."""
+    now = datetime.now(UTC)
+    # Recent creation keeps this parent outside retention's candidate-delete
+    # target while its engagement timestamp exercises the intended history day.
+    # Delivered status prevents the parent from entering a delivery working set.
+    return str(
+        await pool.fetchval(
+            """
+            INSERT INTO insight_candidates
+                (origin_butler, priority, category, dedup_key, expires_at, message,
+                 status, delivered_at, created_at)
+            VALUES ($1, 1, $2, $3, $4, 'Historical engagement', 'delivered', $5, $6)
+            RETURNING id
+            """,
+            origin_butler,
+            category,
+            f"history:{uuid.uuid4()}",
+            now + timedelta(days=1),
+            delivered_at,
+            now,
+        )
+    )
 
 
 async def _set_owner_attention_policy(
@@ -339,6 +385,15 @@ class TestEndToEndInsightFlow:
         assert not cycle_result["skipped"]
         assert len(cycle_result["delivered"]) == 1
         assert notify_mock.called
+        feedback_actions = notify_mock.await_args.args[1]["feedback_actions"]
+        assert feedback_actions == [
+            {
+                "insight_id": cycle_result["delivered"][0],
+                "useful": (f"/api/switchboard/insights/{cycle_result['delivered'][0]}/useful"),
+                "snooze": (f"/api/switchboard/insights/{cycle_result['delivered'][0]}/snooze"),
+                "mute": f"/api/switchboard/insights/{cycle_result['delivered'][0]}/mute",
+            }
+        ]
 
         # Message should be standalone (prefix + message)
         delivered_msg = cycle_result["delivery_message"]
@@ -365,6 +420,8 @@ class TestEndToEndInsightFlow:
         engagement = await insight_pool.fetchrow("SELECT * FROM insight_engagement")
         assert engagement is not None
         assert engagement["engaged"] is False
+        assert engagement["category"] == "birthday"
+        assert engagement["origin_butler"] == "relationship"
 
     async def test_candidate_not_redelivered_after_delivery(self, insight_pool):
         """A delivered candidate is not re-delivered in a subsequent cycle."""
@@ -426,7 +483,11 @@ class TestEndToEndInsightFlow:
         )
 
         notify_mock = AsyncMock(return_value={"status": "sent"})
-        result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
+        with patch(
+            "butlers.tools.switchboard.insight.broker.record_attention_event",
+            new=AsyncMock(),
+        ) as ledger_mock:
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         assert result["expired"] >= 1
         assert len(result["delivered"]) == 0
@@ -437,6 +498,210 @@ class TestEndToEndInsightFlow:
             "health:old:user-1:2025",
         )
         assert status == "expired"
+        ledger_mock.assert_awaited_once()
+        assert ledger_mock.await_args.kwargs["outcome"] == "expired"
+        assert ledger_mock.await_args.kwargs["reason"] == "blocked_by:budget"
+
+    async def test_feedback_never_not_now_and_useful_are_reversible(self, insight_pool):
+        from butlers.tools.switchboard.insight.broker import (
+            filter_by_cooldown,
+            propose_insight_candidate,
+            record_insight_feedback,
+        )
+
+        await propose_insight_candidate(
+            insight_pool,
+            origin_butler="health",
+            priority=70,
+            category="Health",
+            dedup_key="health:medication:2026-08",
+            message="Medication check",
+            expires_at=_future(),
+            now=_PINNED_NOW,
+        )
+        first = await insight_pool.fetchrow(
+            "SELECT id FROM insight_candidates WHERE dedup_key='health:medication:2026-08'"
+        )
+        insight_id = str(first["id"])
+
+        never = await record_insight_feedback(
+            insight_pool,
+            insight_id=insight_id,
+            verdict="never",
+            actor="owner",
+            now=_PINNED_NOW,
+        )
+        assert never == {
+            "status": "recorded",
+            "verdict": "never",
+            "insight_id": insight_id,
+            "snooze_until": None,
+        }
+        cooldown = await insight_pool.fetchrow(
+            "SELECT cooldown_until, reason FROM insight_cooldowns WHERE dedup_key=$1",
+            "health:medication",
+        )
+        assert cooldown["reason"] == "never"
+        assert cooldown["cooldown_until"].year == 9999
+
+        useful = await record_insight_feedback(
+            insight_pool,
+            insight_id=insight_id,
+            verdict="useful",
+            actor="owner",
+            now=_PINNED_NOW + timedelta(minutes=1),
+        )
+        assert useful == {
+            "status": "recorded",
+            "verdict": "useful",
+            "insight_id": insight_id,
+            "snooze_until": None,
+        }
+        assert (
+            await insight_pool.fetchval(
+                "SELECT count(*) FROM insight_cooldowns WHERE dedup_key=$1", "health:medication"
+            )
+            == 0
+        )
+
+        snooze_until = _PINNED_NOW + timedelta(days=3)
+        await record_insight_feedback(
+            insight_pool,
+            insight_id=insight_id,
+            verdict="not_now",
+            snooze_until=snooze_until,
+            actor="owner",
+            now=_PINNED_NOW,
+        )
+        assert (
+            await filter_by_cooldown(
+                insight_pool, [insight_id], now=_PINNED_NOW + timedelta(days=1)
+            )
+            == []
+        )
+
+    async def test_category_weights_keep_global_capacity_for_an_engaged_category(
+        self, insight_pool
+    ):
+        from butlers.tools.switchboard.insight.broker import (
+            compute_category_budget_weights,
+            delivery_cycle,
+            record_insight_feedback,
+        )
+
+        for index in range(10):
+            await insight_pool.execute(
+                """
+                INSERT INTO insight_engagement
+                    (insight_id, delivered_at, engaged, category, origin_butler)
+                VALUES ($1::uuid, $2, $3, 'Health', 'health')
+                """,
+                await _insert_history_candidate(
+                    insight_pool,
+                    delivered_at=_PINNED_NOW - timedelta(minutes=index),
+                    category="Health",
+                    origin_butler="health",
+                ),
+                _PINNED_NOW - timedelta(minutes=index),
+                index == 0,
+            )
+        await insight_pool.execute(
+            """
+            INSERT INTO insight_engagement
+                (insight_id, delivered_at, engaged, category, origin_butler)
+            VALUES ($1::uuid, $2, TRUE, 'Finance', 'finance')
+            """,
+            await _insert_history_candidate(
+                insight_pool, delivered_at=_PINNED_NOW, category="Finance", origin_butler="finance"
+            ),
+            _PINNED_NOW,
+        )
+
+        decisions = await compute_category_budget_weights(
+            insight_pool,
+            ["Health", "Finance"],
+            configured_budget=3,
+            now=_PINNED_NOW,
+        )
+        assert decisions["Health"]["weight"] == 0.5
+        assert decisions["Finance"]["weight"] == 1.0
+        assert decisions["Health"]["budget"] == 1
+        assert decisions["Finance"]["budget"] == 3
+        assert decisions["Health"]["reason"] == "hearing less from Health: 9 of last 10 ignored"
+
+        insight_id = await insight_pool.fetchval(
+            """
+            INSERT INTO insight_candidates
+                (origin_butler, priority, category, dedup_key, expires_at, message)
+            VALUES ('health', 60, 'Health', 'health:restore:2026', $1, 'restore')
+            RETURNING id
+            """,
+            _future(),
+        )
+        await insight_pool.execute(
+            """
+            INSERT INTO insight_candidates
+                (origin_butler, priority, category, dedup_key, expires_at, message)
+            VALUES ('finance', 60, 'Finance', 'finance:budget:2026', $1, 'budget')
+            """,
+            _future(),
+        )
+        await insight_pool.execute(
+            "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'normal') "
+            "ON CONFLICT (id) DO UPDATE SET verbosity = 'normal'"
+        )
+        cycle = await delivery_cycle(
+            insight_pool,
+            notify_fn=AsyncMock(return_value={"status": "sent"}),
+            now=_PINNED_NOW,
+        )
+        assert cycle["effective_budget"] == 3
+        assert len(cycle["delivered"]) == 2
+
+        await record_insight_feedback(
+            insight_pool,
+            insight_id=str(insight_id),
+            verdict="useful",
+            actor="owner",
+            now=_PINNED_NOW + timedelta(minutes=1),
+        )
+        restored = await compute_category_budget_weights(
+            insight_pool,
+            ["Health", "Finance"],
+            configured_budget=3,
+            now=_PINNED_NOW + timedelta(minutes=1),
+        )
+        assert restored["Health"]["weight"] == 1.0
+        assert restored["Health"]["budget"] == 3
+        assert restored["Finance"]["weight"] == 1.0
+
+    async def test_equal_priority_prefers_candidate_expiring_before_next_cycle(self, insight_pool):
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await insight_pool.execute(
+            "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'minimal') "
+            "ON CONFLICT (id) DO UPDATE SET verbosity='minimal'"
+        )
+        await insight_pool.execute(
+            """
+            INSERT INTO insight_candidates
+                (origin_butler, priority, category, dedup_key, expires_at, message, created_at)
+            VALUES
+                ('health', 70, 'Health', 'health:later:2026', $1, 'survives', $3),
+                ('health', 70, 'Health', 'health:soon:2026', $2, 'expires soon', $3 + interval '1 minute')
+            """,
+            _PINNED_NOW + timedelta(days=2),
+            _PINNED_NOW + timedelta(hours=6),
+            _PINNED_NOW,
+        )
+        notify_mock = AsyncMock(return_value={"status": "sent"})
+
+        result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
+
+        delivered = await insight_pool.fetchval(
+            "SELECT message FROM insight_candidates WHERE id=$1::uuid", result["delivered"][0]
+        )
+        assert delivered == "expires soon"
 
 
 # ===========================================================================
@@ -792,88 +1057,28 @@ class TestCooldownEnforcement:
 
 
 # ===========================================================================
-# Category 7: Adaptive delivery with low engagement (requires Docker)
+# Category 7: Configured global capacity (requires Docker)
 # ===========================================================================
 
 
 @pytest.mark.skipif(not _docker_available, reason="Docker not available")
 @pytest.mark.integration
-class TestAdaptiveDelivery:
-    """Adaptive delivery: budget reduces when user engagement is low."""
+class TestConfiguredGlobalCapacity:
+    """Category signals must not lower the owner's global delivery capacity."""
 
-    async def test_full_budget_when_engagement_above_50_percent(self, insight_pool):
-        """engagement_rate >= 0.5 → full configured budget."""
+    async def test_aggregate_disengagement_does_not_reduce_configured_cap(self, insight_pool):
         from butlers.tools.switchboard.insight.broker import compute_effective_budget
 
         settings = {"verbosity": "normal", "custom_budget": None}
         now = _PINNED_NOW
-        # Insert 10 deliveries, 6 engaged (60%)
-        for i in range(6):
-            await insight_pool.execute(
-                """
-                INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
-                VALUES ($1::uuid, $2, TRUE)
-            """,
-                str(uuid.uuid4()),
-                now - timedelta(days=i),
-            )
-        for i in range(4):
-            await insight_pool.execute(
-                """
-                INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
-                VALUES ($1::uuid, $2, FALSE)
-            """,
-                str(uuid.uuid4()),
-                now - timedelta(days=i),
-            )
-
-        budget = await compute_effective_budget(insight_pool, settings, now=now)
-        # normal budget=3, engagement=60% → no reduction
-        assert budget == 3
-
-    async def test_budget_reduced_one_when_moderate_disengagement(self, insight_pool):
-        """0.25 <= engagement_rate < 0.5 → max(1, configured_budget - 1)."""
-        from butlers.tools.switchboard.insight.broker import compute_effective_budget
-
-        settings = {"verbosity": "normal", "custom_budget": None}
-        now = _PINNED_NOW
-        # 3 engaged, 10 total → 30% engagement
-        for i in range(3):
-            await insight_pool.execute(
-                """
-                INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
-                VALUES ($1::uuid, $2, TRUE)
-            """,
-                str(uuid.uuid4()),
-                now - timedelta(days=i),
-            )
-        for i in range(7):
-            await insight_pool.execute(
-                """
-                INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
-                VALUES ($1::uuid, $2, FALSE)
-            """,
-                str(uuid.uuid4()),
-                now - timedelta(days=i),
-            )
-
-        budget = await compute_effective_budget(insight_pool, settings, now=now)
-        # normal budget=3, engagement=30% → max(1, 3-1) = 2
-        assert budget == 2
-
-    async def test_budget_becomes_1_when_severe_disengagement(self, insight_pool):
-        """engagement_rate < 0.25 → effective budget = 1."""
-        from butlers.tools.switchboard.insight.broker import compute_effective_budget
-
-        settings = {"verbosity": "verbose", "custom_budget": None}
-        now = _PINNED_NOW
-        # 1 engaged, 10 total → 10%
+        # One engaged delivery across ten records is severe aggregate
+        # disengagement, but category shaping must not turn it into a global cap.
         await insight_pool.execute(
             """
             INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, TRUE)
         """,
-            str(uuid.uuid4()),
+            await _insert_history_candidate(insight_pool, delivered_at=now - timedelta(days=1)),
             now - timedelta(days=1),
         )
         for i in range(9):
@@ -882,47 +1087,12 @@ class TestAdaptiveDelivery:
                 INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
                 VALUES ($1::uuid, $2, FALSE)
             """,
-                str(uuid.uuid4()),
+                await _insert_history_candidate(insight_pool, delivered_at=now - timedelta(days=i)),
                 now - timedelta(days=i),
             )
 
         budget = await compute_effective_budget(insight_pool, settings, now=now)
-        assert budget == 1
-
-    async def test_no_penalty_when_no_engagement_history(self, insight_pool):
-        """No deliveries in 14-day window → engagement_rate = 1.0 (no reduction)."""
-        from butlers.tools.switchboard.insight.broker import compute_effective_budget
-
-        settings = {"verbosity": "verbose", "custom_budget": None}
-        budget = await compute_effective_budget(insight_pool, settings)
-        assert budget == 5  # verbose budget with no history
-
-    async def test_no_automatic_increase_after_improvement(self, insight_pool):
-        """Improvement in engagement does NOT automatically restore budget.
-
-        Once reduced by adaptive logic, the user MUST explicitly change their
-        verbosity setting. We verify the engine uses the configured budget
-        as ceiling — it never exceeds it.
-        """
-        from butlers.tools.switchboard.insight.broker import compute_effective_budget
-
-        # Start with minimal budget=1
-        settings = {"verbosity": "minimal", "custom_budget": None}
-        now = _PINNED_NOW
-        # Perfect engagement
-        for i in range(5):
-            await insight_pool.execute(
-                """
-                INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
-                VALUES ($1::uuid, $2, TRUE)
-            """,
-                str(uuid.uuid4()),
-                now - timedelta(days=i),
-            )
-
-        budget = await compute_effective_budget(insight_pool, settings, now=now)
-        # Engagement rate = 100%, configured = 1 → cannot exceed configured
-        assert budget == 1
+        assert budget == 3
 
 
 # ===========================================================================
@@ -1556,6 +1726,36 @@ class TestBudgetEnforcement:
         )
         assert pending == 2
 
+        from butlers.tools.switchboard.insight.broker import expire_candidates
+
+        budget_rows = await insight_pool.fetch(
+            "SELECT id, metadata, expires_at FROM insight_candidates WHERE status = 'pending'"
+        )
+        assert len(budget_rows) == 2
+        assert all(row["metadata"]["blocked_by"] == "budget" for row in budget_rows)
+        expiry_now = max(row["expires_at"] for row in budget_rows) + timedelta(seconds=1)
+        with patch(
+            "butlers.tools.switchboard.insight.broker.record_attention_event",
+            new=AsyncMock(return_value="expiry-id"),
+        ) as expiry_ledger:
+            assert await expire_candidates(insight_pool, now=expiry_now) == 2
+            assert expiry_ledger.await_count == 2
+            receipts = [call.kwargs for call in expiry_ledger.call_args_list]
+            assert {receipt["notification_ref"] for receipt in receipts} == {
+                str(row["id"]) for row in budget_rows
+            }
+            assert all(receipt["outcome"] == "expired" for receipt in receipts)
+            assert all(receipt["reason"] == "blocked_by:budget" for receipt in receipts)
+            assert await expire_candidates(insight_pool, now=expiry_now) == 0
+            assert expiry_ledger.await_count == 2
+        assert (
+            await insight_pool.fetchval(
+                "SELECT COUNT(*) FROM insight_candidates WHERE status = 'delivered'"
+            )
+            == 1
+        )
+        notify_mock.assert_awaited_once()
+
     @pytest.mark.pg_clock
     async def test_highest_priority_candidate_wins_under_budget(self, insight_pool):
         """When budget=1, the highest-priority candidate is selected."""
@@ -1704,8 +1904,8 @@ class TestCleanup:
 
         old_delivered_at = datetime.now(UTC) - timedelta(days=35)
         recent_delivered_at = datetime.now(UTC) - timedelta(days=5)
-        old_id = str(uuid.uuid4())
-        recent_id = str(uuid.uuid4())
+        old_id = await _insert_history_candidate(insight_pool, delivered_at=old_delivered_at)
+        recent_id = await _insert_history_candidate(insight_pool, delivered_at=recent_delivered_at)
 
         await insight_pool.execute(
             """
@@ -1754,7 +1954,9 @@ class TestCleanup:
             INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, TRUE)
             """,
-            str(uuid.uuid4()),
+            await _insert_history_candidate(
+                insight_pool, delivered_at=old_day_midnight + timedelta(hours=2)
+            ),
             old_day_midnight + timedelta(hours=2),
         )
         await insight_pool.execute(
@@ -1762,7 +1964,9 @@ class TestCleanup:
             INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, FALSE)
             """,
-            str(uuid.uuid4()),
+            await _insert_history_candidate(
+                insight_pool, delivered_at=old_day_midnight + timedelta(hours=3)
+            ),
             old_day_midnight + timedelta(hours=3),
         )
         await insight_pool.execute(
@@ -1770,7 +1974,9 @@ class TestCleanup:
             INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, FALSE)
             """,
-            str(uuid.uuid4()),
+            await _insert_history_candidate(
+                insight_pool, delivered_at=recent_day_midnight + timedelta(hours=2)
+            ),
             recent_day_midnight + timedelta(hours=2),
         )
 
@@ -2007,7 +2213,7 @@ class TestAutoOffTotalDisengagement:
             # and <= day -1), safely below the exclusive window_end (today_midnight).
             day_ts = today_midnight - timedelta(days=num_days - day_offset) + timedelta(hours=1)
             for _ in range(insights_per_day):
-                insight_id = str(uuid.uuid4())
+                insight_id = await _insert_history_candidate(pool, delivered_at=day_ts)
                 await pool.execute(
                     """
                     INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
@@ -2075,7 +2281,9 @@ class TestAutoOffTotalDisengagement:
         await insight_pool.execute(
             """INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, TRUE)""",
-            str(uuid.uuid4()),
+            await _insert_history_candidate(
+                insight_pool, delivered_at=today_midnight - timedelta(hours=12)
+            ),
             today_midnight - timedelta(hours=12),
         )
         assert await check_total_disengagement_auto_off(insight_pool, now=now) is False
@@ -2137,7 +2345,9 @@ class TestAutoOffTotalDisengagement:
         await insight_pool.execute(
             """INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, FALSE)""",
-            str(uuid.uuid4()),
+            await _insert_history_candidate(
+                insight_pool, delivered_at=today_midnight + timedelta(hours=1)
+            ),
             today_midnight + timedelta(hours=1),
         )
         triggered = await check_total_disengagement_auto_off(insight_pool, now=now)
@@ -2159,7 +2369,9 @@ class TestAutoOffTotalDisengagement:
         await insight_pool.execute(
             """INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, FALSE)""",
-            str(uuid.uuid4()),
+            await _insert_history_candidate(
+                insight_pool, delivered_at=today_midnight + timedelta(hours=2)
+            ),
             today_midnight + timedelta(hours=2),
         )
         assert await check_total_disengagement_auto_off(insight_pool, now=now) is False
@@ -2248,7 +2460,7 @@ class TestProposeInsightCandidateUnit:
             "custom_budget": custom_budget,
             "updated_at": datetime.now(UTC),
         }
-        pool.execute.return_value = "INSERT 0 1"
+        pool.fetchval.return_value = uuid.uuid4()
         return pool
 
     @pytest.mark.parametrize(
@@ -2288,7 +2500,7 @@ class TestProposeInsightCandidateUnit:
         result = await propose_insight_candidate(pool, **base)
         assert result["status"] == "error"
         assert match in result["reason"]
-        pool.execute.assert_not_called()
+        pool.fetchval.assert_not_called()
 
     async def test_past_expires_at_returns_error(self):
         from butlers.tools.switchboard.insight.broker import propose_insight_candidate
@@ -2332,7 +2544,7 @@ class TestProposeInsightCandidateUnit:
         )
 
         assert result["status"] == "accepted"
-        pool.execute.assert_called_once()
+        pool.fetchval.assert_called_once()
 
     async def test_injected_now_still_rejects_stale_expires_at(self):
         """Injecting ``now`` narrows the reference frame; it does not disable the check."""
@@ -2354,7 +2566,7 @@ class TestProposeInsightCandidateUnit:
 
         assert result["status"] == "error"
         assert "expires_at must be in the future" in result["reason"]
-        pool.execute.assert_not_called()
+        pool.fetchval.assert_not_called()
 
     @pytest.mark.parametrize(
         "verbosity,custom_budget",
@@ -2376,7 +2588,7 @@ class TestProposeInsightCandidateUnit:
         )
         assert result["status"] == "filtered"
         assert result["reason"] == "verbosity is off"
-        pool.execute.assert_not_called()
+        pool.fetchval.assert_not_called()
 
     async def test_valid_submission_with_optional_fields(self):
         """Valid submission accepted; 3/4-segment dedup_keys pass; optional args forwarded."""
@@ -2397,8 +2609,8 @@ class TestProposeInsightCandidateUnit:
             now=_PINNED_NOW,
         )
         assert result["status"] == "accepted"
-        pool.execute.assert_called_once()
-        call_args = pool.execute.call_args.args
+        pool.fetchval.assert_called_once()
+        call_args = pool.fetchval.call_args.args
         assert call_args[5] == 3
         assert call_args[8] == "telegram"
 

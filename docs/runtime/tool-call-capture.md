@@ -21,35 +21,20 @@ Neither source alone gives the full picture. The capture system bridges them by 
 
 The capture system uses a `contextvars.ContextVar` to track which runtime session is currently active in each async task. Before the spawner invokes the runtime adapter, it sets the runtime session ID. Tool handlers running in the MCP server's async context can then read this variable to know which session they belong to.
 
-Key functions:
-
-- **`set_current_runtime_session_id(session_id)`** --- Bind a session ID to the current async context. Returns a token for later reset.
-- **`reset_current_runtime_session_id(token)`** --- Restore the previous session ID.
-- **`get_current_runtime_session_id()`** --- Read the current session ID (returns `None` if no session is active).
+The setters return a reset token, and a read with no bound session returns `None`.
 
 ## Capture Buffer
 
 Tool call records accumulate in a module-level `defaultdict(list)` keyed by session ID string. A `threading.Lock` protects all mutations, since the capture buffer may be accessed from multiple threads.
 
-- **`ensure_runtime_session_capture(session_id)`** --- Pre-allocate the buffer for a session ID. Called by the spawner before invocation.
-- **`capture_tool_call(...)`** --- Append a tool execution record for the current session. Silently dropped if no session ID is bound.
-- **`consume_runtime_session_tool_calls(session_id)`** --- Return and clear all captured records. Called by the spawner after the runtime returns.
-- **`discard_runtime_session_tool_calls(session_id)`** --- Drop records without returning them (cleanup on error paths).
+The spawner pre-allocates the buffer before invocation and consumes (returns and clears) it after
+the runtime returns; error paths discard it. A capture with no bound session ID is silently
+dropped, so a tool call outside a spawned session never lands in a session record.
 
 ## Tool Call Record Format
 
-Each captured record is a dictionary with these fields:
-
-| Field | Required | Description |
-| --- | --- | --- |
-| `name` | Yes | The MCP tool name (e.g., `send_email`, `status`) |
-| `module` | No | The module that registered the tool (e.g., `email`, `core`) |
-| `input` | No | The input payload dict (arguments passed to the tool) |
-| `outcome` | No | Execution outcome string |
-| `result` | No | The return value from the tool handler |
-| `error` | No | Error message if the tool call failed |
-
-All values pass through `_json_safe()` before storage, which recursively converts non-serializable types to JSON-safe representations: Pydantic models via `model_dump(mode="json")`, bytes decoded as UTF-8 with replacement, sets/tuples to lists, and arbitrary objects via `str()` fallback.
+Each record carries the tool `name` plus optional `module`, `input`, `outcome`, `result`, and
+`error` (`capture_tool_call()` is the authoritative shape). All values pass through `_json_safe()` before storage, which recursively converts non-serializable types to JSON-safe representations: Pydantic models via `model_dump(mode="json")`, bytes decoded as UTF-8 with replacement, sets/tuples to lists, and arbitrary objects via `str()` fallback.
 
 ## Routing Context
 

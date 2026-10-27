@@ -30,6 +30,7 @@ async def memory_search(
     limit: int = 10,
     min_confidence: float = 0.2,
     filters: dict[str, Any] | None = None,
+    read_policy: _search.CatalogReadPolicy | None = None,
 ) -> list[dict[str, Any]]:
     """Search across memory types using hybrid, semantic, or keyword mode.
 
@@ -40,6 +41,9 @@ async def memory_search(
             Supported keys: scope, entity_id, predicate, source_butler,
             time_from, time_to, retention_class, sensitivity.
             Unrecognized keys are silently ignored.
+        read_policy: Server-held sensitivity ceiling. MCP closures pass the
+            owning runtime policy so a private memory pool cannot substitute
+            its own missing or stale runtime_config row.
     """
     results = await _search.search(
         pool,
@@ -51,6 +55,7 @@ async def memory_search(
         limit=limit,
         min_confidence=min_confidence,
         filters=filters,
+        read_policy=read_policy,
     )
     return [_serialize_row(r) for r in results]
 
@@ -64,6 +69,7 @@ async def memory_recall(
     limit: int = 10,
     filters: dict[str, Any] | None = None,
     request_context: dict[str, Any] | None = None,
+    read_policy: _search.CatalogReadPolicy | None = None,
 ) -> list[dict[str, Any]]:
     """High-level composite-scored retrieval of relevant facts and rules.
 
@@ -74,6 +80,9 @@ async def memory_recall(
             entity_id, predicate, source_butler, time_from, time_to,
             retention_class, sensitivity. Unrecognized keys are silently ignored.
         request_context: Optional dict with 'tenant_id' and 'request_id'.
+        read_policy: Server-held sensitivity ceiling. MCP closures pass the
+            owning runtime policy so a private memory pool cannot substitute
+            its own missing or stale runtime_config row.
     """
     tenant_id = "shared"
     if isinstance(request_context, dict):
@@ -90,6 +99,7 @@ async def memory_recall(
         limit=limit,
         filters=filters,
         tenant_id=tenant_id,
+        read_policy=read_policy,
     )
     return [_serialize_row(r) for r in results]
 
@@ -98,13 +108,24 @@ async def memory_get(
     pool: Pool,
     memory_type: str,
     memory_id: str,
+    *,
+    read_policy: _search.CatalogReadPolicy | None = None,
 ) -> dict[str, Any] | None:
     """Retrieve a specific memory by type and ID.
 
-    Converts the string memory_id to a UUID, delegates to _storage.get_memory(),
-    and serializes the result for JSON output.
+    Converts the string memory_id to a UUID, applies the server-held sensitivity
+    ceiling in the atomic storage retrieval, and serializes the result for JSON
+    output. A row above the ceiling is indistinguishable from an absent UUID and
+    does not receive a reference-metadata bump.
     """
-    result = await _storage.get_memory(pool, memory_type, uuid.UUID(memory_id))
+    if read_policy is None:
+        read_policy = await _search.load_catalog_read_policy(pool)
+    result = await _storage.get_memory(
+        pool,
+        memory_type,
+        uuid.UUID(memory_id),
+        allowed_sensitivities=read_policy.allowed_sensitivities,
+    )
     if result is None:
         return None
     return _serialize_row(result)

@@ -71,8 +71,19 @@ export interface UseListTriageOptions<TId extends string = string> {
   ids: TId[];
   /** Currently-selected id, or null/undefined if nothing is selected yet. */
   selectedId: TId | null | undefined;
+  /**
+   * Resolve selection at keypress time when the list's source of truth is
+   * actual DOM focus rather than React selection state.
+   */
+  resolveSelectedId?: () => TId | null | undefined;
   /** Called with the next id when j/k moves the selection. */
   onSelect: (id: TId) => void;
+  /**
+   * Where an unselected list enters. The historical default always enters at
+   * the first item. Real-focus lists can opt into directional entry so `j`
+   * enters at the first item and `k` enters at the last item.
+   */
+  unselectedEntry?: "first" | "directional";
   /**
    * Act-verb bindings for the CURRENTLY SELECTED row (e.g. approve/deny/
    * defer, or a single acknowledge/mark-read). Memoize in the caller keyed
@@ -100,18 +111,26 @@ export interface UseListTriageResult {
 export function useListTriage<TId extends string = string>({
   ids,
   selectedId,
+  resolveSelectedId,
   onSelect,
+  unselectedEntry = "first",
   verbs = [],
 }: UseListTriageOptions<TId>): UseListTriageResult {
   const moveSelection = useCallback(
     (delta: 1 | -1) => {
       if (ids.length === 0) return;
-      const idx = selectedId ? ids.indexOf(selectedId) : -1;
-      const nextIdx = idx === -1 ? 0 : Math.min(Math.max(idx + delta, 0), ids.length - 1);
+      const currentSelectedId = resolveSelectedId ? resolveSelectedId() : selectedId;
+      const idx = currentSelectedId ? ids.indexOf(currentSelectedId) : -1;
+      const nextIdx =
+        idx === -1
+          ? unselectedEntry === "directional" && delta === -1
+            ? ids.length - 1
+            : 0
+          : Math.min(Math.max(idx + delta, 0), ids.length - 1);
       const next = ids[nextIdx];
-      if (next !== undefined && next !== selectedId) onSelect(next);
+      if (next !== undefined && next !== currentSelectedId) onSelect(next);
     },
-    [ids, selectedId, onSelect],
+    [ids, selectedId, resolveSelectedId, onSelect, unselectedEntry],
   );
 
   const bindings = useMemo<ShortcutBinding[]>(() => {

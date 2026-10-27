@@ -81,6 +81,8 @@ def _patch_db_wiring(monkeypatch):
     monkeypatch.setattr("butlers.db.database_name_from_env", lambda fallback: "butlers")
 
 
+# Spec: REQ-fleet-case-file-011
+# Patched operator role/dry-run seam; not an actual database operation.
 async def test_run_connects_with_the_switchboard_role(monkeypatch):
     monkeypatch.setattr(
         "butlers.core.fleet_cases.backfill_from_owner_conditions",
@@ -94,6 +96,8 @@ async def test_run_connects_with_the_switchboard_role(monkeypatch):
     assert _FakeDatabase.instances[0].kwargs["db_name"] == "butlers"
 
 
+# Spec: REQ-fleet-case-file-011
+# Patched operator role/dry-run seam; not an actual database operation.
 async def test_dry_run_reports_the_resolved_count_and_never_calls_the_backfill(monkeypatch):
     backfill_mock = AsyncMock()
     monkeypatch.setattr("butlers.core.fleet_cases.backfill_from_owner_conditions", backfill_mock)

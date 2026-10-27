@@ -108,6 +108,7 @@ __all__ = [
     "COMMITMENT_IDENTITY_VERSION",
     "COMMITMENT_KINDS",
     "COMMITMENT_METADATA_CLASS",
+    "COMMITMENT_SPHERES",
     "CREATION_CONFIDENCE_THRESHOLD",
     "DEFAULT_INITIAL_GRACE_SECONDS",
     "RESOLUTION_REASONS",
@@ -115,6 +116,7 @@ __all__ = [
     "ConditionTransition",
     "commitment_fingerprint",
     "create_commitment",
+    "validate_commitment_creation",
     "list_active_commitments",
     "list_entity_commitments",
     "normalize_action_description",
@@ -125,6 +127,8 @@ __all__ = [
 COMMITMENT_METADATA_CLASS = "commitment"
 COMMITMENT_KINDS = frozenset({"promise", "waiting_for", "follow_up", "obligation", "decision"})
 COMMITMENT_DIRECTIONS = frozenset({"owner_to_other", "other_to_owner", "self"})
+# Owner-declared, never inferred (REQ-commitment-lifecycle-010).
+COMMITMENT_SPHERES = frozenset({"work", "personal"})
 RESOLUTION_REASONS = frozenset({"satisfied", "cancelled", "superseded", "expired"})
 
 CREATION_CONFIDENCE_THRESHOLD = 0.6
@@ -361,6 +365,62 @@ async def _post_write_commitment_edges(
 # ---------------------------------------------------------------------------
 
 
+def validate_commitment_creation(
+    *,
+    source: str,
+    summary: str,
+    kind: str,
+    direction: str,
+    counterparty_entity_id: str | None,
+    confidence: float,
+    evidence_opened: dict[str, Any],
+    action_description: str,
+    deadline: datetime | str | None = None,
+    initial_grace_seconds: float = DEFAULT_INITIAL_GRACE_SECONDS,
+    sphere: str | None = None,
+) -> dict[str, Any]:
+    """Validate a creation without database access and build its closed metadata.
+
+    Batch producers can preflight every item with this same validator before
+    effects. ``create_commitment`` always calls it again; preflight cannot bypass
+    validation or the common producer's write path.
+    """
+    caller = "create_commitment"
+    _require_text(caller, "source", source)
+    _require_text(caller, "summary", summary)
+    _require_text(caller, "action_description", action_description)
+    if normalize_action_description(action_description) == "":
+        raise ValueError(f"{caller}: action_description must contain identifying content")
+    if kind not in COMMITMENT_KINDS:
+        raise ValueError(f"{caller}: kind must be one of {sorted(COMMITMENT_KINDS)}")
+    if direction not in COMMITMENT_DIRECTIONS:
+        raise ValueError(f"{caller}: direction must be one of {sorted(COMMITMENT_DIRECTIONS)}")
+    if counterparty_entity_id is not None:
+        _require_text(caller, "counterparty_entity_id", counterparty_entity_id)
+    checked_confidence = _require_confidence(caller, confidence)
+    checked_evidence = _require_evidence(caller, "evidence_opened", evidence_opened)
+    deadline_iso = _require_deadline(caller, deadline)
+    if initial_grace_seconds < 0:
+        raise ValueError(f"{caller}: initial_grace_seconds must be >= 0")
+    if sphere is not None and sphere not in COMMITMENT_SPHERES:
+        raise ValueError(f"{caller}: sphere must be one of {sorted(COMMITMENT_SPHERES)}")
+
+    metadata: dict[str, Any] = {
+        "class": COMMITMENT_METADATA_CLASS,
+        "kind": kind,
+        "direction": direction,
+        "counterparty_entity_id": counterparty_entity_id,
+        "confidence": checked_confidence,
+        "evidence_opened": checked_evidence,
+    }
+    if deadline_iso is not None:
+        metadata["deadline"] = deadline_iso
+    if sphere is not None:
+        metadata["sphere"] = sphere
+
+    return metadata
+
+
 async def create_commitment(
     pool: asyncpg.Pool,
     *,
@@ -374,6 +434,8 @@ async def create_commitment(
     action_description: str,
     deadline: datetime | str | None = None,
     initial_grace_seconds: float = DEFAULT_INITIAL_GRACE_SECONDS,
+    sphere: str | None = None,
+    transaction_connection: asyncpg.Connection | None = None,
 ) -> ConditionTransition | None:
     """Create (or re-confirm) one commitment on the owner condition ledger.
 
@@ -395,43 +457,33 @@ async def create_commitment(
     not yet a commitment, not an error. See this module's docstring for why
     that is a return value while malformed input is an exception.
 
+    ``transaction_connection`` composes the same write and projections inside an
+    internal caller's active transaction, without acquiring or committing another
+    connection. Omitting it preserves the pool-owned transaction path.
+
     Raises ``ValueError`` — before touching the pool — for an empty
     ``source``/``summary``/``action_description``, an unknown ``kind`` or
     ``direction``, a non-string ``counterparty_entity_id``, a ``confidence``
     outside 0.0-1.0, an ``evidence_opened`` without a ``source``, an
-    unparseable ``deadline``, or a negative ``initial_grace_seconds``.
+    unparseable ``deadline``, a ``sphere`` other than ``work``/``personal``, or
+    a negative ``initial_grace_seconds``. ``sphere`` is the owner's declaration
+    and is stored only when given.
     """
-    caller = "create_commitment"
-    _require_text(caller, "source", source)
-    _require_text(caller, "summary", summary)
-    _require_text(caller, "action_description", action_description)
-    if normalize_action_description(action_description) == "":
-        raise ValueError(f"{caller}: action_description must contain identifying content")
-    if kind not in COMMITMENT_KINDS:
-        raise ValueError(f"{caller}: kind must be one of {sorted(COMMITMENT_KINDS)}")
-    if direction not in COMMITMENT_DIRECTIONS:
-        raise ValueError(f"{caller}: direction must be one of {sorted(COMMITMENT_DIRECTIONS)}")
-    if counterparty_entity_id is not None:
-        _require_text(caller, "counterparty_entity_id", counterparty_entity_id)
-    checked_confidence = _require_confidence(caller, confidence)
-    checked_evidence = _require_evidence(caller, "evidence_opened", evidence_opened)
-    deadline_iso = _require_deadline(caller, deadline)
-    if initial_grace_seconds < 0:
-        raise ValueError(f"{caller}: initial_grace_seconds must be >= 0")
-
-    if checked_confidence < CREATION_CONFIDENCE_THRESHOLD:
+    metadata = validate_commitment_creation(
+        source=source,
+        summary=summary,
+        kind=kind,
+        direction=direction,
+        counterparty_entity_id=counterparty_entity_id,
+        confidence=confidence,
+        evidence_opened=evidence_opened,
+        action_description=action_description,
+        deadline=deadline,
+        initial_grace_seconds=initial_grace_seconds,
+        sphere=sphere,
+    )
+    if metadata["confidence"] < CREATION_CONFIDENCE_THRESHOLD:
         return None
-
-    metadata: dict[str, Any] = {
-        "class": COMMITMENT_METADATA_CLASS,
-        "kind": kind,
-        "direction": direction,
-        "counterparty_entity_id": counterparty_entity_id,
-        "confidence": checked_confidence,
-        "evidence_opened": checked_evidence,
-    }
-    if deadline_iso is not None:
-        metadata["deadline"] = deadline_iso
 
     observation = Observation(
         fingerprint=commitment_fingerprint(
@@ -455,6 +507,11 @@ async def create_commitment(
             counterparty_entity_id=counterparty_entity_id,
         )
 
+    connection_kwargs = (
+        {"transaction_connection": transaction_connection}
+        if transaction_connection is not None
+        else {}
+    )
     transitions = await owner_conditions.reconcile_snapshot(
         pool,
         source=source,
@@ -462,6 +519,7 @@ async def create_commitment(
         snapshot_complete=False,
         initial_grace_seconds=initial_grace_seconds,
         post_write=_post_write,
+        **connection_kwargs,
     )
     return transitions[0] if transitions else None
 

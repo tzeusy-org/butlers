@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from butlers.api.routers import oauth as oauth_module
+from butlers.api.deps import get_db_optional
 from butlers.google_credentials import (
     GoogleCredentials,
     load_google_credentials,
@@ -71,7 +71,7 @@ def _make_app(
     db_client_secret: str = "test-client-secret",
     db_refresh_token: str | None = "1//fake-refresh-token",
 ):
-    from butlers.api.app import create_app
+    from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
     app = create_app()
     secrets = {
@@ -128,7 +128,7 @@ def _make_app(
 
     db_manager = MagicMock()
     db_manager.credential_shared_pool.return_value = pool
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
+    app.dependency_overrides[get_db_optional] = lambda: db_manager
     return app
 
 
@@ -416,7 +416,7 @@ class TestOAuthCallbackResponseRedaction:
         self,
     ) -> None:
         """Unknown Google error codes are sanitized — never echoed back to client."""
-        from butlers.api.app import create_app
+        from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
         app = create_app()
 

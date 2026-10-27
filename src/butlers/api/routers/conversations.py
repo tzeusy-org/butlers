@@ -24,6 +24,11 @@ GET  /api/conversations/messages/search
     ts_rank ordering and highlight ranges — distinct from the per-butler,
     per-conversation substring search above.
 
+GET  /api/conversations/{conversation_id}
+    Cross-butler conversation identity lookup by id alone, regardless of
+    owning butler_name (bu-0ynlk.11 — the /chat/:conversationId full-page
+    route and cmdk recent-thread recall). 404 when the id is unknown.
+
 GET  /api/butlers/{name}/conversations/summary
     Aggregate statistics for all conversations of a butler.
 
@@ -61,7 +66,24 @@ SSE event types
     streams without an immutable user-message id and terminal-action states
     do not emit this event.
 ``token``
-    Streamed assistant response token. Data: ``{content}``.
+    Streamed assistant response token. Data: ``{content}``. Delivered as one
+    or more events per turn: when the routed runtime cannot stream (every
+    runtime adapter today — see ``butlers.core.runtimes`` and
+    ``butlers.api.chat_stream``), a single event carries the full reply text;
+    a future streaming-capable producer publishing incremental deltas onto
+    the turn's chat-stream NOTIFY channel would instead surface as several
+    ``token`` events whose concatenated ``content`` always equals the
+    persisted reply row's content byte-for-byte (never fabricated, never
+    diverges from the persisted row).
+``phase``
+    Real-time processing status. Data: ``{phase, target?, tool?}`` where
+    ``phase`` is one of ``classifying`` (Switchboard is triaging), ``routed``
+    (``target`` names the butler handling this turn), ``starting_session``
+    (the routed butler's session is about to run — ``target`` names it),
+    ``thinking`` (``tool`` names the tool call in progress — only emitted by
+    a streaming-capable producer, never fabricated), or ``writing`` (the
+    reply is about to stream). Only the phases a given turn's runtime can
+    truthfully observe are emitted; a phase is never guessed.
 ``message_complete``
     The routed butler's ``conversation_reply`` message, with attribution.
     Data: ``{message_id, session_id, model_name, input_tokens, output_tokens,
@@ -119,10 +141,12 @@ from fastmcp.exceptions import ToolError
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
+from butlers.api.chat_stream import ChatStreamListener, open_chat_stream_listener
 from butlers.api.conversation_envelope import build_dashboard_envelope
 from butlers.api.conversations import (
     conversation_create,
     conversation_get,
+    conversation_get_by_id_any_butler,
     conversation_list,
     conversation_message_count_increment,
     conversation_search,
@@ -139,16 +163,12 @@ from butlers.api.conversations import (
     message_set_session_id_if_null,
 )
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
-from butlers.api.models import (
-    CursorPaginatedResponse,
-    CursorPaginationMeta,
-    PaginatedResponse,
-    PaginationMeta,
-)
+from butlers.api.deps import ButlerUnreachableError, Db, MCPClientManager, get_mcp_manager
+from butlers.api.models import PaginatedResponse, PaginationMeta
 from butlers.api.models.conversation import (
     ConversationCancelResponse,
     ConversationCreateRequest,
+    ConversationDetail,
     ConversationMessage,
     ConversationSearchResult,
     ConversationStats,
@@ -157,6 +177,7 @@ from butlers.api.models.conversation import (
     MessageCreateRequest,
     MessageSearchResult,
 )
+from butlers.api.pagination import InvalidCursorError, Page
 from butlers.core.dashboard_turns import (
     DashboardTurnResult,
     bind_ingress,
@@ -203,11 +224,6 @@ _SWITCHBOARD_BUTLER: str = "switchboard"
 # handoff, target route recovery, and API process restarts. The map remains for
 # legacy callers that omit a message id and for session-timeout links.
 _ACTIVE_TURNS: dict[UUID, dict[str, str]] = {}
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +283,7 @@ async def _submit_to_switchboard(
     envelope: dict[str, Any],
     *,
     mcp_mgr: MCPClientManager,
+    owner_source_pool: Any | None = None,
 ) -> dict[str, Any] | None:
     """Submit an ingest.v1 envelope to the Switchboard butler via MCP.
 
@@ -283,6 +300,39 @@ async def _submit_to_switchboard(
         a deterministic rejection, not a connectivity failure, so the caller
         surfaces it distinctly rather than inviting a retry.
     """
+    # The exact canonical payload is bound by the authenticated API producer,
+    # before transport. Public dashboard labels/message locators cannot stamp it.
+    if owner_source_pool is not None:
+        from butlers.core.owner_auth_context import in_http_request, verified_http_principal
+
+        if in_http_request.get() and verified_http_principal.get() == "owner":
+            import hashlib
+
+            from butlers.core.fact_authority import dashboard_origin_digest
+
+            has_stamp = await owner_source_pool.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE "
+                "table_schema='public' AND table_name='dashboard_messages' "
+                "AND column_name='fact_owner_admission')"
+            )
+            origin = dashboard_origin_digest(envelope)
+            if has_stamp is True and origin is not None:
+                await owner_source_pool.execute(
+                    "UPDATE public.dashboard_messages SET fact_owner_admission="
+                    "fact_owner_admission || $2::jsonb WHERE id=$1 AND role='user' "
+                    "AND fact_owner_admission IS NOT NULL "
+                    "AND fact_owner_admission->>'accepted_origin_digest' IS NULL "
+                    "AND content=$3 AND conversation_id=$4",
+                    UUID(envelope["event"]["external_event_id"]),
+                    {
+                        "accepted_text_digest": hashlib.sha256(
+                            envelope["payload"]["normalized_text"].encode()
+                        ).hexdigest(),
+                        "accepted_origin_digest": origin,
+                    },
+                    envelope["payload"]["raw"]["message"],
+                    UUID(envelope["payload"]["raw"]["conversation_id"]),
+                )
     try:
         client = await asyncio.wait_for(
             mcp_mgr.get_client(_SWITCHBOARD_BUTLER), timeout=_MCP_DISPATCH_TIMEOUT_S
@@ -453,6 +503,15 @@ async def _stream_conversation_response(
             {"conversation_id": str(conversation_id), "title": conversation_title},
         )
 
+    # Phase: classifying/routed. A pinned per-butler conversation's routing
+    # is already deterministic (no Switchboard classification happens for
+    # it), so it goes straight to "routed"; only a Switchboard-addressed
+    # (widget) turn is genuinely being classified yet.
+    if butler_name == _SWITCHBOARD_BUTLER:
+        yield _sse_event("phase", {"phase": "classifying"})
+    else:
+        yield _sse_event("phase", {"phase": "routed", "target": butler_name})
+
     # Step 2: Claim the outbound Switchboard submission immediately before
     # making it. Opening the turn earlier makes Stop addressable before SSE,
     # but only this final claim is the external side-effect boundary.
@@ -507,7 +566,9 @@ async def _stream_conversation_response(
 
     if should_submit:
         try:
-            accepted = await _submit_to_switchboard(butler_name, envelope, mcp_mgr=mcp_mgr)
+            accepted = await _submit_to_switchboard(
+                butler_name, envelope, mcp_mgr=mcp_mgr, owner_source_pool=shared_pool
+            )
         except ValueError as exc:
             failure_turn: DashboardTurnResult | None = None
             if message_id is not None:
@@ -651,6 +712,12 @@ async def _stream_conversation_response(
     # turn, otherwise the pinned/addressed butler itself.
     routed_butler = triage_target if routed_this_turn else butler_name
 
+    # Phase: routed. Only for the Switchboard-classified case — a pinned
+    # conversation already emitted "routed" above, before classification
+    # (which never runs for it) could have changed the target.
+    if butler_name == _SWITCHBOARD_BUTLER:
+        yield _sse_event("phase", {"phase": "routed", "target": routed_butler})
+
     # Register this turn as cancellable (POST .../cancel resolves conversation_id
     # -> routed_butler + request_id -> live session, see _resolve_session_id).
     # Cleared in the finally below so a stale entry never outlives the turn it
@@ -669,7 +736,21 @@ async def _stream_conversation_response(
             active_turn["message_id"] = str(message_id)
         _ACTIVE_TURNS[conversation_id] = active_turn
 
+    # Best-effort: open the per-request chat-stream NOTIFY listener (see
+    # butlers.api.chat_stream) so conversation_reply_create's reply_ready
+    # NOTIFY — and any future streaming-capable producer's token/phase
+    # deltas — wake the poll loop below immediately instead of waiting for
+    # the next fixed-interval safety-net check. `None` when the dedicated
+    # LISTEN connection could not be established; the loop degrades to pure
+    # polling in that case, honoring the same fallback contract as a
+    # non-streaming runtime.
+    stream_listener: ChatStreamListener | None = await open_chat_stream_listener(request_id_str)
+    streamed_content_parts: list[str] = []
+    phase_writing_emitted = False
+
     try:
+        yield _sse_event("phase", {"phase": "starting_session", "target": routed_butler})
+
         # A receipt is attributable only to the durable dashboard-turn record,
         # never to an optimistic classification result or sticky conversation
         # history. It is deliberately unavailable for legacy streams that lack
@@ -813,7 +894,37 @@ async def _stream_conversation_response(
                 shared_pool, conversation_id, since=message_created_at
             )
             if reply_row is None:
-                await asyncio.sleep(_POLL_INTERVAL_S)
+                if stream_listener is None:
+                    await asyncio.sleep(_POLL_INTERVAL_S)
+                    continue
+                # Wait for a chat-stream NOTIFY (conversation_reply_create's
+                # reply_ready wake, or a future streaming producer's
+                # token/phase delta) instead of blindly sleeping the full
+                # interval — a wake re-checks message_find_reply_since on the
+                # very next loop iteration, well before the safety-net
+                # timeout below would have fired anyway.
+                envelope = await stream_listener.get(timeout=_POLL_INTERVAL_S)
+                if envelope is None:
+                    continue
+                etype = envelope.get("type")
+                edata = envelope.get("data")
+                edata = edata if isinstance(edata, dict) else {}
+                if etype == "token":
+                    content = edata.get("content")
+                    if isinstance(content, str) and content:
+                        if not phase_writing_emitted:
+                            phase_writing_emitted = True
+                            yield _sse_event("phase", {"phase": "writing"})
+                        yield _sse_event("token", {"content": content})
+                        streamed_content_parts.append(content)
+                elif etype == "phase":
+                    phase_name = edata.get("phase")
+                    if phase_name == "writing":
+                        phase_writing_emitted = True
+                    yield _sse_event("phase", edata)
+                # Any other type (including "reply_ready") is just a wake —
+                # message_find_reply_since on the next iteration is the
+                # authoritative check.
 
         # Step 4: Emit the already-persisted conversation_reply — no DB write
         # happens here; conversation_reply_create() did it inside the routed
@@ -835,7 +946,23 @@ async def _stream_conversation_response(
                     shared_pool, reply_row["id"], session_id=reply_session_id
                 )
 
-        yield _sse_event("token", {"content": reply_row["content"]})
+        # Trust boundary: streamed deltas are display-only — the persisted
+        # row is always the source of truth. Emit only whatever content was
+        # NOT already streamed as deltas, so the client's accumulated
+        # content always ends up byte-for-byte identical to the persisted
+        # row regardless of how much (if any) streaming happened. Today no
+        # runtime adapter streams deltas (see butlers.api.chat_stream), so
+        # streamed_content is always "" here and this is exactly the
+        # original single-shot emission.
+        streamed_content = "".join(streamed_content_parts)
+        remainder = reply_row["content"]
+        if streamed_content and reply_row["content"].startswith(streamed_content):
+            remainder = reply_row["content"][len(streamed_content) :]
+        if remainder:
+            if not phase_writing_emitted:
+                phase_writing_emitted = True
+                yield _sse_event("phase", {"phase": "writing"})
+            yield _sse_event("token", {"content": remainder})
         yield _sse_event(
             "message_complete",
             {
@@ -847,11 +974,15 @@ async def _stream_conversation_response(
                 "duration_ms": reply_row.get("duration_ms"),
                 "tool_calls": reply_row.get("tool_calls") or [],
                 "sources": reply_row.get("sources") or [],
+                "citations": reply_row.get("citations") or [],
+                "routed_butler": reply_row.get("routed_butler"),
             },
         )
         yield _sse_done()
     finally:
         _ACTIVE_TURNS.pop(conversation_id, None)
+        if stream_listener is not None:
+            await stream_listener.aclose()
 
 
 async def _persist_dashboard_user_message(
@@ -871,6 +1002,67 @@ async def _persist_dashboard_user_message(
     ``page_context``, not from the request body, so a retry never re-sends a
     stale or since-changed page context.
     """
+    from butlers.core.owner_auth_context import in_http_request, verified_http_principal
+
+    if in_http_request.get() and verified_http_principal.get() == "owner":
+        from butlers.core.fact_authority import FactWriteContext
+
+        has_stamp = await pool.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE "
+            "table_schema='public' AND table_name='dashboard_messages' "
+            "AND column_name='fact_owner_admission')"
+        )
+        if has_stamp is not True:
+            # Core-only/older deployments keep ordinary chat processing. Missing
+            # private producer evidence supplies no owner-class fact admission.
+            return await _persist_dashboard_user_message_inner(
+                pool,
+                conversation_id=conversation_id,
+                message=message,
+                message_id=message_id,
+                page_context=page_context,
+            )
+        async with pool.acquire() as conn, conn.transaction():
+            result = await _persist_dashboard_user_message_inner(
+                conn,
+                conversation_id=conversation_id,
+                message=message,
+                message_id=message_id,
+                page_context=page_context,
+            )
+            if result[1]:
+                owner = await conn.fetchrow(
+                    "SELECT id,created_at FROM public.entities WHERE 'owner'=ANY(roles) "
+                    "ORDER BY id LIMIT 1 FOR KEY SHARE"
+                )
+                if owner is None:
+                    raise HTTPException(status_code=409, detail="Registered owner unavailable.")
+                report = FactWriteContext(
+                    "owner_device", owner["id"], owner["created_at"], owner["id"]
+                )
+                await conn.execute(
+                    "UPDATE public.dashboard_messages SET fact_owner_admission=$2 WHERE id=$1",
+                    result[0]["id"],
+                    report.to_record(),
+                )
+            return result
+    return await _persist_dashboard_user_message_inner(
+        pool,
+        conversation_id=conversation_id,
+        message=message,
+        message_id=message_id,
+        page_context=page_context,
+    )
+
+
+async def _persist_dashboard_user_message_inner(
+    pool: Any,
+    *,
+    conversation_id: UUID,
+    message: str,
+    message_id: UUID | None,
+    page_context: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], bool]:
     if message_id is None:
         return (
             await message_create(
@@ -1332,7 +1524,8 @@ async def list_conversations(
     ] = "active",
     limit: int = Query(20, ge=1, le=100, description="Max records to return"),
     offset: int = Query(0, ge=0, description="Number of records to skip"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[ConversationSummary]:
     """List conversations for a butler with optional status filter.
 
@@ -1370,7 +1563,8 @@ async def search_conversations(
     q: str | None = Query(None, description="Search query string"),
     limit: int = Query(20, ge=1, le=100, description="Max records to return"),
     offset: int = Query(0, ge=0, description="Number of records to skip"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[ConversationSearchResult]:
     """Search conversations by message content (case-insensitive substring match).
 
@@ -1411,7 +1605,7 @@ async def search_conversations(
 
 @messages_search_router.get(
     "/messages/search",
-    response_model=CursorPaginatedResponse[MessageSearchResult],
+    response_model=Page[MessageSearchResult],
 )
 async def search_messages(
     q: str = Query(..., min_length=1, max_length=512, description="Full-text search query."),
@@ -1435,8 +1629,9 @@ async def search_messages(
     to: str | None = Query(
         None, description="ISO-8601 exclusive upper bound on message created_at."
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> CursorPaginatedResponse[MessageSearchResult]:
+    *,
+    db: Db,
+) -> Page[MessageSearchResult]:
     """Owner-scoped full-text search across every butler's dashboard messages.
 
     Unlike ``GET /api/butlers/{name}/conversations/search`` (per-butler,
@@ -1452,8 +1647,9 @@ async def search_messages(
     even if a new message is inserted between page fetches.
 
     Returns:
-        200 — ``{"data": [...], "meta": {"next_cursor", "has_more"}}``
-        422 — malformed ``cursor``, or ``from``/``to`` is not valid ISO-8601
+        200 — ``{"items": [...], "next_cursor", "limit"}``
+        400 — malformed ``cursor``
+        422 — ``from``/``to`` is not valid ISO-8601
         503 — shared database pool unavailable
     """
     try:
@@ -1485,13 +1681,57 @@ async def search_messages(
             limit=limit,
             cursor=cursor,
         )
+    except InvalidCursorError:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    return CursorPaginatedResponse[MessageSearchResult](
-        data=[MessageSearchResult(**item) for item in result["items"]],
-        meta=CursorPaginationMeta(next_cursor=result["next_cursor"], has_more=result["has_more"]),
+    return Page[MessageSearchResult](
+        items=[MessageSearchResult(**item) for item in result["items"]],
+        next_cursor=result["next_cursor"],
+        limit=limit,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/conversations/{conversation_id}
+# ---------------------------------------------------------------------------
+
+
+@messages_search_router.get("/{conversation_id}", response_model=ConversationDetail)
+async def get_conversation_by_id(
+    conversation_id: UUID,
+    *,
+    db: Db,
+) -> ConversationDetail:
+    """Cross-butler conversation lookup by id (bu-0ynlk.11).
+
+    Resolves a conversation regardless of its owning ``butler_name`` — the
+    ``/chat/:conversationId`` full-page route and cmdk recent-thread recall
+    both address a conversation by id alone before they know which butler
+    owns it. ``id`` is a UUID7 primary key on the shared
+    ``public.dashboard_conversations`` table, so this lookup is
+    mount-boundary safe without a butler-scoped filter (see
+    ``conversation_get_by_id_any_butler``). Callers fetch the thread's
+    messages afterward through the existing per-butler
+    ``GET /api/butlers/{name}/conversations/{id}/messages`` route using the
+    ``butler_name`` this response resolves.
+
+    Returns 404 when the id is unknown.
+    """
+    try:
+        pool = db.credential_shared_pool()
+    except (KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
+
+    conversation = await conversation_get_by_id_any_butler(pool, conversation_id)
+    if conversation is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "CONVERSATION_NOT_FOUND", "message": "Conversation not found."},
+        )
+
+    return ConversationDetail(**conversation)
 
 
 # ---------------------------------------------------------------------------
@@ -1502,7 +1742,8 @@ async def search_messages(
 @router.get("/{name}/conversations/summary")
 async def get_conversation_summary(
     name: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConversationStats:
     """Return aggregate conversation statistics for a butler."""
     try:
@@ -1524,7 +1765,8 @@ async def create_conversation(
     name: str,
     body: ConversationCreateRequest,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> StreamingResponse:
     """Create a new conversation with the first user message.
@@ -1647,7 +1889,8 @@ async def list_messages(
     conversation_id: UUID,
     limit: int = Query(50, ge=1, le=200, description="Max records to return"),
     offset: int = Query(0, ge=0, description="Number of records to skip"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[ConversationMessage]:
     """List messages in a conversation ordered by ``created_at ASC``.
 
@@ -1687,7 +1930,8 @@ async def send_message(
     conversation_id: UUID,
     body: MessageCreateRequest,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> StreamingResponse:
     """Send a follow-up message in an existing conversation.
@@ -1801,7 +2045,8 @@ async def cancel_dashboard_message_turn(
     name: str,
     message_id: UUID,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConversationCancelResponse:
     """Stop the one immutable dashboard turn identified by ``message_id``.
 
@@ -1833,7 +2078,8 @@ async def cancel_conversation_turn(
         description="Exact persisted user-message id for durable cancellation.",
     ),
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConversationCancelResponse:
     """Compatibility cancel for an in-flight conversation turn.
 
@@ -1932,7 +2178,8 @@ async def update_conversation(
     name: str,
     conversation_id: UUID,
     body: ConversationUpdateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConversationSummary:
     """Update a conversation's title or status.
 

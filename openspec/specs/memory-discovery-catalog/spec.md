@@ -122,6 +122,23 @@ When a fact or rule is stored or updated, the storage layer SHALL write a corres
 
 ---
 
+### Requirement: Held rules are not cataloged
+
+The catalog write-behind SHALL NOT write an entry for a rule that is held under
+the module-memory "Content authority and steering-class admission" requirement
+(non-owner-class or NULL authority with no endorsement). A held rule's existing
+catalog row SHALL be staled, and backfill SHALL skip held rules. Endorsing a
+rule SHALL upsert its catalog entry (clearing any stale marker) in the same
+transaction as the endorsement.
+
+#### Scenario: Held rule is absent from catalog search
+
+- **WHEN** a third-party-authority rule is stored with catalog write-behind on
+- **THEN** no `public.memory_catalog` row SHALL exist for it
+- **AND** after owner endorsement exactly one live catalog row SHALL exist
+
+---
+
 ### Requirement: Atomic catalog disownment on forget, expiry, and purge
 
 The storage layer SHALL mark a disowned fact's or rule's `public.memory_catalog` row stale (`confidence = 0`, `invalid_at` set) in the SAME database transaction as the canonical state change, for every path that permanently disowns a memory — `memory_forget` (plain or correction-driven), the decay sweep's terminal expiry transition, and `purge_superseded_facts`. Unlike the best-effort, eventually-consistent write-behind used for new catalog entries and the supersession cascade, this disownment cascade MUST NOT swallow its own failures — a catalog-write error here rolls back the whole transaction so the canonical disownment and the catalog can never diverge, even across a crash between the two writes.

@@ -9,11 +9,18 @@ from typing import Any
 
 import asyncpg
 
+from butlers.tools.health import owner_dominance
 from butlers.tools.health._helpers import _get_owner_entity_id, _normalize_end_date, _row_to_dict
 
 logger = logging.getLogger(__name__)
 
 VALID_MEASUREMENT_TYPES = {"weight", "blood_pressure", "heart_rate", "blood_sugar", "temperature"}
+
+# Types a connected device reports but the owner cannot log by hand (``measurement_log`` and
+# ``measurement_update`` still accept only ``VALID_MEASUREMENT_TYPES``).  History and latest
+# read them.
+READABLE_DEVICE_ONLY_TYPES = {"body_fat"}
+READABLE_MEASUREMENT_TYPES = VALID_MEASUREMENT_TYPES | READABLE_DEVICE_ONLY_TYPES
 
 # Notes substrings that indicate a call originated from butler-generated
 # digest/briefing/summary output rather than a genuine user measurement.
@@ -135,7 +142,7 @@ async def measurement_log(
             predicate=predicate,
             content=content,
             embedding_engine=embedding_engine,
-            permanence="stable",
+            permanence="permanent",
             scope="health",
             entity_id=owner_entity_id,
             valid_at=valid_at,
@@ -278,11 +285,15 @@ async def measurement_history(
     start_date: datetime | None = None,
     end_date: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    """Get measurement history for a type, optionally filtered by date range."""
-    if type not in VALID_MEASUREMENT_TYPES:
+    """Get measurement history for a type, optionally filtered by date range.
+
+    On an owner-local day where the owner logged the type themselves, device readings for
+    that day are left out (they stay stored); see ``owner_dominance``.
+    """
+    if type not in READABLE_MEASUREMENT_TYPES:
         raise ValueError(
             f"Unrecognized measurement type: {type!r}. "
-            f"Must be one of: {', '.join(sorted(VALID_MEASUREMENT_TYPES))}"
+            f"Must be one of: {', '.join(sorted(READABLE_MEASUREMENT_TYPES))}"
         )
 
     predicate = f"measurement_{type}"
@@ -306,6 +317,7 @@ async def measurement_history(
         f" FROM facts {where} ORDER BY valid_at DESC",
         *params,
     )
+    rows = await owner_dominance.drop_dominated(pool, predicate, list(rows))
     return [_fact_to_measurement(dict(r)) for r in rows]
 
 
@@ -313,11 +325,15 @@ async def measurement_latest(
     pool: asyncpg.Pool,
     type: str,
 ) -> dict[str, Any] | None:
-    """Get the most recent measurement for a type."""
-    if type not in VALID_MEASUREMENT_TYPES:
+    """Get the most recent measurement for a type.
+
+    When the newest row is a device reading and the owner logged the type on the same
+    owner-local day, the owner's value is returned instead.
+    """
+    if type not in READABLE_MEASUREMENT_TYPES:
         raise ValueError(
             f"Unrecognized measurement type: {type!r}. "
-            f"Must be one of: {', '.join(sorted(VALID_MEASUREMENT_TYPES))}"
+            f"Must be one of: {', '.join(sorted(READABLE_MEASUREMENT_TYPES))}"
         )
 
     predicate = f"measurement_{type}"
@@ -330,4 +346,7 @@ async def measurement_latest(
     )
     if row is None:
         return None
+    row = await owner_dominance.dominant_latest(
+        pool, predicate, row, columns="id, predicate, content, valid_at, created_at, metadata"
+    )
     return _fact_to_measurement(dict(row))

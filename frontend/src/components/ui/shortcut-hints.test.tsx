@@ -72,6 +72,31 @@ describe("ShortcutHints — On this page section (bu-qvnce.11)", () => {
     expect(document.body.textContent).toContain("Next approval");
   });
 
+  it("advertises the global QA chord in the help sheet", () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ShortcutRegistryProvider>
+          <ShortcutHints />
+        </ShortcutRegistryProvider>,
+      );
+    });
+    act(() => openHelpSheet());
+
+    const dialog = document.querySelector('[role="dialog"]') as HTMLElement;
+    expect(dialog.textContent).toContain("Go to QA");
+    const qaRow = Array.from(dialog.querySelectorAll('[role="listitem"]')).find((row) =>
+      row.textContent?.includes("Go to QA"),
+    );
+    expect(Array.from(qaRow?.querySelectorAll("kbd") ?? []).map((key) => key.textContent)).toEqual([
+      "g",
+      "q",
+    ]);
+  });
+
   it("drops the section's rows when the registering page unmounts (e.g. navigating away)", () => {
     container = document.createElement("div");
     document.body.appendChild(container);

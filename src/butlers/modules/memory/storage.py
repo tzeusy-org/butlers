@@ -8,15 +8,16 @@ use the EmbeddingEngine for semantic vector generation.
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import logging
 import math
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from butlers.modules.memory.embedding import EmbeddingEngine
+from butlers.modules.memory.search_vector import preprocess_text, tsvector_sql
 
 if TYPE_CHECKING:
     from asyncpg import Connection, Pool
@@ -27,6 +28,13 @@ from butlers.core.tool_call_capture import (
     get_current_runtime_session_id,
     get_current_runtime_trigger_source,
 )
+from butlers.modules.memory import knowledge_gaps
+from butlers.modules.memory.content_authority import (
+    ContentAuthority,
+    is_owner_class,
+    resolve_content_authority,
+    validate_authority,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,29 +42,6 @@ logger = logging.getLogger(__name__)
 class StaleSupersessionTargetError(ValueError):
     """Raised when an optimistic supersession target is no longer current."""
 
-
-# ---------------------------------------------------------------------------
-# Load sibling modules from disk (roster/ is not a Python package).
-# ---------------------------------------------------------------------------
-
-_MODULE_DIR = Path(__file__).resolve().parent
-
-
-def _load_module(name: str):
-    path = _MODULE_DIR / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_embedding_mod = _load_module("embedding")
-_search_mod = _load_module("search_vector")
-
-EmbeddingEngine = _embedding_mod.EmbeddingEngine
-preprocess_text = _search_mod.preprocess_text
-tsvector_sql = _search_mod.tsvector_sql
 
 # ---------------------------------------------------------------------------
 # Discovery-catalog write-time sensitivity exclusion (defense-in-depth)
@@ -69,16 +54,10 @@ tsvector_sql = _search_mod.tsvector_sql
 # explicitly authorize higher levels via max_sensitivity), write-time
 # exclusion means an under-authorized reader can never even race a purge.
 #
-# This vocabulary is intentionally DUPLICATED from
-# search.py::CATALOG_SENSITIVITY_LEVELS / DEFAULT_CATALOG_SENSITIVITY rather
-# than imported: a static import of search.py -- even just for these two
-# constants -- would make search.py's pgvector distance operators reachable
-# from every transitive importer of this module, including relationship's
-# deterministic-Finder endpoint guardrail (see the identical rationale next
-# to `_search_helper.search_catalog` in `__init__.py`, and
-# `roster/relationship/tests/test_finder_no_llm_transitive.py`).
-# `tests/modules/memory/test_catalog_write_time_sensitivity.py` pins parity
-# against the real search.py constants so the two cannot silently drift.
+# Keep the write policy's vocabulary local; the parity test below pins it to
+# search.py's read ceiling. Deterministic API readers use their own lightweight
+# channel/attribution modules rather than importing semantic storage/search.
+# `tests/modules/memory/test_catalog_write_time_sensitivity.py` pins parity.
 _CATALOG_SENSITIVITY_LEVELS: tuple[str, ...] = ("normal", "pii", "confidential")
 _DEFAULT_CATALOG_SENSITIVITY = "normal"
 
@@ -598,6 +577,26 @@ async def _cascade_catalog_disownment(
     )
 
 
+async def cascade_fact_retraction(
+    conn: Connection,
+    fact_ids: list[uuid.UUID],
+    *,
+    invalid_at: datetime | None = None,
+) -> None:
+    """Public entry point for the catalog/graph-edge cascade on retracted facts.
+
+    For callers outside this module that must retract ``facts`` rows via raw
+    SQL on a connection/transaction they already hold (bu-9ltqm) -- e.g. a
+    bulk retraction that doesn't compose with ``forget_memory``'s own
+    per-memory transaction management, or a call site that needs its own
+    idempotency guard on the retracting ``UPDATE`` -- rather than going
+    through ``forget_memory`` one fact at a time. MUST be called on the same
+    connection/transaction as the retracting UPDATE, or the catalog/graph
+    state can diverge from the canonical retraction on a crash.
+    """
+    await _cascade_catalog_disownment(conn, "facts", fact_ids, invalid_at=invalid_at)
+
+
 async def _backfill_facts_to_catalog(
     pool: Pool,
     *,
@@ -686,6 +685,7 @@ async def _backfill_rules_to_catalog(
                    r.retention_class, r.sensitivity, r.tenant_id, r.source_butler
             FROM rules r
             WHERE COALESCE(r.metadata ->> 'forgotten', 'false') <> 'true'
+              AND (r.content_authority IN ('owner', 'owner_device') OR r.endorsed_at IS NOT NULL)
               AND NOT (COALESCE(r.sensitivity, 'normal') = ANY($3))
               AND NOT EXISTS (
                   SELECT 1 FROM public.memory_catalog mc
@@ -799,7 +799,12 @@ async def _reconcile_rules_catalog_disownment(
             WHERE mc.source_schema = $1
               AND mc.source_table = 'rules'
               AND mc.invalid_at IS NULL
-              AND (r.id IS NULL OR COALESCE(r.metadata ->> 'forgotten', 'false') = 'true')
+              AND (
+                  r.id IS NULL
+                  OR COALESCE(r.metadata ->> 'forgotten', 'false') = 'true'
+                  OR (COALESCE(r.content_authority, '') NOT IN ('owner', 'owner_device')
+                      AND r.endorsed_at IS NULL)
+              )
             LIMIT $2
         )
         UPDATE public.memory_catalog mc
@@ -927,7 +932,12 @@ async def get_catalog_drift_counts(
             count(*) FILTER (
                 WHERE mc.source_table = 'rules'
                   AND mc.invalid_at IS NULL
-                  AND (r.id IS NULL OR COALESCE(r.metadata ->> 'forgotten', 'false') = 'true')
+                  AND (
+                      r.id IS NULL
+                      OR COALESCE(r.metadata ->> 'forgotten', 'false') = 'true'
+                      OR (COALESCE(r.content_authority, '') NOT IN ('owner', 'owner_device')
+                          AND r.endorsed_at IS NULL)
+                  )
             ) AS rules_drifted
         FROM public.memory_catalog mc
         LEFT JOIN {facts_relation} f ON mc.source_table = 'facts' AND f.id = mc.source_id
@@ -975,6 +985,23 @@ async def _lookup_episode_ttl_days(pool: Pool, retention_class: str) -> int:
     return _DEFAULT_EPISODE_TTL_DAYS
 
 
+async def _stamp_authority(
+    pool: Any,
+    content_authority: str | None,
+    authority_entity_id: uuid.UUID | None,
+    routing_context: dict[str, Any] | None = None,
+) -> ContentAuthority:
+    """Return the authority to stamp on a write.
+
+    An explicit ``content_authority`` is honoured only for server-internal
+    callers that derived it themselves (consolidation); MCP-facing tools never
+    expose the argument.  Otherwise it is derived from the routing context.
+    """
+    if content_authority is not None:
+        return ContentAuthority(validate_authority(content_authority), authority_entity_id)
+    return await resolve_content_authority(pool, routing_context)
+
+
 async def store_episode(
     pool: Pool,
     content: str,
@@ -988,6 +1015,9 @@ async def store_episode(
     request_id: str | None = None,
     retention_class: str = "transient",
     sensitivity: str = "normal",
+    content_authority: str | None = None,
+    authority_entity_id: uuid.UUID | None = None,
+    routing_context: dict[str, Any] | None = None,
 ) -> uuid.UUID:
     """Store a raw episode from a butler runtime session.
 
@@ -1008,10 +1038,18 @@ async def store_episode(
         request_id: Optional request trace ID for correlation.
         retention_class: Retention policy class (default 'transient').
         sensitivity: Data sensitivity classification (default 'normal').
+        content_authority: Explicit server-derived authority; when omitted it is
+            derived from ``routing_context`` (or the current runtime session's).
+        authority_entity_id: Sender entity paired with an explicit authority.
+        routing_context: Routing context of the originating session, for callers
+            running outside that session's task (the Spawner's episode hook).
 
     Returns:
         The UUID of the newly created episode row.
     """
+    authority = await _stamp_authority(
+        pool, content_authority, authority_entity_id, routing_context
+    )
     embedding = embedding_engine.embed(content)
     search_text = preprocess_text(content)
     ttl_days = await _lookup_episode_ttl_days(pool, retention_class)
@@ -1041,6 +1079,7 @@ async def store_episode(
                 retention_class=retention_class,
                 sensitivity=sensitivity,
                 embedding_model_version=embedding_engine.model_name,
+                authority=authority,
             )
             return existing_episode_id
 
@@ -1061,6 +1100,7 @@ async def store_episode(
             retention_class=retention_class,
             sensitivity=sensitivity,
             embedding_model_version=embedding_engine.model_name,
+            authority=authority,
         )
         return episode_id
 
@@ -1103,12 +1143,15 @@ async def _insert_episode_record(
     retention_class: str,
     sensitivity: str,
     embedding_model_version: str = "unknown",
+    authority: ContentAuthority | None = None,
 ) -> None:
     sql = f"""
         INSERT INTO episodes (id, butler, session_id, content, embedding, search_vector,
                               importance, expires_at, metadata, tenant_id, request_id,
-                              retention_class, sensitivity, embedding_model_version)
-        VALUES ($1, $2, $3, $4, $5, {tsvector_sql("$6")}, $7, $8, $9, $10, $11, $12, $13, $14)
+                              retention_class, sensitivity, embedding_model_version,
+                              content_authority, authority_entity_id)
+        VALUES ($1, $2, $3, $4, $5, {tsvector_sql("$6")}, $7, $8, $9, $10, $11, $12, $13, $14,
+                $15, $16)
     """
     await conn.execute(
         sql,
@@ -1126,6 +1169,8 @@ async def _insert_episode_record(
         retention_class,
         sensitivity,
         embedding_model_version,
+        authority.authority if authority else None,
+        authority.entity_id if authority else None,
     )
 
 
@@ -1143,6 +1188,7 @@ async def _update_episode_record(
     retention_class: str,
     sensitivity: str,
     embedding_model_version: str = "unknown",
+    authority: ContentAuthority | None = None,
 ) -> None:
     sql = f"""
         UPDATE episodes
@@ -1155,7 +1201,9 @@ async def _update_episode_record(
             request_id = COALESCE($8, request_id),
             retention_class = $9,
             sensitivity = $10,
-            embedding_model_version = $11
+            embedding_model_version = $11,
+            content_authority = $12,
+            authority_entity_id = $13
         WHERE id = $1
     """
     await conn.execute(
@@ -1171,6 +1219,8 @@ async def _update_episode_record(
         retention_class,
         sensitivity,
         embedding_model_version,
+        authority.authority if authority else None,
+        authority.entity_id if authority else None,
     )
 
 
@@ -1212,6 +1262,7 @@ async def _resolve_write_provenance_with_conn(
     if get_current_runtime_trigger_source() == "schedule:consolidation":
         return effective_source_butler, None
 
+    placeholder_authority = await resolve_content_authority(conn)
     placeholder_now = now or datetime.now(UTC)
     ttl_days = _DEFAULT_EPISODE_TTL_DAYS
     expires_at = placeholder_now + timedelta(days=ttl_days)
@@ -1234,6 +1285,7 @@ async def _resolve_write_provenance_with_conn(
         retention_class="transient",
         sensitivity="normal",
         embedding_model_version=embedding_engine.model_name,
+        authority=placeholder_authority,
     )
     return effective_source_butler, episode_id
 
@@ -1287,6 +1339,7 @@ async def _insert_fact_record(
     retention_class: str,
     sensitivity: str,
     embedding_model_version: str = "unknown",
+    authority: ContentAuthority | None = None,
 ) -> None:
     """Insert a single fact row into the ``facts`` table.
 
@@ -1323,6 +1376,7 @@ async def _insert_fact_record(
         retention_class: Retention policy class string.
         sensitivity: Data sensitivity classification string.
         embedding_model_version: Model name used to produce the embedding vector.
+        authority: Server-derived content authority to stamp, or ``None`` (legacy).
     """
     sql = f"""
         INSERT INTO facts (
@@ -1332,7 +1386,7 @@ async def _insert_fact_record(
             created_at, last_confirmed_at, tags, metadata, entity_id,
             object_entity_id, valid_at, tenant_id, request_id,
             idempotency_key, observed_at, retention_class, sensitivity,
-            embedding_model_version
+            embedding_model_version, content_authority, authority_entity_id
         )
         VALUES (
             $1, $2, $3, $4, $5, {tsvector_sql("$6")},
@@ -1341,7 +1395,7 @@ async def _insert_fact_record(
             $15, $15, $16, $17, $18,
             $19, $20, $21, $22,
             $23, $24, $25, $26,
-            $27
+            $27, $28, $29
         )
     """
     await conn.execute(
@@ -1373,6 +1427,8 @@ async def _insert_fact_record(
         retention_class,
         sensitivity,
         embedding_model_version,
+        authority.authority if authority else None,
+        authority.entity_id if authority else None,
     )
 
 
@@ -1403,6 +1459,8 @@ async def store_fact(
     source_schema: str | None = None,
     enforce_consolidation_edge_allowlist: bool = False,
     consolidation_edge_classification: str | None = None,
+    content_authority: str | None = None,
+    authority_entity_id: uuid.UUID | None = None,
 ) -> dict:
     """Store a distilled fact with optional supersession.
 
@@ -1487,6 +1545,7 @@ async def store_fact(
     if enforce_consolidation_edge_allowlist and object_entity_id is not None:
         _validate_consolidation_narrative_edge(predicate, consolidation_edge_classification)
 
+    authority = await _stamp_authority(pool, content_authority, authority_entity_id)
     fact_id = uuid.uuid4()
     searchable = f"{subject} {predicate} {content}"
     embedding = embedding_engine.embed(searchable)
@@ -1691,6 +1750,13 @@ async def store_fact(
             _fuzzy_suggestions: list[dict] = []
             if _predicate_is_novel:
                 _fuzzy_suggestions = await _fuzzy_match_predicates(conn, predicate)
+                if scope == "lifestyle":
+                    suggested = ", ".join(str(item["predicate"]) for item in _fuzzy_suggestions)
+                    hint = f" Closest registered predicates: {suggested}." if suggested else ""
+                    raise ValueError(
+                        f"Lifestyle predicate {predicate!r} is not registered.{hint} "
+                        "Use the Lifestyle memory taxonomy instead of creating a new predicate."
+                    )
 
             # Guard: reject facts that embed entity UUIDs in content without
             # using object_entity_id.  This catches the common mistake of
@@ -1730,6 +1796,21 @@ async def store_fact(
                     # fact already exists; no new guidance is needed).
                     return {"id": existing_idem_id, "supersedes_id": None}
 
+            # Mirrored writes reserve both closure pairs before taking fact-row
+            # locks. Reciprocal writers must share one lock order, not first lock
+            # their respective forward pair and then wait on each other's inverse.
+            _inverse_predicate: str | None = None
+            _gap_closure_allowed = True
+            if _registry_row is not None and entity_id is not None and object_entity_id is not None:
+                if _registry_row.get("is_symmetric"):
+                    _inverse_predicate = predicate
+                else:
+                    _inverse_predicate = _registry_row.get("inverse_of") or None
+                if _inverse_predicate is not None:
+                    _gap_closure_allowed = await knowledge_gaps.reserve_gap_pairs(
+                        conn, [(entity_id, predicate), (object_entity_id, _inverse_predicate)]
+                    )
+
             # Supersession applies only to property facts (valid_at IS NULL).
             # Temporal facts (valid_at IS NOT NULL) always coexist as independent
             # active rows regardless of predicate_registry.is_temporal.
@@ -1762,7 +1843,7 @@ async def store_fact(
                 if object_entity_id is not None:
                     # Edge-fact: keyed on (tenant_id, entity_id, object_entity_id, scope, predicate)
                     existing = await conn.fetchrow(
-                        "SELECT id FROM facts "
+                        "SELECT id, content_authority FROM facts "
                         "WHERE tenant_id = $1 AND entity_id = $2 AND object_entity_id = $3 "
                         "AND scope = $4 AND predicate = $5 "
                         "AND validity IN ('active', 'fading') AND valid_at IS NULL"
@@ -1776,7 +1857,7 @@ async def store_fact(
                 elif entity_id is not None:
                     # Property-fact: keyed on (tenant_id, entity_id, scope, predicate)
                     existing = await conn.fetchrow(
-                        "SELECT id FROM facts "
+                        "SELECT id, content_authority FROM facts "
                         "WHERE tenant_id = $1 AND entity_id = $2 AND object_entity_id IS NULL "
                         "AND scope = $3 AND predicate = $4 "
                         "AND validity IN ('active', 'fading') AND valid_at IS NULL"
@@ -1788,7 +1869,7 @@ async def store_fact(
                     )
                 else:
                     existing = await conn.fetchrow(
-                        "SELECT id FROM facts "
+                        "SELECT id, content_authority FROM facts "
                         "WHERE tenant_id = $1 AND entity_id IS NULL "
                         "AND subject = $2 AND predicate = $3 "
                         "AND validity IN ('active', 'fading') AND valid_at IS NULL"
@@ -1806,6 +1887,14 @@ async def store_fact(
                     )
 
                 if existing:
+                    if is_owner_class(existing["content_authority"]) and authority.authority in (
+                        "third_party",
+                        "mixed",
+                    ):
+                        raise ValueError(
+                            "A non-owner-authored fact cannot supersede an owner-authored fact; "
+                            "store it under a distinct predicate or entity as an attributed report."
+                        )
                     old_id = existing["id"]
                     supersedes_id = old_id
                     superseded_ids.append(old_id)
@@ -1859,7 +1948,20 @@ async def store_fact(
                 retention_class=retention_class,
                 sensitivity=sensitivity,
                 embedding_model_version=embedding_engine.model_name,
+                authority=authority,
             )
+
+            # An owner question this fact answers moves to `answerable` in this same
+            # transaction (bu-q7vx1q.9), so a rolled-back write never answers a gap.
+            if _gap_closure_allowed:
+                await knowledge_gaps.close_matching_gaps(
+                    conn,
+                    entity_id=entity_id,
+                    predicate=predicate,
+                    ref=f"fact:{fact_id}",
+                    value=content,
+                    authority=authority,
+                )
 
             if entity_id is not None and object_entity_id is not None:
                 # RFC 0031 (bu-8cdl1.8 Slice 2): project the entity-to-entity
@@ -1896,14 +1998,6 @@ async def store_fact(
             # Requires mem_025 migration to be applied (inverse_of and is_symmetric
             # columns must exist on predicate_registry).
             if _registry_row is not None and entity_id is not None and object_entity_id is not None:
-                _inverse_predicate: str | None = None
-                _is_symmetric = _registry_row.get("is_symmetric") or False
-                _inverse_of = _registry_row.get("inverse_of")
-                if _is_symmetric:
-                    _inverse_predicate = predicate
-                elif _inverse_of:
-                    _inverse_predicate = _inverse_of
-
                 if _inverse_predicate is not None:
                     # Compute the inverse fact's idempotency key when applicable.
                     _inv_idem_key: str | None = None
@@ -1993,7 +2087,20 @@ async def store_fact(
                             retention_class=retention_class,
                             sensitivity=sensitivity,
                             embedding_model_version=embedding_engine.model_name,
+                            authority=authority,
                         )
+                        # Cite the newly active inverse itself, with its swapped
+                        # value and the original server stamp. A temporal skip
+                        # never enters this path and cannot heal a stranded gap.
+                        if _gap_closure_allowed:
+                            await knowledge_gaps.close_matching_gaps(
+                                conn,
+                                entity_id=object_entity_id,
+                                predicate=_inverse_predicate,
+                                ref=f"fact:{_inv_fact_id}",
+                                value=_inv_content,
+                                authority=authority,
+                            )
                         # The mirrored fact is itself a canonical edge-fact row
                         # (entity_id/object_entity_id both set by construction
                         # above) -- it gets its own projected edge under its
@@ -2170,8 +2277,14 @@ async def store_rule(
     sensitivity: str = "normal",
     enable_shared_catalog: bool = False,
     source_schema: str | None = None,
+    content_authority: str | None = None,
+    authority_entity_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
     """Store a new behavioral rule as a candidate.
+
+    A rule whose server-derived ``content_authority`` is not owner-class is
+    *held*: it is stored but invisible to recall, Active Rules and the discovery
+    catalog until the owner endorses it (see :func:`endorse_rule`).
 
     Rules start as candidates with confidence=0.5 and effectiveness_score=0.0.
     They progress through maturity levels (candidate -> established -> proven)
@@ -2199,10 +2312,14 @@ async def store_rule(
         source_schema: The butler schema name used as ``source_schema`` in the
             catalog row (e.g. ``'health'``).  Required when
             ``enable_shared_catalog=True``; ignored otherwise.
+        content_authority: Explicit server-derived authority (consolidation);
+            when omitted it is derived from the current runtime session.
+        authority_entity_id: Sender entity paired with an explicit authority.
 
     Returns:
         The UUID of the newly created rule.
     """
+    authority = await _stamp_authority(pool, content_authority, authority_entity_id)
     rule_id = uuid.uuid4()
     embedding = embedding_engine.embed(content)
     search_text = preprocess_text(content)
@@ -2216,12 +2333,12 @@ async def store_rule(
                            applied_count, success_count, harmful_count,
                            source_episode_id, source_butler, created_at, tags, metadata,
                            tenant_id, request_id, retention_class, sensitivity,
-                           embedding_model_version)
+                           embedding_model_version, content_authority, authority_entity_id)
         VALUES ($1, $2, $3, {tsvector_sql("$4")}, $5, 'candidate',
                 0.5, 0.01, 0.0,
                 0, 0, 0,
                 $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                $15)
+                $15, $16, $17)
     """
 
     await pool.execute(
@@ -2241,12 +2358,15 @@ async def store_rule(
         retention_class,
         sensitivity,
         embedding_engine.model_name,
+        authority.authority,
+        authority.entity_id,
     )
 
     # -------------------------------------------------------------------------
     # Write-behind to public.memory_catalog (best-effort, non-blocking).
+    # A held rule is never cataloged; endorse_rule() writes its entry.
     # -------------------------------------------------------------------------
-    if enable_shared_catalog and source_schema:
+    if enable_shared_catalog and source_schema and is_owner_class(authority.authority):
         try:
             await _upsert_catalog(
                 pool,
@@ -2436,17 +2556,22 @@ async def get_memory(
     pool: Pool,
     memory_type: str,
     memory_id: uuid.UUID,
+    *,
+    allowed_sensitivities: tuple[str, ...] | list[str],
 ) -> dict | None:
-    """Retrieve a single memory by type and UUID, bumping its reference count.
+    """Retrieve one authorized memory by type and UUID, bumping its reference count.
 
     Atomically increments ``reference_count`` by 1 and sets
-    ``last_referenced_at`` to now. Returns the full record as a dict,
-    or ``None`` if not found.
+    ``last_referenced_at`` to now for a row at an allowed sensitivity. Returns
+    the full record as a dict, or ``None`` if the row is absent or not
+    authorized for this server-held policy.
 
     Args:
         pool: asyncpg connection pool.
         memory_type: One of 'episode', 'fact', 'rule'.
         memory_id: The UUID of the memory item.
+        allowed_sensitivities: Persisted sensitivity values allowed by the
+            server-held read policy.
 
     Returns:
         A dict of the full record, or None if not found.
@@ -2461,13 +2586,16 @@ async def get_memory(
 
     table = _TYPE_TABLE[memory_type]
 
-    # Bump reference_count and last_referenced_at, returning the updated row
+    # Filter within the same UPDATE that bumps reference metadata: a denied UUID
+    # must not leak its existence or mutate its row before returning None.
     row = await pool.fetchrow(
         f"UPDATE {table} "
         f"SET reference_count = reference_count + 1, last_referenced_at = now() "
         f"WHERE id = $1 "
+        f"  AND COALESCE(sensitivity, '{_DEFAULT_CATALOG_SENSITIVITY}') = ANY($2) "
         f"RETURNING *",
         memory_id,
+        list(allowed_sensitivities),
     )
 
     if row is None:
@@ -2493,6 +2621,25 @@ class CorrectionGuardError(Exception):
     def __init__(self, reason: str, message: str) -> None:
         super().__init__(message)
         self.reason = reason
+        self.message = message
+
+
+class EpisodeNotDeadLetterError(Exception):
+    """Raised when retry_dead_letter_episode is asked to reset a non-dead_letter episode.
+
+    Attributes:
+        current_status: The episode's actual ``consolidation_status``.
+        message: Human-readable explanation suitable for an API error response.
+    """
+
+    def __init__(self, current_status: str) -> None:
+        message = (
+            "Episode is not in dead_letter state "
+            f"(current consolidation_status: {current_status!r}); only a "
+            "dead-lettered episode can be retried"
+        )
+        super().__init__(message)
+        self.current_status = current_status
         self.message = message
 
 
@@ -2786,6 +2933,7 @@ async def confirm_memory(
     memory_id: uuid.UUID,
     *,
     memory_schema: str | None = None,
+    allowed_sensitivities: tuple[str, ...] | list[str] | None = None,
 ) -> bool:
     """Confirm a fact or rule is still accurate, resetting confidence decay.
 
@@ -2801,6 +2949,8 @@ async def confirm_memory(
         memory_id: UUID of the memory to confirm.
         memory_schema: Explicit owning schema for dashboard callers. Normal
             daemon and MCP callers omit it and retain search-path behavior.
+        allowed_sensitivities: Optional server-held sensitivity set. When
+            supplied, the authorization predicate is part of the mutation.
 
     Returns:
         True if the memory was found and updated, False if not found.
@@ -2816,11 +2966,255 @@ async def confirm_memory(
         raise ValueError("Episodes cannot be confirmed — they don't have confidence decay")
 
     table = _memory_relation(memory_type, memory_schema)
+    conditions = ["id = $1"]
+    params: list[Any] = [memory_id]
+    if memory_type == "fact":
+        conditions.append("validity IN ('active', 'fading')")
+    else:
+        conditions.extend(["(metadata->>'forgotten')::boolean IS NOT TRUE", "retired_at IS NULL"])
+    if allowed_sensitivities is not None:
+        params.append(list(allowed_sensitivities))
+        conditions.append(f"COALESCE(sensitivity, '{_DEFAULT_CATALOG_SENSITIVITY}') = ANY($2)")
     result = await pool.execute(
-        f"UPDATE {table} SET last_confirmed_at = now() WHERE id = $1",
-        memory_id,
+        f"UPDATE {table} SET last_confirmed_at = now() WHERE {' AND '.join(conditions)}",
+        *params,
     )
     return result.endswith("1")
+
+
+# ---------------------------------------------------------------------------
+# Retry consolidation (dead_letter -> pending)
+# ---------------------------------------------------------------------------
+
+
+async def retry_dead_letter_episode(
+    pool: Pool,
+    episode_id: uuid.UUID,
+    *,
+    memory_schema: str | None = None,
+) -> dict | None:
+    """Reset a dead-lettered episode so the scheduler reconsolidates it.
+
+    Resetting only the status label would leave the episode's terminal retry
+    state poisoned — ``consolidation_attempts`` already at the ceiling, and a
+    stale ``dead_letter_reason``/lease still set — so a manual retry must also
+    clear those fields.  Once reset, the episode's ``consolidation_status`` of
+    ``'pending'`` is unconditionally eligible for
+    :func:`butlers.modules.memory.consolidation.run_consolidation`'s claim
+    query on the very next scheduled sweep, the same path a freshly-stored
+    episode takes — this is a genuine re-enqueue, not a cosmetic relabel.
+
+    Args:
+        pool: asyncpg connection pool for the memory database.
+        episode_id: UUID of the episode to retry.
+        memory_schema: Explicit owning schema for dashboard callers. Normal
+            daemon and MCP callers omit it and retain search-path behavior.
+
+    Returns:
+        The updated episode row (dict, including the public lifecycle dossier
+        columns, never the lease columns) if the reset succeeded, or ``None``
+        if no episode with that id exists.
+
+    Raises:
+        EpisodeNotDeadLetterError: If the episode exists but its
+            ``consolidation_status`` is not ``'dead_letter'``.
+    """
+    table = _memory_relation("episode", memory_schema)
+
+    # One schema-qualified conditional UPDATE decides the transition, so two
+    # concurrent requeues produce exactly one reset and one event; the loser
+    # observes the episode's current status in the follow-up read.
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            updated = await conn.fetchrow(
+                f"""
+                UPDATE {table}
+                SET consolidation_status        = 'pending',
+                    consolidation_attempts      = 0,
+                    dead_letter_reason          = NULL,
+                    last_consolidation_error    = NULL,
+                    next_consolidation_retry_at = NULL,
+                    leased_until                = NULL,
+                    leased_by                   = NULL
+                WHERE id = $1 AND consolidation_status = 'dead_letter'
+                RETURNING id, butler, session_id, content, importance, reference_count,
+                          consolidated, consolidation_status, created_at,
+                          last_referenced_at, expires_at, metadata,
+                          consolidation_attempts, last_consolidation_error,
+                          dead_letter_reason, next_consolidation_retry_at
+                """,
+                episode_id,
+            )
+            if updated is None:
+                current = await conn.fetchrow(
+                    f"SELECT consolidation_status FROM {table} WHERE id = $1",
+                    episode_id,
+                )
+                if current is None:
+                    return None
+                raise EpisodeNotDeadLetterError(current["consolidation_status"])
+
+            await conn.execute(
+                """
+                INSERT INTO memory_events
+                    (event_type, actor, memory_type, memory_id, payload)
+                VALUES
+                    ('episode_consolidation_requeued', 'dashboard_api',
+                     'episode', $1, $2)
+                """,
+                episode_id,
+                {"outcome": "reset_to_pending"},
+            )
+
+    return dict(updated)
+
+
+# ---------------------------------------------------------------------------
+# Retire (stop a rule from firing, without soft-deleting it)
+# ---------------------------------------------------------------------------
+
+
+async def retire_rule(
+    pool: Pool,
+    rule_id: uuid.UUID,
+    *,
+    memory_schema: str | None = None,
+) -> bool:
+    """Retire a rule: it stops firing, but is kept on the books.
+
+    Sets ``retired_at`` to now(). Distinct from ``forget_memory``: forgetting
+    a rule means it was wrong (soft-deleted, like a fact's retraction);
+    retiring a rule means it may still be correct but the owner has decided
+    it no longer needs to be enforced. ``search.semantic_search`` and
+    ``search.keyword_search`` both exclude ``retired_at IS NOT NULL`` rows —
+    that is the evaluation-path guard that actually stops a retired rule from
+    being surfaced into an agent's context.
+
+    Idempotent: retiring an already-retired rule keeps its original
+    ``retired_at`` (``COALESCE``) rather than bumping it, so "when was this
+    retired" stays accurate across repeat calls.
+
+    The catalog disownment cascade runs in the same transaction as the
+    ``retired_at`` write, mirroring ``forget_memory``'s plain path — a
+    retired rule must stop being served via the cross-butler
+    ``public.memory_catalog`` (Fleet Knowledge) too, not just locally.
+
+    Returns:
+        True if the rule was found and updated, False if not found.
+    """
+    table = _memory_relation("rule", memory_schema)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            result = await conn.execute(
+                f"UPDATE {table} SET retired_at = COALESCE(retired_at, now()) WHERE id = $1",
+                rule_id,
+            )
+            found = result.endswith("1")
+            if found:
+                await _cascade_catalog_disownment(conn, "rules", [rule_id])
+    return found
+
+
+class RuleNotEndorsableError(ValueError):
+    """Raised when a retired or forgotten rule is presented for endorsement."""
+
+
+async def endorse_rule(
+    pool: Pool,
+    rule_id: uuid.UUID,
+    *,
+    endorsed_by: uuid.UUID | None,
+    memory_schema: str | None = None,
+) -> dict[str, Any] | None:
+    """Owner-endorse a held rule so it may steer sessions.
+
+    One transaction: lock the rule row, refuse a retired/forgotten rule (a later
+    correction or retirement wins), stamp ``endorsed_at``/``endorsed_by``, write
+    the ``rule_endorsed`` audit event, and upsert the rule's discovery-catalog
+    entry (clearing any stale marker).  Idempotent: an already-endorsed rule
+    returns its original receipt with ``changed=False`` and writes nothing.
+    A rule that already carries owner-class authority is active without
+    endorsement and returns the same no-change receipt.
+
+    Returns the receipt dict, or ``None`` when the rule does not exist.
+
+    Raises:
+        RuleNotEndorsableError: the rule is retired or forgotten.
+    """
+    table = _memory_relation("rule", memory_schema)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                f"SELECT id, content_authority, endorsed_at, endorsed_by, retired_at,"
+                f" COALESCE((metadata->>'forgotten')::boolean, false) AS forgotten,"
+                f" tenant_id, sensitivity"
+                f" FROM {table} WHERE id = $1 FOR UPDATE",
+                rule_id,
+            )
+            if row is None:
+                return None
+            receipt: dict[str, Any] = {
+                "rule_id": rule_id,
+                "content_authority": row["content_authority"],
+                "endorsed_at": row["endorsed_at"],
+                "endorsed_by": row["endorsed_by"],
+                "changed": False,
+            }
+            if row["endorsed_at"] is not None or is_owner_class(row["content_authority"]):
+                return receipt
+            if row["retired_at"] is not None or row["forgotten"]:
+                raise RuleNotEndorsableError("retired or forgotten rules cannot be endorsed")
+
+            endorsed = await conn.fetchrow(
+                f"UPDATE {table} SET endorsed_at = now(), endorsed_by = $2"
+                f" WHERE id = $1 RETURNING endorsed_at",
+                rule_id,
+                endorsed_by,
+            )
+            receipt.update(endorsed_at=endorsed["endorsed_at"], endorsed_by=endorsed_by)
+            receipt["changed"] = True
+
+            await conn.execute(
+                """
+                INSERT INTO memory_events
+                    (event_type, actor, tenant_id, memory_type, memory_id, payload)
+                VALUES ('rule_endorsed', 'owner', $1, 'rule', $2, $3)
+                """,
+                row["tenant_id"],
+                rule_id,
+                {
+                    "endorsed_by": str(endorsed_by) if endorsed_by else None,
+                    "content_authority": row["content_authority"],
+                },
+            )
+
+            if await conn.fetchval(
+                "SELECT to_regclass('public.memory_catalog')"
+            ) is not None and not _is_catalog_write_excluded(row["sensitivity"]):
+                source_schema = memory_schema or await conn.fetchval("SELECT current_schema()")
+                await conn.execute(
+                    f"""
+                    INSERT INTO public.memory_catalog (
+                        source_schema, source_table, source_id, source_butler, tenant_id,
+                        entity_id, summary, embedding, search_vector, memory_type,
+                        title, scope, confidence, retention_class, sensitivity, updated_at
+                    )
+                    SELECT $1::text, 'rules', r.id, r.source_butler, r.tenant_id, NULL, r.content,
+                           r.embedding, r.search_vector, 'rule', LEFT(r.content, 100),
+                           r.scope, r.confidence, r.retention_class, r.sensitivity, now()
+                    FROM {table} r WHERE r.id = $2
+                    ON CONFLICT (source_schema, source_table, source_id) DO UPDATE SET
+                        summary = EXCLUDED.summary,
+                        embedding = EXCLUDED.embedding,
+                        search_vector = EXCLUDED.search_vector,
+                        confidence = EXCLUDED.confidence,
+                        invalid_at = NULL,
+                        updated_at = now()
+                    """,
+                    source_schema,
+                    rule_id,
+                )
+    return receipt
 
 
 # ---------------------------------------------------------------------------
@@ -2831,6 +3225,8 @@ async def confirm_memory(
 async def mark_helpful(
     pool: Pool,
     rule_id: uuid.UUID,
+    *,
+    allowed_sensitivities: tuple[str, ...] | list[str] | None = None,
 ) -> dict | None:
     """Mark a rule as having been applied successfully.
 
@@ -2851,6 +3247,8 @@ async def mark_helpful(
     Args:
         pool: asyncpg connection pool.
         rule_id: UUID of the rule.
+        allowed_sensitivities: Optional server-held sensitivity set. When
+            supplied, the authorization predicate is part of the mutation.
 
     Returns:
         Updated rule as dict, or None if rule not found.
@@ -2858,14 +3256,25 @@ async def mark_helpful(
     async with pool.acquire() as conn:
         async with conn.transaction():
             # Increment counts and update timestamp in one atomic UPDATE
+            conditions = [
+                "id = $1",
+                "(metadata->>'forgotten')::boolean IS NOT TRUE",
+                "retired_at IS NULL",
+            ]
+            params: list[Any] = [rule_id]
+            if allowed_sensitivities is not None:
+                params.append(list(allowed_sensitivities))
+                conditions.append(
+                    f"COALESCE(sensitivity, '{_DEFAULT_CATALOG_SENSITIVITY}') = ANY($2)"
+                )
             row = await conn.fetchrow(
                 "UPDATE rules "
                 "SET applied_count = applied_count + 1, "
                 "    success_count = success_count + 1, "
                 "    last_applied_at = now() "
-                "WHERE id = $1 "
+                f"WHERE {' AND '.join(conditions)} "
                 "RETURNING *",
-                rule_id,
+                *params,
             )
             if row is None:
                 return None
@@ -2911,6 +3320,8 @@ async def mark_harmful(
     pool: Pool,
     rule_id: uuid.UUID,
     reason: str | None = None,
+    *,
+    allowed_sensitivities: tuple[str, ...] | list[str] | None = None,
 ) -> dict | None:
     """Mark a rule as having caused problems.
 
@@ -2935,6 +3346,8 @@ async def mark_harmful(
         pool: asyncpg connection pool.
         rule_id: UUID of the rule.
         reason: Optional reason why the rule was harmful.
+        allowed_sensitivities: Optional server-held sensitivity set. When
+            supplied, the authorization predicate is part of the mutation.
 
     Returns:
         Updated rule as dict, or None if rule not found.
@@ -2942,14 +3355,25 @@ async def mark_harmful(
     async with pool.acquire() as conn:
         async with conn.transaction():
             # Increment counts
+            conditions = [
+                "id = $1",
+                "(metadata->>'forgotten')::boolean IS NOT TRUE",
+                "retired_at IS NULL",
+            ]
+            params: list[Any] = [rule_id]
+            if allowed_sensitivities is not None:
+                params.append(list(allowed_sensitivities))
+                conditions.append(
+                    f"COALESCE(sensitivity, '{_DEFAULT_CATALOG_SENSITIVITY}') = ANY($2)"
+                )
             row = await conn.fetchrow(
                 "UPDATE rules "
                 "SET applied_count = applied_count + 1, "
                 "    harmful_count = harmful_count + 1, "
                 "    last_applied_at = now() "
-                "WHERE id = $1 "
+                f"WHERE {' AND '.join(conditions)} "
                 "RETURNING *",
-                rule_id,
+                *params,
             )
             if row is None:
                 return None
@@ -3102,6 +3526,24 @@ async def invert_to_anti_pattern(
 # ---------------------------------------------------------------------------
 
 
+_LEGACY_FADING_MARKER = "fading"
+
+
+def _clear_legacy_fading_marker(metadata: dict) -> bool:
+    """Drop the sweep's own pre-validity marker; leave every domain key alone.
+
+    Before the ``validity`` column (bu-5ud8p.1) the sweep recorded a fading fact as
+    ``metadata.status = 'fading'`` (mem_008 backfilled and cleared those rows). That exact
+    value is the only thing it ever wrote, so it is the only thing it may remove: a domain
+    status such as a Health condition's ``resolved`` or ``managed`` shares the key and must
+    survive (bu-pimdvx). Returns True when the marker was present and removed.
+    """
+    if metadata.get("status") == _LEGACY_FADING_MARKER:
+        del metadata["status"]
+        return True
+    return False
+
+
 async def run_decay_sweep(pool: Pool) -> dict:
     """Run a confidence decay sweep across all active (and previously-fading) facts
     and rules (excluding permanent ones with decay_rate=0.0).
@@ -3211,9 +3653,7 @@ async def run_decay_sweep(pool: Pool) -> dict:
             )
 
             if eff < expiry_thresh:
-                # Legacy metadata.status bookkeeping is superseded by the
-                # validity column — drop the stale key as part of the transition.
-                metadata.pop("status", None)
+                _clear_legacy_fading_marker(metadata)
                 if archive_first:
                     try:
                         metadata["archived_at"] = now.isoformat()
@@ -3261,7 +3701,7 @@ async def run_decay_sweep(pool: Pool) -> dict:
                         continue
                 stats["facts_expired"] += 1
             elif eff < fading_thresh:
-                had_stale_status = metadata.pop("status", None) is not None
+                had_stale_status = _clear_legacy_fading_marker(metadata)
                 if fact["validity"] != "fading" or had_stale_status:
                     await conn.execute(
                         "UPDATE facts SET validity = 'fading', metadata = $1 WHERE id = $2",
@@ -3270,7 +3710,7 @@ async def run_decay_sweep(pool: Pool) -> dict:
                     )
                 stats["facts_fading"] += 1
             else:
-                had_stale_status = metadata.pop("status", None) is not None
+                had_stale_status = _clear_legacy_fading_marker(metadata)
                 if fact["validity"] != "active" or had_stale_status:
                     await conn.execute(
                         "UPDATE facts SET validity = 'active', metadata = $1 WHERE id = $2",

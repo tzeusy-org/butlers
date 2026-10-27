@@ -294,6 +294,40 @@ async def test_spending_summary_category_filter(pool):
     assert Decimal(result["total_spend"]) == Decimal("100.00")
 
 
+async def test_spending_summary_category_filter_matches_inferred_category_overlay(pool):
+    """category_filter matches the effective (overlay-aware) category, not the raw one.
+
+    A row whose raw category is benign but whose ``inferred_category`` overlay
+    matches the filter must be included, and a row whose raw category matches
+    the filter but whose overlay says otherwise must be excluded — parity with
+    facts.py's COALESCE(metadata->>'inferred_category', metadata->>'category')
+    category_filter expression.
+    """
+    from butlers.tools.finance.spending import spending_summary
+
+    posted = _this_month_mid()
+    # Raw category "general" but overlay says "groceries" — must be included.
+    await _insert_tx(
+        pool,
+        amount="100.00",
+        category="general",
+        metadata={"inferred_category": "groceries"},
+        posted_at=posted,
+    )
+    # Raw category "groceries" but overlay overrides it to "dining" — must be excluded.
+    await _insert_tx(
+        pool,
+        amount="50.00",
+        category="groceries",
+        metadata={"inferred_category": "dining"},
+        posted_at=posted,
+    )
+
+    result = await spending_summary(pool, category_filter="groceries")
+
+    assert Decimal(result["total_spend"]) == Decimal("100.00")
+
+
 # ---------------------------------------------------------------------------
 # account_id filter
 # ---------------------------------------------------------------------------

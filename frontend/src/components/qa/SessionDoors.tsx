@@ -39,7 +39,7 @@ function SessionDoor({ id, label }: { id: string; label: string }) {
       to={`/sessions/${id}`}
       aria-label={`Open ${label} session ${id}`}
       data-testid="qa-session-door"
-      className="inline-flex items-baseline gap-1.5 border border-border/60 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-foreground underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-1 focus-visible:outline-ring tnum"
+      className="inline-flex items-baseline gap-1.5 border border-border/60 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-foreground underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-1 focus-visible:outline-focus tnum"
     >
       <span className="text-muted-foreground">{label}</span>
       <span>{shortSessionLabel(id)}</span>

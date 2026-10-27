@@ -156,6 +156,88 @@ def is_rule_effective(
     )
 
 
+def has_narrow_constraints(arg_constraints: dict[str, Any]) -> bool:
+    """Return whether any constraint is exact/pattern (or legacy exact)."""
+    if not arg_constraints:
+        return False
+
+    for constraint in arg_constraints.values():
+        if isinstance(constraint, dict):
+            ctype = str(constraint.get("type", "")).lower()
+            if ctype in {"exact", "pattern"}:
+                return True
+            continue
+        if constraint != "*":
+            return True
+    return False
+
+
+def validate_rule_constraints(
+    *,
+    tool_name: str,
+    risk_tier: Any,
+    arg_constraints: dict[str, Any],
+    expires_at: Any,
+    max_uses: int | None,
+) -> str | None:
+    """Validate a new rule's safety bounds against the tool's effective risk tier.
+
+    The single validator shared by the MCP tool and the dashboard REST endpoint:
+    ``max_uses`` must be positive, and a high/critical-risk tool needs at least one
+    exact or pattern constraint plus an ``expires_at`` or ``max_uses`` bound.
+    Returns the error message, or ``None`` when the rule is acceptable.
+    """
+    from butlers.config import ApprovalRiskTier
+
+    if max_uses is not None and max_uses <= 0:
+        return "max_uses must be greater than 0"
+
+    if risk_tier in {ApprovalRiskTier.HIGH, ApprovalRiskTier.CRITICAL}:
+        if not has_narrow_constraints(arg_constraints):
+            return (
+                f"High-risk tool '{tool_name}' requires at least one exact or pattern "
+                "arg constraint"
+            )
+        if expires_at is None and max_uses is None:
+            return (
+                f"High-risk tool '{tool_name}' requires bounded scope via "
+                "'expires_at' or 'max_uses'"
+            )
+    return None
+
+
+def claim_rule_use_sql(rule_param: int = 1, now_param: int = 2) -> str:
+    """SQL of the one conditional ``UPDATE`` that claims a use of a standing rule.
+
+    The ``WHERE`` clause re-checks active / expiry / ``max_uses`` under the row lock,
+    so racing claimers cannot exceed ``max_uses``.  Exposed with parameter numbers so
+    the gate can embed the very same statement in a CTE together with the
+    approved-action ``INSERT`` (one statement, hence one atomic unit).
+    """
+    return (
+        "UPDATE approval_rules SET use_count = use_count + 1 "
+        f"WHERE id = ${rule_param} AND active = true "
+        "AND (max_uses IS NULL OR use_count < max_uses) "
+        f"AND (expires_at IS NULL OR expires_at >= ${now_param}) "
+        "RETURNING id"
+    )
+
+
+async def claim_rule_use(
+    conn: Any,
+    rule_id: Any,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Atomically claim one use of a standing rule; False when it cannot be used.
+
+    This is the single counting path for ``approval_rules.use_count``.  A claimed use
+    stays consumed even if the action later fails to execute (an approval was issued).
+    """
+    row = await conn.fetchrow(claim_rule_use_sql(), rule_id, now or datetime.now(UTC))
+    return row is not None
+
+
 # ---------------------------------------------------------------------------
 # Rule matching
 # ---------------------------------------------------------------------------

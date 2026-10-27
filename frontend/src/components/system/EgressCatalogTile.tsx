@@ -8,13 +8,14 @@
 // ---------------------------------------------------------------------------
 
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+  Tile,
+  TileContent,
+  TileDescription,
+  TileFooter,
+  TileHeader,
+  TileTitle,
+} from "@/components/ui/Tile"
+import { QueryTile } from "@/components/ui/query-tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
 import { useEgressFacts } from "@/hooks/use-system"
@@ -25,35 +26,19 @@ import { useEgressFacts } from "@/hooks/use-system"
 
 function TileSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Data Egress</CardTitle>
-        <CardDescription>External services that received data</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile loading>
+      <TileHeader>
+        <TileTitle>Data Egress</TileTitle>
+        <TileDescription>External services that received data</TileDescription>
+      </TileHeader>
+      <TileContent>
         <div data-testid="egress-tile-skeleton" className="space-y-2">
           <Skeleton className="h-5 w-48" />
           <Skeleton className="h-5 w-40" />
           <Skeleton className="h-5 w-44" />
         </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-function TileError() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Data Egress</CardTitle>
-        <CardDescription>External services that received data</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <p data-testid="egress-tile-error" className="text-destructive text-sm">
-          Could not load egress catalog.
-        </p>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
@@ -71,51 +56,57 @@ function TileError() {
  * The catalog_covers_from field shows the earliest audit event timestamp.
  */
 export function EgressCatalogTile() {
-  const { data: response, isPending, isError, isForbidden } = useEgressFacts()
-
-  if (isPending) return <TileSkeleton />
-
-  if (isForbidden) {
+  const q = useEgressFacts()
+  if (q.isForbidden && !q.isPending) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Data Egress</CardTitle>
-          <CardDescription>External services that received data</CardDescription>
-        </CardHeader>
-        <CardContent data-testid="egress-tile-forbidden">
+      <Tile degraded>
+        <TileHeader>
+          <TileTitle>Data Egress</TileTitle>
+          <TileDescription>External services that received data</TileDescription>
+        </TileHeader>
+        <TileContent data-testid="egress-tile-forbidden">
           <p className="text-muted-foreground text-sm">
             Owner only -- sign in as the owner to view.
           </p>
-        </CardContent>
-      </Card>
-    )
-  }
-
-  if (isError) return <TileError />
-
-  const catalog = response?.data
-
-  if (!catalog || catalog.actors.length === 0) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Data Egress</CardTitle>
-          <CardDescription>External services that received data</CardDescription>
-        </CardHeader>
-        <CardContent data-testid="egress-tile-empty">
-          <p className="text-muted-foreground text-sm">No external egress recorded yet.</p>
-        </CardContent>
-      </Card>
+        </TileContent>
+      </Tile>
     )
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Data Egress</CardTitle>
-        <CardDescription>External services that received data</CardDescription>
-      </CardHeader>
-      <CardContent data-testid="egress-tile-content" className="max-h-[320px] overflow-y-auto">
+    <QueryTile q={q} title="Data Egress" description="External services that received data"
+      errorMessage="Could not load egress catalog." errorTestId="egress-tile-error" loadingFallback={<TileSkeleton />}>
+      {(response) => <EgressCatalogContent response={response} />}
+    </QueryTile>
+  )
+}
+
+function EgressCatalogContent({ response }: {
+  response: NonNullable<ReturnType<typeof useEgressFacts>["data"]>
+}) {
+  const catalog = response.data
+
+  if (catalog.actors.length === 0) {
+    return (
+      <Tile>
+        <TileHeader>
+          <TileTitle>Data Egress</TileTitle>
+          <TileDescription>External services that received data</TileDescription>
+        </TileHeader>
+        <TileContent data-testid="egress-tile-empty">
+          <p className="text-muted-foreground text-sm">No external egress recorded yet.</p>
+        </TileContent>
+      </Tile>
+    )
+  }
+
+  return (
+    <Tile>
+      <TileHeader>
+        <TileTitle>Data Egress</TileTitle>
+        <TileDescription>External services that received data</TileDescription>
+      </TileHeader>
+      <TileContent data-testid="egress-tile-content" className="max-h-[320px] overflow-y-auto">
         <ul className="space-y-3">
           {catalog.actors.map((actor) => (
             <li key={actor.actor_id} className="text-sm">
@@ -132,9 +123,9 @@ export function EgressCatalogTile() {
             </li>
           ))}
         </ul>
-      </CardContent>
+      </TileContent>
       {catalog.catalog_covers_from && (
-        <CardFooter>
+        <TileFooter>
           <p
             data-testid="egress-tile-covers-from"
             className="text-muted-foreground text-xs"
@@ -142,8 +133,8 @@ export function EgressCatalogTile() {
             Records since{" "}
             <Time value={catalog.catalog_covers_from} mode="absolute" />
           </p>
-        </CardFooter>
+        </TileFooter>
       )}
-    </Card>
+    </Tile>
   )
 }

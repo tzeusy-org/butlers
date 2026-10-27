@@ -14,9 +14,9 @@ onto every cross-butler table since (the same class of gap
 ``dashboard_conversations``/``dashboard_messages``). Concierge is RFC 0031's
 own motivating consumer (its fleet dossier reads the projected graph), so
 without this grant the Slice-3 ``entity_graph_walk``/``entity_graph_path``
-core tools -- registered on every butler via
-``UNIVERSAL_CORE_TOOL_NAMES`` -- would fail closed with a Postgres
-permission-denied the first time concierge called either tool.
+core tools -- registered fleet-wide by the graph tool group -- would fail
+closed with a Postgres permission-denied the first time concierge called either
+tool.
 
 This migration closes that gap with the same guarded grant pattern
 ``core_215``/``core_221`` use. ``downgrade()`` only revokes the grant this

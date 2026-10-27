@@ -13,8 +13,8 @@ analysis, wrong blast-radius reasoning, and phantom work items.
 |---|---|---|
 | **What it is** | A long-running daemon (FastMCP server process) | A pluggable capability unit loaded by a butler |
 | **Lives in** | `roster/{butler-name}/` with a `butler.toml` | `src/butlers/modules/` or `roster/{butler}/modules/` |
-| **Has its own process?** | Yes — one OS process per butler | No — runs inside its host butler's process |
-| **Has its own DB schema?** | Yes — one PostgreSQL schema per butler | No — uses its host butler's schema |
+| **Runs as** | Its own daemon with its own FastMCP server (`butlers up` may host several daemons in one OS process) | Code inside its host daemon |
+| **Has its own DB schema?** | Yes — one PostgreSQL schema per butler | No — its tables live in the host butler's schema (Chronicler's memory uses the private `chronicler_mem` schema) |
 | **Has its own port?** | Yes — one FastMCP port per butler | No — shares its host butler's port |
 | **Lifecycle** | Starts/stops independently; registered in butler registry | Starts/stops inside its host butler's `on_startup`/`on_shutdown` |
 | **Defined by** | `butler.toml`, `MANIFESTO.md`, `CLAUDE.md` | `Module` ABC subclass in Python |
@@ -25,28 +25,16 @@ analysis, wrong blast-radius reasoning, and phantom work items.
 ## How to Tell Them Apart
 
 **A butler** has a directory in `roster/` that contains a `butler.toml`. Butlers
-appear in the process table and in the butler registry (Switchboard heartbeat
-list). They have ports. The current roster:
-
-```
-roster/switchboard/   roster/general/      roster/relationship/
-roster/health/        roster/finance/       roster/travel/
-roster/education/     roster/home/          roster/lifestyle/
-roster/messenger/     roster/chronicler/    roster/qa/
-```
+appear in the Switchboard butler registry and have ports. List them with
+`ls roster/`; staffers carry `type = "staffer"` in their `butler.toml`.
 
 **A module** has a Python class that extends `Module` from
 `src/butlers/modules/base.py`. Modules appear in `butler.toml` under
 `[modules.*]` sections and in the `module.states()` tool output. They do not
-have ports, schemas, or roster entries.
-
-Current shared modules (in `src/butlers/modules/`):
-
-```
-email       telegram    calendar    memory
-contacts    pipeline    approvals   mailbox
-metrics     self_healing
-```
+have ports or roster entries. List shared modules with
+`ls src/butlers/modules/`; butler-local modules live in
+`roster/{butler}/modules/`. See which butlers load a module with
+`grep -l '^\[modules.memory\]' roster/*/butler.toml`.
 
 ---
 
@@ -57,8 +45,8 @@ A redesign brief or implementation plan sometimes names `memory`, `contact`, or
 
 | Phantom butler name | Reality |
 |---|---|
-| `memory` | The **memory module** — loaded by `relationship` via `[modules.memory]` in `butler.toml`. `roster/memory/` does not exist. |
-| `contact` | The **contacts module** — loaded by `relationship` via `[modules.contacts]` in `butler.toml`. `roster/contact/` does not exist. |
+| `memory` | The **memory module**, loaded by most domain butlers and Switchboard via `[modules.memory]`. `roster/memory/` does not exist. |
+| `contact` | The **contacts module**, loaded by several domain butlers via `[modules.contacts]`. `roster/contact/` does not exist. |
 | `household` | Functionality served by the **home butler** (`roster/home/`). No `household` module or butler exists. |
 
 When a brief lists butlers "touched" by a change, verify each name against the
@@ -68,25 +56,9 @@ the butler that hosts it.
 
 ---
 
-## Module Enablement Pattern
-
-A butler opts into a module by adding a section to its `butler.toml`:
-
-```toml
-[modules.memory]
-groups = ["core", "entity"]
-
-[modules.contacts]
-provider = "google"
-include_other_contacts = false
-```
-
-The `ModuleRegistry` discovers concrete `Module` subclasses, validates configs,
-resolves dependencies via topological sort, runs migrations, and calls
-`on_startup()` in order. The daemon owns the module lifecycle.
-
-Modules only add tools to the butler's FastMCP server. They never start their
-own server, claim a port, or create a separate PostgreSQL schema.
+Modules only add tools to their host butler's FastMCP server. They never start
+their own server or claim a port. Enablement, config validation and lifecycle:
+[Modules and Connectors](../../docs/concepts/modules-and-connectors.md).
 
 ---
 
@@ -98,12 +70,11 @@ own server, claim a port, or create a separate PostgreSQL schema.
   read" must go through MCP, not direct SQL — even between two modules loaded by
   different butlers.
 - **Work inventory**: a task that says "update the memory butler" is actually a
-  task on the `memory` module inside the `relationship` butler. The PR touches
-  `src/butlers/modules/memory/` and possibly `roster/relationship/butler.toml`,
-  not a `roster/memory/` directory.
-- **Routing**: the Switchboard routes to butlers, not modules. A message
-  classified as memory-related is routed to the `relationship` butler, which
-  then uses its loaded `memory` module to respond.
+  task on the `memory` module. The PR touches `src/butlers/modules/memory/` and
+  possibly the hosts' `butler.toml`, not a `roster/memory/` directory.
+- **Routing**: the Switchboard routes to butlers, not modules. A message is
+  routed to the domain butler that owns it, which then uses its loaded modules
+  to respond.
 
 ---
 

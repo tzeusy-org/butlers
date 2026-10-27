@@ -86,7 +86,7 @@ describe("Display: typography", () => {
 
   it("applies primary foreground color token", () => {
     const html = renderToStaticMarkup(<Display>headline</Display>)
-    expect(html).toContain("--fg")
+    expect(html).toContain("text-fg")
   })
 })
 

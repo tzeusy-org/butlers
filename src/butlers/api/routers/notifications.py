@@ -24,8 +24,10 @@ from typing import Any
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from butlers.api.approval_review import project_notification_reviews
 from butlers.api.briefing.cache import BriefingCache, get_cache, resolve_owner_id
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse, PaginationMeta
 from butlers.api.models.notification import (
     AckFailedResult,
@@ -33,6 +35,10 @@ from butlers.api.models.notification import (
     NotificationListResponse,
     NotificationStats,
     NotificationSummary,
+)
+from butlers.core.approval_recovery_exclusion import (
+    notification_metadata_is_recovery,
+    notification_recovery_exclusion_sql,
 )
 from butlers.core.attention_ledger import record_attention_event
 from butlers.credential_store import resolve_owner_entity_info
@@ -48,11 +54,6 @@ _OWNER_INFO_TYPE_BY_CHANNEL = {"telegram": "telegram_chat_id", "email": "email"}
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 butler_notifications_router = APIRouter(prefix="/api/butlers", tags=["butlers", "notifications"])
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _get_switchboard_pool(db: DatabaseManager) -> asyncpg.Pool | None:
@@ -167,6 +168,7 @@ _RETRIED_EXISTS_SQL = (
     "AND n2.channel = notifications.channel "
     "AND n2.message = notifications.message "
     "AND n2.status = 'sent' "
+    f"AND {notification_recovery_exclusion_sql('n2')} "
     "AND n2.created_at > notifications.created_at"
     ")"
 )
@@ -190,6 +192,7 @@ _EFFECTIVE_STATUS_CASE_SQL = (
 async def _query_notifications(
     pool: asyncpg.Pool,
     *,
+    db: DatabaseManager | None = None,
     offset: int,
     limit: int,
     butler: str | None = None,
@@ -203,7 +206,7 @@ async def _query_notifications(
     Shared by both the cross-butler and butler-scoped endpoints.
     """
     # Build dynamic WHERE clause
-    conditions: list[str] = []
+    conditions: list[str] = [notification_recovery_exclusion_sql()]
     args: list[object] = []
     idx = 1
 
@@ -260,6 +263,7 @@ async def _query_notifications(
         data_sql = (
             f"SELECT id, source_butler, channel, recipient, message, metadata, "
             f"status, error, session_id, trace_id, created_at, "
+            "to_jsonb(notifications)->'approval_review' AS approval_review, "
             f"{_EFFECTIVE_STATUS_CASE_SQL} AS effective_status "
             f"FROM notifications{where_clause} "
             f"ORDER BY created_at DESC "
@@ -277,6 +281,7 @@ async def _query_notifications(
         )
         return _empty_notification_page(offset=offset, limit=limit, source_available=False)
 
+    review_states = await project_notification_reviews(db, rows)
     notifications = [
         NotificationSummary(
             id=row["id"],
@@ -291,8 +296,10 @@ async def _query_notifications(
             session_id=row["session_id"],
             trace_id=row["trace_id"],
             created_at=row["created_at"],
+            approval_review=review[0],
+            approval_review_state=review[1],
         )
-        for row in rows
+        for row, review in zip(rows, review_states, strict=True)
     ]
 
     return NotificationListResponse(
@@ -318,7 +325,8 @@ async def list_notifications(
     ),
     since: datetime | None = Query(None, description="Only notifications created after this time"),
     until: datetime | None = Query(None, description="Only notifications created before this time"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> NotificationListResponse:
     """Return paginated notification history from the Switchboard database.
 
@@ -333,6 +341,7 @@ async def list_notifications(
     try:
         return await _query_notifications(
             pool,
+            db=db,
             offset=offset,
             limit=limit,
             butler=butler,
@@ -368,7 +377,8 @@ async def list_butler_notifications(
     ),
     since: datetime | None = Query(None, description="Only notifications created after this time"),
     until: datetime | None = Query(None, description="Only notifications created before this time"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> NotificationListResponse:
     """Return paginated notifications for a specific butler.
 
@@ -381,6 +391,7 @@ async def list_butler_notifications(
     try:
         return await _query_notifications(
             pool,
+            db=db,
             offset=offset,
             limit=limit,
             butler=name,
@@ -430,7 +441,8 @@ async def notification_stats(
     until: datetime | None = Query(
         None, description="Only count notifications created at/before this timestamp"
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[NotificationStats]:
     """Return aggregated notification statistics.
 
@@ -466,7 +478,12 @@ async def notification_stats(
     # window's own bound values are re-used verbatim (unaliased vs. aliased
     # predicate text differs, args do not).
     window_clause, window_args = _window_predicate(since, until, "created_at")
-    window_where = f" WHERE {window_clause}" if window_clause else ""
+    exclusion = notification_recovery_exclusion_sql()
+    n_exclusion = notification_recovery_exclusion_sql("n")
+    n2_exclusion = notification_recovery_exclusion_sql("n2")
+    window_where = f" WHERE {exclusion}"
+    if window_clause:
+        window_where += f" AND {window_clause}"
     window_and = f" AND {window_clause}" if window_clause else ""
     n_clause, n_args = _window_predicate(since, until, "n.created_at")
     n_and = f" AND {n_clause}" if n_clause else ""
@@ -478,7 +495,8 @@ async def notification_stats(
         )
         sent = (
             await pool.fetchval(
-                f"SELECT count(*) FROM notifications WHERE status = 'sent'{window_and}",
+                f"SELECT count(*) FROM notifications WHERE status = 'sent' "
+                f"AND {exclusion}{window_and}",
                 *window_args,
             )
             or 0
@@ -489,7 +507,7 @@ async def notification_stats(
             await pool.fetchval(
                 f"""
                 SELECT count(*) FROM notifications n
-                WHERE n.status = 'failed'{n_and}
+                WHERE n.status = 'failed' AND {n_exclusion}{n_and}
                 AND NOT (
                     n.session_id IS NOT NULL
                     AND EXISTS (
@@ -499,6 +517,7 @@ async def notification_stats(
                         AND n2.message = n.message
                         AND n2.status = 'sent'
                         AND n2.created_at > n.created_at
+                        AND {n2_exclusion}
                     )
                 )
                 """,
@@ -517,7 +536,7 @@ async def notification_stats(
         # the ``failed`` count shown by the notifications verdict opener.
         butler_rows = await pool.fetch(
             f"SELECT source_butler, count(*) AS cnt FROM notifications "
-            f"WHERE status = 'failed'{window_and} "
+            f"WHERE status = 'failed' AND {exclusion}{window_and} "
             f"AND NOT ({_RETRIED_EXISTS_SQL}) GROUP BY source_butler",
             *window_args,
         )
@@ -556,7 +575,8 @@ async def notification_stats(
 )
 async def mark_notification_read(
     notification_id: uuid.UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     cache: BriefingCache = Depends(get_cache),
 ) -> ApiResponse[NotificationSummary]:
     """Mark a notification as read.
@@ -575,12 +595,14 @@ async def mark_notification_read(
 
     try:
         row = await pool.fetchrow(
-            """
+            f"""
             UPDATE notifications
             SET status = 'read'
             WHERE id = $1
+              AND {notification_recovery_exclusion_sql()}
             RETURNING id, source_butler, channel, recipient, message, metadata,
-                      status, error, session_id, trace_id, created_at
+                      status, error, session_id, trace_id, created_at,
+                      to_jsonb(notifications)->'approval_review' AS approval_review
             """,
             notification_id,
         )
@@ -589,7 +611,7 @@ async def mark_notification_read(
             raise HTTPException(
                 status_code=503,
                 detail="Notifications table is not yet initialised",
-            )
+            ) from exc
         raise
 
     if row is None:
@@ -606,6 +628,7 @@ async def mark_notification_read(
     else:
         cache.invalidate_all()
 
+    review = (await project_notification_reviews(db, [row]))[0]
     return ApiResponse(
         data=NotificationSummary(
             id=row["id"],
@@ -620,6 +643,8 @@ async def mark_notification_read(
             session_id=row["session_id"],
             trace_id=row["trace_id"],
             created_at=row["created_at"],
+            approval_review=review[0],
+            approval_review_state=review[1],
         )
     )
 
@@ -634,7 +659,8 @@ async def mark_notification_read(
     response_model=ApiResponse[AckFailedResult],
 )
 async def ack_failed_notifications(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     cache: BriefingCache = Depends(get_cache),
 ) -> ApiResponse[AckFailedResult]:
     """Acknowledge all failed notifications in bulk.
@@ -653,7 +679,8 @@ async def ack_failed_notifications(
 
     try:
         result = await pool.execute(
-            "UPDATE notifications SET status = 'read' WHERE status = 'failed'"
+            "UPDATE notifications SET status = 'read' WHERE status = 'failed' AND "
+            + notification_recovery_exclusion_sql()
         )
     except Exception as exc:
         if _is_missing_notifications_table_error(exc):
@@ -690,11 +717,12 @@ async def _fetch_notification_row(
 ) -> asyncpg.Record | None:
     try:
         return await pool.fetchrow(
-            """
+            f"""
             SELECT id, source_butler, channel, recipient, message, metadata,
                    status, error, session_id, trace_id, created_at
             FROM notifications
             WHERE id = $1
+              AND {notification_recovery_exclusion_sql()}
             """,
             notification_id,
         )
@@ -718,6 +746,8 @@ def _extract_stored_envelope(row: Mapping[str, Any]) -> dict[str, Any]:
     is retryable, not just the ones that happen to carry one.
     """
     metadata = row.get("metadata")
+    if notification_metadata_is_recovery(metadata):
+        raise ValueError("notification recovery has no generic replay envelope")
     if isinstance(metadata, Mapping):
         stored = metadata.get("notify_request")
         if isinstance(stored, Mapping):
@@ -795,10 +825,11 @@ async def _claim_failed_notification(
     recoverable by inspection; a duplicate real send is not.
     """
     return await pool.fetchrow(
-        """
+        f"""
         UPDATE notifications
         SET status = 'read'
         WHERE id = $1 AND status = 'failed'
+          AND {notification_recovery_exclusion_sql()}
         RETURNING id, source_butler, channel, recipient, message, metadata,
                   status, error, session_id, trace_id, created_at
         """,
@@ -843,7 +874,8 @@ async def _finalize_manual_action(
 )
 async def retry_notification(
     notification_id: uuid.UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     cache: BriefingCache = Depends(get_cache),
 ) -> ApiResponse[NotificationActionResult]:
     """Manually re-attempt delivery of a failed notification, right now.
@@ -950,7 +982,8 @@ async def retry_notification(
 )
 async def escalate_notification(
     notification_id: uuid.UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     cache: BriefingCache = Depends(get_cache),
 ) -> ApiResponse[NotificationActionResult]:
     """Re-attempt a failed notification on the owner's alternate channel.

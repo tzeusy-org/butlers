@@ -1,0 +1,31 @@
+# Task history and pending successor conversion
+
+The eight tasks below retain their complete original bodies and checkbox states:
+three checked historical source/ordinary-boundary outcomes and five unchecked
+implementation/reconciliation outcomes. These checks do not claim that held
+capture or the RFC 0038 goal runtime shipped. The moved `butler-general` delta now
+lives in `generalist-lead-focused-delegation`; all six `general-capture`
+requirements stay active here. RFC 0038 D1/D2/D5 supersede the old classification
+and domain-session routing mechanism. Goal-runtime conversion and behavior proof
+remain PENDING; the historical packet is not dispatch authority. This fold does
+not tick tasks, archive either change, or authorize live operations.
+
+## 1. Canonical source
+- [x] 1.1 Preserve exact adopted artifact and integrate its durable RFC/manifesto/spec target without unrelated baseline loss.
+- [x] 1.2 Complete independent exact-head source/packet review and protected landing under bu-2jtfw.9.1.
+  Evidence: PR #4252 (historical squash-merge commit d6c45cf72) landed under the
+  closed bead bu-2jtfw.9.1. Current main carries the patch-equivalent commit
+  bc2fc2156ee9c121682a1c975d55f755b8efb407 (same stable patch-id
+  a3ba7e418fc5dc3bde8de89e4ba0f213d45fbaf1).
+
+## 2. Repository implementation after source landing
+- [x] 2.1 Implement passive ordinary-source classification, vocabulary/privacy/query/mutation gates and immutable General source versions; no private enrollment.
+  Evidence: PR #4281 (bc5f88d7b, bu-2jtfw.9.3) and General migration `gen_003`
+  (`roster/general/migrations/003_ordinary_source_authority.py`).
+- [ ] 2.2 Implement held admission, owner/source authority, durable source-owned routing receipts and ambiguous-lineage protection.
+- [ ] 2.3 Implement bounded search/catalog retirement and General source-fence readiness with crash/replay/enrollment tests.
+- [ ] 2.4 Wire actual chat/dashboard intake, held lane, source doors and deliberate consolidation proposal controls with synthetic accessible UI tests.
+
+## 3. Reconciliation
+- [ ] 3.1 Reconcile all nine original outcomes and six adopted requirements under bu-2jtfw.9.2; preserve missing work as complete source packets.
+- [ ] 3.2 Distinguish repository delivery from separately authorized live deployment/data operations; no custody/checklist implementation or archive by implication.

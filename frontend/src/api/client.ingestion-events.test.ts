@@ -24,8 +24,8 @@ function mockEventsResponse(events: unknown[] = []) {
   mockFetch.mockResolvedValueOnce({
     ok: true,
     status: 200,
-    json: async () => ({ data: events, meta: { next_cursor: null, has_more: false } }),
-    text: async () => JSON.stringify({ data: events, meta: { next_cursor: null, has_more: false } }),
+    json: async () => ({ items: events, next_cursor: null, limit: 50 }),
+    text: async () => JSON.stringify({ items: events, next_cursor: null, limit: 50 }),
     headers: { get: () => "application/json" },
   });
 }
@@ -34,7 +34,36 @@ function mockEventsResponse(events: unknown[] = []) {
 // Import the function under test (after mock setup)
 // ---------------------------------------------------------------------------
 
-import { listIngestionEvents } from "./client.ts";
+import {
+  listIngestionEvents, getIngestionEvent, getIngestionEventSessions, getIngestionDroppedKnown,
+  getIngestionWindowRollup, getIngestionEventReplays,
+  getIngestionEventSenderContact, getIngestionEventPayload,
+} from "./client.ts";
+
+it("forwards cancellation from each ingestion read to the underlying fetch", async () => {
+  const readers = [
+    (signal: AbortSignal) => listIngestionEvents({}, signal),
+    (signal: AbortSignal) => getIngestionDroppedKnown("24h", signal),
+    (signal: AbortSignal) => getIngestionEvent("event", signal),
+    (signal: AbortSignal) => getIngestionEventSessions("event", signal),
+    (signal: AbortSignal) => getIngestionWindowRollup({}, signal),
+    (signal: AbortSignal) => getIngestionEventsHistogram({ trace_id: "trace" }, signal),
+    (signal: AbortSignal) => getIngestionEventReplays("event", signal),
+    (signal: AbortSignal) => getIngestionEventSenderContact("event", signal),
+    (signal: AbortSignal) => getIngestionEventPayload("event", signal),
+  ];
+  for (const read of readers) {
+    mockFetch.mockImplementationOnce((_url: string, options: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        options.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+      }),
+    );
+    const controller = new AbortController();
+    const request = read(controller.signal);
+    controller.abort();
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // channels= CSV param
@@ -173,7 +202,6 @@ describe("getIngestionEventsHistogram", () => {
 // getIngestionWindowRollup — GET /api/ingestion/rollup (bu-q750c trace_id threading)
 // ---------------------------------------------------------------------------
 
-import { getIngestionWindowRollup } from "./client.ts";
 
 function mockRollupResponse(body: {
   events: number;
@@ -232,4 +260,16 @@ describe("getIngestionWindowRollup", () => {
     const result = await getIngestionWindowRollup({ trace_id: "trace-abc-123" });
     expect(result).toEqual(body);
   });
+});
+
+
+it("preserves partial dropped-known evidence through the actual API client", async () => {
+  const body = { available: false, counts_available: true, classification_available: false,
+    uncertain_drops: 2, availability_reason: "classification_unknown",
+    window: "7d", dropped: 3, episodes: 2 };
+  mockFetch.mockResolvedValueOnce({ ok: true, status: 200, json: async () => body,
+    text: async () => JSON.stringify(body), headers: { get: () => "application/json" } });
+  expect(await getIngestionDroppedKnown("7d")).toEqual(body);
+  expect(mockFetch.mock.calls[0][0]).toContain("/ingestion/events/dropped-known?window=7d");
+  expect(mockFetch).toHaveBeenCalledTimes(1);
 });

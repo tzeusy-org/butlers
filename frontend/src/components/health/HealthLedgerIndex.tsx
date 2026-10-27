@@ -1,4 +1,4 @@
-import { Section } from "@/components/overview/Section";
+import { Section } from "@/components/ui/Section";
 import { RowLink } from "@/components/ui/RowLink";
 
 const HEALTH_LEDGER_ENTRIES = [

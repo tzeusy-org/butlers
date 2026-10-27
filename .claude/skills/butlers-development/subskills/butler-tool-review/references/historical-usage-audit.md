@@ -1,17 +1,21 @@
 # Historical Usage Audit (Phase 7 Detail)
 
-Query the butler's `sessions` table to see which tools the runtime LLM has
-actually called. Every MCP tool invocation is captured in the JSONB
-`tool_calls` column via `_ToolCallLoggingMCP` (`daemon.py`) and persisted by
-`sessions.complete()`. This is the primary evidence for removal decisions —
-code-level analysis alone cannot tell you whether a tool is actually used.
+Query the butler's `sessions` table for session-bound tool-use evidence. Core
+handlers are captured through `_ToolCallLoggingMCP`, module handlers through
+`_SpanWrappingMCP`, and `Spawner` merges daemon-captured records with
+adapter-parsed records before `session_complete()` persists the JSONB
+`tool_calls` column. Calls outside runtime session capture may be absent. This
+is one LLM-use signal and candidate-evidence source, never primary removal
+authority: code-level analysis and session history answer different consumer
+questions, and neither grants permission to remove a tool.
 
-**Daemon-called tools never appear in session data but are still required:**
-`ingest`, `tick`, `route.execute` (daemon dispatches these directly),
-`connector.heartbeat`, `backfill.poll`, `backfill.progress` (connector-facing),
-`trigger` (called by the scheduler loop). Tools that are exclusively
-LLM-facing (memory, calendar, email, state, sessions, schedule, extraction,
-etc.) MUST show usage here to justify their existence.
+Session history is evidence of LLM-facing usage only. It does not enumerate
+infrastructure or server-to-server consumers: for example, `ingest`,
+`route.execute`, `cancel_session`, and `chronicler_day_close_refresh` may have
+zero session calls while remaining required. These examples are non-exhaustive.
+Before classifying any zero-session tool as eligible for removal review, search
+repository call sites and roster configuration, API, connector, and scheduler
+use.
 
 ## Database connection
 
@@ -28,30 +32,96 @@ Connect via `psql` with `PGPASSWORD` env var. Sessions live in `{butler_schema}.
 **Tool call frequency (last 30 days):**
 
 ```sql
+WITH normalized_calls AS (
+    SELECT
+        s.completed_at,
+        CASE
+            WHEN jsonb_typeof(tc->'name') = 'string' THEN tc->>'name'
+            WHEN jsonb_typeof(tc->'tool_name') = 'string' THEN tc->>'tool_name'
+            WHEN jsonb_typeof(tc->'tool') = 'string' THEN tc->>'tool'
+            WHEN jsonb_typeof(tc->'tool') = 'object'
+                 AND jsonb_typeof(tc->'tool'->'name') = 'string'
+                THEN tc->'tool'->>'name'
+            WHEN jsonb_typeof(tc->'call') = 'object'
+                 AND jsonb_typeof(tc->'call'->'name') = 'string'
+                THEN tc->'call'->>'name'
+            WHEN jsonb_typeof(tc->'tool_call') = 'object'
+                 AND jsonb_typeof(tc->'tool_call'->'name') = 'string'
+                THEN tc->'tool_call'->>'name'
+            WHEN jsonb_typeof(tc->'toolCall') = 'object'
+                 AND jsonb_typeof(tc->'toolCall'->'name') = 'string'
+                THEN tc->'toolCall'->>'name'
+            WHEN jsonb_typeof(tc->'function') = 'object'
+                 AND jsonb_typeof(tc->'function'->'name') = 'string'
+                THEN tc->'function'->>'name'
+            ELSE '<unresolved>'
+        END AS tool_name
+    FROM {schema}.sessions AS s
+    CROSS JOIN LATERAL jsonb_array_elements(
+        CASE
+            WHEN jsonb_typeof(s.tool_calls) = 'array' THEN s.tool_calls
+            ELSE '[]'::jsonb
+        END
+    ) AS calls(tc)
+)
 SELECT
-    tc->>'name' AS tool_name,
-    tc->>'module' AS module,
+    tool_name,
     COUNT(*) AS call_count
-FROM {schema}.sessions,
-     jsonb_array_elements(tool_calls) AS tc
+FROM normalized_calls
 WHERE completed_at > now() - interval '30 days'
-GROUP BY 1, 2
+GROUP BY tool_name
 ORDER BY call_count DESC;
 ```
 
-**Last-used date per tool (all time):**
+**Tool call frequency (all time):**
 
 ```sql
+WITH normalized_calls AS (
+    SELECT
+        s.completed_at,
+        CASE
+            WHEN jsonb_typeof(tc->'name') = 'string' THEN tc->>'name'
+            WHEN jsonb_typeof(tc->'tool_name') = 'string' THEN tc->>'tool_name'
+            WHEN jsonb_typeof(tc->'tool') = 'string' THEN tc->>'tool'
+            WHEN jsonb_typeof(tc->'tool') = 'object'
+                 AND jsonb_typeof(tc->'tool'->'name') = 'string'
+                THEN tc->'tool'->>'name'
+            WHEN jsonb_typeof(tc->'call') = 'object'
+                 AND jsonb_typeof(tc->'call'->'name') = 'string'
+                THEN tc->'call'->>'name'
+            WHEN jsonb_typeof(tc->'tool_call') = 'object'
+                 AND jsonb_typeof(tc->'tool_call'->'name') = 'string'
+                THEN tc->'tool_call'->>'name'
+            WHEN jsonb_typeof(tc->'toolCall') = 'object'
+                 AND jsonb_typeof(tc->'toolCall'->'name') = 'string'
+                THEN tc->'toolCall'->>'name'
+            WHEN jsonb_typeof(tc->'function') = 'object'
+                 AND jsonb_typeof(tc->'function'->'name') = 'string'
+                THEN tc->'function'->>'name'
+            ELSE '<unresolved>'
+        END AS tool_name
+    FROM {schema}.sessions AS s
+    CROSS JOIN LATERAL jsonb_array_elements(
+        CASE
+            WHEN jsonb_typeof(s.tool_calls) = 'array' THEN s.tool_calls
+            ELSE '[]'::jsonb
+        END
+    ) AS calls(tc)
+)
 SELECT
-    tc->>'name' AS tool_name,
-    tc->>'module' AS module,
-    COUNT(*) AS total_calls,
-    MAX(completed_at) AS last_used
-FROM {schema}.sessions,
-     jsonb_array_elements(tool_calls) AS tc
-GROUP BY 1, 2
-ORDER BY last_used ASC;
+    tool_name,
+    COUNT(*) AS total_calls
+FROM normalized_calls
+GROUP BY tool_name
+ORDER BY total_calls DESC;
 ```
+
+The normalization CTE is intentionally identical in both queries. Its
+type-dispatched `CASE` prevents an object-valued `tool` field from being
+stringified before nested-name extraction. `<unresolved>` counts preserve
+evidence that an unsupported call shape exists without exposing arguments or
+payloads; investigate those counts before making any zero-use claim. Query
+outputs remain content-blind: normalized tool names and aggregate counts only.
 
 **Session volume (for sample size context):**
 
@@ -68,30 +138,50 @@ Replace `{schema}` with the butler's schema name from `butler.toml` (e.g.
 
 - **Ignore** `command_execution` and `skill` rows — these are runtime
   internals, not MCP tools.
-- **Ignore** tool name variants with `mcp__` or `{butler}_` prefixes — these
-  are the same tools under different naming conventions. Consolidate counts.
-- **Daemon-called tools** — see the list above; they are KEEP regardless of
-  zero session calls.
-- **Safe to remove** if a tool has:
-  - Zero calls over 30+ days AND
-  - Is NOT in the daemon-called list above AND
-  - Is NOT newly added (check git log for when the tool was introduced —
-    `git log --all -1 --format=%ai -- {tool_source_file}`)
+- Strip a prefix and consolidate the result only when the stripped name exists
+  in the mechanically derived registered inventory or in a verified alias set.
+  Consolidate any other alias only through that verified alias set. Retain
+  unmatched names for investigation.
+- **Zero session calls are not a removal verdict.** Check repository call sites,
+  roster configuration, API, connector, and scheduler use before classifying
+  a tool as removable.
+- **Candidate eligibility review.** A tool is eligible for removal review only
+  when all of the following evidence is recorded:
+  - Zero session calls, treated only as a candidate signal AND
+  - No repository, roster-config, API, connector, or scheduler consumer AND
+  - No RFC, OpenSpec, manifesto, or role-contract requirement AND
+  - No rare recovery or scheduled cadence consumer AND
+  - Introduction evidence does not show it is too new for the sampled window.
+    Locate the registering line with `git blame`, or search history for the
+    registration/name:
+
+    ```bash
+    git blame -L <registration-line>,<registration-line> -- {tool_source_file}
+    git log --max-count=20 --format='%h %ad %s' --date=short -S'<registration-or-tool-name>' -- {tool_source_file}
+    git log --max-count=20 --format='%h %ad %s' --date=short -G'<registration-regex>' -- {tool_source_file}
+    ```
+
+    These results are evidence, not proof: renames and moved code can break
+    history continuity.
+
+Eligibility is still not authority. Do not remove a tool unless the owning
+issue, specification decision, or owner instruction explicitly authorizes that
+removal.
 
 ## Output format
 
 ```
 ## Historical Usage (last 30 days, N sessions sampled)
 
-| Tool | Module | Calls | Last Used | Verdict |
-|---|---|---:|---|---|
-| route_to_butler | core | 1292 | 2026-04-07 | KEEP — primary function |
-| memory_store_fact | memory | 0 | never | REMOVE — never called, not daemon-internal |
-| ingest | core | 0 | n/a | KEEP — daemon-called, not LLM-facing |
+| Tool | Calls | Verdict |
+|---|---:|---|
+| route_to_butler | 1292 | RETAIN — primary function |
+| memory_store_fact | 0 | CANDIDATE — complete eligibility and authority review |
+| ingest | 0 | RETAIN — verified infrastructure consumer |
 
-### Dead tools (0 calls, safe to remove)
+### Eligibility candidates (zero calls, pending evidence review)
 - email_send_message, email_reply_to_thread, ...
 
-### Removal savings
-- N tools removable → estimated ~X token savings
+### Potential savings
+- If N eligible tools receive explicit removal authority: estimated ~X token savings
 ```

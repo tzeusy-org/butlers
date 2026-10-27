@@ -63,7 +63,7 @@ export function useSetEligibility() {
   >({
     mutationFn: ({ name, state }: { name: string; state: string }) =>
       setButlerEligibility(name, state),
-    cancelQueryKeys: [["switchboard-registry"]],
+    cancelQueryKeys: [["switchboard-registry"], ["butlers", "board"]],
     applyOptimisticUpdate: ({ name, state }, queryClient) =>
       snapshotAndUpdateQueries<ApiResponse<RegistryEntry[]>>(
         queryClient,
@@ -79,7 +79,7 @@ export function useSetEligibility() {
             : current,
       ),
     rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
-    invalidateQueryKeys: [["switchboard-registry"]],
+    invalidateQueryKeys: [["switchboard-registry"], ["butlers", "board"]],
   });
 }
 

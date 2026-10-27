@@ -63,7 +63,7 @@ import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
@@ -81,6 +81,7 @@ from butlers.core.model_capabilities import (
     CapabilityDescriptorError,
     effective_capabilities,
 )
+from butlers.core.purpose_lane import PURPOSE_LANE_STANDARD, PurposeLane
 
 if TYPE_CHECKING:
     from butlers.core.pricing import PricingConfig
@@ -312,6 +313,7 @@ class SpendRoutingResult:
     resolved: tuple[str, str, list[str], uuid.UUID, int]
     max_cost_per_call: float | None = None
     breaker_open: BreakerState | None = None
+    matched_rule_id: uuid.UUID | None = None
 
 
 # Shared with the ceiling-deny message the spawner builds below and the
@@ -355,12 +357,17 @@ class CeilingStatus:
     unpriced_models:
         Executed models with ledger usage but no configured price. Their usage
         is deliberately excluded from ``mtd_usd`` rather than treated as free.
+    unmeasurable_attempts:
+        Invoked attempts for which the runtime yielded no parseable token usage.
+        These are excluded from ``mtd_usd`` and surfaced separately so the
+        measured subtotal cannot impersonate a complete total.
     """
 
     allowed: bool
     mtd_usd: float
     ceiling_usd: float | None
     unpriced_models: tuple[UnpricedModelUsage, ...] = ()
+    unmeasurable_attempts: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -391,6 +398,7 @@ class LedgerSpend:
 
     cost_usd: float
     unpriced_models: tuple[UnpricedModelUsage, ...] = ()
+    unmeasurable_attempts: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +466,179 @@ breaker_open AS (
     )
 )
 """
+
+
+# ---------------------------------------------------------------------------
+# Provider allowance windows (bu-q7vx1q.13)
+# ---------------------------------------------------------------------------
+#
+# A provider plan usage-limit rejection exhausts the whole provider ACCOUNT, not
+# one model.  ``public.provider_allowance_states`` records that per account key;
+# an entry's account key is ``model_catalog.allowance_account`` or, when NULL, its
+# ``runtime_type``.  The CTE below lists every catalog entry whose account is
+# exhausted with a reset still in the future, so each resolver drops all of them at
+# once -- including when failover would otherwise pick a sibling entry on the dead
+# account.  Exclusion lifts by itself when ``reset_at`` passes (no cleanup job) and
+# is cleared early by a successful attempt (``clear_allowance_exhaustion``).
+#
+# ``unknown`` is deliberately NOT excluded here: routing has no evidence the account
+# is dead.  Readers that render capacity must still show it as unknown.
+#
+# Distinct from the owner token quota (``token_limits``): that is an owner-set budget
+# on one catalog entry, this is the provider's own cap on an account.
+ALLOWANCE_DEFAULT_WINDOW = timedelta(hours=1)
+ALLOWANCE_OUTCOME = "allowance_exhausted"
+ALLOWANCE_ACCOUNT_KEY_SQL = "COALESCE(mc.allowance_account, mc.runtime_type)"
+
+_ALLOWANCE_BLOCKED_CTE = f"""
+allowance_blocked AS (
+    SELECT mc.id AS catalog_entry_id, pas.reset_at
+    FROM public.model_catalog mc
+    JOIN public.provider_allowance_states pas
+        ON pas.account_key = {ALLOWANCE_ACCOUNT_KEY_SQL}
+    WHERE pas.state = 'exhausted'
+      AND pas.reset_at > now()
+)
+"""
+
+
+# Upsert for one exhausted account.  GREATEST keeps the latest-known reset when
+# concurrent rejections race; ``first_seen_at`` survives repeats; a repeat only
+# refreshes the causing attempt id.  ``reset_source`` follows whichever reset won.
+# $1 account_key, $2 reset_at, $3 reset_source, $4 attempt id (nullable).
+_ALLOWANCE_EXHAUST_SQL = """
+INSERT INTO public.provider_allowance_states
+    (account_key, state, reset_at, reset_source, last_rejection_attempt_id)
+VALUES ($1, 'exhausted', $2, $3, $4)
+ON CONFLICT (account_key) DO UPDATE SET
+    reset_source = CASE
+        WHEN public.provider_allowance_states.state = 'exhausted'
+             AND public.provider_allowance_states.reset_at >= EXCLUDED.reset_at
+        THEN public.provider_allowance_states.reset_source
+        ELSE EXCLUDED.reset_source
+    END,
+    reset_at = CASE
+        WHEN public.provider_allowance_states.state = 'exhausted'
+        THEN GREATEST(public.provider_allowance_states.reset_at, EXCLUDED.reset_at)
+        ELSE EXCLUDED.reset_at
+    END,
+    first_seen_at = CASE
+        WHEN public.provider_allowance_states.state = 'exhausted'
+        THEN public.provider_allowance_states.first_seen_at
+        ELSE now()
+    END,
+    state = 'exhausted',
+    last_rejection_attempt_id = EXCLUDED.last_rejection_attempt_id,
+    updated_at = now()
+"""
+
+# A success on an account proves it is usable: clear only an exhausted row, and
+# only when the success is newer than the recorded rejection.  $1 catalog entry.
+_ALLOWANCE_CLEAR_SQL = f"""
+UPDATE public.provider_allowance_states pas
+SET state = 'available', reset_at = NULL, reset_source = 'unknown', updated_at = now()
+FROM public.model_catalog mc
+WHERE mc.id = $1
+  AND pas.account_key = {ALLOWANCE_ACCOUNT_KEY_SQL}
+  AND pas.state = 'exhausted'
+"""
+
+
+async def mark_allowance_exhausted(
+    pool: asyncpg.Pool,
+    catalog_entry_id: uuid.UUID,
+    *,
+    reset_at: datetime | None,
+    attempt_id: int | None,
+    now: datetime | None = None,
+) -> datetime | None:
+    """Mark the provider account behind ``catalog_entry_id`` exhausted until its reset.
+
+    ``reset_at`` is the instant parsed from the provider's message; ``None`` falls
+    back to ``now + ALLOWANCE_DEFAULT_WINDOW`` and is recorded as
+    ``reset_source='default_window'`` so nothing downstream presents a guess as a
+    stated reset.  Returns the reset instant written, or ``None`` when the entry no
+    longer exists.  Best-effort: a write failure is logged and returns ``None``,
+    because the runtime_failure path must never raise out of provenance.
+    """
+    now = now or datetime.now(UTC)
+    source = "parsed" if reset_at is not None else "default_window"
+    effective_reset = reset_at if reset_at is not None else now + ALLOWANCE_DEFAULT_WINDOW
+    try:
+        key = await pool.fetchval(
+            f"SELECT {ALLOWANCE_ACCOUNT_KEY_SQL} FROM public.model_catalog mc WHERE mc.id = $1",
+            catalog_entry_id,
+        )
+        if key is None:
+            return None
+        await pool.execute(_ALLOWANCE_EXHAUST_SQL, key, effective_reset, source, attempt_id)
+    except Exception:
+        logger.warning("Failed to record provider allowance exhaustion", exc_info=True)
+        return None
+    clear_routing_decision_cache()
+    return effective_reset
+
+
+async def clear_allowance_exhaustion(pool: asyncpg.Pool, catalog_entry_id: uuid.UUID) -> None:
+    """Mark the account behind a successful attempt available (no-op when not exhausted)."""
+    try:
+        status = await pool.execute(_ALLOWANCE_CLEAR_SQL, catalog_entry_id)
+    except Exception:
+        logger.warning("Failed to clear provider allowance exhaustion", exc_info=True)
+        return
+    if status.endswith(" 0"):
+        return
+    clear_routing_decision_cache()
+
+
+# Earliest reset among the entries a task could run on, but only when EVERY enabled,
+# verified entry in the requested tiers is on an exhausted account.  $1 butler,
+# $2 ordered tiers.  Returns no row when anything could run, or nothing exists.
+_ALLOWANCE_DEFERRAL_SQL = f"""
+WITH
+{_ALLOWANCE_BLOCKED_CTE},
+tier_order AS (
+    SELECT t.tier FROM unnest($2::text[]) AS t(tier)
+),
+fit AS (
+    SELECT mc.id
+    FROM public.model_catalog mc
+    LEFT JOIN public.butler_model_overrides bmo
+        ON bmo.catalog_entry_id = mc.id AND bmo.butler_name = $1
+    WHERE COALESCE(bmo.enabled, mc.enabled) = true
+      AND mc.last_verified_ok IS DISTINCT FROM false
+      AND COALESCE(bmo.complexity_tier, mc.complexity_tier) IN (SELECT tier FROM tier_order)
+)
+SELECT MIN(ab.reset_at) AS reset_at
+FROM fit
+JOIN allowance_blocked ab ON ab.catalog_entry_id = fit.id
+HAVING COUNT(*) = (SELECT COUNT(*) FROM fit)
+"""
+
+
+async def allowance_deferral(
+    pool: asyncpg.Pool, butler_name: str, complexity: Complexity | str
+) -> datetime | None:
+    """Return when background work for ``complexity`` can next run, or ``None`` if it can now.
+
+    Non-``None`` only when every catalog entry the task could fall through to is on
+    an exhausted provider account, so deferring costs nothing a different account
+    could have served.  Fails open (``None``) on any error: an allowance read must
+    never freeze a healthy schedule.
+    """
+    try:
+        tier_value = (
+            complexity.value
+            if isinstance(complexity, Complexity)
+            else _check_deprecated_tier(str(complexity))
+        )
+        tiers = list(TIER_FALLTHROUGH_ORDER[TIER_FALLTHROUGH_ORDER.index(tier_value) :])
+        row = await pool.fetchrow(_ALLOWANCE_DEFERRAL_SQL, butler_name, tiers)
+    except Exception:
+        logger.warning("Allowance deferral lookup failed; not deferring", exc_info=True)
+        return None
+    reset_at = None if row is None else row["reset_at"]
+    return reset_at if isinstance(reset_at, datetime) else None
 
 
 # ---------------------------------------------------------------------------
@@ -994,12 +1175,52 @@ all_candidates AS (
     WHERE COALESCE(bmo.enabled, mc.enabled) = true
       AND mc.last_verified_ok IS DISTINCT FROM false
       AND mc.id NOT IN (SELECT catalog_entry_id FROM breaker_open)
+      AND mc.id NOT IN (SELECT catalog_entry_id FROM allowance_blocked)
+)
+"""
+
+# Receipt-aware variant of ``all_candidates``. Intent-aware resolution needs to
+# retain breaker-open entries long enough to explain their exclusion, while the
+# eligibility predicate below still keeps them out of the winning set. The
+# legacy resolver continues to use ``_ALL_CANDIDATES_CTE`` unchanged.
+_RECEIPT_ALL_CANDIDATES_CTE = """
+all_candidates AS (
+    SELECT
+        mc.runtime_type,
+        mc.model_id,
+        mc.extra_args,
+        mc.id,
+        mc.session_timeout_s,
+        mc.created_at,
+        mc.capabilities,
+        mc.max_context_tokens,
+        mc.max_output_tokens,
+        COALESCE(bmo.complexity_tier, mc.complexity_tier) AS effective_tier,
+        COALESCE(bmo.priority, mc.priority) AS effective_priority,
+        t.ord AS tier_ord,
+        COALESCE(qoc.quota_ok, true) AS quota_ok,
+        bo.catalog_entry_id IS NOT NULL AS breaker_open,
+        ab.catalog_entry_id IS NOT NULL AS allowance_blocked
+    FROM public.model_catalog mc
+    LEFT JOIN public.butler_model_overrides bmo
+        ON bmo.catalog_entry_id = mc.id AND bmo.butler_name = $1
+    LEFT JOIN quota_ok_candidates qoc
+        ON qoc.catalog_entry_id = mc.id
+    LEFT JOIN breaker_open bo
+        ON bo.catalog_entry_id = mc.id
+    LEFT JOIN allowance_blocked ab
+        ON ab.catalog_entry_id = mc.id
+    JOIN tier_order t
+        ON COALESCE(bmo.complexity_tier, mc.complexity_tier) = t.tier
+    WHERE COALESCE(bmo.enabled, mc.enabled) = true
+      AND mc.last_verified_ok IS DISTINCT FROM false
 )
 """
 
 _RESOLVE_SQL = f"""
 WITH
 {_BREAKER_OPEN_CTE},
+{_ALLOWANCE_BLOCKED_CTE},
 {_QUOTA_OK_CTE},
 tier_order AS (
     SELECT t.tier, t.ord
@@ -1021,6 +1242,7 @@ candidates AS (
         ac.id,
         ac.session_timeout_s,
         ac.effective_tier,
+        ac.effective_priority,
         ac.quota_ok,
         ROW_NUMBER() OVER (ORDER BY ac.created_at ASC, ac.id ASC) - 1 AS rn,
         COUNT(*) OVER () AS total
@@ -1038,7 +1260,8 @@ evidence AS (
         PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms)
             FILTER (WHERE outcome = 'success' AND duration_ms IS NOT NULL) AS p50_duration_ms,
         PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms)
-            FILTER (WHERE outcome = 'success' AND duration_ms IS NOT NULL) AS p95_duration_ms
+            FILTER (WHERE outcome = 'success' AND duration_ms IS NOT NULL) AS p95_duration_ms,
+        MAX(ts) AS last_attempt_at
     FROM public.model_dispatch_attempts
     WHERE catalog_entry_id IN (SELECT id FROM candidates)
       AND outcome IN ('success', 'runtime_failure')
@@ -1047,8 +1270,9 @@ evidence AS (
 )
 SELECT
     c.runtime_type, c.model_id, c.extra_args, c.id, c.session_timeout_s, c.effective_tier,
+    c.effective_priority,
     c.rn, c.total,
-    e.success_count, e.failure_count, e.p50_duration_ms, e.p95_duration_ms,
+    e.success_count, e.failure_count, e.p50_duration_ms, e.p95_duration_ms, e.last_attempt_at,
     c.quota_ok
 FROM candidates c
 LEFT JOIN evidence e ON e.catalog_entry_id = c.id
@@ -1073,12 +1297,13 @@ LEFT JOIN evidence e ON e.catalog_entry_id = c.id
 _RESOLVE_CANDIDATES_SQL = f"""
 WITH
 {_BREAKER_OPEN_CTE},
+{_ALLOWANCE_BLOCKED_CTE},
 {_QUOTA_OK_CTE},
 tier_order AS (
     SELECT t.tier, t.ord
     FROM unnest($2::text[]) WITH ORDINALITY AS t(tier, ord)
 ),
-{_ALL_CANDIDATES_CTE},
+{_RECEIPT_ALL_CANDIDATES_CTE},
 evidence AS (
     SELECT
         catalog_entry_id,
@@ -1098,7 +1323,8 @@ evidence AS (
 SELECT
     ac.runtime_type, ac.model_id, ac.extra_args, ac.id, ac.session_timeout_s,
     ac.capabilities, ac.max_context_tokens, ac.max_output_tokens,
-    ac.effective_tier, ac.effective_priority, ac.tier_ord, ac.quota_ok,
+    ac.effective_tier, ac.effective_priority, ac.tier_ord, ac.quota_ok, ac.breaker_open,
+    ac.allowance_blocked,
     e.success_count, e.failure_count, e.p50_duration_ms, e.p95_duration_ms,
     e.last_attempt_at
 FROM all_candidates ac
@@ -1154,6 +1380,7 @@ RETURNING counter
 _NEXT_SAME_TIER_SQL = f"""
 WITH
 {_BREAKER_OPEN_CTE},
+{_ALLOWANCE_BLOCKED_CTE},
 all_candidates AS (
     SELECT
         mc.runtime_type,
@@ -1172,6 +1399,7 @@ all_candidates AS (
       AND COALESCE(bmo.complexity_tier, mc.complexity_tier) = $2
       AND mc.id != ALL($3::uuid[])
       AND mc.id NOT IN (SELECT catalog_entry_id FROM breaker_open)
+      AND mc.id NOT IN (SELECT catalog_entry_id FROM allowance_blocked)
 )
 SELECT
     runtime_type,
@@ -1230,8 +1458,11 @@ SELECT 1 FROM public.token_limits WHERE catalog_entry_id = $1 LIMIT 1
 _LEDGER_INSERT_SQL = """
 INSERT INTO public.token_usage_ledger
     (catalog_entry_id, butler_name, session_id, input_tokens, output_tokens,
-     cached_input_tokens, cache_creation_tokens, purpose)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     cached_input_tokens, cache_creation_tokens, purpose,
+     base_prompt_tokens, timezone_instruction_tokens, context_preamble_tokens,
+     routing_instructions_tokens, memory_context_tokens, resume_outcome, purpose_lane,
+     attempt_id, usage_source)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 """
 
 # Read the configured monthly spend ceiling (singleton row id=1).
@@ -1246,11 +1477,16 @@ SELECT monthly_usd FROM public.spend_ceiling WHERE id = 1
 _MTD_USAGE_BY_MODEL_SQL = """
 SELECT
     mc.model_id AS model_id,
-    COUNT(*) AS calls,
-    COALESCE(SUM(tul.input_tokens), 0)  AS input_tokens,
-    COALESCE(SUM(tul.output_tokens), 0) AS output_tokens,
-    COALESCE(SUM(tul.cached_input_tokens), 0)   AS cached_input_tokens,
-    COALESCE(SUM(tul.cache_creation_tokens), 0) AS cache_creation_tokens
+    COUNT(*) FILTER (WHERE tul.usage_source = 'measured') AS calls,
+    COUNT(*) FILTER (WHERE tul.usage_source = 'unmeasurable') AS unmeasurable_attempts,
+    COALESCE(SUM(tul.input_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)
+        AS input_tokens,
+    COALESCE(SUM(tul.output_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)
+        AS output_tokens,
+    COALESCE(SUM(tul.cached_input_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)
+        AS cached_input_tokens,
+    COALESCE(SUM(tul.cache_creation_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)
+        AS cache_creation_tokens
 FROM public.token_usage_ledger tul
 JOIN public.model_catalog mc ON mc.id = tul.catalog_entry_id
 WHERE tul.recorded_at >= date_trunc('month', now() AT TIME ZONE 'UTC')
@@ -1665,6 +1901,8 @@ async def resolve_model_with_effective_tier(
     allow_tier_fallthrough: bool = True,
     quota_aware: bool = False,
     intent: DispatchIntent | None = None,
+    receipt_intent: DispatchIntent | None = None,
+    receipt_sink: list[DispatchResolution] | None = None,
 ) -> tuple[str, str, list[str], uuid.UUID, int, str] | None:
     """Resolve the best model for a butler and return the effective tier alongside.
 
@@ -1730,10 +1968,15 @@ async def resolve_model_with_effective_tier(
         authoritative for the tier -- the intent's own tier is overridden with
         it -- so callers cannot accidentally route to two different tiers by
         passing an intent built from a stale complexity. Ranking is unchanged,
-        and an intent that requires nothing selects exactly what ``None``
-        selects. The resolution receipt is dropped here (this signature returns
-        the same 6-tuple as before); callers that want it call
-        ``resolve_dispatch`` directly.
+        and an intent that requires nothing selects exactly what ``None`` selects.
+    receipt_intent:
+        Observational intent metadata for a receipt around the legacy selection
+        path. Unlike ``intent``, this never participates in eligibility or ranking;
+        the legacy query and selector produce the unchanged 6-tuple first. This is
+        used by tool-less Discretion dispatches whose established catalog contract
+        does not parse capability envelopes.
+    receipt_sink:
+        Optional collector for the intent-aware or observational resolution.
 
     Returns
     -------
@@ -1754,14 +1997,23 @@ async def resolve_model_with_effective_tier(
     else:
         tier_value = _check_deprecated_tier(str(complexity_tier))
 
+    if intent is not None and receipt_intent is not None:
+        raise ValueError("intent and receipt_intent are mutually exclusive")
     if intent is not None:
-        resolution = await resolve_dispatch(
-            pool,
-            butler_name,
-            dataclasses.replace(intent, complexity_tier=tier_value),
-            allow_tier_fallthrough=allow_tier_fallthrough,
-            quota_aware=quota_aware,
-        )
+        try:
+            resolution = await resolve_dispatch(
+                pool,
+                butler_name,
+                dataclasses.replace(intent, complexity_tier=tier_value),
+                allow_tier_fallthrough=allow_tier_fallthrough,
+                quota_aware=quota_aware,
+            )
+        except TierQuotaExhausted as exc:
+            if receipt_sink is not None and exc.resolution is not None:
+                receipt_sink.append(exc.resolution)
+            raise
+        if receipt_sink is not None:
+            receipt_sink.append(resolution)
         return resolution.selection
 
     if allow_tier_fallthrough and tier_value in TIER_FALLTHROUGH_ORDER:
@@ -1808,7 +2060,7 @@ async def resolve_model_with_effective_tier(
             butler_name,
             effective_tier,
         )
-    return (
+    selection = (
         row["runtime_type"],
         row["model_id"],
         _parse_extra_args(row["extra_args"]),
@@ -1816,6 +2068,16 @@ async def resolve_model_with_effective_tier(
         row["session_timeout_s"],
         effective_tier,
     )
+    if receipt_sink is not None and receipt_intent is not None:
+        receipt_sink.append(
+            _describe_legacy_resolution(
+                rows,
+                winner=row,
+                intent=dataclasses.replace(receipt_intent, complexity_tier=tier_value),
+                selection=selection,
+            )
+        )
+    return selection
 
 
 # ---------------------------------------------------------------------------
@@ -1832,6 +2094,12 @@ class CandidateOutcome(enum.StrEnum):
 
     EXCLUDED_HARD_FIT = "excluded_hard_fit"
     """Disqualified by capability / context / deadline / budget fit, before ranking."""
+
+    EXCLUDED_BREAKER = "excluded_breaker"
+    """Disqualified because its dispatch-outcome circuit breaker was open."""
+
+    EXCLUDED_ALLOWANCE = "excluded_allowance"
+    """Disqualified because its provider account is exhausted until a known reset."""
 
     EXCLUDED_QUOTA = "excluded_quota"
     NOT_TOP_PRIORITY = "not_top_priority"
@@ -1869,6 +2137,19 @@ class CandidateRecord:
 
     def describe(self) -> dict[str, Any]:
         """JSON-safe projection for the resolution receipt."""
+        exclusion = None
+        if self.outcome is CandidateOutcome.EXCLUDED_BREAKER:
+            exclusion = "breaker_open"
+        elif self.outcome is CandidateOutcome.EXCLUDED_ALLOWANCE:
+            exclusion = "allowance_exhausted"
+        elif self.outcome is CandidateOutcome.EXCLUDED_QUOTA:
+            exclusion = "quota"
+        elif self.exclusions:
+            exclusion = (
+                "budget"
+                if any(f.code is FitCode.COST_EXCEEDS_BUDGET for f in self.exclusions)
+                else "capability"
+            )
         return {
             "catalog_entry_id": str(self.catalog_entry_id),
             "runtime_type": self.runtime_type,
@@ -1876,6 +2157,7 @@ class CandidateRecord:
             "effective_tier": self.effective_tier,
             "effective_priority": self.effective_priority,
             "outcome": self.outcome.value,
+            "exclusion": exclusion,
             "exclusions": [f.describe() for f in self.exclusions],
             "advisories": [f.describe() for f in self.advisories],
             "evidence_samples": self.evidence_samples,
@@ -1936,6 +2218,65 @@ def _evidence_age_s(row: asyncpg.Record, *, now: datetime) -> float | None:
     if last.tzinfo is None:
         last = last.replace(tzinfo=UTC)
     return max(0.0, (now - last).total_seconds())
+
+
+def _describe_legacy_resolution(
+    rows: list[asyncpg.Record],
+    *,
+    winner: asyncpg.Record,
+    intent: DispatchIntent,
+    selection: tuple[str, str, list[str], uuid.UUID, int, str],
+) -> DispatchResolution:
+    """Describe the legacy winner without re-evaluating candidate eligibility.
+
+    This is an observational adapter for callers such as DiscretionDispatcher whose
+    established routing contract predates capability envelopes. The exact legacy query
+    and selector still decide the winner; receipt construction must not parse or filter
+    the stored capability document.
+    """
+    pricing = _get_cached_pricing()
+    scored = {row["id"]: _score_row(row, pricing) for row in rows}
+    if len(rows) == 1:
+        winner_reason = WINNER_REASON_SOLE_CANDIDATE
+    elif sum(score.score is not None for score in scored.values()) >= 2:
+        winner_reason = WINNER_REASON_EVIDENCE_SCORE
+    else:
+        winner_reason = WINNER_REASON_ROUND_ROBIN
+
+    now = datetime.now(tz=UTC)
+    ordered_rows = sorted(rows, key=lambda row: int(row["rn"]))
+    candidates = tuple(
+        CandidateRecord(
+            catalog_entry_id=row["id"],
+            runtime_type=row["runtime_type"],
+            model_id=row["model_id"],
+            effective_tier=row["effective_tier"],
+            effective_priority=int(row["effective_priority"]),
+            outcome=(
+                CandidateOutcome.SELECTED
+                if row["id"] == winner["id"]
+                else CandidateOutcome.ELIGIBLE
+            ),
+            evidence_samples=int(row["success_count"] or 0) + int(row["failure_count"] or 0),
+            evidence_age_s=_evidence_age_s(row, now=now),
+            score=scored[row["id"]].score,
+        )
+        for row in ordered_rows
+    )
+    effective_intent = dataclasses.replace(intent, complexity_tier=selection[5])
+    return DispatchResolution(
+        policy_version=DISPATCH_POLICY_VERSION,
+        requested_intent=intent,
+        effective_intent=effective_intent,
+        candidates=candidates,
+        selection=selection,
+        winner_reason=winner_reason,
+    )
+
+
+def _row_dispatchable(row: asyncpg.Record, verdicts: Mapping[uuid.UUID, FitVerdict]) -> bool:
+    """A receipt row can win only if it fits and neither the breaker nor its account blocks it."""
+    return verdicts[row["id"]].eligible and not row["breaker_open"] and not row["allowance_blocked"]
 
 
 def _row_capabilities(row: asyncpg.Record) -> CapabilityDescriptor | CapabilityDescriptorError:
@@ -2047,7 +2388,7 @@ async def resolve_dispatch(
     # First tier (in fallthrough order) with at least one candidate that fits.
     winning_tier: str | None = None
     for row in rows:
-        if verdicts[row["id"]].eligible:
+        if _row_dispatchable(row, verdicts):
             winning_tier = row["effective_tier"]
             break
 
@@ -2072,7 +2413,17 @@ async def resolve_dispatch(
         # Every candidate in every tier failed hard fit. This is NOT the same as "no
         # catalog entries exist": the caller's static fallback is still the right
         # recovery, but the receipt says why, which "returned None" never could.
-        candidates = tuple(_record(row, CandidateOutcome.EXCLUDED_HARD_FIT) for row in rows)
+        candidates = tuple(
+            _record(
+                row,
+                CandidateOutcome.EXCLUDED_BREAKER
+                if row["breaker_open"]
+                else CandidateOutcome.EXCLUDED_ALLOWANCE
+                if row["allowance_blocked"]
+                else CandidateOutcome.EXCLUDED_HARD_FIT,
+            )
+            for row in rows
+        )
         logger.warning(
             "resolve_dispatch: butler %r has %d eligible catalog entries but none fit "
             "intent (trigger_class=%s, tier=%s)",
@@ -2103,7 +2454,7 @@ async def resolve_dispatch(
 
     winning_tier_ord = next(r["tier_ord"] for r in rows if r["effective_tier"] == winning_tier)
     in_tier = [r for r in rows if r["effective_tier"] == winning_tier]
-    survivors = [r for r in in_tier if verdicts[r["id"]].eligible]
+    survivors = [r for r in in_tier if _row_dispatchable(r, verdicts)]
     best_priority = max(int(r["effective_priority"]) for r in survivors)
     top = [r for r in survivors if int(r["effective_priority"]) == best_priority]
 
@@ -2123,6 +2474,10 @@ async def resolve_dispatch(
                 # Below the winning tier in fallthrough order: never evaluated against
                 # a winner, so "did not fit" would be a claim the resolver never made.
                 outcome = CandidateOutcome.TIER_NOT_REACHED
+            elif row["breaker_open"]:
+                outcome = CandidateOutcome.EXCLUDED_BREAKER
+            elif row["allowance_blocked"]:
+                outcome = CandidateOutcome.EXCLUDED_ALLOWANCE
             elif not verdicts[rid].eligible:
                 # Includes every candidate in a HIGHER tier: that tier lost only
                 # because none of its entries fit, and the receipt must say so.
@@ -2229,7 +2584,6 @@ async def next_same_tier_candidate(
     attempted_ids:
         Catalog entry IDs that have already been attempted or explicitly skipped
         for this logical session.  All of these are excluded from the result.
-
     Returns
     -------
     tuple[str, str, list[str], uuid.UUID, int] | None
@@ -2237,8 +2591,21 @@ async def next_same_tier_candidate(
         for the next eligible candidate, or ``None`` when all same-tier candidates
         are exhausted.
     """
-    row = await pool.fetchrow(_NEXT_SAME_TIER_SQL, butler_name, effective_tier, attempted_ids)
+    row = await pool.fetchrow(
+        _NEXT_SAME_TIER_SQL,
+        butler_name,
+        effective_tier,
+        attempted_ids,
+    )
     if row is None:
+        return None
+    if not (
+        isinstance(row["runtime_type"], str)
+        and isinstance(row["model_id"], str)
+        and isinstance(row["id"], uuid.UUID)
+        and isinstance(row["session_timeout_s"], int)
+    ):
+        logger.warning("Same-tier candidate row had an invalid shape; refusing it")
         return None
     return (
         row["runtime_type"],
@@ -2389,9 +2756,13 @@ async def apply_spend_routing_rules(
 
         # First match wins — stop evaluating further rules regardless of outcome.
         rule_id = rule_row["id"]
+        matched_rule_id = rule_id if isinstance(rule_id, uuid.UUID) else uuid.UUID(str(rule_id))
         action = _coerce_rule_dict(rule_row["action"])
         max_cost_per_call = _parse_max_cost_per_call(action, rule_id)
         target_model = action.get("model")
+        match_metadata = {
+            "matched_rule_id": matched_rule_id,
+        }
 
         if not target_model or not isinstance(target_model, str):
             if max_cost_per_call is None:
@@ -2413,7 +2784,11 @@ async def apply_spend_routing_rules(
                     max_cost_per_call,
                     resolved[1],
                 )
-            return SpendRoutingResult(resolved=resolved, max_cost_per_call=max_cost_per_call)
+            return SpendRoutingResult(
+                resolved=resolved,
+                max_cost_per_call=max_cost_per_call,
+                **match_metadata,
+            )
 
         try:
             row = await pool.fetchrow(_RESOLVE_BY_MODEL_ID_SQL, butler_name, target_model)
@@ -2427,7 +2802,11 @@ async def apply_spend_routing_rules(
                 resolved[1],
                 exc_info=True,
             )
-            return SpendRoutingResult(resolved=resolved, max_cost_per_call=max_cost_per_call)
+            return SpendRoutingResult(
+                resolved=resolved,
+                max_cost_per_call=max_cost_per_call,
+                **match_metadata,
+            )
 
         if row is None:
             logger.warning(
@@ -2440,7 +2819,11 @@ async def apply_spend_routing_rules(
                 target_model,
                 resolved[1],
             )
-            return SpendRoutingResult(resolved=resolved, max_cost_per_call=max_cost_per_call)
+            return SpendRoutingResult(
+                resolved=resolved,
+                max_cost_per_call=max_cost_per_call,
+                **match_metadata,
+            )
 
         logger.info(
             "apply_spend_routing_rules: rule %s matched (butler=%s tier=%s); routed model %s -> %s"
@@ -2499,6 +2882,7 @@ async def apply_spend_routing_rules(
             ),
             max_cost_per_call=max_cost_per_call,
             breaker_open=breaker_open_state,
+            **match_metadata,
         )
 
     # No rule matched — tier-based resolution stands.
@@ -2600,15 +2984,20 @@ def price_ledger_usage_rows(
 
     effective_pricing = pricing or load_pricing()
     cost_usd = 0.0
+    unmeasurable_attempts = 0
     unpriced_by_model: dict[str, dict[str, int]] = {}
 
     for row in usage_rows:
         model_id = str(row.get("model_id") or "unknown")
-        calls = int(row.get("calls") or 1)
+        raw_calls = row.get("calls")
+        calls = 1 if raw_calls is None else int(raw_calls)
+        unmeasurable_attempts += int(row.get("unmeasurable_attempts") or 0)
         input_tokens = int(row.get("input_tokens") or 0)
         output_tokens = int(row.get("output_tokens") or 0)
         cached_input_tokens = int(row.get("cached_input_tokens") or 0)
         cache_creation_tokens = int(row.get("cache_creation_tokens") or 0)
+        if calls == 0:
+            continue
         cost = estimate_session_cost(
             effective_pricing,
             model_id,
@@ -2643,6 +3032,7 @@ def price_ledger_usage_rows(
             UnpricedModelUsage(model=model_id, **usage)
             for model_id, usage in sorted(unpriced_by_model.items())
         ),
+        unmeasurable_attempts=unmeasurable_attempts,
     )
 
 
@@ -2731,6 +3121,7 @@ async def check_monthly_ceiling(
             mtd_usd=spend.cost_usd,
             ceiling_usd=ceiling_usd,
             unpriced_models=spend.unpriced_models,
+            unmeasurable_attempts=spend.unmeasurable_attempts,
         )
 
     except Exception:
@@ -2747,11 +3138,20 @@ async def record_token_usage(
     catalog_entry_id: uuid.UUID,
     butler_name: str,
     session_id: uuid.UUID | None,
-    input_tokens: int,
-    output_tokens: int,
-    cached_input_tokens: int = 0,
-    cache_creation_tokens: int = 0,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    cached_input_tokens: int | None = 0,
+    cache_creation_tokens: int | None = 0,
     purpose: str | None = None,
+    purpose_lane: PurposeLane = PURPOSE_LANE_STANDARD,
+    base_prompt_tokens: int | None = None,
+    timezone_instruction_tokens: int | None = None,
+    context_preamble_tokens: int | None = None,
+    routing_instructions_tokens: int | None = None,
+    memory_context_tokens: int | None = None,
+    resume_outcome: str | None = None,
+    attempt_id: int | None = None,
+    usage_source: str = "measured",
 ) -> None:
     """Record token usage to ``public.token_usage_ledger``.
 
@@ -2786,8 +3186,53 @@ async def record_token_usage(
         ``None`` when the caller has no meaningful purpose to report (kept
         nullable rather than defaulted so honestly-unknown rows stay
         distinguishable from a real, named purpose).
+    purpose_lane:
+        Closed content-handling lane persisted separately from the open-ended
+        spend-purpose dimension. Defaults to ``standard`` for legacy callers.
+    base_prompt_tokens, timezone_instruction_tokens, context_preamble_tokens,
+    routing_instructions_tokens, memory_context_tokens:
+        Per-layer token digest of the composed system prompt (bu-hz0g0), from
+        ``spawner_context.compose_prompt_digest()``. ``None`` for callers that
+        never compose a layered prompt (e.g. the discretion dispatcher lane),
+        kept nullable rather than defaulted to 0 so "no composition happened"
+        stays distinguishable from "this layer was empty".
+    resume_outcome:
+        Whether this dispatch resumed a provider-native session:
+        ``"resumed"`` (a resume handle was attached and the attempt using it
+        succeeded), ``"resume_failed_retried_cold"`` (the resume attempt
+        failed and was transparently retried cold on the same candidate), or
+        ``"resume_failed_terminal"`` (the resume attempt failed and was
+        ineligible for the transparent cold retry). ``None`` when resume was
+        never attempted this dispatch (non-conversational trigger, adapter
+        without resume support, no handle available, etc.) -- an evolving,
+        code-owned vocabulary with no DB-level CHECK constraint, mirroring
+        ``purpose``.
+    attempt_id:
+        Stable ``public.model_dispatch_attempts.id`` for the provider invocation.
+        ``None`` is retained for historical and non-spawner callers that have no
+        dispatch-attempt identity.
+    usage_source:
+        ``"measured"`` when the provider returned parseable token counts, or
+        ``"unmeasurable"`` when an invoked attempt returned no usable counts.
+        Unmeasurable rows require all token buckets to be ``None``.
     """
     try:
+        if purpose_lane not in {"standard", "private_content"}:
+            raise ValueError("purpose_lane must be standard or private_content")
+        if usage_source not in {"measured", "unmeasurable"}:
+            raise ValueError("usage_source must be measured or unmeasurable")
+        if usage_source == "measured" and (input_tokens is None or output_tokens is None):
+            raise ValueError("measured usage requires input_tokens and output_tokens")
+        if usage_source == "unmeasurable" and any(
+            value is not None
+            for value in (
+                input_tokens,
+                output_tokens,
+                cached_input_tokens,
+                cache_creation_tokens,
+            )
+        ):
+            raise ValueError("unmeasurable usage must not fabricate token counts")
         await pool.execute(
             _LEDGER_INSERT_SQL,
             catalog_entry_id,
@@ -2798,6 +3243,15 @@ async def record_token_usage(
             cached_input_tokens,
             cache_creation_tokens,
             purpose,
+            base_prompt_tokens,
+            timezone_instruction_tokens,
+            context_preamble_tokens,
+            routing_instructions_tokens,
+            memory_context_tokens,
+            resume_outcome,
+            purpose_lane,
+            attempt_id,
+            usage_source,
         )
     except Exception:
         logger.warning(

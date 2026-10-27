@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter, useSearchParams } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -6,12 +6,18 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import EntityDetailPage, { ENTITY_MODE_STORAGE_KEY } from "@/pages/EntityDetailPage";
 import { useEntity } from "@/hooks/use-memory";
 import {
+  useEntityActivity,
   useEntityDeltaFacts,
   useEntityFacts,
-  useEntityTimeline,
+  useEntityLinkedContacts,
   useRelationshipEntitiesByIds,
 } from "@/hooks/use-entities";
-import type { EntityDetail, EntityFact } from "@/api/types";
+import type {
+  ContactInfoEntry,
+  EntityDetail,
+  EntityFact,
+  LinkedContactSummary,
+} from "@/api/types";
 import { makeLocalStorageMock } from "@/test-utils/entity-detail-page";
 
 // Mock react-router's useParams and useSearchParams so we can control both
@@ -48,12 +54,14 @@ vi.mock("@/hooks/use-memory", () => ({
   useUpdateEntityInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useDeleteEntityInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useRevealEntitySecret: vi.fn(() => ({ mutate: vi.fn() })),
-  useSetLinkedContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useUnlinkContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
 // Relationship-scoped hooks consumed by the consolidated page
 vi.mock("@/hooks/use-entities", () => ({
+  useIdentityCandidates: vi.fn(() => ({ data: { facts: [] }, isPending: false, isError: false, refetch: vi.fn() })),
+  useDecideIdentityCandidate: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  ENTITY_CADENCE_REFRESH_MS: 30_000,
+  ENTITY_CADENCE_MAX_AGE_MS: 90_000,
   // EntityDetailPage renders EntityVerbRail (bu-6t8ix.4); its four write verbs each
   // call a mutation hook from this module. Inert here: these suites submit nothing,
   // the hooks only need to exist and report an idle state. Declared inline because a
@@ -89,10 +97,24 @@ vi.mock("@/hooks/use-entities", () => ({
     error: null,
   })),
   useEntityTimeline: vi.fn(() => ({ data: [], isLoading: false })),
+  useEntityActivity: vi.fn(() => ({
+    data: { pages: [{
+      items: [], total: 0, limit: 50, offset: 0, degraded: false, degraded_reason: null,
+    }], pageParams: [0] },
+    isLoading: false,
+    isError: false,
+    isRefetching: false,
+    refetch: vi.fn(),
+    fetchNextPage: vi.fn(),
+    hasNextPage: false,
+    isFetchingNextPage: false,
+  })),
+  useEntityCadence: vi.fn(() => ({ data: { window_days: 30, interaction_count: 0, completeness: "complete", has_more: false }, isLoading: false, isError: false })),
   useEntityGifts: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityLoans: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityMessageThreads: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityLinkedContacts: vi.fn(() => ({ data: [], isLoading: false })),
+  useAddEntityContact: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useEntityDates: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityActivityBins: vi.fn(() => ({ data: { bins: [] }, isLoading: false, isError: false })),
   useEntityDeltaFacts: vi.fn(() => ({ data: { marked_at: null, items: [] }, isSuccess: true })),
@@ -118,17 +140,18 @@ vi.mock("@/hooks/use-entities", () => ({
   useMergeRelationshipEntities: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
 }));
 
-vi.mock("@/hooks/use-contacts", () => ({
-  useContacts: vi.fn(() => ({ data: { contacts: [] } })),
-  useCreateContactInfo: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
-  useDeleteContactInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  usePatchContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  usePatchContactInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-}));
 
-vi.mock("@/components/relationship/OwnerSetupBanner", () => ({
-  OwnerSetupBanner: () => null,
-}));
+// Stubbed out by default; the owner-setup suite renders the real banner so the
+// drawer's "(action needed)" state is checked against the banner's own output.
+const ownerBanner = vi.hoisted(() => ({ real: false }));
+vi.mock("@/components/relationship/OwnerSetupBanner", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/components/relationship/OwnerSetupBanner")>();
+  return {
+    OwnerSetupBanner: (props: Parameters<typeof actual.OwnerSetupBanner>[0]) =>
+      ownerBanner.real ? actual.OwnerSetupBanner(props) : null,
+  };
+});
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
@@ -141,8 +164,6 @@ const BASE_ENTITY: EntityDetail = {
   aliases: [],
   roles: ["owner"],
   fact_count: 0,
-  linked_contact_id: null,
-  linked_contact_name: null,
   unidentified: false,
   source_butler: null,
   source_scope: null,
@@ -198,18 +219,142 @@ describe("EntityDetailPage — identity hero", () => {
     setEntityState(BASE_ENTITY);
     const html = renderPage();
     expect(html).toContain("Activity");
+    expect(html).toContain("No activity recorded yet.");
   });
 
-  it("shows an activity error state (not 'No activity recorded yet.') on timeline load failure", () => {
-    // bu-mkd5r three-way contract: a down timeline backend must not read as a
+  it("renders exact summaries for colliding source-qualified rows without predicate fallback", () => {
+    setEntityState(BASE_ENTITY);
+    vi.mocked(useEntityActivity).mockReturnValue({
+      data: { pages: [{
+        items: [
+          {
+            id: "shared-id",
+            ts: "2026-05-30T12:00:00Z",
+            kind: "note",
+            src: "relationship",
+            store: "narrative",
+            predicate: "contact_note",
+            episode_id: null,
+            summary: "Exact narrative summary",
+          },
+          {
+            id: "shared-id",
+            ts: "2026-05-29T12:00:00Z",
+            kind: "fact",
+            src: "relationship",
+            store: "identity",
+            predicate: "private_predicate_sentinel",
+            episode_id: null,
+            summary: null,
+          },
+        ],
+        total: 2,
+        limit: 50,
+        offset: 0,
+        degraded: false,
+        degraded_reason: null,
+      }], pageParams: [0] },
+      isLoading: false,
+      isError: false,
+      isRefetching: false,
+      refetch: vi.fn(),
+      fetchNextPage: vi.fn(),
+      hasNextPage: false,
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof useEntityActivity>);
+
+    const html = renderPage();
+    expect(html).toContain("Exact narrative summary");
+    expect(html).not.toContain(
+      '<p class="text-sm leading-snug">private predicate sentinel</p>',
+    );
+  });
+
+  it("keeps partial activity visible while naming unavailable Chronicle data", () => {
+    setEntityState(BASE_ENTITY);
+    vi.mocked(useEntityActivity).mockReturnValue({
+      data: { pages: [{
+        items: [
+          {
+            id: "fact-1",
+            ts: "2026-05-30T12:00:00Z",
+            kind: "note",
+            src: "relationship",
+            store: "narrative",
+            predicate: "contact_note",
+            episode_id: null,
+            summary: "Available relationship activity",
+          },
+        ],
+        total: 1,
+        limit: 50,
+        offset: 0,
+        degraded: true,
+        degraded_reason: "chronicler_activity_unavailable",
+      }], pageParams: [0] },
+      isLoading: false,
+      isError: false,
+      isRefetching: false,
+      refetch: vi.fn(),
+      fetchNextPage: vi.fn(),
+      hasNextPage: false,
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof useEntityActivity>);
+
+    const html = renderPage();
+    expect(html).toContain('data-testid="entity-activity-degraded"');
+    expect(html).toContain("Chronicle activity: unavailable");
+    expect(html).toContain("Available relationship activity");
+    expect(html).not.toContain("No activity recorded yet.");
+  });
+
+  it("keeps cached rows visible when a refetch fails", () => {
+    setEntityState(BASE_ENTITY);
+    vi.mocked(useEntityActivity).mockReturnValue({
+      data: { pages: [{
+        items: [
+          {
+            id: "cached-1",
+            ts: "2026-05-30T12:00:00Z",
+            kind: "note",
+            src: "relationship",
+            store: "narrative",
+            predicate: "contact_note",
+            episode_id: null,
+            summary: "Cached activity remains visible",
+          },
+        ],
+        total: 1,
+        limit: 50,
+        offset: 0,
+        degraded: false,
+        degraded_reason: null,
+      }], pageParams: [0] },
+      isLoading: false,
+      isError: true,
+      isRefetching: false,
+      refetch: vi.fn(),
+      fetchNextPage: vi.fn(),
+      hasNextPage: false,
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof useEntityActivity>);
+
+    const html = renderPage();
+    expect(html).toContain('data-testid="entity-activity-fetch-error"');
+    expect(html).toContain("Cached activity remains visible");
+    expect(html).not.toContain("No activity recorded yet.");
+  });
+
+  it("shows an activity error state on initial activity load failure", () => {
+    // bu-mkd5r three-way contract: a down activity backend must not read as a
     // genuinely quiet history.
     setEntityState(BASE_ENTITY);
-    vi.mocked(useEntityTimeline).mockReturnValue({
+    vi.mocked(useEntityActivity).mockReturnValue({
       data: undefined,
       isLoading: false,
       isError: true,
       refetch: vi.fn(),
-    } as unknown as ReturnType<typeof useEntityTimeline>);
+    } as unknown as ReturnType<typeof useEntityActivity>);
     const html = renderPage();
     expect(html).toContain("entity-timeline-error");
     expect(html).not.toContain("No activity recorded yet.");
@@ -223,11 +368,10 @@ describe("EntityDetailPage — credentials moved to /secrets", () => {
 
   // Credentials & Info management has moved to the User tab of /secrets.
   // The entity page only carries a link to that surface.
-  it("renders a link to /secrets in the practical drawer for owners with no linked contact", () => {
+  it("renders a link to /secrets in the practical drawer for owners", () => {
     setEntityState({
       ...BASE_ENTITY,
       roles: ["owner"],
-      linked_contact_id: null,
       entity_info: [],
     });
 
@@ -241,7 +385,6 @@ describe("EntityDetailPage — credentials moved to /secrets", () => {
     setEntityState({
       ...BASE_ENTITY,
       roles: ["owner"],
-      linked_contact_id: null,
       entity_info: [
         {
           id: "info-1",
@@ -827,6 +970,21 @@ describe("EntityDetailPage — ProvenanceGrid (Workbench mode)", () => {
     expect(html).toContain("Acme Corp");
     // src (source butler)
     expect(html).toContain("general");
+    setEntityFacts([{ ...SAMPLE_ENTITY_FACT, verified: true, confirmation_status: "legacy_verified",
+      content_authority: null, reported_by: { entity_id: null, name: null, availability: "legacy_unknown" } }]);
+    const legacy = renderPage();
+    expect(legacy).toContain("Legacy verification: author unknown");
+    expect(legacy).not.toContain('data-verified="true"');
+    expect(legacy).not.toContain("Owner verified");
+    setEntityFacts([{ ...SAMPLE_ENTITY_FACT, verified: true, confirmation_status: "owner_asserted",
+      content_authority: "owner", reported_by: { entity_id: "owner", name: "Owner", availability: "available" } }]);
+    const admitted = renderPage();
+    expect(admitted).toContain("Owner verified");
+    expect(admitted).toContain("Reported by Owner");
+    setEntityFacts([{ ...SAMPLE_ENTITY_FACT, store: "narrative", verified: true }]);
+    const narrative = renderPage();
+    expect(narrative).not.toContain("Legacy verification: author unknown");
+    expect(narrative).not.toContain("Reported by");
   });
 
   it("Workbench renders real column headers: Predicate, Weight, Last Observed", () => {
@@ -1204,50 +1362,31 @@ describe("EntityDetailPage — BreadcrumbStrip", () => {
 });
 
 // ---------------------------------------------------------------------------
-// LinkedContactSection — plain text (no circular self-link) (bu-u0csg)
+// Contact channels are entity-keyed; the retired contact link flow is gone
 // ---------------------------------------------------------------------------
 
-describe("EntityDetailPage — LinkedContactSection plain-text display", () => {
+describe("EntityDetailPage — contact channels without the retired contact link", () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
 
-  it("linked contact name renders as plain text, not a link to the same entity page", () => {
-    setEntityState({
-      ...BASE_ENTITY,
-      linked_contact_id: "contact-xyz",
-      linked_contact_name: "Linked Contact Name",
-    });
-    const html = renderPage();
-    // Contact name must appear as plain text
-    expect(html).toContain("Linked Contact Name");
-    // Must NOT render a circular self-link to the current entity page
-    expect(html).not.toContain('href="/entities/entity-001"');
-    // Must NOT use the /contacts/ redirect path
-    expect(html).not.toContain('href="/contacts/contact-xyz"');
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
-  it("falls back to linked_contact_id as text when linked_contact_name is null", () => {
-    setEntityState({
-      ...BASE_ENTITY,
-      linked_contact_id: "contact-xyz",
-      linked_contact_name: null,
-    });
-    const html = renderPage();
-    // ID shown as fallback plain text
-    expect(html).toContain("contact-xyz");
-    expect(html).not.toContain('href="/entities/entity-001"');
-  });
+  it("renders ContactChannelCard, no Linked contact control, and no contact-route request", () => {
+    const fetchSpy = vi.fn(() => new Promise<Response>(() => {}));
+    vi.stubGlobal("fetch", fetchSpy);
+    setEntityState(BASE_ENTITY);
 
-  it("linked contact section is not rendered when linked_contact_id is null", () => {
-    setEntityState({
-      ...BASE_ENTITY,
-      linked_contact_id: null,
-      linked_contact_name: null,
-    });
     const html = renderPage();
-    // No link to a contact page should appear
-    expect(html).not.toContain("/contacts/");
+
+    expect(html).toContain('data-testid="contact-channel-card');
+    expect(html).not.toContain("Linked contact");
+    expect(html).not.toContain("Link contact");
+    expect(html).not.toContain("Linked Contact Name");
+    const requested = fetchSpy.mock.calls.map((call: unknown[]) => String(call[0]));
+    expect(requested.filter((url) => url.includes("/relationship/contacts"))).toEqual([]);
   });
 });
 
@@ -1303,5 +1442,82 @@ describe("EntityDetailPage — editorial hero first-seen / last-seen line", () =
     expect(html).toContain("Last seen");
     // The "—" character should appear at least once (first seen + possibly last seen too)
     expect(html).toContain("—");
+  });
+});
+
+describe("EntityDetailPage — owner setup drives \"(action needed)\" (bu-6m6ou0)", () => {
+  const telegramFact = (id: string, value: string): ContactInfoEntry => ({
+    id,
+    type: "telegram_user_id",
+    value,
+    is_primary: true,
+    secured: false,
+    parent_id: null,
+    context: null,
+    source: "entity_facts",
+    predicate: "has-handle",
+    value_hash: `${id}-hash`,
+    verified: true,
+  });
+  const ownerContacts = (...values: string[]): LinkedContactSummary[] => [
+    {
+      id: "contact-1",
+      full_name: "Test Owner",
+      email: null,
+      phone: null,
+      contact_info: values.map((value, index) => telegramFact(`fact-${index}`, value)),
+      labels: [],
+      preferred_channel: null,
+      reachable_channels: [],
+    },
+  ];
+  const setLinkedContacts = (state: Record<string, unknown>) =>
+    vi.mocked(useEntityLinkedContacts).mockReturnValue(
+      state as unknown as ReturnType<typeof useEntityLinkedContacts>,
+    );
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    ownerBanner.real = true;
+    setEntityState({ ...BASE_ENTITY, roles: ["owner"] });
+  });
+
+  afterEach(() => {
+    ownerBanner.real = false;
+  });
+
+  it("does not flag a fully configured owner (no linked-contact field needed)", () => {
+    setLinkedContacts({ data: ownerContacts("owner_handle", "123456789"), isError: false });
+
+    const html = renderPage();
+
+    expect(html).not.toContain("(action needed)");
+    expect(html).not.toContain("Missing:");
+  });
+
+  it("flags an owner missing a Telegram chat ID, matching the banner's missing list", () => {
+    setLinkedContacts({ data: ownerContacts("owner_handle"), isError: false });
+
+    const html = renderPage();
+
+    expect(html).toContain("(action needed)");
+    expect(html).toContain("Missing: Telegram chat ID.");
+  });
+
+  it("does not flag the owner while contact facts are loading or unavailable", () => {
+    setLinkedContacts({ data: undefined, isLoading: true, isError: false });
+    expect(renderPage()).not.toContain("(action needed)");
+
+    setLinkedContacts({ data: undefined, isLoading: false, isError: true, refetch: vi.fn() });
+    const html = renderPage();
+    expect(html).not.toContain("(action needed)");
+    expect(html).toContain("Owner contact facts");
+  });
+
+  it("never flags a non-owner entity, whatever its facts", () => {
+    setEntityState({ ...BASE_ENTITY, canonical_name: "Owner", roles: [] });
+    setLinkedContacts({ data: [], isError: false });
+
+    expect(renderPage()).not.toContain("(action needed)");
   });
 });

@@ -6,15 +6,14 @@ Modules are the tool-surface extension mechanism. They implement the `Module` AB
 
 ```python
 class Module(ABC):
-    @property
-    def name(self) -> str: ...              # e.g., "steam", "email"
+    name = "example"                       # class-level string; no constructor for discovery
     @property
     def config_schema(self) -> type: ...    # Pydantic model class
     @property
     def dependencies(self) -> list[str]: ... # other module names (usually [])
 
     async def register_tools(self, mcp, config, db): ...  # register MCP tools
-    def migration_revisions(self) -> str | None: ...       # Alembic branch label
+    def migration_revisions(self) -> str | None: ...       # optional legacy metadata
     async def on_startup(self, config, db, credential_store): ...
     async def on_shutdown(self): ...
     def tool_metadata(self) -> dict | None: ...  # sensitivity metadata
@@ -29,6 +28,8 @@ class SteamConfig(BaseModel):
     # service-specific settings...
 
 class SteamModule(Module):
+    name = "steam"
+
     @property
     def config_schema(self):
         return SteamConfig
@@ -99,11 +100,13 @@ def tool_metadata(self):
 
 ## Module Registration
 
-Add to `src/butlers/modules/` and ensure the module registry discovers it. The registry auto-discovers `Module` subclasses from `butlers.modules.*` packages.
+Add to `src/butlers/modules/` and ensure the module registry discovers it. The registry auto-discovers `Module` subclasses from `butlers.modules.*` packages without constructing them. Declare a non-empty class-level `name`; startup constructs only TOML-declared modules. CLI and daemon select existing migration directories rather than the legacy hook.
 
 ## Key Rules
 
 - Modules ONLY add tools — never modify core infrastructure
+- Every tool needs a docstring: it is the MCP description, and strict providers reject a tool
+  without one (`tests/contracts/test_tool_descriptions.py` enforces it)
 - Module dependencies are resolved via topological sort
 - Config is validated via Pydantic before `register_tools()` is called
 - Blocking I/O (HTTP calls) must use `asyncio.to_thread` or async HTTP clients

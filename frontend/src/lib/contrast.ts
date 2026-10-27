@@ -86,3 +86,6 @@ export function contrastRatio(a: Oklch, b: Oklch): number {
 
 /** WCAG AA minimum contrast ratio for normal-weight text under 18pt/14pt-bold. */
 export const WCAG_AA_NORMAL_TEXT = 4.5
+
+/** WCAG AA minimum contrast ratio for non-text controls and state indicators. */
+export const WCAG_AA_NON_TEXT = 3.0

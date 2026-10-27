@@ -79,9 +79,9 @@ describe("Mono: typography", () => {
 // ---------------------------------------------------------------------------
 
 describe("Mono: color variants", () => {
-  it("default (muted=false) uses --fg foreground token", () => {
+  it("default (muted=false) uses the foreground utility", () => {
     const html = renderToStaticMarkup(<Mono>label</Mono>)
-    expect(html).toContain("--fg")
+    expect(html).toContain("text-fg")
   })
 
   it("muted=true uses --mfg muted foreground token", () => {

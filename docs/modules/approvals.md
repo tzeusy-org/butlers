@@ -49,29 +49,28 @@ The approval gate operates at two independent layers, both enforcing gating:
 
 ## Tools Provided
 
-The module registers 17 MCP tools (8 queue, 6 rule, and 3 autonomy-suggestion tools):
+Tools are registered in `ApprovalsModule.register_tools` (`src/butlers/modules/approvals/module.py`);
+read it for the current names and signatures. The families:
 
-| Tool | Category | Description |
-|------|----------|-------------|
-| `list_pending_actions` | Queue | List actions with optional status filter |
-| `show_pending_action` | Queue | Show full details for a single action |
-| `approve_action` | Queue | Approve a pending action; execute immediately only when an owning executor is available |
-| `dispatch_approved_action` | Queue | Dispatch an approved, un-run action through the owning daemon's original tool handler |
-| `reject_action` | Queue | Reject with optional reason |
-| `pending_action_count` | Queue | Count of pending actions |
-| `expire_stale_actions` | Queue | Mark expired actions past their `expires_at` |
-| `list_executed_actions` | Queue | Query executed actions for audit review |
-| `create_approval_rule` | Rules | Create a new standing approval rule |
-| `create_rule_from_action` | Rules | Create a rule from a pending action with smart constraint defaults |
-| `list_approval_rules` | Rules | List standing approval rules |
-| `show_approval_rule` | Rules | Show full rule details with use count |
-| `revoke_approval_rule` | Rules | Deactivate a standing approval rule |
-| `suggest_rule_constraints` | Rules | Preview suggested constraints for a pending action |
-| `list_promotion_suggestions` | Autonomy | List pending promotion or demotion suggestions |
-| `confirm_promotion_suggestion` | Autonomy | Apply a confirmed promotion or demotion suggestion |
-| `dismiss_promotion_suggestion` | Autonomy | Dismiss a promotion or demotion suggestion |
+- **Queue** -- list, show, count, approve, reject and expire pending actions, and query executed
+  actions for audit. Approval executes immediately only when an owning executor is available;
+  otherwise `dispatch_approved_action` later runs the approved action through the owning daemon's
+  original tool handler.
+- **Standing rules** -- create (directly or from a pending action with suggested constraints),
+  list, show and revoke the rules described below.
+- **Autonomy suggestions** -- list, confirm or dismiss suggested promotions and demotions of a
+  tool's approval posture.
 
 ## Standing Rules
+
+Creating rules (directly, from an action, or with approval) and confirming an
+autonomy promotion require the dashboard's fresh action-bound passkey step-up.
+An authenticated MCP actor or Telegram callback cannot create standing
+permission. They receive `dashboard_step_up_required` with `/approvals` as the
+dashboard door. Ordinary approval, rejection, revocation and demotion remain
+available under their existing authority. See
+[standing-rule confirmation](../identity_and_secrets/dashboard-owner-auth.md#standing-rule-confirmation)
+for the exact session/nonce transaction, backup and deployment boundaries.
 
 Standing rules auto-approve matching invocations. A rule matches when all of these hold:
 
@@ -126,9 +125,132 @@ The module owns tables in the hosting butler's schema (Alembic branch: `approval
 
 None. The approvals module is a leaf module. Other modules interact with it indirectly through the daemon's gate-wiring mechanism.
 
+## Implementation Notes
+
+- Dormant RFC 0023 recovery uses the explicit
+  [approval delivery authority transport](../runtime/approval-delivery-authority.md).
+  Protected peer admission and the owning source's durable presentation proof
+  are separate prerequisites. Ordinary TCP or caller correlation cannot enable
+  recovery, and constructing the opt-in transport does not activate rollout.
+
+- Owner-entity mutations park for approval unless `src` is in `_OWNER_AUTO_APPLY_SOURCES`
+  (`roster/relationship/tools/relationship_assert_fact.py`): owner self-registration plus
+  `_TRUSTED_INTERNAL_SOURCES` (structured derivation such as `interaction_sync`). Prose-extraction
+  jobs are deliberately untrusted (RFC 0017). The dashboard API rejects any auto-apply `src`
+  (`roster/relationship/api/models.py::_reject_trusted_internal_src`), and the MCP wrapper hardcodes
+  `src="relationship"`.
+- Butlers that cannot read `relationship.entity_facts` recognise the owner through
+  `public.resolve_owner_triple` (SECURITY DEFINER), called by
+  `identity.resolve_owner_channel_via_definer()` when normal resolution returns None.
+- Every channel gate delegates to `identity.resolve_channel_contact_with_owner_corroboration()`,
+  which tests ambiguity across all live matching entities before filtering to the owner. The bypass
+  goes only to exactly one active identifier on one live, non-merged, non-deleted owner entity;
+  every other case, including lookup errors, fails closed.
+- Decision paths (the `approve_action`, `reject_action` and `expire_stale_actions` MCP tools, backed
+  by `ApprovalsModule._approve_action`, `ApprovalsModule._reject_action` and
+  `ApprovalsModule._expire_stale_actions` in `src/butlers/modules/approvals/module.py`) use
+  compare-and-set
+  writes (`... WHERE status='pending'`). Expiry is a decision boundary: approve and defer paths
+  expire a still-pending action whose `expires_at` has passed instead of acting on it.
+  Dashboard approve-with-edits restores the locked original arguments on a refused decision
+  before committing, preserving an expiry transition without persisting the refused edit.
+- `execute_approved_action` is idempotent per `action_id`: a per-action lock serialises it, an
+  `executed` action replays its stored `execution_result`, and the terminal write happens only
+  from `approved`.
+- `ButlerDaemon._apply_approval_gates()` (`src/butlers/daemon.py`) falls back to registered MCP
+  tool handlers when an approved action's
+  `tool_name` is not a gated original, so module-queued actions for non-gated tools can execute.
+- A producer calling `park_pending_action()` outside the MCP gate persists a declared owner, a
+  registered tool name and exact kwargs, and the owning daemon validates that handler signature at
+  startup. If no safe command can be replayed (secret-bearing requests), reject before parking with
+  a redacted audit signal; never repair historic rows by guessing.
+- `approval_events` rows are insert-only: trigger `trg_approval_events_immutable` rejects `UPDATE`
+  and `DELETE`.
+- Standing-rule precedence is deterministic (`constraint_specificity_desc`, `bounded_scope_desc`,
+  `created_at_desc`, `rule_id_asc`). `high` and `critical` tiers require a constrained rule (at least
+  one arg constraint plus `expires_at` or `max_uses`); rules created from an action at those tiers
+  default to `max_uses=1`.
+
+The dashboard action, flat-list, history and dossier responses expose additive
+`origin: "prepared" | null` from the stored pending action. Only the exact stored
+`prepared` value earns the neutral Prepared label in the rail and dossier;
+absent, malformed and unrecognized values remain Origin unknown. This label is
+independent of status, expiry, permissions and delivery evidence. Intended
+non-send without delivery evidence is not a failed push, while independently
+recorded failure or uncertain delivery remains visible even for a prepared action.
+
+- A notification review link is a dossier locator, not an approval capability. The dashboard's
+  qualified `GET /api/approvals/{id}?review_source=messenger` repeats a bounded lookup over
+  every configured approvals source. A missing pool, failed read, duplicate UUID, or wrong source
+  withholds the dossier; ordinary unqualified lookup and decision permissions stay unchanged.
+  Configuration is retained before provisioning, so a failed pool cannot disappear from this check.
+
+## Approval cards show the exact stored call
+
+The owner push for a single parked action (Telegram) renders the call itself, not
+the assistant's description of it. A per-tool preview registry
+(`src/butlers/modules/approvals/previews.py`) turns the stored `tool_args` into
+fact lines: for email sends every To, Cc and Bcc address, the subject
+and the full body; for Telegram, WhatsApp and `notify` sends the recipient and
+text. The assistant's `why`, `blast_radius` and `reversibility` sit under
+"Assistant says" as claims, with URLs defanged (`hxxps://a[.]b/c`) and each
+span rendered in code formatting so it stays literal after the transport's HTML
+escaping. "Started by" names the owning butler (and marks prepared actions).
+
+Approve and Reject are offered only when the whole call is shown and the card
+fits about 3,500 UTF-16 code units (Telegram's own measure, so an emoji counts
+twice). Otherwise the card says why and offers Open only:
+no registered preview, an argument the preview cannot show (for example
+attachments or a reply markup), a recipient that cannot be enumerated, a body
+with backticks, any C0/C1 control character (other than a newline) or Unicode
+format character such as a bidi override or zero-width space in a shown value
+(these can forge the transport's placeholders or reorder what the owner reads), an
+over-budget call, or an `administer` or protected or
+consequential tool. Register a preview with `register_preview(tool, renderer,
+effect_class=...)`; an unregistered tool is Open only by design.
+
+Each presented card records `args_digest` (SHA-256 of the canonical JSON of the
+stored call) on its `approval_delivery_presentations` row, written under the
+action's row lock when the handoff starts; the handoff does not start if the
+stored call changed since it was rendered, and a card never records a NULL
+digest. A connector-authenticated Telegram tap carries only the action id, so the
+approve endpoint refuses it with 409 "changed since shown" when any presented
+digest differs from the stored call, and the tap edits the message to say nothing
+was executed. This check applies to card taps only: a dashboard approval binds to
+the call the dashboard displayed, and dashboard edits are the owner's explicit
+change. The dashboard dossier and summary review dialog expose only a complete registered
+owner-safe `call_preview`, including the tool identity and argument digest from the
+same stored row. Both approval API routes require that `displayed_call` and
+compare it under the pending-row lock before any owner edit, status/audit write
+or dispatch. Missing, malformed, stale or unshowable calls execute nothing.
+Summary actions first open the complete review; the five-second undo callback
+retains that exact reviewed snapshot even if a later fetch sees a different call.
+No raw secret-field fallback or truncated preview earns an Approve button.
+Rows presented before migration 018 carry no digest and are not checked.
+Migration 018's downgrade refuses while any presentation carries a digest.
+
 ## Related Pages
 
 - [Module System](module-system.md)
 - [Calendar Module](calendar.md) -- uses approval integration for overlap overrides
 - [Email Module](email.md) -- tools gated by approvals
 - [Telegram Module](telegram.md) -- tools gated by approvals
+
+### Calendar canonical preparation
+
+Calendar response admission is a module-owned startup extension of the real
+approval gate, not caller metadata or a private handler API. The gate validates
+its public arguments and dossier, then invokes the registered canonical
+preparer before recipient exemptions or standing-rule matching. The preparer
+freezes the provider-proven target and atomically persists its command and
+ordinary pending action through one owning connection. Other gated tools keep
+their existing policy and notification-recovery behavior.
+
+Startup refuses an enabled response capability without its actual registered
+gate and owning executor. Dispatch uses the captured original handler and the
+existing task/tool/argument execution context; direct or inherited child-task
+calls cannot write. Dashboard response decisions reuse `approve_owning_action`
+with exact persisted arguments, no edits and `create_rule=False`. An already
+approved command may recover through that same owning dispatch; its independent
+committed attempt fence prevents a repeated provider write. RFC 0023 recovery
+remains notification-only and retains its default-off authority boundary.

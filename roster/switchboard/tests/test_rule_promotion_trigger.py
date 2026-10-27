@@ -588,3 +588,19 @@ def test_promotion_trigger_result_as_dict_has_all_fields():
         "errors",
     }
     assert all(v == 0 for v in d.values())
+
+
+class TestAccountSecurityCarveOut:
+    """bu-q7vx1q.10: a promoted rule must never suppress first-party security alerts."""
+
+    def test_skip_and_metadata_only_refused_for_classifier_senders(self):
+        sender = "no-reply@accounts.google.com"
+        assert build_proposed_action("skip", None, sender_key=sender) is None
+        assert build_proposed_action("metadata_only", None, sender_key=sender) is None
+
+    def test_other_senders_and_route_to_unaffected(self):
+        assert build_proposed_action("skip", None, sender_key="promo@example.com") == "skip"
+        assert (
+            build_proposed_action("route_to", "finance", sender_key="no-reply@accounts.google.com")
+            == "route_to:finance"
+        )

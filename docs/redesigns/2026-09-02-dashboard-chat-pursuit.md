@@ -10,9 +10,9 @@ experience."*
 
 - **Run:** wf_ae184fd2-da6 — 9 agents in 3 hourly batches of 3 (throttle honored), synthesis inline.
 - **Yield:** 97 findings · 66 proposals · 93 candidate findings dropped by agents as already-known.
-- **Data:** [`2026-09-02-dashboard-chat-pursuit-data.json`](2026-09-02-dashboard-chat-pursuit-data.json)
+- **Data:** `git show b23d5b76afab:docs/redesigns/2026-09-02-dashboard-chat-pursuit-data.json`
   — full per-lens structured output, keyed by lens name. Access pattern:
-  `jq '.["lens:use-cases"]' docs/redesigns/2026-09-02-dashboard-chat-pursuit-data.json`
+  `git show b23d5b76afab:docs/redesigns/2026-09-02-dashboard-chat-pursuit-data.json | jq '.["lens:use-cases"]'`
   (lenses: `qc:current-surface`, `lens:page-context`, `lens:use-cases`, `lens:question-lane-tools`,
   `ux:conversation-surface`, `ux:a11y-keyboard`, `lens:actions-from-chat`,
   `lens:continuity-memory`, `ux:speed-streaming`; each has `.findings[]`, `.proposals[]`,

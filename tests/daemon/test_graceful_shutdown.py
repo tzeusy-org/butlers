@@ -42,9 +42,7 @@ class StubModuleOk(Module):
         self.started = False
         self.shutdown_called = False
 
-    @property
-    def name(self) -> str:
-        return "stub_ok"
+    name = "stub_ok"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -76,9 +74,7 @@ class StubModuleFailing(Module):
         self.started = False
         self.shutdown_called = False
 
-    @property
-    def name(self) -> str:
-        return "stub_failing"
+    name = "stub_failing"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -110,9 +106,7 @@ class StubModuleAfterFailing(Module):
         self.started = False
         self.shutdown_called = False
 
-    @property
-    def name(self) -> str:
-        return "stub_after"
+    name = "stub_after"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -209,18 +203,28 @@ def _make_fetchrow_side_effect(butler_name: str = "test-butler"):
 def _patch_infra():
     """Return a dict of patches for all infrastructure dependencies."""
     mock_conn = AsyncMock()
+    # asyncpg uses synchronous factories for both asynchronous contexts.
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=None)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    mock_conn.transaction = MagicMock(return_value=transaction)
     mock_conn.execute = AsyncMock(return_value=None)
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
 
     mock_pool = AsyncMock()
+    mock_pool.acquire = MagicMock()
     # Support `async with pool.acquire() as conn:` pattern
     mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
     mock_pool.execute = AsyncMock(return_value=None)
     mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
-    mock_pool.fetchval = AsyncMock(return_value=None)
+
+    async def fetchval(query, *_args):
+        return 1 if "public.register_butler_boot" in query else None
+
+    mock_pool.fetchval = AsyncMock(side_effect=fetchval)
     mock_pool.fetch = AsyncMock(return_value=[])
 
     mock_db = MagicMock()
@@ -271,8 +275,8 @@ def _patch_infra():
         "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
         "FastMCP": patch("butlers.lifecycle.FastMCP"),
         "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "get_adapter": patch(
-            "butlers.lifecycle.get_adapter",
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter",
             return_value=type(
                 "MockAdapter",
                 (),
@@ -280,7 +284,7 @@ def _patch_infra():
                     "binary_name": "claude",
                     "__init__": lambda self, **kwargs: None,
                 },
-            ),
+            )(),
         ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
@@ -426,7 +430,7 @@ class TestDaemonGracefulShutdown:
             patches["sync_schedules"],
             patches["FastMCP"],
             patches["Spawner"],
-            patches["get_adapter"],
+            patches["build_runtime_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
@@ -458,6 +462,20 @@ class TestDaemonGracefulShutdown:
         )
         await daemon2.shutdown()
         patches2["mock_spawner"].drain.assert_awaited_once_with(timeout=15.0)
+
+    async def test_failed_boot_registration_never_advertises_acceptance(
+        self, tmp_path: Path
+    ) -> None:
+        patches = _patch_infra()
+        patches["mock_db"].pool.fetchval.side_effect = RuntimeError("registration unavailable")
+        daemon = await self._start_daemon(_make_butler_toml(tmp_path), patches)
+        try:
+            assert daemon._boot_epoch is None
+            assert daemon._accepting_connections is False
+            assert daemon._boot_registration_task is not None
+        finally:
+            await daemon.shutdown()
+        assert daemon._boot_registration_task is None
 
         # Correct shutdown order
         registry = _make_registry(StubModuleOk)
@@ -506,7 +524,7 @@ class TestStartupFailureCleanup:
             patches["sync_schedules"],
             patches["FastMCP"],
             patches["Spawner"],
-            patches["get_adapter"],
+            patches["build_runtime_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],

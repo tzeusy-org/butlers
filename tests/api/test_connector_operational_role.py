@@ -19,8 +19,8 @@ Behavior under test:
   - a row whose ``operational_role`` is ``unknown`` reports the named
     ``unclassified`` liveness — never active, never healthy, never inferred
     ``offline`` — and is counted apart from the fleet rollups
-  - fleet liveness (``cross-summary`` and the switchboard
-    ``/connectors/summary``) counts executable runtime instances only
+  - fleet liveness (the ``/api/ingestion/connectors/cross-summary`` endpoint)
+    counts executable runtime instances only
   - a checkpoint whose parent cannot be resolved stays visible instead of
     silently disappearing
   - genuine source failures still degrade explicitly rather than fabricating a
@@ -37,7 +37,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.ingestion_connectors import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -192,7 +192,7 @@ def _wire(app: FastAPI, fetch_calls: list) -> AsyncMock:
     pool.execute = AsyncMock(return_value=None)
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return pool
 
 
@@ -458,7 +458,7 @@ async def test_registry_failure_degrades_explicitly(app: FastAPI) -> None:
     pool.fetch = AsyncMock(side_effect=RuntimeError("registry unreachable"))
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     data = await _get(app, "/api/ingestion/connectors/summaries")
 
@@ -472,7 +472,7 @@ async def test_cross_summary_failure_reports_zero_not_healthy(app: FastAPI) -> N
     pool.fetch = AsyncMock(side_effect=RuntimeError("registry unreachable"))
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     data = await _get(app, "/api/ingestion/connectors/cross-summary")
 

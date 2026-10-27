@@ -95,7 +95,7 @@ export function TierBadge({ tier, className, ...props }: TierBadgeProps) {
       className={cn(
         "inline-flex items-center gap-1",
         "font-mono text-[9px] font-medium uppercase leading-none",
-        "text-[var(--mfg,oklch(0.708_0_0))]",
+        "text-[var(--mfg)]",
         className,
       )}
       {...props}

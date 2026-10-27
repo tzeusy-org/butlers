@@ -1,6 +1,6 @@
 # RFC 0021: Decision Loop — One-Tap Approvals and Decision Memory
 
-**Status:** Accepted (owner sign-off 2026-07-17, gate bu-24lu6.1)
+**Status:** Accepted (owner sign-off 2026-07-17)
 **Date:** 2026-07-02
 **Related:** RFC 0011 (insight anti-spam patterns), RFC 0017 (owner-routing safety),
 RFC 0019 (proactive egress dispositions), `about/heart-and-soul/security.md`
@@ -100,6 +100,15 @@ deep link.
 An approval-request message carries buttons: **Approve**, **Reject**, and
 **Open** (dashboard deep link, which is where edit-then-approve lives — the
 `edits`-aware approve endpoint already exists).
+
+Ordinary approve, reject, edit and dispatch remain one-tap decisions after
+their existing owner authentication, exact stored-call and currentness checks.
+Only standing-rule creation/promotion, Vouch, Contain and mode loosening require
+the action-bound dashboard step-up of RFC 0038 D13. A Telegram callback or its
+UX ACK does not supply that independent factor; missing confirmation opens the
+dashboard without performing the restricted mutation. This qualifier does not
+change callback token identity, expiry, the standard executor or the exact
+stored action the owner approved.
 
 `callback_data` is an opaque signed token bound to the action:
 `apr1:<action_id>:<verb_char>:<hmac_16hex>` (fits Telegram's 64-byte limit:

@@ -10,7 +10,7 @@ Migration bead 7 (bu-akads): reads from ``relationship.entity_facts`` triples
 
 Used by:
 - Switchboard ingestion path (before routing) to inject sender identity preambles.
-- notify() to resolve outbound recipients from contact_id.
+- notify() to resolve outbound recipients from entity_id.
 - Approval gate to replace name-heuristic with role-based target resolution.
 """
 
@@ -24,6 +24,14 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import asyncpg
+
+# Outbound owner authorization accepts only transport-shaped identifiers. An
+# active fact with malformed content is not sufficient evidence that delivery
+# can reach an owner-controlled endpoint.
+_EMAIL_IDENTIFIER_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[\w]+", re.ASCII)
+_TELEGRAM_CHAT_ID_RE = re.compile(r"-?\d+")
+_TELEGRAM_USERNAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{4,31}")
+_WHATSAPP_INDIVIDUAL_IDENTIFIER_RE = re.compile(r"(\d+)(?::\d+)?@(s\.whatsapp\.net|lid)")
 
 # WhatsApp individual-chat JID suffix for s.whatsapp.net domain.
 _WHATSAPP_INDIVIDUAL_JID_SUFFIX = "@s.whatsapp.net"
@@ -235,6 +243,7 @@ _CHANNEL_TYPE_TO_PREDICATE: dict[str, str] = {
 }
 
 _IDENTITY_CHANNEL_ALIASES: dict[str, str] = {
+    "whatsapp": "whatsapp_jid",
     "whatsapp_user_client": "whatsapp_jid",
 }
 
@@ -242,6 +251,73 @@ _IDENTITY_CHANNEL_ALIASES: dict[str, str] = {
 def canonical_identity_channel_type(channel_type: str) -> str:
     """Return the shared identity channel type for a transport channel."""
     return _IDENTITY_CHANNEL_ALIASES.get(channel_type, channel_type)
+
+
+OWNER_AUTHORIZED_IDENTITY_CHANNELS: frozenset[str] = frozenset(
+    {"email", "whatsapp_jid", *_TELEGRAM_PREFIX_CHANNEL_TYPES}
+)
+
+
+def is_well_formed_owner_channel_identifier(channel_type: str, channel_value: str) -> bool:
+    """Return whether a channel value is eligible for owner authorization.
+
+    Unknown channel types fail closed. A future communication integration must
+    add its canonical identity mapping and shape validation before an owner fact
+    can bypass approval.
+    """
+    if not isinstance(channel_value, str):
+        return False
+    value = channel_value.strip()
+    if not value:
+        return False
+
+    canonical_channel = canonical_identity_channel_type(channel_type)
+    if canonical_channel not in OWNER_AUTHORIZED_IDENTITY_CHANNELS:
+        return False
+    if canonical_channel == "email":
+        return _EMAIL_IDENTIFIER_RE.fullmatch(value) is not None
+    if canonical_channel in _TELEGRAM_PREFIX_CHANNEL_TYPES:
+        bare = value.removeprefix("telegram:").removeprefix("@")
+        return bool(_TELEGRAM_CHAT_ID_RE.fullmatch(bare) or _TELEGRAM_USERNAME_RE.fullmatch(bare))
+    if canonical_channel == "whatsapp_jid":
+        return _WHATSAPP_INDIVIDUAL_IDENTIFIER_RE.fullmatch(value) is not None
+    return False
+
+
+def _owner_channel_authorization_candidates(
+    channel_type: str,
+    channel_value: str,
+) -> tuple[str, ...]:
+    """Build typed canonical facts for one ambiguity-safe owner decision."""
+    if not is_well_formed_owner_channel_identifier(channel_type, channel_value):
+        return ()
+
+    canonical_channel = canonical_identity_channel_type(channel_type)
+    if canonical_channel == "email":
+        return (f"has-email:{normalize_email_sender(channel_value)}",)
+
+    if canonical_channel in _TELEGRAM_PREFIX_CHANNEL_TYPES:
+        values = _telegram_username_candidates(channel_value)
+        for variant in list(values):
+            prefixed = _telegram_prefixed_value(variant)
+            if prefixed not in values:
+                values.append(prefixed)
+        return tuple(dict.fromkeys(f"has-handle:{value.lower()}" for value in values))
+
+    if canonical_channel == "whatsapp_jid":
+        match = _WHATSAPP_INDIVIDUAL_IDENTIFIER_RE.fullmatch(channel_value.strip())
+        if match is None:
+            return ()
+        digits, service = match.groups()
+        values = [
+            f"has-handle:{channel_value.strip().lower()}",
+            f"has-handle:{digits}@{service}",
+        ]
+        if service == "s.whatsapp.net":
+            values.append(f"phone-digits:{digits}")
+        return tuple(dict.fromkeys(values))
+
+    return ()
 
 
 def _extract_whatsapp_jid_phone(jid: str) -> str | None:
@@ -272,9 +348,8 @@ def _telegram_username_candidates(value: str) -> list[str]:
     case-insensitive on the platform.
 
     This function generates the candidate set that covers all practical
-    permutations so that ``resolve_contact_by_channel`` and
-    ``approvals._shared.is_primary_contact`` can normalise on the fly without
-    requiring the caller to know the canonical storage form.
+    permutations so that ``resolve_contact_by_channel`` can normalise on the
+    fly without requiring the caller to know the canonical storage form.
 
     The first entry is always the original value (exact-match wins) so that
     numeric chat IDs (``"206570151"``) succeed on the first attempt and never
@@ -332,10 +407,6 @@ class ResolvedContact:
 
     Attributes
     ----------
-    contact_id:
-        UUID of the resolved contact in public.contacts.  May be ``None``
-        after the bead-7 cut-over when resolution goes through
-        ``relationship.entity_facts`` (entity_id is the authoritative key).
     name:
         Display name of the contact (may be ``None`` if not set).
     roles:
@@ -346,9 +417,11 @@ class ResolvedContact:
     is_unidentified:
         ``True`` when ``public.entities.metadata.unidentified`` explicitly marks
         this as a transitory entity awaiting disambiguation.
+
+    ``entity_id`` is the routing key. The shape carries no contact identifier
+    (relationship-facts spec).
     """
 
-    contact_id: UUID | None
     name: str | None
     roles: list[str]
     entity_id: UUID | None
@@ -500,9 +573,8 @@ async def resolve_contact_by_channel(
 
     Notes
     -----
-    - ``entity_id`` is the authoritative key post bead 7.  ``contact_id`` on
-      the returned dataclass will be ``None`` since we no longer query
-      ``public.contacts``.
+    - ``entity_id`` is the authoritative key post bead 7; ``public.contacts`` is
+      no longer queried.
     - This function is safe to call if the migration has not yet run —
       it returns ``None`` gracefully.
     """
@@ -620,7 +692,6 @@ async def resolve_contact_by_channel(
         roles = []
 
     return ResolvedContact(
-        contact_id=None,  # entity_id is now the authoritative key (bead 7)
         name=row["name"] or None,
         roles=roles,
         entity_id=entity_id,
@@ -830,7 +901,6 @@ async def resolve_contacts_by_channel_bulk(
             raw_roles = row["roles"]
             roles = [str(r) for r in raw_roles] if isinstance(raw_roles, (list, tuple)) else []
             result[pair] = ResolvedContact(
-                contact_id=None,
                 name=row["name"] or None,
                 roles=roles,
                 entity_id=entity_id,
@@ -845,51 +915,43 @@ async def resolve_owner_channel_via_definer(
     pool: asyncpg.Pool,
     channel_type: str,
     channel_value: str,
+    *,
+    raise_on_error: bool = False,
 ) -> tuple[ResolvedContact, bool] | None:
     """Resolve an OWNER channel through the ``public.resolve_owner_triple`` function.
 
-    :func:`resolve_contact_by_channel` and :func:`is_primary_contact` read
-    ``relationship.entity_facts`` directly. A non-relationship butler runs under a
-    schema-isolated role (``SET ROLE butler_<schema>_rw``) that cannot read that
-    table, so those helpers return ``None`` even for owner-directed sends, and the
-    approval gate parks the message as "unresolvable target".
+    :func:`resolve_contact_by_channel` reads ``relationship.entity_facts``
+    directly. A non-relationship butler runs under a schema-isolated role
+    (``SET ROLE butler_<schema>_rw``) that cannot read that table, so direct
+    resolution returns ``None`` even for owner-directed sends, and the approval
+    gate parks the message as "unresolvable target".
 
     This helper instead calls the ``SECURITY DEFINER`` lookup added in migration
     ``core_145``, which runs as its owner (a role with relationship-schema read
-    access) and returns only owner matches. The channel-type → predicate mapping
-    and value normalisation live here (mirroring
-    :func:`resolve_contact_by_channel`); the function receives the predicate plus
-    pre-normalised candidate object values.
+    access) and returns only owner matches. Channel-specific validation and
+    normalization live here. The function receives one typed candidate universe
+    spanning every equivalent fact predicate so it can reject ambiguity in one
+    decision, including WhatsApp JID/phone and case-normalized email collisions.
 
-    Returns ``(owner_contact, is_primary)`` when *channel_value* is one of the
-    owner's registered handles for *channel_type*, else ``None`` (not an owner
-    channel, unknown channel type, or the function is unavailable).
+    Returns ``(owner_contact, is_primary)`` when the candidate values resolve
+    to exactly one live entity and that entity is the owner.  Returns ``None``
+    for non-owner, unknown, or cross-entity ambiguous identifiers, unknown
+    channel types, and unavailable lookup infrastructure. Trusted admission callers
+    set ``raise_on_error=True`` to distinguish unavailable infrastructure from a miss.
     """
-    canonical_channel = canonical_identity_channel_type(channel_type)
-    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(canonical_channel)
-    if predicate is None:
+    candidates = _owner_channel_authorization_candidates(channel_type, channel_value)
+    if not candidates:
         return None
-
-    # Candidate object values: verbatim, plus telegram canonical-prefix and
-    # username variants — the same normalisation resolve_contact_by_channel applies.
-    candidates: list[str] = [channel_value]
-    if canonical_channel in _TELEGRAM_USERNAME_CHANNEL_TYPES:
-        for variant in _telegram_username_candidates(channel_value):
-            if variant not in candidates:
-                candidates.append(variant)
-    if canonical_channel in _TELEGRAM_PREFIX_CHANNEL_TYPES:
-        for variant in list(candidates):
-            prefixed = _telegram_prefixed_value(variant)
-            if prefixed not in candidates:
-                candidates.append(prefixed)
 
     try:
         row = await pool.fetchrow(
             "SELECT entity_id, is_primary FROM public.resolve_owner_triple($1, $2)",
-            predicate,
-            candidates,
+            "owner-channel",
+            list(candidates),
         )
     except Exception:  # noqa: BLE001
+        if raise_on_error:
+            raise
         logger.debug("identity.owner_channel_resolution_failed")
         return None
 
@@ -906,12 +968,35 @@ async def resolve_owner_channel_via_definer(
             return None
 
     owner_contact = ResolvedContact(
-        contact_id=None,
         name=None,
         roles=["owner"],
         entity_id=entity_id,
     )
     return owner_contact, bool(row["is_primary"])
+
+
+async def resolve_channel_contact_with_owner_corroboration(
+    pool: asyncpg.Pool,
+    channel_type: str,
+    channel_value: str,
+) -> ResolvedContact | None:
+    """Resolve one channel target without trusting an owner-looking direct read.
+
+    A directly resolved non-owner is authoritative. A miss or owner-looking
+    result must pass the ambiguity-safe owner-only definer, which evaluates the
+    full normalized candidate set across schema isolation. This is the single
+    policy seam shared by email, generic recipient, and MCP approval gates.
+    """
+    direct = await resolve_contact_by_channel(pool, channel_type, channel_value)
+    if direct is not None and "owner" not in direct.roles:
+        return direct
+
+    try:
+        owner_result = await resolve_owner_channel_via_definer(pool, channel_type, channel_value)
+    except Exception:  # noqa: BLE001
+        logger.debug("identity.owner_channel_corroboration_failed")
+        return None
+    return owner_result[0] if owner_result is not None else None
 
 
 async def create_temp_contact(
@@ -924,13 +1009,14 @@ async def create_temp_contact(
     pre_resolved_miss: bool = False,
     reservation_state_key: str | None = None,
     raise_on_error: bool = False,
+    resolver: Any = None,
 ) -> ResolvedContact | None:
     """Create a temporary entity for an unknown sender.
 
     Creates a ``public.entities`` entry with ``metadata.unidentified = true``.
     Phase 7 (bu-jnaa3): it no longer writes a ``public.contacts`` row — the
-    returned ``ResolvedContact.contact_id`` is always ``None`` and ``entity_id``
-    is the authoritative identity. It does NOT write the sender's channel triple
+    returned ``ResolvedContact`` carries ``entity_id`` as the authoritative
+    identity. It does NOT write the sender's channel triple
     to ``relationship.entity_facts``.
 
     entity-v3 (bu-hvrt1): the channel-triple assertion — the existing-sender
@@ -984,13 +1070,14 @@ async def create_temp_contact(
         else f"Unknown ({channel_type} {channel_value})"
     )
     strict_failure: IdentityResolutionQueryError | None = None
+    lookup = resolver or resolve_contact_by_channel
 
     try:
         # Re-check via the triple store to avoid double-creation: if the channel
         # identifier already resolves to an entity, return that instead of
         # minting a duplicate.  This mirrors resolve_contact_by_channel().
         if not pre_resolved_miss:
-            existing_resolved = await resolve_contact_by_channel(
+            existing_resolved = await lookup(
                 pool,
                 lookup_channel_type,
                 channel_value,
@@ -1041,7 +1128,7 @@ async def create_temp_contact(
                 # present, the sender reservation row lock. A fact can land
                 # between the caller's miss and this lock; this strict query is
                 # the only recheck with a concrete race-closing purpose.
-                existing_in_txn = await resolve_contact_by_channel(
+                existing_in_txn = await lookup(
                     conn,
                     lookup_channel_type,
                     channel_value,
@@ -1086,7 +1173,6 @@ async def create_temp_contact(
                         if reserved_entity is not None:
                             raw_roles = reserved_entity["roles"]
                             return ResolvedContact(
-                                contact_id=None,
                                 name=reserved_entity["canonical_name"] or None,
                                 roles=(
                                     [str(role) for role in raw_roles]
@@ -1149,8 +1235,7 @@ async def create_temp_contact(
 
         # Phase 7 (bu-jnaa3): create_temp_contact NO LONGER writes a
         # public.contacts row — the contact object is being retired and
-        # ``entity_id`` is the authoritative identity. ``contact_id`` is always
-        # ``None`` for freshly-minted senders; callers key off ``entity_id``.
+        # ``entity_id`` is the authoritative identity; callers key off it.
         #
         # entity-v3 (bu-hvrt1): it also does NOT write the sender's channel
         # triple to relationship.entity_facts. Switchboard ingress must not write
@@ -1160,7 +1245,6 @@ async def create_temp_contact(
         # ``relationship.tools.relationship_assert_fact.assert_sender_channel_fact``.
 
         return ResolvedContact(
-            contact_id=None,
             name=name,
             roles=[],
             entity_id=entity_id,
@@ -1329,13 +1413,12 @@ async def resolve_outbound_channel(
 def build_identity_preamble(
     resolved: ResolvedContact | None,
     channel: str,
-    temp_contact_id: UUID | None = None,
     temp_entity_id: UUID | None = None,
 ) -> str:
     """Build the structured identity preamble for a routed prompt.
 
-    Migration bead 7 (bu-akads): ``contact_id`` is no longer included in the
-    preamble output.  ``entity_id`` is the canonical identifier.
+    Migration bead 7 (bu-akads): the preamble carries no contact identifier;
+    ``entity_id`` is the canonical identifier.
 
     Parameters
     ----------
@@ -1343,11 +1426,6 @@ def build_identity_preamble(
         A ``ResolvedContact`` for a known sender, or ``None`` for unknown.
     channel:
         The source channel (e.g., ``"telegram"``).
-    temp_contact_id:
-        contact_id of the temporary contact (may be ``None``). Used as a
-        fallback identifier in the preamble for unknown senders when
-        ``temp_entity_id`` is not available (``create_temp_contact`` always
-        returns a contact_id), emitted as ``(contact_id: <uuid>)``.
     temp_entity_id:
         entity_id of the temporary contact (may be ``None``).
 
@@ -1378,28 +1456,24 @@ def build_identity_preamble(
             f"[Source: Unknown sender (entity_id: {temp_entity_id}), "
             f"via {channel} -- pending disambiguation]"
         )
-    if temp_contact_id is not None:
-        # Fallback for create_temp_contact which always returns a contact_id
-        return (
-            f"[Source: Unknown sender (contact_id: {temp_contact_id}), "
-            f"via {channel} -- pending disambiguation]"
-        )
-
     return f"[Source: Unknown sender, via {channel} -- pending disambiguation]"
 
 
 __all__ = [
     "ResolvedContact",
+    "OWNER_AUTHORIZED_IDENTITY_CHANNELS",
     "build_identity_preamble",
     "canonical_identity_channel_type",
+    "is_well_formed_owner_channel_identifier",
     "create_temp_contact",
     "normalize_email_sender",
     "parse_email_sender",
     "resolve_contact_by_channel",
+    "resolve_channel_contact_with_owner_corroboration",
     "resolve_contacts_by_channel_bulk",
     "resolve_outbound_channel",
-    # Telegram normalization helpers — consumed by approvals._shared to keep
-    # is_primary_contact consistent with resolve_contact_by_channel.
+    # Telegram normalization helpers are exported for migration/write-side
+    # normalization callers that share this canonical representation.
     "_telegram_username_candidates",
     "_TELEGRAM_USERNAME_CHANNEL_TYPES",
     "_telegram_prefixed_value",

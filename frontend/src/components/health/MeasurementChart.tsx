@@ -1,15 +1,5 @@
 import { useMemo, useState } from "react";
-import { format } from "date-fns";
 import { useSearchParams } from "react-router";
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 
 import type {
   Measurement,
@@ -21,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
+import { TimeSeriesChart } from "@/components/ui/TimeSeriesChart";
 import { hasValidMeasurementUrlState } from "@/lib/measurement-door";
 import { chartableMeasurementTypes } from "@/lib/measurement-vocabulary";
 import { cn } from "@/lib/utils";
@@ -29,7 +20,11 @@ import {
   useMeasurementTrend,
   useMeasurementTypes,
 } from "@/hooks/use-health";
+import { useTickingNow } from "@/hooks/use-ticking-now";
 import { chartSeriesColor } from "@/lib/chart-colors";
+import { DAY_MS, buildTimeSeries } from "@/lib/time-series";
+import { isMeasurementUnreachable, type MeasurementSignalRead } from "@/lib/measurement-acquisition";
+import { MeasurementSignalHealthNote } from "./MeasurementSignalHealthNote";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -42,6 +37,12 @@ const TREND_WINDOWS: { value: MeasurementTrendWindowDays; label: string }[] = [
   { value: 30, label: "30D" },
   { value: 90, label: "90D" },
 ];
+
+// A silence longer than this breaks the line instead of being bridged.
+const CHART_MAX_GAP_MS = 7 * DAY_MS;
+const CHART_NOW_TICK_MS = 60_000;
+const BP_KEYS = ["systolic", "diastolic"] as const;
+const SCALAR_KEYS = ["value"] as const;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -59,18 +60,6 @@ function finiteNumber(value: unknown): number | null {
 function extractValue(m: Measurement, key: string): number | null {
   const v = m.value[key];
   return finiteNumber(v);
-}
-
-function chartDate(measuredAt: string): string {
-  const date = new Date(measuredAt);
-  return Number.isNaN(date.getTime()) ? "Unknown date" : format(date, "MMM d");
-}
-
-interface ChartPoint {
-  date: string;
-  value?: number | null;
-  systolic?: number | null;
-  diastolic?: number | null;
 }
 
 /** Format a measurement's value object as a readable string for display. */
@@ -114,7 +103,7 @@ function EmptyLine({ children }: { children: React.ReactNode }) {
 // MeasurementChart
 // ---------------------------------------------------------------------------
 
-export default function MeasurementChart() {
+export default function MeasurementChart({ expectedSignals }: { expectedSignals?: MeasurementSignalRead }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedType = searchParams.get("type") ?? "";
   const since = searchParams.get("since") ?? "";
@@ -215,31 +204,25 @@ export default function MeasurementChart() {
 
   // Build only semantically named series: scalars use the API's normalized
   // value key, while blood pressure has its explicit two-key contract.
-  const chartData = useMemo<ChartPoint[]>(() => {
-    if (!measurements.length || (!supportsTrend && !isBP)) return [];
-
-    const sorted = [...measurements].sort(
-      (a, b) => new Date(a.measured_at).getTime() - new Date(b.measured_at).getTime(),
+  const seriesKeys: readonly string[] = isBP ? BP_KEYS : SCALAR_KEYS;
+  const now = useTickingNow(CHART_NOW_TICK_MS);
+  const chartSeries = useMemo(() => {
+    if (!measurements.length || (!supportsTrend && !isBP)) return null;
+    const untilMs = until ? new Date(until).getTime() : NaN;
+    return buildTimeSeries(
+      measurements.map((m) => ({
+        at: m.measured_at,
+        values: Object.fromEntries(seriesKeys.map((k) => [k, extractValue(m, k)])),
+      })),
+      seriesKeys,
+      {
+        windowStart: since ? new Date(since).getTime() : undefined,
+        windowEnd: Number.isFinite(untilMs) ? untilMs : now,
+        maxGapMs: CHART_MAX_GAP_MS,
+      },
     );
-
-    if (isBP) {
-      return sorted.map((m) => ({
-        date: chartDate(m.measured_at),
-        systolic: extractValue(m, "systolic"),
-        diastolic: extractValue(m, "diastolic"),
-      }));
-    }
-
-    return sorted.map((m) => ({
-      date: chartDate(m.measured_at),
-      value: extractValue(m, "value"),
-    }));
-  }, [measurements, isBP, supportsTrend]);
-  const hasChartableValues = chartData.some((point) =>
-    isBP
-      ? point.systolic != null || point.diastolic != null
-      : point.value != null,
-  );
+  }, [measurements, isBP, supportsTrend, since, until, seriesKeys, now]);
+  const hasChartableValues = (chartSeries?.observationCount ?? 0) > 0;
 
   if (measurementTypesLoading) {
     return (
@@ -390,7 +373,7 @@ export default function MeasurementChart() {
             type="date"
             value={since}
             onChange={(e) => setChartParam("since", e.target.value)}
-            className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 w-40 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+            className="border-input bg-background ring-offset-background focus-visible:ring-focus flex h-9 w-40 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
           />
         </div>
         <div className="flex items-center gap-2">
@@ -402,7 +385,7 @@ export default function MeasurementChart() {
             type="date"
             value={until}
             onChange={(e) => setChartParam("until", e.target.value)}
-            className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 w-40 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+            className="border-input bg-background ring-offset-background focus-visible:ring-focus flex h-9 w-40 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
           />
         </div>
         {(since || until) && (
@@ -417,6 +400,7 @@ export default function MeasurementChart() {
       </div>
 
       {/* Chart */}
+      <MeasurementSignalHealthNote read={expectedSignals} />
       {invalidChartUrl ? null : isLoading ? (
         <Skeleton className="h-64 w-full" />
       ) : isError ? (
@@ -426,6 +410,9 @@ export default function MeasurementChart() {
           onRetry={() => void refetch()}
           testId="measurement-readings-degraded"
         />
+      ) : measurements.length === 0 && buckets.length === 0 &&
+        isMeasurementUnreachable(expectedSignals, activeType) ? (
+        <EmptyLine>{typeLabel} instrument unreachable. No readings for this range.</EmptyLine>
       ) : !supportsTrend && !isBP ? (
         <EmptyLine>
           No unambiguous {typeLabel} series is available for this range.
@@ -433,47 +420,25 @@ export default function MeasurementChart() {
       ) : !hasChartableValues ? (
         <EmptyLine>No {typeLabel} readings for this range.</EmptyLine>
       ) : (
-        <div className="h-72 w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" className="stroke-border/60" />
-              <XAxis dataKey="date" className="text-xs" />
-              <YAxis className="text-xs" />
-              <Tooltip />
-              {isBP ? (
-                <>
-                  <Line
-                    type="monotone"
-                    dataKey="systolic"
-                    stroke={hue}
-                    strokeWidth={2}
-                    dot={false}
-                    name="Systolic"
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="diastolic"
-                    stroke={secondaryHue}
-                    strokeOpacity={0.5}
-                    strokeWidth={2}
-                    strokeDasharray="4 3"
-                    dot={false}
-                    name="Diastolic"
-                  />
-                </>
-              ) : (
-                <Line
-                  type="monotone"
-                  dataKey="value"
-                  stroke={hue}
-                  strokeWidth={2}
-                  dot={false}
-                  name={typeLabel}
-                />
-              )}
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
+        <TimeSeriesChart
+          testId="measurement-time-series"
+          series={chartSeries!}
+          height={288}
+          lines={
+            isBP
+              ? [
+                  { key: "systolic", name: "Systolic", stroke: hue },
+                  {
+                    key: "diastolic",
+                    name: "Diastolic",
+                    stroke: secondaryHue,
+                    strokeOpacity: 0.5,
+                    strokeDasharray: "4 3",
+                  },
+                ]
+              : [{ key: "value", name: typeLabel, stroke: hue }]
+          }
+        />
       )}
 
       {/* Raw data table toggle */}

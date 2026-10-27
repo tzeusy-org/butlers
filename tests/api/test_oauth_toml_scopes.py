@@ -29,6 +29,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
+from butlers.api.deps import get_db_optional
 from butlers.api.routers.oauth import (
     _PROVIDER_REGISTRY,
     _clear_toml_scope_cache,
@@ -146,23 +147,23 @@ def test_collect_toml_scopes_deduplicates_across_butlers(tmp_path: Path):
 
 
 def test_collect_toml_scopes_per_provider_isolation(tmp_path: Path):
-    """Scopes declared for spotify do not bleed into google results."""
+    """Scopes declared for a second provider do not bleed into google results."""
     _write_butler_toml(
         tmp_path,
         "music",
         41101,
         oauth={
             "google": ["https://www.googleapis.com/auth/calendar"],
-            "spotify": ["user-read-recently-played", "user-top-read"],
+            "test-provider": ["identity.read", "activity.read"],
         },
     )
     google_result = collect_toml_scopes("google", roster_dir=tmp_path)
-    spotify_result = collect_toml_scopes("spotify", roster_dir=tmp_path)
+    synthetic_result = collect_toml_scopes("test-provider", roster_dir=tmp_path)
     assert google_result == ["https://www.googleapis.com/auth/calendar"]
-    assert set(spotify_result) == {"user-read-recently-played", "user-top-read"}
+    assert set(synthetic_result) == {"identity.read", "activity.read"}
     # No cross-contamination.
-    assert all("spotify" not in s for s in google_result)
-    assert all("google" not in s for s in spotify_result)
+    assert all("test-provider" not in s for s in google_result)
+    assert all("google" not in s for s in synthetic_result)
 
 
 def test_collect_toml_scopes_unknown_provider_returns_empty(tmp_path: Path):
@@ -235,31 +236,32 @@ def test_compose_provider_default_scopes_fallback_when_no_toml(tmp_path: Path):
     assert "https://www.googleapis.com/auth/calendar" in result
 
 
-def test_compose_provider_default_scopes_fallback_spotify(tmp_path: Path):
-    """When no butler.toml declares spotify scopes, hardcoded Spotify defaults are used."""
-    provider_cfg = _PROVIDER_REGISTRY["spotify"]
-    result = _compose_provider_default_scopes(provider_cfg, "spotify", roster_dir=tmp_path)
-    # Spotify default is 'base' + 'listening_history':
-    #   user-read-email, user-read-private (base)
-    #   user-read-recently-played, user-top-read, user-read-playback-state (listening_history)
-    # This matches the five scopes declared as required in oauth_scope_registry.py.
-    assert "user-read-email" in result
-    assert "user-read-private" in result
-    assert "user-read-recently-played" in result
-    assert "user-top-read" in result
-    assert "user-read-playback-state" in result
+def test_compose_provider_default_scopes_fallback_synthetic(
+    tmp_path: Path, synthetic_oauth_provider: str
+):
+    """A test-only provider uses its injected default scope sets."""
+    provider_cfg = _PROVIDER_REGISTRY[synthetic_oauth_provider]
+    result = _compose_provider_default_scopes(
+        provider_cfg, synthetic_oauth_provider, roster_dir=tmp_path
+    )
+    assert "identity.read" in result
+    assert "activity.read" in result
 
 
-def test_compose_provider_default_scopes_toml_overrides_spotify(tmp_path: Path):
-    """butler.toml-declared spotify scopes replace the hardcoded 'base' defaults."""
-    toml_scopes = ["user-read-recently-played", "user-top-read"]
-    _write_butler_toml(tmp_path, "music", 41101, oauth={"spotify": toml_scopes})
-    provider_cfg = _PROVIDER_REGISTRY["spotify"]
-    result = _compose_provider_default_scopes(provider_cfg, "spotify", roster_dir=tmp_path)
+def test_compose_provider_default_scopes_toml_overrides_synthetic(
+    tmp_path: Path, synthetic_oauth_provider: str
+):
+    """TOML-declared synthetic scopes replace the injected defaults."""
+    toml_scopes = ["activity.read", "journal.read"]
+    _write_butler_toml(tmp_path, "general", 41101, oauth={synthetic_oauth_provider: toml_scopes})
+    provider_cfg = _PROVIDER_REGISTRY[synthetic_oauth_provider]
+    result = _compose_provider_default_scopes(
+        provider_cfg, synthetic_oauth_provider, roster_dir=tmp_path
+    )
     scope_list = result.split()
     assert set(scope_list) == set(toml_scopes)
     # Hardcoded defaults (user-read-email) should NOT be present.
-    assert "user-read-email" not in scope_list
+    assert "identity.read" not in scope_list
 
 
 # ===========================================================================
@@ -272,8 +274,8 @@ def _make_app_with_mocked_creds(app):
     secrets = {
         "GOOGLE_OAUTH_CLIENT_ID": "test-client-id",
         "GOOGLE_OAUTH_CLIENT_SECRET": "test-secret",
-        "SPOTIFY_OAUTH_CLIENT_ID": "test-client-id",
-        "SPOTIFY_OAUTH_CLIENT_SECRET": "test-secret",
+        "TEST_PROVIDER_OAUTH_CLIENT_ID": "test-client-id",
+        "TEST_PROVIDER_OAUTH_CLIENT_SECRET": "test-secret",
     }
     conn = AsyncMock()
 
@@ -290,22 +292,27 @@ def _make_app_with_mocked_creds(app):
     async def _acquire():
         yield conn
 
+    async def _fetchval(query, *args):
+        if query.startswith("INSERT INTO public.audit_log ") and query.endswith("RETURNING id"):
+            return 1
+        return None
+
     pool = MagicMock()
     pool.acquire = _acquire
-    pool.fetchval = AsyncMock(return_value=None)
+    pool.fetchval = AsyncMock(side_effect=_fetchval)
     db_manager = MagicMock()
     db_manager.credential_shared_pool.return_value = pool
 
-    from butlers.api.routers import oauth as oauth_module
-
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
+    app.dependency_overrides[get_db_optional] = lambda: db_manager
     return app
 
 
-async def test_start_uses_toml_scopes_in_auth_url(app, tmp_path: Path):
-    """When butler.toml declares spotify scopes they appear in the auth URL scope param."""
-    toml_scopes = ["user-read-recently-played", "user-top-read"]
-    _write_butler_toml(tmp_path, "music", 41101, oauth={"spotify": toml_scopes})
+async def test_start_uses_toml_scopes_in_auth_url(
+    app, tmp_path: Path, synthetic_oauth_provider: str
+):
+    """Synthetic provider TOML scopes appear in its authorization URL."""
+    toml_scopes = ["activity.read", "journal.read"]
+    _write_butler_toml(tmp_path, "general", 41101, oauth={synthetic_oauth_provider: toml_scopes})
 
     # Patch collect_toml_scopes to use our temp roster_dir.
     import butlers.api.routers.oauth as oauth_module
@@ -321,22 +328,26 @@ async def test_start_uses_toml_scopes_in_auth_url(app, tmp_path: Path):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/oauth/spotify/start", params={"redirect": "false"})
+            resp = await client.get(
+                f"/api/oauth/{synthetic_oauth_provider}/start", params={"redirect": "false"}
+            )
         assert resp.status_code == 200
         auth_url = resp.json()["data"]["authorization_url"]
         qs = parse_qs(urlparse(auth_url).query)
         scope_str = qs.get("scope", [""])[0]
-        assert "user-read-recently-played" in scope_str
-        assert "user-top-read" in scope_str
-        # Hardcoded default (user-read-email) should NOT appear when toml overrides.
-        assert "user-read-email" not in scope_str
+        assert "activity.read" in scope_str
+        assert "journal.read" in scope_str
+        # Injected default (identity.read) should NOT appear when toml overrides.
+        assert "identity.read" not in scope_str
     finally:
         oauth_module.collect_toml_scopes = _original
         _clear_toml_scope_cache()
 
 
-async def test_start_falls_back_to_hardcoded_scopes_without_toml(app, tmp_path: Path):
-    """When no butler.toml declares spotify scopes, hardcoded defaults remain in auth URL."""
+async def test_start_falls_back_to_hardcoded_scopes_without_toml(
+    app, tmp_path: Path, synthetic_oauth_provider: str
+):
+    """When no TOML declares scopes, injected defaults remain in the auth URL."""
     # Use tmp_path as roster_dir — it has no butler.toml files.
     import butlers.api.routers.oauth as oauth_module
 
@@ -351,17 +362,15 @@ async def test_start_falls_back_to_hardcoded_scopes_without_toml(app, tmp_path: 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/oauth/spotify/start", params={"redirect": "false"})
+            resp = await client.get(
+                f"/api/oauth/{synthetic_oauth_provider}/start", params={"redirect": "false"}
+            )
         assert resp.status_code == 200
         auth_url = resp.json()["data"]["authorization_url"]
         qs = parse_qs(urlparse(auth_url).query)
         scope_str = qs.get("scope", [""])[0]
-        # Hardcoded Spotify defaults (base + listening_history) should be present.
-        assert "user-read-email" in scope_str
-        assert "user-read-private" in scope_str
-        assert "user-read-recently-played" in scope_str
-        assert "user-top-read" in scope_str
-        assert "user-read-playback-state" in scope_str
+        assert "identity.read" in scope_str
+        assert "activity.read" in scope_str
     finally:
         oauth_module.collect_toml_scopes = _original
         _clear_toml_scope_cache()

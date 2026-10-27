@@ -12,7 +12,8 @@
  * 4. DormantList (collapsible, from available-catalog profiles not yet registered)
  * 5. UnparentedCheckpointsList (collapsible, cursors with no resolvable owner)
  * 6. KPI footer band (total connectors, healthy, auth-needed, events/24h)
- * 7. "add connector" action
+ * 7. ConnectorFanoutMatrix (independent 7d routing aggregate)
+ * 8. "add connector" action
  *
  * The roster lists executable runtime instances only (bu-6jv4m.11). Persisted
  * checkpoint cursors are storage state, not connectors: the backend nests them
@@ -22,13 +23,15 @@
  * verdict — visible, but outside the fleet-liveness KPIs, since nothing has
  * claimed it as a process.
  *
- * Data: uses useConnectorSummariesWithAggregates and useAvailableConnectors
+ * Data: uses useConnectorSummaries and useAvailableConnectors
  * hooks. Per-connector `hourly_events` (ingested) and `hourly_filtered_events`
  * (skip-routed, bu-scyro) both come from GET /api/ingestion/connectors/summaries
  * — sourced from the DB, not Prometheus, so sparklines are always populated.
  * This endpoint has no Prometheus dependency and therefore no
  * `aggregates_available` flag (that flag lives on the pipeline endpoint,
- * consumed by BoardFooter). When the response's top-level
+ * consumed by BoardFooter). The separate cross-butler routing distribution
+ * uses its own explicit aggregate source through ConnectorFanoutMatrix. When
+ * the response's top-level
  * `hourly_events_available` is `false` (the combined hourly query itself
  * failed), a `SourceDegradedNote` names the degraded source instead of letting
  * the all-zero fallback arrays render as an honest "quiet 24h". Likewise,
@@ -50,7 +53,7 @@
 
 import { Link } from 'react-router'
 import {
-  useConnectorSummariesWithAggregates,
+  useConnectorSummaries,
   useAvailableConnectors,
 } from '@/hooks/use-ingestion'
 import type { ConnectorSummary } from '@/api/types'
@@ -60,6 +63,7 @@ import { ConnectorRosterRow } from './ConnectorRosterRow'
 import { DormantList } from './DormantList'
 import { ArchivedConnectorsList } from './ArchivedConnectorsList'
 import { ArchiveCandidatesList } from './ArchiveCandidatesList'
+import { ConnectorFanoutMatrix } from './ConnectorFanoutMatrix'
 import { UnparentedCheckpointsList } from './UnparentedCheckpointsList'
 import { deriveConnectorDispatchInfo } from './connector-auth'
 import { CONNECTOR_ROSTER_GRID_COLUMNS } from './layout'
@@ -136,7 +140,7 @@ export function ConnectorsRoster() {
     isLoading: connectorsLoading,
     isError: connectorsError,
     refetch: refetchConnectors,
-  } = useConnectorSummariesWithAggregates()
+  } = useConnectorSummaries()
   const {
     data: availableResp,
     isLoading: availableLoading,
@@ -430,6 +434,11 @@ export function ConnectorsRoster() {
           )}
         </>
       )}
+
+      {/* This aggregate has an independent Prometheus authority. Keep it
+          mounted even when the DB-backed roster is unavailable so neither
+          source can erase the other's honest state. */}
+      <ConnectorFanoutMatrix />
 
       {rosterUnavailable && catalogSection}
 

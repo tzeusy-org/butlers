@@ -132,6 +132,7 @@ from butlers.google_credentials import (
     load_google_credentials,
 )
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import CHANNEL_KIND_CAPABILITY, CHANNEL_KIND_FEED
 from butlers.oauth_token_payload import (
     OAuthTokenValidationError,
     validate_oauth_token_payload,
@@ -177,6 +178,9 @@ _DEFAULT_POLL_INTERVALS: dict[str, int] = {
     "spo2": 3600,
     "breathing_rate": 3600,
     "vo2_max": 86400,
+    "workout": 1800,
+    "weight": 3600,
+    "body_fat": 3600,
 }
 
 # Default first-run backfill window in days.
@@ -274,8 +278,8 @@ class ResourceBundle:
     ----------
     resource:
         Short key used in cursor identities, idempotency keys, metric
-        labels, and external_event_ids. Must match the predicate-taxonomy
-        keys in ``openspec/changes/google-health-connector/design.md`` §D5.
+        labels, and external_event_ids. Must match the ``<resource>`` segment
+        of the identities in ``openspec/specs/connector-google-health/spec.md``.
     endpoint_path:
         Relative path on ``health.googleapis.com/v4`` that is polled.
         Paths follow the public v4 discovery document's
@@ -385,6 +389,39 @@ RESOURCE_BUNDLES: tuple[ResourceBundle, ...] = (
         default_interval_s=_DEFAULT_POLL_INTERVALS["vo2_max"],
         category="daily",
         normalized_summary="VO2 Max: {value}",
+    ),
+    ResourceBundle(
+        resource="workout",
+        endpoint_path="/users/me/dataTypes/exercise/dataPoints:reconcile",
+        data_type="exercise",
+        filter_field="exercise.interval.civil_start_time",
+        poll_interval_key="GOOGLE_HEALTH_POLL_ACTIVITY_S",
+        default_interval_s=_DEFAULT_POLL_INTERVALS["workout"],
+        category="workout",
+        normalized_summary="Workout: {activity_type} ({duration_label})",
+    ),
+    # Body measurements: one reading per sample (``category="measurement"``), keyed on
+    # the sample's physical time.  Plain ``dataPoints`` list endpoints: ``:reconcile`` is
+    # unconfirmed for these types (bu-q7vx1q.35).
+    ResourceBundle(
+        resource="weight",
+        endpoint_path="/users/me/dataTypes/weight/dataPoints",
+        data_type="weight",
+        filter_field="weight.sample_time.physical_time",
+        poll_interval_key="GOOGLE_HEALTH_POLL_HEALTH_METRICS_S",
+        default_interval_s=_DEFAULT_POLL_INTERVALS["weight"],
+        category="measurement",
+        normalized_summary="Weight: {value} kg",
+    ),
+    ResourceBundle(
+        resource="body_fat",
+        endpoint_path="/users/me/dataTypes/body-fat/dataPoints",
+        data_type="body-fat",
+        filter_field="body_fat.sample_time.physical_time",
+        poll_interval_key="GOOGLE_HEALTH_POLL_HEALTH_METRICS_S",
+        default_interval_s=_DEFAULT_POLL_INTERVALS["body_fat"],
+        category="measurement",
+        normalized_summary="Body fat: {value}%",
     ),
 )
 
@@ -551,6 +588,53 @@ def build_sleep_session_envelope(
         },
         "control": {
             "idempotency_key": idempotency_key,
+            "policy_tier": "default",
+            "ingestion_tier": "full",
+        },
+    }
+
+
+def build_workout_session_envelope(
+    *,
+    endpoint_identity: str,
+    google_user_id: str,
+    session_id: str,
+    session_record: dict[str, Any],
+    observed_at: str,
+) -> dict[str, Any]:
+    """Build an ingest.v1 envelope for a Google Health exercise session.
+
+    Key shape: ``google_health:<email>:workout_session:<session_id>``
+    Idempotency key shape: ``google_health:<email>:workout:<session_id>``
+
+    A trailing-window re-poll therefore re-emits the same key and the fact
+    store treats it as a no-op.
+    """
+    activity_type = str(session_record.get("activity_type") or "workout")
+    duration_label = _format_sleep_duration_label(int(session_record.get("durationMillis") or 0))
+    normalized_text = f"Workout: {activity_type} ({duration_label})"
+
+    return {
+        "schema_version": "ingest.v1",
+        "source": {
+            "channel": _CONNECTOR_CHANNEL,
+            "provider": _CONNECTOR_PROVIDER,
+            "endpoint_identity": endpoint_identity,
+        },
+        "event": {
+            "external_event_id": f"google_health:{google_user_id}:workout_session:{session_id}",
+            "external_thread_id": None,
+            "observed_at": observed_at,
+        },
+        "sender": {
+            "identity": google_user_id,
+        },
+        "payload": {
+            "raw": dict(session_record),
+            "normalized_text": normalized_text,
+        },
+        "control": {
+            "idempotency_key": f"google_health:{google_user_id}:workout:{session_id}",
             "policy_tier": "default",
             "ingestion_tier": "full",
         },
@@ -1132,6 +1216,7 @@ class GoogleHealthConnector:
                 "uptime_s": 0,
             },
             "counters": {},
+            "capabilities": {CHANNEL_KIND_CAPABILITY: CHANNEL_KIND_FEED},
             "sent_at": datetime.now(UTC).isoformat(),
         }
         try:
@@ -1174,6 +1259,7 @@ class GoogleHealthConnector:
                 endpoint_identity=ctx.endpoint_identity,
             ),
             get_health_state=_account_health_state,
+            channel_kind=CHANNEL_KIND_FEED,
         )
         self._heartbeats[ctx.account_id] = hb
 
@@ -1209,6 +1295,7 @@ class GoogleHealthConnector:
             mcp_client=self._mcp_client,
             metrics=metrics,
             get_health_state=self._get_health_state,
+            channel_kind=CHANNEL_KIND_FEED,
         )
         self._degraded_heartbeat.start()
         # Do not wait for the normal heartbeat interval: replacing the final
@@ -1253,6 +1340,7 @@ class GoogleHealthConnector:
                 mcp_client=self._mcp_client,
                 metrics=self._metrics,
                 get_health_state=self._get_health_state,
+                channel_kind=CHANNEL_KIND_FEED,
             )
         else:
             # Accounts already known — stop any degraded heartbeat and ensure
@@ -1911,7 +1999,17 @@ class GoogleHealthConnector:
                     session_record=record,
                     observed_at=observed_at,
                 )
+            elif bundle.category == "workout":
+                envelope = build_workout_session_envelope(
+                    endpoint_identity=endpoint_identity,
+                    google_user_id=ctx.email,
+                    session_id=record_id,
+                    session_record=record,
+                    observed_at=observed_at,
+                )
             else:
+                # ``record_id`` is the date for daily summaries and the sample's physical
+                # time for ``measurement`` bundles; either way it is the key's last segment.
                 envelope = build_daily_summary_envelope(
                     endpoint_identity=endpoint_identity,
                     google_user_id=ctx.email,
@@ -1972,7 +2070,7 @@ class GoogleHealthConnector:
         Google Health v4 uses AIP-160 ``filter`` query expressions on
         ``dataPoints:list`` / ``dataPoints:reconcile``.
         """
-        if bundle.category == "sleep":
+        if bundle.category in ("sleep", "measurement"):
             start = since.isoformat()
             end = until.isoformat()
         else:
@@ -1980,7 +2078,7 @@ class GoogleHealthConnector:
             end = until.date().isoformat()
         return {
             "filter": f'{bundle.filter_field} >= "{start}" AND {bundle.filter_field} < "{end}"',
-            "pageSize": 25 if bundle.category == "sleep" else 10000,
+            "pageSize": 25 if bundle.category in ("sleep", "workout") else 10000,
         }
 
     def _build_post_body(
@@ -2333,6 +2431,10 @@ def _normalize_google_health_record(
     """Normalize Google Health v4 union records to the wellness ingest raw contract."""
     if bundle.category == "sleep":
         return _normalize_sleep_record(record)
+    if bundle.category == "workout":
+        return _normalize_workout_record(record)
+    if bundle.category == "measurement":
+        return _normalize_measurement_record(bundle, record)
     union = _DAILY_UNION_FIELDS.get(bundle.resource)
     if union is None:
         return dict(record)
@@ -2348,6 +2450,48 @@ def _normalize_google_health_record(
         normalized["date"] = date_value
     if value is not None:
         normalized["value"] = value
+    return normalized
+
+
+_MEASUREMENT_UNION_FIELDS: dict[str, tuple[str, str]] = {
+    "weight": ("weight", "weightGrams"),
+    "body_fat": ("bodyFat", "percentage"),
+}
+
+
+def _normalize_measurement_record(
+    bundle: ResourceBundle,
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    """Normalize a weight / body-fat data point to ``{sampleTime, value, unit}``.
+
+    Weight arrives in grams and is converted to kilograms here, the unit Health stores for
+    manual weight.  A record without a usable sample time or numeric value is returned
+    without ``sampleTime`` so ``_record_identity`` skips it.
+    """
+    union_key, value_key = _MEASUREMENT_UNION_FIELDS[bundle.resource]
+    payload = record.get(union_key)
+    if not isinstance(payload, dict):
+        return {}
+    sample_time = (payload.get("sampleTime") or {}).get("physicalTime")
+    raw_value = payload.get(value_key)
+    if (
+        not isinstance(sample_time, str)
+        or not sample_time
+        or isinstance(raw_value, bool)
+        or not isinstance(raw_value, (int, float))
+    ):
+        return {}
+    if bundle.resource == "weight":
+        value: float = round(float(raw_value) / 1000.0, 3)
+        unit = "kg"
+    else:
+        value = float(raw_value)
+        unit = "%"
+    normalized: dict[str, Any] = {"sampleTime": sample_time, "value": value, "unit": unit}
+    point_id = _data_point_id(record)
+    if point_id:
+        normalized["data_point_id"] = point_id
     return normalized
 
 
@@ -2397,6 +2541,61 @@ def _normalize_sleep_record(record: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _normalize_workout_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Flatten a v4 ``exercise`` data point into the workout ingest raw contract.
+
+    Keys written here are what ``wellness_ingest`` and the Chronicler workout
+    adapter read: ``session_id``, ``startTime``, ``endTime``, ``durationMillis``,
+    ``activity_type``, ``detection`` (``manual`` | ``auto``), and the optional
+    ``calories``, ``distance_m``, ``average_heart_rate`` summary metrics.
+    """
+    exercise = record.get("exercise")
+    if not isinstance(exercise, dict):
+        return dict(record)
+
+    interval = exercise.get("interval") if isinstance(exercise.get("interval"), dict) else {}
+    metrics = (
+        exercise.get("metricsSummary") if isinstance(exercise.get("metricsSummary"), dict) else {}
+    )
+    source = exercise.get("dataSource") if isinstance(exercise.get("dataSource"), dict) else {}
+
+    session_id = _data_point_id(record) or interval.get("startTime")
+    start_time = interval.get("startTime")
+    end_time = interval.get("endTime")
+
+    normalized: dict[str, Any] = dict(exercise)
+    if session_id:
+        normalized["session_id"] = str(session_id)
+    if start_time:
+        normalized["startTime"] = start_time
+    if end_time:
+        normalized["endTime"] = end_time
+    normalized["durationMillis"] = (
+        _duration_ms(str(start_time), str(end_time)) if start_time and end_time else 0
+    )
+
+    exercise_type = exercise.get("exerciseType")
+    normalized["activity_type"] = (
+        str(exercise_type).lower().replace("_", " ")
+        if exercise_type
+        else str(exercise.get("displayName") or "workout").lower()
+    )
+    normalized["detection"] = (
+        "manual" if str(source.get("recordingMethod") or "").upper() == "MANUAL" else "auto"
+    )
+
+    calories = metrics.get("caloriesKcal")
+    if isinstance(calories, (int, float)) and not isinstance(calories, bool):
+        normalized["calories"] = calories
+    distance_mm = metrics.get("distanceMillimeters")
+    if isinstance(distance_mm, (int, float)) and not isinstance(distance_mm, bool):
+        normalized["distance_m"] = round(distance_mm / 1000, 1)
+    average_hr = _to_int(metrics.get("averageHeartRateBeatsPerMinute"))
+    if average_hr is not None:
+        normalized["average_heart_rate"] = average_hr
+    return normalized
+
+
 def _build_activity_records(
     steps_data: dict[str, Any],
     active_minutes_data: dict[str, Any],
@@ -2440,7 +2639,11 @@ def _record_identity(bundle: ResourceBundle, record: dict[str, Any]) -> str | No
     is the date portion of the ``start_time`` / ``date`` field, normalised
     to YYYY-MM-DD.
     """
-    if bundle.category == "sleep":
+    if bundle.category == "measurement":
+        sample_time = record.get("sampleTime")
+        return str(sample_time) if sample_time else None
+
+    if bundle.category in ("sleep", "workout"):
         session_id = record.get("session_id") or record.get("id")
         if session_id:
             return str(session_id)

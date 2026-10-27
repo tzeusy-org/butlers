@@ -11,7 +11,7 @@ the Docker-availability guard applied to roster/ integration tests.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -19,8 +19,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -86,9 +87,9 @@ def _app_with_pool(
     app = create_app()
 
     # Find the relationship router module to override its _get_db_manager.
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     return app, mock_pool
@@ -314,6 +315,46 @@ class TestEntityTimeline:
 
         contents = [item["content"] for item in resp.json()]
         assert contents == ["newest", "middle", "oldest"]
+
+
+class TestEntityCadence:
+    """Cadence evidence names its window and whether the bounded read is complete."""
+
+    @pytest.mark.parametrize(
+        ("row_count", "limit", "expected_count", "expected_completeness", "has_more"),
+        [
+            (0, 200, 0, "complete", False),
+            (3, 2, 2, "incomplete", True),
+        ],
+    )
+    async def test_cadence_reports_bounded_evidence_completeness(
+        self,
+        row_count: int,
+        limit: int,
+        expected_count: int,
+        expected_completeness: str,
+        has_more: bool,
+    ):
+        app, pool = _app_with_pool(fetch_rows=[{"id": uuid4()} for _ in range(row_count)])
+
+        resp = await _get(
+            app,
+            f"/api/relationship/entities/{_ENT_ID}/cadence",
+            window_days=14,
+            limit=limit,
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["window_days"] == 14
+        assert body["interaction_count"] == expected_count
+        assert body["completeness"] == expected_completeness
+        assert body["has_more"] is has_more
+        assert body["window_started_at"] < body["window_ended_at"]
+
+        cadence_call = pool.fetch.await_args
+        assert cadence_call.args[4] == limit + 1
+        assert cadence_call.args[3] - cadence_call.args[2] == timedelta(days=14)
 
 
 # ---------------------------------------------------------------------------
@@ -773,6 +814,7 @@ def _make_ef_fact_row(**kwargs) -> MagicMock:
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    row.get = MagicMock(side_effect=data.get)
     return row
 
 
@@ -827,9 +869,9 @@ def _app_with_pool_linked_contacts(
     mock_db.pool.return_value = mock_pool
 
     app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     return app, mock_pool
@@ -1106,9 +1148,9 @@ def _app_with_entity_pool(
 
     app = create_app()
 
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     return app, mock_pool
@@ -1230,9 +1272,9 @@ def _build_app_with_dual_pools(
     mock_db.pool.side_effect = _pool_lookup
 
     app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     return app, rel_pool, sw_pool
@@ -1308,6 +1350,9 @@ class TestEntityMessageThreads:
         sw_candidates = sw_call[0][1]
         assert "alice@example.com" in sw_candidates
         assert "12345" in sw_candidates
+        # A chat groups by its conversation key, not the per-message reply
+        # target; pre-split rows fall back to source_thread_identity.
+        assert "request_context ->> 'external_conversation_id'" in sw_call[0][0]
 
     async def test_limit_clamped_to_100(self):
         app, _, _ = _build_app_with_dual_pools(entity_exists=True)
@@ -1421,9 +1466,9 @@ def _build_app_for_dunbar_patch(
     mock_db.pool.return_value = pool
 
     app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     # Patch the engine module the router imports lazily.

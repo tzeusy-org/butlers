@@ -34,8 +34,9 @@ import shutil
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 
+from butlers.core.child_env import without_owner_auth
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
 
 logger = logging.getLogger(__name__)
@@ -820,6 +821,10 @@ def build_config_file(
             "enabled": True,
         }
 
+        headers = server_cfg.get("headers")
+        if isinstance(headers, dict) and headers:
+            mcp_section[server_name]["headers"] = dict(headers)
+
     config: dict[str, Any] = {
         "mcp": mcp_section,
         "permission": {},
@@ -936,6 +941,7 @@ class OpenCodeAdapter(RuntimeAdapter):
         """
         return build_config_file(mcp_servers, tmp_dir)
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -1041,7 +1047,7 @@ class OpenCodeAdapter(RuntimeAdapter):
             # servers, instructions, or provider config to override —
             # otherwise let OpenCode use its own config so provider
             # auth/keys are preserved.
-            subprocess_env = dict(env) if env else {}
+            subprocess_env = without_owner_auth(env or {})
             if mcp_servers or instructions_path or self._provider_config:
                 subprocess_env["OPENCODE_CONFIG"] = str(config_path)
 

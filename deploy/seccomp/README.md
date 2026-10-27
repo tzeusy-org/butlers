@@ -23,3 +23,11 @@ The policy is applied only to `dashboard-api` and
 or restore-drill services.
 
 Upstream source: <https://raw.githubusercontent.com/moby/moby/v25.0.0/profiles/seccomp/default.json>.
+
+## Kubernetes
+
+The Helm chart does not use this profile: it runs `dashboard-api` `privileged` because the
+user-namespace alternative (`hostUsers: false`, `procMount: Unmasked`, seccomp `Localhost` pointing
+at this file installed under the kubelet seccomp root) failed on the current k3s node, where the
+overlayfs snapshotter lacks idmapped-mount support (kernel 5.15). See "Security posture
+differences from compose" in `docs/operations/kubernetes-deployment.md` for the probe matrix.

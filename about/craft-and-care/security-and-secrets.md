@@ -18,8 +18,6 @@ boundaries. Sensitive data and privileged operations still need discipline.
   repo's docs and contracts.
 - If a new secret type is introduced, define where it lives, who can read it,
   and how operators provision it.
-- Documentation for secret handling must avoid embedding actual secret values or
-  one-off local shortcuts.
 
 ## Privilege and Boundary Discipline
 

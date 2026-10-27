@@ -202,6 +202,11 @@ class Observation:
     ``predecessor_fingerprint``. A complete snapshot can then distinguish the
     predecessor's absence from ordinary recovery without reinterpreting or
     rewriting its historical fingerprint.
+
+    ``confirm_only`` marks an identity the producer is carrying forward rather
+    than observing: under the source lock it confirms a still-active episode
+    and is skipped when none exists, so an episode resolved after the producer
+    read it is never reopened.
     """
 
     fingerprint: str
@@ -209,6 +214,7 @@ class Observation:
     metadata: dict[str, Any] | None = None
     identity_version: int | None = None
     predecessor_fingerprint: str | None = None
+    confirm_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -332,6 +338,7 @@ async def reconcile_snapshot(
     initial_grace_seconds: float,
     post_write: Callable[[asyncpg.Connection, list[ConditionTransition]], Awaitable[None]]
     | None = None,
+    transaction_connection: asyncpg.Connection | None = None,
 ) -> list[ConditionTransition]:
     """Atomically reconcile one producer check-in against the condition ledger at ``table``.
 
@@ -367,8 +374,15 @@ async def reconcile_snapshot(
     complete but before commit — a downstream projection (e.g. the
     commitment-graph write-behind in ``butlers.core.commitments``) that must
     never silently diverge from the row it derives from. An exception raised
-    by ``post_write`` propagates and rolls back the whole transaction,
-    including the reconciliation writes it was projecting.
+    by ``post_write`` propagates. The default pool-owned transaction rolls back
+    the reconciliation writes it was projecting. With a caller-owned connection,
+    the owning caller must let that exception abort its outer transaction and
+    handle any typed response only after that transaction has rolled back.
+
+    ``transaction_connection`` composes this check-in inside an internal caller's
+    active transaction. It uses the same source lock, writes and callback, and
+    never acquires, commits or releases that connection. The ordinary pool path
+    remains the default. Inputs are validated before checking connection state.
     """
     if not table:
         raise ValueError("reconcile_snapshot: table must be non-empty")
@@ -394,19 +408,27 @@ async def reconcile_snapshot(
         raise ValueError("reconcile_snapshot: duplicate predecessor_fingerprint in observations")
     _reject_reserved_metadata_keys(observations)
 
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            transitions = await _reconcile_source_locked(
-                conn,
-                table=table,
-                source=source,
-                observations=observations,
-                snapshot_complete=snapshot_complete,
-                initial_grace_seconds=initial_grace_seconds,
+    async def _reconcile(conn: asyncpg.Connection) -> list[ConditionTransition]:
+        transitions = await _reconcile_source_locked(
+            conn,
+            table=table,
+            source=source,
+            observations=observations,
+            snapshot_complete=snapshot_complete,
+            initial_grace_seconds=initial_grace_seconds,
+        )
+        if post_write is not None:
+            await post_write(conn, transitions)
+        return transitions
+
+    if transaction_connection is not None:
+        if not transaction_connection.is_in_transaction():
+            raise ValueError(
+                "reconcile_snapshot: transaction_connection requires an active transaction"
             )
-            if post_write is not None:
-                await post_write(conn, transitions)
-            return transitions
+        return await _reconcile(transaction_connection)
+    async with pool.acquire() as conn, conn.transaction():
+        return await _reconcile(conn)
 
 
 async def resolve_condition(
@@ -502,6 +524,8 @@ async def _reconcile_source_locked(
 
     for obs in observations:
         existing = active_by_fingerprint.get(obs.fingerprint)
+        if existing is None and obs.confirm_only:
+            continue
         if existing is None:
             results.append(
                 await _open_episode(

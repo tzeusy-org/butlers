@@ -2,7 +2,11 @@
 
 > **Purpose:** How to safely update pinned third-party Docker image tags in `docker-compose.yml`.
 > **Audience:** Operators maintaining the Butlers stack.
-> **Related:** [Docker Deployment](docker-deployment.md)
+> **Related:** [Docker Deployment](docker-deployment.md), [Kubernetes Deployment](kubernetes-deployment.md)
+
+This page covers retained Compose image pins and local Compose app tags. The live
+`butlers-dev` stack runs committed registry images on k3s; its app/frontend image
+workflow is below. A Compose image bump does not update the Helm chart or the live release.
 
 ## Pinned Service Images
 
@@ -17,7 +21,7 @@ All third-party images in `docker-compose.yml` are pinned to specific release ta
 | `log-init`, `log-cleanup` | `alpine` | `3.19` |
 | `backup-cron` | `postgres` | `17-alpine` |
 
-The `butlers-app` and `butlers-app-audio` images are always built locally by
+For a Compose deployment, `butlers-app` and `butlers-app-audio` are built locally by
 `scripts/compose.sh`. Their tag defaults to `latest` for local development but
 can be overridden via `BUTLERS_APP_TAG` (see below).
 
@@ -120,7 +124,32 @@ git commit -m "chore: bump <image> to <new-tag>"
 
 ---
 
-## Overriding the `butlers-app` Image Tag
+## Live Dev App and Frontend Images (Kubernetes)
+
+Commit the change, then run the existing dev deployment helper from the repo root:
+
+```bash
+scripts/k8s/deploy-dev.sh
+```
+
+The helper uses the chart's `ship-dev` target to build and push app and frontend
+images, deploy their 12-character commit-SHA tags, and wait for the API and daemon
+rollouts. It refuses a dirty image build. To redeploy an already-pushed tag:
+
+```bash
+scripts/k8s/deploy-dev.sh <previous-12-character-sha>
+```
+
+This uses `deploy-dev TAG=<sha>` without rebuilding. The frontend tag includes
+`-dev` because its base path is baked into the image. See
+[Kubernetes Deployment](kubernetes-deployment.md#deploy) for site configuration
+and secret prerequisites; `BUTLERS_APP_TAG` does not select chart images.
+
+## Overriding the `butlers-app` Image Tag (Legacy Compose)
+
+Use this path only for a Compose deployment against a database not owned by a
+running Kubernetes fleet. The launcher refuses a competing fleet; its override
+is for non-live databases only. `--prod` retains the production Compose path.
 
 `butlers-app` and `butlers-app-audio` are built locally by `scripts/compose.sh`.
 By default they are tagged `:latest`. For environments where reproducible image

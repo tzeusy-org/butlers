@@ -36,7 +36,7 @@ is not proof that its requirements reached the baseline.
    changes. Apply the delivered delta to the baseline and inspect the actual
    requirement-body diff. Rebuild any overlapping delta against that refreshed
    baseline so a later archive cannot undo it. Follow the
-   [repository archive cautions](../../AGENTS.md#two-unarchived-openspec-changes-can-silently-overwrite-each-other).
+   [repository archive cautions](../../.claude/skills/doctrine/subskills/spec-and-spine/references/openspec-gotchas.md#two-open-changes-overwrite-each-other).
 6. Validate the baseline and active changes, then archive the completed change.
    Confirm its requirements landed and refresh relevant v1 evidence before
    closing the epic. Moving a directory alone does not complete this step.

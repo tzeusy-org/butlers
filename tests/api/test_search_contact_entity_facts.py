@@ -23,7 +23,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.search import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -45,7 +45,7 @@ def _wire_app(app: FastAPI, *, pool: AsyncMock) -> None:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["relationship"]
     mock_db.pool = MagicMock(return_value=pool)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
 
 async def _get(app: FastAPI, q: str) -> dict:
@@ -89,7 +89,7 @@ async def test_contact_found_by_name(app: FastAPI) -> None:
     mock_db.butler_names = ["relationship"]
     mock_db.pool = MagicMock(return_value=pool)
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     body = await _get(app, "alice")
 
@@ -98,6 +98,8 @@ async def test_contact_found_by_name(app: FastAPI) -> None:
     assert contacts[0]["title"] == "Alice Smith"
     assert contacts[0]["snippet"] == "alice@example.com"
     assert contacts[0]["id"] == str(entity_id)
+    # Contacts are person entities; the retired /contacts/{id} route drops the id.
+    assert contacts[0]["url"] == f"/entities/{entity_id}"
 
 
 async def test_contact_without_entity_no_snippet(app: FastAPI) -> None:
@@ -119,7 +121,7 @@ async def test_contact_without_entity_no_snippet(app: FastAPI) -> None:
     mock_db.butler_names = ["relationship"]
     mock_db.pool = MagicMock(return_value=pool)
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     body = await _get(app, "bob")
 
@@ -144,7 +146,7 @@ async def test_contact_search_exception_swallowed(app: FastAPI) -> None:
     mock_db.butler_names = ["relationship"]
     mock_db.pool = MagicMock(return_value=pool)
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     body = await _get(app, "anything")
 
@@ -156,7 +158,7 @@ async def test_empty_query_returns_empty_results(app: FastAPI) -> None:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = []
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -198,7 +200,7 @@ async def test_contact_snippet_includes_phone(app: FastAPI) -> None:
     mock_db.butler_names = ["relationship"]
     mock_db.pool = MagicMock(return_value=pool)
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     body = await _get(app, "charlie")
 
@@ -235,7 +237,7 @@ async def test_contact_snippet_email_and_phone_both_shown(app: FastAPI) -> None:
     mock_db.butler_names = ["relationship"]
     mock_db.pool = MagicMock(return_value=pool)
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     body = await _get(app, "dana")
 
@@ -261,7 +263,7 @@ async def test_clean_search_reports_no_degraded_sources(app: FastAPI) -> None:
     mock_db.butler_names = ["relationship"]
     mock_db.pool = MagicMock(return_value=pool)
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     body = await _get(app, "anything")
 
@@ -281,7 +283,7 @@ async def test_partial_fan_out_failure_flags_the_butler(app: FastAPI) -> None:
     mock_db.fan_out_with_status = AsyncMock(
         side_effect=[({"relationship": [], "finance": []}, ["finance"]), ({}, [])]
     )
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     body = await _get(app, "anything")
 
@@ -298,7 +300,7 @@ async def test_structural_fan_out_failure_flags_sentinels(app: FastAPI) -> None:
     mock_db.butler_names = ["relationship"]
     mock_db.pool = MagicMock(return_value=pool)
     mock_db.fan_out_with_status = AsyncMock(side_effect=RuntimeError("fleet down"))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     body = await _get(app, "anything")
 
@@ -319,7 +321,7 @@ async def test_entity_contact_genuine_failure_flags_both(app: FastAPI) -> None:
     mock_db.butler_names = ["relationship"]
     mock_db.pool = MagicMock(return_value=pool)
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     body = await _get(app, "anything")
 
@@ -337,7 +339,7 @@ async def test_no_pool_available_flags_entity_contact_not_500(app: FastAPI) -> N
     mock_db.butler_names = []  # -> _any_pool raises RuntimeError
     mock_db.pool = MagicMock(side_effect=KeyError("none"))
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     body = await _get(app, "anything")
 
@@ -357,7 +359,7 @@ async def test_entity_contact_missing_schema_not_degraded(app: FastAPI) -> None:
     mock_db.butler_names = ["relationship"]
     mock_db.pool = MagicMock(return_value=pool)
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     body = await _get(app, "anything")
 

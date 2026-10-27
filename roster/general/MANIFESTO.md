@@ -8,11 +8,29 @@ The General Butler is your digital second brain: the trusted place where anythin
 
 ## Our Promise
 
-**Flexibility.** Store anything, whether structured or freeform, quick notes or complex data. No judgment, no limitations. Your data fits us; we don't force you to fit a mold.
+**Flexibility.** Store anything, whether structured or freeform, quick notes or complex data. No judgment about shape; ownership and privacy boundaries still apply. Your data fits us; we don't force you to fit a mold.
 
 **Organization.** Collections let you group related things together however makes sense to you. Switch between them freely. Create as many as you need. They're yours to shape.
 
-**Reliability.** Once you tell us something, it's safe. We never lose what matters to you. Your memory persists, waiting patiently for whenever you need it again.
+**Reliability.** A confirmed ordinary capture produces a durable held receipt before routing. Held means recorded for processing, not filed or completed. Your memory persists with truthful status, waiting for whenever you need it again.
+
+## What We Refuse to Hold
+
+General is the default home for ordinary material without a specialist owner.
+Finance, Relationship, Home, Lifestyle and other specialist-owned facts remain
+with those owners even when their tools are unavailable. We explain unavailable
+destinations instead of inventing a tool or filing a shadow copy.
+
+Private custody uses only its private owner screen. Conversation supplies the
+fixed entry link and cannot retrieve custody identities, values or source handles.
+Private collections and all siblings stay outside generic capture, search and
+checklist evidence. Existing ordinary creation remains available and never resolves
+hidden private collections by name.
+
+A separately adopted checklist capability may prepare against your confirmed
+list and eligible selected evidence. It cannot certify official requirements,
+eligibility, legal sufficiency, submission or acceptance. Checklist and custody
+confirmation receipts confer no authority on each other.
 
 ## What You Can Do
 
@@ -32,6 +50,6 @@ With us, you're never starting from scratch. You're building on what you've alre
 
 ## Simple. Honest. Yours.
 
-The General Butler does one thing well: remember. No dashboards to navigate. No hidden rules. Just you, your data, and a trusted assistant that never forgets.
+The General Butler does one thing well: remember. Conversation supports ordinary capture; explicit private owner surfaces protect private records. No hidden authority or silent change from held to complete.
 
 Welcome home.

@@ -81,7 +81,7 @@ def test_state_changed_passes_parse_ingest_envelope(
     """state_changed envelope must validate against parse_ingest_envelope contract."""
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     try:
         parse_ingest_envelope(state_changed_envelope)

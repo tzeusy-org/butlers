@@ -18,7 +18,7 @@ resolve_owner_entity_info() are all mocked.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -218,9 +218,9 @@ class TestBuildSwitchboardInsightNotifyFn:
         """Regression (bu-1q9wh): when both the numeric chat id and the @username
         handle are stored, notify_fn must deliver to the numeric chat id.
 
-        Sending to a bare @username is undeliverable (Telegram addresses private
-        users by numeric id only) and trips the approval gate's owner-primacy
-        check, parking the owner's own notifications forever.
+        Sending to a bare @username is undeliverable because Telegram addresses
+        private users by numeric id only; choosing the numeric endpoint avoids
+        provider rejection for an otherwise owner-directed notification.
         """
         from butlers.scheduled_jobs import _build_switchboard_insight_notify_fn
 
@@ -318,8 +318,10 @@ class TestSwitchboardInsightDeliveryJobWiring:
             notify_fn: Any = None,
             now: Any = None,
             daily_hold_mode: bool = False,
+            amend_fn: Any = None,
         ) -> dict[str, Any]:
             captured["notify_fn"] = notify_fn
+            captured["amend_fn"] = amend_fn
             captured["daily_hold_mode"] = daily_hold_mode
             return {"skipped": False, "delivered": [], "expired": 0, "effective_budget": 1}
 
@@ -334,6 +336,7 @@ class TestSwitchboardInsightDeliveryJobWiring:
             "notify_fn must NOT be None — delivery would be skipped"
         )
         assert callable(captured["notify_fn"]), "notify_fn must be callable"
+        assert callable(captured["amend_fn"]), "amend_fn must be wired for in-place amendment"
         assert captured["daily_hold_mode"] is True, (
             "the daily job must pass daily_hold_mode=True (bu-ep4ks.9 slice 5) "
             "or the windowed cron degenerates into a plain fixed-time cycle"
@@ -353,6 +356,7 @@ class TestSwitchboardInsightDeliveryJobWiring:
             notify_fn: Any = None,
             now: Any = None,
             daily_hold_mode: bool = False,
+            amend_fn: Any = None,
         ) -> dict[str, Any]:
             # Simulate actual delivery by calling notify_fn
             assert notify_fn is not None
@@ -412,8 +416,10 @@ class TestSwitchboardInsightUrgentSubcycleJobWiring:
             notify_fn: Any = None,
             now: Any = None,
             urgent_only: bool = False,
+            amend_fn: Any = None,
         ) -> dict[str, Any]:
             captured["notify_fn"] = notify_fn
+            captured["amend_fn"] = amend_fn
             captured["urgent_only"] = urgent_only
             return {"skipped": False, "delivered": [], "expired": 0, "effective_budget": 0}
 
@@ -428,6 +434,7 @@ class TestSwitchboardInsightUrgentSubcycleJobWiring:
             "notify_fn must NOT be None — delivery would be skipped"
         )
         assert callable(captured["notify_fn"]), "notify_fn must be callable"
+        assert callable(captured["amend_fn"]), "amend_fn must be wired for in-place amendment"
         assert captured["urgent_only"] is True, (
             "the hourly job must pass urgent_only=True or it degenerates into "
             "a second daily-budgeted cycle"
@@ -511,6 +518,8 @@ class TestBrokerChannelSelectionInNotifyMetadata:
                 "message": "Insight 1",
                 "channel": channels[0],
                 "metadata": None,
+                "expires_at": _PINNED_NOW + timedelta(days=2),
+                "created_at": _PINNED_NOW,
             },
             {
                 "id": cid2,
@@ -522,6 +531,8 @@ class TestBrokerChannelSelectionInNotifyMetadata:
                 "message": "Insight 2",
                 "channel": channels[1],
                 "metadata": None,
+                "expires_at": _PINNED_NOW + timedelta(days=2),
+                "created_at": _PINNED_NOW,
             },
             {
                 "id": cid3,
@@ -533,6 +544,8 @@ class TestBrokerChannelSelectionInNotifyMetadata:
                 "message": "Insight 3",
                 "channel": channels[2],
                 "metadata": None,
+                "expires_at": _PINNED_NOW + timedelta(days=2),
+                "created_at": _PINNED_NOW,
             },
         ]
         all_ids = [cid1, cid2, cid3]
@@ -564,6 +577,16 @@ class TestBrokerChannelSelectionInNotifyMetadata:
                 "butlers.tools.switchboard.insight.broker.expire_candidates",
                 new=AsyncMock(return_value=0),
             ),
+            # The mock pool answers every fetch() with candidate rows, which the
+            # premise-revalidation and fold-line queries cannot read.
+            patch(
+                "butlers.tools.switchboard.insight.broker._revalidate_premises",
+                new=AsyncMock(return_value=({}, 0)),
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker._pending_fold_lines",
+                new=AsyncMock(return_value=[]),
+            ),
             patch(
                 "butlers.tools.switchboard.insight.broker.filter_by_cooldown",
                 new=AsyncMock(return_value=all_ids),
@@ -571,10 +594,6 @@ class TestBrokerChannelSelectionInNotifyMetadata:
             patch(
                 "butlers.tools.switchboard.insight.broker.deduplicate_candidates",
                 new=AsyncMock(return_value=all_ids),
-            ),
-            patch(
-                "butlers.tools.switchboard.insight.broker.compute_effective_budget",
-                new=AsyncMock(return_value=3),
             ),
             patch("butlers.tools.switchboard.insight.broker.record_cooldowns", new=AsyncMock()),
             patch(
@@ -588,10 +607,10 @@ class TestBrokerChannelSelectionInNotifyMetadata:
         ):
 
             async def mock_fetch(query: str, *args: Any) -> list:
-                if "insight_candidates" in query and "LIMIT" not in query:
-                    return [_FakeRecord({"id": c["id"]}) for c in candidates]
-                if "insight_candidates" in query and "LIMIT" in query:
+                if "SELECT id, origin_butler" in query:
                     return [_FakeRecord(c) for c in candidates]
+                if "insight_candidates" in query:
+                    return [_FakeRecord({"id": c["id"]}) for c in candidates]
                 return []
 
             mock_pool.fetch = mock_fetch
@@ -606,3 +625,124 @@ class TestBrokerChannelSelectionInNotifyMetadata:
         assert meta.get("channel") == expected_channel, (
             f"Expected channel {expected_channel!r}, got {meta.get('channel')!r}"
         )
+
+
+@pytest.mark.parametrize(
+    "job_name",
+    ["_run_switchboard_insight_delivery_cycle_job", "_run_switchboard_insight_urgent_subcycle_job"],
+)
+async def test_actual_daily_and_urgent_assembly_supplies_only_installed_pool_reader(job_name):
+    from types import SimpleNamespace
+    from uuid import UUID
+
+    from butlers import scheduled_jobs
+    from butlers.core import finance_warning_control as control
+
+    pool = object()
+    daemon = SimpleNamespace(
+        db=SimpleNamespace(pool=pool),
+        config=SimpleNamespace(name="switchboard"),
+        _tool_catalog=None,
+        _boot_instance_id=UUID(int=1),
+        _boot_epoch=1,
+    )
+    owner = control.FinanceWarningControlOwner(daemon)
+    daemon._finance_warning_control_owner = owner
+    cycle = AsyncMock(return_value={})
+    try:
+        with patch("butlers.tools.switchboard.insight.broker.delivery_cycle", cycle):
+            await getattr(scheduled_jobs, job_name)(pool, None)
+        callback = cycle.call_args.kwargs["finance_warning_reader"]
+        assert callback.__self__ is owner
+        assert cycle.call_args.kwargs["notify_fn"] is not None
+        assert (
+            await callback({"subject": str(UUID(int=1)), "selected_date": "2026-10-27", "epoch": 0})
+            is None
+        )
+    finally:
+        await owner.close(1)
+
+
+@pytest.mark.parametrize("final_verdict", [False, None])
+async def test_real_delivery_cycle_rechecks_finance_after_format_and_preserves_unknown(
+    final_verdict,
+):
+    from contextlib import ExitStack
+    from types import SimpleNamespace
+    from uuid import UUID
+
+    from butlers.tools.switchboard.insight import broker
+
+    cid = UUID(int=1)
+    candidate = {
+        "id": cid,
+        "origin_butler": "finance",
+        "priority": 75,
+        "category": "subscription-renewal",
+        "dedup_key": "finance:subscription-renewal:synthetic:2026-01-16",
+        "cooldown_days": None,
+        "message": "Synthetic unverified renewal",
+        "channel": None,
+        "metadata": {},
+        "expires_at": _PINNED_NOW + timedelta(days=1),
+        "created_at": _PINNED_NOW,
+        "premise": {
+            "kind": "probe",
+            "butler": "finance",
+            "probe": "subscription_warning_still_relevant",
+            "args": {"subject": str(cid), "selected_date": "2026-01-16", "epoch": 0},
+        },
+    }
+    pool = AsyncMock()
+
+    async def fetch(query, *args):
+        return [_FakeRecord(candidate)]
+
+    pool.fetch = fetch
+    pool.execute = AsyncMock(return_value="UPDATE 1")
+    pool.acquire = lambda: _FakeAcquireCtx(_FakeConn())
+    read = AsyncMock(side_effect=[True, final_verdict])
+    notify = AsyncMock(return_value={"status": "sent"})
+    replacements = {
+        "get_insight_settings": {"verbosity": "normal", "custom_budget": None},
+        "get_approvals_policy_quiet_hours": {
+            "quiet_start_hour": None,
+            "quiet_end_hour": None,
+            "timezone": "UTC",
+        },
+        "get_suppressing_context_signal": None,
+        "expire_candidates": 0,
+        "_pending_fold_lines": [],
+        "filter_by_cooldown": [str(cid)],
+        "deduplicate_candidates": [str(cid)],
+        "compute_effective_budget": 1,
+        "compute_category_budget_weights": {},
+        "record_cooldowns": None,
+        "record_engagement_rows": None,
+        "cleanup_old_rows": None,
+        "check_total_disengagement_auto_off": False,
+        "record_attention_event": None,
+    }
+    with ExitStack() as stack:
+        for name, value in replacements.items():
+            stack.enter_context(patch.object(broker, name, AsyncMock(return_value=value)))
+        stack.enter_context(
+            patch(
+                "butlers.core.attention_urgency.candidate_interruption",
+                AsyncMock(
+                    return_value=SimpleNamespace(interrupts=False, cause="routine", ref=None)
+                ),
+            )
+        )
+        result = await broker.delivery_cycle(
+            pool, notify_fn=notify, now=_PINNED_NOW, finance_warning_reader=read
+        )
+    assert read.await_count == 2
+    if final_verdict is False:
+        assert result["reason"] == "finance_warning_superseded"
+        notify.assert_not_awaited()
+        assert any("status = 'withdrawn'" in call.args[0] for call in pool.execute.call_args_list)
+    else:
+        assert result["delivered"] == [str(cid)]
+        wire = notify.call_args.args[0]
+        assert "as of 2026-01-15 12:00 UTC" in wire and "Unverified Finance report" in wire

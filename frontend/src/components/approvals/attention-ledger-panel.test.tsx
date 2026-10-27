@@ -72,6 +72,7 @@ describe("AttentionLedgerPanel -- semantic outcome table", () => {
             deferred: 2,
             suppressed: 3,
             failed: 4,
+            expired_unseen: 2,
             total: 15,
             suppressed_never_delivered: false,
           },
@@ -91,12 +92,13 @@ describe("AttentionLedgerPanel -- semantic outcome table", () => {
       "Deferred",
       "Suppressed",
       "Failed",
+      "Expired unseen",
       "Total",
     ]);
 
     const row = within(table).getByRole("row", { name: /finance/ });
     expect(within(row).getByRole("rowheader", { name: "finance" })).toBeTruthy();
-    expect(within(row).getAllByRole("cell")).toHaveLength(6);
+    expect(within(row).getAllByRole("cell")).toHaveLength(7);
   });
 });
 
@@ -112,6 +114,7 @@ describe("AttentionLedgerPanel -- suppressed-but-never-delivered flag", () => {
             deferred: 3,
             suppressed: 120,
             failed: 0,
+            expired_unseen: 0,
             total: 123,
             suppressed_never_delivered: true,
           },
@@ -144,6 +147,7 @@ describe("AttentionLedgerPanel -- suppressed-but-never-delivered flag", () => {
             deferred: 0,
             suppressed: 2,
             failed: 0,
+            expired_unseen: 0,
             total: 8,
             suppressed_never_delivered: false,
           },
@@ -172,6 +176,7 @@ describe("AttentionLedgerPanel -- suppressed-but-never-delivered flag", () => {
             deferred: 0,
             suppressed: 120,
             failed: 0,
+            expired_unseen: 0,
             total: 120,
             suppressed_never_delivered: true,
           },
@@ -182,6 +187,7 @@ describe("AttentionLedgerPanel -- suppressed-but-never-delivered flag", () => {
             deferred: 0,
             suppressed: 4,
             failed: 0,
+            expired_unseen: 0,
             total: 4,
             suppressed_never_delivered: true,
           },
@@ -214,6 +220,7 @@ describe("AttentionLedgerPanel -- failed outcome column (bu-hmdqz.3)", () => {
             deferred: 0,
             suppressed: 0,
             failed: 21,
+            expired_unseen: 0,
             total: 21,
             suppressed_never_delivered: false,
           },
@@ -244,6 +251,7 @@ describe("AttentionLedgerPanel -- failed outcome column (bu-hmdqz.3)", () => {
             deferred: 0,
             suppressed: 0,
             failed: 0,
+            expired_unseen: 0,
             total: 5,
             suppressed_never_delivered: false,
           },

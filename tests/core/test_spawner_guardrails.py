@@ -18,13 +18,18 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from butlers.config import ButlerConfig, RuntimeSeedConfig
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
+from butlers.core.purpose_lane import (
+    PURPOSE_LANE_PRIVATE_CONTENT,
+    PURPOSE_LANE_STANDARD,
+    purpose_lane_from_routing_context,
+)
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import (
     _DEGENERATE_TOOL_LOOP_CONSECUTIVE_THRESHOLD,
@@ -45,6 +50,23 @@ pytestmark = pytest.mark.unit
 
 _SESSION_ID = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
 _CATALOG_ID = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000002")
+
+
+@pytest.mark.parametrize(
+    ("routing_context", "expected"),
+    [
+        (
+            {"request_context": {"source_channel": "whatsapp_user_client"}},
+            PURPOSE_LANE_PRIVATE_CONTENT,
+        ),
+        ({"source_metadata": {"channel": "telegram_bot"}}, PURPOSE_LANE_PRIVATE_CONTENT),
+        ({"request_context": {"source_channel": "email"}}, PURPOSE_LANE_STANDARD),
+        ({"request_context": {"message": "telegram"}}, PURPOSE_LANE_STANDARD),
+        (None, PURPOSE_LANE_STANDARD),
+    ],
+)
+def test_purpose_lane_uses_trusted_channel_metadata_only(routing_context, expected) -> None:
+    assert purpose_lane_from_routing_context(routing_context) == expected
 
 
 def _make_config(name: str = "test-butler") -> ButlerConfig:
@@ -336,6 +358,7 @@ class _SuccessAdapter(RuntimeAdapter):
     def binary_name(self) -> str:
         return "mock"
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -361,8 +384,19 @@ class _SuccessAdapter(RuntimeAdapter):
 
 def _catalog_result(
     model: str = "test-model",
+    runtime_type: str = "codex",
 ) -> tuple[str, str, list, uuid.UUID, int, str]:
-    return ("codex", model, [], _CATALOG_ID, 300, "workhorse")
+    return (runtime_type, model, [], _CATALOG_ID, 300, "workhorse")
+
+
+def _local_ollama_provider_config() -> dict[str, dict[str, Any]]:
+    return {
+        "ollama": {
+            "npm": "@ai-sdk/openai-compatible",
+            "options": {"baseURL": "http://127.0.0.1:11434/v1"},
+            "models": {"test-model": {"name": "test-model"}},
+        }
+    }
 
 
 def _make_spawner(
@@ -729,6 +763,7 @@ class TestSpawnerUndeliveredReplyAccounting:
     async def test_route_reply_with_failed_notify_marks_session_failed(
         self, tmp_path: Path
     ) -> None:
+        """REQ-core-spawner-008: ordinary delivery failure creates no investigation."""
         # One notify attempt whose result is null (boundary rejection shape).
         adapter = _SuccessAdapter(
             result_text="I replied (allegedly).",
@@ -737,6 +772,9 @@ class TestSpawnerUndeliveredReplyAccounting:
         spawner, _mock_pool = _make_spawner(adapter, tmp_path)
 
         with (
+            patch(
+                "butlers.core.qa.dispatch.dispatch_qa_investigation", new_callable=AsyncMock
+            ) as local_dispatch,
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_sc,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
             patch(
@@ -746,7 +784,7 @@ class TestSpawnerUndeliveredReplyAccounting:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=_catalog_result(),
+                return_value=_catalog_result(model="ollama/test-model", runtime_type="opencode"),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -763,11 +801,18 @@ class TestSpawnerUndeliveredReplyAccounting:
                     },
                 )(),
             ),
+            patch(
+                "butlers.core.spawner_provider.resolve_provider_config",
+                new_callable=AsyncMock,
+                return_value=_local_ollama_provider_config(),
+            ),
+            patch.object(spawner, "_get_or_create_adapter", return_value=adapter),
         ):
             mock_sc.return_value = _SESSION_ID
             result = await spawner.trigger("Did I miss the Dr Ng followup?", "route")
 
         # The runtime invocation itself succeeded (memory/route flow unaffected).
+        local_dispatch.assert_not_awaited()
         assert result.success is True
         # But the session row is recorded as a failed delivery.
         mock_complete.assert_awaited_once()
@@ -796,7 +841,7 @@ class TestSpawnerUndeliveredReplyAccounting:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=_catalog_result(),
+                return_value=_catalog_result(model="ollama/test-model", runtime_type="opencode"),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -813,6 +858,12 @@ class TestSpawnerUndeliveredReplyAccounting:
                     },
                 )(),
             ),
+            patch(
+                "butlers.core.spawner_provider.resolve_provider_config",
+                new_callable=AsyncMock,
+                return_value=_local_ollama_provider_config(),
+            ),
+            patch.object(spawner, "_get_or_create_adapter", return_value=adapter),
         ):
             mock_sc.return_value = _SESSION_ID
             result = await spawner.trigger("Did I miss the Dr Ng followup?", "route")

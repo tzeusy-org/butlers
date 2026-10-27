@@ -29,8 +29,6 @@ src/butlers/modules/
     002_create_approval_events.py
   contacts/migrations/                # Contacts module chain
     001_contacts_sync_tables.py
-  mailbox/migrations/                 # Mailbox module chain
-    001_create_mailbox_table.py
 
 roster/
   health/migrations/                  # Health butler chain (branch_labels=("health",))

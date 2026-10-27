@@ -28,11 +28,22 @@ from butlers.modules.approvals.command_contracts import (
 from butlers.modules.approvals.module import ApprovalsConfig, ApprovalsModule
 from butlers.modules.memory import MemoryModule, MemoryModuleConfig
 from butlers.modules.registry import default_registry
+from butlers.testing.approval_parking_fake import record_pending_action
 from tests.modules.test_module_approvals import MockDB
 
 pytestmark = pytest.mark.unit
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture(autouse=True)
+def _use_non_recovery_park_recorder(monkeypatch: pytest.MonkeyPatch):
+    """Keep in-memory command tests on their explicit non-recovery seam."""
+    monkeypatch.setattr(
+        "butlers.modules.approvals.gate.park_pending_action",
+        record_pending_action,
+    )
+
 
 # Roster modules are installed dynamically by ModuleRegistry.  Load that
 # registry before importing the switchboard module's generated alias.
@@ -171,6 +182,9 @@ async def _relationship_approval_daemon(
     fact_id: uuid.UUID,
 ) -> tuple[ButlerDaemon, ApprovalsModule, _RelationshipMemoryDB]:
     config = load_config(_REPO_ROOT / "roster" / "relationship")
+    # This fixture registers only Memory and Approvals, not Calendar. Keep
+    # every registered memory gate while scoping the unregistered module out.
+    config.modules["approvals"]["gated_tools"].pop("calendar_respond", None)
     approvals = ApprovalsModule()
     memory = MemoryModule()
     approval_db = _RelationshipMemoryDB(fact_id)
@@ -447,6 +461,12 @@ def test_non_messenger_direct_park_sites_stay_declared() -> None:
         ),
         ("roster/relationship/jobs/relationship_jobs.py", "run_email_identity_enrichment"),
         ("roster/relationship/tools/relationship_assert_fact.py", "_create_pending_action"),
+        # The registered Calendar tool uses its trusted startup-bound canonical
+        # preparer; replay still runs through the owning gate and executor.
+        ("src/butlers/modules/calendar_response.py", "prepare_and_park"),
+        # Messenger parks the original registered route.execute envelope; the
+        # executor's exact task/tool/argument context authorizes its replay.
+        ("src/butlers/core_tools/_routing.py", "_check_routed_delivery_approval"),
     }
     found_sources: set[tuple[str, str]] = set()
     for root in (_REPO_ROOT / "src", _REPO_ROOT / "roster"):

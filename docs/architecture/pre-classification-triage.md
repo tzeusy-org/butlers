@@ -2,7 +2,7 @@
 
 > **Purpose:** Defines the deterministic pre-classification triage layer that routes email messages before LLM classification, eliminating 50-70% of classification calls.
 > **Audience:** Developers working on Switchboard routing, operators managing triage rules, architects evaluating routing efficiency.
-> **Prerequisites:** [Routing Architecture](routing.md), [Thread Affinity Routing](thread-affinity-routing.md).
+> **Prerequisites:** [Switchboard Routing](../concepts/switchboard-routing.md), [Thread Affinity Routing](thread-affinity-routing.md).
 
 ## Overview
 
@@ -150,6 +150,6 @@ curl -s -X POST http://localhost:41200/api/switchboard/triage-rules/test \
 
 ## Related Pages
 
-- [Routing Architecture](routing.md) — how triage fits into the overall routing pipeline
+- [Switchboard Routing](../concepts/switchboard-routing.md) — how triage fits into the overall routing pipeline
 - [Thread Affinity Routing](thread-affinity-routing.md) — the first step in the triage pipeline
 - [Email Priority Queuing](email-priority-queuing.md) — tier-based queue ordering for triaged messages

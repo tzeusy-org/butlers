@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import importlib
-import importlib.util
 import inspect
 import logging
 import pkgutil
-import sys
 from collections import deque
 from pathlib import Path
 
@@ -38,40 +36,15 @@ def _register_roster_modules(registry: ModuleRegistry) -> None:
         if not modules_pkg_init.is_file():
             continue
 
-        target, is_package = modules_pkg_init, True
-
-        butler_name = entry.name
-        synthetic_name = f"butlers.modules._roster_{butler_name}"
-
-        # Skip if already loaded (e.g. from a previous default_registry() call).
-        if synthetic_name in sys.modules:
-            mod = sys.modules[synthetic_name]
-        else:
-            try:
-                if is_package:
-                    spec = importlib.util.spec_from_file_location(
-                        synthetic_name,
-                        target,
-                        submodule_search_locations=[str(target.parent)],
-                    )
-                else:
-                    spec = importlib.util.spec_from_file_location(synthetic_name, target)
-
-                if spec is None or spec.loader is None:
-                    continue
-                mod = importlib.util.module_from_spec(spec)
-                sys.modules[synthetic_name] = mod
-                spec.loader.exec_module(mod)
-            except Exception:
-                logger.warning("Failed to load roster module: %s", butler_name, exc_info=True)
-                continue
+        synthetic_name = f"butlers.modules._roster_{entry.name}"
+        try:
+            mod = importlib.import_module(synthetic_name)
+        except Exception as exc:
+            raise ImportError(f"Failed to discover module: {synthetic_name}") from exc
 
         for _name, obj in inspect.getmembers(mod, inspect.isclass):
             if issubclass(obj, Module) and obj is not Module and not inspect.isabstract(obj):
-                try:
-                    registry.register(obj)
-                except ValueError:
-                    pass  # already registered
+                _register_discovered(registry, obj)
 
 
 def default_registry() -> ModuleRegistry:
@@ -83,22 +56,24 @@ def default_registry() -> ModuleRegistry:
     """
     registry = ModuleRegistry()
     package = butlers.modules
-    for importer, modname, ispkg in pkgutil.walk_packages(
+    for _importer, modname, _ispkg in pkgutil.walk_packages(
         package.__path__, prefix=package.__name__ + "."
     ):
         try:
             mod = importlib.import_module(modname)
-        except Exception:
-            logger.debug("Skipping unimportable module: %s", modname, exc_info=True)
-            continue
+        except Exception as exc:
+            raise ImportError(f"Failed to discover module: {modname}") from exc
         for _name, obj in inspect.getmembers(mod, inspect.isclass):
             if issubclass(obj, Module) and obj is not Module and not inspect.isabstract(obj):
-                try:
-                    registry.register(obj)
-                except ValueError:
-                    pass  # Already registered (e.g. re-exported from __init__)
+                _register_discovered(registry, obj)
     _register_roster_modules(registry)
     return registry
+
+
+def _register_discovered(registry: ModuleRegistry, cls: type[Module]) -> None:
+    if cls in registry._modules.values():
+        return  # Only the same concrete class re-export is idempotent.
+    registry.register(cls)
 
 
 class ModuleRegistry:
@@ -117,14 +92,12 @@ class ModuleRegistry:
         """Register a module class.
 
         Raises ``ValueError`` if a module with the same name is already
-        registered.  The module name is obtained by instantiating the class
-        temporarily — this is intentional to avoid relying on class-level
-        attributes that could diverge from the instance property.
+        registered or its ``name`` is not a non-empty class-level string.
+        Registration and discovery never construct module instances.
         """
-        # We need the name without a full instantiation dance for concrete
-        # subclasses; use a temporary instance to read the property.
-        instance = module_cls()
-        name = instance.name
+        name = module_cls.name
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"Module {module_cls.__name__} must declare a non-empty class name")
         if name in self._modules:
             raise ValueError(f"Module '{name}' is already registered")
         self._modules[name] = module_cls
@@ -156,13 +129,13 @@ class ModuleRegistry:
             graph contains a cycle.
         """
         # 1. Validate all requested modules are registered.
-        for name in modules_config:
+        for name in sorted(modules_config):
             if name not in self._modules:
                 raise ValueError(f"Unknown module: '{name}'")
 
         # 2. Instantiate each module.
         instances: dict[str, Module] = {}
-        for name in modules_config:
+        for name in sorted(modules_config):
             instances[name] = self._modules[name]()
 
         # 3. Validate all dependencies exist in the enabled set.
@@ -185,9 +158,8 @@ class ModuleRegistry:
         explicit config dict; modules absent from *modules_config* receive an
         empty ``{}`` dict (config validation downstream is non-fatal).
 
-        This is the preferred startup path as of butlers-949.  It ensures that
-        all modules are always present so that runtime enable/disable state can
-        be managed independently of the static ``butler.toml`` config.
+        This explicit utility is distinct from daemon admission: daemon startup
+        uses ``load_from_config`` so undeclared modules are never constructed.
 
         Parameters
         ----------

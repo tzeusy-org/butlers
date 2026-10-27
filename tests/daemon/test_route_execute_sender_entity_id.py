@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -118,6 +119,42 @@ def _make_butler_toml(
 
 def _patch_infra():
     mock_pool = AsyncMock()
+
+    async def _runtime_row(query, *args):
+        if query.lstrip().startswith("SELECT *") and "runtime_config" in query:
+            return {
+                "butler_name": args[0],
+                "core_groups": None,
+                "core_groups_narrowing_reason": None,
+                "catalog_read_sensitivity": "normal",
+                "max_concurrent": 3,
+                "max_queued": 10,
+                "tool_exposure_policy": "eager_filtered",
+                "blind_spot_preamble_enabled": True,
+                "seeded_at": None,
+                "updated_at": None,
+            }
+        return None
+
+    mock_pool.fetchrow = AsyncMock(side_effect=_runtime_row)
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetchval = AsyncMock(return_value=None)
+    mock_conn.fetch = AsyncMock(return_value=[])
+    mock_conn.execute = AsyncMock(return_value=None)
+
+    @asynccontextmanager
+    async def _transaction():
+        yield
+
+    mock_conn.transaction = MagicMock(side_effect=_transaction)
+
+    @asynccontextmanager
+    async def _acquire():
+        yield mock_conn
+
+    mock_pool.acquire = MagicMock(side_effect=_acquire)
     mock_pool.fetchval.return_value = None
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()
@@ -136,7 +173,7 @@ def _patch_infra():
 
     mock_adapter = MagicMock()
     mock_adapter.binary_name = "claude"
-    mock_adapter_cls = MagicMock(return_value=mock_adapter)
+    mock_adapter_builder = MagicMock(return_value=mock_adapter)
 
     return {
         "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
@@ -158,7 +195,9 @@ def _patch_infra():
         "recover_route_inbox": patch.object(
             ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
         ),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
+        ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "mock_db": mock_db,
         "mock_pool": mock_pool,
@@ -194,7 +233,7 @@ async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict):
         patches["sync_schedules"],
         patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
         patches["Spawner"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["connect_switchboard"],
@@ -291,7 +330,7 @@ class TestRouteExecuteSenderEntityIdInjection:
         assert ctx.get("source_entity_id") == sender_entity_id
 
     async def test_no_sender_entity_id_leaves_routing_ctx_unset(self, tmp_path: Path) -> None:
-        """When source_sender_entity_id is absent, _routing_ctx_var is not set by route."""
+        """Without an entity ID, route still propagates the validated source channel."""
         patches = _patch_infra()
         butler_dir = _make_butler_toml(tmp_path, butler_name="health")
         daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
@@ -322,8 +361,7 @@ class TestRouteExecuteSenderEntityIdInjection:
 
         assert result["status"] == "accepted"
         assert len(captured_routing_ctx) == 1
-        # When no entity_id, routing context should be None (not set by route.execute)
-        assert captured_routing_ctx[0] is None
+        assert captured_routing_ctx == [{"request_context": {"source_channel": "telegram_bot"}}]
 
     async def test_conceptual_message_is_persisted_and_available_as_structured_context(
         self,
@@ -376,7 +414,12 @@ class TestRouteExecuteSenderEntityIdInjection:
         assert result["status"] == "accepted"
         persisted_envelope = _mock_route_inbox.await_args.kwargs["route_envelope"]
         assert persisted_envelope["input"]["context"]["conceptual_message"] == conceptual_message
-        assert captured_routing_ctx == [{"conceptual_message": conceptual_message}]
+        assert captured_routing_ctx == [
+            {
+                "conceptual_message": conceptual_message,
+                "request_context": {"source_channel": "telegram_bot"},
+            }
+        ]
 
     async def test_route_inbox_insert_failure_is_content_blind(
         self,

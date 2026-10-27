@@ -78,6 +78,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.home_assistant_scrub import HABearerScrubError, scrub_ha_envelope
 
 if TYPE_CHECKING:
     import asyncpg
@@ -91,7 +92,7 @@ logger = logging.getLogger(__name__)
 CONNECTOR_TYPE = "home_assistant"
 # NOTE: When the HA connector wires up replay via drain_replay_pending → submit_fn →
 # Switchboard ingest, "home_assistant" must be added to SourceChannel and SourceProvider
-# in roster/switchboard/tools/routing/contracts.py, and _ALLOWED_PROVIDERS_BY_CHANNEL
+# in roster/switchboard/tools/contracts.py, and _ALLOWED_PROVIDERS_BY_CHANNEL
 # updated accordingly, otherwise ingest.v1 Pydantic validation will reject replayed rows.
 CONNECTOR_CHANNEL = "home_assistant"
 CONNECTOR_PROVIDER = "home_assistant"
@@ -226,7 +227,7 @@ def ha_full_payload(
         )
     external_event_id = f"ha:{entity_id}:{time_ms}"
 
-    return FilteredEventBuffer.full_payload(
+    payload = FilteredEventBuffer.full_payload(
         channel=CONNECTOR_CHANNEL,
         provider=CONNECTOR_PROVIDER,
         endpoint_identity=endpoint_identity,
@@ -236,6 +237,7 @@ def ha_full_payload(
         sender_identity=entity_id,
         raw=raw,
     )
+    return scrub_ha_envelope(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -485,7 +487,14 @@ class HAFilterPersistence:
         try:
             await self._buffer.flush(self._db_pool)
         except Exception:
-            logger.warning("HAFilterPersistence: filtered event flush failed", exc_info=True)
+            logger.warning("HAFilterPersistence: filtered event flush failed")
+
+    async def _submit_scrubbed_replay(self, envelope: dict[str, Any]) -> None:
+        """Keep both detector and transport exceptions content-free for replay."""
+        try:
+            await self._submit_fn(scrub_ha_envelope(envelope))
+        except Exception:
+            raise HABearerScrubError("Home Assistant replay submission failed") from None
 
     async def drain_replay(self) -> None:
         """Drain up to 10 ``replay_pending`` rows for this connector.
@@ -502,8 +511,8 @@ class HAFilterPersistence:
                 pool=self._db_pool,
                 connector_type=CONNECTOR_TYPE,
                 endpoint_identity=self._endpoint_identity,
-                submit_fn=self._submit_fn,
+                submit_fn=self._submit_scrubbed_replay,
                 drain_logger=logger,
             )
         except Exception:
-            logger.warning("HAFilterPersistence: replay queue drain failed", exc_info=True)
+            logger.warning("HAFilterPersistence: replay queue drain failed")

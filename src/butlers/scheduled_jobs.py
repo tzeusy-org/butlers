@@ -13,7 +13,6 @@ import functools
 import logging
 import sys
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -50,23 +49,10 @@ _CHRONICLER_INTERNAL_SCHEMAS = frozenset(
 def _load_switchboard_eligibility_sweep_job() -> Callable[
     [asyncpg.Pool], Awaitable[dict[str, Any]]
 ]:
-    """Load the switchboard eligibility sweep job from roster/ by file path."""
-    import importlib.util as _ilu
+    """Resolve the canonical Switchboard eligibility sweep job on first use."""
+    from butlers.roster_imports import roster_module
 
-    module_path = (
-        Path(__file__).resolve().parents[2]
-        / "roster"
-        / "switchboard"
-        / "jobs"
-        / "eligibility_sweep.py"
-    )
-    module_name = "roster_switchboard_eligibility_sweep_job"
-    spec = _ilu.spec_from_file_location(module_name, module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load switchboard eligibility sweep job from {module_path}")
-    module = _ilu.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.run_eligibility_sweep_job
+    return roster_module("switchboard", "jobs/eligibility_sweep").run_eligibility_sweep_job
 
 
 async def _run_switchboard_eligibility_sweep_job(
@@ -83,25 +69,12 @@ async def _run_switchboard_eligibility_sweep_job(
 def _load_switchboard_rule_promotion_trigger_job() -> Callable[
     [asyncpg.Pool, dict[str, Any] | None], Awaitable[dict[str, Any]]
 ]:
-    """Load the switchboard rule-promotion trigger job from roster/ by file path."""
-    import importlib.util as _ilu
+    """Resolve the canonical Switchboard rule promotion trigger job on first use."""
+    from butlers.roster_imports import roster_module
 
-    module_path = (
-        Path(__file__).resolve().parents[2]
-        / "roster"
-        / "switchboard"
-        / "jobs"
-        / "rule_promotion_trigger.py"
-    )
-    module_name = "roster_switchboard_rule_promotion_trigger_job"
-    spec = _ilu.spec_from_file_location(module_name, module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(
-            f"Unable to load switchboard rule promotion trigger job from {module_path}"
-        )
-    module = _ilu.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.run_rule_promotion_trigger_job
+    return roster_module(
+        "switchboard", "jobs/rule_promotion_trigger"
+    ).run_rule_promotion_trigger_job
 
 
 async def _run_switchboard_rule_promotion_trigger_job(
@@ -111,6 +84,25 @@ async def _run_switchboard_rule_promotion_trigger_job(
     """Run the switchboard rule-promotion trigger deterministic schedule job."""
     run_rule_promotion_trigger_job = _load_switchboard_rule_promotion_trigger_job()
     return await run_rule_promotion_trigger_job(pool, job_args)
+
+
+@functools.lru_cache(maxsize=1)
+def _load_switchboard_dropped_known_watch_job() -> Callable[
+    [asyncpg.Pool, dict[str, Any] | None], Awaitable[dict[str, Any]]
+]:
+    """Resolve the canonical Switchboard dropped known watch job on first use."""
+    from butlers.roster_imports import roster_module
+
+    return roster_module("switchboard", "jobs/dropped_known_watch").run_dropped_known_watch_job
+
+
+async def _run_switchboard_dropped_known_watch_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the switchboard dropped-known watch deterministic schedule job."""
+    run_dropped_known_watch_job = _load_switchboard_dropped_known_watch_job()
+    return await run_dropped_known_watch_job(pool, job_args)
 
 
 async def _run_switchboard_domain_event_reconciliation_sweep_job(
@@ -157,34 +149,6 @@ async def _run_switchboard_fleet_case_lapse_sweep_job(
     return await run_lapse_sweep(pool)
 
 
-async def _run_switchboard_decision_review_digest_job(
-    pool: asyncpg.Pool,
-    job_args: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Run the weekly decision-review digest job for the Switchboard butler.
-
-    Delegates to ``butlers.jobs.decision_review.run_decision_review_digest``
-    (bu-ckkpz.4, epic bu-ckkpz "Owner Decision Desk").
-    """
-    from butlers.jobs.decision_review import run_decision_review_digest
-
-    return await run_decision_review_digest(pool, job_args)
-
-
-async def _run_switchboard_decision_escalation_check_job(
-    pool: asyncpg.Pool,
-    job_args: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Run the P1/deploy decision-block age-escalation check for Switchboard.
-
-    Delegates to ``butlers.jobs.decision_review.run_decision_escalation_check``
-    (bu-ckkpz.4, epic bu-ckkpz "Owner Decision Desk").
-    """
-    from butlers.jobs.decision_review import run_decision_escalation_check
-
-    return await run_decision_escalation_check(pool, job_args)
-
-
 def _build_switchboard_insight_notify_fn(
     pool: asyncpg.Pool,
 ) -> Any:
@@ -218,8 +182,7 @@ def _build_switchboard_insight_notify_fn(
 
         if channel == "telegram":
             # Resolve the numeric chat id (telegram_chat_id), not the @username
-            # handle — the username is undeliverable and trips the approval
-            # gate's owner-primacy check, parking owner notifications forever.
+            # handle; the Telegram delivery API requires a numeric identifier.
             recipient = await resolve_owner_telegram_recipient(pool)
             if not recipient:
                 logger.error(
@@ -265,6 +228,28 @@ def _build_switchboard_insight_notify_fn(
     return _notify_fn
 
 
+def _build_switchboard_insight_amend_fn(pool: asyncpg.Pool) -> Any:
+    """Build the ``amend_fn`` the insight delivery cycle uses to edit a delivered message.
+
+    Returns an async callable ``amend_fn(delivery_ref, text) -> dict`` that edits
+    the stored Telegram message in place through the Switchboard's channel
+    routing (bu-q7vx1q.5). ``delivery_ref`` is the reference the broker stored
+    when it delivered the candidate; a reference without a chat and provider
+    message id is reported as ``rejected`` so the broker folds instead.
+    """
+
+    async def _amend_fn(delivery_ref: dict[str, Any], text: str) -> dict[str, Any]:
+        from butlers.tools.switchboard.notification.deliver import amend_delivery
+
+        chat_id = delivery_ref.get("chat_id")
+        message_id = delivery_ref.get("provider_message_id")
+        if not chat_id or not isinstance(message_id, int):
+            return {"status": "rejected"}
+        return await amend_delivery(pool, chat_id=str(chat_id), message_id=message_id, text=text)
+
+    return _amend_fn
+
+
 async def _run_switchboard_insight_delivery_cycle_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -287,10 +272,18 @@ async def _run_switchboard_insight_delivery_cycle_job(
     regardless of whether the owner is reachable yet.
     """
     del job_args
+    from butlers.core.finance_warning_control import lookup_owner
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
+    owner = lookup_owner(pool)
     notify_fn = _build_switchboard_insight_notify_fn(pool)
-    return await delivery_cycle(pool, notify_fn=notify_fn, daily_hold_mode=True)
+    return await delivery_cycle(
+        pool,
+        notify_fn=notify_fn,
+        **({"finance_warning_reader": owner.read} if owner is not None else {}),
+        daily_hold_mode=True,
+        amend_fn=_build_switchboard_insight_amend_fn(pool),
+    )
 
 
 async def _run_switchboard_insight_urgent_subcycle_job(
@@ -310,10 +303,18 @@ async def _run_switchboard_insight_urgent_subcycle_job(
     selection and cadence differ.
     """
     del job_args
+    from butlers.core.finance_warning_control import lookup_owner
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
+    owner = lookup_owner(pool)
     notify_fn = _build_switchboard_insight_notify_fn(pool)
-    return await delivery_cycle(pool, notify_fn=notify_fn, urgent_only=True)
+    return await delivery_cycle(
+        pool,
+        notify_fn=notify_fn,
+        **({"finance_warning_reader": owner.read} if owner is not None else {}),
+        urgent_only=True,
+        amend_fn=_build_switchboard_insight_amend_fn(pool),
+    )
 
 
 async def _run_switchboard_commitment_escalation_job(
@@ -736,6 +737,48 @@ async def _run_memory_ann_observability_job(
     return await ann_observability.run_ann_observability(resolve_memory_runtime_pool())
 
 
+async def _run_memory_knowledge_gap_delivery_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Expire stale knowledge gaps and post one notice per answered gap's origin thread.
+
+    Deterministic (no LLM session).  Notices are posted into the origin dashboard
+    conversation through the same persistence ``conversation_reply`` uses; a butler whose
+    memory schema predates ``mem_014`` is skipped rather than failed.
+    """
+    del pool
+    if job_args:
+        raise RuntimeError(
+            "memory_knowledge_gap_delivery job does not accept job_args; "
+            f"received: {sorted(job_args)}"
+        )
+    import importlib
+    from uuid import UUID
+
+    from butlers.api.conversations import conversation_reply_create
+    from butlers.core.memory_hooks import (
+        resolve_memory_dispatch_butler_name,
+        resolve_memory_runtime_pool,
+    )
+
+    knowledge_gaps = importlib.import_module("butlers.modules.memory.knowledge_gaps")
+    memory_pool = resolve_memory_runtime_pool()
+    butler_name = resolve_memory_dispatch_butler_name()
+    if not await memory_pool.fetchval("SELECT to_regclass('knowledge_gaps') IS NOT NULL"):
+        return {"skipped": "knowledge_gaps table not migrated"}
+
+    async def post(conversation_id: UUID, text: str) -> bool:
+        message = await conversation_reply_create(
+            memory_pool, conversation_id, message=text, routed_butler=butler_name
+        )
+        return message is not None
+
+    return await knowledge_gaps.deliver_knowledge_gaps(
+        memory_pool, post=post, origin_butler=butler_name
+    )
+
+
 _MEMORY_MAINTENANCE_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {
     "memory_consolidation": _run_memory_consolidation_job,
     "memory_episode_cleanup": _run_memory_episode_cleanup_job,
@@ -743,6 +786,7 @@ _MEMORY_MAINTENANCE_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
     "memory_decay_sweep": _run_memory_decay_sweep_job,
     "memory_catalog_backfill": _run_memory_catalog_backfill_job,
     "memory_ann_observability": _run_memory_ann_observability_job,
+    "memory_knowledge_gap_delivery": _run_memory_knowledge_gap_delivery_job,
 }
 
 
@@ -922,6 +966,18 @@ async def _run_finance_bill_reconciliation_sweep_job(
     return await mod.run_bill_reconciliation_sweep(pool)
 
 
+async def _run_finance_cost_claim_reconciliation_sweep_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Finance's deterministic shared cost-claim reconciliation sweep."""
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("finance")
+    return await mod.run_cost_claim_reconciliation_sweep(pool)
+
+
 async def _run_finance_anomaly_insight_scan_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1051,6 +1107,26 @@ async def _run_health_insight_scan_job(
     return await mod.run_insight_scan(pool, ha_environment_reader=ha_reader)
 
 
+async def _run_health_baseline_watch_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the health personal-baselines watch (deterministic, zero LLM)."""
+    from butlers.jobs.health_baselines import run_baseline_watch
+
+    return await run_baseline_watch(pool, job_args)
+
+
+async def _run_health_visit_brief_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the health pre-appointment visit brief (deterministic, zero LLM, owner-only)."""
+    from butlers.jobs.health_visit_brief import run_visit_brief
+
+    return await run_visit_brief(pool, job_args)
+
+
 async def _run_health_atmosphere_advisory_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1086,6 +1162,23 @@ async def _run_relationship_calendar_prep_contribution_job(
     return await run_relationship_calendar_prep_contribution(pool=pool, job_args=job_args)
 
 
+async def _run_relationship_meeting_debrief_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Record ended meetings with other people and propose one end-of-day debrief batch.
+
+    Delegates to ``butlers.jobs.meeting_debrief.run_meeting_debrief`` (bu-q7vx1q.12). The
+    insight proposer is injected, and its import deferred, for the same reason as
+    ``_run_switchboard_commitment_escalation_job``.
+    """
+    del job_args
+    from butlers.jobs.meeting_debrief import run_meeting_debrief
+    from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+    return await run_meeting_debrief(pool, insight_proposer=propose_insight_candidate)
+
+
 async def _run_messenger_calendar_prep_contribution_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1118,6 +1211,45 @@ async def _run_relationship_insight_scan_job(
     return await mod.run_insight_scan(pool)
 
 
+async def _run_relationship_upcoming_dates_check_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Remind the owner of active people's dates this week (bu-idc5mx.4; template, zero LLM)."""
+    del job_args
+    from butlers.tools.relationship.reminders import run_upcoming_dates_check
+
+    return await run_upcoming_dates_check(pool)
+
+
+async def _run_relationship_maintenance_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Suggest the week's top overdue reconnections by urgency (bu-idc5mx.4; zero LLM)."""
+    del job_args
+    from butlers.tools.relationship.reminders import run_relationship_maintenance
+
+    return await run_relationship_maintenance(pool)
+
+
+async def _run_prepared_action_orphan_sweep_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Expire stale origin='prepared' pending actions (bu-2jtfw.11).
+
+    Deterministic, zero-LLM. See
+    ``butlers.modules.approvals.operations.sweep_orphaned_prepared_actions``
+    for why this exists as a dedicated sweep rather than relying on the
+    existing on-touch expiry path.
+    """
+    del job_args
+    from butlers.modules.approvals.operations import sweep_orphaned_prepared_actions
+
+    return await sweep_orphaned_prepared_actions(pool)
+
+
 async def _run_relationship_interaction_sync_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1128,6 +1260,18 @@ async def _run_relationship_interaction_sync_job(
 
     mod = load_roster_jobs("relationship")
     return await mod.run_interaction_sync(pool)
+
+
+async def _run_relationship_loan_cost_claim_backfill_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Retry idempotent Relationship loan claim projections."""
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("relationship")
+    return await mod.run_loan_cost_claim_backfill(pool)
 
 
 async def _run_relationship_memory_curation_job(
@@ -1268,6 +1412,28 @@ async def _run_lifestyle_briefing_contribution_job(
     from butlers.jobs.briefing import run_lifestyle_briefing_contribution
 
     return await run_lifestyle_briefing_contribution(pool=pool, job_args=job_args)
+
+
+async def _run_lifestyle_taste_projection_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Project connector evidence into Lifestyle's taste ledger without an LLM."""
+    del job_args
+    from butlers.tools.lifestyle import taste_ledger
+
+    sessions = await taste_ledger.backfill_from_listening_sessions(pool)
+    plays = await taste_ledger.backfill_from_track_plays(pool)
+    return {
+        "sessions": {
+            "works_created": sessions.works_created,
+            "signals_created": sessions.signals_created,
+        },
+        "track_plays": {
+            "works_created": plays.works_created,
+            "signals_created": plays.signals_created,
+        },
+    }
 
 
 async def _run_collect_briefing_contributions_job(
@@ -1445,6 +1611,16 @@ async def _run_home_atmosphere_preconditioning_job(
     return await run_home_atmosphere_preconditioning(pool, job_args)
 
 
+async def _run_home_safety_sentinel_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Reconcile owner-declared leak/smoke/CO/gas sensors and alert without a model."""
+    from butlers.jobs.home_safety import run_safety_sentinel
+
+    return await run_safety_sentinel(pool, job_args)
+
+
 _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {
     "device_health_check": _run_home_device_health_check_job,
     "environment_report": _run_home_environment_report_job,
@@ -1453,6 +1629,7 @@ _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
     "context_producer_home_presence": _run_context_producer_home_presence_job,
     "atmosphere_feed_refresh": _run_home_atmosphere_feed_refresh_job,
     "atmosphere_preconditioning": _run_home_atmosphere_preconditioning_job,
+    "home_safety_sentinel": _run_home_safety_sentinel_job,
 }
 
 
@@ -1514,6 +1691,19 @@ async def _run_qa_evidence_cleanup_job(
 # ---------------------------------------------------------------------------
 # Chronicler jobs
 # ---------------------------------------------------------------------------
+
+
+async def _run_chronicler_gap_interview_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Ask Chronicler's day-close gap interview for yesterday (bu-idc5mx.4; zero LLM)."""
+    from butlers.chronicler.gap_interview_job import run_gap_interview_job
+    from butlers.core.tool_call_capture import get_current_credential_store
+
+    store = get_current_credential_store()
+    store_kwargs = {"credential_store": store} if store is not None else {}
+    return await run_gap_interview_job(pool, job_args, **store_kwargs)
 
 
 async def _run_chronicler_project_sessions_job(
@@ -1761,30 +1951,41 @@ async def _run_chronicler_narrate_daily_job(
 # ---------------------------------------------------------------------------
 
 
-async def _run_session_process_logs_prune_job(
-    pool: asyncpg.Pool,
-    job_args: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Prune expired session_process_logs rows for a butler schema.
+def _session_process_logs_prune_job(butler_name: str) -> _DeterministicScheduleJobHandler:
+    """Return ``butler_name``'s session_process_logs pruner, confined to its own schema.
+
+    Each butler role sees only its own schema plus ``public``, and the schema is
+    interpolated into SQL, so the handler targets ``<butler_name>`` by default
+    and refuses any other ``schema`` job arg before a statement is issued.
 
     Disabled by default.  Enable via ``job_args = {enabled = true, dry_run = false}``.
-    ``schema`` must be supplied in job_args (defaults to the butler name).
     See docs/operations/data-retention.md §[A] and butlers.jobs.retention.
     """
-    from butlers.jobs.retention import prune_session_process_logs
 
-    args = job_args or {}
-    schema: str = args.get("schema", "general")
-    enabled: bool = bool(args.get("enabled", False))
-    dry_run: bool = bool(args.get("dry_run", True))
-    batch_limit: int = int(args.get("batch_limit", 500))
-    return await prune_session_process_logs(
-        pool,
-        schema=schema,
-        enabled=enabled,
-        dry_run=dry_run,
-        batch_limit=batch_limit,
-    )
+    async def _run_session_process_logs_prune_job(
+        pool: asyncpg.Pool,
+        job_args: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        from butlers.jobs.retention import prune_session_process_logs
+
+        args = job_args or {}
+        if args.get("schema", butler_name) != butler_name:
+            raise ValueError(
+                "session_process_logs_prune may only target the running butler's own "
+                f"schema ({butler_name!r})"
+            )
+        enabled: bool = bool(args.get("enabled", False))
+        dry_run: bool = bool(args.get("dry_run", True))
+        batch_limit: int = int(args.get("batch_limit", 500))
+        return await prune_session_process_logs(
+            pool,
+            schema=butler_name,
+            enabled=enabled,
+            dry_run=dry_run,
+            batch_limit=batch_limit,
+        )
+
+    return _run_session_process_logs_prune_job
 
 
 async def _run_filtered_events_partition_prune_job(
@@ -1860,12 +2061,24 @@ async def _run_secret_probe_log_prune_job(
     )
 
 
+# Pruners over shared ``connectors`` / ``public`` tables run from ``general`` only.
 _RETENTION_PRUNER_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {
-    "session_process_logs_prune": _run_session_process_logs_prune_job,
     "filtered_events_partition_prune": _run_filtered_events_partition_prune_job,
     "insight_candidates_prune": _run_insight_candidates_prune_job,
     "secret_probe_log_prune": _run_secret_probe_log_prune_job,
 }
+
+
+def _retention_pruner_job_handlers(butler_name: str) -> dict[str, _DeterministicScheduleJobHandler]:
+    """Return the retention pruners ``butler_name`` may dispatch (all disabled by default).
+
+    Every butler gets its own schema-scoped session log pruner; ``general`` also
+    owns the shared-table pruners in ``_RETENTION_PRUNER_JOB_HANDLERS``.
+    """
+    handlers = {"session_process_logs_prune": _session_process_logs_prune_job(butler_name)}
+    if butler_name == "general":
+        handlers.update(_RETENTION_PRUNER_JOB_HANDLERS)
+    return handlers
 
 
 # ---------------------------------------------------------------------------
@@ -1889,20 +2102,18 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "collect_briefing_contributions": _run_collect_briefing_contributions_job,
             "context_producer_calendar": _run_context_producer_calendar_job,
             # Retention pruners (disabled by default — see docs/operations/data-retention.md)
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
-            "filtered_events_partition_prune": _run_filtered_events_partition_prune_job,
-            "insight_candidates_prune": _run_insight_candidates_prune_job,
-            "secret_probe_log_prune": _run_secret_probe_log_prune_job,
+            **_retention_pruner_job_handlers("general"),
         },
         "health": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "daily_briefing_contribution": _run_health_briefing_contribution_job,
             "calendar_overlay_contribution": _run_health_calendar_overlay_contribution_job,
             "insight_scan": _run_health_insight_scan_job,
+            "baseline_watch": _run_health_baseline_watch_job,
+            "health_visit_brief": _run_health_visit_brief_job,
             "atmosphere_advisory": _run_health_atmosphere_advisory_job,
             "context_producer_sleep_window": _run_context_producer_sleep_window_job,
-            # Per-butler session log pruner
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            **_retention_pruner_job_handlers("health"),
         },
         "finance": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
@@ -1910,10 +2121,11 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "calendar_overlay_contribution": _run_finance_calendar_overlay_contribution_job,
             "insight_scan": _run_finance_insight_scan_job,
             "bill_reconciliation_sweep": _run_finance_bill_reconciliation_sweep_job,
+            "cost_claim_reconciliation_sweep": _run_finance_cost_claim_reconciliation_sweep_job,
             "anomaly_insight_scan": _run_finance_anomaly_insight_scan_job,
             "monthly_finance_digest": _run_finance_monthly_finance_digest_job,
             "simplefin_sync": _run_finance_simplefin_sync_job,
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            **_retention_pruner_job_handlers("finance"),
         },
         "relationship": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
@@ -1921,7 +2133,11 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "calendar_overlay_contribution": _run_relationship_calendar_overlay_contribution_job,
             "calendar_prep_contribution": _run_relationship_calendar_prep_contribution_job,
             "insight_scan": _run_relationship_insight_scan_job,
+            "upcoming_dates_check": _run_relationship_upcoming_dates_check_job,
+            "relationship_maintenance": _run_relationship_maintenance_job,
+            "meeting_debrief": _run_relationship_meeting_debrief_job,
             "interaction_sync": _run_relationship_interaction_sync_job,
+            "loan_cost_claim_backfill": _run_relationship_loan_cost_claim_backfill_job,
             "memory_curation": _run_relationship_memory_curation_job,
             "pending_actions_curation": _run_relationship_pending_actions_curation_job,
             "fact_retraction_curation": _run_relationship_fact_retraction_curation_job,
@@ -1929,7 +2145,8 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "episodic_predicate_curation": _run_relationship_episodic_predicate_curation_job,
             "email_identity_enrichment": _run_relationship_email_identity_enrichment_job,
             # contact_info_reconciler retired (bu-e2ja9 / core_115): table dropped.
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            **_retention_pruner_job_handlers("relationship"),
+            "prepared_action_orphan_sweep": _run_prepared_action_orphan_sweep_job,
         },
         "travel": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
@@ -1941,18 +2158,18 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "destination_outlook": _run_travel_destination_outlook_job,
             "context_producer_travel": _run_context_producer_travel_job,
             "context_producer_commuting_eta": _run_context_producer_commuting_eta_job,
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            **_retention_pruner_job_handlers("travel"),
         },
         "messenger": {
             "calendar_prep_contribution": _run_messenger_calendar_prep_contribution_job,
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            **_retention_pruner_job_handlers("messenger"),
         },
         "education": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "compute_analytics_snapshots": _run_education_compute_analytics_snapshots_job,
             "mind_map_staleness_abandonment": _run_education_mind_map_staleness_job,
             "daily_briefing_contribution": _run_education_briefing_contribution_job,
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            **_retention_pruner_job_handlers("education"),
         },
         "chronicler": {
             # Memory maintenance handlers (bu-93y4rt): the chronicler now enables
@@ -1962,6 +2179,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             # purge_superseded / catalog_backfill) or they fail with "unknown
             # deterministic job".
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
+            "chronicler_gap_interview": _run_chronicler_gap_interview_job,
             "chronicler_project_sessions": _run_chronicler_project_sessions_job,
             "chronicler_project_calendar": _run_chronicler_project_calendar_job,
             "chronicler_project_owntracks": _run_chronicler_project_owntracks_job,
@@ -2005,12 +2223,13 @@ def _build_deterministic_schedule_job_registry() -> dict[
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             **_HOME_DETERMINISTIC_JOB_HANDLERS,
             "daily_briefing_contribution": _run_home_briefing_contribution_job,
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            **_retention_pruner_job_handlers("home"),
         },
         "lifestyle": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "daily_briefing_contribution": _run_lifestyle_briefing_contribution_job,
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            "taste_ledger_project": _run_lifestyle_taste_projection_job,
+            **_retention_pruner_job_handlers("lifestyle"),
         },
         "switchboard": {
             "eligibility_sweep": _run_switchboard_eligibility_sweep_job,
@@ -2019,20 +2238,19 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "commitment_escalation": _run_switchboard_commitment_escalation_job,
             "spend_rule_savings": _run_switchboard_spend_rule_savings_job,
             "rule_promotion_trigger": _run_switchboard_rule_promotion_trigger_job,
-            "decision_review_digest": _run_switchboard_decision_review_digest_job,
-            "decision_escalation_check": _run_switchboard_decision_escalation_check_job,
+            "dropped_known_watch": _run_switchboard_dropped_known_watch_job,
             "domain_event_reconciliation_sweep": (
                 _run_switchboard_domain_event_reconciliation_sweep_job
             ),
             "fleet_case_lapse_sweep": _run_switchboard_fleet_case_lapse_sweep_job,
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            **_retention_pruner_job_handlers("switchboard"),
         },
         "qa": {
             "qa_patrol": _run_qa_patrol_job,
             "qa_pr_status_check": _run_qa_pr_status_check_job,
             "qa_evidence_cleanup": _run_qa_evidence_cleanup_job,
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            **_retention_pruner_job_handlers("qa"),
         },
     }
 

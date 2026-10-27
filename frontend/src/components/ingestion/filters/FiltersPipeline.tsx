@@ -12,7 +12,7 @@
  *
  * Data sources:
  * - usePipelineStats("24h")        → PipelineStats (funnel counts)
- * - useIngestionRules({enabled:true})  → active rules
+ * - useIngestionRules()  → active rules
  * - useIngestionRules({archived:true}) → archived (soft-deleted) rules via ?archived=true
  *
  * Priority senders: rules with action starting with "route" and
@@ -32,7 +32,8 @@
  *       dashboard-ingestion-dispatch-console/spec.md §"Filters Pipeline"
  */
 
-import { useState } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router'
 import { usePipelineStats } from '@/hooks/use-ingestion'
 import { useIngestionRules, useUpdateIngestionRule, useDeleteIngestionRule } from '@/hooks/use-ingestion-rules'
 import {
@@ -40,7 +41,7 @@ import {
   useAddPriorityContact,
   useRemovePriorityContact,
 } from '@/hooks/use-priority-contacts'
-import { useContacts } from '@/hooks/use-contacts'
+import { useRelationshipEntities } from '@/hooks/use-entities'
 import { useChannelDefault, useUpdateChannelDefault } from '@/hooks/use-channel-defaults'
 import { GATE_DEFS, groupRulesByGate, deriveGateCounts } from './gate-state'
 import type { GateKey } from './gate-state'
@@ -55,6 +56,9 @@ import type { ChannelDefaultPolicy } from '@/api/index.ts'
 import { ApiError } from '@/api/index.ts'
 import { getAvailablePipelineBacklog } from './backlog-state'
 import { SourceDegradedNote } from '@/components/ui/query-boundary'
+
+/** Priority-sender picker size; the relationship entity list caps `limit` at 200. */
+const PRIORITY_CANDIDATE_LIMIT = 200
 
 // ---------------------------------------------------------------------------
 // Rule classification helpers
@@ -167,6 +171,24 @@ function ExecutionBacklog({ stats, loading, statsError, onRetry }: ExecutionBack
 // ---------------------------------------------------------------------------
 
 export function FiltersPipeline() {
+  const [searchParams] = useSearchParams()
+  // URLSearchParams decodes once. Opaque ids are never used as CSS selectors.
+  const ruleTarget = searchParams.get('rule') || null
+  const focusReceipt = useRef<{ target: string | null; focused: boolean }>({ target: null, focused: false })
+
+  // Child rows focus in passive effects, after this target receipt is reset.
+  useLayoutEffect(() => {
+    if (focusReceipt.current.target !== ruleTarget) {
+      focusReceipt.current = { target: ruleTarget, focused: false }
+    }
+  }, [ruleTarget])
+
+  const focusLinkedRow = useCallback((row: HTMLElement) => {
+    if (!ruleTarget || row.dataset.ruleId !== ruleTarget || focusReceipt.current.focused) return
+    focusReceipt.current.focused = true
+    row.focus({ preventScroll: true })
+    row.scrollIntoView?.({ behavior: 'instant', block: 'center' })
+  }, [ruleTarget])
   const [toggleError, setToggleError] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [priorityMutationError, setPriorityMutationError] = useState<string | null>(null)
@@ -198,7 +220,7 @@ export function FiltersPipeline() {
     isLoading: rulesLoading,
     isError: rulesError,
     refetch: refetchRules,
-  } = useIngestionRules({ enabled: true })
+  } = useIngestionRules()
 
   // Archived rules (soft-deleted = deleted_at is set). The backend returns these
   // only when ?archived=true is passed; this is the PARAMS argument (query
@@ -208,6 +230,8 @@ export function FiltersPipeline() {
   const {
     data: archivedRulesResp,
     isLoading: archivedLoading,
+    isError: archivedError,
+    refetch: refetchArchived,
   } = useIngestionRules({ archived: true })
 
   const updateRule = useUpdateIngestionRule()
@@ -223,8 +247,14 @@ export function FiltersPipeline() {
   const addPriorityContact = useAddPriorityContact()
   const removePriorityContact = useRemovePriorityContact()
 
-  // Contact candidates for the add picker.
-  const { data: contactsResp, isLoading: contactsLoading } = useContacts({ limit: 200 })
+  // Contact candidates for the add picker: entities that carry contact facts.
+  // priority_contacts.contact_id is an entity UUID (core_131), so the entity id
+  // is submitted directly. 200 is the entity list endpoint's ceiling.
+  const {
+    data: candidatesResp,
+    isLoading: candidatesLoading,
+    isError: candidatesError,
+  } = useRelationshipEntities({ has: 'contact', limit: PRIORITY_CANDIDATE_LIMIT })
 
   // Channel defaults edit — fetch the current policy only while a channel is
   // actively being edited (the backend 404s for unset channels; that's an
@@ -246,12 +276,20 @@ export function FiltersPipeline() {
   // (deleted_at set); no client-side filtering needed.
   const archivedRules: IngestionRule[] = archivedRulesResp?.data ?? []
 
+  // Empty arrays from successful reads prove absence; missing data and stale
+  // responses after errors do not. Include disabled non-archived rules.
+  const ruleReadsComplete = !rulesLoading && !archivedLoading && !rulesError && !archivedError
+    && Array.isArray(activeRulesResp?.data) && Array.isArray(archivedRulesResp?.data)
+  const linkedRuleId = ruleReadsComplete ? ruleTarget : null
+  const linkedRuleExists = linkedRuleId !== null && [...allActiveRules, ...archivedRules]
+    .some((rule) => rule.id === linkedRuleId)
+
   const priorityContacts = priorityContactsResp?.data ?? []
-  const contactCandidates = contactsResp?.contacts ?? []
+  const contactCandidates = candidatesResp?.items ?? []
 
   // Split out special-purpose rules before gate bucketing
   const channelDefaultRules = allActiveRules.filter(isChannelDefault)
-  const gatableRules = allActiveRules.filter((r) => !isChannelDefault(r))
+  const gatableRules = allActiveRules.filter((r) => !isChannelDefault(r) || r.id === linkedRuleId)
 
   const rulesByGate = groupRulesByGate(gatableRules)
 
@@ -399,7 +437,7 @@ export function FiltersPipeline() {
   // Loading state
   // -------------------------------------------------------------------------
 
-  if (statsLoading && rulesLoading) {
+  if (statsLoading && rulesLoading && !ruleTarget) {
     return (
       <div className="space-y-4 py-6">
         {Array.from({ length: 3 }).map((_, i) => (
@@ -415,6 +453,24 @@ export function FiltersPipeline() {
 
   return (
     <div data-testid="filters-pipeline">
+      {ruleTarget && !ruleReadsComplete && (rulesLoading || archivedLoading) && !rulesError && !archivedError ? (
+        <p role="status" className="mb-4 font-mono text-[11px] text-muted-foreground">
+          Loading linked rule…
+        </p>
+      ) : ruleTarget && !ruleReadsComplete ? (
+        <SourceDegradedNote
+          className="mb-4"
+          label="linked rule"
+          detail="unavailable; rule reads could not be completed"
+          onRetry={() => { void refetchRules(); void refetchArchived() }}
+          testId="linked-rule-unavailable"
+        />
+      ) : ruleTarget && !linkedRuleExists ? (
+        <p role="status" className="mb-4 font-serif text-sm text-muted-foreground" data-testid="linked-rule-missing">
+          Rule no longer exists. The linked rule was not found in active or archived rules.
+        </p>
+      ) : null}
+
       {/* Error banners */}
       {(toggleError || deleteError) && (
         <div
@@ -466,6 +522,8 @@ export function FiltersPipeline() {
             rulesLoading={rulesLoading}
             rulesError={rulesError}
             onRetryRules={() => void refetchRules()}
+            linkedRuleId={linkedRuleId}
+            onLinkedRowReady={focusLinkedRow}
             onToggleRule={handleToggleRule}
             onEditRule={handleEditRule}
             onDeleteRule={handleDeleteRule}
@@ -484,7 +542,8 @@ export function FiltersPipeline() {
           error={priorityError}
           mutationError={priorityMutationError}
           addCandidates={contactCandidates}
-          candidatesLoading={contactsLoading}
+          candidatesLoading={candidatesLoading}
+          candidatesError={candidatesError}
           onAdd={handleAddPrioritySender}
           onRemove={handleRemovePrioritySender}
         />
@@ -507,6 +566,8 @@ export function FiltersPipeline() {
       {!archivedLoading && (
         <ArchivedRulesSection
           rules={archivedRules}
+          linkedRuleId={linkedRuleId}
+          onLinkedRowReady={focusLinkedRow}
           onRestore={handleRestoreRule}
           restoreError={restoreError}
         />

@@ -31,9 +31,10 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 
 import asyncpg
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import PaginationMeta
 from butlers.api.models.attention_ledger import (
     AttentionLedgerEntry,
@@ -55,11 +56,6 @@ router = APIRouter(prefix="/api/attention", tags=["attention"])
 # start delivering" framing -- not specified by the bead, so picked as the
 # smallest window that comfortably spans a butler's daily/weekly cron cadence.
 _DEFAULT_SUMMARY_WINDOW = timedelta(days=7)
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub -- overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _get_shared_pool(db: DatabaseManager) -> asyncpg.Pool | None:
@@ -234,10 +230,15 @@ async def list_attention_ledger(
         None, description="Filter by choke point: notify, insight, or discretion"
     ),
     outcome: str | None = Query(
-        None, description="Filter by outcome: delivered, coalesced, deferred, suppressed, failed"
+        None,
+        description=(
+            "Filter by outcome: delivered, coalesced, deferred, suppressed, failed, "
+            "expired, withdrawn, amended"
+        ),
     ),
     origin_butler: str | None = Query(None, description="Filter by originating butler/job name"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> AttentionLedgerListResponse:
     """Return paginated attention-ledger rows, newest first.
 
@@ -309,6 +310,7 @@ async def _query_ledger_summary(
         "COUNT(*) FILTER (WHERE outcome = 'deferred') AS deferred, "
         "COUNT(*) FILTER (WHERE outcome = 'suppressed') AS suppressed, "
         "COUNT(*) FILTER (WHERE outcome = 'failed') AS failed, "
+        "COUNT(*) FILTER (WHERE outcome = 'expired') AS expired_unseen, "
         "COUNT(*) AS total "
         f"FROM public.attention_ledger{where_clause} "
         "GROUP BY origin_butler "
@@ -324,6 +326,7 @@ async def _query_ledger_summary(
             deferred=row["deferred"],
             suppressed=row["suppressed"],
             failed=row["failed"],
+            expired_unseen=row["expired_unseen"],
             total=row["total"],
             suppressed_never_delivered=row["suppressed"] > 0 and row["delivered"] == 0,
         )
@@ -356,7 +359,8 @@ async def get_attention_ledger_summary(
     origin_butler: str | None = Query(
         None, description="Narrow the rollup to a single originating butler/job"
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> AttentionLedgerSummaryResponse:
     """Return per-``origin_butler`` delivery-vs-suppression counts over a window.
 

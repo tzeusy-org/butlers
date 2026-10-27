@@ -16,12 +16,13 @@ import asyncpg
 import httpx
 import pytest
 
-from butlers.api.app import create_app
-from butlers.api.routers.memory import _get_db_manager, list_facts, list_rules
+from butlers.api.deps import get_db
+from butlers.api.routers.memory import list_facts, list_rules
 from butlers.db import register_jsonb_codec
 from butlers.migrations import run_migrations
 from butlers.modules.memory.storage import get_links
 from butlers.testing.migration import create_migration_db, migration_db_name
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -161,7 +162,7 @@ async def _delete_sourced_episode(db_url: str) -> dict[str, object]:
         )
         links = await get_links(pool, "fact", fact_id)
         app = create_app()
-        app.dependency_overrides[_get_db_manager] = lambda: api_db
+        app.dependency_overrides[get_db] = lambda: api_db
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:

@@ -55,7 +55,7 @@ The identity switcher chip SHALL include connected Google accounts as selectable
 
 #### Scenario: Identity switch to a non-primary Google account
 
-- **WHEN** the owner clicks the identity chip and selects a Google account entity (e.g. the companion entity for `tzeuse@gmail.com`)
+- **WHEN** the owner clicks the identity chip and selects a Google account entity (e.g. the companion entity for `owner.secondary@example.com`)
 - **THEN** the URL updates to `/secrets?identity=<google_account_entity_id>`
 - **AND** the User-tab spine re-renders to show the `google_oauth_refresh` credential for that non-primary account
 - **AND** `PageGoogleAccounts` renders with that account's scope-set picker and connector health data

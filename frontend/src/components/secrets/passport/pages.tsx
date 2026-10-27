@@ -11,6 +11,8 @@
 // No LLM narration. All text is stored-prose, templated, verbatim, or literal.
 // ---------------------------------------------------------------------------
 
+import { StateDot } from "@/components/ui/StateDot";
+import { googleHealthState } from "@/lib/google-health-state";
 import * as React from "react";
 import { Time } from "@/components/ui/time";
 
@@ -177,8 +179,8 @@ function HeadingBand({
               className="m-0"
               style={{
                 fontFamily: titleMono
-                  ? "var(--font-mono, monospace)"
-                  : "var(--font-sans, 'Inter Tight', sans-serif)",
+                  ? "var(--font-mono)"
+                  : "var(--font-sans)",
                 fontSize: titleMono ? 24 : 30,
                 fontWeight: 500,
                 letterSpacing: titleMono ? "0.005em" : "-0.025em",
@@ -276,7 +278,7 @@ function ActionArrow({
   return (
     <a
       href={href ?? "#"}
-      className="text-[13px] whitespace-nowrap"
+      className="text-[13px] whitespace-nowrap max-md:inline-flex max-md:min-h-11 max-md:items-center"
       style={{
         color: "var(--fg)",
         textDecoration: "underline",
@@ -868,8 +870,6 @@ function TestModeExpiryBanner({
   isExpiring: boolean;
   primaryAccountEmail: string | null;
 }) {
-  const tone = isExpiring ? "var(--red)" : "var(--amber)";
-  const textTone = isExpiring ? "var(--red)" : "var(--amber-text)";
   const label = isExpiring
     ? "test-mode consent about to expire, re-consent to keep Google Health connected"
     : "test mode: consent expires every 7 days until production verification completes";
@@ -887,29 +887,20 @@ function TestModeExpiryBanner({
   return (
     <div
       className="flex items-start gap-2 p-2.5 rounded-sm"
-      style={{
-        border: `1px solid ${tone}`,
-        background: isExpiring
-          ? "color-mix(in oklch, var(--red) 8%, transparent)"
-          : "color-mix(in oklch, var(--amber) 8%, transparent)",
-      }}
       data-testid="test-mode-expiry-banner"
       data-expired={isExpiring ? "true" : "false"}
       data-variant={isExpiring ? "red" : "orange"}
     >
-      <span
-        className="inline-block shrink-0 rounded-full mt-1"
-        style={{ width: 6, height: 6, backgroundColor: tone }}
-        aria-hidden="true"
-      />
+      <StateDot state={isExpiring ? "error" : "degraded"} className="mt-1"
+        aria-label={isExpiring ? "Google Health consent: about to expire" : "Google Health consent: test mode"} />
       <div className="flex flex-col gap-1 min-w-0">
-        <Mono size={10} color={textTone}>{label}</Mono>
+        <Mono size={10} color="var(--fg)">{label}</Mono>
         <a
           href={reconsentUrl}
           data-testid="test-mode-reconsent-link"
           className="underline underline-offset-2 w-fit"
         >
-          <Mono size={9} color={textTone}>re-consent (Google Health)</Mono>
+          <Mono size={9} color="var(--mfg)">re-consent (Google Health)</Mono>
         </a>
       </div>
     </div>
@@ -936,14 +927,6 @@ function TestModeExpiryBanner({
  * [bu-hh875][bu-zv881]
  */
 function GoogleHealthPassportStatusCard({ status }: { status: GoogleHealthStatusResponse }) {
-  const stateColor =
-    status.state === "healthy"
-      ? "var(--green)"
-      : status.state === "error"
-        ? "var(--red)"
-        : "var(--amber)";
-  const stateTextColor = stateColor === "var(--amber)" ? "var(--amber-text)" : stateColor;
-
   // Compute banner flags via a module-level helper so Date.now() is not called
   // directly during render (required by the react-hooks/purity ESLint rule).
   const { showBanner, isExpiring } = computeHealthBannerFlags(status);
@@ -967,12 +950,8 @@ function GoogleHealthPassportStatusCard({ status }: { status: GoogleHealthStatus
       <div className="flex flex-col gap-1.5">
         {/* State row */}
         <div className="flex items-center gap-2">
-          <span
-            className="inline-block shrink-0 rounded-full"
-            style={{ width: 6, height: 6, backgroundColor: stateColor }}
-            aria-hidden="true"
-          />
-          <Mono size={10} color={stateTextColor}>{status.state}</Mono>
+          <StateDot state={googleHealthState(status.state)} aria-label={`Google Health: ${status.state.replaceAll("_", " ")}`} />
+          <Mono size={10} color="var(--mfg)">{status.state}</Mono>
         </div>
 
         {/* KV rows */}
@@ -1617,7 +1596,7 @@ export function PageUser({
             value={rotateValue}
             onChange={(e) => setRotateValue(e.target.value)}
             placeholder="paste token here"
-            className="font-mono text-[11px] p-2 resize-none outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
+            className="font-mono text-[11px] p-2 resize-none outline-none focus-visible:ring-[3px] focus-visible:ring-focus w-full"
             style={{
               border: "1px solid var(--border-strong)",
               background: "var(--bg)",
@@ -2159,7 +2138,7 @@ export function PageSystem({
             value={setValue}
             onChange={(e) => setSetValue(e.target.value)}
             placeholder="paste value here"
-            className="font-mono text-[11px] p-2 resize-none outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
+            className="font-mono text-[11px] p-2 resize-none outline-none focus-visible:ring-[3px] focus-visible:ring-focus w-full"
             style={{
               border: "1px solid var(--border-strong)",
               background: "var(--bg)",
@@ -2210,7 +2189,7 @@ export function PageSystem({
               <select
                 value={overrideButler}
                 onChange={(e) => setOverrideButler(e.target.value)}
-                className="font-mono text-[11px] p-1.5 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                className="font-mono text-[11px] p-1.5 outline-none focus-visible:ring-[3px] focus-visible:ring-focus"
                 style={{
                   border: "1px solid var(--border-strong)",
                   background: "var(--bg)",
@@ -2230,7 +2209,7 @@ export function PageSystem({
             value={overrideValue}
             onChange={(e) => setOverrideValue(e.target.value)}
             placeholder="paste override value here"
-            className="font-mono text-[11px] p-2 resize-none outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
+            className="font-mono text-[11px] p-2 resize-none outline-none focus-visible:ring-[3px] focus-visible:ring-focus w-full"
             style={{
               border: "1px solid var(--border-strong)",
               background: "var(--bg)",
@@ -2306,7 +2285,7 @@ export function PageSystem({
           the shared GOOGLE_OAUTH_CLIENT_ID / _SECRET keys. Writes via the
           oauth PUT endpoint (the correct public credential-pool location) and
           carries the (re-)authorize action that formerly lived on
-          /settings/owner. */}
+          the retired owner-settings page. */}
       {isGoogleApp && (
         <div className="pt-3.5" style={{ borderTop: "1px solid var(--border)" }}>
           <GoogleAppCredentials />
@@ -2455,7 +2434,7 @@ function CliDeviceAuthPanel({ auth }: { auth: CliDeviceAuthState }) {
             <span
               className="px-3 py-1.5 tabular-nums"
               style={{
-                fontFamily: "var(--font-mono, monospace)",
+                fontFamily: "var(--font-mono)",
                 fontSize: 22,
                 fontWeight: 600,
                 letterSpacing: "0.18em",
@@ -2859,7 +2838,7 @@ export function PageCli({
             value={setTokenValue}
             onChange={(e) => setSetTokenValue(e.target.value)}
             placeholder={isApiKeyMode ? "paste api key here" : "paste token here"}
-            className="font-mono text-[11px] p-2 resize-none outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
+            className="font-mono text-[11px] p-2 resize-none outline-none focus-visible:ring-[3px] focus-visible:ring-focus w-full"
             style={{
               border: "1px solid var(--border-strong)",
               background: "var(--bg)",
@@ -3112,7 +3091,7 @@ export function PassportEmptyState() {
     <div className="p-10">
       <span
         style={{
-          fontFamily: "var(--font-serif, 'Source Serif 4', serif)",
+          fontFamily: "var(--font-serif)",
           fontStyle: "italic",
           color: "var(--dim)",
           fontSize: 15,
@@ -3156,11 +3135,8 @@ const DRAWER_PROVIDER_SLUGS = new Set([
 // Spotify is deliberately NOT here. It has its own complete OAuth
 // implementation — the connector PKCE flow at /api/connectors/spotify/oauth/*,
 // client_id only, no client secret — and that is the flow the registered
-// Spotify app's redirect URIs point at. The generalized router's `spotify`
-// registry entry is a confidential-client flow needing
-// SPOTIFY_OAUTH_CLIENT_ID/SECRET, which were never provisioned; routing this
-// pill there (bu-5gliy) gave Spotify a connect button that could only fail.
-// SpotifyDrawer owns the control, on this panel and on PageUser.
+// Spotify app's redirect URIs point at. Spotify has no generalized provider
+// registry entry; SpotifyDrawer owns the control on this panel and on PageUser.
 const OAUTH_PROVIDERS = [{ slug: "google", label: "Google" }];
 
 const STUB_PROVIDERS = [
@@ -3357,7 +3333,7 @@ export function PassportAddPanel({
           <h1
             className="m-0"
             style={{
-              fontFamily: "var(--font-sans, 'Inter Tight', sans-serif)",
+              fontFamily: "var(--font-sans)",
               fontSize: 28,
               fontWeight: 500,
               letterSpacing: "-0.025em",
@@ -3429,7 +3405,7 @@ export function PassportAddPanel({
               onChange={(e) => handleSystemKeyChange(e.target.value)}
               placeholder="SECRET_KEY_NAME"
               list="system-key-suggestions"
-              className="font-mono text-[11px] p-2 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
+              className="font-mono text-[11px] p-2 outline-none focus-visible:ring-[3px] focus-visible:ring-focus w-full"
               style={{
                 border: "1px solid var(--border-strong)",
                 background: "var(--bg)",
@@ -3456,7 +3432,7 @@ export function PassportAddPanel({
               value={systemValue}
               onChange={(e) => setSystemValue(e.target.value)}
               placeholder="paste value here"
-              className="font-mono text-[11px] p-2 resize-none outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
+              className="font-mono text-[11px] p-2 resize-none outline-none focus-visible:ring-[3px] focus-visible:ring-focus w-full"
               style={{
                 border: "1px solid var(--border-strong)",
                 background: "var(--bg)",
@@ -3472,7 +3448,7 @@ export function PassportAddPanel({
             <select
               value={systemCategory}
               onChange={(e) => setSystemCategory(e.target.value as SecretCategory)}
-              className="font-mono text-[11px] p-1.5 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              className="font-mono text-[11px] p-1.5 outline-none focus-visible:ring-[3px] focus-visible:ring-focus"
               style={{
                 border: "1px solid var(--border-strong)",
                 background: "var(--bg)",
@@ -3494,7 +3470,7 @@ export function PassportAddPanel({
               value={systemTarget}
               onChange={(e) => setSystemTarget(e.target.value)}
               placeholder="shared"
-              className="font-mono text-[11px] p-2 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
+              className="font-mono text-[11px] p-2 outline-none focus-visible:ring-[3px] focus-visible:ring-focus w-full"
               style={{
                 border: "1px solid var(--border-strong)",
                 background: "var(--bg)",
@@ -3625,7 +3601,7 @@ export function PassportAddPanel({
                 <select
                   value={userType}
                   onChange={(e) => handleUserTypeChange(e.target.value)}
-                  className="font-mono text-[11px] p-1.5 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                  className="font-mono text-[11px] p-1.5 outline-none focus-visible:ring-[3px] focus-visible:ring-focus"
                   style={{
                     border: "1px solid var(--border-strong)",
                     background: "var(--bg)",
@@ -3656,7 +3632,7 @@ export function PassportAddPanel({
                   value={userValue}
                   onChange={(e) => setUserValue(e.target.value)}
                   placeholder={USER_SECRET_TEMPLATES.find((t) => t.type === userType)?.description ?? "credential value"}
-                  className="font-mono text-[11px] p-2 resize-none outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
+                  className="font-mono text-[11px] p-2 resize-none outline-none focus-visible:ring-[3px] focus-visible:ring-focus w-full"
                   style={{
                     border: "1px solid var(--border-strong)",
                     background: "var(--bg)",
@@ -3674,7 +3650,7 @@ export function PassportAddPanel({
                   value={userLabel}
                   onChange={(e) => setUserLabel(e.target.value)}
                   placeholder="human-readable label"
-                  className="font-mono text-[11px] p-2 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
+                  className="font-mono text-[11px] p-2 outline-none focus-visible:ring-[3px] focus-visible:ring-focus w-full"
                   style={{
                     border: "1px solid var(--border-strong)",
                     background: "var(--bg)",

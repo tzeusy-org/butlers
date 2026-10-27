@@ -4,6 +4,8 @@ import { CheckIcon, CopyIcon } from "lucide-react";
 
 import { Time } from "@/components/ui/time";
 import { ComplexityBadge } from "@/components/general/ComplexityBadge";
+import { PurposeLaneBadge } from "@/components/sessions/PurposeLaneBadge";
+import { useSessionPromptReceipt } from "@/hooks/use-sessions";
 import { cn } from "@/lib/utils";
 import type { SessionDetail } from "@/api/types.ts";
 import { CollapsibleJson, ToolCallTimeline } from "./ToolCallTimeline";
@@ -152,11 +154,78 @@ function CollapsibleText({ label, text }: { label: string; text: string }) {
   );
 }
 
+function EffectivePromptReceipt({ sessionId }: { sessionId: string }) {
+  const { data, isLoading, isError, error, refetch } = useSessionPromptReceipt(sessionId);
+  const receipt = data?.data;
+
+  if (isLoading) {
+    return <p className="text-xs text-muted-foreground">Loading effective prompt receipt…</p>;
+  }
+  if (isError) {
+    return (
+      <p className="text-xs text-destructive">
+        Effective prompt receipt unavailable. {error instanceof Error ? error.message : ""}{" "}
+        <button type="button" className="underline" onClick={() => void refetch()}>
+          Retry
+        </button>
+      </p>
+    );
+  }
+  if (!receipt || receipt.status !== "captured" || receipt.effective_prompt == null) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        {receipt?.status === "corrupt"
+          ? "Stored prompt receipt failed verification; prompt content was withheld."
+          : "This legacy session has no effective prompt receipt."}
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-[10px] text-muted-foreground">
+        <span>{receipt.total_bytes?.toLocaleString()} bytes</span>
+        <span title={receipt.prompt_digest ?? undefined}>
+          sha256 · {receipt.prompt_digest?.slice(0, 12)}
+        </span>
+      </div>
+      <pre className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-md border bg-muted/30 p-3 text-xs">
+        {receipt.effective_prompt}
+      </pre>
+      <div className="overflow-x-auto rounded-md border">
+        <table className="w-full text-left text-xs">
+          <thead className="border-b text-muted-foreground">
+            <tr>
+              <th scope="col" className="px-2 py-1.5 font-medium">Source</th>
+              <th scope="col" className="px-2 py-1.5 font-medium">State</th>
+              <th scope="col" className="px-2 py-1.5 text-right font-medium">Bytes</th>
+              <th scope="col" className="px-2 py-1.5 font-medium">SHA</th>
+            </tr>
+          </thead>
+          <tbody>
+            {receipt.prompt_provenance.map((entry, index) => (
+              <tr key={`${entry.source}:${index}`} className="border-b last:border-0">
+                <td className="px-2 py-1.5 font-mono">{entry.source}</td>
+                <td className="px-2 py-1.5">{entry.status}</td>
+                <td className="px-2 py-1.5 text-right tabular-nums">{entry.bytes}</td>
+                <td className="px-2 py-1.5 font-mono" title={entry.sha ?? undefined}>
+                  {entry.sha?.slice(0, 10) ?? "Unavailable."}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // SessionDossier
 // ---------------------------------------------------------------------------
 
 export function SessionDossier({ session, className }: SessionDossierProps) {
+  const [promptReceiptOpen, setPromptReceiptOpen] = useState(false);
   const running = isSessionRunning(session);
   const elapsed = useElapsedLabel(session.started_at, running);
 
@@ -186,6 +255,9 @@ export function SessionDossier({ session, className }: SessionDossierProps) {
             </Link>
           </MetadataRow>
           <MetadataRow label="Trigger">{session.trigger_source}</MetadataRow>
+          <MetadataRow label="Purpose">
+            <PurposeLaneBadge lane={session.purpose_lane} />
+          </MetadataRow>
           <MetadataRow label="Started">
             {session.started_at ? (
               <Time value={session.started_at} mode="absolute" precision="second" />
@@ -230,6 +302,52 @@ export function SessionDossier({ session, className }: SessionDossierProps) {
         </div>
       </section>
 
+      <section>
+        <details className="rounded-md border p-3" data-testid="model-resolution-disclosure">
+          <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Why this model?
+          </summary>
+          {session.resolution_receipt ? (
+            <div className="mt-3 space-y-2 text-xs">
+              <p>
+                <span className="text-muted-foreground">Winner: </span>
+                <span className="font-mono">
+                  {session.resolution_receipt.winner?.model_id ?? session.model ?? "Unknown"}
+                </span>
+                {session.resolution_receipt.winner?.reason
+                  ? ` · ${session.resolution_receipt.winner.reason.replaceAll("_", " ")}`
+                  : null}
+              </p>
+              {session.resolution_receipt.failover && (
+                <p data-testid="model-resolution-failover">
+                  Failover after attempt{" "}
+                  {session.resolution_receipt.failover.from_attempt_index + 1}:{" "}
+                  {session.resolution_receipt.failover.failure_class}
+                </p>
+              )}
+              <ul className="space-y-1">
+                {(session.resolution_receipt.candidates ?? []).map((candidate) => (
+                  <li key={candidate.catalog_entry_id} className="flex justify-between gap-3">
+                    <span className="font-mono">{candidate.model_id}</span>
+                    <span className="text-muted-foreground">
+                      {candidate.exclusion ?? candidate.outcome.replaceAll("_", " ")}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {session.resolution_receipt.truncated && (
+                <p className="text-muted-foreground">
+                  Candidate list truncated; {session.resolution_receipt.candidate_count ?? "more"}{" "}
+                  were considered.
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="mt-3 text-xs text-muted-foreground">No receipt recorded.</p>
+          )}
+        </details>
+      </section>
+
       {/* Prompt */}
       <section>
         <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
@@ -238,6 +356,18 @@ export function SessionDossier({ session, className }: SessionDossierProps) {
         <pre className="rounded-md border p-3 text-xs whitespace-pre-wrap break-words max-h-48 overflow-y-auto bg-muted/30">
           {session.prompt}
         </pre>
+      </section>
+
+      <section>
+        <button
+          type="button"
+          className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+          aria-expanded={promptReceiptOpen}
+          onClick={() => setPromptReceiptOpen((open) => !open)}
+        >
+          Effective prompt {promptReceiptOpen ? "▾" : "▸"}
+        </button>
+        {promptReceiptOpen && <EffectivePromptReceipt sessionId={session.id} />}
       </section>
 
       {/* Tool calls */}

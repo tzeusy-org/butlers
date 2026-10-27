@@ -8,7 +8,7 @@ Defines how the Switchboard resolves inbound message identities to canonical ent
 
 ### Requirement: Inbound message identity resolution
 
-The Switchboard SHALL call `resolve_contact_by_channel(type, value)` on every inbound message before routing. The resolution MUST use the message's source channel type (e.g., `'telegram'`, `'email'`) and source identifier (e.g., Telegram chat ID, email address) to look up the sender in `relationship.entity_facts` via channel-handle predicates (a `has-handle` triple whose value is prefixed `telegram:<id>`, a `has-email` triple, etc.). NOTE: resolution moved off `public.contact_info` to `relationship.entity_facts` per RFC 0004 Amendment 3 (bead bu-akads, epic bu-oluyt); `public.contacts` / `public.contact_info` are vestigial and `public.entity_info` holds only `secured=true` credentials.
+The Switchboard SHALL call `resolve_contact_by_channel(type, value)` on every inbound message before routing. The resolution MUST use the message's source channel type (e.g., `'telegram'`, `'email'`) and source identifier (e.g., Telegram chat ID, email address) to look up the sender in `relationship.entity_facts` via channel-handle predicates (a `has-handle` triple whose value is prefixed `telegram:<id>`, a `has-email` triple, etc.). Roles and canonical name SHALL be read from `public.entities`.
 
 The Switchboard fleet startup wiring SHALL enable this resolution for its
 production `MessagePipeline` and provide a non-null callback for the
@@ -19,13 +19,13 @@ connector or contacts-table path.
 #### Scenario: Owner sends a Telegram message
 
 - **WHEN** a Telegram message arrives from chat ID `99999`
-- **AND** `resolve_contact_by_channel('telegram', '99999')` returns a contact with `roles = ['owner']`
+- **AND** `resolve_contact_by_channel('telegram', '99999')` returns an entity whose `public.entities.roles = ['owner']`
 - **THEN** the Switchboard MUST identify the sender as the owner
 
 #### Scenario: Known non-owner sends a Telegram message
 
 - **WHEN** a Telegram message arrives from chat ID `12345`
-- **AND** `resolve_contact_by_channel('telegram', '12345')` returns a contact "Chloe" with `roles = []` and `entity_id = 'abc-123'`
+- **AND** `resolve_contact_by_channel('telegram', '12345')` returns the entity "Chloe" with `roles = []` and `entity_id = 'abc-123'`
 - **THEN** the Switchboard MUST identify the sender as "Chloe" with entity_id `abc-123`
 
 #### Scenario: Unknown sender sends a Telegram message
@@ -58,25 +58,23 @@ connector or contacts-table path.
 #### Scenario: Email message identity resolution
 
 - **WHEN** an email arrives from `chloe@example.com`
-- **AND** `resolve_contact_by_channel('email', 'chloe@example.com')` returns a contact
-- **THEN** the Switchboard MUST identify the sender using the resolved contact
-
----
+- **AND** `resolve_contact_by_channel('email', 'chloe@example.com')` returns an entity
+- **THEN** the Switchboard MUST identify the sender using the resolved entity
 
 ### Requirement: Identity-enriched prompt injection
 
-After resolving the sender's identity, the Switchboard MUST inject a structured identity preamble into the prompt before routing to downstream butlers. The preamble format depends on the sender's identity resolution result. The text preamble carries `entity_id` only; `contact_id` is no longer emitted in the preamble (bead bu-akads), `entity_id` being the canonical preamble identifier. An entity-only unknown sender MUST NOT gain a contact identifier merely to populate the preamble or routing context.
+After resolving the sender's identity, the Switchboard MUST inject a structured identity preamble into the prompt before routing to downstream butlers. The preamble format depends on the sender's identity resolution result. The text preamble carries `entity_id` only and MUST NOT emit `contact_id`; `entity_id` is the canonical preamble identifier. An entity-only unknown sender MUST NOT gain a contact identifier merely to populate the preamble or routing context.
 
 #### Scenario: Owner message prompt injection
 
-- **WHEN** the sender is resolved as the owner contact with `entity_id = 'def-456'`
+- **WHEN** the sender is resolved as the owner entity with `entity_id = 'def-456'`
 - **THEN** the routed prompt MUST be prefixed with `[Source: Owner (entity_id: def-456), via {channel}]`
 - **AND** the original message text MUST follow the preamble
 - **AND** downstream butlers MUST use `entity_id` as the anchor when storing facts about the owner
 
 #### Scenario: Known non-owner message prompt injection
 
-- **WHEN** the sender is resolved as a known contact "Chloe" with `entity_id = 'def-456'`
+- **WHEN** the sender is resolved as a known entity "Chloe" with `entity_id = 'def-456'`
 - **THEN** the routed prompt MUST be prefixed with `[Source: Chloe (entity_id: def-456), via telegram]`
 - **AND** downstream butlers MUST use `entity_id` as the subject when storing facts from this message
 
@@ -92,20 +90,18 @@ After resolving the sender's identity, the Switchboard MUST inject a structured 
 - **WHEN** the Switchboard routes `[Source: Chloe (entity_id: def-456), via telegram] I had lunch at 2pm today` to the Relationship butler
 - **THEN** the Relationship butler MUST store the fact "had lunch at 2pm" with `entity_id = 'def-456'` (Chloe's entity), NOT the owner's entity
 
----
-
 ### Requirement: Structured entity_id in route.v1 request_context
 
 In addition to the text preamble, the Switchboard MUST include the resolved sender identity as structured fields in the `request_context` dict of the route.v1 envelope. This provides a machine-readable path for downstream butlers to access the sender's entity_id without parsing free-text.
 
-**Implementation note:** `route_to_butler` in `src/butlers/core_tools/_switchboard.py` reads `source_contact_id` and `source_entity_id` from the routing context (populated by `MessagePipeline._set_routing_context()` in `src/butlers/modules/pipeline.py`) and injects them into `request_context` as `source_sender_contact_id` and `source_sender_entity_id`.
+**Implementation note:** `route_to_butler` in `src/butlers/core_tools/_switchboard.py` reads `source_contact_id` and `source_entity_id` from the routing context (populated by `MessagePipeline._set_routing_context()` in `src/butlers/modules/pipeline.py`) and injects them into `request_context` as `source_sender_contact_id` and `source_sender_entity_id`. The contact value is always null in practice; removal of `source_sender_contact_id`, `routing_log.contact_id`, and `IdentityResolutionResult.contact_id` is tracked as a separate follow-up.
 
 #### Scenario: Resolved sender identity in request_context
 
 - **WHEN** a message is routed via route.v1 envelope
-- **AND** the sender was resolved to a known contact with `contact_id` and `entity_id`
-- **THEN** `request_context` MUST contain `source_sender_contact_id` (UUID string)
-- **AND** `request_context` MUST contain `source_sender_entity_id` (UUID string)
+- **AND** the sender was resolved to a known entity with `entity_id`
+- **THEN** `request_context` MUST contain `source_sender_entity_id` (UUID string)
+- **AND** `request_context.source_sender_contact_id` MUST be null or omitted (deprecated compatibility field; see below)
 
 #### Scenario: Unknown sender identity in request_context
 
@@ -126,12 +122,13 @@ In addition to the text preamble, the Switchboard MUST include the resolved send
 
 ### Requirement: Routing log identity enrichment
 
-The Switchboard's `routing_log` table SHALL be extended to store resolved identity alongside the raw `source_id`. The following columns SHALL be added: `contact_id UUID`, `entity_id UUID`, and `sender_roles TEXT[]`.
+The Switchboard's `routing_log` table SHALL store resolved identity alongside the raw `source_id`. The `entity_id UUID` and `sender_roles TEXT[]` columns carry the resolved identity. The `contact_id UUID` column is a deprecated compatibility column: it MUST be retained in the schema but MUST be written null (the entity is the routing key; no contact identifier is minted or looked up to populate it). Removing the column is a separate, separately approved wire/DB change.
 
 #### Scenario: Routing log captures resolved identity
 
 - **WHEN** a message from a known contact is routed
-- **THEN** the `routing_log` entry MUST include the resolved `contact_id`, `entity_id`, and `sender_roles` alongside the existing `source_channel` and `source_id`
+- **THEN** the `routing_log` entry MUST include the resolved `entity_id` and `sender_roles` alongside the existing `source_channel` and `source_id`
+- **AND** the `routing_log` entry's `contact_id` MUST be null
 
 #### Scenario: Routing log captures unknown sender
 
@@ -169,25 +166,25 @@ The Switchboard MUST differentiate message handling based on whether the sender 
 
 ### Requirement: Resolved sender identity in route.v1 request_context
 
-After resolving the sender's identity, the Switchboard MUST include the resolved `entity_id` as a structured field in the `route.v1` envelope's `request_context`. It MAY include `contact_id` only when an independent identifier is available; an entity-only unknown sender MUST use null or omitted contact semantics. This provides downstream butlers with machine-readable identity anchors that they can use directly for fact storage — without needing to parse the text preamble.
+After resolving the sender's identity, the Switchboard MUST include the resolved `entity_id` as a structured field in the `route.v1` envelope's `request_context`. The retired `contact_id` is a deprecated compatibility field (`source_sender_contact_id`): it MUST be null or omitted for every sender. This provides downstream butlers with machine-readable identity anchors that they can use directly for fact storage — without needing to parse the text preamble.
 
 The `request_context` identity fields have these semantics:
 - `source_sender_entity_id` (UUID | null): the resolved entity UUID for the sender, or `null` if identity resolution failed entirely
-- `source_sender_contact_id` (UUID | null): an optional compatibility identifier; it MUST be null or omitted for entity-only unknown senders and when identity resolution fails
+- `source_sender_contact_id` (UUID | null): a deprecated compatibility field retained in the schema; it MUST be null or omitted in all cases (known, owner, entity-only unknown, and failed resolution). Consumers MUST use `source_sender_entity_id`.
 
-#### Scenario: Known sender populates both identity fields in request_context
+#### Scenario: Known sender populates the entity identity field in request_context
 
-- **WHEN** the Switchboard resolves a known contact "Chloe" with `contact_id = 'abc-123'` and `entity_id = 'def-456'`
+- **WHEN** the Switchboard resolves a known sender "Chloe" with `entity_id = 'def-456'`
 - **AND** routes the message to a downstream butler via `route.v1`
 - **THEN** `request_context.source_sender_entity_id` MUST be `'def-456'`
-- **AND** `request_context.source_sender_contact_id` MUST be `'abc-123'`
+- **AND** `request_context.source_sender_contact_id` MUST be null or omitted
 
-#### Scenario: Owner sender populates both identity fields in request_context
+#### Scenario: Owner sender populates the entity identity field in request_context
 
-- **WHEN** the Switchboard resolves the owner contact with `contact_id = 'abc-123'` and `entity_id = 'def-456'`
+- **WHEN** the Switchboard resolves the owner with `entity_id = 'def-456'`
 - **AND** routes the message to a downstream butler via `route.v1`
 - **THEN** `request_context.source_sender_entity_id` MUST be `'def-456'`
-- **AND** `request_context.source_sender_contact_id` MUST be `'abc-123'`
+- **AND** `request_context.source_sender_contact_id` MUST be null or omitted
 
 #### Scenario: Unknown sender populates entity-only identity fields
 

@@ -20,6 +20,7 @@ for the full wire contract, delivery semantics, and failure modes.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -36,6 +37,32 @@ FLEET_EVENTS_CHANNEL = "butlers_fleet_events"
 # large event degrades to a dropped-and-logged NOTIFY rather than an
 # exception bubbling out of a best-effort call site.
 _MAX_NOTIFY_PAYLOAD_BYTES = 7800
+# Bound acquisition/query work and each transaction cleanup operation. A caller
+# connection may need one additional budget to roll back a failed notification.
+_PUBLISH_TIMEOUT_S = 1.0
+
+
+async def _publish_on_connection(connection: asyncpg.Connection, payload: str) -> bool:
+    """Isolate NOTIFY from caller-owned work; failed cleanup must remain visible."""
+    transaction = connection.transaction()
+    # Starting or finishing isolation can itself fail. Those errors are not
+    # safe to absorb: the caller must not mistake an unsafe transaction for one
+    # it can commit. In an asyncpg-owned outer transaction this is a savepoint.
+    async with asyncio.timeout(_PUBLISH_TIMEOUT_S):
+        await transaction.start()
+    try:
+        async with asyncio.timeout(_PUBLISH_TIMEOUT_S):
+            await connection.execute("SELECT pg_notify($1, $2)", FLEET_EVENTS_CHANNEL, payload)
+    except BaseException as exc:
+        async with asyncio.timeout(_PUBLISH_TIMEOUT_S):
+            await transaction.rollback()
+        if not isinstance(exc, Exception):
+            raise  # cancellation remains cancellation, after rollback
+        logger.debug("publish_fleet_event: isolated NOTIFY failed (non-fatal)", exc_info=True)
+        return False
+    async with asyncio.timeout(_PUBLISH_TIMEOUT_S):
+        await transaction.commit()
+    return True
 
 
 async def publish_fleet_event(
@@ -51,15 +78,18 @@ async def publish_fleet_event(
     including the dashboard-api bridge, which re-publishes it onto the real
     in-process event bus.
 
-    Best-effort and never raises: a NOTIFY failure (oversized payload,
-    connection loss, pool exhaustion) must never fail the caller's actual
-    work (recording a session, delivering a notification, gating a tool
-    call). Call sites should treat this exactly like the existing
-    ``emit_event()`` calls it complements — fire-and-forget, off the
-    critical path.
+    Best-effort: acquisition and sending are bounded to one second. Pool
+    failures return ``False``; cancellation propagates. For a caller-owned
+    asyncpg connection, a transaction/savepoint isolates SQL errors so they
+    do not abort the caller's business transaction. Each isolation/cleanup
+    operation also has a one-second budget. If isolation or cleanup fails,
+    that error propagates: transaction health cannot safely be asserted.
+    When nested in a caller transaction, PostgreSQL delivers NOTIFY only
+    after that outer transaction commits.
 
-    Returns ``True`` if the NOTIFY was sent, ``False`` if it was skipped
-    (oversized payload) or failed (logged at debug level).
+    Returns ``True`` if the NOTIFY was sent, ``False`` if skipped or safely
+    failed. This is lossy transport; callers do not retry or require delivery
+    for their durable operation to succeed.
     """
     envelope = {"type": event_type, "data": data or {}}
     try:
@@ -87,8 +117,24 @@ async def publish_fleet_event(
         )
         return False
 
+    if isinstance(pool, asyncpg.Connection):
+        return await _publish_on_connection(pool, payload)
+
     try:
-        await pool.execute("SELECT pg_notify($1, $2)", FLEET_EVENTS_CHANNEL, payload)
+        async with asyncio.timeout(_PUBLISH_TIMEOUT_S):
+            if isinstance(pool, asyncpg.Pool):
+                # The driver query timeout alone does not cover pool exhaustion.
+                # Acquisition also supplies a bounded release/reset budget.
+                async with pool.acquire(timeout=_PUBLISH_TIMEOUT_S) as connection:
+                    await connection.execute(
+                        "SELECT pg_notify($1, $2)",
+                        FLEET_EVENTS_CHANNEL,
+                        payload,
+                        timeout=_PUBLISH_TIMEOUT_S,
+                    )
+            else:
+                # Preserve duck-typed pool seams used by existing producers.
+                await pool.execute("SELECT pg_notify($1, $2)", FLEET_EVENTS_CHANNEL, payload)
     except Exception:
         logger.debug(
             "publish_fleet_event: NOTIFY failed for event_type=%r (non-fatal)",

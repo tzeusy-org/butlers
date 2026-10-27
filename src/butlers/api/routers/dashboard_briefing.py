@@ -11,7 +11,7 @@ Returns a six-field Briefing object:
     generated_at ISO 8601 wall-clock timestamp of composition.
 
 Access: owner-only. HTTP 403 for non-owner sessions, HTTP 401 for
-unauthenticated (via ApiKeyMiddleware).
+unauthenticated (via the central owner-authentication boundary).
 
 Caching: per-owner LRU+TTL, 5-minute TTL. Cache hit preserves
 the original generated_at.
@@ -74,6 +74,7 @@ from butlers.api.briefing.prompts import elaborate_llm
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
+    Db,
     MCPClientManager,
     get_butler_configs,
     get_mcp_manager,
@@ -84,46 +85,10 @@ from butlers.core.general_settings import load_general_settings
 from butlers.core.pricing import PricingConfig
 from butlers.core.qa.patrol_status import is_valid_patrol_status
 from butlers.credential_store import CredentialStore
-from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard-briefing"])
-
-
-# ---------------------------------------------------------------------------
-# Prometheus counters
-# ---------------------------------------------------------------------------
-
-briefing_reads_total = get_or_create_counter(
-    "briefing_reads_total",
-    "Number of GET /api/dashboard/briefing requests.",
-)
-
-briefing_cache_hits_total = get_or_create_counter(
-    "briefing_cache_hits_total",
-    "Number of GET /api/dashboard/briefing requests served from cache.",
-)
-
-briefing_elaboration_llm_total = get_or_create_counter(
-    "briefing_elaboration_llm_total",
-    "Number of briefing elaborations produced by the LLM.",
-)
-
-briefing_elaboration_fallback_total = get_or_create_counter(
-    "briefing_elaboration_fallback_total",
-    "Number of briefing elaborations served from the templated fallback.",
-)
-
-briefing_elaboration_rejected_total = get_or_create_counter(
-    "briefing_elaboration_rejected_total",
-    "Number of LLM elaborations rejected by the voice lint.",
-)
-
-briefing_classification_error_total = get_or_create_counter(
-    "briefing_classification_error_total",
-    "Number of classification exceptions caught and downgraded to degraded.",
-)
 
 
 # ---------------------------------------------------------------------------
@@ -145,11 +110,6 @@ class Briefing(BaseModel):
 # ---------------------------------------------------------------------------
 # Dependency stub (overridden at startup or in tests)
 # ---------------------------------------------------------------------------
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub -- overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +144,7 @@ async def _assert_owner_contact(pool: Any) -> Any:
         raise HTTPException(
             status_code=403,
             detail={"code": "forbidden", "message": "Owner contact assertion failed"},
-        )
+        ) from exc
 
     if row is None:
         raise HTTPException(
@@ -790,7 +750,6 @@ async def _compose_briefing(
         state_class = classify(state)
     except Exception as exc:
         logger.error("Classification failed, defaulting to degraded: %s", exc)
-        briefing_classification_error_total.inc()
         state_class = "degraded"
 
     # Step 2: greet and headline.
@@ -836,18 +795,15 @@ async def _compose_briefing(
                 if voice_lint_passes(llm_text):
                     elaboration = llm_text
                     source = "llm"
-                    briefing_elaboration_llm_total.inc()
                 else:
                     violation = first_violation(llm_text)
                     logger.info("LLM elaboration rejected by voice lint (violation=%s)", violation)
-                    briefing_elaboration_rejected_total.inc()
         except Exception as exc:
             logger.warning("LLM elaboration raised unexpectedly: %s", exc)
 
     # Step 5: fallback if LLM path did not produce a passing response.
     if elaboration is None:
         elaboration = elaborate_fallback(state, state_class)
-        briefing_elaboration_fallback_total.inc()
 
     # Step 6: generated_at records wall-clock composition time, set once.
     generated_at = datetime.now(UTC).isoformat()
@@ -879,7 +835,8 @@ async def _compose_briefing(
 
 @router.get("/briefing", response_model=ApiResponse[Briefing])
 async def get_dashboard_briefing(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     cache: BriefingCache = Depends(get_cache),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mgr: MCPClientManager = Depends(get_mcp_manager),
@@ -893,12 +850,12 @@ async def get_dashboard_briefing(
     - Classification exception falls through to the degraded paragraph.
     - Never raises HTTP 500 in normal operation.
     """
-    briefing_reads_total.inc()
-
     try:
         sw_pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
     codex_auth_authority: CredentialStore | None = None
     try:
         settings_pool = db.credential_shared_pool()
@@ -918,7 +875,6 @@ async def get_dashboard_briefing(
     # Cache check.
     cached = cache.get(owner_id)
     if cached is not None:
-        briefing_cache_hits_total.inc()
         return ApiResponse(data=Briefing(**cached))
 
     # Capture before asynchronous composition so any state mutation that

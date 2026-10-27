@@ -192,9 +192,13 @@ run — your job is to narrate over that result, not to re-derive it.
    deterministic reconciliation pass (duplicate merge, contradicted-intent
    drop). Trust the bundle's `layer`/`confidence` fields and its
    `dropped_intents` list as final; do not second-guess which blocks count.
-3. If the bundle contains no episodes and no events, exit silently.
+3. If the bundle contains no episodes, no events, and no sensitive_envelopes, exit silently.
 4. Produce a brief day-close summary (3-10 bullet points) that:
    - Uses local display timestamps from the bundle when mentioning times.
+   - Treats sensitive_envelopes as masked observations with only start_at,
+     end_at, category and duration. Never infer or request their title, source,
+     identity, location, payload or citations. An envelope is not proof of
+     attendance or a complete day; do not infer missing activity from its absence.
    - Does not print raw source_ref values, connector IDs, database keys, or
      other machine identifiers. The system records provenance from the tool
      call; the human-facing message should cite only readable names such as
@@ -234,23 +238,14 @@ run — your job is to narrate over that result, not to re-derive it.
 # opted-in surfaces" the day-close prompt above defers to. Deliberately its OWN
 # scheduled surface (NOT bolted into day-close), owner-toggleable, max one
 # message/day. Runs at 09:00 owner-local — after the 01:05 day-close reconciles
-# yesterday, at a civil hour; notify() additionally applies quiet-hours /
-# delivery preferences. The tool enforces the per-day dedupe.
+# yesterday, at a civil hour. A deterministic job (bu-idc5mx.4): it computes
+# yesterday in the owner's general timezone and calls the same ask service as the
+# chronicler_gap_interview tool, which enforces the per-day dedupe and the
+# quiet-hours / delivery-preferences gate. No session, no model.
 [[butler.schedule]]
 name = "chronicler_gap_interview"
 cron = "0 9 * * *"
-dispatch_mode = "prompt"
-complexity = "cheap"
-prompt = """
-Run the Chronicler day-close GAP INTERVIEW for yesterday. This is a separate,
-explicitly-opted-in surface — NOT part of day-close.
-1. Use the owner's configured timezone from your system prompt. Compute
-   yesterday's local date in that timezone, not in UTC.
-2. Call chronicler_gap_interview(date_label="<local-yesterday>", timezone="<owner-IANA-timezone>").
-   This one tool does everything — it evaluates the day, enforces the
-   max-one-per-day dedupe, applies quiet-hours/delivery preferences, and (only
-   when the day qualifies) delivers the one-tap inline-button prompt to the
-   owner itself. The owner's tap is applied automatically.
-3. Do NOT send any message yourself (no notify(), no summary, no commentary).
-   Just report the tool's returned status. That is the entire task.
-"""
+dispatch_mode = "job"
+job_name = "chronicler_gap_interview"
+
+# RFC 0015: core always registers the error relay; no module opt-in is required.

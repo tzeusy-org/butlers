@@ -52,8 +52,6 @@ the other pillars:
 These standards are grounded in the existing workflow and tooling already used
 in the repository:
 
-- Test-first and spec-first discipline from
-  [`about/heart-and-soul/development.md`](../heart-and-soul/development.md)
 - Repo-specific execution constraints and quality gates from
   [`AGENTS.md`](../../AGENTS.md)
 - Command entrypoints from [`Makefile`](../../Makefile)

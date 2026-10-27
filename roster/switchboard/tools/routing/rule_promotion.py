@@ -91,6 +91,7 @@ from typing import Any, Protocol
 
 import asyncpg
 
+from butlers.account_security import is_account_security_sender
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.tools.switchboard.routing.verdict_log import is_email_sender_key
 
@@ -242,7 +243,9 @@ def passes_evidence_quality_gate(
     return elapsed >= min_elapsed
 
 
-def build_proposed_action(verdict_action: str, verdict_target: str | None) -> str | None:
+def build_proposed_action(
+    verdict_action: str, verdict_target: str | None, *, sender_key: str | None = None
+) -> str | None:
     """Translate a ``routing_verdict_log`` verdict into a
     ``rule_promotion_suggestions.proposed_action`` string.
 
@@ -253,8 +256,16 @@ def build_proposed_action(verdict_action: str, verdict_target: str | None) -> st
     no rule equivalent instead of raising).
 
     Returns ``None`` for ``pass_through``/``block`` verdicts — nothing
-    meaningful to promote.
+    meaningful to promote. Also returns ``None`` for ``skip``/``metadata_only``
+    when ``sender_key`` is a first-party account-security alert sender: the
+    sensor (bu-q7vx1q.10) must never be suppressed by a promoted rule.
     """
+    if (
+        sender_key is not None
+        and verdict_action in ("skip", "metadata_only")
+        and is_account_security_sender(sender_key)
+    ):
+        return None
     if verdict_action == "route_to":
         if not verdict_target:
             return None
@@ -745,7 +756,7 @@ async def _process_candidate(
         return "skipped_no_agreement"
     verdict_action, verdict_target = agreement
 
-    proposed_action = build_proposed_action(verdict_action, verdict_target)
+    proposed_action = build_proposed_action(verdict_action, verdict_target, sender_key=sender_key)
     if proposed_action is None:
         return "skipped_no_rule_equivalent"
 

@@ -280,8 +280,52 @@ and `execve` the provider CLI. The runtime payload SHALL therefore inherit only
 the approved stdio endpoints and no Bubblewrap setup descriptor. Missing
 `close_range`, a missing or mismatched shim, an unsafe descriptor referent, or
 close/verification failure SHALL disable CLI-auth launch and signer activation
-without fallback. The
-identity SHALL NOT be reused until the domain has no live descendant. A fixed
+without fallback.
+
+The image build SHALL generate the complete read-only runtime closure for that
+PID 1 shim after the final shim installation and SHALL store it in the same
+image-owned runtime-input manifest used for provider inputs. The manifest SHALL
+use schema version `3` with exactly top-level fields `version`, `shim`, and
+`providers`. `shim` SHALL contain exactly `name`, `executable`, and
+`readonly_inputs`: `name` SHALL equal `runtime-cli-sandbox-init`, `executable`
+SHALL equal the child-visible absolute shim path, and the non-empty
+`readonly_inputs` array SHALL contain exact `source`/`destination` mappings for
+the shim executable and every interpreter or shared-library input it requires.
+The provider entry shape remains `binary`, `executable`, and `readonly_inputs`;
+provider inputs SHALL NOT be treated as evidence that the shim closure is
+complete. Build-time closure discovery SHALL fail on an unresolved dependency,
+conflicting logical destination, or any other inability to establish the
+closure. It SHALL NOT defer discovery to runtime.
+Before allocating an invocation identity, creating or writing a staged HOME, or
+spawning Bubblewrap, the trusted parent SHALL read the manifest through the
+existing bounded no-follow file-descriptor path and require a root-owned,
+single-link, mode-`0444` regular file no larger than 64 KiB. It SHALL reject a
+missing manifest, any version other than `3`, a missing or malformed shim
+record, an empty shim input list, a shim name or executable that does not match
+the configured image shim, unsafe or unavailable input sources, non-normalized
+or forbidden destinations, and conflicting bindings. Provider-entry sources
+SHALL retain their existing rule: each is a root-owned, non-symlink regular file
+or directory with no group or world write permission. Every shim
+`readonly_inputs` source SHALL instead be a root-owned, non-symlink regular file
+with no group or world write permission; the shim executable binding SHALL also
+be executable. A directory-valued shim binding, including a broad root-owned
+tree such as `/usr/lib`, SHALL be rejected before identity allocation, stage
+creation or write, `_launch_invocation`, or spawn. Identical
+source/destination bindings shared by the provider, payload, and shim SHALL be
+deduplicated, bindings SHALL be ordered deterministically by destination, and
+two sources for one destination SHALL be rejected before spawn. The validated
+shim mappings SHALL be an explicit required input to every launch-plan caller,
+including provider-independent exact-image harnesses. The launch planner SHALL
+remain synchronous and deterministic over its validated arguments: it SHALL
+perform no manifest I/O, `ldd` execution,
+subprocess discovery, or runtime fallback, and this amendment SHALL add no new
+runtime spawn kind. A version-2/new-reader, version-3/old-reader, missing-closure,
+or otherwise mixed image/application combination SHALL make CLI-auth launch and
+signer activation unavailable before spawn while leaving unrelated Dashboard
+health available; it SHALL NOT infer shim dependencies from a provider's glibc
+closure or retry through a direct child.
+
+The identity SHALL NOT be reused until the domain has no live descendant. A fixed
 shared child UID, directory permissions, global serialization, or
 process-group/`setsid` handling alone SHALL NOT satisfy the boundary. Default
 and hotreload Dashboard services SHALL use the same repository-owned
@@ -548,3 +592,37 @@ Scope: v1-mandatory
 - **AND** it returns `503/unavailable` for that key ID after `T`, without
   disclosing which verifier entry matched or performing receipt, lookup, launch,
   or persistence work
+
+#### Scenario: PID1 shim inputs do not depend on provider-library coincidence
+
+- **WHEN** a provider or provider-independent payload has a read-only runtime
+  closure that omits libc, the ELF interpreter, or every other shim dependency
+- **THEN** the trusted parent supplies the validated version-3 shim closure as a
+  separate required input to the existing Bubblewrap launch planner
+- **AND** identical provider/shim bindings are mounted once in deterministic
+  destination order without changing the one concrete sandbox spawn boundary
+- **AND** every production or exact-image-harness caller obtains that closure
+  only from the validated image manifest, never from an architecture-specific
+  library list or caller-side `ldd`
+
+#### Scenario: Invalid image-owned shim closure fails before spawn
+
+- **WHEN** the runtime-input manifest is missing, unsafe, malformed, version 2
+  or otherwise unsupported, names a different shim executable, has an empty or
+  unsafe shim closure, contains any directory-valued shim source, or maps two
+  different sources to one logical destination
+- **THEN** CLI-auth launch and signer activation are unavailable before any
+  child process is spawned
+- **AND** the runtime performs no `ldd` discovery, provider-closure inference,
+  direct-subprocess fallback, provider execution, staged-authority write, or
+  credential mutation or persistence
+- **AND** unrelated Dashboard health remains available
+
+#### Scenario: Image build emits one complete shim closure
+
+- **WHEN** `Dockerfile.base` builds the runtime-input manifest
+- **THEN** it runs the generator only after the final
+  `runtime-cli-sandbox-init` install and records the executable plus its complete
+  interpreter/shared-library closure as exact source-to-destination bindings
+- **AND** an unresolved dependency or conflicting destination fails the image
+  build instead of producing a partial manifest

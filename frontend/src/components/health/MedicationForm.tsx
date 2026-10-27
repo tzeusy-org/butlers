@@ -1,3 +1,5 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
 // ---------------------------------------------------------------------------
 // MedicationForm — reusable add/edit form for health medications [bu-aisjm]
 //
@@ -48,6 +50,28 @@ function parseSchedule(raw: string): string[] {
     .filter((s) => s.length > 0);
 }
 
+type QuantityParseResult = { value?: number; error?: string };
+
+/**
+ * Parse the owner-entered supply count without silently rounding or coercing.
+ * The API accepts only a positive JSON integer, so decimal/scientific text,
+ * zero, negative values, and values outside JavaScript's safe integer range
+ * stay client-side validation errors instead of becoming fabricated counts.
+ */
+function parseQuantity(raw: string): QuantityParseResult {
+  const trimmed = raw.trim();
+  if (trimmed === "") return {};
+  if (!/^\d+$/.test(trimmed)) {
+    return { error: "Supply quantity must be a positive whole number." };
+  }
+
+  const value = Number(trimmed);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    return { error: "Supply quantity must be a positive whole number." };
+  }
+  return { value };
+}
+
 export function MedicationForm({ medication, onDone, onCancel }: MedicationFormProps) {
   const isEdit = medication != null;
 
@@ -59,10 +83,17 @@ export function MedicationForm({ medication, onDone, onCancel }: MedicationFormP
   );
   const [notes, setNotes] = useState(medication?.notes ?? "");
   const [active, setActive] = useState(medication?.active ?? true);
+  const [quantity, setQuantity] = useState(
+    medication?.quantity != null ? String(medication.quantity) : "",
+  );
+  const [quantityTouched, setQuantityTouched] = useState(false);
+  const [quantityError, setQuantityError] = useState<string | null>(null);
+
+  const draft = useDraft("health.medication", [isEdit ? "edit" : "create", medication?.id ?? "new"], { name, dosage, frequency, schedule, active, notes }, (next) => { setName(next.name as typeof name); setDosage(next.dosage as typeof dosage); setFrequency(next.frequency as typeof frequency); setSchedule(next.schedule as typeof schedule); setActive(next.active as typeof active); setNotes(next.notes as typeof notes); }, true, undefined, medication?.updated_at);
 
   const createMutation = useCreateMedication();
   const updateMutation = useUpdateMedication();
-  const isPending = createMutation.isPending || updateMutation.isPending;
+  const isPending = createMutation.isPending || updateMutation.isPending || !!draft.session?.presentation.cleanup || !!draft.session?.presentation.submitting;
 
   function handleError(err: unknown) {
     const message =
@@ -84,39 +115,56 @@ export function MedicationForm({ medication, onDone, onCancel }: MedicationFormP
 
     const scheduleList = parseSchedule(schedule);
     const trimmedNotes = notes.trim();
+    const parsedQuantity = parseQuantity(quantity);
+    if (parsedQuantity.error) {
+      setQuantityError(parsedQuantity.error);
+      toast.error(parsedQuantity.error);
+      return;
+    }
+    setQuantityError(null);
 
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
     try {
       if (isEdit) {
+        const body = {
+          name: trimmedName,
+          dosage: trimmedDosage,
+          frequency: trimmedFrequency,
+          schedule: scheduleList,
+          active,
+          notes: trimmedNotes === "" ? null : trimmedNotes,
+          ...(quantityTouched && parsedQuantity.value != null
+            ? { quantity: parsedQuantity.value }
+            : {}),
+        };
         await updateMutation.mutateAsync({
           id: medication.id,
-          body: {
-            name: trimmedName,
-            dosage: trimmedDosage,
-            frequency: trimmedFrequency,
-            schedule: scheduleList,
-            active,
-            notes: trimmedNotes === "" ? null : trimmedNotes,
-          },
+          body,
         });
-        toast.success("Medication updated.");
+        if (draft.current(submission)) toast.success("Medication updated.");
       } else {
-        await createMutation.mutateAsync({
+        const body = {
           name: trimmedName,
           dosage: trimmedDosage,
           frequency: trimmedFrequency,
           schedule: scheduleList,
           notes: trimmedNotes === "" ? null : trimmedNotes,
-        });
-        toast.success("Medication added.");
+          ...(parsedQuantity.value != null ? { quantity: parsedQuantity.value } : {}),
+        };
+        await createMutation.mutateAsync(body);
+        if (draft.current(submission)) toast.success("Medication added.");
       }
-      onDone();
+      await draft.submitted(submission, onDone);
     } catch (err) {
-      handleError(err);
-    }
+      if (draft.current(submission)) handleError(err);
+    } finally { draft.finish(); }
   }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4" data-testid="medication-form">
+      <DraftNotice session={draft.session} />
       <div className="space-y-2">
         <Label htmlFor="med-name">Name</Label>
         <Input
@@ -160,6 +208,35 @@ export function MedicationForm({ medication, onDone, onCancel }: MedicationFormP
       </div>
 
       <div className="space-y-2">
+        <Label htmlFor="med-quantity">Supply quantity (optional)</Label>
+        {/* Text preserves malformed input for explicit validation instead of browser sanitization. */}
+        <Input
+          id="med-quantity"
+          type="text"
+          inputMode="numeric"
+          value={quantity}
+          onChange={(e) => {
+            setQuantity(e.target.value);
+            setQuantityTouched(true);
+            if (quantityError) setQuantityError(null);
+          }}
+          placeholder={isEdit ? "Leave blank to keep current supply" : "Leave blank if unknown"}
+          aria-invalid={quantityError != null}
+          aria-describedby={quantityError ? "med-quantity-error" : "med-quantity-help"}
+        />
+        <p id="med-quantity-help" className="text-xs text-muted-foreground">
+          {isEdit
+            ? "Change or re-enter the count to record a refill. Leave blank to keep the existing supply unchanged."
+            : "Enter the owner-recorded count in the current supply. Leave blank if unknown."}
+        </p>
+        {quantityError && (
+          <p id="med-quantity-error" role="alert" className="text-xs text-[var(--red-text)]">
+            {quantityError}
+          </p>
+        )}
+      </div>
+
+      <div className="space-y-2">
         <Label htmlFor="med-notes">Notes (optional)</Label>
         <Textarea
           id="med-notes"
@@ -178,7 +255,7 @@ export function MedicationForm({ medication, onDone, onCancel }: MedicationFormP
       )}
 
       <div className="flex justify-end gap-2 pt-2">
-        <Button type="button" variant="ghost" onClick={onCancel} disabled={isPending}>
+        <Button type="button" variant="ghost" onClick={() => draft.dismiss(onCancel)} disabled={isPending}>
           Cancel
         </Button>
         <Button type="submit" disabled={isPending}>

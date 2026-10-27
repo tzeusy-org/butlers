@@ -37,7 +37,7 @@ def db_factory(postgres_container):
     return _make
 
 
-async def test_provision_connect_pool_close(db_factory):
+async def test_provision_connect_pool_close(db_factory, postgres_container, monkeypatch):
     """provision() creates DB; idempotent; connect() returns usable pool; close releases it."""
     db = db_factory()
 
@@ -81,6 +81,35 @@ async def test_provision_connect_pool_close(db_factory):
     assert db.pool is None
     await db.close()  # no error
     assert db.pool is None
+
+    # REQ-testing-047 / REQ-testing-048: real PG17, actual bootstrap/migration,
+    # ordinary existing runtime role, vector extension and separate commit read.
+    # A planted unusable ambient endpoint cannot replace this explicit target.
+    from butlers.testing.migration import create_migrated_test_pool
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://unreachable:synthetic@127.0.0.1:1/absent")
+    with pytest.raises((OSError, asyncpg.PostgresError)):
+        await asyncpg.connect(
+            dsn="postgresql://unreachable:synthetic@127.0.0.1:1/absent", timeout=1
+        )
+    migrated = await create_migrated_test_pool(postgres_container, chains=["core"])
+    try:
+        async with migrated.acquire() as connection, connection.transaction():
+            await connection.execute('SET LOCAL ROLE "butler_general_rw"')
+            assert await connection.fetchval("SELECT current_user") == "butler_general_rw"
+            assert int(await connection.fetchval("SHOW server_version_num")) >= 170000
+            assert await connection.fetchval("SELECT vector_dims('[1,2,3]'::vector)") == 3
+            await connection.execute(
+                "INSERT INTO public.state (key, value) VALUES ('ci_service_retirement', $1::jsonb)",
+                {"probe": "committed"},
+            )
+        async with migrated.acquire() as readback, readback.transaction():
+            await readback.execute('SET LOCAL ROLE "butler_general_rw"')
+            assert await readback.fetchval(
+                "SELECT value FROM public.state WHERE key = 'ci_service_retirement'"
+            ) == {"probe": "committed"}
+    finally:
+        await migrated.close()
 
 
 def test_from_env_parsing(monkeypatch):

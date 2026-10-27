@@ -60,6 +60,15 @@ class ModelFeature(enum.StrEnum):
     #: The runtime can continue a prior provider-native session instead of
     #: cold-starting (mirrors ``RuntimeAdapter.supports_resume``).
     SESSION_RESUME = "session_resume"
+    #: The runtime accepts image content blocks as model input (bu-2jtfw.7).
+    #: Deliberately undeclared at the adapter-baseline layer: vision support is a
+    #: per-model fact (a given CLI/API adapter carries both vision and non-vision
+    #: model ids), so this stays ``Support.UNKNOWN`` until a catalog row declares
+    #: ``capabilities: {"vision": true}`` -- an image-bearing dispatch against a
+    #: catalog with no such row fails closed (``evaluate_fit`` excludes UNKNOWN at
+    #: every consequence level except OBSERVE) rather than silently degrading to a
+    #: text-only model that would hallucinate a description.
+    VISION = "vision"
 
 
 class Support(enum.StrEnum):

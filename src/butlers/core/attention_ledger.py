@@ -19,6 +19,13 @@ model-evaluated IGNORE verdicts are legitimate decisions and are NOT recorded
 (classify-before-flagging). See
 ``butlers.connectors.discretion.DiscretionEvaluator``.
 
+bu-2jtfw.11 adds a fourth source, ``source="approvals"``: a prepared action
+(``pending_actions.origin='prepared'``) that fails execution on approve. A
+prepared action is never pushed to the owner (it has no ``notify``/``insight``
+egress attempt of its own -- it surfaces only through the insight digest's
+door), so its execution failure has no other egress path to record it on. See
+``butlers.modules.approvals.executor.execute_approved_action``.
+
 The egress paths are:
 
 - ``notify()`` (``butlers.core_tools._notifications``) — the core MCP tool
@@ -44,15 +51,8 @@ The egress paths are:
   docstring for why it goes through the MCP tool rather than an in-process
   ``deliver()`` call, even though ``deliver()``/``route()``'s
   ``butler_registry`` lookups are now schema-qualified — bu-tdd4k.2).
-- ``butlers.jobs.decision_review`` (bu-ckkpz.4) — Switchboard's weekly
-  decision-review digest and P1/deploy age-escalation crons. Run inside the
-  Switchboard daemon process itself, so unlike Home's crons above they call
-  ``switchboard.notification.deliver`` in-process (no MCP round-trip needed
-  — mirrors ``secrets_lifecycle``'s composition, not Home's). See that
-  module's docstring for why the underlying beads data is read from a
-  bind-mounted JSONL file rather than a live query.
 
-All five call :func:`record_attention_event` at each terminal decision point
+All remaining paths call :func:`record_attention_event` at each terminal decision point
 so a notification is never silently dropped: it is recorded as delivered,
 coalesced (folded into a digest), deferred (retryable later), or suppressed
 (quiet hours / context bus), always with a machine-readable ``reason``.
@@ -78,6 +78,7 @@ from typing import Any, Literal
 import asyncpg
 
 from butlers.core.approvals_policy import (
+    AttentionReadUnavailable,
     get_approvals_policy_quiet_hours,
     is_policy_quiet_now,
 )
@@ -88,7 +89,7 @@ logger = logging.getLogger(__name__)
 # Shared vocabulary
 # ---------------------------------------------------------------------------
 
-Source = Literal["notify", "insight", "discretion"]
+Source = Literal["notify", "insight", "discretion", "approvals"]
 # "deferred" means a benign, chosen hold that resolves on its own (quiet
 # hours, a coalescing window) -- the notification WILL be attempted again.
 # "failed" (bu-hmdqz.3) means a genuine terminal failure at this attempt (no
@@ -98,10 +99,35 @@ Source = Literal["notify", "insight", "discretion"]
 # ``butlers.core.temporal.delivery_db.insert_deferred_notification``).
 # Conflating the two lets an outage impersonate quiet-hours discipline in the
 # ledger -- the exact failure mode bu-hmdqz.3 fixed for secrets_lifecycle.
-Outcome = Literal["delivered", "coalesced", "deferred", "suppressed", "failed"]
+#
+# "withdrawn" and "amended" (bu-q7vx1q.5) are the premise-bound-speech outcomes:
+# a proactive insight whose asserted fact stopped being true was held back
+# before it was sent, or was edited in place after it was. Neither is a
+# failure and neither is a chosen quiet-hours hold -- they are corrections.
+Outcome = Literal[
+    "delivered",
+    "coalesced",
+    "deferred",
+    "suppressed",
+    "failed",
+    "expired",
+    "withdrawn",
+    "amended",
+]
 
-VALID_SOURCES = frozenset({"notify", "insight", "discretion"})
-VALID_OUTCOMES = frozenset({"delivered", "coalesced", "deferred", "suppressed", "failed"})
+VALID_SOURCES = frozenset({"notify", "insight", "discretion", "approvals"})
+VALID_OUTCOMES = frozenset(
+    {
+        "delivered",
+        "coalesced",
+        "deferred",
+        "suppressed",
+        "failed",
+        "expired",
+        "withdrawn",
+        "amended",
+    }
+)
 
 # Metadata key carrying the runtime session id that was executing when the
 # ledger row was written (bu-358jk).
@@ -123,10 +149,9 @@ ATTENTION_LEDGER_SESSION_KEY = "session_id"
 
 # Priority range shared with RFC 0011's Priority Scoring Convention (1-100
 # scale): 90-100 is "time-critical — action needed within 24-48 hours". The
-# attention policy (quiet hours, context-bus dnd/sleeping) fails OPEN for any
-# candidate/notification at or above this threshold — it always gets through,
-# regardless of quiet hours or dnd/sleeping context signals. Only the routine
-# (below-threshold) path is budgeted/suppressible.
+# This is a ranking/ledger convention, not interruption authority. The D7
+# notify and Insight delivery boundaries require a current verified cause for
+# quiet-hours or dnd/sleeping exceptions; a model-assigned score never grants one.
 URGENT_PRIORITY_THRESHOLD = 90
 
 # notify()'s priority parameter is a 3-level enum (high/medium/low), not the
@@ -182,7 +207,7 @@ def is_priority_urgent(priority_score: int | None) -> bool:
 
 
 async def record_attention_event(
-    pool: asyncpg.Pool | None,
+    pool: asyncpg.Pool | asyncpg.Connection | None,
     *,
     origin_butler: str,
     source: Source,
@@ -411,7 +436,7 @@ async def find_notify_dispatch_for_session(
 
 
 async def attention_event_recorded_since(
-    pool: asyncpg.Pool | None,
+    pool: asyncpg.Pool | asyncpg.Connection | None,
     *,
     dedup_key: str,
     since: datetime,
@@ -519,10 +544,10 @@ async def get_suppressing_context(
     """Return the active context hold and its latest suppressor expiry.
 
     Deterministic, non-LLM read of ``public.user_context`` via the existing
-    context-bus module (``butlers.context_bus.get_active_context``). Fails
-    open (returns None) on any error, consistent with every other
-    context-bus reader in this codebase (see
-    ``spawner_context.fetch_situational_context_preamble``).
+    context-bus module (``butlers.context_bus.get_active_context``). A failed
+    read or absent pool raises ``AttentionReadUnavailable``; only a successful
+    empty read means no suppressor. Prompt decoration has a separate fallback
+    and never supplies delivery authority.
 
     ``now`` is the instant the hold is evaluated at, defaulting to the wall
     clock. A signal only holds while it is unexpired *at that instant*: the
@@ -533,19 +558,15 @@ async def get_suppressing_context(
     calculation (``roster/switchboard/tools/insight/broker.py``).
     """
     if pool is None:
-        return None
+        raise AttentionReadUnavailable("context_store_unavailable")
     if now is None:
         now = datetime.now(UTC)
     try:
         from butlers.context_bus import get_active_context
 
         signals = await get_active_context(pool)
-    except Exception:
-        logger.debug(
-            "get_suppressing_context: context bus unavailable; failing open",
-            exc_info=True,
-        )
-        return None
+    except Exception as exc:
+        raise AttentionReadUnavailable("context_store_unavailable") from exc
 
     suppressing = [
         signal
@@ -606,9 +627,10 @@ async def check_owner_notify_suppression(
     """
     try:
         policy = await get_approvals_policy_quiet_hours(pool)
-    except Exception:
-        logger.debug("%s: quiet-hours policy lookup failed", log_context, exc_info=True)
-        policy = None
+    except Exception as exc:
+        # Callers must retain pending work or surface failure, never record a
+        # destructive suppression or continue to a provider on an unreadable store.
+        raise AttentionReadUnavailable("attention_policy_unavailable") from exc
 
     if now is None:
         now = datetime.now(UTC)

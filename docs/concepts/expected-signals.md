@@ -26,3 +26,12 @@ does not guess an endpoint or retain connector-type-only authority.
 
 The ledger contains cadence and timestamps, not measurement values or candidate
 messages. See RFC 0029 for the schema, ownership, and failure contract.
+
+## Implementation Notes
+
+- Adopt a signal only with a trustworthy producer mapping. When domain rows cannot identify the
+  instrument whose liveness governs the observation, keep it `unmeasurable`; never guess a
+  connector or emit owner-behaviour wording.
+- The ledger also records static reference-data gaps: a butler role with access can upsert
+  `producer="owner"`, `producer_endpoint_identity=None`, `last_observed_at=None`, which evaluates
+  to `absent` without claiming a measurement.

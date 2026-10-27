@@ -6,6 +6,7 @@ import asyncio
 import importlib.util
 import shutil
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -16,6 +17,7 @@ from butlers.migrations import get_chain_head
 from butlers.testing.migration import (
     create_migrated_test_db,
     create_migration_db,
+    init_db_sql_for_dbapi,
     migration_bootstrap_db_url,
     migration_db_name,
     table_exists,
@@ -74,8 +76,9 @@ def _get_table_columns_sql(db_url: str) -> dict[str, set[str]]:
     """Return ``{schema.table → {column, ...}}`` for all user tables via information_schema.
 
     Excludes system schemas (pg_catalog, information_schema, pg_toast).  Used to
-    compare schema structure between two databases without relying on alembic
-    version strings.
+    compare the connected login's privilege-filtered metadata inventory without
+    relying on alembic version strings. An omitted table may still exist in
+    pg_catalog; ownership and effective grants need a separate positive witness.
     """
     engine = create_engine(db_url)
     try:
@@ -185,6 +188,26 @@ def _execute_as_role(db_url: str, role_name: str, sql: str, *, scalar: bool = Fa
         engine.dispose()
 
 
+def _replay_init_db(postgres_container, db_name: str, db_url: str) -> None:
+    """Replay production bootstrap so RLS must survive its broad public grants."""
+    migration_user = urlparse(db_url).username
+    assert migration_user is not None
+    engine = create_engine(
+        migration_bootstrap_db_url(postgres_container, db_name), isolation_level="AUTOCOMMIT"
+    )
+    raw_connection = engine.raw_connection()
+    try:
+        raw_connection.autocommit = True
+        with raw_connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT set_config('butlers.connecting_user', %s, false)", (migration_user,)
+            )
+            cursor.execute(init_db_sql_for_dbapi())
+    finally:
+        raw_connection.close()
+        engine.dispose()
+
+
 def test_create_migration_db_bootstraps_restore_drill_prerequisite(postgres_container):
     """REQ-database-security-006: fresh test databases stage the trusted bootstrap interface."""
     db_url = create_migration_db(postgres_container, migration_db_name())
@@ -290,10 +313,13 @@ def test_core_only_migrations_keep_session_stubs_in_sync(postgres_container):
 
     assert {"cached_input_tokens", "cache_creation_tokens"} <= public_columns
 
+    from butlers.migrations import _chain_script_directory
+
+    # The QA view migration owns these runtime-session stubs. A private auth
+    # schema can also have a sessions table without sharing this data model.
+    stub_schemas = _chain_script_directory("core").get_revision("core_055").module._SESSION_SCHEMAS
     session_stubs = {
-        table_name: columns
-        for table_name, columns in table_columns.items()
-        if table_name != "public.sessions" and table_name.endswith(".sessions")
+        f"{schema}.sessions": table_columns[f"{schema}.sessions"] for schema in stub_schemas
     }
     assert session_stubs, "core-only provisioning must create QA sessions stubs"
 
@@ -447,8 +473,76 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
         db_url, chains=["switchboard"], target_schema="switchboard"
     )
 
+    from butlers.bootstrap_prerequisite import BootstrapPrerequisiteError, check_bootstrap_database
+
+    def relationship_read_default() -> bool:
+        with create_engine(db_url).connect() as connection:
+            return connection.execute(
+                text(
+                    "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_default_acl AS d "
+                    "JOIN pg_catalog.pg_namespace AS n ON n.oid = d.defaclnamespace "
+                    "CROSS JOIN LATERAL pg_catalog.aclexplode(d.defaclacl) AS a "
+                    "WHERE d.defaclrole = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user) "
+                    "AND n.nspname = 'switchboard' AND d.defaclobjtype = 'r' "
+                    "AND a.grantee = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = 'butler_relationship_rw') "
+                    "AND a.privilege_type = 'SELECT')"
+                )
+            ).scalar_one()
+
+    # Genuine checked-init -> immutable bounded replay -> second schema -> repair.
+    assert relationship_read_default() is True
     command.upgrade(relationship_core, "core_076")
+    assert relationship_read_default() is False
+    check_bootstrap_database(db_url)
+    # Losing an ordinary cross-schema read must not waive a required own ACL.
+    # These are the disposable normal creator's existing default-ACL privileges.
+    profile_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with profile_engine.connect() as connection:
+            connection.execute(
+                text(
+                    "ALTER DEFAULT PRIVILEGES IN SCHEMA relationship "
+                    "REVOKE INSERT ON TABLES FROM butler_relationship_rw"
+                )
+            )
+        try:
+            with profile_engine.connect() as connection:
+                before = tuple(
+                    connection.execute(
+                        text(
+                            "SELECT defaclrole, defaclnamespace, defaclobjtype, defaclacl::text "
+                            "FROM pg_catalog.pg_default_acl ORDER BY 1,2,3"
+                        )
+                    )
+                )
+            with pytest.raises(BootstrapPrerequisiteError):
+                check_bootstrap_database(db_url)
+            with profile_engine.connect() as connection:
+                assert (
+                    tuple(
+                        connection.execute(
+                            text(
+                                "SELECT defaclrole, defaclnamespace, defaclobjtype, defaclacl::text "
+                                "FROM pg_catalog.pg_default_acl ORDER BY 1,2,3"
+                            )
+                        )
+                    )
+                    == before
+                )
+        finally:
+            with profile_engine.connect() as connection:
+                connection.execute(
+                    text(
+                        "ALTER DEFAULT PRIVILEGES IN SCHEMA relationship "
+                        "GRANT INSERT ON TABLES TO butler_relationship_rw"
+                    )
+                )
+    finally:
+        profile_engine.dispose()
+    check_bootstrap_database(db_url)
     command.upgrade(switchboard_core, "core_076")
+    assert relationship_read_default() is False
+    check_bootstrap_database(db_url)
     command.upgrade(switchboard_chain, "switchboard@head")
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
@@ -484,6 +578,32 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
         )
 
     relationship_core = _build_alembic_config(db_url, chains=["core"], target_schema="relationship")
+    # pinned-revision: both genuine schema histories must finish core_083's
+    # shared contact_info ALTER before the first core_115 retires that table.
+    command.upgrade(relationship_core, "core_114")
+    command.upgrade(switchboard_core, "core_114")
+    staged_engine = create_engine(db_url)
+    try:
+        with staged_engine.connect() as connection:
+            for schema in ("relationship", "switchboard"):
+                # pinned-revision: prove the shared-table pre-retirement staging point.
+                assert (
+                    connection.execute(
+                        text(
+                            f"SELECT version_num FROM {schema}.alembic_version "
+                            "WHERE version_num = 'core_114'"
+                        )
+                    ).scalar_one()
+                    == "core_114"
+                )
+            assert (
+                connection.execute(
+                    text("SELECT to_regclass('public.contact_info') IS NOT NULL")
+                ).scalar_one()
+                is True
+            )
+    finally:
+        staged_engine.dispose()
     command.upgrade(relationship_core, "core@head")
 
     count = _execute_as_role(
@@ -493,6 +613,22 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
         scalar=True,
     )
     assert count == 1
+    assert relationship_read_default() is True
+    check_bootstrap_database(db_url)
+    command.upgrade(relationship_core, "core@head")
+    command.upgrade(switchboard_core, "core@head")
+    command.upgrade(switchboard_core, "core@head")
+    check_bootstrap_database(db_url)
+    assert relationship_read_default() is True
+    assert (
+        _execute_as_role(
+            db_url,
+            RUNTIME_ROLES["relationship"],
+            "SELECT COUNT(*) FROM switchboard.message_inbox",
+            scalar=True,
+        )
+        == 1
+    )
 
 
 def test_switchboard_runtime_role_can_ensure_message_inbox_partitions(postgres_container):
@@ -834,6 +970,194 @@ def test_alembic_version_tracking_and_schema_scoped(postgres_container):
     assert _table_exists_in_schema(db_url, "public", "alembic_version")
 
 
+def test_insight_feedback_migration_shape_and_constraints(postgres_container):
+    """core_241 keeps feedback typed and engagement attributable by category."""
+    from butlers.migrations import run_migrations
+
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    asyncio.run(run_migrations(db_url, chain="core"))
+
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            columns = {
+                row[0]
+                for row in conn.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema='public' AND table_name='insight_feedback'"
+                    )
+                )
+            }
+            assert {
+                "insight_id",
+                "dedup_family",
+                "category",
+                "origin_butler",
+                "verdict",
+                "snooze_until",
+                "actor",
+                "decided_at",
+                "evidence_ref",
+            } <= columns
+            engagement_columns = {
+                row[0]
+                for row in conn.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema='public' AND table_name='insight_engagement'"
+                    )
+                )
+            }
+            assert {"category", "origin_butler"} <= engagement_columns
+            conn.execute(
+                text(
+                    "INSERT INTO public.attention_ledger "
+                    "(origin_butler, source, outcome, reason) "
+                    "VALUES ('health', 'insight', 'expired', 'blocked_by:budget')"
+                )
+            )
+
+            candidate_id = conn.execute(
+                text(
+                    "INSERT INTO public.insight_candidates "
+                    "(origin_butler, priority, category, dedup_key, expires_at, message) "
+                    "VALUES ('health', 50, 'Health', 'health:signal:today', now() + interval '1 day', 'x') "
+                    "RETURNING id"
+                )
+            ).scalar_one()
+            with pytest.raises(IntegrityError):
+                with conn.begin_nested():
+                    conn.execute(
+                        text(
+                            "INSERT INTO public.insight_feedback "
+                            "(insight_id, dedup_family, category, origin_butler, verdict, actor) "
+                            "VALUES (:id, 'health:signal', 'Health', 'health', "
+                            "'not_now', 'owner')"
+                        ),
+                        {"id": candidate_id},
+                    )
+    finally:
+        engine.dispose()
+
+
+def test_insight_feedback_rls_survives_bootstrap_replay(postgres_container):
+    """Public-table grants cannot let non-Switchboard roles read or forge feedback."""
+    from butlers.migrations import run_migrations
+
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    asyncio.run(run_migrations(db_url, chain="core"))
+
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            candidate_id = conn.execute(
+                text(
+                    "INSERT INTO public.insight_candidates "
+                    "(origin_butler, priority, category, dedup_key, expires_at, message) "
+                    "VALUES ('health', 50, 'Health', 'health:signal:today', "
+                    "now() + interval '1 day', 'x') RETURNING id"
+                )
+            ).scalar_one()
+            conn.execute(
+                text(
+                    "INSERT INTO public.insight_feedback "
+                    "(insight_id, dedup_family, category, origin_butler, verdict, actor) "
+                    "VALUES (:id, 'health:signal', 'Health', 'health', 'useful', 'owner')"
+                ),
+                {"id": candidate_id},
+            )
+    finally:
+        engine.dispose()
+
+    _replay_init_db(postgres_container, db_name, db_url)
+
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            assert conn.execute(
+                text(
+                    "SELECT relrowsecurity FROM pg_class WHERE oid = 'public.insight_feedback'::regclass"
+                )
+            ).scalar_one()
+            table_owner = conn.execute(
+                text(
+                    "SELECT pg_get_userbyid(relowner) FROM pg_class "
+                    "WHERE oid = 'public.insight_feedback'::regclass"
+                )
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+    assert table_owner not in {*RUNTIME_ROLES.values(), "connector_writer"}
+
+    assert (
+        _execute_as_role(
+            db_url,
+            RUNTIME_ROLES["switchboard"],
+            "SELECT count(*) FROM public.insight_feedback",
+            scalar=True,
+        )
+        == 1
+    )
+    for role in (RUNTIME_ROLES["general"], "connector_writer"):
+        assert (
+            _execute_as_role(
+                db_url,
+                role,
+                "SELECT count(*) FROM public.insight_feedback",
+                scalar=True,
+            )
+            == 0
+        )
+        with pytest.raises(ProgrammingError, match="row-level security"):
+            _execute_as_role(
+                db_url,
+                role,
+                "INSERT INTO public.insight_feedback "
+                f"(insight_id, dedup_family, category, origin_butler, verdict, actor) VALUES "
+                f"('{candidate_id}', 'health:signal', 'Health', 'health', 'useful', 'forged')",
+            )
+
+    async def owner_feedback_still_reaches_the_server_path() -> None:
+        import asyncpg
+
+        from butlers.tools.switchboard.insight.broker import record_insight_feedback
+
+        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=1)
+        try:
+            result = await record_insight_feedback(
+                pool,
+                insight_id=str(candidate_id),
+                verdict="useful",
+                actor="owner",
+            )
+        finally:
+            await pool.close()
+        assert result["status"] == "recorded"
+
+    asyncio.run(owner_feedback_still_reaches_the_server_path())
+
+
+def test_insight_feedback_downgrade_tolerates_shared_table_replay(postgres_container):
+    """Two schema-scoped core chains may remove the same public table in turn."""
+    from butlers.migrations import _build_alembic_config
+
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    general = _build_alembic_config(db_url, chains=["core"], target_schema="general")
+    health = _build_alembic_config(db_url, chains=["core"], target_schema="health")
+
+    command.upgrade(general, "core@head")
+    command.upgrade(health, "core@head")
+    assert table_exists(db_url, "insight_feedback")
+
+    command.downgrade(general, "core_240")
+    command.downgrade(health, "core_240")
+    assert not table_exists(db_url, "insight_feedback")
+
+
 def test_core_acl_and_relationship_chain(postgres_container):
     """ACL: runtime roles exist, own-schema write allowed, cross-schema denied. relationship chain creates reminders."""
     from butlers.migrations import run_migrations
@@ -900,6 +1224,27 @@ def test_core_acl_and_relationship_chain(postgres_container):
     assert not _table_exists_in_schema(db_url, "public", "_reminders_backup"), (
         "_reminders_backup table should have been dropped by rel_020"
     )
+    # The relationship head (rel_035 today, the effective-time expand) runs after
+    # the historical direct-DML migrations and keeps the deployed writer's legacy conflict target beside
+    # the new occurrence index; no cutover migration is in the chain.
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            indexes = conn.execute(
+                text(
+                    "SELECT to_regclass('relationship.uq_ef_spo_active') IS NOT NULL, "
+                    "to_regclass('relationship.uq_ef_spo_occurrence_active') IS NOT NULL"
+                )
+            ).one()
+            versions = {
+                row[0] for row in conn.execute(text("SELECT version_num FROM alembic_version"))
+            }
+    finally:
+        engine.dispose()
+    assert tuple(indexes) == (True, True)
+    # alembic_version also holds the core head here, so check membership of the
+    # resolved relationship head rather than assert_at_chain_head's single row.
+    assert get_chain_head("relationship") in versions
 
 
 # ---------------------------------------------------------------------------
@@ -1001,5 +1346,304 @@ def test_core_migration_smoke_downgrade_upgrade_round_trip(postgres_container):
         "Schema after round-trip must be equivalent to a direct empty→head migration. "
         f"Tables only in round-trip DB: {only_round_trip!r}. "
         f"Tables only in fresh DB: {only_fresh!r}. "
-        "Check that the most recent migration's downgrade() is symmetric with its upgrade()."
+        "This is the ordinary login's privilege-filtered metadata inventory. "
+        "Check qualified object presence, ownership, effective/inherited privileges and "
+        "per-creator default ACLs in a disposable database before attributing absence "
+        "to asymmetric downgrade/upgrade teardown."
     )
+
+
+# Current-schema event chains: core_013/044's historical fixed roster omitted QA.
+# These controls run only on the genuine migrated Postgres lane.
+def _apply_current_event_chains_revision(db_url: str, schema: str, operation: str) -> None:
+    """Reapply the actual revision under an actual schema-scoped Alembic context."""
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    migration_path = (
+        Path(__file__).resolve().parents[2]
+        / "alembic/versions/core/core_280_current_schema_event_chains.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "core_280_current_schema_event_chains", migration_path
+    )
+    assert spec is not None and spec.loader is not None
+    revision = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(revision)
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"SET LOCAL search_path TO {_quote_ident(schema)}, public"))
+            with Operations.context(MigrationContext.configure(conn)):
+                getattr(revision, operation)()
+    finally:
+        engine.dispose()
+
+
+def _event_chains_history(db_url: str, schema: str) -> list[dict]:
+    """An independent committed connection reads the complete historical row values."""
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            return list(
+                conn.execute(
+                    text(
+                        f"SELECT to_jsonb(chain) FROM {_quote_ident(schema)}.event_chains AS chain "
+                        "ORDER BY name"
+                    )
+                ).scalars()
+            )
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("schema", ["qa", "general", None, "future_scheduler"])
+def test_current_schema_event_chains_converge_and_preserve_history(postgres_container, schema):
+    """Current tables, checks, indexes and no-op rollback preserve all five statuses."""
+    from butlers.migrations import _build_alembic_config
+
+    target = schema or "public"
+    quoted = _quote_ident(target)
+    db_url = create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core"],
+        schemas={"core": schema} if schema else None,
+        revisions={"core": "core_279"},
+    )
+    # This is a genuine predecessor counterfactual, not a hand-built relation.
+    assert _table_exists_in_schema(db_url, target, "event_chains") is (target == "general")
+    engine = create_engine(db_url)
+    try:
+        before = []
+        if target == "general":
+            with engine.begin() as conn:
+                conn.execute(
+                    text(f"""
+                        INSERT INTO {quoted}.event_chains
+                            (name, trigger_type, trigger_reference, actions, status, butler_name)
+                        SELECT 'historic-' || status, 'calendar_event_end', 'old-reference',
+                               '[{{"action_type":"notify","message":"history"}}]'::jsonb,
+                               status, :owner
+                        FROM unnest(ARRAY['active','paused','fired','failed','disabled']) AS status
+                    """),
+                    {"owner": target},
+                )
+            before = _event_chains_history(db_url, target)
+        config = _build_alembic_config(db_url, ["core"], target_schema=schema)
+        command.upgrade(config, "core_280")
+        assert _table_exists_in_schema(db_url, target, "event_chains")
+        if before:
+            assert _event_chains_history(db_url, target) == before
+        else:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(f"""
+                        INSERT INTO {quoted}.event_chains
+                            (name, trigger_type, actions, status, butler_name)
+                        SELECT 'historic-' || status, 'calendar_event_end', '[]'::jsonb,
+                               status, :owner
+                        FROM unnest(ARRAY['active','paused','fired','failed','disabled']) AS status
+                    """),
+                    {"owner": target},
+                )
+        history = _event_chains_history(db_url, target)
+        with engine.connect() as conn:
+            columns = set(
+                conn.execute(
+                    text("""
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_schema = :schema AND table_name = 'event_chains'
+                    """),
+                    {"schema": target},
+                ).scalars()
+            )
+            assert columns == {
+                "id",
+                "name",
+                "trigger_type",
+                "trigger_reference",
+                "actions",
+                "status",
+                "butler_name",
+                "created_at",
+                "updated_at",
+            }
+            indexes = {
+                row[0]: row[1]
+                for row in conn.execute(
+                    text("""
+                        SELECT indexname, indexdef FROM pg_indexes
+                        WHERE schemaname = :schema AND tablename = 'event_chains'
+                    """),
+                    {"schema": target},
+                )
+            }
+            assert "UNIQUE" in indexes["idx_event_chains_name_butler"]
+            assert "(name, butler_name)" in indexes["idx_event_chains_name_butler"]
+            assert "(trigger_type)" in indexes["idx_event_chains_trigger_type"]
+            assert "status = 'active'" in indexes["idx_event_chains_trigger_type"]
+            assert "(butler_name)" in indexes["idx_event_chains_butler_name"]
+        for trigger, status in (("unknown", "active"), ("deadline_passed", "unknown")):
+            with pytest.raises(IntegrityError):
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(f"""
+                            INSERT INTO {quoted}.event_chains
+                                (name, trigger_type, actions, status, butler_name)
+                            VALUES ('invalid', :trigger, '[]'::jsonb, :status, :owner)
+                        """),
+                        {"trigger": trigger, "status": status, "owner": target},
+                    )
+        with pytest.raises(IntegrityError):
+            with engine.begin() as conn:
+                conn.execute(
+                    text(f"""
+                        INSERT INTO {quoted}.event_chains
+                            (name, trigger_type, actions, butler_name)
+                        VALUES ('historic-active', 'deadline_passed', '[]'::jsonb, :owner)
+                    """),
+                    {"owner": target},
+                )
+        _apply_current_event_chains_revision(db_url, target, "upgrade")
+        assert _event_chains_history(db_url, target) == history
+        command.downgrade(config, "core_279")
+        assert _event_chains_history(db_url, target) == history
+        command.upgrade(config, "core_280")
+        assert _event_chains_history(db_url, target) == history
+        if target in {"public", "future_scheduler"}:
+            assert not _role_exists(db_url, f"butler_{target}_rw")
+    finally:
+        engine.dispose()
+
+
+def test_current_schema_event_chains_widen_core013_status_without_rewriting(postgres_container):
+    """The actual old core_013 constraint converges without rewriting calendar history."""
+    db_url = create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core"],
+        schemas={"core": "general"},
+        revisions={"core": "core_013"},
+    )
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                INSERT INTO general.event_chains (name, trigger_type, actions, status, butler_name)
+                SELECT 'old-' || status, 'calendar_event_end', '[{"action_type":"notify"}]'::jsonb,
+                       status, 'general'
+                FROM unnest(ARRAY['active','fired','disabled']) AS status
+            """)
+            )
+        history = _event_chains_history(db_url, "general")
+        with pytest.raises(IntegrityError):
+            with engine.begin() as conn:
+                conn.execute(
+                    text("""
+                    INSERT INTO general.event_chains
+                        (name, trigger_type, actions, status, butler_name)
+                    VALUES ('new-paused', 'deadline_passed', '[]'::jsonb, 'paused', 'general')
+                """)
+                )
+        _apply_current_event_chains_revision(db_url, "general", "upgrade")
+        assert _event_chains_history(db_url, "general") == history
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                INSERT INTO general.event_chains (name, trigger_type, actions, status, butler_name)
+                SELECT 'new-' || status, 'deadline_passed', '[]'::jsonb, status, 'general'
+                FROM unnest(ARRAY['paused','failed']) AS status
+            """)
+            )
+        expanded = _event_chains_history(db_url, "general")
+        assert {row["status"] for row in expanded} == {
+            "active",
+            "paused",
+            "fired",
+            "failed",
+            "disabled",
+        }
+        _apply_current_event_chains_revision(db_url, "general", "downgrade")
+        _apply_current_event_chains_revision(db_url, "general", "upgrade")
+        assert _event_chains_history(db_url, "general") == expanded
+    finally:
+        engine.dispose()
+
+
+def test_current_schema_event_chains_qa_role_tick_and_foreign_write_refusal(postgres_container):
+    """Real QA policy reads and scheduler tick work without granting foreign writes."""
+    import asyncpg
+
+    from butlers.core.scheduler import QaSchedulePolicy, read_qa_schedule_policy, tick
+    from butlers.db import register_jsonb_codec
+
+    db_name = migration_db_name()
+    db_url = create_migrated_test_db(
+        postgres_container,
+        db_name,
+        chains=["core", "switchboard"],
+        schemas={"core": "qa", "switchboard": "switchboard"},
+    )
+    _replay_init_db(postgres_container, db_name, db_url)
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                INSERT INTO switchboard.butler_registry (name, endpoint_url)
+                VALUES ('qa', 'http://qa:41100/mcp') ON CONFLICT (name) DO NOTHING
+            """)
+            )
+            conn.execute(
+                text("""
+                UPDATE switchboard.butler_registry_control_plane
+                SET policy_state = 'active', policy_provenance = 'operator' WHERE name = 'qa'
+            """)
+            )
+        for role, destination in (("butler_general_rw", "qa"), ("butler_qa_rw", "general")):
+            with pytest.raises(ProgrammingError) as error:
+                _execute_as_role(
+                    db_url,
+                    role,
+                    f"INSERT INTO {destination}.event_chains "
+                    "(name, trigger_type, actions, butler_name) "
+                    "VALUES ('forbidden', 'deadline_passed', '[]'::jsonb, 'qa')",
+                )
+            assert error.value.orig.pgcode == "42501"
+
+        async def exercise_qa():
+            async def as_qa_role(conn):
+                await conn.execute('SET ROLE "butler_qa_rw"')
+
+            pool = await asyncpg.create_pool(
+                db_url,
+                min_size=1,
+                max_size=1,
+                init=register_jsonb_codec,
+                setup=as_qa_role,
+                server_settings={"search_path": "qa,public"},
+            )
+            try:
+                assert await read_qa_schedule_policy(pool) is QaSchedulePolicy.ALLOW
+                await pool.execute("""
+                    INSERT INTO event_chains (name, trigger_type, actions, butler_name)
+                    VALUES ('historical-calendar', 'calendar_event_end', '[]'::jsonb, 'qa')
+                """)
+                before = _event_chains_history(db_url, "qa")
+
+                async def no_dispatch(**kwargs):
+                    raise AssertionError("historical calendar chain must remain inert")
+
+                assert await tick(pool, no_dispatch, butler_name="qa") == 0
+                assert _event_chains_history(db_url, "qa") == before
+                assert await pool.fetchval("SELECT count(*) FROM event_chains") == 1
+                await pool.execute("DELETE FROM event_chains WHERE name = 'historical-calendar'")
+                assert _event_chains_history(db_url, "qa") == []
+            finally:
+                await pool.close()
+
+        asyncio.run(exercise_qa())
+    finally:
+        engine.dispose()

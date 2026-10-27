@@ -50,7 +50,7 @@ const KIND_LABEL: Record<ConflictIssue["kind"], string> = {
 const PILL =
   "inline-flex items-center justify-center gap-1.5 h-7 rounded-[3px] border px-2.5 " +
   "font-mono text-[11px] leading-none transition-colors " +
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus " +
   "disabled:pointer-events-none disabled:opacity-40";
 
 /** Pluralise a count + noun: `(2, "overlap") => "2 overlaps"`. */

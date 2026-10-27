@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -49,6 +50,7 @@ def test_events_stream_connect_and_receive_snapshot(app):
             assert snap["events"] == []
 
 
+# Spec: REQ-core-fleet-events-004
 def test_events_stream_receives_emitted_event(app):
     """A connected subscriber immediately receives an emit_event() call."""
     from fastapi.testclient import TestClient
@@ -88,6 +90,8 @@ async def test_events_stream_subscribes_before_snapshot_send(monkeypatch):
     emitted = {"done": False}
 
     class _FakeWebSocket:
+        state = SimpleNamespace(owner_authority=SimpleNamespace(method="header"))
+
         async def accept(self) -> None:
             return None
 
@@ -104,7 +108,7 @@ async def test_events_stream_subscribes_before_snapshot_send(monkeypatch):
                 raise WebSocketDisconnect(code=1000)
 
     ws = _FakeWebSocket()
-    await events_mod.events_stream(ws, api_key=None)
+    await events_mod.events_stream(ws)
 
     assert sent[0]["type"] == "snapshot"
     assert sent[1]["type"] == "notification"
@@ -113,6 +117,7 @@ async def test_events_stream_subscribes_before_snapshot_send(monkeypatch):
     assert events_mod._events_subscribers == []
 
 
+# Spec: REQ-core-fleet-events-004
 def test_events_stream_snapshot_includes_recent_events(app):
     """Snapshot contains events emitted before the connection was opened."""
     from fastapi.testclient import TestClient
@@ -138,19 +143,21 @@ def test_events_stream_auth_rejected_when_key_configured(app, monkeypatch):
 
     with TestClient(app) as client:
         with pytest.raises(WebSocketDisconnect) as exc_info:
-            with client.websocket_connect("/api/events/stream?api_key=wrong-key") as ws:
+            with client.websocket_connect(
+                "/api/events/stream?api_key=wrong-key", headers={"X-API-Key": "wrong-key"}
+            ) as ws:
                 ws.receive_text()
     assert exc_info.value.code == 4401
 
 
 def test_events_stream_auth_accepted_with_correct_key(app, monkeypatch):
-    """WS accepts the connection when api_key matches."""
+    """WS accepts the explicitly authenticated synthetic domain client."""
     monkeypatch.setenv("DASHBOARD_API_KEY", "correct-key")
 
     from fastapi.testclient import TestClient
 
     with TestClient(app) as client:
-        with client.websocket_connect("/api/events/stream?api_key=correct-key") as ws:
+        with client.websocket_connect("/api/events/stream") as ws:
             snap = json.loads(ws.receive_text())
             assert snap["type"] == "snapshot"
 
@@ -295,6 +302,7 @@ class _FakeSessionPool:
         return "INSERT 0 0"
 
 
+# Spec: REQ-core-fleet-events-008
 async def test_session_create_emits_session_started_event():
     """session_create publishes onto the cross-process fleet event bus via
     publish_fleet_event (RFC 0022) — the daemon-side upward emit_event
@@ -327,6 +335,7 @@ async def test_session_create_emits_session_started_event():
     assert data["session_id"] == str(expected_id)
 
 
+# Spec: REQ-core-fleet-events-008
 async def test_session_complete_emits_session_ended_event():
     """session_complete publishes onto the cross-process fleet event bus via
     publish_fleet_event (RFC 0022) — the daemon-side upward emit_event

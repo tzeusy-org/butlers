@@ -6,7 +6,7 @@ not a whole-ecosystem page audit. This is a historical audit record as of
 pull-request state, persistent turn state, and next trustworthy delivery
 boundary observed on that date.
 
-**Data:** [structured audit data](2026-07-28-talk-to-butlers-maturity-pursuit-data.json).
+**Data:** `git show b23d5b76afab:docs/redesigns/2026-07-28-talk-to-butlers-maturity-pursuit-data.json`.
 
 > **Historical scope.** The audit findings and evidence below remain preserved
 > as observed on 2026-07-28. The subsequent-status note records later branch

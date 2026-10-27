@@ -115,7 +115,7 @@ After each quiz response is recorded, the system MUST recompute the `mastery_sco
 
 ### Requirement: Mastery status state machine
 
-The `mastery_status` column on `mind_map_nodes` SHALL follow a defined state machine. Only valid transitions MUST be applied; invalid transitions MUST NOT modify the column. The `mastery_record_response()` function MUST evaluate and apply the appropriate state transition after every quiz response. The valid transitions are:
+The `mastery_status` column on `mind_map_nodes` SHALL follow the state machine defined by module-education-mind-map "Mastery status state machine", which is the single source for the set of permitted transitions. The `mastery_record_response()` function MUST evaluate and apply the appropriate state transition after every quiz response, and it applies only these response-driven transitions from that set:
 
 - `unseen` → `diagnosed`: after a diagnostic response is recorded for the node
 - `unseen` → `learning`: when a `teach` response is recorded and no prior diagnostic response exists
@@ -179,8 +179,6 @@ The `mastery_status` column on `mind_map_nodes` SHALL follow a defined state mac
 - **AND** `mastery_record_response()` is called with `response_type="review"` and `quality=5`
 - **THEN** the node's `mastery_status` MUST NOT be set to `'reviewing'` or `'mastered'`
 - **AND** the transition to `reviewing` MUST only occur after the node passes through `learning`
-
----
 
 ### Requirement: Mastery threshold for graduation to mastered
 

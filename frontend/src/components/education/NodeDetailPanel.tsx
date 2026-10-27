@@ -1,4 +1,5 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useMemo } from "react";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Time } from "@/components/ui/time";
@@ -8,7 +9,12 @@ import { useModalChoreography } from "@/hooks/use-modal-choreography";
 import { masteryStatusBadgeClassName } from "./mastery-status";
 import NodeSourceAnnotations from "./NodeSourceAnnotations";
 import QuizHistoryList from "./QuizHistoryList";
-import { conceptTypeLabel, parseConceptType, type RegistryStatus } from "./source-annotations";
+import {
+  conceptTypeLabel,
+  parseConceptType,
+  parseSourceRefs,
+  type RegistryStatus,
+} from "./source-annotations";
 
 interface NodeDetailPanelProps {
   mindMapId: string | null;
@@ -24,20 +30,35 @@ export default function NodeDetailPanel({
   const { data: mindMap } = useMindMap(mindMapId);
   const node = mindMap?.nodes?.find((n) => n.id === nodeId);
 
-  // Source-annotation provenance (bu-istke.5). The registry is fetched
-  // separately from the map, so its three outcomes stay distinct all the way
-  // to the render: a resolved list can prove a source_id dangling, while a
-  // loading or failed fetch proves nothing and must not be reported as one.
+  // Source-annotation provenance (bu-istke.5). Only the source_ids named on
+  // this node are resolved (bu-sovji) — not the whole registry — so the
+  // registry outcomes stay distinct all the way to the render: a resolved
+  // list can prove a source_id dangling, while a loading or failed fetch
+  // proves nothing and must not be reported as one.
+  const sourceIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          parseSourceRefs(node?.metadata)
+            .map((ref) => ref.sourceId)
+            .filter((id): id is string => id !== null),
+        ),
+      ),
+    [node?.metadata],
+  );
   const {
     data: sources,
     isLoading: sourcesLoading,
     isError: sourcesError,
-  } = useEducationSources();
-  const registryStatus: RegistryStatus = sourcesError
-    ? "unavailable"
-    : sourcesLoading || sources === undefined
-      ? "loading"
-      : "resolved";
+  } = useEducationSources(sourceIds);
+  const registryStatus: RegistryStatus =
+    sourceIds.length === 0
+      ? "resolved"
+      : sourcesError
+        ? "unavailable"
+        : sourcesLoading || sources === undefined
+          ? "loading"
+          : "resolved";
   const conceptType = parseConceptType(node?.metadata);
 
   // Focus choreography (bu-x7syp): on open, focus moves into the panel and
@@ -66,15 +87,15 @@ export default function NodeDetailPanel({
     // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onKeyDown here is Escape-to-close only (trapFocus: false — no Tab handling), matching the accepted TimelineEventDrawer/EventDrawer inline-disclosure-panel pattern.
     <div ref={rootRef} role="complementary" aria-label="Node detail panel" onKeyDown={onKeyDown}>
       {/* Focus lands here on open (tabIndex=-1: programmatically focusable,
-          not a Tab stop); visually hidden since CardTitle below already
+          not a Tab stop); visually hidden since SectionTitle below already
           carries the same information for sighted users. */}
-      <h2 ref={initialFocusRef} tabIndex={-1} className="sr-only focus:outline-none">
+      <h2 ref={initialFocusRef} tabIndex={-1} className="sr-only">
         Node details: {node.label}
       </h2>
-      <Card>
-        <CardHeader className="flex flex-row items-start justify-between space-y-0">
+      <Section>
+        <SectionHeader className="flex flex-row items-start justify-between space-y-0">
           <div className="space-y-1">
-            <CardTitle className="text-lg">{node.label}</CardTitle>
+            <SectionTitle>{node.label}</SectionTitle>
             <div className="flex flex-wrap items-center gap-2">
               <Badge className={masteryStatusBadgeClassName(node.mastery_status)}>
                 {node.mastery_status}
@@ -100,8 +121,8 @@ export default function NodeDetailPanel({
           >
             <X className="h-4 w-4" />
           </Button>
-        </CardHeader>
-        <CardContent className="space-y-4">
+        </SectionHeader>
+        <SectionContent className="space-y-4">
           {node.description && (
             <p className="text-sm text-muted-foreground">{node.description}</p>
           )}
@@ -145,8 +166,8 @@ export default function NodeDetailPanel({
             <h4 className="mb-2 text-sm font-medium">Quiz History</h4>
             <QuizHistoryList mindMapId={mindMapId!} nodeId={nodeId} compact />
           </div>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     </div>
   );
 }

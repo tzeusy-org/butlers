@@ -44,8 +44,6 @@ vi.mock("@/hooks/use-memory", () => ({
   usePromoteEntity: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useForgetRelationshipEntity: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useRevealEntitySecret: vi.fn(() => ({ mutate: vi.fn() })),
-  useSetLinkedContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useUnlinkContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
 const useRelationshipEntityQueue = vi.fn();
@@ -57,7 +55,11 @@ const useRelationshipEntitiesByIds = vi
 const useEntityFacts = vi.fn();
 
 vi.mock("@/hooks/use-entities", () => ({
+  ENTITY_CADENCE_REFRESH_MS: 30_000,
+  ENTITY_CADENCE_MAX_AGE_MS: 90_000,
   useEntityTimeline: vi.fn(() => ({ data: [], isLoading: false })),
+  useEntityActivity: vi.fn(() => ({ data: { pages: [{ items: [], total: 0, limit: 50, offset: 0, degraded: false, degraded_reason: null }], pageParams: [0] }, isLoading: false, isError: false, isRefetching: false, refetch: vi.fn(), fetchNextPage: vi.fn(), hasNextPage: false, isFetchingNextPage: false })),
+  useEntityCadence: vi.fn(() => ({ data: { window_days: 30, interaction_count: 0, completeness: "complete", has_more: false }, isLoading: false, isError: false })),
   useEntityGifts: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityLoans: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityMessageThreads: vi.fn(() => ({ data: [], isLoading: false })),
@@ -92,13 +94,6 @@ vi.mock("@/hooks/use-entities", () => ({
   useMergeRelationshipEntities: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
 }));
 
-vi.mock("@/hooks/use-contacts", () => ({
-  useContacts: vi.fn(() => ({ data: { contacts: [] } })),
-  useCreateContactInfo: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
-  useDeleteContactInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  usePatchContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  usePatchContactInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-}));
 
 vi.mock("@/components/relationship/OwnerSetupBanner", () => ({
   OwnerSetupBanner: () => null,
@@ -329,7 +324,7 @@ describe("EntityDetailPage — Workbench KPI strip accuracy", () => {
   it("shows lower-bound counts with '+' suffix when facts window is truncated (has_more=true)", () => {
     // Simulate >200 facts: has_more=true; the visible window has 1 src and 1 channel.
     useEntityFacts.mockReturnValue({
-      data: { items: [IDENTITY_FACT, NARRATIVE_FACT], next_cursor: "abc123", has_more: true },
+      data: { items: [IDENTITY_FACT, NARRATIVE_FACT], next_cursor: "abc123", limit: 200 },
       isFetching: false,
       error: null,
     });

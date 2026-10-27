@@ -41,7 +41,6 @@ The bootstrap flow:
          connector_detail_path present → /ingestion/connectors/<type>/<identity>
          "secrets"   → /secrets?focus=u:<provider>&toast=connected
          "ingestion" → /ingestion/connectors
-         "settings_owner" → /settings/owner?toast=connected&provider=<provider>
          (default)   → /secrets?focus=u:<provider>&toast=connected
 
 Provider registry
@@ -50,13 +49,12 @@ Providers are registered in ``_PROVIDER_REGISTRY`` keyed by provider name.
 Each entry is a ``_ProviderConfig`` dataclass describing auth/token URLs,
 scope-sets, default scopes, and redirect-URI env-var name.
 
-Currently registered: ``google``, ``spotify``.
+Currently registered: ``google``. Additional providers are injected only by
+tests; connector-owned OAuth flows do not use this registry.
 
 Environment variables:
   GOOGLE_OAUTH_REDIRECT_URI  — Callback URL registered with Google
                                (default: http://localhost:41200/api/oauth/google/callback)
-  SPOTIFY_OAUTH_REDIRECT_URI — Callback URL registered with Spotify
-                               (default: http://localhost:41200/api/oauth/spotify/callback)
   OAUTH_DASHBOARD_URL        — Frontend base URL prefixed onto the server-built
                                post-callback redirect paths (e.g.
                                ``https://host/butlers-dev``). Required when the
@@ -83,16 +81,16 @@ import secrets
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 import butlers.api.routers.audit as _audit
+from butlers.api.deps import OptionalDb
 from butlers.api.models import ApiResponse
 from butlers.api.models.oauth import (
     DeleteCredentialsResponse,
@@ -133,27 +131,12 @@ from butlers.oauth_token_payload import (
     validate_oauth_token_payload,
 )
 from butlers.secrets_provider_catalog import PROVIDER_CATALOG
-from butlers.spotify_credentials import (
-    SPOTIFY_ACCESS_TOKEN,
-    SPOTIFY_CATEGORY,
-    SPOTIFY_REFRESH_TOKEN,
-    SPOTIFY_TOKEN_EXPIRES_AT,
-)
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Optional DB manager dependency for credential persistence
 # ---------------------------------------------------------------------------
-
-
-def _get_db_manager() -> Any:
-    """Stub replaced at startup by wire_db_dependencies().
-
-    When not wired (e.g. in tests that don't boot the full app), returns None
-    so the callback degrades gracefully to log-only mode.
-    """
-    return None
 
 
 def _make_credential_store(db_manager: Any) -> CredentialStore | None:
@@ -320,55 +303,11 @@ class _ProviderConfig:
     """butler_secrets key for the OAuth app client secret."""
 
     userinfo_url: str | None = None
-    """Userinfo endpoint; None for providers that do not expose one (e.g. Spotify)."""
+    """Userinfo endpoint; None for providers that do not expose one."""
 
-    # Spotify: user profile URL plays the role of a userinfo endpoint.
     profile_url: str | None = None
     """Optional profile endpoint for providers that use a different mechanism."""
 
-
-# ---------------------------------------------------------------------------
-# Spotify scope-set registry
-# ---------------------------------------------------------------------------
-#
-# Spotify uses opaque scope strings (not URLs).  The ``base`` set provides
-# minimal identity so the /me call succeeds; downstream butlers add music/
-# listening-history scopes.
-SPOTIFY_SCOPE_SETS: dict[str, list[str]] = {
-    "base": [
-        "user-read-email",
-        "user-read-private",
-    ],
-    "listening_history": [
-        "user-read-recently-played",
-        "user-top-read",
-        # user-read-playback-state is read-only state and belongs with listening rather
-        # than the write-capable 'playback' set.  It is included in the default scope
-        # composition so the scope surface never reports spurious drift for a freshly
-        # authorized Spotify connector.
-        "user-read-playback-state",
-    ],
-    "playback": [
-        # Write-capable and currently-playing scopes — NOT included by default.
-        "user-modify-playback-state",
-        "user-read-currently-playing",
-    ],
-    "library": [
-        "user-library-read",
-        "user-library-modify",
-    ],
-    "playlists": [
-        "playlist-read-private",
-        "playlist-read-collaborative",
-        "playlist-modify-public",
-        "playlist-modify-private",
-    ],
-}
-
-_SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize"
-_SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
-_SPOTIFY_PROFILE_URL = "https://api.spotify.com/v1/me"
-_DEFAULT_SPOTIFY_REDIRECT_URI = "http://localhost:41200/api/oauth/spotify/callback"
 
 _PROVIDER_REGISTRY: dict[str, _ProviderConfig] = {
     "google": _ProviderConfig(
@@ -380,23 +319,12 @@ _PROVIDER_REGISTRY: dict[str, _ProviderConfig] = {
         redirect_uri_env_var="GOOGLE_OAUTH_REDIRECT_URI",
         userinfo_url=GOOGLE_USERINFO_URL,
     ),
-    "spotify": _ProviderConfig(
-        auth_url=_SPOTIFY_AUTH_URL,
-        token_url=_SPOTIFY_TOKEN_URL,
-        scope_sets=SPOTIFY_SCOPE_SETS,
-        # "base" + "listening_history" gives the five scopes declared as required in the
-        # oauth_scope_registry.py manifest: user-read-email, user-read-private,
-        # user-read-recently-played, user-top-read, user-read-playback-state.
-        # Keeping them aligned means a freshly-authorized connector shows no false drift.
-        default_scope_sets=("base", "listening_history"),
-        default_redirect_uri=_DEFAULT_SPOTIFY_REDIRECT_URI,
-        redirect_uri_env_var="SPOTIFY_OAUTH_REDIRECT_URI",
-        client_id_key="SPOTIFY_OAUTH_CLIENT_ID",
-        client_secret_key="SPOTIFY_OAUTH_CLIENT_SECRET",
-        userinfo_url=None,
-        profile_url=_SPOTIFY_PROFILE_URL,
-    ),
 }
+
+
+# Connector-owned OAuth providers are intentionally absent from the generic
+# registry and must receive the same fixed 404 as any unknown provider.
+_CONNECTOR_OWNED_OAUTH_PROVIDERS = frozenset({"spotify"})
 
 
 def _get_provider_config(provider: str) -> _ProviderConfig | None:
@@ -412,8 +340,12 @@ def _is_catalog_oauth_provider(provider: str) -> bool:
     has no ``_PROVIDER_REGISTRY`` entry because no real OAuth app is configured)
     from a genuinely-unknown / typo'd provider that is absent from the catalog
     entirely.  The former gets an honest ``oauth_provider_not_configured``
-    response; the latter keeps the existing ``unknown_provider`` 404.
+    response; the latter keeps the existing ``unknown_provider`` 404. Connector-
+    owned OAuth providers are deliberately treated as the latter so the generic
+    route cannot become a compatibility surface.
     """
+    if provider in _CONNECTOR_OWNED_OAUTH_PROVIDERS:
+        return False
     meta = PROVIDER_CATALOG.get(provider)
     return meta is not None and meta.kind == "oauth"
 
@@ -460,7 +392,7 @@ def collect_toml_scopes(provider: str, roster_dir: Path | None = None) -> list[s
     Parameters
     ----------
     provider:
-        OAuth provider name (e.g. ``"google"``, ``"spotify"``).
+        OAuth provider name (for example, ``"google"``).
     roster_dir:
         Path to the roster directory.  Defaults to ``<repo>/roster/``.
     """
@@ -570,7 +502,7 @@ def _compose_provider_default_scopes(
        ``scopes`` list, the scope string is the ordered union of all declared
        scopes across all butlers.
     2. Otherwise, fall back to the hardcoded ``provider_cfg.default_scope_sets``
-       so that existing providers (google, spotify) keep working unchanged when
+       so that registered providers keep working unchanged when
        no butler.toml explicitly declares their scopes.
 
     Parameters
@@ -579,7 +511,7 @@ def _compose_provider_default_scopes(
         Static configuration for the provider (contains the named scope-set
         registry and the default_scope_sets tuple used for fallback).
     provider:
-        Provider name (e.g. ``"google"``, ``"spotify"``).  Used to look up
+        Provider name (for example, ``"google"``). Used to look up
         butler.toml declarations.
     roster_dir:
         Optional path to the roster directory; passed to ``collect_toml_scopes``
@@ -696,7 +628,6 @@ def _build_success_redirect_url(
       connector_detail_path present → /ingestion/connectors/<type>/<identity>
       "secrets"    → /secrets?focus=u:<provider>&toast=connected
       "ingestion"  → /ingestion/connectors
-      "settings_owner" → /settings/owner?toast=connected&provider=<provider>
       (None / any) → /secrets?focus=u:<provider>&toast=connected  (default)
 
     ``connector_detail_path`` takes priority over ``page_of_origin`` when set,
@@ -709,8 +640,6 @@ def _build_success_redirect_url(
     resolved_page = page_of_origin or _PAGE_OF_ORIGIN_DEFAULT
     if resolved_page == "ingestion":
         return "/ingestion/connectors"
-    if resolved_page == "settings_owner":
-        return f"/settings/owner?toast=connected&provider={quote(provider, safe='')}"
     cred_key = normalize_credential_key("user", provider)
     return f"/secrets?focus={cred_key}&toast=connected"
 
@@ -731,11 +660,6 @@ def _build_error_redirect_url(
     resolved_page = page_of_origin or _PAGE_OF_ORIGIN_DEFAULT
     if resolved_page == "ingestion":
         return f"/ingestion/connectors?oauth_error={error_code}"
-    if resolved_page == "settings_owner":
-        return (
-            f"/settings/owner?oauth_error={quote(error_code, safe='')}"
-            f"&provider={quote(provider, safe='')}"
-        )
     cred_key = normalize_credential_key("user", provider)
     return f"/secrets?focus={cred_key}&oauth_error={error_code}"
 
@@ -834,13 +758,12 @@ class _StateEntry:
     """Page that initiated the OAuth dance; used by callback to route the redirect.
 
     Known values: ``"secrets"`` → /secrets page,
-    ``"ingestion"`` → /ingestion/connectors,
-    ``"settings_owner"`` → /settings/owner.
-    Absent/None defaults to the ``"secrets"`` return path.
+    ``"ingestion"`` → /ingestion/connectors.
+    Absent/None or any other value defaults to the ``"secrets"`` return path.
     """
 
     provider: str = field(default="google")
-    """OAuth provider identifier (e.g. ``"google"``, ``"spotify"``)."""
+    """OAuth provider identifier (for example, ``"google"``)."""
 
     connector_detail_path: str | None = None
     """Validated relative path for the connector detail deep-link redirect.
@@ -883,6 +806,18 @@ def _store_state(
         connector_detail_path=connector_detail_path,
     )
     _evict_expired_states()
+
+
+def has_valid_callback_state(state: str, provider: str) -> bool:
+    """Admit only a known provider-bound callback; the handler consumes it.
+
+    This narrowly scoped authority never authenticates a dashboard session.
+    Lookup is bounded and does not expose any state or account metadata.
+    """
+    if len(state) > 256:
+        return False
+    entry = _state_store.get(state)
+    return bool(entry and entry.provider == provider and time.monotonic() < entry.expiry)
 
 
 def _validate_and_consume_state(state: str) -> _StateEntry | None:
@@ -949,10 +884,10 @@ _STUB_SYNTHETIC_USERINFO: dict[str, Any] = {
     "id": "stub-user-id-000000000001",
 }
 
-# Synthetic Spotify profile returned by the stub.
-_STUB_SYNTHETIC_SPOTIFY_PROFILE: dict[str, Any] = {
+# Synthetic profile returned by the test-mode stub.
+_STUB_SYNTHETIC_PROFILE: dict[str, Any] = {
     "email": "stub-user@stub.invalid",
-    "id": "stub-spotify-user-0001",
+    "id": "stub-provider-user-0001",
     "display_name": "Stub Test User",
 }
 
@@ -1247,7 +1182,7 @@ async def oauth_google_start(
     page_of_origin: str | None = Query(
         default=None,
         description="Optional page that initiated the OAuth flow. "
-        "Known values: 'secrets', 'ingestion', and 'settings_owner'. "
+        "Known values: 'secrets' and 'ingestion'. "
         "When present, the value is carried in the CSRF state token so the callback "
         "can route the user back to the originating page. "
         "Missing or empty is treated as the 'secrets' default at callback time.",
@@ -1259,7 +1194,8 @@ async def oauth_google_start(
         "connectors roster. Must match <connector_type>/<endpoint_identity> format. "
         "Invalid values are silently ignored (fallback to page_of_origin routing).",
     ),
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> Response:
     """Begin the Google OAuth authorization flow.
 
@@ -1502,7 +1438,8 @@ async def oauth_google_callback(
     error_description: str | None = Query(
         default=None, description="Human-readable error from Google."
     ),
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> Response:
     """Handle the Google OAuth callback after user authorization.
 
@@ -1836,7 +1773,8 @@ async def _update_account_refresh_token(
 )
 async def upsert_google_credentials(
     body: UpsertAppCredentialsRequest,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> UpsertAppCredentialsResponse:
     """Store Google app credentials in the database.
 
@@ -1890,7 +1828,8 @@ async def upsert_google_credentials(
     ),
 )
 async def delete_google_credentials_endpoint(
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> DeleteCredentialsResponse:
     """Delete all stored Google OAuth credentials from the database.
 
@@ -1934,7 +1873,8 @@ async def delete_google_credentials_endpoint(
     ),
 )
 async def get_google_credential_status(
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> GoogleCredentialStatusResponse:
     """Return masked status of stored Google credentials.
 
@@ -1996,7 +1936,8 @@ async def get_google_credential_status(
     ),
 )
 async def list_google_accounts_endpoint(
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> list[GoogleAccountResponse]:
     """List all connected Google accounts."""
     shared_pool = _get_shared_pool(db_manager)
@@ -2015,7 +1956,8 @@ async def list_google_accounts_endpoint(
 )
 async def set_primary_google_account(
     account_id: uuid.UUID,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> SetPrimaryResponse:
     """Set a Google account as the primary account."""
     shared_pool = _get_shared_pool(db_manager)
@@ -2024,8 +1966,8 @@ async def set_primary_google_account(
 
     try:
         account = await set_primary_account(shared_pool, account_id)
-    except GoogleAccountNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+    except GoogleAccountNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.") from exc
 
     return SetPrimaryResponse(account=_account_to_response(account))
 
@@ -2046,7 +1988,8 @@ async def disconnect_google_account(
         default=False,
         description="When true, fully removes the google_accounts row and companion entity.",
     ),
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> DisconnectAccountResponse:
     """Disconnect a Google account."""
     shared_pool = _get_shared_pool(db_manager)
@@ -2057,8 +2000,8 @@ async def disconnect_google_account(
     try:
         account_before = await get_google_account(shared_pool, account=account_id)
         was_primary = account_before.is_primary
-    except GoogleAccountNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+    except GoogleAccountNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.") from exc
 
     await disconnect_account(shared_pool, account_id, hard_delete=hard_delete)
 
@@ -2089,7 +2032,8 @@ async def disconnect_google_account(
 )
 async def get_google_account_status(
     account_id: uuid.UUID,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> GoogleAccountStatus:
     """Get per-account credential status."""
     shared_pool = _get_shared_pool(db_manager)
@@ -2100,8 +2044,8 @@ async def get_google_account_status(
 
     try:
         account = await get_google_account(shared_pool, account=account_id)
-    except GoogleAccountNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+    except GoogleAccountNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.") from exc
 
     # Check app credentials.
     app_creds = await load_app_credentials(cred_store)
@@ -2179,7 +2123,8 @@ def _account_to_response(account: Any) -> GoogleAccountResponse:
     ),
 )
 async def oauth_status(
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> OAuthStatusResponse:
     """Report the current state of Google OAuth credentials.
 
@@ -3146,7 +3091,7 @@ async def oauth_provider_start(
     page_of_origin: str | None = Query(
         default=None,
         description="Page that initiated the OAuth dance. "
-        "Known values: 'secrets' (default), 'ingestion', 'settings_owner'. "
+        "Known values: 'secrets' (default) and 'ingestion'. "
         "Threaded through state token; callback uses it for return routing.",
     ),
     connector_detail_path: str | None = Query(
@@ -3156,7 +3101,8 @@ async def oauth_provider_start(
         "connectors roster. Must match <connector_type>/<endpoint_identity> format. "
         "Invalid values are silently ignored (fallback to page_of_origin routing).",
     ),
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> Response:
     """Begin the OAuth authorization flow for *provider*.
 
@@ -3168,11 +3114,6 @@ async def oauth_provider_start(
     When ``connector_detail_path`` is supplied and valid, the callback will
     deep-link to the specific connector detail page instead of the roster.
     """
-    # See oauth_google_start: an opaque account_ref stands in for account_hint
-    # when the caller must not hold the account email (bu-nz4sn).
-    if not account_hint and account_ref is not None:
-        account_hint = await _resolve_account_ref_hint(provider, account_ref, db_manager)
-
     provider_cfg = _get_provider_config(provider)
     if provider_cfg is None:
         # Distinguish a catalog-declared oauth provider that simply has not been
@@ -3206,6 +3147,14 @@ async def oauth_provider_start(
                 "known": sorted(_PROVIDER_REGISTRY.keys()),
             },
         )
+
+    # See oauth_google_start: an opaque account_ref stands in for account_hint
+    # when the caller must not hold the account email (bu-nz4sn). Resolve it
+    # only after the provider has passed the generic registry boundary, so a
+    # connector-owned or unknown provider is a fixed 404 with no DB/provider
+    # work and cannot consume state or write credentials.
+    if not account_hint and account_ref is not None:
+        account_hint = await _resolve_account_ref_hint(provider, account_ref, db_manager)
 
     # --- Resolve scope composition ---
     requested_sets = _parse_scope_set_param(scope_set)
@@ -3304,10 +3253,6 @@ async def oauth_provider_start(
             params["prompt"] = "consent"
         if account_hint:
             params["login_hint"] = account_hint
-    elif provider == "spotify":
-        if force_consent:
-            params["show_dialog"] = "true"
-
     authorization_url = f"{provider_cfg.auth_url}?{urlencode(params)}"
 
     logger.info(
@@ -3361,14 +3306,15 @@ async def oauth_provider_callback(
     error_description: str | None = Query(
         default=None, description="Human-readable error from the provider."
     ),
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> Response:
     """Handle the OAuth callback for *provider*.
 
     For ``provider=google`` the full Google-specific credential persistence
     logic (registry, health-scope metadata, gmail-reload) is reused.
-    For other providers (e.g. ``spotify``), a lightweight generic path
-    stores the refresh token in the shared credential store.
+    For other registered providers, a lightweight generic path stores the
+    refresh token in the shared credential store.
 
     On success, redirects based on ``state.page_of_origin``:
       "secrets"   → /secrets?focus=u:<provider>&toast=connected
@@ -3560,7 +3506,7 @@ async def oauth_provider_callback(
         # Test-mode stub: skip real HTTP call and return synthetic profile.
         if _is_oauth_stub_active():
             logger.debug("OAuth stub: returning synthetic profile for provider=%s", provider)
-            stub_profile = dict(_STUB_SYNTHETIC_SPOTIFY_PROFILE)
+            stub_profile = dict(_STUB_SYNTHETIC_PROFILE)
             account_email = _extract_profile_account_identity(stub_profile)
         else:
             account_email, identity_unresolved_reason = await _resolve_profile_account_identity(
@@ -3586,45 +3532,9 @@ async def oauth_provider_callback(
             detail="Shared credential DB unavailable; cannot persist OAuth credentials.",
         )
 
-    if provider == "spotify":
-        # Spotify's connector, module, status, and disconnect paths all consume
-        # the canonical SPOTIFY_* keys. Persist the generalized callback result
-        # to that established authority instead of inventing a parallel key that
-        # no runtime consumer reads.
-        expires_at = (datetime.now(UTC) + timedelta(seconds=token.expires_in)).isoformat()
-        await cred_store.store(
-            SPOTIFY_ACCESS_TOKEN,
-            access_token,
-            category=SPOTIFY_CATEGORY,
-            description="Spotify OAuth access token",
-            is_sensitive=True,
-        )
-        if refresh_token:
-            await cred_store.store(
-                SPOTIFY_REFRESH_TOKEN,
-                refresh_token,
-                category=SPOTIFY_CATEGORY,
-                description="Spotify OAuth refresh token",
-                is_sensitive=True,
-            )
-        await cred_store.store(
-            SPOTIFY_TOKEN_EXPIRES_AT,
-            expires_at,
-            category=SPOTIFY_CATEGORY,
-            description="Spotify access token expiry (ISO 8601 UTC)",
-            is_sensitive=False,
-        )
-        if scope:
-            await cred_store.store(
-                "SPOTIFY_GRANTED_SCOPES",
-                scope,
-                category=SPOTIFY_CATEGORY,
-                description="Spotify OAuth granted scopes (space-separated)",
-                is_sensitive=False,
-            )
-    elif refresh_token:
-        # Other generalized providers retain the provider-namespaced key until
-        # they define a more specific runtime credential contract.
+    if refresh_token:
+        # Generalized providers retain the provider-namespaced key until they
+        # define a more specific runtime credential contract.
         await cred_store.store(
             f"oauth_{provider}_refresh_token",
             refresh_token,

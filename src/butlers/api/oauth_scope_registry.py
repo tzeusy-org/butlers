@@ -18,6 +18,7 @@ Design decisions:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -30,6 +31,28 @@ ScopeStatus = Literal["ok", "missing", "extra"]
 AuthStatus = Literal["ok", "degraded", "expired", "rotation-needed", "unsupported", "unconfigured"]
 AltSurfaceKind = Literal["session-validity", "static-token", "device-pairing"]
 DriftClass = Literal["ok", "extra", "drift", "expired", "unsupported"]
+
+
+# Provider scope identifiers are structured labels (for example a short Spotify
+# permission or a Google URL).  A long opaque value made only of token-safe
+# characters is not a usable scope label and must never be reflected from the
+# registry onto the dashboard wire.  This leaves legitimate extra scopes
+# visible while containing malformed credential-shaped observations.
+_OPAQUE_SCOPE_VALUE = re.compile(
+    r"^(?:[A-Za-z0-9._~+/=-]{40,}|Bearer\s+\S+)$",
+    flags=re.IGNORECASE,
+)
+
+
+def _public_observed_scope_names(observed_scopes: list[str] | None) -> list[str] | None:
+    """Return observed scope identifiers that are safe for dashboard projection."""
+    if observed_scopes is None:
+        return None
+    return [
+        scope_name
+        for scope_name in observed_scopes
+        if not _OPAQUE_SCOPE_VALUE.fullmatch(scope_name)
+    ]
 
 
 @dataclass(frozen=True)
@@ -270,24 +293,6 @@ _GOOGLE_HEALTH_MANIFEST = ScopeManifest(
     ],
 )
 
-_DISCORD_MANIFEST = ScopeManifest(
-    version=1,
-    required=[
-        ScopeDecl(
-            name="identify",
-            serif_note="Used to read your Discord user ID and username",
-        ),
-        ScopeDecl(
-            name="guilds",
-            serif_note="Used to list the servers you belong to",
-        ),
-        ScopeDecl(
-            name="messages.read",
-            serif_note="Used to read messages from channels you have access to",
-        ),
-    ],
-)
-
 # ---------------------------------------------------------------------------
 # Scope manifest registry — maps connector_type → ScopeManifest
 # ---------------------------------------------------------------------------
@@ -298,8 +303,6 @@ _OAUTH_MANIFESTS: dict[str, ScopeManifest] = {
     "google_calendar": _GOOGLE_CALENDAR_MANIFEST,
     "google_drive": _GOOGLE_DRIVE_MANIFEST,
     "google_health": _GOOGLE_HEALTH_MANIFEST,
-    "discord": _DISCORD_MANIFEST,
-    "discord_user": _DISCORD_MANIFEST,  # same OAuth surface, different connector name
 }
 
 
@@ -366,16 +369,6 @@ APPLICABILITY_MATRIX: dict[str, ConnectorAuthEntry] = {
     "google_health": ConnectorAuthEntry(
         connector_type="google_health",
         credential_model="google_oauth",
-        oauth_supported=True,
-    ),
-    "discord": ConnectorAuthEntry(
-        connector_type="discord",
-        credential_model="oauth2",
-        oauth_supported=True,
-    ),
-    "discord_user": ConnectorAuthEntry(
-        connector_type="discord_user",
-        credential_model="oauth2",
         oauth_supported=True,
     ),
     "telegram_bot": ConnectorAuthEntry(
@@ -487,11 +480,12 @@ def classify_drift(
     if token_rejected:
         return "expired"
 
-    if observed_scopes is None:
+    public_observed_scopes = _public_observed_scope_names(observed_scopes)
+    if public_observed_scopes is None:
         # Never probed — treat as unconfigured (not drift), handled by auth_status
         return "ok"
 
-    observed = frozenset(observed_scopes)
+    observed = frozenset(public_observed_scopes)
     required = manifest.required_names()
 
     if not required.issubset(observed):
@@ -533,19 +527,20 @@ def compute_auth_status(
     if token_rejected:
         return "expired"
 
-    if observed_scopes is None:
+    public_observed_scopes = _public_observed_scope_names(observed_scopes)
+    if public_observed_scopes is None:
         return "unconfigured"
 
     # Check manifest version drift (rotation-needed when row is behind manifest)
     version_drift = required_scopes_version is None or required_scopes_version < manifest.version
 
-    drift = classify_drift(manifest, observed_scopes)
+    drift = classify_drift(manifest, public_observed_scopes)
 
     if drift == "drift" or version_drift:
         return "rotation-needed"
 
     # Check optional scope coverage for degraded
-    observed = frozenset(observed_scopes)
+    observed = frozenset(public_observed_scopes)
     optional_missing = manifest.optional_names() - observed
     if optional_missing:
         return "degraded"
@@ -578,7 +573,8 @@ def build_scope_rows(
     """Compute the scopes[] block per spec §Dashboard API response shape.
 
     Ordering: required → optional → sensitive → extra.
-    Extra scopes (in observed but not in any manifest category) are appended last.
+    Safe extra scopes (in observed but not in any manifest category) are
+    appended last; opaque credential-shaped observations are withheld.
 
     Args:
         manifest: The connector's scope manifest.
@@ -587,7 +583,8 @@ def build_scope_rows(
     Returns:
         List of ScopeRow entries in canonical order.
     """
-    if observed_scopes is None:
+    public_observed_scopes = _public_observed_scope_names(observed_scopes)
+    if public_observed_scopes is None:
         # No observation — return required scopes as missing
         return [
             ScopeRow(
@@ -602,7 +599,7 @@ def build_scope_rows(
             for d in manifest.all_decls()
         ]
 
-    observed = frozenset(observed_scopes)
+    observed = frozenset(public_observed_scopes)
     sensitive_names = manifest.sensitive_names()
     rows: list[ScopeRow] = []
 
@@ -623,7 +620,7 @@ def build_scope_rows(
 
     # Extra scopes — observed but not in any manifest category
     declared_names = manifest.all_declared_names()
-    for scope_name in observed_scopes:
+    for scope_name in public_observed_scopes:
         if scope_name not in declared_names:
             rows.append(
                 ScopeRow(

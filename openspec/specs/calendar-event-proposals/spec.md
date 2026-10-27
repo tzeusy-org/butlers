@@ -12,9 +12,9 @@ user's real calendar by inference alone.
 
 ## Requirements
 
-### Requirement: [TARGET-STATE] Calendar Event Proposals Store
+### Requirement: Calendar Event Proposals Store
 
-The capability SHALL persist butler-inferred event proposals in a new per-schema
+The capability SHALL persist butler-inferred event proposals in a per-schema
 `calendar_event_proposals` table that holds an event-shaped payload plus
 proposal-specific provenance and lifecycle state. It SHALL NOT reuse
 `autonomy_suggestions` (which promotes auto-approve RULES) nor `pending_actions`
@@ -40,7 +40,7 @@ proposal-specific provenance and lifecycle state. It SHALL NOT reuse
 - **THEN** it does NOT create a `pending_actions` row
 - **BECAUSE** `pending_actions` gates a specific already-decided butler tool call awaiting approval, whereas a proposal is an editable recommendation the butler has deliberately NOT executed and that the user may dismiss as a first-class outcome
 
-### Requirement: [TARGET-STATE] calendar_propose_event Producer
+### Requirement: calendar_propose_event Producer
 
 The capability SHALL expose a programmatic `calendar_propose_event` producer that
 ingestion handlers call to stage an inferred event. The producer SHALL insert a
@@ -60,11 +60,11 @@ ingestion handlers call to stage an inferred event. The producer SHALL insert a
 - **AND** it returns the id of the existing proposal
 - **BECAUSE** one originating ingestion signal should yield at most one proposal
 
-### Requirement: [TARGET-STATE] Proposals Workspace Projection View
+### Requirement: Proposals Workspace Projection View
 
 The capability SHALL extend the calendar workspace read endpoint so
 `GET /api/calendar/workspace?view=proposals` projects pending proposals into the
-unified entry shape, tagged with a new `source_type` value `"proposed_event"`.
+unified entry shape, tagged with the `source_type` value `"proposed_event"`.
 
 #### Scenario: Proposals view returns pending proposals
 
@@ -80,7 +80,7 @@ unified entry shape, tagged with a new `source_type` value `"proposed_event"`.
 - **THEN** the endpoint returns an empty entries list rather than HTTP 500
 - **AND** the failure is logged
 
-### Requirement: [TARGET-STATE] Accept and Dismiss Proposal Endpoints
+### Requirement: Accept and Dismiss Proposal Endpoints
 
 The capability SHALL expose endpoints to accept or dismiss a proposal. Accept
 SHALL route the proposal's payload through `calendar_create_butler_event` onto the
@@ -99,7 +99,7 @@ provider write. Both SHALL be idempotent on the proposal's current status.
 - **WHEN** a pending proposal carries a `description` and/or `location` and accept is called
 - **THEN** both fields are forwarded to `calendar_create_butler_event` (which accepts `description` and `location` parameters), are stored on the underlying scheduler/reminder row, surface on the workspace projection, and are pushed to the Butlers subcalendar event
 - **AND** an inline `description`/`location` override in the request body takes precedence over the stored value
-- **BECAUSE** the create tool previously had no `description`/`location` parameters, so accepting a proposal silently dropped both (bu-cb0ap)
+- **BECAUSE** without `description`/`location` parameters on the create tool, accepting a proposal would silently drop both
 
 #### Scenario: Dismiss discards without a provider write
 
@@ -119,13 +119,11 @@ provider write. Both SHALL be idempotent on the proposal's current status.
 - **THEN** a structured error is surfaced
 - **AND** the proposal row remains `status="pending"` (it is NOT flipped to `accepted`, and no `accepted` row without an `accepted_event_id` is ever persisted) so the user can retry
 
-### Requirement: [TARGET-STATE] Subcalendar Routing Prerequisite
+### Requirement: Subcalendar Routing Prerequisite
 
 Accepting a proposal SHALL never write to the user's primary calendar by
-inference. This depends on butler-authored events routing to the dedicated
-Butlers subcalendar, delivered by the
-`calendar-route-butler-events-to-dedicated-calendar` change, which MUST land
-before this capability.
+inference. It MUST rely on butler-authored events routing to the dedicated
+Butlers subcalendar.
 
 #### Scenario: Accepted proposal lands on the Butlers subcalendar
 

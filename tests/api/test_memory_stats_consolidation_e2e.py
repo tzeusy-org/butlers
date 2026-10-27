@@ -25,9 +25,9 @@ from contextlib import asynccontextmanager
 import httpx
 import pytest
 
-from butlers.api.app import create_app
-from butlers.api.routers.memory import _get_db_manager
+from butlers.api.deps import get_db
 from butlers.modules.memory.consolidation import _record_consolidation_run
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -40,19 +40,23 @@ pytestmark = [
 # mirror the only columns the stats fan-out queries reference.
 _STATS_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS episodes (
+    content_authority TEXT, authority_entity_id UUID,
     id                   BIGSERIAL PRIMARY KEY,
     consolidated         BOOLEAN NOT NULL DEFAULT false,
     consolidation_status TEXT    NOT NULL DEFAULT 'pending',
     expires_at           TIMESTAMPTZ
 );
 CREATE TABLE IF NOT EXISTS facts (
+    content_authority TEXT, authority_entity_id UUID,
     id       BIGSERIAL PRIMARY KEY,
     validity TEXT NOT NULL DEFAULT 'active'
 );
 CREATE TABLE IF NOT EXISTS rules (
-    id       BIGSERIAL PRIMARY KEY,
-    maturity TEXT NOT NULL DEFAULT 'candidate',
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+    content_authority TEXT, authority_entity_id UUID, endorsed_at TIMESTAMPTZ, endorsed_by UUID,
+    id         BIGSERIAL PRIMARY KEY,
+    maturity   TEXT NOT NULL DEFAULT 'candidate',
+    metadata   JSONB NOT NULL DEFAULT '{}'::jsonb,
+    retired_at TIMESTAMPTZ
 );
 CREATE TABLE IF NOT EXISTS public.consolidation_runs (
     id                 BIGSERIAL PRIMARY KEY,
@@ -85,7 +89,7 @@ class _SinglePoolDB:
 @asynccontextmanager
 async def _app_client(db: object):
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:

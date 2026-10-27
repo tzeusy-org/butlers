@@ -11,12 +11,13 @@
 // ---------------------------------------------------------------------------
 
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+  Tile,
+  TileContent,
+  TileDescription,
+  TileHeader,
+  TileTitle,
+} from "@/components/ui/Tile"
+import { QueryTile } from "@/components/ui/query-tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useDatabaseFacts } from "@/hooks/use-system"
 import type { SchemaSize } from "@/api/types"
@@ -28,36 +29,20 @@ import { humanizeBytes } from "./db-size-utils"
 
 function TileSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Database Size</CardTitle>
-        <CardDescription>PostgreSQL disk footprint</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile loading>
+      <TileHeader>
+        <TileTitle>Database Size</TileTitle>
+        <TileDescription>PostgreSQL disk footprint</TileDescription>
+      </TileHeader>
+      <TileContent>
         <div data-testid="db-size-tile-skeleton" className="space-y-2">
           <Skeleton className="h-8 w-24" />
           <Skeleton className="h-4 w-full" />
           <Skeleton className="h-4 w-full" />
           <Skeleton className="h-4 w-3/4" />
         </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-function TileError() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Database Size</CardTitle>
-        <CardDescription>PostgreSQL disk footprint</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <p data-testid="db-size-tile-error" className="text-destructive text-sm">
-          Could not load database size.
-        </p>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
@@ -96,28 +81,36 @@ function SchemaRow({ schema, totalBytes }: SchemaRowProps) {
  * null. A follow-up bead will add a size history endpoint to power the chart.
  */
 export function DbSizeTile() {
-  const { data: response, isPending, isError } = useDatabaseFacts()
-
-  if (isPending) return <TileSkeleton />
-  if (isError) return <TileError />
-
-  const facts = response?.data
-
-  // Show at most the top 5 schemas by size (already sorted by API)
-  const topSchemas = (facts?.schemas ?? []).slice(0, 5)
+  const q = useDatabaseFacts()
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Database Size</CardTitle>
-        <CardDescription>PostgreSQL disk footprint</CardDescription>
-      </CardHeader>
-      <CardContent data-testid="db-size-tile-content">
+    <QueryTile q={q} title="Database Size" description="PostgreSQL disk footprint"
+      errorMessage="Could not load database size." errorTestId="db-size-tile-error" loadingFallback={<TileSkeleton />}>
+      {(response) => <DbSizeContent response={response} />}
+    </QueryTile>
+  )
+}
+
+function DbSizeContent({ response }: {
+  response: NonNullable<ReturnType<typeof useDatabaseFacts>["data"]>
+}) {
+  const facts = response.data
+
+  // Show at most the top 5 schemas by size (already sorted by API)
+  const topSchemas = facts.schemas.slice(0, 5)
+
+  return (
+    <Tile>
+      <TileHeader>
+        <TileTitle>Database Size</TileTitle>
+        <TileDescription>PostgreSQL disk footprint</TileDescription>
+      </TileHeader>
+      <TileContent data-testid="db-size-tile-content">
         <dl className="space-y-4 text-sm">
           <div>
             <dt className="text-muted-foreground text-xs">Total size</dt>
             <dd className="text-lg font-semibold tabular-nums">
-              {facts != null ? humanizeBytes(facts.total_size_bytes) : "--"}
+              {humanizeBytes(facts.total_size_bytes)}
             </dd>
           </div>
 
@@ -130,7 +123,7 @@ export function DbSizeTile() {
                     <SchemaRow
                       key={schema.schema_name}
                       schema={schema}
-                      totalBytes={facts?.total_size_bytes ?? 0}
+                      totalBytes={facts.total_size_bytes}
                     />
                   ))}
                 </ul>
@@ -138,7 +131,7 @@ export function DbSizeTile() {
             </div>
           )}
         </dl>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }

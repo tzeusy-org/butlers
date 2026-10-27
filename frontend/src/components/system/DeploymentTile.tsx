@@ -14,12 +14,13 @@
 // ---------------------------------------------------------------------------
 
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+  Tile,
+  TileContent,
+  TileDescription,
+  TileHeader,
+  TileTitle,
+} from "@/components/ui/Tile"
+import { QueryTile } from "@/components/ui/query-tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
 import { useDeploymentFacts } from "@/hooks/use-system"
@@ -59,34 +60,18 @@ function servingModeText(current: {
 
 function TileSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Deployment</CardTitle>
-        <CardDescription>What's actually serving right now</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile loading>
+      <TileHeader>
+        <TileTitle>Deployment</TileTitle>
+        <TileDescription>What's actually serving right now</TileDescription>
+      </TileHeader>
+      <TileContent>
         <div data-testid="deployment-tile-skeleton" className="space-y-2">
           <Skeleton className="h-8 w-40" />
           <Skeleton className="h-4 w-52" />
         </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-function TileError() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Deployment</CardTitle>
-        <CardDescription>What's actually serving right now</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <p data-testid="deployment-tile-error" className="text-destructive text-sm">
-          Could not load deployment status.
-        </p>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
@@ -110,24 +95,32 @@ function TileError() {
  *   - commits_behind_main === 0: green "up to date with origin/main".
  */
 export function DeploymentTile() {
-  const { data: response, isPending, isError } = useDeploymentFacts()
+  const q = useDeploymentFacts()
 
-  if (isPending) return <TileSkeleton />
-  if (isError) return <TileError />
+  return (
+    <QueryTile q={q} title="Deployment" description="What's actually serving right now"
+      errorMessage="Could not load deployment status." errorTestId="deployment-tile-error" loadingFallback={<TileSkeleton />}>
+      {(response) => <DeploymentContent response={response} />}
+    </QueryTile>
+  )
+}
 
-  const facts = response?.data
+function DeploymentContent({ response }: {
+  response: NonNullable<ReturnType<typeof useDeploymentFacts>["data"]>
+}) {
+  const facts = response.data
 
-  if (!facts?.current) {
+  if (!facts.current) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Deployment</CardTitle>
-          <CardDescription>What's actually serving right now</CardDescription>
-        </CardHeader>
-        <CardContent data-testid="deployment-tile-empty">
+      <Tile degraded>
+        <TileHeader>
+          <TileTitle>Deployment</TileTitle>
+          <TileDescription>What's actually serving right now</TileDescription>
+        </TileHeader>
+        <TileContent data-testid="deployment-tile-empty">
           <p className="text-muted-foreground text-sm">No deployment recorded yet.</p>
-        </CardContent>
-      </Card>
+        </TileContent>
+      </Tile>
     )
   }
 
@@ -148,12 +141,15 @@ export function DeploymentTile() {
   const isRed = redClauses.length > 0
 
   return (
-    <Card className={isRed ? "border-[var(--red)]/40" : undefined}>
-      <CardHeader>
-        <CardTitle>Deployment</CardTitle>
-        <CardDescription>What's actually serving right now</CardDescription>
-      </CardHeader>
-      <CardContent data-testid="deployment-tile-content">
+    <Tile
+      degraded={!behindKnown}
+      className={isRed ? "border-[var(--red)]/40" : undefined}
+    >
+      <TileHeader>
+        <TileTitle>Deployment</TileTitle>
+        <TileDescription>What's actually serving right now</TileDescription>
+      </TileHeader>
+      <TileContent data-testid="deployment-tile-content">
         {isRed ? (
           <div data-testid="deployment-tile-red-badge" className="mb-3 flex flex-col gap-1">
             {redClauses.map((clause) => (
@@ -220,7 +216,7 @@ export function DeploymentTile() {
         <p className="text-muted-foreground mt-3 text-xs">
           {recordedVerb} <Time value={current.started_at} mode="relative" />
         </p>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }

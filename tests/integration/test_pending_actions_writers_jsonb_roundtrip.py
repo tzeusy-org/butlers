@@ -43,12 +43,14 @@ workarounds in approvals.py/pipeline.py are therefore kept (see bead notes).
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import shutil
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -61,6 +63,7 @@ from butlers.core_tools._base import ToolContext
 from butlers.core_tools._notifications import register_notification_tools
 from butlers.daemon import ButlerDaemon
 from butlers.modules.approvals.email_guard import check_email_recipient, check_recipient
+from butlers.testing.approval_delivery_schema import install_approval_delivery_schema
 from butlers.testing.schema_standins import (
     APPROVAL_EVENTS,
     APPROVAL_RULES,
@@ -74,6 +77,26 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
+
+
+_AUDIT_WRITER_MIGRATION = (
+    Path(__file__).resolve().parents[2] / "alembic/versions/core/core_279_audit_writer_integrity.py"
+)
+
+
+async def _install_audit_writer_integrity(pool: Any) -> None:
+    """Apply the real audit writer migration above this fixture's minimal table."""
+    spec = importlib.util.spec_from_file_location("core_279_fixture", _AUDIT_WRITER_MIGRATION)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    statements: list[str] = []
+    mock_op = MagicMock()
+    mock_op.execute.side_effect = statements.append
+    with patch.object(migration, "op", mock_op):
+        migration.upgrade()
+    for statement in statements:
+        await pool.execute(statement)
 
 
 @pytest.fixture
@@ -91,10 +114,18 @@ async def pending_actions_pool(provisioned_postgres_pool):
         await pool.execute(PENDING_ACTIONS.ddl())
         await pool.execute(APPROVAL_RULES.ddl())
         await pool.execute(APPROVAL_EVENTS.ddl())
+        await install_approval_delivery_schema(pool)
         # connector_registry stand-in for the disconnect/rotate-token endpoints.
         # Shared declaration, not a local column list: a local one only covers
         # today's queries and breaks silently when the chain widens (bu-r8opr).
         await pool.execute(CONNECTOR_REGISTRY.ddl())
+        # notify() reads the recipient's posture from public.entities before it
+        # resolves an identifier (bu-q7vx1q.8); an unreadable posture fails closed,
+        # so this fixture needs the one column that read touches.
+        await pool.execute(
+            "CREATE TABLE IF NOT EXISTS public.entities ("
+            "id UUID PRIMARY KEY, posture TEXT NOT NULL DEFAULT 'active')"
+        )
         # Token rotation is rejected before a pending action can be created.
         # Its refusal is an audit event, so provision the canonical table the
         # route writes in the normal (non-migration-error) path.
@@ -126,16 +157,22 @@ async def pending_actions_pool(provisioned_postgres_pool):
                 )
             )
         """)
+        await _install_audit_writer_integrity(pool)
         yield pool
 
 
 async def _fetch_latest_tool_args(pool, tool_name: str) -> Any:
     row = await pool.fetchrow(
-        "SELECT tool_args FROM pending_actions WHERE tool_name = $1 "
-        "ORDER BY requested_at DESC LIMIT 1",
+        "SELECT pa.tool_args, adi.id AS delivery_intent_id "
+        "FROM pending_actions AS pa "
+        "LEFT JOIN approval_delivery_intents AS adi ON adi.action_id = pa.id "
+        "WHERE pa.tool_name = $1 ORDER BY pa.requested_at DESC LIMIT 1",
         tool_name,
     )
     assert row is not None, f"no pending_actions row found for tool_name={tool_name!r}"
+    assert row["delivery_intent_id"] is not None, (
+        f"pending action for {tool_name!r} committed without its delivery intent"
+    )
     return row["tool_args"]
 
 

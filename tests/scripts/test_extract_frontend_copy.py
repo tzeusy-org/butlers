@@ -3,10 +3,8 @@
 Regression guard for bu-5n509. The extractor originally collected only JSX text
 nodes and a fixed attribute allowlist, so copy assembled in JS expressions --
 `toast.error("...")`, template literals, ternary branches -- was invisible to it.
-That was tolerable while the inventory was advisory, but CI job
-`frontend-copy-inventory-guard` (bu-erfdj) now regenerates the file and fails the
-build on any diff, which makes the inventory read as authoritative while being
-structurally blind to a whole category of visible copy.
+The on-demand inventory must include that visible copy without claiming that
+its bounded extraction surface is an exhaustive inventory of the UI.
 
 These tests pin the widened collection surface, the `{}` rendering of
 interpolated expressions, the depth-0 rule that keeps nested non-copy strings
@@ -17,6 +15,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -87,6 +86,21 @@ def test_collects_both_branches_of_a_ternary_attribute(tmp_path: Path) -> None:
     assert "Pause this butler" in strings
 
 
+def test_collects_user_facing_keys_of_object_literals(tmp_path: Path) -> None:
+    """Lookup tables of owner-facing labels (PR #4261's ATTENTION_COPY) reach the inventory."""
+    strings = _extract(
+        tmp_path,
+        """
+        const X: Record<string, { label: string; warn: boolean }> = {
+          a: { label: "Owner alert queued", warn: false },
+          b: { "title": `Sent ${n} alerts`, warn: true },
+        };
+        """,
+    )
+    assert "Owner alert queued" in strings
+    assert "Sent {} alerts" in strings
+
+
 def test_collects_template_literal_in_an_attribute(tmp_path: Path) -> None:
     strings = _extract(
         tmp_path,
@@ -111,6 +125,19 @@ def test_ignores_class_names_keys_and_routes(tmp_path: Path) -> None:
           data-testid="butler-row"
           onClick={() => navigate("/butlers/overview")}
         />
+        """,
+    )
+    assert strings == []
+
+
+def test_ignores_object_literal_values_under_non_user_facing_keys(tmp_path: Path) -> None:
+    strings = _extract(
+        tmp_path,
+        """
+        const opt = { id: "verify-all", value: "sent", to: "/entities", className: "px-2 text-sm" };
+        interface Row { label: string; kind: "Some Kind" }
+        const pick = flag ? label : "Not a key";
+        const cls = cn("placeholder:text-[var(--mfg)] px-2", "placeholder:text-fg");
         """,
     )
     assert strings == []
@@ -190,15 +217,68 @@ def test_generated_header_declares_what_the_inventory_does_not_cover(tmp_path: P
     assert "toast" in header
     # ...and names the blind spots, so a reader knows what a miss does not mean.
     assert "Not covered" in header
+    assert "object literal" in header
     assert "{}" in header
 
 
+def test_report_skips_story_and_test_files(tmp_path: Path) -> None:
+    """Storybook `title: "ui/Foo"` and test fixtures are not production UI copy."""
+    module = _extractor()
+    page = tmp_path / "Page.tsx"
+    page.write_text("<span>Hello there</span>", encoding="utf-8")
+    story = tmp_path / "Page.stories.tsx"
+    story.write_text('export default { title: "Design System Kit" };', encoding="utf-8")
+    report, _ = module.generate_report([page, story])
+    assert "Hello there" in report
+    assert "Design System Kit" not in report
+
+
 def test_report_is_a_pure_function_of_the_sources(tmp_path: Path) -> None:
-    """The CI guard diffs the regenerated file; any nondeterminism would flap it."""
+    """Repeated on-demand extraction of the same sources stays deterministic."""
     module = _extractor()
     fixture = tmp_path / "FixturePage.tsx"
     fixture.write_text('toast.success("Butler restored");', encoding="utf-8")
     assert module.generate_report([fixture]) == module.generate_report([fixture])
+
+
+def test_adding_one_string_changes_exactly_one_report_line(tmp_path: Path) -> None:
+    """A local copy change stays local in the report, without a global count trailer."""
+    module = _extractor()
+    first = tmp_path / "FirstPage.tsx"
+    second = tmp_path / "SecondPage.tsx"
+    first.write_text("<span>Hello there</span>", encoding="utf-8")
+    second.write_text("<span>Goodbye now</span>", encoding="utf-8")
+    before, _ = module.generate_report([first, second])
+
+    second.write_text("<span>Goodbye now</span><span>See you soon</span>", encoding="utf-8")
+    after, _ = module.generate_report([first, second])
+
+    removed = [line for line in before.splitlines() if line not in after.splitlines()]
+    added = [line for line in after.splitlines() if line not in before.splitlines()]
+    assert removed == []
+    assert added == ["- See you soon"]
+
+
+def test_on_demand_cli_writes_only_stdout_and_diagnostics(tmp_path: Path) -> None:
+    """Execute the actual CLI in a source checkout without a committed inventory."""
+    script = tmp_path / "scripts" / _SCRIPT.name
+    script.parent.mkdir()
+    script.write_bytes(_SCRIPT.read_bytes())
+    pages = tmp_path / "frontend" / "src" / "pages"
+    pages.mkdir(parents=True)
+    (pages / "FixturePage.tsx").write_text("<span>Fresh visible copy</span>")
+
+    def extract():
+        return subprocess.run(
+            [sys.executable, str(script)], check=True, capture_output=True, text=True, timeout=10
+        )
+
+    first = extract()
+    assert first.stdout.startswith("# Frontend Copy Inventory\n")
+    assert "- Fresh visible copy" in first.stdout
+    assert "Total strings : 1" in first.stderr
+    assert not (tmp_path / "frontend" / "COPY_INVENTORY.md").exists()
+    assert extract().stdout == first.stdout
 
 
 # ---------------------------------------------------------------------------

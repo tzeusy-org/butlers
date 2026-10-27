@@ -55,9 +55,9 @@ What the detector cannot see
   refusal) are a related failure mode this guard deliberately does not cover.
 
 The backstop for all of these is unchanged: the migration test itself fails
-loudly when it runs, and AGENTS.md carries the convention. This guard removes
-the cases a reviewer can see statically, which is where the recurrences came
-from.
+loudly when it runs, and docs/data_and_storage/migration-patterns.md carries
+the convention. This guard removes the cases a reviewer can see statically,
+which is where the recurrences came from.
 """
 
 from __future__ import annotations

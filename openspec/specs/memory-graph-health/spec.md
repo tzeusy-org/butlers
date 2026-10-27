@@ -22,8 +22,6 @@ candidate pool that genuinely lacks a memory schema SHALL be absent rather than
 failed, matching the existing fan-out contract.
 
 ID: REQ-memory-graph-health-001
-Source: [Observed] PR #3734; `openspec/changes/archive/2026-08-14-memory-graph-health-read-api/CANONICALIZATION.md`
-Scope: v1-mandatory
 
 #### Scenario: All relevant memory pools provide complete coverage
 
@@ -59,8 +57,6 @@ SHALL be numerator divided by denominator when the denominator is non-zero and
 `null` when the denominator is zero.
 
 ID: REQ-memory-graph-health-002
-Source: [Observed] PR #3734; `openspec/changes/archive/2026-08-14-memory-graph-health-read-api/CANONICALIZATION.md`
-Scope: v1-mandatory
 
 #### Scenario: Pending episode inside the cleanup grace window is not degraded
 

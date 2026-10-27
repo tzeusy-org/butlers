@@ -27,14 +27,15 @@ import asyncpg
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.chronicler.contracts import INITIAL_SOURCES, seed_source_registry
 from butlers.chronicler.models import Episode, Layer
 from butlers.chronicler.rollups import materialize_daily_rollups
 from butlers.chronicler.storage import list_daily_rollups, upsert_episode
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -77,9 +78,9 @@ def _build_chronicler_api(pool) -> httpx.ASGITransport:
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
     app = create_app(api_key="")
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "chronicler" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "chronicler":
+            app.dependency_overrides[get_db] = lambda: db
             break
     else:  # pragma: no cover — defensive
         raise AssertionError("chronicler router not registered on the app")

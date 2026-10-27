@@ -92,7 +92,7 @@ def test_envelope_validates_against_parse_ingest_envelope(base_envelope: dict[st
     """Envelope must validate against the canonical parse_ingest_envelope contract."""
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     try:
         parse_ingest_envelope(base_envelope)
@@ -395,3 +395,74 @@ def test_drive_manager_heartbeat_preserves_degraded_source_error() -> None:
         "degraded",
         "code=503, message=Backend Error",
     )
+
+
+def _drive_account_with_cache(name: str) -> tuple[GDriveAccountLoop, Any]:
+    from unittest.mock import AsyncMock, MagicMock
+
+    config = GDriveAccountConfig(
+        email=_FAKE_EMAIL,
+        client_id="client-id",
+        client_secret="client-secret",
+        refresh_token="refresh-token",
+        switchboard_mcp_url="http://switchboard.test/mcp",
+    )
+    account = GDriveAccountLoop(_FAKE_EMAIL, config)
+    conn = AsyncMock()
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=conn)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    account._cursor_pool = MagicMock()
+    account._cursor_pool.acquire.return_value = ctx
+    account._metadata_cache = {_FAKE_FILE_ID: _make_cached(name=name)}
+    return account, conn
+
+
+async def test_metadata_cache_save_withholds_code_in_file_name() -> None:
+    account, conn = _drive_account_with_cache("Your code is 482913.txt")
+    await account._save_metadata_cache_to_store()
+    saved = conn.execute.await_args.args[3][_FAKE_FILE_ID]
+    assert "482913" not in saved["name"]
+    assert saved["mime_type"] == "text/plain" and saved["parents"] == ["p1"]
+
+    account, conn = _drive_account_with_cache("Budget 482913.xlsx")
+    await account._save_metadata_cache_to_store()
+    assert conn.execute.await_args.args[3][_FAKE_FILE_ID]["name"] == "Budget 482913.xlsx"
+
+
+async def test_metadata_cache_save_skips_write_when_detector_fails(caplog) -> None:
+    from unittest.mock import patch
+
+    account, conn = _drive_account_with_cache("Your code is 482913.txt")
+    with patch("butlers.connectors.google_drive.scrub_text", side_effect=RuntimeError("482913")):
+        await account._save_metadata_cache_to_store()
+    conn.execute.assert_not_awaited()
+    assert "bearer scrub failed" in caplog.text
+    assert "482913" not in caplog.text and "Your code" not in caplog.text
+
+
+async def test_scrubbed_cache_reloaded_after_restart_does_not_fake_a_rename() -> None:
+    """A saved (scrubbed) name reloads and still classifies the unchanged raw name as modified."""
+    from unittest.mock import AsyncMock
+
+    raw_name = "Your code is 482913.txt"
+    account, conn = _drive_account_with_cache(raw_name)
+    await account._save_metadata_cache_to_store()
+    saved = conn.execute.await_args.args[3]
+    assert "482913" not in saved[_FAKE_FILE_ID]["name"]
+
+    restarted, restarted_conn = _drive_account_with_cache("unused")
+    restarted._metadata_cache = {}
+    restarted_conn.fetchrow = AsyncMock(return_value={"settings": {"metadata_cache": saved}})
+    await restarted._load_metadata_cache_from_store()
+    cached = restarted._metadata_cache[_FAKE_FILE_ID]
+
+    change = {"file": {"id": _FAKE_FILE_ID, "name": raw_name, "parents": ["p1"]}}
+    assert _detect_change_type(change, cached) == _CHANGE_TYPE_MODIFIED
+    change["file"]["name"] = "Quarterly plan.txt"
+    assert _detect_change_type(change, cached) == _CHANGE_TYPE_RENAMED
+
+    # In steady state the raw in-memory cache sees a rename that only changes a withheld span.
+    live = _make_cached(name="Code of Conduct 2025.pdf")
+    change["file"]["name"] = "Code of Conduct 2026.pdf"
+    assert _detect_change_type(change, live) == _CHANGE_TYPE_RENAMED

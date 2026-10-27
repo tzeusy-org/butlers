@@ -11,22 +11,8 @@ operability.
 - Prefer simple structural wins over clever micro-optimizations.
 - Preserve diagnosability while improving speed.
 
-## Good Performance Work
+## Anti-patterns
 
-Examples of the right kind of improvement:
-
-- removing N+1 query patterns in overview and analytics paths
-- batching DB reads instead of per-row follow-up queries
-- reducing duplicate async work in pollers or recovery loops
-- tightening test scope to speed iteration without weakening final verification
-- eliminating unnecessary compatibility layers that keep extra code paths alive
-
-## Bad Performance Work
-
-These are anti-patterns:
-
-- adding caching without proving repeated work is the bottleneck
-- making control flow harder to understand for speculative gains
 - reducing verification depth in the name of throughput
 - suppressing logs or traces just because they are noisy
 - changing behavior to look faster while losing guarantees
@@ -42,3 +28,18 @@ Before claiming a performance improvement, be able to answer:
 5. What should operators watch after the change?
 
 If those answers are weak, the optimization is not ready.
+
+## Reasoning Architecture Evaluation
+
+The [goal architecture](../heart-and-soul/architecture.md) makes agent
+allocation and model choice replaceable execution choices. Compare direct lead
+execution, focused delegation, and model tiers on equivalent tool/context
+access and disclosed compute budgets. Report whole-goal success, constraint
+preservation, useful proactive actions, missed obligations, owner corrections,
+latency, and total cost including discovery, retries, recovery and idle capacity.
+
+Include simple work that should finish without children and cross-domain work
+with conflicting constraints. Token price, tool count, agent count and search
+hit rate are diagnostic inputs, not success criteria. Future model capability
+and cost assumptions must be labeled and evaluated across plausible scenarios;
+a vendor benchmark is not evidence that Butlers improved.

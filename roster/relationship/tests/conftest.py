@@ -13,6 +13,20 @@ _PRISTINE_DUNBAR_GLOBALS: dict[str, object] = {
 }
 
 
+@pytest.fixture(scope="module")
+def interaction_sync_database(postgres_container):
+    """Provision real named-schema chains once for the owning test module."""
+    from roster.relationship.tests.calendar_projection import create_interaction_sync_database
+
+    return create_interaction_sync_database(postgres_container)
+
+
+@pytest.fixture
+def interaction_sync_pool(interaction_sync_database):
+    """Resettable own-role factory; approval hooks bind its actual yielded pool."""
+    return interaction_sync_database
+
+
 @pytest.hookimpl(trylast=True)
 def pytest_runtest_teardown(item: pytest.Item) -> None:
     """Fail any test that leaves the Dunbar scoring engine's globals patched.
@@ -61,6 +75,14 @@ def _register_real_approval_hooks(request: pytest.FixtureRequest):
         check_recipient,
     )
     from butlers.modules.approvals.park import park_pending_action as _real_park
+    from butlers.testing.approval_parking_fake import record_pending_action
+
+    async def _schema_aware_park(pool, **kwargs):
+        has_delivery_schema = await pool.fetchval(
+            "SELECT to_regclass('approval_delivery_intents') IS NOT NULL"
+        )
+        implementation = _real_park if has_delivery_schema else record_pending_action
+        return await implementation(pool, **kwargs)
 
     pool_fixture_names = (
         "pool",
@@ -81,7 +103,7 @@ def _register_real_approval_hooks(request: pytest.FixtureRequest):
         pool,
         email_guard=check_email_recipient,
         recipient_guard=check_recipient,
-        park_pending_action=_real_park,
+        park_pending_action=_schema_aware_park,
     )
     yield
     _hooks.unregister_approval_hooks(pool, runtime)

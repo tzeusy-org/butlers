@@ -20,6 +20,7 @@ import pytest
 from butlers.testing.schema_standins import (
     CONTACT_ENTITY_MAP,
     ENTITY_PREDICATE_REGISTRY,
+    ENTITY_REBIND_LOG,
     PENDING_ACTIONS,
 )
 from butlers.tools.relationship.whatsapp_reconciliation import (
@@ -32,6 +33,27 @@ from butlers.tools.relationship.whatsapp_reconciliation import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT_PATH = _REPO_ROOT / "scripts" / "reconcile_whatsapp_entities.py"
+
+
+def _apply_evidence_schema():
+    """Load ``roster/relationship/tests/evidence_schema.py`` by path.
+
+    ``roster/`` is not importable from ``tests/`` on its own, and the rel_034 /
+    rel_035 DDL must not be copied here (same loader as
+    ``tests/integration/test_email_identity_enrichment_db.py``).
+    """
+    schema_path = (
+        Path(__file__).resolve().parents[2]
+        / "roster"
+        / "relationship"
+        / "tests"
+        / "evidence_schema.py"
+    )
+    spec = importlib.util.spec_from_file_location("_relationship_evidence_schema", schema_path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.apply_evidence_schema
 
 
 def _load_script():
@@ -276,6 +298,8 @@ def test_script_has_pep_723_metadata_and_no_automatic_runtime_imports() -> None:
     assert "migrations" not in source
 
 
+# uv fetches from PyPI: TLS certificate checks fail under the faketime legs' shifted clock.
+@pytest.mark.faketime_fragile
 def test_pep_723_command_can_import_the_repository_package(tmp_path: Path) -> None:
     """The documented uv invocation must not isolate the script from Butlers."""
     result = subprocess.run(
@@ -293,6 +317,7 @@ def test_pep_723_command_can_import_the_repository_package(tmp_path: Path) -> No
 
 
 @pytest.mark.integration
+@pytest.mark.faketime_fragile
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_pep_723_apply_path_runs_with_only_declared_dependencies(
     postgres_container,
@@ -370,8 +395,11 @@ async def test_pep_723_apply_path_runs_with_only_declared_dependencies(
             """
         )
         await conn.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
+        await conn.execute(ENTITY_REBIND_LOG.ddl(schema="public"))
         await conn.execute(CONTACT_ENTITY_MAP.ddl(schema="relationship"))
         await conn.execute(PENDING_ACTIONS.ddl(schema="relationship"))
+        # rel_034 stores + rel_035 effective-time columns the merge path reads.
+        await _apply_evidence_schema()(conn)
         source_id = await conn.fetchval(
             """
             INSERT INTO public.entities (canonical_name, metadata)

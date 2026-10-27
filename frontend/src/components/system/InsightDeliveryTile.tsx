@@ -11,12 +11,13 @@
 // ---------------------------------------------------------------------------
 
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+  Tile,
+  TileContent,
+  TileDescription,
+  TileHeader,
+  TileTitle,
+} from "@/components/ui/Tile"
+import { QueryTile } from "@/components/ui/query-tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useInsightDeliveryState } from "@/hooks/use-system"
 import { Time } from "@/components/ui/time"
@@ -28,36 +29,20 @@ import type { ReactNode } from "react"
 
 function TileSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Insight Delivery</CardTitle>
-        <CardDescription>Proactive insight pipeline state</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile loading>
+      <TileHeader>
+        <TileTitle>Insight Delivery</TileTitle>
+        <TileDescription>Proactive insight pipeline state</TileDescription>
+      </TileHeader>
+      <TileContent>
         <div data-testid="insight-delivery-tile-skeleton" className="space-y-2">
           <Skeleton className="h-5 w-40" />
           <Skeleton className="h-5 w-40" />
           <Skeleton className="h-5 w-40" />
           <Skeleton className="h-5 w-48" />
         </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-function TileError() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Insight Delivery</CardTitle>
-        <CardDescription>Proactive insight pipeline state</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <p data-testid="insight-delivery-tile-error" className="text-destructive text-sm">
-          Could not load insight delivery state.
-        </p>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
@@ -100,48 +85,56 @@ function StatRow({ label, value, testId, muted = false }: StatRowProps) {
  * Values come from real delivery-state tables — never placeholders.
  */
 export function InsightDeliveryTile() {
-  const { data: response, isPending, isError } = useInsightDeliveryState()
+  const q = useInsightDeliveryState()
 
-  if (isPending) return <TileSkeleton />
-  if (isError) return <TileError />
+  return (
+    <QueryTile q={q} title="Insight Delivery" description="Proactive insight pipeline state"
+      errorMessage="Could not load insight delivery state." errorTestId="insight-delivery-tile-error" loadingFallback={<TileSkeleton />}>
+      {(response) => <InsightDeliveryContent response={response} />}
+    </QueryTile>
+  )
+}
 
-  const state = response?.data
+function InsightDeliveryContent({ response }: {
+  response: NonNullable<ReturnType<typeof useInsightDeliveryState>["data"]>
+}) {
+  const state = response.data
 
-  const lastDeliveryLabel = state?.last_delivery_at ? (
+  const lastDeliveryLabel = state.last_delivery_at ? (
     <Time value={state.last_delivery_at} mode="absolute" precision="minute" />
   ) : "No deliveries yet"
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Insight Delivery</CardTitle>
-        <CardDescription>Proactive insight pipeline state</CardDescription>
-      </CardHeader>
-      <CardContent data-testid="insight-delivery-tile-content">
+    <Tile>
+      <TileHeader>
+        <TileTitle>Insight Delivery</TileTitle>
+        <TileDescription>Proactive insight pipeline state</TileDescription>
+      </TileHeader>
+      <TileContent data-testid="insight-delivery-tile-content">
         <dl className="divide-y divide-border">
           <StatRow
             label="Queued"
-            value={state?.queued ?? 0}
+            value={state.queued}
             testId="insight-delivery-queued"
           />
           <StatRow
             label="Delivered"
-            value={state?.delivered ?? 0}
+            value={state.delivered}
             testId="insight-delivery-delivered"
           />
           <StatRow
             label="Failed"
-            value={state?.failed ?? 0}
+            value={state.failed}
             testId="insight-delivery-failed"
           />
           <StatRow
             label="Last delivery"
             value={lastDeliveryLabel}
             testId="insight-delivery-last-at"
-            muted={!state?.last_delivery_at}
+            muted={!state.last_delivery_at}
           />
         </dl>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }

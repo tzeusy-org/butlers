@@ -46,14 +46,15 @@ from fastapi import (
 from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
 from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
     MCPClientManager,
+    OptionalDb,
     get_butler_configs,
-    get_db_manager,
     get_mcp_manager,
     get_pricing,
 )
@@ -69,6 +70,7 @@ from butlers.api.models import (
 )
 from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.routers.audit import append as audit_append
+from butlers.api.runtime_attention_status import ATTENTION_REASON_COPY
 from butlers.core.model_routing import (
     LedgerSpend,
     price_ledger_usage_rows,
@@ -115,18 +117,6 @@ def _is_tool_absent_error(exc: Exception, info: ButlerConnectionInfo) -> bool:
     )
 
 
-def _get_db_manager() -> DatabaseManager | None:
-    """Return dashboard DB manager when initialized, otherwise None.
-
-    Ledger-authoritative aggregate routes surface a degraded response when this
-    is unavailable; they never substitute session-derived prices.
-    """
-    try:
-        return get_db_manager()
-    except RuntimeError:
-        return None
-
-
 # The Spend dashboard's dollar-bearing aggregate surfaces share this single
 # ledger spine. `sessions.model` describes the model requested for a session,
 # not necessarily the catalog entry that actually executed it, so it is only
@@ -137,11 +127,18 @@ SELECT
     tul.butler_name AS butler_name,
     COALESCE(tul.purpose, 'unknown') AS purpose,
     mc.model_id AS model_id,
-    COUNT(*)::bigint AS calls,
-    COALESCE(SUM(tul.input_tokens), 0)::bigint AS input_tokens,
-    COALESCE(SUM(tul.output_tokens), 0)::bigint AS output_tokens,
-    COALESCE(SUM(tul.cached_input_tokens), 0)::bigint AS cached_input_tokens,
-    COALESCE(SUM(tul.cache_creation_tokens), 0)::bigint AS cache_creation_tokens
+    COUNT(*) FILTER (WHERE tul.usage_source = 'measured')::bigint AS calls,
+    COUNT(*) FILTER (WHERE tul.usage_source = 'unmeasurable')::bigint
+        AS unmeasurable_attempts,
+    BOOL_OR(tul.session_id IS NOT NULL) AS has_session,
+    COALESCE(SUM(tul.input_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)::bigint
+        AS input_tokens,
+    COALESCE(SUM(tul.output_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)::bigint
+        AS output_tokens,
+    COALESCE(SUM(tul.cached_input_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)::bigint
+        AS cached_input_tokens,
+    COALESCE(SUM(tul.cache_creation_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)::bigint
+        AS cache_creation_tokens
 FROM public.token_usage_ledger tul
 JOIN public.model_catalog mc ON mc.id = tul.catalog_entry_id
 WHERE tul.recorded_at >= $1
@@ -398,6 +395,13 @@ async def _ledger_session_divergences(
 
     ledger_by_butler_day: dict[tuple[str, str], int] = defaultdict(int)
     for row in rows:
+        # Connector discretion and synthetic dashboard runtime calls are
+        # intentionally recorded without a task-session id. They are valid
+        # spend sources, but there can never be a roster session pool to
+        # compare them with. Only an explicit false value opts a grouped row
+        # out; older/partial evidence stays fail-closed as roster-backed.
+        if row.get("has_session") is False:
+            continue
         key = (str(row.get("butler_name") or "unknown"), str(row.get("day") or ""))
         ledger_by_butler_day[key] += sum(
             int(row.get(field) or 0)
@@ -783,17 +787,7 @@ class FleetHaltAttentionObservation(BaseModel):
     episode: FleetHaltAttentionEpisode | None = None
 
 
-_FLEET_ATTENTION_REASON_COPY = {
-    ("pre_transport", "recipient_unavailable"): "Recipient unavailable before delivery",
-    ("pre_transport", "policy_denied"): "Delivery policy denied the alert",
-    ("transport_rejected", "provider_rejected"): "Transport rejected the alert",
-    ("transport_uncertain", "transport_timeout"): "Delivery timed out; outcome is uncertain",
-    (
-        "transport_uncertain",
-        "transport_connection_lost",
-    ): "Delivery connection was lost; outcome is uncertain",
-    ("transport_uncertain", "worker_recovery"): "A dead delivery claim was fenced as uncertain",
-}
+_FLEET_ATTENTION_REASON_COPY = ATTENTION_REASON_COPY
 
 
 @router.get(
@@ -802,7 +796,8 @@ _FLEET_ATTENTION_REASON_COPY = {
 )
 async def get_fleet_halt_runtime_attention(
     _owner: str = Depends(require_dashboard_owner_control),
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[FleetHaltAttentionObservation]:
     """Return sanitized durable alert evidence without weakening Spend data."""
     if db is None:
@@ -846,7 +841,8 @@ async def get_cost_summary(
     butler: str | None = Query(None, description="Filter to a single butler by name"),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[SpendSummary]:
     """Return aggregate cost summary across all butlers.
 
@@ -887,6 +883,7 @@ async def get_cost_summary(
             data=SpendSummary(
                 period=period_label,
                 total_cost_usd=0.0,
+                measured_usd=0.0,
                 total_sessions=0,
                 total_input_tokens=0,
                 total_output_tokens=0,
@@ -904,6 +901,8 @@ async def get_cost_summary(
         data=SpendSummary(
             period=period_label,
             total_cost_usd=round(spend.cost_usd, 6),
+            measured_usd=round(spend.cost_usd, 6),
+            unmeasurable_attempts=spend.unmeasurable_attempts,
             total_sessions=sum(int(row.get("calls") or 0) for row in rows),
             total_input_tokens=input_tokens,
             total_output_tokens=output_tokens,
@@ -998,7 +997,8 @@ async def get_daily_costs(
     butler: str | None = Query(None, description="Filter to a single butler by name"),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[list[DailySpend]]:
     """Return daily cost time series aggregated across all butlers.
 
@@ -1084,6 +1084,7 @@ def _top_sessions_from_data(
                 output_tokens=output_tokens,
                 model=model_id,
                 started_at=s.get("started_at", ""),
+                purpose_lane=s.get("purpose_lane"),
             )
         )
     return sessions
@@ -1211,7 +1212,8 @@ async def get_top_sessions(
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[list[TopSession]]:
     """Return most expensive sessions across all butlers.
 
@@ -1463,7 +1465,8 @@ async def get_costs_by_schedule(
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[list[ScheduleCost]]:
     """Return per-schedule cost analysis across all butlers.
 
@@ -1588,7 +1591,8 @@ async def get_spend_breakdown(
     by: Literal["butler", "model", "feature", "purpose"] = Query(
         "butler", description="Dimension to break spend down by"
     ),
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
     mgr: MCPClientManager = Depends(get_mcp_manager),
@@ -1700,6 +1704,8 @@ class ForecastResponse(BaseModel):
     days_in_month: int
     days_elapsed: int
     mtd_usd: float
+    measured_usd: float = 0.0
+    unmeasurable_attempts: int = 0
     ceiling_usd: float | None
     projection_confidence: Literal["low", "normal"]
     # True when pricing MTD from public.token_usage_ledger (the same source
@@ -1721,7 +1727,8 @@ class ForecastResponse(BaseModel):
 
 @router.get("/forecast", response_model=ApiResponse[ForecastResponse])
 async def get_spend_forecast(
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
 ) -> ApiResponse[ForecastResponse]:
@@ -1820,6 +1827,8 @@ async def get_spend_forecast(
             days_in_month=days_in_month,
             days_elapsed=days_elapsed,
             mtd_usd=round(mtd_spend.cost_usd, 6),
+            measured_usd=round(mtd_spend.cost_usd, 6),
+            unmeasurable_attempts=mtd_spend.unmeasurable_attempts,
             ceiling_usd=ceiling_usd,
             projection_confidence=projection_confidence_for(days_elapsed),
             ceiling_source_error=ceiling_source_error,
@@ -1951,7 +1960,8 @@ class SpendRuleUpdate(BaseModel):
 
 @router.get("/rules", response_model=ApiResponse[list[SpendRule]])
 async def list_spend_rules(
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[list[SpendRule]]:
     """Return all spend routing rules ordered by position."""
     if db is None:
@@ -1988,7 +1998,8 @@ async def list_spend_rules(
 async def create_spend_rule(
     body: SpendRuleCreate,
     request: Request,
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[SpendRule]:
     """Create a new spend routing rule.
 
@@ -2055,10 +2066,11 @@ async def create_spend_rule(
     try:
         await audit_append(
             db.pool("switchboard"),
-            actor="owner",
+            actor=authenticated_principal(),
             action="spend.rule.create",
             target=f"rule:{rule.id}",
             note=f"position={position} condition={condition_payload} action={action_payload}",
+            result="success",
         )
     except Exception:
         logger.warning("Audit append failed for spend.rule.create", exc_info=True)
@@ -2070,7 +2082,8 @@ async def update_spend_rule(
     rule_id: str,
     body: SpendRuleUpdate,
     request: Request,
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[SpendRule]:
     """Update an existing spend routing rule by ID.
 
@@ -2165,10 +2178,11 @@ async def update_spend_rule(
     try:
         await audit_append(
             db.pool("switchboard"),
-            actor="owner",
+            actor=authenticated_principal(),
             action="spend.rule.update",
             target=f"rule:{rule_id}",
             note=f"position={new_position} condition={new_condition} action={new_action}",
+            result="success",
         )
     except Exception:
         logger.warning("Audit append failed for spend.rule.update", exc_info=True)
@@ -2179,7 +2193,8 @@ async def update_spend_rule(
 async def delete_spend_rule(
     rule_id: str,
     request: Request,
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> None:
     """Delete a spend routing rule by ID.
 
@@ -2243,7 +2258,8 @@ class SpendCeilingUpdate(BaseModel):
 async def update_spend_ceiling(
     body: SpendCeilingUpdate,
     request: Request,
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[SpendCeiling]:
     """Set the monthly spend ceiling.
 

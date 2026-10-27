@@ -1,16 +1,16 @@
 import { useState } from "react";
-import { useSearchParams } from "react-router";
 
+import { useCommandBarPrefill } from "@/components/butler-detail/command-bar-prefill";
 import { CardSkeleton } from "@/components/skeletons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  Section,
+  SectionContent,
+  SectionDescription,
+  SectionHeader,
+  SectionTitle,
+} from "@/components/ui/Section";
 import {
   Dialog,
   DialogContent,
@@ -100,7 +100,7 @@ export default function ButlerSkillsTab({ butlerName }: ButlerSkillsTabProps) {
   const { data: skillsResponse, isLoading, isError, error } = useButlerSkills(butlerName);
   const [selectedSkill, setSelectedSkill] = useState<ButlerSkill | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [, setSearchParams] = useSearchParams();
+  const { request: requestPrefill } = useCommandBarPrefill();
 
   if (isLoading) {
     return <SkillsSkeleton />;
@@ -108,16 +108,16 @@ export default function ButlerSkillsTab({ butlerName }: ButlerSkillsTabProps) {
 
   if (isError) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Skills</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Skills</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <p className="text-sm text-destructive">
             Failed to load skills: {error instanceof Error ? error.message : "Unknown error"}
           </p>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
@@ -125,15 +125,15 @@ export default function ButlerSkillsTab({ butlerName }: ButlerSkillsTabProps) {
 
   if (skills.length === 0) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Skills</CardTitle>
-          <CardDescription>Skills available to this butler</CardDescription>
-        </CardHeader>
-        <CardContent>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Skills</SectionTitle>
+          <SectionDescription>Skills available to this butler</SectionDescription>
+        </SectionHeader>
+        <SectionContent>
           <p className="text-sm text-muted-foreground">No skills registered</p>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
@@ -142,25 +142,27 @@ export default function ButlerSkillsTab({ butlerName }: ButlerSkillsTabProps) {
     setDialogOpen(true);
   }
 
-  function handleTriggerSkill(skillName: string) {
-    setSearchParams({ tab: "trigger", skill: skillName }, { replace: true });
+  // Prefill the header command bar instead of navigating: the old Trigger tab
+  // is folded into that bar, and nothing runs until the operator presses Run.
+  function handleUseSkill(skillName: string) {
+    requestPrefill(`Use the ${skillName} skill to `);
   }
 
   return (
     <>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {skills.map((skill) => (
-          <Card key={skill.name} className="flex flex-col justify-between">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
+          <Section key={skill.name} className="flex flex-col justify-between">
+            <SectionHeader>
+              <SectionTitle className="flex items-center gap-2">
                 {skill.name}
                 <Badge variant="secondary" className="text-xs">
                   skill
                 </Badge>
-              </CardTitle>
-              <CardDescription>{firstLine(skill.content)}</CardDescription>
-            </CardHeader>
-            <CardContent>
+              </SectionTitle>
+              <SectionDescription>{firstLine(skill.content)}</SectionDescription>
+            </SectionHeader>
+            <SectionContent>
               <div className="flex gap-2">
                 <Button
                   variant="outline"
@@ -171,13 +173,13 @@ export default function ButlerSkillsTab({ butlerName }: ButlerSkillsTabProps) {
                 </Button>
                 <Button
                   size="sm"
-                  onClick={() => handleTriggerSkill(skill.name)}
+                  onClick={() => handleUseSkill(skill.name)}
                 >
-                  Trigger
+                  Use skill
                 </Button>
               </div>
-            </CardContent>
-          </Card>
+            </SectionContent>
+          </Section>
         ))}
       </div>
 

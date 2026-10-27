@@ -24,7 +24,6 @@ through the central writer ``relationship_assert_fact()`` into
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from typing import Any
 
@@ -49,47 +48,6 @@ _CONTACT_INFO_TYPES = {"email", "phone", "telegram", "linkedin", "twitter", "web
 _CONTACT_INFO_CONTEXTS = {"personal", "work", "other"}
 
 logger = logging.getLogger(__name__)
-
-# Work-domain heuristic: email addresses at these domains are auto-tagged
-# context='work' when no explicit context is provided on insert.
-#
-# Override at runtime via BUTLERS_WORK_DOMAINS env var (comma-separated list
-# of lowercase domain names, e.g. "example.com,acme.corp").
-_DEFAULT_WORK_DOMAINS: frozenset[str] = frozenset(["example.com"])
-
-
-def _get_work_domains() -> frozenset[str]:
-    """Return the current work-domain set.
-
-    Reads BUTLERS_WORK_DOMAINS once per call; the env var is intentionally
-    re-read each call so runtime changes are picked up without restart.
-    Setting BUTLERS_WORK_DOMAINS to an empty string disables the heuristic
-    (returns an empty set); unset falls back to _DEFAULT_WORK_DOMAINS.
-    """
-    raw = os.environ.get("BUTLERS_WORK_DOMAINS")
-    if raw is not None:
-        return frozenset(d.strip().lower() for d in raw.split(",") if d.strip())
-    return _DEFAULT_WORK_DOMAINS
-
-
-def classify_email_context(email: str) -> str | None:
-    """Return 'work' if the email domain is in the work-domain list, else None.
-
-    Parameters
-    ----------
-    email:
-        An email address string (e.g. ``"alice@example.com"``).
-
-    Returns
-    -------
-    str | None
-        ``'work'`` when the domain matches a known work domain, else ``None``.
-    """
-    at = email.rfind("@")
-    if at == -1:
-        return None
-    domain = email[at + 1 :].lower()
-    return "work" if domain in _get_work_domains() else None
 
 
 async def _resolve_contact_entity(pool: asyncpg.Pool, contact_id: uuid.UUID) -> uuid.UUID | None:

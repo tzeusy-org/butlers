@@ -38,6 +38,7 @@ pytestmark = [
 _EPISODES_SQL = """
 DROP TABLE IF EXISTS episodes;
 CREATE TABLE episodes (
+    content_authority TEXT, authority_entity_id UUID,
     id                   BIGSERIAL PRIMARY KEY,
     consolidated         BOOLEAN NOT NULL DEFAULT false,
     consolidation_status TEXT    NOT NULL DEFAULT 'pending',

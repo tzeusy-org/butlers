@@ -19,7 +19,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from butlers.config import RuntimeSeedConfig
-from butlers.core.runtime_config import RuntimeConfigAccessor, _row_to_config
+from butlers.core.runtime_config import (
+    RuntimeConfigAccessor,
+    _row_to_config,
+    resolve_effective_core_groups,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -30,6 +34,8 @@ def _make_row(
     catalog_read_sensitivity: str = "normal",
     max_concurrent: int = 3,
     max_queued: int = 10,
+    tool_exposure_policy: str = "eager_filtered",
+    core_groups_narrowing_reason: str | None = None,
     seeded_at: str = "2026-01-01T00:00:00+00:00",
     updated_at: str = "2026-01-01T00:00:00+00:00",
 ) -> dict:
@@ -40,9 +46,26 @@ def _make_row(
         "catalog_read_sensitivity": catalog_read_sensitivity,
         "max_concurrent": max_concurrent,
         "max_queued": max_queued,
+        "tool_exposure_policy": tool_exposure_policy,
+        "core_groups_narrowing_reason": core_groups_narrowing_reason,
         "seeded_at": seeded_at,
         "updated_at": updated_at,
     }
+
+
+def _transaction_pool():
+    """One connection stands in for this test's acquired transaction boundary."""
+    pool = AsyncMock()
+    acquisition = MagicMock()
+    acquisition.__aenter__ = AsyncMock(return_value=pool)
+    acquisition.__aexit__ = AsyncMock(return_value=False)
+    pool.acquire = MagicMock(return_value=acquisition)
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock()
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    pool.transaction = MagicMock(return_value=transaction)
+    pool.fetchval = AsyncMock(return_value=1)
+    return pool
 
 
 def _mock_record(row_dict: dict) -> MagicMock:
@@ -55,11 +78,13 @@ def _mock_record(row_dict: dict) -> MagicMock:
 
 def _make_seed(
     core_groups: tuple[str, ...] | None = None,
+    tool_exposure_policy: str = "eager_filtered",
 ) -> RuntimeSeedConfig:
     return RuntimeSeedConfig(
         core_groups=core_groups,
         max_concurrent_sessions=3,
         max_queued_sessions=10,
+        tool_exposure_policy=tool_exposure_policy,
     )
 
 
@@ -98,17 +123,25 @@ async def test_cache_miss_after_ttl():
 
 
 async def test_seed_on_empty_table():
-    """seed_if_empty() inserts a row when the table is empty."""
-    pool = AsyncMock()
-    seed = _make_seed(core_groups=("infra", "state"))
-    seeded_row = _mock_record(_make_row(core_groups=["infra", "state"]))
+    """seed_if_empty() inserts a row when the table is empty, including the hot policy."""
+    pool = _transaction_pool()
+    seed = _make_seed(core_groups=("infra", "state"), tool_exposure_policy="auto")
+    seeded_row = _mock_record(
+        _make_row(core_groups=["infra", "state"], tool_exposure_policy="auto")
+    )
     pool.execute = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=seeded_row)
+    pool.fetchrow = AsyncMock(
+        side_effect=lambda sql, *_args: None if "WITH candidate" in sql else seeded_row
+    )
 
     accessor = RuntimeConfigAccessor(pool, "test")
     result = await accessor.seed_if_empty(seed, "test")
 
     assert result.core_groups == ("infra", "state")
+    assert result.tool_exposure_policy == "auto"
+    insert_sql, *insert_args = pool.execute.await_args_list[0].args
+    assert "tool_exposure_policy" in insert_sql
+    assert "auto" in insert_args
 
 
 async def test_db_failure_with_stale_cache():
@@ -141,11 +174,13 @@ async def test_db_failure_with_no_cache():
 
 async def test_concurrent_seed_race():
     """Two concurrent seed_if_empty() calls don't fail (ON CONFLICT DO NOTHING)."""
-    pool = AsyncMock()
+    pool = _transaction_pool()
     seed = _make_seed()
     seeded_row = _mock_record(_make_row())
     pool.execute = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=seeded_row)
+    pool.fetchrow = AsyncMock(
+        side_effect=lambda sql, *_args: None if "WITH candidate" in sql else seeded_row
+    )
 
     accessor1 = RuntimeConfigAccessor(pool, "test")
     accessor2 = RuntimeConfigAccessor(pool, "test")
@@ -162,6 +197,79 @@ async def test_concurrent_seed_race():
     seed_sql = pool.execute.await_args_list[0].args[0]
     assert "ON CONFLICT" in seed_sql
     assert "DO NOTHING" in seed_sql
+
+
+def test_git_core_groups_replace_unexplained_narrow_runtime_groups():
+    resolution = resolve_effective_core_groups(
+        ("infra", "state", "delegation"),
+        ("infra", "state"),
+        narrowing_reason=None,
+    )
+
+    assert resolution.effective == ("infra", "state", "delegation")
+    assert resolution.source == "git"
+    assert resolution.requires_reconciliation is True
+
+
+def test_explicit_reason_preserves_true_runtime_narrowing():
+    resolution = resolve_effective_core_groups(
+        ("infra", "state", "delegation"),
+        ("infra", "state"),
+        narrowing_reason="Temporary incident containment",
+    )
+
+    assert resolution.effective == ("infra", "state")
+    assert resolution.source == "runtime_narrowing"
+    assert resolution.requires_reconciliation is False
+
+
+def test_reason_cannot_authorize_runtime_broadening():
+    resolution = resolve_effective_core_groups(
+        ("infra", "state"),
+        ("infra", "state", "delegation"),
+        narrowing_reason="Not actually a narrowing",
+    )
+
+    assert resolution.effective == ("infra", "state")
+    assert resolution.source == "git"
+    assert resolution.requires_reconciliation is True
+
+
+async def test_seed_reconciles_and_audits_stale_groups_once():
+    pool = _transaction_pool()
+    stale = _mock_record(_make_row(core_groups=["infra"]))
+    reconciled = _mock_record(_make_row(core_groups=["infra", "delegation"]))
+    pool.execute = AsyncMock()
+    pool.fetchrow = AsyncMock(side_effect=[stale, {"previous_core_groups": ["infra"]}, reconciled])
+
+    accessor = RuntimeConfigAccessor(pool, "test")
+    result = await accessor.seed_if_empty(_make_seed(core_groups=("infra", "delegation")), "test")
+
+    assert result.core_groups == ("infra", "delegation")
+    reconcile_sql, *args = pool.fetchrow.await_args_list[1].args
+    assert pool.fetchval.await_args.args[2] == "core_groups_reconciled"
+    assert "UPDATE test.runtime_config" in reconcile_sql
+    assert "INSERT INTO public.audit_log" in pool.fetchval.await_args.args[0]
+    assert args[0] == "test"
+    assert args[1] == ["infra", "delegation"]
+
+
+async def test_seed_keeps_explicit_narrowing_without_audit():
+    pool = _transaction_pool()
+    narrowed = _mock_record(
+        _make_row(
+            core_groups=["infra"],
+            core_groups_narrowing_reason="Temporary incident containment",
+        )
+    )
+    pool.execute = AsyncMock()
+    pool.fetchrow = AsyncMock(side_effect=[narrowed, None, narrowed])
+
+    accessor = RuntimeConfigAccessor(pool, "test")
+    result = await accessor.seed_if_empty(_make_seed(core_groups=("infra", "delegation")), "test")
+
+    assert result.core_groups == ("infra",)
+    assert pool.fetchrow.await_args_list[1].args[-1] is False
 
 
 async def test_invalidate_cache():
@@ -214,3 +322,122 @@ def test_row_to_config_missing_catalog_authority_fails_closed_normal():
     config = _row_to_config(_mock_record(row_data))
 
     assert config.catalog_read_sensitivity == "normal"
+
+
+def test_row_to_config_preserves_tool_exposure_policy():
+    row = _mock_record(_make_row(tool_exposure_policy="auto"))
+
+    config = _row_to_config(row)
+
+    assert config.tool_exposure_policy == "auto"
+
+
+def test_row_to_config_missing_tool_exposure_policy_fails_closed_eager_filtered():
+    """A rolling pre-core_224 row shape must never opt a butler into native discovery."""
+    row_data = _make_row()
+    del row_data["tool_exposure_policy"]
+
+    config = _row_to_config(_mock_record(row_data))
+
+    assert config.tool_exposure_policy == "eager_filtered"
+
+
+async def test_get_tool_exposure_policy_bypasses_the_ttl_cache():
+    """The per-attempt authoritative read always hits the DB, even within a warm TTL cache.
+
+    This is the mechanism that makes the hot policy correct across process
+    boundaries (bu-ondtw.2 design): a cached get() can be stale for up to
+    ttl_s, but every session-planning caller must see a committed PATCH
+    immediately regardless of which process wrote it.
+    """
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(
+        side_effect=[
+            _mock_record(_make_row(tool_exposure_policy="eager_filtered")),
+            {"tool_exposure_policy": "auto"},
+        ]
+    )
+
+    accessor = RuntimeConfigAccessor(pool, "test", ttl_s=300.0)
+    warm = await accessor.get()
+    assert warm.tool_exposure_policy == "eager_filtered"
+
+    live = await accessor.get_tool_exposure_policy()
+
+    assert live == "auto"
+    assert pool.fetchrow.call_count == 2
+
+
+async def test_get_tool_exposure_policy_falls_back_to_stale_cache_on_db_failure():
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(
+        side_effect=[
+            _mock_record(_make_row(tool_exposure_policy="auto")),
+            Exception("DB unavailable"),
+        ]
+    )
+
+    accessor = RuntimeConfigAccessor(pool, "test")
+    await accessor.get()
+
+    live = await accessor.get_tool_exposure_policy()
+
+    assert live == "auto"
+
+
+async def test_get_tool_exposure_policy_raises_with_no_cache_and_no_row():
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=None)
+
+    accessor = RuntimeConfigAccessor(pool, "test")
+
+    with pytest.raises(RuntimeError, match="No runtime_config row found"):
+        await accessor.get_tool_exposure_policy()
+
+
+async def test_reconciliation_uses_existing_core_append_in_own_transaction(monkeypatch):
+    from butlers.core import audit
+
+    stale = _mock_record(_make_row(core_groups=["infra"]))
+    reconciled = _mock_record(_make_row(core_groups=["infra", "delegation"]))
+    pool = _transaction_pool()
+    pool.fetchrow = AsyncMock(side_effect=[stale, reconciled, reconciled])
+    connection = AsyncMock()
+    connection.fetchrow.return_value = {"previous_core_groups": ["infra"]}
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock()
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    connection.transaction = MagicMock(return_value=transaction)
+    acquisition = MagicMock()
+    acquisition.__aenter__ = AsyncMock(return_value=connection)
+    acquisition.__aexit__ = AsyncMock(return_value=False)
+    pool.acquire = MagicMock(return_value=acquisition)
+    receipt = AsyncMock(return_value=1)
+    monkeypatch.setattr(audit, "append", receipt)
+    result = await RuntimeConfigAccessor(pool, "test").seed_if_empty(
+        _make_seed(core_groups=("infra", "delegation")), "test"
+    )
+    assert result.core_groups == ("infra", "delegation")
+    acquisition.__aenter__.assert_awaited_once()
+    transaction.__aenter__.assert_awaited_once()
+    receipt.assert_awaited_once()
+    assert receipt.await_args.args == (connection, "test", "core_groups_reconciled")
+    assert receipt.await_args.kwargs["metadata"]["runtime_core_groups"] == ["infra"]
+    transaction.__aexit__.assert_awaited_once_with(None, None, None)
+
+
+async def test_reconciliation_audit_failure_exits_the_owned_transaction(monkeypatch):
+    from butlers.core import audit
+
+    pool = _transaction_pool()
+    stale = _mock_record(_make_row(core_groups=["infra"]))
+    pool.fetchrow = AsyncMock(side_effect=[stale, {"previous_core_groups": ["infra"]}])
+    failure = RuntimeError("controlled audit failure")
+    monkeypatch.setattr(audit, "append", AsyncMock(side_effect=failure))
+    with pytest.raises(RuntimeError, match="controlled audit failure"):
+        await RuntimeConfigAccessor(pool, "test").seed_if_empty(
+            _make_seed(core_groups=("infra", "delegation")), "test"
+        )
+    boundary = pool.transaction.return_value.__aexit__
+    assert boundary.await_args.args[:2] == (RuntimeError, failure)
+    assert pool.fetchrow.await_count == 2

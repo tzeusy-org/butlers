@@ -27,19 +27,38 @@ Scope and design
 -----------------
 The scanner in this file is a small, self-contained, defensive TypeScript
 *fragment* parser — NOT a general TS/JS parser. It understands exactly the
-patterns ``client.ts`` actually uses (verified empirically: it resolves
-443/443 functions that call ``apiFetch`` with zero unresolved call sites at
-the time this test was written):
+patterns ``client.ts`` actually uses:
 
 - string / template-literal literal first arguments to ``apiFetch<T>(...)``,
-  including ``${...}`` interpolation (each interpolation collapses to one
-  path-segment wildcard — we cannot know the *value*, only that a dynamic
-  segment exists there);
+  including ``${...}`` interpolation. An interpolated local ``const`` that
+  fully resolves (a template literal such as ``${base}``, or a ternary of
+  string literals such as ``${action}``) is substituted in place, expanding to
+  every candidate; any other interpolation collapses to one wildcard (we
+  cannot know the *value*, only that a dynamic part exists there);
 - a first argument that is a local ``const`` (resolved via simple textual
-  lookup within the same function body, including one level of ternary);
+  lookup within the same function body, including nested ternaries);
 - query-parameter names set via ``.set("name", ...)`` on a
   ``URLSearchParams``, either inline or via a shared ``*SearchParams(...)``
   helper (``client.ts``'s own naming convention — 13 such helpers exist).
+
+Scanner coverage is itself checked with zero slack (bu-i8q4iu). A whole-file
+census attributes every ``apiFetch`` call to its enclosing function,
+independently of body extraction. The set of census functions the scanner did
+not resolve (or that call ``apiFetch`` more than once, since only the first
+call is read) must equal ``UNRESOLVED_APIFETCH_FUNCTIONS``, which is empty. A
+new unparseable pattern fails with the function's name, and deleting a
+client.ts function needs no edit. The census found 21 functions that a
+count-only floor had hidden: an inline object return type
+(``Promise<{ status: string }>``) was mistaken for the body.
+
+Matching is segment-wise and method-aware (bu-tllj5r). An OpenAPI ``{param}``
+segment accepts any FE segment. A FE segment that is exactly a wildcard
+(``${id}``) matches only a ``{param}`` segment, so ``/contacts/${id}`` never
+passes on a literal sibling such as ``/contacts/overdue``. A mixed segment
+(``devices${qs}``) must fullmatch a literal segment with the wildcard read as
+``[^/]*``. A template with no literal text (an unresolved ``${path}``) names no
+route and is not counted as resolved. Check A accepts a template only when a
+matching path declares the function's HTTP method.
 
 What this test does NOT do: resolve arbitrary caller-supplied numeric
 *values* (e.g. a page component's own ``limit: 500`` literal) back through
@@ -54,19 +73,17 @@ concrete case this bug class was fixed for, and the per-literal pins in
 named constants) was completed in bu-5ela3: no production literal exceeded
 its endpoint's ``le``, and every zero-headroom literal is now pinned in
 ``_LIMIT_LITERAL_PINS`` so a future ``le`` tightening (or a bumped literal)
-fails CI instead of 422-ing every load. Two calls to the dead
-``GET /api/relationship/contacts`` path (``FiltersPipeline.tsx``,
-``EntityDetailPage.tsx``) 404 rather than 422 — a different drift class,
-tracked via the dead-path allowlist, not the pins here.
+fails CI instead of 422-ing every load. The priority-sender picker in
+``FiltersPipeline.tsx`` reads ``GET /api/relationship/entities`` at its
+``limit`` ceiling and is pinned here too.
 
 Known, tracked exceptions
 --------------------------
-- The dead ``/relationship/contacts*`` family (11 client.ts functions) —
-  ``public.contacts`` was DROPped (core_134, bu-y6o7q) and its router was
-  fully removed, so these routes 404 live. Excising the client fns / hooks /
-  ``ButlerRelationshipContactsTab`` that still consume them is deferred to
-  the contact-era excision cluster (epic bu-oluyt) — this test documents the
-  drift instead of silently ignoring it (see ``KNOWN_DEAD_PATH_FUNCTIONS``).
+- None. The dead ``/relationship/contacts*`` family (``public.contacts`` was
+  DROPped in core_134, bu-y6o7q) was excised from client.ts in bu-wgniv and
+  bu-lzrpwd; its former consumers read the entity-keyed routes instead. Only
+  ``GET /relationship/contacts/overdue`` remains, and it is live. A future
+  intentionally-dead path must be listed in ``KNOWN_DEAD_PATH_FUNCTIONS``.
 
 The formerly-tracked "extra query param the backend does not declare" cases
 (``getSessions`` / ``getSessionAggregate`` / ``getButlerSessions`` /
@@ -100,31 +117,23 @@ _CROSS_SUMMARY_HANDLER = "get_cross_connector_summary_with_aggregates"
 # Wildcard marker substituted for each `${...}` template interpolation.
 _WILDCARD = "\x00"
 
-# Guards the scanner itself: if fewer than this many apiFetch call sites
-# resolve, the parser has regressed (silently) and every assertion below
-# would be vacuous. After the bu-wgniv dead-export sweep (which deleted ~48
-# unused api/client.ts functions) 385/385 resolve. Kept close to that count
-# (not a round number like 350) so a single newly-unparseable call site — one
-# function silently dropped by a future authoring pattern — trips this guard
-# instead of hiding inside slack (PR #3173 review: a wide buffer here would let
-# coverage rot without failing).
-_MIN_RESOLVED_FUNCTIONS = 380
+# client.ts functions that call apiFetch but whose call the scanner cannot
+# resolve (or that call it more than once). Compared for exact set equality
+# against the whole-file census, so there is zero slack in either direction:
+# a new unparseable pattern fails with its function name, and a stale entry
+# fails too. Deleting a client.ts function needs no edit here. Any entry needs
+# a reason and a tracking bead id.
+UNRESOLVED_APIFETCH_FUNCTIONS: frozenset[str] = frozenset()
 
 # ---------------------------------------------------------------------------
 # Known, tracked contract exceptions
 # ---------------------------------------------------------------------------
 
-# The dead /relationship/contacts* family (bu-oluyt contact-era excision
-# cluster). Keyed by client.ts export name -> the OpenAPI-normalized path
-# template it resolves to (informational; asserted against below).
-KNOWN_DEAD_PATH_FUNCTIONS: dict[str, str] = {
-    # The bu-wgniv dead-export sweep deleted the six unused members of this
-    # dead-path family from client.ts (deleteContact, archiveContact,
-    # unarchiveContact, createContactInfo, deleteContactInfo, patchContactInfo);
-    # only the still-referenced dead-path readers remain listed here.
-    "getContacts": "/relationship/contacts",
-    "getContactInteractions": f"/relationship/contacts/{_WILDCARD}/interactions{_WILDCARD}",
-}
+# Client.ts functions whose path is intentionally dead pending excision, keyed
+# by export name -> the OpenAPI-normalized path template (informational;
+# asserted against below). Empty since bu-lzrpwd removed the last
+# /relationship/contacts* readers.
+KNOWN_DEAD_PATH_FUNCTIONS: dict[str, str] = {}
 
 # Pre-existing "sends a query param the backend does not declare" drift,
 # discovered by this test's first run (not introduced by bu-hmdqz.5).
@@ -254,7 +263,69 @@ def _cross_summary_payload_shapes() -> list[set[str]]:
     return list(shapes.values())
 
 
-_FUNC_START_RE = re.compile(r"(?:export (?:async )?|async )?\bfunction (\w+)\s*\(")
+# An optional generic parameter list may sit between the name and `(`
+# (`function apiFetch<T>(`), so a generic endpoint function is never invisible.
+_FUNC_START_RE = re.compile(r"(?:export (?:async )?|async )?\bfunction (\w+)\s*(?:<[^()]*>)?\s*\(")
+
+# After these, a depth-0 `{` in a return annotation opens a type literal, not
+# the body: `): { a: string } {`, `): A | { b: B } {`, `): () => { c: C } {`.
+_TYPE_LITERAL_PRECEDERS = frozenset(":|&=,")
+
+
+def _find_body_open(text: str, paren_close: int) -> int | None:
+    """Return the index of the function body's `{`, or None when bodyless.
+
+    Skips a return-type annotation by balanced scanning over `<>`, `()`,
+    `[]` and `{}`. An inline object type (`Promise<{ status: string }>`, or a
+    bare `{ a: string }`) is part of the annotation, never the body: taking
+    the first `{` after the parameter list misattributed the body to the type
+    literal and silently dropped the function (bu-i8q4iu).
+    """
+    i = paren_close + 1
+    n = len(text)
+    depth = 0
+    prev = ")"
+    while i < n:
+        c = text[i]
+        if c.isspace():
+            i += 1
+        elif text.startswith("//", i):
+            nl = text.find("\n", i)
+            i = nl if nl != -1 else n
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = end + 2 if end != -1 else n
+        elif c in "\"'":
+            i = _skip_string(text, i, c)
+            prev = c
+        elif c == "`":
+            i = _skip_template(text, i)
+            prev = c
+        elif text.startswith("=>", i):
+            i += 2
+            prev = "="
+        elif c in "<([":
+            depth += 1
+            i += 1
+        elif c in ">)]}":
+            depth -= 1
+            i += 1
+            if depth == 0:
+                prev = c
+        elif c == "{":
+            if depth == 0 and prev not in _TYPE_LITERAL_PRECEDERS:
+                return i
+            depth += 1
+            i += 1
+        elif c == ";" and depth == 0:
+            # A bodyless declaration (TS overload signature / ambient `declare
+            # function`): the next `{` belongs to a *later* declaration.
+            return None
+        else:
+            if depth == 0:
+                prev = c
+            i += 1
+    return None
 
 
 def _extract_functions(text: str) -> dict[str, str]:
@@ -265,14 +336,10 @@ def _extract_functions(text: str) -> dict[str, str]:
         paren_open = m.end() - 1
         try:
             paren_close = _find_matching(text, paren_open, "(", ")")
-            brace_open = text.index("{", paren_close + 1)
-        except (ValueError, IndexError):
+        except ValueError:
             continue
-        # A bodyless declaration (TS overload signature / ambient `declare
-        # function`) ends in `;` before any `{` of its own — the next `{`
-        # `text.index` finds belongs to a *later* declaration. Skip rather
-        # than misattribute that unrelated body to this name.
-        if ";" in text[paren_close + 1 : brace_open]:
+        brace_open = _find_body_open(text, paren_close)
+        if brace_open is None:
             continue
         try:
             brace_close = _find_matching(text, brace_open, "{", "}")
@@ -365,32 +432,66 @@ def _split_ternary(expr: str) -> tuple[str, str, str] | None:
     return expr[:qmark_idx], expr[qmark_idx + 1 : colon_idx], expr[colon_idx + 1 :]
 
 
-def _parse_template_literal(expr: str) -> str:
+# Upper bound on the candidate templates one expression may expand into, so a
+# chain of enumerated interpolations cannot blow up combinatorially. Exceeding
+# it raises: a truncated candidate set would silently skip a dead branch.
+_MAX_TEMPLATE_CANDIDATES = 16
+
+
+class TemplateExpansionError(ValueError):
+    """A template expands to more candidates than the scanner will check."""
+
+
+def _parse_template_literal(
+    expr: str, local_consts: dict[str, str] | None = None, depth: int = 0
+) -> list[str]:
+    """Expand a template literal into candidate templates.
+
+    An interpolation of a local ``const`` that fully resolves (a nested template
+    literal, or a ternary whose every leaf is a string literal) is substituted
+    in place; anything else collapses to one ``_WILDCARD``.
+    """
     inner = expr[1:-1]
-    out: list[str] = []
+    candidates = [""]
     i = 0
     n = len(inner)
     while i < n:
         if inner[i] == "\\":
-            out.append(inner[i : i + 2])
+            candidates = [c + inner[i : i + 2] for c in candidates]
             i += 2
             continue
         if inner[i] == "$" and i + 1 < n and inner[i + 1] == "{":
             close = _find_matching(inner, i + 1, "{", "}")
-            out.append(_WILDCARD)
+            name = inner[i + 2 : close].strip()
+            options = [_WILDCARD]
+            if local_consts and re.fullmatch(r"\w+", name) and name in local_consts:
+                resolved = _resolve_path_expr(
+                    local_consts[name], local_consts, depth + 1, strict=True
+                )
+                if resolved:
+                    options = resolved
+            candidates = [c + o for c in candidates for o in options]
+            if len(candidates) > _MAX_TEMPLATE_CANDIDATES:
+                raise TemplateExpansionError(
+                    f"{expr} expands to more than {_MAX_TEMPLATE_CANDIDATES} path candidates"
+                )
             i = close + 1
             continue
-        out.append(inner[i])
+        candidates = [c + inner[i] for c in candidates]
         i += 1
-    return "".join(out)
+    return candidates
 
 
-def _resolve_path_expr(expr: str, local_consts: dict[str, str], depth: int = 0) -> list[str]:
+def _resolve_path_expr(
+    expr: str, local_consts: dict[str, str], depth: int = 0, *, strict: bool = False
+) -> list[str]:
     """Resolve a first-argument expression to candidate path templates.
 
-    Handles string/template literals, one level of ternary (both branches
-    are returned as candidates), and bare identifiers resolved against
-    ``local_consts`` (this function's own ``const`` assignments).
+    Handles string/template literals, nested ternaries (every branch is
+    returned as a candidate), and bare identifiers resolved against
+    ``local_consts`` (this function's own ``const`` assignments). With
+    ``strict``, a ternary resolves only when every branch does, so a partially
+    understood expression is never passed off as its resolvable branches.
     """
     expr = expr.strip()
     while expr.startswith("(") and expr.endswith(")"):
@@ -406,16 +507,18 @@ def _resolve_path_expr(expr: str, local_consts: dict[str, str], depth: int = 0) 
     ternary = _split_ternary(expr)
     if ternary:
         _, a, b = ternary
-        return _resolve_path_expr(a, local_consts, depth + 1) + _resolve_path_expr(
-            b, local_consts, depth + 1
-        )
+        left = _resolve_path_expr(a, local_consts, depth + 1, strict=strict)
+        right = _resolve_path_expr(b, local_consts, depth + 1, strict=strict)
+        if strict and not (left and right):
+            return []
+        return left + right
     if expr[0] in "\"'" and expr[-1] == expr[0]:
         return [expr[1:-1]]
     if expr[0] == "`" and expr[-1] == "`":
-        return [_parse_template_literal(expr)]
+        return _parse_template_literal(expr, local_consts, depth)
     if re.fullmatch(r"\w+", expr):
         if expr in local_consts:
-            return _resolve_path_expr(local_consts[expr], local_consts, depth + 1)
+            return _resolve_path_expr(local_consts[expr], local_consts, depth + 1, strict=strict)
         return []
     return []
 
@@ -503,6 +606,31 @@ def _find_apifetch_call_args(body: str) -> list[str]:
     return out
 
 
+#: The client's own fetch wrapper; its definition is not a call site.
+_APIFETCH_DEFINITION = "apiFetch"
+
+
+def _apifetch_call_sites(text: str) -> dict[str, int]:
+    """Whole-file census: enclosing function name -> number of apiFetch calls.
+
+    Independent of body extraction on purpose: each call is attributed to the
+    nearest preceding top-level function declaration (client.ts has no nested
+    named functions), so a function whose body extraction fails still counts.
+    """
+    starts = [(m.start(), m.group(1)) for m in _FUNC_START_RE.finditer(text)]
+    census: dict[str, int] = {}
+    for m in _APIFETCH_CALL_RE.finditer(text):
+        owner = None
+        for start, name in starts:
+            if start > m.start():
+                break
+            owner = name
+        if owner is None or text[: m.start()].endswith("function "):
+            continue
+        census[owner] = census.get(owner, 0) + 1
+    return census
+
+
 class FunctionContract:
     """A resolved client.ts endpoint function: its path template(s), HTTP
     method, and the query-param names it sends."""
@@ -531,7 +659,10 @@ def _scan_client_ts(text: str) -> dict[str, FunctionContract]:
         if not args:
             continue
         local_consts = _extract_local_consts(body)
-        candidates = _resolve_path_expr(args[0], local_consts)
+        try:
+            candidates = _resolve_path_expr(args[0], local_consts)
+        except TemplateExpansionError as exc:
+            raise TemplateExpansionError(f"{name}: {exc}") from None
         if not candidates:
             continue
         method = "get"
@@ -539,30 +670,86 @@ def _scan_client_ts(text: str) -> dict[str, FunctionContract]:
             m = _METHOD_RE.search(args[1])
             if m:
                 method = m.group(1).lower()
-        # Path portion only (strip any literal query-string suffix).
-        paths = list(dict.fromkeys(c.split("?")[0] for c in candidates))
+        # Path portion only (strip any literal query-string suffix). A template
+        # with no literal segment (e.g. an unresolved whole-path `${path}`)
+        # names no route, so it is not a resolved contract.
+        paths = [
+            path
+            for path in dict.fromkeys(c.split("?")[0] for c in candidates)
+            if _has_literal_segment(path)
+        ]
+        if not paths:
+            continue
         query_names = _extract_query_param_names(body, helper_bodies)
         contracts[name] = FunctionContract(name, paths, method, query_names)
     return contracts
 
 
-def _path_matches(fe_template: str, api_path: str) -> bool:
-    """Segment-wise match: a FE wildcard segment matches anything; an
-    OpenAPI ``{param}`` segment matches anything; otherwise segments must be
-    literally equal."""
-    fe_full = "/api" + fe_template
-    fe_segs = fe_full.split("/")
-    api_segs = api_path.split("/")
-    if len(fe_segs) != len(api_segs):
+def _unresolved_apifetch_functions(text: str) -> set[str]:
+    """Census functions the scanner did not resolve, or that call apiFetch twice.
+
+    ``_scan_client_ts`` reads only a function's first call, so a second call
+    site would otherwise go unchecked.
+    """
+    census = _apifetch_call_sites(text)
+    resolved = _scan_client_ts(text)
+    return (set(census) - set(resolved)) | {name for name, count in census.items() if count > 1}
+
+
+def _has_literal_segment(fe_template: str) -> bool:
+    """Whether any segment carries literal text (``issues${qs}`` does; ``${path}`` does not)."""
+    return any(seg.replace(_WILDCARD, "") for seg in fe_template.split("/"))
+
+
+def _segment_matches(fe_seg: str, api_seg: str) -> bool:
+    """One path segment.
+
+    An OpenAPI ``{param}`` segment accepts any non-empty FE segment. A FE
+    segment with no literal text (``${id}``, or ``${id}${qs}`` with a query
+    suffix) matches only a ``{param}`` segment, never a literal sibling such as
+    ``overdue``. A mixed literal+wildcard segment (``devices${qs}``) must
+    fullmatch a literal API segment with the wildcard read as ``[^/]*``.
+    Literal segments are equal.
+    """
+    if api_seg.startswith("{") and api_seg.endswith("}"):
+        return fe_seg != ""
+    if _WILDCARD in fe_seg and not fe_seg.replace(_WILDCARD, ""):
         return False
-    for f, a in zip(fe_segs, api_segs):
-        if _WILDCARD in f:
-            continue
-        if a.startswith("{") and a.endswith("}"):
-            continue
-        if f != a:
-            return False
-    return True
+    if _WILDCARD in fe_seg:
+        pattern = "".join("[^/]*" if ch == _WILDCARD else re.escape(ch) for ch in fe_seg)
+        return re.fullmatch(pattern, api_seg) is not None
+    return fe_seg == api_seg
+
+
+def _path_matches(fe_template: str, api_path: str) -> bool:
+    """Segment-wise match of a FE template against one OpenAPI path."""
+    fe_segs = ("/api" + fe_template).split("/")
+    api_segs = api_path.split("/")
+    return len(fe_segs) == len(api_segs) and all(
+        _segment_matches(f, a) for f, a in zip(fe_segs, api_segs, strict=True)
+    )
+
+
+def _matching_operations(template: str, method: str, openapi_paths: dict[str, dict]) -> list[dict]:
+    """The OpenAPI operations for *method* on every live path *template* matches."""
+    return [
+        operations[method]
+        for api_path, operations in openapi_paths.items()
+        if method in operations and _path_matches(template, api_path)
+    ]
+
+
+def _check_a_offenders(
+    fe_contracts: dict[str, FunctionContract], openapi_paths: dict[str, dict]
+) -> list[str]:
+    """Templates with no live route for the contract's HTTP method, minus tracked-dead ones."""
+    return [
+        f"{name}: {contract.method.upper()} {template!r}"
+        for name, contract in fe_contracts.items()
+        if name not in KNOWN_DEAD_PATH_FUNCTIONS
+        for template in contract.paths
+        if not _matching_operations(template, contract.method, openapi_paths)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -583,29 +770,73 @@ def fe_contracts(client_ts_text: str) -> dict[str, FunctionContract]:
 
 @pytest.fixture(scope="module")
 def openapi_paths() -> dict[str, dict]:
-    with warnings.catch_warnings():
-        # FastAPI warns about pre-existing duplicate operation IDs in the
-        # ingestion connectors router (unrelated to this contract) — not
-        # this test's concern.
-        warnings.simplefilter("ignore")
-        from butlers.api.app import create_app
+    from butlers.api.app import create_app
 
-        app = create_app()
-        schema = app.openapi()
+    app = create_app()
+    schema = app.openapi()
     return schema["paths"]
 
 
+def test_openapi_schema_has_no_duplicate_operation_ids():
+    """Every router is mounted once so generated client contracts stay unambiguous."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        from butlers.api.app import create_app
+
+        create_app().openapi()
+
+    duplicate_operation_ids = [
+        str(warning.message)
+        for warning in caught
+        if "Duplicate Operation ID" in str(warning.message)
+    ]
+    assert duplicate_operation_ids == []
+
+
+def test_legacy_switchboard_connector_namespace_is_absent(
+    openapi_paths: dict[str, dict],
+):
+    """No compatibility route may preserve the retired connector namespace."""
+    legacy_paths = sorted(
+        path for path in openapi_paths if path.startswith("/api/switchboard/connectors")
+    )
+    assert legacy_paths == []
+
+
 # ---------------------------------------------------------------------------
-# Sanity: the scanner itself resolves the vast majority of call sites.
+# Sanity: the scanner resolves every apiFetch call site, or it is tracked.
 # ---------------------------------------------------------------------------
 
 
-def test_scanner_resolves_most_apifetch_call_sites(fe_contracts: dict[str, FunctionContract]):
-    assert len(fe_contracts) >= _MIN_RESOLVED_FUNCTIONS, (
-        f"Only resolved {len(fe_contracts)} apiFetch call sites "
-        f"(expected >= {_MIN_RESOLVED_FUNCTIONS}). The client.ts scanner may "
-        "have regressed — check for new authoring patterns it doesn't "
-        "understand yet before trusting the assertions below."
+def test_every_apifetch_call_site_resolves_or_is_tracked(client_ts_text: str):
+    unresolved = _unresolved_apifetch_functions(client_ts_text)
+    new = sorted(unresolved - UNRESOLVED_APIFETCH_FUNCTIONS)
+    stale = sorted(UNRESOLVED_APIFETCH_FUNCTIONS - unresolved)
+    assert not new, (
+        f"client.ts functions call apiFetch but the scanner did not resolve them (or they "
+        f"call it more than once): {new}. Teach the scanner the new pattern, or add each "
+        "to UNRESOLVED_APIFETCH_FUNCTIONS with a reason and a tracking bead."
+    )
+    assert not stale, (
+        f"UNRESOLVED_APIFETCH_FUNCTIONS lists functions that now resolve or no longer "
+        f"exist: {stale}. Remove them."
+    )
+
+
+def test_census_counts_every_apifetch_call(client_ts_text: str):
+    """Anti-vacuity: the census sees every call, and each lands in its function's body."""
+    census = _apifetch_call_sites(client_ts_text)
+    occurrences = len(_APIFETCH_CALL_RE.findall(client_ts_text))
+    assert census
+    assert sum(census.values()) == occurrences - 1  # minus the definition
+    functions = _extract_functions(client_ts_text)
+    misattributed = sorted(
+        name
+        for name, count in census.items()
+        if len(_APIFETCH_CALL_RE.findall(functions.get(name, ""))) != count
+    )
+    assert misattributed == [], (
+        f"body extraction lost these functions' apiFetch calls: {misattributed}"
     )
 
 
@@ -625,16 +856,7 @@ def test_openapi_schema_is_non_trivial(openapi_paths: dict[str, dict]):
 def test_every_client_ts_path_matches_a_live_route_or_is_tracked_dead(
     fe_contracts: dict[str, FunctionContract], openapi_paths: dict[str, dict]
 ):
-    api_path_list = list(openapi_paths.keys())
-    offenders: list[str] = []
-    for name, contract in fe_contracts.items():
-        for template in contract.paths:
-            if any(_path_matches(template, p) for p in api_path_list):
-                continue
-            if name in KNOWN_DEAD_PATH_FUNCTIONS:
-                continue
-            offenders.append(f"{name}: {template!r}")
-
+    offenders = _check_a_offenders(fe_contracts, openapi_paths)
     assert offenders == [], (
         "client.ts calls a path that does not exist in the live FastAPI "
         "OpenAPI schema (would 404 at runtime). If this is intentionally "
@@ -649,7 +871,6 @@ def test_known_dead_paths_are_still_actually_dead(
 ):
     """Anti-rot: if a tracked-dead route is ever re-mounted, the allowlist
     entry must be removed (not left stale, silently hiding a live route)."""
-    api_path_list = list(openapi_paths.keys())
     still_alive = []
     for name in KNOWN_DEAD_PATH_FUNCTIONS:
         contract = fe_contracts.get(name)
@@ -658,7 +879,7 @@ def test_known_dead_paths_are_still_actually_dead(
             "longer finds it in client.ts — remove the stale allowlist entry."
         )
         for template in contract.paths:
-            if any(_path_matches(template, p) for p in api_path_list):
+            if _matching_operations(template, contract.method, openapi_paths):
                 still_alive.append(name)
     assert still_alive == [], (
         "The following functions are allowlisted as dead but now match a "
@@ -681,12 +902,7 @@ def _declared_query_params(
     declared: set[str] = set()
     matched_any = False
     for template in contract.paths:
-        for api_path, operations in openapi_paths.items():
-            if not _path_matches(template, api_path):
-                continue
-            op = operations.get(contract.method)
-            if op is None:
-                continue
+        for op in _matching_operations(template, contract.method, openapi_paths):
             matched_any = True
             for param in op.get("parameters", []):
                 if param.get("in") == "query":
@@ -795,9 +1011,16 @@ _LIMIT_LITERAL_PINS: list[tuple[str, str, str, str, str]] = [
     ),
     (
         "general-collections",
-        "components/butler-detail/ButlerGeneralEntitiesTab.tsx",
+        "components/general/ButlerGeneralEntitiesTab.tsx",
         r"\bDROPDOWN_FETCH_LIMIT\s*=\s*(\d+)",
         "/api/general/collections",
+        "limit",
+    ),
+    (
+        "priority-sender-candidates",
+        "components/ingestion/filters/FiltersPipeline.tsx",
+        r"\bPRIORITY_CANDIDATE_LIMIT\s*=\s*(\d+)",
+        "/api/relationship/entities",
         "limit",
     ),
     (
@@ -910,6 +1133,23 @@ def test_cross_summary_backend_payload_shapes_match() -> None:
         ),
         ("/relationship/contacts", "/api/relationship/groups", False),
         (f"/relationship/contacts/{_WILDCARD}", "/api/relationship/contacts", False),
+        ("/relationship/contacts", "/api/relationship/contacts/{contact_id}", False),
+        # A pure `${id}` segment names a parameter, never a literal sibling route.
+        (f"/relationship/contacts/{_WILDCARD}", "/api/relationship/contacts/overdue", False),
+        # ...however many wildcards it has, e.g. `${id}${qs}` with a query suffix.
+        (
+            f"/relationship/contacts/{_WILDCARD}{_WILDCARD}",
+            "/api/relationship/contacts/overdue",
+            False,
+        ),
+        (
+            f"/relationship/contacts/{_WILDCARD}",
+            "/api/relationship/contacts/{contact_id}",
+            True,
+        ),
+        # A literal+wildcard segment (`devices${qs}`) keeps its literal prefix.
+        (f"/home/devices{_WILDCARD}", "/api/home/entities", False),
+        (f"/home/devices{_WILDCARD}", "/api/home/devices", True),
     ],
 )
 def test_path_matches_examples(fe_template: str, api_path: str, expected: bool):
@@ -921,6 +1161,104 @@ def test_scan_finds_the_circles_groups_call(client_ts_text: str):
     assert "getGroups" in contracts
     assert contracts["getGroups"].paths == ["/relationship/groups"]
     assert contracts["getGroups"].query_names >= {"offset", "limit"}
+
+
+# The 12 functions that built their path as `${base}?${qs}` from a local const
+# and so used to resolve to a bare whole-path wildcard (silently unchecked).
+_LOCAL_CONST_PATH_FUNCTIONS = (
+    "getButlerSessions",
+    "getButlerHourlyActivity",
+    "getButlerDailyActivity",
+    "getButlerSessionKinds",
+    "getButlerLatencyStats",
+    "getButlerFrictionSummary",
+    "getButlerActivityFeed",
+    "getButlerNotifications",
+    "getIssueOccurrences",
+    "getAuditIssueGroup",
+    "getMedicationDoses",
+    "getMedicationAdherence",
+)
+
+
+def test_every_resolved_template_names_a_route(fe_contracts: dict[str, FunctionContract]):
+    """No contract counts as resolved unless each template carries literal text."""
+    assert [
+        (name, template)
+        for name, contract in fe_contracts.items()
+        for template in contract.paths
+        if not _has_literal_segment(template)
+    ] == []
+    assert set(_LOCAL_CONST_PATH_FUNCTIONS) <= set(fe_contracts)
+
+
+def test_scan_substitutes_local_consts_inside_template_literals():
+    text = (
+        "export function listSessions(name: string, params?: P) {\n"
+        "  const qs = sp.toString();\n"
+        "  const base = `/butlers/${encodeURIComponent(name)}/sessions`;\n"
+        "  const path = qs ? `${base}?${qs}` : base;\n"
+        "  return apiFetch<R>(path);\n"
+        "}\n"
+        "export function feedback(id: string, verdict: V) {\n"
+        '  const action = verdict === "a" ? "snooze" : verdict === "b" ? "mute" : "useful";\n'
+        '  return apiFetch<R>(`/insights/${id}/${action}`, { method: "POST" });\n'
+        "}\n"
+        "export function opaque(path: string) {\n"
+        "  return apiFetch<R>(`${path}`);\n"
+        "}\n"
+    )
+    contracts = _scan_client_ts(text)
+    assert contracts["listSessions"].paths == [f"/butlers/{_WILDCARD}/sessions"]
+    assert contracts["feedback"].paths == [
+        f"/insights/{_WILDCARD}/snooze",
+        f"/insights/{_WILDCARD}/mute",
+        f"/insights/{_WILDCARD}/useful",
+    ]
+    assert contracts["feedback"].method == "post"
+    # A whole-path wildcard names no route, so it is not a resolved contract.
+    assert "opaque" not in contracts
+
+
+def test_scan_fails_loudly_when_a_template_exceeds_the_candidate_cap():
+    """Truncating the expansion would drop, and so never check, some branches."""
+    five_way = '"a" : v === 2 ? "b" : v === 3 ? "c" : v === 4 ? "d" : "e"'
+    text = (
+        "export function probe(v: number) {\n"
+        f"  const x = v === 1 ? {five_way};\n"
+        f"  const y = v === 1 ? {five_way};\n"
+        "  return apiFetch<R>(`/probe/${x}/${y}`);\n"
+        "}\n"
+    )
+    with pytest.raises(TemplateExpansionError, match="probe"):
+        _scan_client_ts(text)
+
+
+def test_check_a_reports_param_and_method_mismatches_against_a_literal_sibling():
+    """The bu-tllj5r false negative: GET/PATCH `/contacts/${id}` against only GET `/contacts/overdue`."""
+    text = (
+        "export function getContact(id: string) {\n"
+        "  return apiFetch<C>(`/relationship/contacts/${encodeURIComponent(id)}`);\n"
+        "}\n"
+        "export function patchContact(id: string, body: B) {\n"
+        "  return apiFetch<C>(`/relationship/contacts/${encodeURIComponent(id)}`, {\n"
+        '    method: "PATCH", body: JSON.stringify(body),\n'
+        "  });\n"
+        "}\n"
+        "export function getOverdueContacts() {\n"
+        '  return apiFetch<O>("/relationship/contacts/overdue");\n'
+        "}\n"
+    )
+    only_overdue = {"/api/relationship/contacts/overdue": {"get": {"parameters": []}}}
+    offenders = _check_a_offenders(_scan_client_ts(text), only_overdue)
+    assert sorted(offender.split(":")[0] for offender in offenders) == [
+        "getContact",
+        "patchContact",
+    ]
+    # Method-aware: a GET-only route never satisfies a PATCH caller.
+    get_only_param = {"/api/relationship/contacts/{contact_id}": {"get": {"parameters": []}}}
+    offenders = _check_a_offenders(_scan_client_ts(text), {**only_overdue, **get_only_param})
+    assert [offender.split(":")[0] for offender in offenders] == ["patchContact"]
 
 
 def test_extract_functions_skips_bodyless_overload_signature():
@@ -952,3 +1290,45 @@ def test_extract_local_consts_stops_at_statement_semicolon_not_body_end():
     body = 'const path = someCond ? "/a" : "/b"; apiFetch(path);'
     consts = _extract_local_consts(body)
     assert consts["path"] == 'someCond ? "/a" : "/b"'
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        "",
+        ": Promise<{ status: string }>",
+        ": { a: string }",
+        ": Promise<ApiResponse<{ id: string; tags: { t: string }[] }>>",
+        ": Promise<A | { b: () => { c: C } }>",
+    ],
+    ids=["none", "promise-object", "bare-object", "nested-generic", "union-arrow"],
+)
+def test_extract_functions_skips_inline_object_return_types(annotation: str):
+    """bu-i8q4iu: an inline object type in the return annotation is not the body."""
+    text = (
+        f"export async function probe(id: string){annotation} {{\n"
+        '  return apiFetch<R>(`/probe/${id}`, { method: "DELETE" });\n'
+        "}\n"
+    )
+    contracts = _scan_client_ts(text)
+    assert contracts["probe"].paths == [f"/probe/{_WILDCARD}"]
+    assert contracts["probe"].method == "delete"
+
+
+def test_census_attributes_generic_unparseable_and_repeated_calls_by_name():
+    """Generic declarations are seen; unresolvable or second calls are named."""
+    text = (
+        "export function generic<T>(id: string): Promise<{ id: T }> {\n"
+        "  return apiFetch<T>(`/generic/${id}`);\n"
+        "}\n"
+        "export function opaque() {\n"
+        "  return apiFetch<R>(buildPath());\n"
+        "}\n"
+        "export async function twice(id: string) {\n"
+        "  await apiFetch<R>(`/twice/${id}`);\n"
+        "  return apiFetch<R>(`/twice/${id}/again`);\n"
+        "}\n"
+    )
+    assert _apifetch_call_sites(text) == {"generic": 1, "opaque": 1, "twice": 2}
+    assert "generic" in _scan_client_ts(text)
+    assert _unresolved_apifetch_functions(text) == {"opaque", "twice"}

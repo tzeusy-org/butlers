@@ -81,6 +81,8 @@ vi.mock("@/api/index.ts", () => ({
   getApprovalsFlat: vi.fn(),
   getApprovalsHistory: vi.fn(),
   getApprovalsPolicy: vi.fn(),
+  getUnroutableAttention: vi.fn(),
+  retryUnroutableAttention: vi.fn(),
   getApprovalDetail: vi.fn(),
   approveApproval: vi.fn(),
   denyApproval: vi.fn(),
@@ -128,10 +130,12 @@ import {
   getApprovalsFlat,
   getApprovalsHistory,
   getApprovalsPolicy,
+  getUnroutableAttention,
   getAutonomySuggestions,
   getRulePromotionStats,
   getRulePromotionSuggestions,
   retryApproval,
+  retryUnroutableAttention,
   revokeApprovalRule,
   createApprovalRuleFromAction,
   updateApprovalsPolicy,
@@ -249,6 +253,7 @@ function resetPageMocks() {
       promoted_rule_spot_checks: 0,
     }) as AnyMock,
   );
+  vi.mocked(getUnroutableAttention).mockReturnValue(makeApiResponse([]) as AnyMock);
 }
 
 // ---------------------------------------------------------------------------
@@ -400,6 +405,102 @@ describe("ApprovalsPage — load-more", () => {
 
     expect(container.textContent).toContain("No pending approvals");
     expect(findButton(container, "Load more")).toBeUndefined();
+  });
+
+  it("shows unroutable questions on the Command surface and retries once", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getUnroutableAttention).mockReturnValue(
+      makeApiResponse([
+        {
+          id: "dead-letter-1",
+          question: "Which butler owns this?",
+          failure_reason: "No target acknowledged the route",
+          created_at: "2026-09-13T01:00:00Z",
+        },
+      ]) as AnyMock,
+    );
+    vi.mocked(retryUnroutableAttention).mockReturnValue(
+      makeApiResponse({
+        dead_letter_id: "dead-letter-1",
+        replayed_request_id: "replay-1",
+        status: "queued",
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Retry") !== undefined);
+
+    expect(container.textContent).toContain("Unroutable: Which butler owns this?");
+    expect(container.textContent).toContain("No target acknowledged the route");
+    expect(container.querySelector('.attention-row[data-tone="red"]')).not.toBeNull();
+    await act(async () => {
+      findButton(container, "Retry")?.click();
+      await flush();
+    });
+
+    expect(retryUnroutableAttention).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(retryUnroutableAttention).mock.calls[0]?.[0]).toBe("dead-letter-1");
+  });
+
+  it("names an unroutable-source failure and recovers through its retry", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getUnroutableAttention)
+      .mockRejectedValueOnce(new Error("unroutable source offline"))
+      .mockReturnValueOnce(
+        makeApiResponse([
+          {
+            id: "dead-letter-recovered",
+            question: "Can this route now?",
+            failure_reason: "No target acknowledged the first attempt",
+            created_at: "2026-09-13T01:00:00Z",
+          },
+        ]) as AnyMock,
+      );
+
+    renderPage();
+    await flushUntil(
+      () => container.querySelector('[data-testid="unroutable-attention-degraded"]') !== null,
+    );
+
+    const degraded = container.querySelector(
+      '[data-testid="unroutable-attention-degraded"]',
+    );
+    expect(degraded?.textContent).toContain("Unroutable messages: unavailable");
+    await act(async () => {
+      degraded?.querySelector("button")?.click();
+      await flush();
+    });
+    await flushUntil(() => container.textContent?.includes("Can this route now?") === true);
+
+    expect(getUnroutableAttention).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-testid="unroutable-attention-list"]')).not.toBeNull();
+  });
+
+  it("retains an unroutable row and re-enables Retry when replay fails", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getUnroutableAttention).mockReturnValue(
+      makeApiResponse([
+        {
+          id: "dead-letter-failed-retry",
+          question: "Please try me again",
+          failure_reason: "No target acknowledged the route",
+          created_at: "2026-09-13T01:00:00Z",
+        },
+      ]) as AnyMock,
+    );
+    vi.mocked(retryUnroutableAttention).mockRejectedValue(new Error("Retry unavailable"));
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Retry") !== undefined);
+    await act(async () => {
+      findButton(container, "Retry")?.click();
+      await flush();
+    });
+    await flushUntil(() => vi.mocked(toast.error).mock.calls.length === 1);
+
+    expect(toast.error).toHaveBeenCalledWith("Retry unavailable");
+    expect(container.textContent).toContain("Unroutable: Please try me again");
+    expect(findButton(container, "Retry")).toHaveProperty("disabled", false);
   });
 
   it("labels the shared policy and rejects an incomplete quiet-hour pair locally", async () => {
@@ -565,7 +666,10 @@ describe("ApprovalsPage — load-more", () => {
 
   it("renders the degraded note above the (incomplete) rows when a partial fan-out still returned rows (bu-jad4j.4)", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
-      makeDegradedResponse([makeSummary("a1", "send_email")], ["finance"]) as AnyMock,
+      makeDegradedResponse(
+        [{ ...makeSummary("a1", "send_email"), origin: "prepared" }],
+        ["finance"],
+      ) as AnyMock,
     );
 
     renderPage();
@@ -576,6 +680,8 @@ describe("ApprovalsPage — load-more", () => {
     // Both the note and the surviving row render.
     expect(container.querySelector('[data-testid="approvals-queue-degraded"]')).not.toBeNull();
     expect(container.textContent).toContain("send email");
+    expect(container.querySelector('[data-testid="rail-item"] [aria-label="Approval origin: Prepared"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="approvals-queue-degraded"]')?.getAttribute("role")).toBe("alert");
   });
 
   it("keeps the honest empty state for a reachable-but-empty queue (mutation guard, bu-jad4j.4)", async () => {
@@ -728,7 +834,7 @@ describe("ApprovalsPage - failed-push indicator + callback-secret banner (bu-p5s
 
     const badge = container.querySelector('[data-testid="rail-item-push-failed"]');
     expect(badge).not.toBeNull();
-    expect(badge?.textContent).toContain("Owner not notified");
+    expect(badge?.textContent).toContain("Legacy push failed");
     expect(
       container.querySelector('[data-testid="rail-item"][data-push-failed="true"]'),
     ).not.toBeNull();
@@ -750,6 +856,30 @@ describe("ApprovalsPage - failed-push indicator + callback-secret banner (bu-p5s
     expect(
       container.querySelector('[data-testid="rail-item"][data-push-failed]'),
     ).toBeNull();
+
+    // Spec: REQ-dashboard-approvals-004; classification is independent of
+    // status and notification. Refresh through the real query consumers.
+    for (const origin of ["prepared", null, undefined, "legacy", "PREPARED", true, {}]) {
+      vi.mocked(getApprovalsFlat).mockReturnValue(
+        makeApiResponse([{ ...makeSummary("a1"), origin, push_failed: false }]) as AnyMock,
+      );
+      vi.mocked(getApprovalDetail).mockReturnValue(
+        makeApiResponse({ ...(await makePendingDetail("a1")).data, origin }) as AnyMock,
+      );
+      await act(async () => {
+        await qc.invalidateQueries({ queryKey: ["approvals", "flat"] });
+        await qc.invalidateQueries({ queryKey: ["approvals", "detail"] });
+        await flush();
+      });
+      const label = origin === "prepared" ? "Prepared" : "Origin unknown";
+      expect(container.querySelectorAll(`[aria-label="Approval origin: ${label}"]`)).toHaveLength(2);
+      expect(container.querySelector('[data-testid="rail-item"]')?.textContent).toContain("pending");
+      expect(container.querySelector('[data-testid="dossier-push-failed"]')).toBeNull();
+      expect(container.querySelector('[data-testid="rail-item-push-failed"]')).toBeNull();
+      expect(approveApproval).not.toHaveBeenCalled();
+      expect(denyApproval).not.toHaveBeenCalled();
+      expect(deferApproval).not.toHaveBeenCalled();
+    }
   });
 
   it("renders the dossier push-failed alert when the selected approval's push failed", async () => {
@@ -773,7 +903,127 @@ describe("ApprovalsPage - failed-push indicator + callback-secret banner (bu-p5s
 
     const alertEl = container.querySelector('[data-testid="dossier-push-failed"]');
     expect(alertEl).not.toBeNull();
-    expect(alertEl?.textContent).toContain("never notified");
+    expect(alertEl?.textContent).toContain("Legacy approval push reported failed");
+    expect(alertEl?.textContent).not.toContain("never attempted");
+
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([
+        { ...makeSummary("a1"), origin: "prepared", push_failed: true },
+      ]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse({
+        ...(await makePendingDetail("a1")).data,
+        origin: "prepared",
+        push_outcome: "failed",
+        push_failed: true,
+      }) as AnyMock,
+    );
+    await act(async () => {
+      await qc.invalidateQueries({ queryKey: ["approvals", "flat"] });
+      await qc.invalidateQueries({ queryKey: ["approvals", "detail"] });
+      await flush();
+    });
+    expect(container.querySelectorAll('[aria-label="Approval origin: Prepared"]')).toHaveLength(2);
+    expect(container.querySelector('[data-testid="rail-item-push-failed"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="dossier-push-failed"]')?.getAttribute("role")).toBe("alert");
+  });
+
+  it("links the target contact to its entity page, not the retired contact route", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a1", "send_email")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse({
+        ...(await makePendingDetail("a1")).data,
+        target_contact: { id: "e-1", name: "Alice", roles: [] },
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => container.textContent?.includes("Alice") ?? false);
+
+    const link = Array.from(container.querySelectorAll("a")).find(
+      (anchor) => anchor.textContent === "Alice",
+    );
+    expect(link?.getAttribute("href")).toBe("/entities/e-1");
+    expect(container.querySelector('a[href^="/contacts/"]')).toBeNull();
+  });
+
+  it("renders durable ambiguous delivery as an accessible alert without sensitive fields", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("ambiguous-1")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makePendingDetail("ambiguous-1").then((response) => ({
+        ...response,
+        data: {
+          ...response.data,
+          delivery: {
+            source: "durable",
+            state: "ambiguous",
+            mode: "single",
+            generation: 2,
+            last_reason_code: "provider_outcome_unknown",
+            attempt_count: 1,
+            next_eligible_at: null,
+            stuck: true,
+            ambiguous: true,
+            legacy_outcome: null,
+            cohort: null,
+          },
+        },
+      })) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () => container.querySelector('[data-testid="approval-delivery-truth"]') !== null,
+    );
+
+    const truth = container.querySelector('[data-testid="approval-delivery-truth"]');
+    expect(truth?.getAttribute("role")).toBe("alert");
+    expect(truth?.textContent).toContain("Delivery uncertain");
+    expect(truth?.textContent).toContain("Generation 2 · single");
+    expect(truth?.textContent).toContain("provider outcome unknown");
+    expect(truth?.textContent).not.toContain("recipient");
+    expect(truth?.textContent).not.toContain("callback");
+  });
+
+  it("labels absent durable truth as unavailable legacy evidence", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("legacy-unknown")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makePendingDetail("legacy-unknown").then((response) => ({
+        ...response,
+        data: {
+          ...response.data,
+          delivery: {
+            source: "unknown",
+            state: null,
+            mode: null,
+            generation: null,
+            last_reason_code: null,
+            attempt_count: 0,
+            next_eligible_at: null,
+            stuck: false,
+            ambiguous: false,
+            legacy_outcome: null,
+            cohort: null,
+          },
+        },
+      })) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () => container.querySelector('[data-testid="approval-delivery-truth"]') !== null,
+    );
+
+    const truth = container.querySelector('[data-testid="approval-delivery-truth"]');
+    expect(truth?.textContent).toContain("Legacy delivery evidence unavailable");
+    expect(truth?.textContent).not.toContain("never attempted");
   });
 
   it("renders the callback-secret degraded banner when callback_secret_configured is false", async () => {
@@ -898,6 +1148,7 @@ function makePendingDetail(id: string) {
     expires_at: null,
     why: null,
     evidence: [],
+    call_preview: { title: "Send email", facts: [{ label: "Body", value: "Reviewed email" }], displayed_call: { tool_name: "send_email", args_digest: "a".repeat(64) } },
     proposed_action: {
       tool_name: "send_email",
       tool_args: {},
@@ -1790,7 +2041,7 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
         },
         {
           id: "9510c225-4764-4ef5-8a0f-3d62be654b28",
-          name: "Acme Research & Technologies",
+          name: "Acme Research Corp & Technologies",
           entity_type: "organization",
           roles: [],
         },
@@ -1804,7 +2055,7 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     );
 
     expect(container.textContent).toContain("Referenced Entities");
-    expect(container.textContent).toContain("Acme Research & Technologies");
+    expect(container.textContent).toContain("Acme Research Corp & Technologies");
     expect(container.textContent).toContain("Tze How Lee");
     // Object UUID is no longer presented bare — the name resolves it.
     expect(container.textContent).toContain("organization");
@@ -1921,10 +2172,17 @@ describe("ApprovalsPage — /approvals/:id routing (bu-86c4c.12)", () => {
 
   it("selects the approval named in the URL, not the first-arrived item", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
-      makeApiResponse([makeSummary("a1"), makeSummary("a2")]) as AnyMock,
+      makeApiResponse([
+        makeSummary("a1"),
+        { ...makeSummary("a2"), origin: "prepared" },
+      ]) as AnyMock,
     );
     vi.mocked(getApprovalDetail).mockImplementation(
-      ((id: string) => makePendingDetail(id)) as AnyMock,
+      ((id: string) =>
+        makePendingDetail(id).then((response) => ({
+          ...response,
+          data: { ...response.data, origin: id === "a2" ? "prepared" : null },
+        }))) as AnyMock,
     );
 
     renderAt("/approvals/a2");
@@ -1932,6 +2190,26 @@ describe("ApprovalsPage — /approvals/:id routing (bu-86c4c.12)", () => {
 
     expect(getApprovalDetail).toHaveBeenCalledWith("a2");
     expect(getApprovalDetail).not.toHaveBeenCalledWith("a1");
+    await flushUntil(() => container.querySelectorAll('[aria-label="Approval origin: Prepared"]').length === 2);
+    expect(container.querySelector('[data-approval-id="a1"] [aria-label="Approval origin: Origin unknown"]')).not.toBeNull();
+    expect(container.querySelector('[data-approval-id="a2"] [aria-label="Approval origin: Prepared"]')).not.toBeNull();
+
+    vi.mocked(getApprovalDetail).mockClear();
+    act(() => root.unmount());
+    root = createRoot(container);
+    renderAt("/approvals/a2?review_source=messenger");
+    await flushUntil(() => vi.mocked(getApprovalDetail).mock.calls.length > 0);
+    expect(getApprovalDetail).toHaveBeenCalledWith("a2", "messenger");
+    expect(getApprovalDetail).not.toHaveBeenCalledWith("a1");
+    await flushUntil(() => qc.getQueryState(["approvals", "detail", "a2", "review-source", "messenger"])?.fetchStatus === "idle");
+    // An ordinary cached dossier cannot substitute for a refused source-bound GET.
+    vi.mocked(getApprovalDetail).mockRejectedValue(new Error("Review source unavailable"));
+    act(() => root.unmount());
+    root = createRoot(container);
+    renderAt("/approvals/a2?review_source=messenger");
+    await flushUntil(() => container.textContent?.includes("failed to load dossier") === true);
+    expect(container.textContent).toContain("failed to load dossier");
+    expect(container.querySelector('[data-testid="approval-dossier-risk"]')).toBeNull();
   });
 
   it("keeps the direct-link workspace from collapsing behind policy/history", async () => {
@@ -3720,7 +3998,7 @@ describe("ApprovalsPage — keyboard triage (bu-86c4c.14)", () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
 
-    expect(approveApproval).toHaveBeenCalledWith("a1");
+    expect(approveApproval).toHaveBeenCalledWith("a1", { displayed_call: { tool_name: "send_email", args_digest: "a".repeat(64) } });
   });
 
   it("undo (clicking the scheduled rail item) cancels the decision before it fires", async () => {

@@ -107,7 +107,7 @@ export function ContactPeoplePicker({
                 data-testid="people-remove-chip"
                 disabled={disabled}
                 onClick={() => removePerson(person.entity_id)}
-                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[3px] text-[var(--mfg)] transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 disabled:opacity-50"
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[3px] text-[var(--mfg)] transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-50"
               >
                 ×
               </button>

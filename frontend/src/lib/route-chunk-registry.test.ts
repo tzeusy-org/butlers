@@ -1,12 +1,26 @@
 /**
  * Tests for the Sidebar path -> route-chunk-loader map (bu-ep4ks.15).
+ *
+ * "Every loader resolves to a page module with a default component export" is
+ * a compile-time invariant, not a runtime one (bu-y9zpp7): shell-capability.ts
+ * wraps each loader in `page(loader: () => Promise<{ default: ComponentType }>)`,
+ * so a missing module or a module without a default component export fails
+ * `tsc -b` (and `npm run build`). The type assertion below pins that loader
+ * type so the gate cannot be silently widened. Importing every page graph at
+ * runtime here was redundant and load-bound, and it timed out under the full
+ * suite.
  */
 
-import { describe, expect, it } from "vitest";
+import type { ComponentType } from "react";
+import { describe, expect, expectTypeOf, it } from "vitest";
 
 import { navSections } from "@/components/layout/nav-config";
 import { SHELL_CAPABILITIES } from "@/lib/shell-capability";
-import { ROUTE_CHUNK_LOADERS, resolveRouteChunkLoader } from "./route-chunk-registry";
+import {
+  type ChunkLoader,
+  ROUTE_CHUNK_LOADERS,
+  resolveRouteChunkLoader,
+} from "./route-chunk-registry";
 
 /** Every path the Sidebar can actually navigate to, flat vs. group children. */
 function allSidebarPaths(): string[] {
@@ -36,19 +50,9 @@ describe("ROUTE_CHUNK_LOADERS", () => {
     expect(Object.keys(ROUTE_CHUNK_LOADERS).sort()).toEqual(expected.sort());
   });
 
-  it(
-    "every registered loader resolves to a module with a default export",
-    async () => {
-      // Real page modules -- each pulls in its full dependency chain, so
-      // this is inherently slower than a typical unit test, especially
-      // alongside the rest of a large concurrent suite run.
-      for (const [path, loader] of Object.entries(ROUTE_CHUNK_LOADERS)) {
-        const mod = (await loader()) as { default?: unknown };
-        expect(mod.default, `loader for ${path} has no default export`).toBeDefined();
-      }
-    },
-    20_000,
-  );
+  it("types every loader as resolving to a default component export (checked by tsc -b)", () => {
+    expectTypeOf<ChunkLoader>().toEqualTypeOf<() => Promise<{ default: ComponentType }>>();
+  });
 });
 
 describe("resolveRouteChunkLoader", () => {

@@ -31,7 +31,7 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import DBAPIError
 
 from alembic import command
-from butlers.migrations import _build_alembic_config, run_migrations
+from butlers.migrations import _build_alembic_config, get_chain_head, run_migrations
 from butlers.testing.migration import (
     assert_at_chain_head,
     create_migration_db,
@@ -569,15 +569,15 @@ async def test_core_only_database_has_guarded_outbox_without_specialist_schema(
                 AND owner_role.rolbypassrls = false AS constrained_owner,
             model_breaker.prosecdef
                 AND model_breaker.proconfig = ARRAY[
-                    'search_path=pg_catalog, public, pg_temp'
+                    'search_path=pg_catalog, pg_temp'
                 ]::text[] AS fixed_definer_path,
             fleet_halt.prosecdef
                 AND fleet_halt.proconfig = ARRAY[
-                    'search_path=pg_catalog, public, pg_temp'
+                    'search_path=pg_catalog, pg_temp'
                 ]::text[] AS fixed_fleet_path,
             lease_guard.prosecdef
                 AND lease_guard.proconfig = ARRAY[
-                    'search_path=pg_catalog, public, pg_temp'
+                    'search_path=pg_catalog, pg_temp'
                 ]::text[] AS fixed_lease_guard_path,
             operator_upgrade.prosecdef
                 AND pg_get_userbyid(operator_upgrade.proowner)
@@ -1520,17 +1520,27 @@ def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_ac
         for target_schema, (returncode, _stdout, stderr) in downgrade_results.items()
         if returncode != 0
     }
-    assert set(failed_downgrades) == set(target_schemas)
-    assert all(
-        "core_198 downgrade requires trusted bootstrap rollback interface" in stderr
-        for stderr in failed_downgrades.values()
+    downgrade_diagnostics = "\n".join(
+        f"{target_schema}: returncode={returncode}\n{stderr}"
+        for target_schema, (returncode, _stdout, stderr) in downgrade_results.items()
     )
+    assert set(failed_downgrades) == set(target_schemas), downgrade_diagnostics
+    assert all(
+        "protected core_198 rollback preflight failed" in stderr
+        for stderr in failed_downgrades.values()
+    ), downgrade_diagnostics
 
     engine = create_engine(bootstrap_url)
     try:
         with engine.connect() as conn:
             for target_schema in target_schemas:
-                assert_at_chain_head(conn, target_schema)
+                # The current-head preflight must refuse before core_231's
+                # autocommit downgrade can commit any newer migration or stamp.
+                # Derive the head so a later serial migration does not turn this
+                # rollback-safety assertion into a stale revision literal.
+                assert conn.execute(
+                    text(f"SELECT version_num FROM {_quote_ident(target_schema)}.alembic_version")
+                ).scalar_one() == get_chain_head("core")
             for relation in (
                 "public.runtime_attention_outbox",
                 "public.runtime_attention_delivery_lease",
@@ -1540,6 +1550,23 @@ def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_ac
                 assert conn.execute(
                     text(f"SELECT to_regclass('{relation}') IS NOT NULL")
                 ).scalar_one()
+    finally:
+        engine.dispose()
+    assert _has_bootstrap_finalized_runtime_attention_interface(bootstrap_url)
+
+    reapply_results = _run_concurrent_core_head_upgrades(db_url, target_schemas)
+    failed_reapplications = {
+        target_schema: stderr
+        for target_schema, (returncode, _stdout, stderr) in reapply_results.items()
+        if returncode != 0
+    }
+    assert not failed_reapplications, "\n".join(failed_reapplications.values())
+
+    engine = create_engine(bootstrap_url)
+    try:
+        with engine.connect() as conn:
+            for target_schema in target_schemas:
+                assert_at_chain_head(conn, target_schema)
     finally:
         engine.dispose()
     assert _has_bootstrap_finalized_runtime_attention_interface(bootstrap_url)
@@ -2103,14 +2130,24 @@ def test_nonempty_outbox_survives_a_refused_core_197_downgrade(
         engine.dispose()
 
     config = _build_alembic_config(bootstrap_url, chains=["core"])
-    with pytest.raises(DBAPIError, match="trusted bootstrap rollback interface"):
+    with pytest.raises(RuntimeError, match="protected core_198 rollback preflight failed"):
         command.downgrade(config, "core_197")
 
-    _upgrade_to_core_head(db_url)
     engine = create_engine(bootstrap_url)
     try:
         with engine.connect() as conn:
+            assert_at_chain_head(conn)
             assert conn.execute(text(f"SELECT count(*) FROM {_OUTBOX}")).scalar_one() == 1
+            assert conn.execute(
+                text(
+                    "SELECT EXISTS ("
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() "
+                    "AND table_name = 'runtime_config' "
+                    "AND column_name = 'core_groups_narrowing_reason'"
+                    ")"
+                )
+            ).scalar_one()
     finally:
         engine.dispose()
 
@@ -2724,4 +2761,634 @@ def test_init_db_rerun_converges_the_fleet_halt_month_clock(postgres_container) 
                 conn.execute(text(_FLEET_HALT_DEFINITION_SQL)).scalar_one() == fresh_definition
             ), "a migrated database and a fresh bootstrap disagree on the producer body"
     finally:
+        admin.dispose()
+
+
+# ---------------------------------------------------------------------------
+# REQ-butler-control-plane-liveness-007: fleet and overdue-QA condition attention
+# ---------------------------------------------------------------------------
+
+_APPEND_CONDITION = "SELECT public.append_runtime_attention_condition($1)"
+_CONDITION_OUTBOX_COUNT = (
+    "SELECT count(*) FROM public.runtime_attention_outbox WHERE source = 'control_plane_condition'"
+)
+
+
+def _asyncpg_url(url: str) -> str:
+    return url.replace("postgresql+psycopg2://", "postgresql://", 1)
+
+
+def _fresh_condition_database(postgres_container) -> tuple[str, str]:
+    """A fresh core-head database with the v4 condition interface installed."""
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    _upgrade_to_core_head(db_url)
+    return db_url, migration_bootstrap_db_url(postgres_container, db_name)
+
+
+async def _insert_condition(
+    admin: asyncpg.Pool,
+    source: str,
+    fingerprint: str,
+    *,
+    age: timedelta = timedelta(minutes=10),
+    state: str = "open",
+    episode: int = 1,
+) -> uuid.UUID:
+    resolved = state == "resolved"
+    return await admin.fetchval(
+        """
+        INSERT INTO public.infra_conditions (
+            source, fingerprint, episode, state, first_detected_at, last_confirmed_at,
+            resolved_at, recovered_after_s, summary, metadata
+        ) VALUES (
+            $1, $2, $3, $4, now() - $5::interval, now(),
+            CASE WHEN $6 THEN now() END, CASE WHEN $6 THEN 1.0 END,
+            'general, health: 127.0.0.1:41101 refused', '{"affected": [{"name": "general"}]}'
+        ) RETURNING id
+        """,
+        source,
+        fingerprint,
+        episode,
+        state,
+        age,
+        resolved,
+    )
+
+
+def test_condition_producer_appends_one_safe_episode_per_condition_even_after_retention(
+    postgres_container,
+) -> None:
+    """REQ-butler-control-plane-liveness-007: one idempotent, content-blind episode.
+
+    Grace, concurrent producers, the fixed identity allowlist, the Switchboard-only
+    producer grant, the CHECK/unique backstops against a forged row, and the
+    condition-side marker that outlives outbox retention -- all on real PostgreSQL.
+    """
+    from butlers.core.fleet_conditions import (
+        FLEET_FINGERPRINT,
+        FLEET_SOURCE,
+        QA_PATROL_OVERDUE_FINGERPRINT,
+        QA_PATROL_SOURCE,
+        QA_PATROL_STOPPED_FINGERPRINT,
+    )
+
+    db_url, bootstrap_url = _fresh_condition_database(postgres_container)
+
+    async def scenario() -> None:
+        admin = await asyncpg.create_pool(
+            _asyncpg_url(bootstrap_url), min_size=1, max_size=2, init=_decode_jsonb
+        )
+        pool = await asyncpg.create_pool(
+            _asyncpg_url(db_url), min_size=1, max_size=8, init=_decode_jsonb
+        )
+        try:
+            fleet = await _insert_condition(admin, FLEET_SOURCE, FLEET_FINGERPRINT)
+            qa = await _insert_condition(
+                admin, QA_PATROL_SOURCE, QA_PATROL_OVERDUE_FINGERPRINT, age=timedelta(0)
+            )
+            stopped = await _insert_condition(
+                admin, QA_PATROL_SOURCE, QA_PATROL_STOPPED_FINGERPRINT
+            )
+            resolved = await _insert_condition(
+                admin, FLEET_SOURCE, FLEET_FINGERPRINT, state="resolved", episode=2
+            )
+            unrelated = await _insert_condition(admin, "infra_state", "not-a-paging-identity")
+
+            # The migration login can CREATE in public.  A better-matching
+            # overload planted there must never run inside the v4 definers,
+            # which execute as runtime_attention_outbox_owner.
+            await pool.execute(
+                """
+                CREATE FUNCTION public.hashtextextended(text, integer) RETURNS bigint
+                LANGUAGE plpgsql AS $hijack$
+                BEGIN
+                    RAISE EXCEPTION 'hijacked as %', current_user;
+                END;
+                $hijack$
+                """
+            )
+            # Concurrent controller scans converge on one episode.
+            ids = await asyncio.gather(
+                *(_call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, fleet) for _ in range(8))
+            )
+            assert len(set(ids)) == 1 and ids[0] is not None
+            fleet_episode = ids[0]
+            assert await admin.fetchval(
+                """
+                SELECT bool_and(proconfig = ARRAY['search_path=pg_catalog, pg_temp']::text[])
+                FROM pg_proc
+                WHERE oid IN (
+                    'public.append_runtime_attention_condition(uuid)'::regprocedure,
+                    'public.observe_runtime_attention_conditions()'::regprocedure
+                )
+                """
+            )
+
+            assert await _call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, fleet) == (
+                fleet_episode
+            )
+
+            # Inside its attention grace, and once resolved, nothing is due.
+            assert await _call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, qa) is None
+            assert await _call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, resolved) is None
+            await admin.execute(
+                "UPDATE public.infra_conditions "
+                "SET first_detected_at = now() - interval '6 minutes', state = 'aging' "
+                "WHERE id = $1",
+                qa,
+            )
+            qa_episode = await _call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, qa)
+            assert qa_episode is not None and qa_episode != fleet_episode
+
+            # Only the fixed fleet and overdue-QA identities page.
+            for not_paging in (stopped, unrelated):
+                with pytest.raises(asyncpg.InvalidParameterValueError):
+                    await _call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, not_paging)
+            with pytest.raises(asyncpg.NoDataFoundError):
+                await _call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, uuid.uuid4())
+
+            rows = {
+                row["id"]: row
+                for row in await admin.fetch(
+                    "SELECT id, lifecycle_state, source_snapshot, payload "
+                    "FROM public.runtime_attention_outbox WHERE source = 'control_plane_condition'"
+                )
+            }
+            assert set(rows) == {fleet_episode, qa_episode}
+            assert rows[fleet_episode]["lifecycle_state"] == "pending"
+            assert rows[fleet_episode]["payload"] == {
+                "classification": "fleet_control_unhealthy",
+                "door": "/system",
+            }
+            assert rows[qa_episode]["payload"] == {
+                "classification": "qa_patrol_overdue",
+                "door": "/system",
+            }
+            snapshot = rows[fleet_episode]["source_snapshot"]
+            assert set(snapshot) == {"condition_id", "condition_kind", "first_detected_at"}
+            assert snapshot["condition_id"] == str(fleet)
+            assert snapshot["condition_kind"] == "fleet_control"
+            stored = json.dumps([dict(row) for row in rows.values()], default=str)
+            for leaked in ("general", "127.0.0.1", "refused", "affected"):
+                assert leaked not in stored
+
+            # Only Switchboard's active role may produce; no other principal.
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await pool.fetchval(_APPEND_CONDITION, fleet)
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await _call_as_role(pool, _MODEL_PRODUCER, _APPEND_CONDITION, fleet)
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await _call_as_role(
+                    pool,
+                    _SWITCHBOARD,
+                    "SELECT count(*) FROM public.runtime_attention_condition_episodes",
+                )
+
+            # Even bootstrap cannot forge a second episode or an unsafe payload.
+            forged = {
+                "condition_id": str(fleet),
+                "condition_kind": "fleet_control",
+                "first_detected_at": "2026-09-29T00:00:00+00:00",
+            }
+            with pytest.raises(asyncpg.UniqueViolationError):
+                await admin.execute(
+                    "INSERT INTO public.runtime_attention_outbox (source, source_snapshot, payload) "
+                    "VALUES ('control_plane_condition', $1, $2)",
+                    forged,
+                    {"classification": "fleet_control_unhealthy", "door": "/system"},
+                )
+            for snapshot_extra, payload in (
+                ({}, {"classification": "fleet_control_unhealthy", "door": "/elsewhere"}),
+                ({}, {"classification": "general is down", "door": "/system"}),
+                (
+                    {"summary": "general"},
+                    {"classification": "qa_patrol_overdue", "door": "/system"},
+                ),
+                (
+                    {"condition_kind": "qa_patrol_stopped"},
+                    {"classification": "qa_patrol_overdue", "door": "/system"},
+                ),
+            ):
+                with pytest.raises(asyncpg.CheckViolationError):
+                    await admin.execute(
+                        "INSERT INTO public.runtime_attention_outbox (source, source_snapshot, payload) "
+                        "VALUES ('control_plane_condition', $1, $2)",
+                        {**forged, "condition_id": str(uuid.uuid4()), **snapshot_extra},
+                        payload,
+                    )
+
+            # Retention: the outbox row ages out; the active condition keeps its
+            # episode identity and last delivery category and never re-pages.
+            await admin.execute(
+                "DELETE FROM public.runtime_attention_outbox WHERE id = $1", fleet_episode
+            )
+            assert await _call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, fleet) == (
+                fleet_episode
+            )
+            assert await admin.fetchval(_CONDITION_OUTBOX_COUNT) == 1
+            observed = {
+                row["condition_id"]: row
+                for row in await pool.fetch(
+                    "SELECT * FROM public.observe_runtime_attention_conditions()"
+                )
+            }
+            assert observed[fleet]["episode_id"] == fleet_episode
+            assert observed[fleet]["outbox_retained"] is False
+            assert observed[fleet]["lifecycle_state"] == "pending"
+            assert observed[qa]["outbox_retained"] is True
+            assert observed[qa]["condition_kind"] == "qa_patrol_overdue"
+            # The projection is the migration login's alone and forbids SET ROLE.
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await _call_as_role(
+                    pool,
+                    _SWITCHBOARD,
+                    "SELECT count(*) FROM public.observe_runtime_attention_conditions()",
+                )
+        finally:
+            await pool.close()
+            await admin.close()
+
+    asyncio.run(scenario())
+
+
+def test_condition_attention_survives_bootstrap_replay_and_rollback_keeps_evidence(
+    postgres_container,
+) -> None:
+    """REQ-butler-control-plane-liveness-007 AC3: grants, RLS, and rollback on replay.
+
+    A rerun of the real bootstrap strips planted grants and restores the one
+    owner policy without disturbing emitted evidence, and the core_198 finalized
+    proof still holds.  Rollback stops new appends only; a re-enable never
+    re-pages a condition that already has its marker.
+    """
+    from butlers.core.fleet_conditions import (
+        FLEET_FINGERPRINT,
+        FLEET_SOURCE,
+        QA_PATROL_OVERDUE_FINGERPRINT,
+        QA_PATROL_SOURCE,
+    )
+
+    db_url, bootstrap_url = _fresh_condition_database(postgres_container)
+    migration_role = unquote(urlparse(db_url).username or "")
+
+    async def append(pool: asyncpg.Pool, condition_id: uuid.UUID) -> object:
+        return await _call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, condition_id)
+
+    async def open_pools() -> tuple[asyncpg.Pool, asyncpg.Pool]:
+        admin = await asyncpg.create_pool(_asyncpg_url(bootstrap_url), min_size=1, max_size=2)
+        pool = await asyncpg.create_pool(_asyncpg_url(db_url), min_size=1, max_size=2)
+        return admin, pool
+
+    async def before_replay() -> tuple[uuid.UUID, uuid.UUID]:
+        admin, pool = await open_pools()
+        try:
+            fleet = await _insert_condition(admin, FLEET_SOURCE, FLEET_FINGERPRINT)
+            episode = await append(pool, fleet)
+            assert episode is not None
+            # Plant the broad grants an ad-hoc repair might leave behind.
+            await admin.execute(
+                f"GRANT SELECT, UPDATE ON public.runtime_attention_condition_episodes "
+                f"TO {_MODEL_PRODUCER}"
+            )
+            await admin.execute(
+                f"GRANT EXECUTE ON FUNCTION public.append_runtime_attention_condition(uuid) "
+                f"TO {_MODEL_PRODUCER}, {_quote_ident(migration_role)}"
+            )
+            await admin.execute(
+                "CREATE POLICY stray_open ON public.runtime_attention_condition_episodes "
+                "FOR ALL TO PUBLIC USING (true)"
+            )
+            return fleet, episode
+        finally:
+            await pool.close()
+            await admin.close()
+
+    fleet, episode = asyncio.run(before_replay())
+    _rerun_actual_init_db(bootstrap_url, db_url)
+    assert _has_exact_finalized_runtime_attention_interface(db_url)
+
+    async def after_replay() -> None:
+        admin, pool = await open_pools()
+        try:
+            shape = await admin.fetchrow(
+                f"""
+                SELECT
+                    marker.relrowsecurity AND marker.relforcerowsecurity AS forced_rls,
+                    pg_get_userbyid(marker.relowner) AS marker_owner,
+                    ARRAY(
+                        SELECT polname::text FROM pg_policy WHERE polrelid = marker.oid
+                    ) AS policies,
+                    has_table_privilege('{_MODEL_PRODUCER}', marker.oid, 'SELECT') AS producer_reads,
+                    has_function_privilege(
+                        '{_MODEL_PRODUCER}',
+                        'public.append_runtime_attention_condition(uuid)'::regprocedure,
+                        'EXECUTE'
+                    ) AS producer_appends,
+                    has_function_privilege(
+                        '{_SWITCHBOARD}',
+                        'public.append_runtime_attention_condition(uuid)'::regprocedure,
+                        'EXECUTE'
+                    ) AS switchboard_appends,
+                    has_function_privilege(
+                        $1::name,
+                        'public.runtime_attention_upgrade_condition_v4()'::regprocedure,
+                        'EXECUTE'
+                    ) AS migration_upgrades,
+                    has_function_privilege(
+                        $1::name,
+                        'public.observe_runtime_attention_conditions()'::regprocedure,
+                        'EXECUTE'
+                    ) AS migration_observes,
+                    pg_get_userbyid(upgrader.proowner) AS upgrader_owner
+                FROM pg_class AS marker
+                JOIN pg_proc AS upgrader
+                  ON upgrader.oid = 'public.runtime_attention_upgrade_condition_v4()'::regprocedure
+                WHERE marker.oid = 'public.runtime_attention_condition_episodes'::regclass
+                """,
+                migration_role,
+            )
+            assert dict(shape) == {
+                "forced_rls": True,
+                "marker_owner": "runtime_attention_outbox_owner",
+                "policies": ["runtime_attention_condition_episodes_owner"],
+                "producer_reads": False,
+                "producer_appends": False,
+                "switchboard_appends": True,
+                "migration_upgrades": False,
+                "migration_observes": True,
+                "upgrader_owner": "runtime_attention_outbox_owner",
+            }
+            assert await append(pool, fleet) == episode
+
+            # bu-giazn6: the v5 marker sync survives the replay re-fenced.
+            marker_sync = await admin.fetchrow(
+                f"""
+                SELECT
+                    pg_get_userbyid(sync.proowner) AS sync_owner,
+                    sync.prosecdef AS sync_definer,
+                    sync.proconfig AS sync_config,
+                    has_function_privilege('public', sync.oid, 'EXECUTE') AS public_executes,
+                    has_function_privilege($1::name, sync.oid, 'EXECUTE') AS migration_executes,
+                    has_function_privilege('{_SWITCHBOARD}', sync.oid, 'EXECUTE')
+                        AS switchboard_executes,
+                    has_function_privilege(
+                        $1::name,
+                        'public.runtime_attention_upgrade_condition_marker_v5()'::regprocedure,
+                        'EXECUTE'
+                    ) AS migration_upgrades,
+                    ARRAY(
+                        SELECT trigger_row.tgname::text
+                        FROM pg_trigger AS trigger_row
+                        WHERE trigger_row.tgrelid = 'public.runtime_attention_outbox'::regclass
+                          AND trigger_row.tgfoid = sync.oid
+                          AND NOT trigger_row.tgisinternal
+                    ) AS sync_triggers
+                FROM pg_proc AS sync
+                WHERE sync.oid = 'public.runtime_attention_sync_condition_marker()'::regprocedure
+                """,
+                migration_role,
+            )
+            assert dict(marker_sync) == {
+                "sync_owner": "runtime_attention_outbox_owner",
+                "sync_definer": True,
+                "sync_config": ["search_path=pg_catalog, pg_temp"],
+                "public_executes": False,
+                "migration_executes": False,
+                "switchboard_executes": False,
+                "migration_upgrades": False,
+                "sync_triggers": ["runtime_attention_condition_marker_sync_trigger"],
+            }
+
+            # v5 rollback: trigger and function go, the marker stays; only the
+            # bootstrap superuser may run it.
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await pool.execute(
+                    "SELECT public.runtime_attention_deactivate_condition_marker_v5()"
+                )
+            await admin.execute("SELECT public.runtime_attention_deactivate_condition_marker_v5()")
+            assert (
+                await admin.fetchval(
+                    "SELECT to_regprocedure('public.runtime_attention_sync_condition_marker()')"
+                )
+                is None
+            )
+            assert (
+                await admin.fetchval(
+                    "SELECT count(*) FROM pg_trigger "
+                    "WHERE tgname = 'runtime_attention_condition_marker_sync_trigger'"
+                )
+                == 0
+            )
+            assert (
+                await admin.fetchval(
+                    "SELECT episode_id FROM public.runtime_attention_condition_episodes "
+                    "WHERE condition_id = $1",
+                    fleet,
+                )
+                == episode
+            )
+            # A marker left stale while the trigger was absent is backfilled by
+            # the re-offered upgrader, which the migration login may run again.
+            await admin.execute(
+                "UPDATE public.runtime_attention_condition_episodes "
+                "SET last_delivery_state = 'failed' WHERE condition_id = $1",
+                fleet,
+            )
+            await pool.execute("SELECT public.runtime_attention_upgrade_condition_marker_v5()")
+            assert (
+                await admin.fetchval(
+                    "SELECT last_delivery_state FROM public.runtime_attention_condition_episodes "
+                    "WHERE condition_id = $1",
+                    fleet,
+                )
+                == "pending"
+            )
+            assert await admin.fetchval(_CONDITION_OUTBOX_COUNT) == 1
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await pool.execute("SELECT public.runtime_attention_upgrade_condition_marker_v5()")
+
+            # Rollback: no new appends, every emitted row and marker kept.
+            await admin.execute("SELECT public.runtime_attention_deactivate_condition_v4()")
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await pool.execute("SELECT public.runtime_attention_deactivate_condition_v4()")
+            qa = await _insert_condition(admin, QA_PATROL_SOURCE, QA_PATROL_OVERDUE_FINGERPRINT)
+            assert await append(pool, qa) is None
+            assert await append(pool, fleet) is None
+            assert await admin.fetchval(_CONDITION_OUTBOX_COUNT) == 1
+            assert (
+                await admin.fetchval(
+                    "SELECT episode_id FROM public.runtime_attention_condition_episodes "
+                    "WHERE condition_id = $1",
+                    fleet,
+                )
+                == episode
+            )
+
+            # Re-enable: the due QA condition pages once; the fleet one does not re-page.
+            await admin.execute(
+                "UPDATE public.runtime_attention_condition_control SET producer_enabled = true"
+            )
+            assert await append(pool, fleet) == episode
+            assert await append(pool, qa) is not None
+            assert await admin.fetchval(_CONDITION_OUTBOX_COUNT) == 2
+        finally:
+            await pool.close()
+            await admin.close()
+
+    asyncio.run(after_replay())
+
+
+# bu-mms5xl: no runtime-attention definer resolves names through public
+# ---------------------------------------------------------------------------
+
+_PINNED_SEARCH_PATH = "search_path=pg_catalog, pg_temp"
+_RUNTIME_ATTENTION_DEFINERS_SQL = """
+    SELECT p.oid::regprocedure::text AS signature, p.proconfig
+    FROM pg_proc AS p
+    JOIN pg_namespace AS n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public' AND p.prosecdef AND p.proname LIKE '%runtime_attention%'
+    ORDER BY 1
+"""
+# The migration login can CREATE in public; an int4 overload beats the
+# catalog's hashtextextended(text, bigint) for a bare ``0`` seed.
+_DECOY_SQL = """
+    CREATE FUNCTION public.hashtextextended(text, integer) RETURNS bigint
+    LANGUAGE plpgsql AS $decoy$
+    BEGIN
+        RAISE EXCEPTION 'hijacked as %', current_user;
+    END;
+    $decoy$
+"""
+
+
+def test_runtime_attention_definers_never_run_a_public_decoy(postgres_container) -> None:
+    """bu-mms5xl: fleet-halt, model-breaker, and reissue definers ignore public.
+
+    The same database is first regressed to the pre-fix search_path (the shape
+    of every database bootstrapped before this change) to prove the decoy is
+    live, then converged by the real init-db rerun, which must pin every
+    runtime-attention definer idempotently.
+    """
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
+    _upgrade_to_core_head(db_url)
+
+    def definers(conn) -> dict[str, list[str]]:
+        return {
+            row.signature: list(row.proconfig or [])
+            for row in conn.execute(text(_RUNTIME_ATTENTION_DEFINERS_SQL))
+        }
+
+    admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    migration = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as conn:
+            fresh = definers(conn)
+            assert {
+                "append_runtime_attention_fleet_halt()",
+                "append_runtime_attention_model_breaker(bigint)",
+                "reissue_runtime_attention_episode(uuid)",
+                "append_runtime_attention_condition(uuid)",
+                "observe_runtime_attention_conditions()",
+                "runtime_attention_sync_condition_marker()",
+            } <= set(fresh)
+            assert all(config == [_PINNED_SEARCH_PATH] for config in fresh.values()), fresh
+
+        entry_id, trigger_id = _seed_legacy_breaker_edge(db_url)
+        uncertain_id = uuid.uuid4()
+        with admin.connect() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO public.model_dispatch_attempts "
+                    "(catalog_entry_id, butler, outcome, failure_reason) VALUES "
+                    "(:entry, 'general', 'quota_skip', 'Monthly spend ceiling reached: test')"
+                ),
+                {"entry": entry_id},
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO public.runtime_attention_outbox (
+                        id, source, lifecycle_state, triggering_attempt_id, source_snapshot,
+                        payload, claim_token, claim_epoch, delivery_lease_epoch,
+                        claimed_by_instance, claimed_at, claim_expires_at,
+                        delivery_error_class, delivery_error_detail
+                    ) VALUES (
+                        :id, 'model_breaker', 'uncertain', -1,
+                        jsonb_build_object(
+                            'catalog_entry_id', CAST(:entry AS text), 'alias', 'decoy',
+                            'model_id', 'decoy', 'triggering_attempt_id', -1,
+                            'consecutive_failures', 5
+                        ),
+                        jsonb_build_object(
+                            'classification', 'model_breaker_open',
+                            'consecutive_failures', 5, 'door', '/settings/models'
+                        ),
+                        gen_random_uuid(), 1, 1, 'dead-worker', now() - interval '2 minutes',
+                        now() - interval '1 minute', 'transport_uncertain', 'worker_recovery'
+                    )
+                    """
+                ),
+                {"id": uncertain_id, "entry": str(entry_id)},
+            )
+            # Regress to the pre-fix path an older bootstrap left behind.
+            for signature in fresh:
+                conn.execute(
+                    text(
+                        f"ALTER FUNCTION public.{signature} "
+                        "SET search_path = pg_catalog, public, pg_temp"
+                    )
+                )
+        with migration.connect() as conn:
+            conn.execute(text(_DECOY_SQL))
+
+        calls = {
+            "model_breaker": (
+                "butler_general_rw",
+                "SELECT public.append_runtime_attention_model_breaker(:trigger)",
+            ),
+            "fleet_halt": (
+                "butler_general_rw",
+                "SELECT public.append_runtime_attention_fleet_halt()",
+            ),
+            "reissue": (
+                None,
+                "SELECT successor_episode_id "
+                "FROM public.reissue_runtime_attention_episode(:uncertain)",
+            ),
+        }
+
+        def call(name: str):
+            role, statement = calls[name]
+            with migration.connect() as conn:
+                if role is not None:
+                    conn.execute(text(f"SET ROLE {_quote_ident(role)}"))
+                try:
+                    return conn.execute(
+                        text(statement), {"trigger": trigger_id, "uncertain": uncertain_id}
+                    ).scalar_one()
+                finally:
+                    if role is not None:
+                        conn.execute(text("RESET ROLE"))
+
+        # The decoy is live against the regressed path: this is the hole.  The
+        # fleet-halt body is re-adopted on every rerun and already casts its
+        # seed to bigint, so only the path guards the two one-shot bodies.
+        for name in ("model_breaker", "reissue"):
+            with pytest.raises(DBAPIError, match="hijacked as runtime_attention_outbox_owner"):
+                call(name)
+
+        # The real bootstrap rerun converges it, idempotently.
+        _rerun_actual_init_db(bootstrap_url, db_url)
+        _rerun_actual_init_db(bootstrap_url, db_url)
+        with admin.connect() as conn:
+            assert definers(conn) == fresh
+        assert _has_exact_finalized_runtime_attention_interface(db_url)
+
+        for name in calls:
+            assert call(name) is not None, name
+    finally:
+        migration.dispose()
         admin.dispose()

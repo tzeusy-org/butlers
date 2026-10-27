@@ -297,6 +297,7 @@ async def memory_store_episode(
     session_id: str | None = None,
     importance: float = 5.0,
     request_context: dict[str, Any] | None = None,
+    routing_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Store a raw episode from a runtime session.
 
@@ -314,6 +315,10 @@ async def memory_store_episode(
         importance: Importance rating (default 5.0).
         request_context: Optional dict with 'tenant_id' and 'request_id' for
             multi-tenant isolation and request trace correlation.
+        routing_context: Routing context of the originating session, for
+            callers outside that session's task (the Spawner's episode hook).
+            The episode's content authority is derived from it, never from
+            ``content``; when omitted the current runtime session's is used.
     """
     session_id_str = session_id.strip() if session_id else None
     if session_id_str in (None, ""):
@@ -337,6 +342,7 @@ async def memory_store_episode(
         importance=importance,
         tenant_id=tenant_id,
         request_id=request_id,
+        routing_context=routing_context,
     )
 
     # Backward-compatible: older storage variants may return a mapping.

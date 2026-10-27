@@ -18,16 +18,17 @@ import { EgressCatalogTile } from "@/components/system/EgressCatalogTile";
 import { InsightDeliveryTile } from "@/components/system/InsightDeliveryTile";
 import { SecurityPostureTile } from "@/components/system/SecurityPostureTile";
 import { StandingConditionsTile } from "@/components/system/StandingConditionsTile";
+import { StoredFunctionsTile } from "@/components/system/StoredFunctionsTile";
 import { SystemVerdictBanner } from "@/components/system/SystemVerdictBanner";
 import { UptimeTile } from "@/components/system/UptimeTile";
 import { VersionTile } from "@/components/system/VersionTile";
 import TopologyGraph from "@/components/topology/TopologyGraph";
 import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  Section,
+  SectionContent,
+  SectionHeader,
+  SectionTitle,
+} from "@/components/ui/Section";
 import { Page } from "@/components/ui/page";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
@@ -45,13 +46,13 @@ interface SystemTileProps {
 
 function SystemTile({ title, action, children }: SystemTileProps) {
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium">{title}</CardTitle>
+    <Section>
+      <SectionHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <SectionTitle>{title}</SectionTitle>
         {action}
-      </CardHeader>
-      <CardContent>{children}</CardContent>
-    </Card>
+      </SectionHeader>
+      <SectionContent>{children}</SectionContent>
+    </Section>
   );
 }
 
@@ -107,7 +108,9 @@ function TopologyTile() {
     status: row.status,
     tone: row.cellTone,
   }));
-  const connectors = connectorsResponse?.data ?? [];
+  const connectors = (connectorsResponse?.data?.connectors ?? []).filter(
+    (connector) => !connector.archived,
+  );
 
   return (
     <TopologyGraph
@@ -146,6 +149,7 @@ function SystemPage() {
         <SecurityPostureTile />
         <InsightDeliveryTile />
         <DriftTile />
+        <StoredFunctionsTile />
         <DeploymentTile />
         <div className="lg:col-span-2 h-full">
           <BackupTile />

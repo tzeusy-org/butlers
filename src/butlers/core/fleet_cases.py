@@ -458,25 +458,38 @@ async def evaluate_case_attention(
 
     dedup_key = case_attention_dedup_key(correlation_key)
     window_start = policy_quiet_hours_window_start(policy, now=now)
-    if window_start is not None and await attention_event_recorded_since(
-        pool, dedup_key=dedup_key, since=window_start
-    ):
-        return {
-            "bypass": False,
-            "reason": "already_bypassed_this_window",
-            "attention_ledger_id": None,
-        }
 
-    attention_ledger_id = await record_attention_event(
-        pool,
-        origin_butler=origin_butler,
-        source="insight",
-        outcome="delivered",
-        intent="fleet_case",
-        dedup_key=dedup_key,
-        reason="urgent_case_bypass",
-        metadata={"case_id": case_id, "correlation_key": correlation_key},
-    )
+    # The existence check and the insert must be one atomic operation: two
+    # truly concurrent calls for the same dedup_key could otherwise both pass
+    # the check before either commits its insert, recording more than one
+    # bypass per window for the same case. pg_advisory_xact_lock(hashtext(...))
+    # serializes calls that share a dedup_key while leaving different
+    # dedup_keys (different cases) uncontended -- same convention as
+    # butlers.core.condition_ledger's source-scoped lock.
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", dedup_key)
+
+            if window_start is not None and await attention_event_recorded_since(
+                conn, dedup_key=dedup_key, since=window_start
+            ):
+                return {
+                    "bypass": False,
+                    "reason": "already_bypassed_this_window",
+                    "attention_ledger_id": None,
+                }
+
+            attention_ledger_id = await record_attention_event(
+                conn,
+                origin_butler=origin_butler,
+                source="insight",
+                outcome="delivered",
+                intent="fleet_case",
+                dedup_key=dedup_key,
+                reason="urgent_case_bypass",
+                metadata={"case_id": case_id, "correlation_key": correlation_key},
+            )
+
     return {
         "bypass": True,
         "reason": "urgent_case_bypass",

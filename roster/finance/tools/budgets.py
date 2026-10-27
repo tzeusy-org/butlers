@@ -27,27 +27,11 @@ from butlers.core.general_settings import resolve_general_timezone
 logger = logging.getLogger(__name__)
 
 # Supported budget periods — see ``_period_bounds`` for how each one is aligned.
-VALID_PERIODS = {"weekly", "monthly", "quarterly", "yearly"}
+VALID_PERIODS = {"daily", "weekly", "monthly", "quarterly", "yearly"}
 
 # Default thresholds
 DEFAULT_WARN_THRESHOLD = Decimal("0.80")
 DEFAULT_ALERT_THRESHOLD = Decimal("1.00")
-
-CREATE_BUDGETS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS budgets (
-    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    category         TEXT NOT NULL,
-    period           TEXT NOT NULL
-                         CHECK (period IN ('weekly', 'monthly', 'quarterly', 'yearly')),
-    amount           NUMERIC(14, 2) NOT NULL,
-    currency         CHAR(3) NOT NULL DEFAULT 'USD',
-    warn_threshold   NUMERIC(5, 4) NOT NULL DEFAULT 0.8000,
-    alert_threshold  NUMERIC(5, 4) NOT NULL DEFAULT 1.0000,
-    is_active        BOOLEAN NOT NULL DEFAULT true,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
 
 _FLAT_THRESHOLD_PCT = Decimal("5")  # abs(change_pct) < 5% => direction="flat"
 
@@ -102,7 +86,8 @@ def _period_window(
 def _period_bounds(period: str, anchor: date) -> tuple[date, date]:
     """Return the inclusive (start, end) date bounds of the current budget period.
 
-    Weekly periods run Monday..Sunday, monthly from the 1st, quarterly from the
+    Daily periods span the owner-local day. Weekly runs Monday..Sunday, monthly
+    from the 1st, quarterly from the
     quarter start, yearly from Jan 1. ``anchor`` is a date in the owner's
     timezone (see :func:`_period_anchor`); the instants that date range covers
     come from :func:`_period_window`.
@@ -110,7 +95,7 @@ def _period_bounds(period: str, anchor: date) -> tuple[date, date]:
     Parameters
     ----------
     period:
-        Budget period: ``weekly``, ``monthly``, ``quarterly``, or ``yearly``.
+        Budget period: ``daily``, ``weekly``, ``monthly``, ``quarterly``, or ``yearly``.
     anchor:
         The date whose containing period is computed (typically "today").
 
@@ -119,6 +104,8 @@ def _period_bounds(period: str, anchor: date) -> tuple[date, date]:
     tuple[date, date]
         ``(period_start, period_end)`` — both inclusive.
     """
+    if period == "daily":
+        return anchor, anchor
     if period == "weekly":
         # ISO weekday: Monday == 1 ... Sunday == 7; align week start to Monday.
         from datetime import timedelta
@@ -233,7 +220,7 @@ async def budget_set(
     amount:
         Budget amount limit (positive value).
     period:
-        Budget period: ``weekly``, ``monthly``, ``quarterly``, or ``yearly``.
+        Budget period: ``daily``, ``weekly``, ``monthly``, ``quarterly``, or ``yearly``.
     currency:
         ISO-4217 currency code (default ``"USD"``).
     warn_threshold:
@@ -357,7 +344,8 @@ async def budget_remove(
     category:
         The budget category to remove.
     period:
-        The budget period to remove: ``weekly``, ``monthly``, ``quarterly``, or ``yearly``.
+        The budget period to remove: ``daily``, ``weekly``, ``monthly``,
+        ``quarterly``, or ``yearly``.
 
     Returns
     -------

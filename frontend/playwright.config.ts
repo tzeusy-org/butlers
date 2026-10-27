@@ -52,6 +52,20 @@ export default defineConfig({
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
+      // Phone specs run only in the `phone` project; no doubled suite.
+      testIgnore: ["**/phone-*.spec.ts"],
+    },
+    {
+      // Walks the phone entry routes at 375px (dashboard-design-language
+      // §Viewport and Modality Contract). Chromium engine with touch.
+      name: "phone",
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 375, height: 667 },
+        isMobile: true,
+        hasTouch: true,
+      },
+      testMatch: "**/phone-*.spec.ts",
     },
   ],
 

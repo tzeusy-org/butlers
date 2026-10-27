@@ -1,47 +1,12 @@
 ## Purpose
 
-Defines the residual contacts-identity capability after the table-based identity
-model was retired. The `public.contacts` and `public.contact_info` tables this
-spec originally described have been dropped (`public.contact_info` by
-`core_115_drop_contact_info`, `public.contacts` by
-`core_134_drop_public_contacts`), and the drop is guarded by
-`tests/contracts/test_contacts_schema_retired.py`. The live identity model is
-the entity graph: `public.entities` is the identity anchor and roles source,
-non-secret channel identifiers are `relationship.entity_facts` triples (Telegram
-handles stored prefixed `telegram:<id>` under `has-handle`), and
-`public.entity_info` is a secrets-only store (RFC 0004 Amendment 3).
-`src/butlers/identity.py` performs entity-graph resolution and always returns
-`contact_id = None`.
+Defines the contact-search typeahead over the entity graph that remains after the table-based
+contacts model (`public.contacts`, `public.contact_info`) was dropped. The `entity-identity` and
+`relationship-facts` specs are the authoritative contracts for the live identity model.
 
-The `entity-identity` and `relationship-facts` specs are the authoritative
-contracts for the live identity model. The table-centric requirements this spec
-formerly carried were archived by the `retire-contacts-table-specs` change (per
-owner decision on bead bu-qtsy4: archive, do not rewrite); their `Migration`
-notes in that change point at the authoritative replacements. Two requirements
-survive here because they are not table-centric: the owner-identity secret-key
-rename contract ("Secret key renames") and the live entity-graph contact-search
-endpoint ("[TARGET-STATE] Contact search endpoint for typeahead", `GET
-/api/contacts/search`, implemented in `src/butlers/api/routers/contacts.py`). The
-module tool-naming contract that formerly lived here ("I/O model removal") was
-relocated to the `core-modules` spec ("Module Tool Naming Convention"), which is
-its proper owner.
 ## Requirements
-### Requirement: Secret key renames
 
-Owner-identity secret keys SHALL be renamed for consistency. The following renames MUST be applied:
-
-| Old key | New key |
-|---|---|
-| `BUTLER_TELEGRAM_CHAT_ID` | `TELEGRAM_CHAT_ID` |
-
-Secret keys that are not identity-bound (API keys, webhook URLs, service tokens) SHALL remain in `butler_secrets` and are not affected by this change.
-
-#### Scenario: Legacy secret key resolves via fallback
-
-- **WHEN** code references `BUTLER_TELEGRAM_CHAT_ID` and the key has been migrated to `TELEGRAM_CHAT_ID`
-- **THEN** the credential resolver MUST check the new key first, then fall back to the legacy key during the transition period
-
-### Requirement: [TARGET-STATE] Contact search endpoint for typeahead
+### Requirement: Contact search endpoint for typeahead
 
 The system SHALL provide a read-only `GET /api/contacts/search?q=` endpoint that
 returns **person** entities from the identity layer for contact-link typeahead
@@ -55,15 +20,19 @@ returns **person** entities from the identity layer for contact-link typeahead
 (`ILIKE`) with no LLM or embedding service. Results SHALL carry, per entity, the
 entity id, the display name, and the matched non-secret identifier (its kind and
 value) when the match came from an identifier.
+- Secret credentials live in `public.entity_info` with `secured = true` (the
+  retired `public.contact_info` table was dropped in core_115 and its non-secret
+  identifiers re-homed to `relationship.entity_facts`; see
+  `tests/contracts/test_contacts_schema_retired.py`). This endpoint SHALL NOT read
+  `public.entity_info`, so secret values are never searched and never appear in
+  results. The endpoint SHALL NOT perform any write and SHALL NOT require a
+  migration. It is distinct from `GET /api/relationship/entities/search` and does
+  not modify it.
+- Active contact search eligibility SHALL exclude candidate identity reports. Candidate review is a separately owner-protected contact/fact response and SHALL not make a candidate a routable contact or recipient. Existing active legacy-NULL and transitory resolution/search behavior, deterministic ordering and PII gates remain unchanged.
 
-Secret credentials live in `public.entity_info` with `secured = true` (the
-retired `public.contact_info` table was dropped in core_115 and its non-secret
-identifiers re-homed to `relationship.entity_facts`; see
-`tests/contracts/test_contacts_schema_retired.py`). This endpoint SHALL NOT read
-`public.entity_info`, so secret values are never searched and never appear in
-results. The endpoint SHALL NOT perform any write and SHALL NOT require a
-migration. It is distinct from `GET /api/relationship/entities/search` and does
-not modify it.
+ID: REQ-contacts-identity-001
+Source: bu-s11n0s.2 original Outcome/S1–S4; heart-and-soul/security.md; Relationship MANIFESTO.md; adopted dashboard-owner-auth and existing capability contract
+Scope: v1-mandatory
 
 #### Scenario: Name match returns the person entity
 
@@ -104,3 +73,7 @@ not modify it.
 - **AND** an organization entity `'Alice Industries'` and a merged person entity `'Alice Ghost'` both match the query by name
 - **THEN** neither the organization nor the merged entity MUST appear in the results (live `entity_type='person'` entities only)
 
+#### Scenario: Candidate does not become a typeahead recipient
+
+- **WHEN** a tempting candidate and independent eligible active handle are planted
+- **THEN** typeahead SHALL admit the active handle under existing policy and exclude candidate routing eligibility

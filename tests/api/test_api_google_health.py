@@ -15,8 +15,8 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db_optional as _gh_get_db
 from butlers.api.models.google_health import GoogleHealthConnectorState
 from butlers.api.routers.google_health import (
     GOOGLE_HEALTH_SCOPE_URLS,
@@ -28,9 +28,7 @@ from butlers.api.routers.google_health import (
     _filter_health_scopes,
     _parse_jsonb_metadata,
 )
-from butlers.api.routers.google_health import (
-    _get_db_manager as _gh_get_db,
-)
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 

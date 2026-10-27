@@ -108,7 +108,7 @@ function CapabilityProbePip({ status }: { status: CapabilityStatus }) {
         aria-label={label}
         title={label}
         className="font-mono text-[11px] font-normal leading-none tabular-nums shrink-0 inline-block w-4 text-center"
-        style={{ color: "var(--dim,oklch(0.55_0_0))" }}
+        style={{ color: "var(--dim)" }}
       >
         ?
       </span>
@@ -122,7 +122,7 @@ function CapabilityProbePip({ status }: { status: CapabilityStatus }) {
       aria-label={label}
       title={label}
       className="font-mono text-[11px] font-normal leading-none tabular-nums shrink-0 inline-block w-4 text-center"
-      style={{ color: ok ? "var(--green,oklch(0.65_0.15_145))" : "var(--red)" }}
+      style={{ color: ok ? "var(--green)" : "var(--red)" }}
     >
       {ok ? "✓" : "✗"}
     </span>
@@ -147,7 +147,7 @@ export function WhatBreaksRow({ entry, capabilities }: WhatBreaksRowProps) {
     <div
       className={cn(
         "flex items-baseline gap-3 py-1.5",
-        "border-b border-[var(--border-soft,oklch(1_0_0/0.06))] last:border-b-0",
+        "border-b border-[var(--border-soft)] last:border-b-0",
       )}
     >
       {capabilityStatus ? (

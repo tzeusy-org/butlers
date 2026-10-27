@@ -1,7 +1,7 @@
 import { Link } from 'react-router'
 
 import { Badge } from '../ui/badge'
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
+import { Section, SectionContent, SectionHeader, SectionTitle } from '../ui/Section'
 import {
   Table,
   TableBody,
@@ -32,56 +32,56 @@ function formatTokens(n: number): string {
 export default function TopSessionsTable({ sessions, isLoading, isUnavailable }: TopSessionsTableProps) {
   if (isLoading) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Most Expensive Sessions</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Most Expensive Sessions</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <div className="space-y-2">
             {Array.from({ length: 5 }).map((_, i) => (
               <div key={i} className="h-10 rounded bg-muted" />
             ))}
           </div>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     )
   }
 
   if (isUnavailable) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Most Expensive Sessions</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Most Expensive Sessions</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <SourceDegradedNote
             label="Top sessions"
             testId="top-sessions-unavailable"
           />
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     )
   }
 
   if (sessions.length === 0) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Most Expensive Sessions</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Most Expensive Sessions</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <p className="text-sm text-muted-foreground">No session data available</p>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     )
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Most Expensive Sessions</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section>
+      <SectionHeader>
+        <SectionTitle>Most Expensive Sessions</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         <Table>
           <TableHeader>
             <TableRow>
@@ -118,7 +118,7 @@ export default function TopSessionsTable({ sessions, isLoading, isUnavailable }:
             ))}
           </TableBody>
         </Table>
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   )
 }

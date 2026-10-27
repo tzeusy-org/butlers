@@ -23,15 +23,6 @@ import asyncpg
 import pytest
 
 from butlers.api.routers.model_settings import _attention_episode
-from butlers.tools.switchboard.routing.transport import (
-    CONFIRMED,
-    PROVIDER_REJECTED,
-    RECIPIENT_UNAVAILABLE,
-    TransportErrorClass,
-    TransportErrorDetail,
-    TransportOutcome,
-    TransportResult,
-)
 from butlers.tools.switchboard.runtime_attention.outbox import (
     MAX_TRANSPORT_ATTEMPTS,
     RETRY_BACKOFF_SECONDS,
@@ -41,6 +32,15 @@ from butlers.tools.switchboard.runtime_attention.outbox import (
 from butlers.tools.switchboard.runtime_attention.worker import (
     RuntimeAttentionDeliveryWorker,
     build_messenger_transport,
+)
+from butlers.tools.switchboard.transport import (
+    CONFIRMED,
+    PROVIDER_REJECTED,
+    RECIPIENT_UNAVAILABLE,
+    TransportErrorClass,
+    TransportErrorDetail,
+    TransportOutcome,
+    TransportResult,
 )
 
 pytestmark = [pytest.mark.db, pytest.mark.integration]
@@ -340,7 +340,7 @@ async def test_fenced_claim_evidence_reaches_the_safe_reason_projection(
 
     A stale-claim recovery episode is fenced to ``uncertain`` without ever
     calling ``mark_uncertain`` — the CHECK constraint and
-    ``routing.transport.WORKER_RECOVERY`` reserve the
+    ``switchboard.transport.WORKER_RECOVERY`` reserve the
     ``('transport_uncertain', 'worker_recovery')`` pair for exactly this path,
     but ``fence_stale_claim`` previously left the evidence columns NULL, so a
     recovery-driven uncertain episode showed no ``safe_reason`` in the API/UI.
@@ -731,3 +731,299 @@ async def test_delivery_logs_carry_typed_outcomes_and_no_secrets(
         assert "outcome=uncertain" in caplog.text
         for secret in ("hunter2", "987654321", "bot_token", "Breaker opened"):
             assert secret not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# REQ-butler-control-plane-liveness-007 — fleet and overdue-QA condition episodes
+# ---------------------------------------------------------------------------
+
+
+async def _seed_due_condition(pool: asyncpg.Pool, *, qa: bool = False) -> uuid.UUID:
+    """Open one paging condition already past the producer's attention grace."""
+    from butlers.core.fleet_conditions import (
+        FLEET_FINGERPRINT,
+        FLEET_SOURCE,
+        QA_PATROL_OVERDUE_FINGERPRINT,
+        QA_PATROL_SOURCE,
+    )
+
+    source, fingerprint = (
+        (QA_PATROL_SOURCE, QA_PATROL_OVERDUE_FINGERPRINT)
+        if qa
+        else (FLEET_SOURCE, FLEET_FINGERPRINT)
+    )
+    return await pool.fetchval(
+        """
+        INSERT INTO public.infra_conditions (
+            source, fingerprint, episode, first_detected_at, summary
+        ) VALUES ($1, $2, 1, now() - interval '6 minutes', 'general: 127.0.0.1:41101 refused')
+        RETURNING id
+        """,
+        source,
+        fingerprint,
+    )
+
+
+async def _controller_append(pool: asyncpg.Pool) -> list[Any]:
+    """Run the controller's attention step exactly as the Dashboard observer does."""
+    from butlers.core.control_plane_identity import DashboardProbeRoleView
+    from butlers.core.fleet_conditions import append_due_condition_attention
+
+    return await append_due_condition_attention(pool, DashboardProbeRoleView(pool))
+
+
+async def _condition_statuses(pool: asyncpg.Pool) -> dict[uuid.UUID, tuple[str, str | None]]:
+    """Owner-facing status per condition, through the dashboard's own projection path."""
+    from butlers.api.runtime_attention_status import condition_attention_status, safe_reason
+
+    return {
+        row["condition_id"]: (
+            condition_attention_status(row),
+            safe_reason(row["delivery_error_class"], row["delivery_error_detail"]),
+        )
+        for row in await pool.fetch("SELECT * FROM public.observe_runtime_attention_conditions()")
+    }
+
+
+async def test_condition_episodes_deliver_fixed_copy_once(migrated_core_postgres_pool) -> None:
+    """Confirmed delivery: fixed content-blind text, ``sent``, and no second page."""
+    from butlers.tools.switchboard.runtime_attention.worker import _episode_message
+
+    async with migrated_core_postgres_pool(min_pool_size=3, max_pool_size=6) as pool:
+        fleet = await _seed_due_condition(pool)
+        qa = await _seed_due_condition(pool, qa=True)
+        episodes = await _controller_append(pool)
+        assert len(set(episodes)) == 2 and None not in episodes
+
+        messages: list[str] = []
+
+        async def transport(episode: OutboxEpisode) -> TransportResult:
+            messages.append(_episode_message(episode))
+            return CONFIRMED
+
+        repository = RuntimeAttentionOutbox(pool, instance_id="worker-a")
+        cycle = await _worker(repository, transport).run_once()
+        assert cycle.delivered == 2
+        assert sorted(messages) == [
+            "Runtime attention: butler fleet control is unhealthy; expected daemons are not "
+            "receiver-ready. Open /system to review.",
+            "Runtime attention: no qualifying QA patrol has completed within its expected "
+            "window. Open /system to review.",
+        ]
+        for leaked in ("general", "127.0.0.1", "refused"):
+            assert not any(leaked in message for message in messages)
+
+        statuses = await _condition_statuses(pool)
+        assert statuses[fleet] == ("sent", None)
+        assert statuses[qa] == ("sent", None)
+
+        # Every later controller pass returns the same episodes; nothing re-pages.
+        assert sorted(await _controller_append(pool)) == sorted(episodes)
+        replay = _Spy(CONFIRMED)
+        assert (await _worker(repository, replay).run_once()).outcomes == ()
+        assert replay.calls == []
+
+
+async def test_condition_delivery_outcomes_stay_distinct_without_resend(
+    migrated_core_postgres_pool,
+) -> None:
+    """Worker-down, dead claim, pre-send failure: truthful, bounded, never resent."""
+    async with migrated_core_postgres_pool(min_pool_size=3, max_pool_size=6) as pool:
+        fleet = await _seed_due_condition(pool)
+        [fleet_episode] = await _controller_append(pool)
+
+        # Appended but no delivery service holds the lease: visibly not sending.
+        assert (await _condition_statuses(pool))[fleet] == ("worker_unavailable", None)
+        repo_a = RuntimeAttentionOutbox(pool, instance_id="worker-a")
+        lease_a = await repo_a.acquire_service_lease()
+        assert lease_a is not None
+        assert (await _condition_statuses(pool))[fleet] == ("pending", None)
+
+        # Worker A claims, then dies mid-send: ``sending`` is never "delivered".
+        claimed = await repo_a.claim_next_pending(lease_a)
+        assert claimed is not None and claimed.id == fleet_episode
+        await repo_a.release_service_lease(lease_a)
+        assert (await _condition_statuses(pool))[fleet][0] == "sending"
+
+        # Recovery fences the dead claim to uncertain; nothing resends it, and
+        # the controller keeps returning the same episode.
+        repo_b = RuntimeAttentionOutbox(pool, instance_id="worker-b")
+        lease_b = await repo_b.acquire_service_lease()
+        assert lease_b is not None
+        claims = await repo_b.list_recoverable(lease_b, stale_after_seconds=0.0)
+        assert [claim.id for claim in claims] == [fleet_episode]
+        assert await repo_b.fence_stale_claim(claims[0], lease_b) is True
+        await repo_b.release_service_lease(lease_b)
+        replay = _Spy(CONFIRMED)
+        await _worker(repo_b, replay).run_once()
+        assert replay.calls == []
+        assert (await _condition_statuses(pool))[fleet] == (
+            "uncertain",
+            "A dead delivery claim was fenced as uncertain",
+        )
+        assert await _controller_append(pool) == [fleet_episode]
+        await _worker(repo_b, replay).run_once()
+        assert replay.calls == []
+
+        # A proven pre-send failure alone follows the bounded backoff, then fails
+        # terminally without minting another episode.
+        qa = await _seed_due_condition(pool, qa=True)
+        episodes = await _controller_append(pool)
+        qa_episode = next(e for e in episodes if e != fleet_episode)
+        unavailable = _Spy(RECIPIENT_UNAVAILABLE)
+        sleeps: list[float] = []
+        await _worker(repo_b, unavailable, sleeps).run_once()
+        assert unavailable.calls == [qa_episode] * MAX_TRANSPORT_ATTEMPTS
+        assert sleeps == list(RETRY_BACKOFF_SECONDS)
+        assert (await _condition_statuses(pool))[qa] == (
+            "failed",
+            "Recipient unavailable before delivery",
+        )
+        assert sorted(await _controller_append(pool)) == sorted([fleet_episode, qa_episode])
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM public.observe_runtime_attention_conditions()"
+            )
+            == 2
+        )
+
+
+async def _as_outbox_owner(
+    pool: asyncpg.Pool, postgres_container: Any, statement: str, *args: Any
+) -> str:
+    """Run one statement as the no-login outbox owner (the marker's sole principal)."""
+    from butlers.testing.migration import migration_bootstrap_db_url
+
+    db_name = await pool.fetchval("SELECT current_database()")
+    url = migration_bootstrap_db_url(postgres_container, db_name)
+    connection = await asyncpg.connect(url.replace("postgresql+psycopg2://", "postgresql://"))
+    try:
+        await connection.execute('SET ROLE "runtime_attention_outbox_owner"')
+        if statement.lstrip().upper().startswith("SELECT"):
+            return await connection.fetchval(statement, *args)
+        return await connection.execute(statement, *args)
+    finally:
+        await connection.close()
+
+
+async def _remove_outbox_row_as_owner(
+    pool: asyncpg.Pool, postgres_container: Any, episode_id: uuid.UUID
+) -> None:
+    """Age one episode out of the outbox the way a future retention purge would."""
+    assert (
+        await _as_outbox_owner(
+            pool,
+            postgres_container,
+            "DELETE FROM public.runtime_attention_outbox WHERE id = $1",
+            episode_id,
+        )
+        == "DELETE 1"
+    )
+
+
+async def _marker_state(
+    pool: asyncpg.Pool, postgres_container: Any, condition_id: uuid.UUID
+) -> str:
+    return await _as_outbox_owner(
+        pool,
+        postgres_container,
+        "SELECT last_delivery_state FROM public.runtime_attention_condition_episodes "
+        "WHERE condition_id = $1",
+        condition_id,
+    )
+
+
+async def _resolve_condition(pool: asyncpg.Pool, condition_id: uuid.UUID) -> None:
+    await pool.execute(
+        """
+        UPDATE public.infra_conditions
+        SET state = 'resolved', resolved_at = now(), recovered_after_s = 1
+        WHERE id = $1
+        """,
+        condition_id,
+    )
+
+
+async def _marker_view(pool: asyncpg.Pool, condition_id: uuid.UUID) -> tuple[str, bool]:
+    row = await pool.fetchrow(
+        """
+        SELECT lifecycle_state, outbox_retained
+        FROM public.observe_runtime_attention_conditions()
+        WHERE condition_id = $1
+        """,
+        condition_id,
+    )
+    return row["lifecycle_state"], row["outbox_retained"]
+
+
+@pytest.mark.parametrize("terminal", ["sent", "failed", "uncertain"])
+async def test_resolved_condition_marker_keeps_terminal_delivery_after_outbox_removal(
+    migrated_core_postgres_pool, postgres_container, terminal: str
+) -> None:
+    """bu-giazn6: the marker follows delivery even after its condition resolves.
+
+    The controller only re-appends active conditions, so nothing but the
+    delivery transitions themselves can carry the terminal category into the
+    marker once the condition has resolved and the outbox row is gone.
+    """
+    async with migrated_core_postgres_pool(min_pool_size=3, max_pool_size=6) as pool:
+        condition = await _seed_due_condition(pool)
+        [episode] = await _controller_append(pool)
+        await _resolve_condition(pool, condition)
+
+        repository = RuntimeAttentionOutbox(pool, instance_id="worker-a")
+        if terminal == "sent":
+            await _worker(repository, _Spy(CONFIRMED)).run_once()
+        elif terminal == "failed":
+            await _worker(repository, _Spy(RECIPIENT_UNAVAILABLE), []).run_once()
+        else:
+            lease = await repository.acquire_service_lease()
+            assert lease is not None
+            assert (await repository.claim_next_pending(lease)).id == episode
+            await repository.release_service_lease(lease)
+            recovery = RuntimeAttentionOutbox(pool, instance_id="worker-b")
+            lease_b = await recovery.acquire_service_lease()
+            assert lease_b is not None
+            [claim] = await recovery.list_recoverable(lease_b, stale_after_seconds=0.0)
+            assert await recovery.fence_stale_claim(claim, lease_b) is True
+            await recovery.release_service_lease(lease_b)
+        assert (await _row(pool, episode))["lifecycle_state"] == terminal
+
+        await _remove_outbox_row_as_owner(pool, postgres_container, episode)
+        assert await _marker_view(pool, condition) == (terminal, False)
+
+
+async def test_rolled_back_transition_leaves_the_condition_marker_unchanged(
+    migrated_core_postgres_pool, postgres_container
+) -> None:
+    """The marker moves in the worker's own transaction, so a rollback undoes both."""
+    from contextlib import asynccontextmanager
+
+    class _Abort(Exception):
+        pass
+
+    async with migrated_core_postgres_pool(min_pool_size=3, max_pool_size=6) as pool:
+        condition = await _seed_due_condition(pool)
+        [episode] = await _controller_append(pool)
+        repository = RuntimeAttentionOutbox(pool, instance_id="worker-a")
+        lease = await repository.acquire_service_lease()
+        assert lease is not None
+        committed_tx = repository._switchboard_tx
+
+        @asynccontextmanager
+        async def rolled_back_tx():
+            async with committed_tx() as connection:
+                yield connection
+                raise _Abort
+
+        with patch.object(repository, "_switchboard_tx", rolled_back_tx):
+            with pytest.raises(_Abort):
+                await repository.claim_next_pending(lease)
+        assert (await _row(pool, episode))["lifecycle_state"] == "pending"
+        assert await _marker_state(pool, postgres_container, condition) == "pending"
+
+        # The same transition, committed, moves the marker with it.
+        claimed = await repository.claim_next_pending(lease)
+        assert claimed is not None and claimed.id == episode
+        assert await _marker_state(pool, postgres_container, condition) == "sending"
+        await repository.release_service_lease(lease)

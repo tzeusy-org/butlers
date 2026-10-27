@@ -7,7 +7,7 @@ bu-w2zo6 — the spec scenario from ``relationship-facts/spec.md``:
         object_kind='literal', validity='active') exists in relationship.entity_facts
     THEN resolve_contact_by_channel('telegram', 'telegram:12345') MUST return a
         ResolvedContact with entity_id=ent-7
-    AND the returned shape MUST NOT include a contact_id (it is None post bead 7).
+    AND the returned shape MUST NOT include a contact_id (no such field; bu-60pwv6.41).
 
 ``tests/core/test_identity.py`` already covers resolution against a *mocked* pool
 (asserting the SQL string + the returned dataclass).  This module is the missing
@@ -32,7 +32,7 @@ from butlers.identity import resolve_contact_by_channel, resolve_contacts_by_cha
 # Minimal schema the resolver touches: public.entities (join target) and
 # relationship.entity_facts (the triple store).  Mirrors the real migration DDL
 # closely enough for the resolver's SELECT.  contacts/contact_info are NOT
-# created — contact_id must be None post bead 7, so the resolver never reads them.
+# created — the resolved shape has no contact_id, so the resolver never reads them.
 _PROVISION_SCHEMA = """
 CREATE SCHEMA IF NOT EXISTS relationship;
 
@@ -105,7 +105,7 @@ pytestmark = [
 
 
 async def test_telegram_resolves_via_has_handle_triple(provisioned_postgres_pool) -> None:
-    """Spec scenario: prefixed telegram handle resolves to its entity; contact_id is None."""
+    """Spec scenario: prefixed telegram handle resolves to its entity; no contact_id field."""
     async with provisioned_postgres_pool() as pool:
         await pool.execute(_PROVISION_SCHEMA)
 
@@ -117,7 +117,7 @@ async def test_telegram_resolves_via_has_handle_triple(provisioned_postgres_pool
         assert result is not None, "active has-handle triple must resolve"
         assert result.entity_id == ent7
         # MUST NOT surface a contact_id — entity_id is authoritative post bead 7.
-        assert result.contact_id is None
+        assert not hasattr(result, "contact_id")
         assert result.name == "Chloe Wong"
         assert result.roles == []
 
@@ -135,7 +135,7 @@ async def test_owner_roles_propagate_from_entities_join(provisioned_postgres_poo
         assert result is not None
         assert result.entity_id == owner
         assert result.roles == ["owner"]
-        assert result.contact_id is None
+        assert not hasattr(result, "contact_id")
 
 
 async def test_phone_resolves_via_has_phone_triple(provisioned_postgres_pool) -> None:
@@ -168,7 +168,7 @@ async def test_telegram_user_client_prefix_fallback(provisioned_postgres_pool) -
 
         assert result is not None
         assert result.entity_id == ent
-        assert result.contact_id is None
+        assert not hasattr(result, "contact_id")
 
 
 async def test_retracted_triple_does_not_resolve(provisioned_postgres_pool) -> None:
@@ -375,7 +375,7 @@ async def test_bulk_resolves_multiple_pairs_matching_single_item_resolution(
 
         assert result[("telegram", "telegram:12345")] is not None
         assert result[("telegram", "telegram:12345")].entity_id == chloe
-        assert result[("telegram", "telegram:12345")].contact_id is None
+        assert not hasattr(result[("telegram", "telegram:12345")], "contact_id")
 
         assert result[("email", "owner@example.com")] is not None
         assert result[("email", "owner@example.com")].entity_id == owner
@@ -399,7 +399,7 @@ async def test_bulk_telegram_user_client_prefix_fallback(provisioned_postgres_po
         resolved = result[("telegram_user_client", "86807245")]
         assert resolved is not None
         assert resolved.entity_id == ent
-        assert resolved.contact_id is None
+        assert not hasattr(resolved, "contact_id")
 
 
 async def test_bulk_retracted_triple_does_not_resolve(provisioned_postgres_pool) -> None:

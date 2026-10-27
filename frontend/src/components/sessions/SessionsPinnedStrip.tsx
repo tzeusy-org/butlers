@@ -96,7 +96,7 @@ function PinnedRow({ session, trailing, after, selected, onClick }: PinnedRowPro
           "flex flex-wrap items-baseline gap-x-2 gap-y-0.5 rounded-md px-2 py-1.5 text-sm",
           selected && "bg-muted",
           interactive &&
-            "cursor-pointer hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+            "cursor-pointer hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-inset",
         )}
       >
         <StatusBadge

@@ -1,0 +1,6 @@
+.git/
+_templates/
+*.tgz
+values.local.yaml
+README.md
+makefile

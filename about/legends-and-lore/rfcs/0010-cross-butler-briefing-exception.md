@@ -134,7 +134,7 @@ This exception pattern is not a blanket authorization for cross-schema access. E
 
 1. **LLM sessions are involved.** If the cross-schema data needs LLM reasoning to extract, transform, or interpret, use Switchboard fan-out. The whole justification for this exception is avoiding LLM sessions for deterministic work.
 2. **Write operations.** Any cross-schema write MUST go through the Switchboard. There are no exceptions to this. The write path is where coordination, conflict resolution, and authorization live.
-3. **Real-time queries.** If the data is needed on-demand during an LLM session (e.g., "what does the Health butler know about X?"), use MCP tool calls through the Switchboard. The exception is for pre-scheduled batch aggregation, not interactive queries.
+3. **Real-time queries.** If the data is needed on-demand during an LLM session (e.g., "what does the Health butler know about X?"), use MCP tool calls through the Switchboard. The exception is for pre-scheduled batch aggregation, not interactive queries. (Owner decision 2026-10-04: two named on-demand carve-outs exist outside this rule, the QA-specific amendment below and RFC 0030's system-plane views; both are recorded in vision.md non-negotiable 3 and neither generalizes.)
 4. **Unbounded key access.** If the access pattern requires reading arbitrary state keys rather than a well-defined, filtered subset, this pattern does not apply. The key filter (`briefing/daily/%`) is a critical constraint.
 5. **Application-level enforcement only.** If the read-only or scope constraints can only be enforced by application code (not database-level views or grants), the guardrails are insufficient.
 
@@ -156,3 +156,64 @@ This exception pattern is not a blanket authorization for cross-schema access. E
 **Direct cross-schema queries in application code.** General's aggregation job hardcodes `SELECT ... FROM health.state` in Python. Rejected because it is fragile, not auditable via migration history, and makes the cross-schema access invisible to database administrators reviewing grants and views.
 
 **Database role with broad cross-schema SELECT.** Grant a `briefing_reader` role SELECT on each specialist's full `state` table (not filtered by a view). Viable but provides broader access than necessary. The view constrains access to `briefing/daily/%` keys only, enforcing the principle of least privilege at the database level.
+
+## QA-only local scheduler policy exception
+
+The QA daemon's deterministic local scheduler MAY read its own administrative
+stop state from a Switchboard-owned, no-argument database function when its
+effective runtime role is exactly `butler_qa_rw`. The function is bound to the
+literal Git-roster identity `qa`; it returns only validated
+`policy_state` and `policy_provenance`. It neither returns nor accepts a
+roster name, endpoint, liveness observation, boot epoch, policy actor/reason,
+timestamp, or arbitrary SQL predicate. Switchboard remains the sole producer
+of the underlying policy and its authenticated owner API remains the only
+policy writer.
+
+This exception exists because a synchronous Switchboard MCP dependency at
+each local tick would recreate the QA circular outage when Switchboard is
+unreachable. Reusing a last-known `active` result would instead bypass a
+later owner stop; reusing a restrictive result could keep QA stopped after an
+owner release. The database is already required by the local patrol, so a
+fresh fixed projection can distinguish remote staleness from owner policy
+without requiring the Switchboard process to be reachable.
+
+The exception has all of these guardrails:
+
+1. A migration-reviewed Switchboard-owned `SECURITY DEFINER` function has a
+   fixed `pg_catalog, switchboard, pg_temp` search path, fully qualified
+   table references, no caller arguments, and an in-body check of the active
+   `SET ROLE` value. It refuses `role=none`, wrong roles, missing rows,
+   invalid enum values, and inconsistent policy/provenance pairs. It returns
+   no raw registry row or observation.
+2. Revoke function EXECUTE from PUBLIC and grant it only to
+   `butler_qa_rw`; do not grant QA SELECT or USAGE on the Switchboard
+   control table/schema. Existing table RLS remains enabled. Replayed
+   `init-db.sql` grants, migration-login ownership, and role fallback
+   cannot turn the audit pool into an accepted caller.
+3. QA calls only through its own runtime-role pool. Missing role enforcement
+   or an unreadable/malformed response is a typed unknown policy and denies
+   new effectful local dispatch. No legacy eligibility, stale positive cache,
+   or arbitrary MCP/HTTP fallback may authorize a run.
+4. An explicit owner pause or quarantine blocks new QA local admissions;
+   `review_required/operator` is an explicit owner review hold, while
+   `review_required/legacy_ambiguous` is unresolved history and blocks
+   without being represented as owner intent. A proven TTL-derived stale observation
+   with `policy_state=active` does not block local patrol. Already admitted
+   work is not retrospectively described as cancelled.
+5. The function and grants remain during rollback until every active reader
+   has a reviewed replacement. A code downgrade must not resurrect a legacy
+   fail-open path or clear a retained owner hold.
+
+This is not an RFC 0010 reuse instance: it is a separately adopted exception
+to Rule 3. It does not authorize other roles, per-butler generic policy reads,
+cross-schema application SQL, shared policy caches, arbitrary public views,
+or a general-purpose scheduler-policy service. A future expansion needs its
+own authority review and owner choice. RFC 0001's local scheduler remains
+independent of remote liveness; RFC 0003's Switchboard policy ownership and
+RFC 0006's runtime-role isolation remain otherwise unchanged.
+
+The `REQ-staffer-qa-006` statement that derived staleness cannot stop QA
+remains absolute. An ambiguous legacy `review_required` hold and missing,
+malformed, or unreadable policy authority are separately typed safety
+refusals, not fabricated owner stops; they cannot count as completed or
+healthy patrols. This limited clarification is part of owner adoption.

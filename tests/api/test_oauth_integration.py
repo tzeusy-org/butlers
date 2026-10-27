@@ -14,8 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from butlers.api.app import create_app
-from butlers.api.routers import oauth as oauth_module
+from butlers.api.deps import get_db_optional
 from butlers.api.routers.oauth import (
     _clear_state_store,
     _generate_state,
@@ -29,6 +28,7 @@ from butlers.startup_guard import (
     check_google_credentials,
     require_google_credentials_or_exit,
 )
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -111,7 +111,7 @@ def _make_app(
     pool.acquire = _acquire
     db_manager = MagicMock()
     db_manager.credential_shared_pool.return_value = pool
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
+    app.dependency_overrides[get_db_optional] = lambda: db_manager
     return app
 
 

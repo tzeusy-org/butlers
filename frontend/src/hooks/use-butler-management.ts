@@ -1,16 +1,17 @@
 /**
  * TanStack Query hooks for Phase 7 butler management endpoints (§9.2).
  *
- * Covers system prompt versioning, tool grants, memory access, and kill switch.
+ * Covers system prompt versioning, memory access, and kill switch.
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
 import {
   getButlerMemoryAccess,
+  getButlerEffectivePrompt,
   getButlerPrompt,
   getButlerPromptHistory,
-  getButlerTools,
   killButler,
   updateButlerPrompt,
 } from "@/api/index.ts";
@@ -26,6 +27,17 @@ export function useButlerPrompt(name: string) {
     queryKey: ["butlers", name, "prompt"],
     queryFn: () => getButlerPrompt(name),
     enabled: !!name,
+  });
+}
+
+/** Fetch the protected prompt bytes and roster-drift receipt that actually ran. */
+export function useButlerEffectivePrompt(name: string) {
+  const refetchInterval = useBusAwarePollInterval();
+  return useQuery({
+    queryKey: ["butlers", name, "prompt-effective"],
+    queryFn: () => getButlerEffectivePrompt(name),
+    enabled: !!name,
+    refetchInterval,
   });
 }
 
@@ -46,19 +58,6 @@ export function useButlerPromptHistory(name: string, params?: { limit?: number; 
   return useQuery({
     queryKey: ["butlers", name, "prompt-history", params],
     queryFn: () => getButlerPromptHistory(name, params),
-    enabled: !!name,
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Tool grants
-// ---------------------------------------------------------------------------
-
-/** Fetch tool grants for a butler. */
-export function useButlerTools(name: string) {
-  return useQuery({
-    queryKey: ["butlers", name, "tools"],
-    queryFn: () => getButlerTools(name),
     enabled: !!name,
   });
 }

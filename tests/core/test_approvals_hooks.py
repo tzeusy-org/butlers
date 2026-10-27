@@ -14,6 +14,66 @@ from butlers.core import approvals_hooks
 pytestmark = pytest.mark.unit
 
 
+async def _admitted_park(_pool, **kwargs):
+    return SimpleNamespace(action_id=kwargs["action_id"])
+
+
+async def test_approved_execution_matcher_is_pool_task_tool_and_argument_bound():
+    import asyncio
+
+    from butlers.modules.approvals.execution_context import (
+        ApprovalExecutionContext,
+        approval_tool_args_digest,
+        get_approval_execution_context,
+        reset_approval_execution_context,
+        set_approval_execution_context,
+    )
+
+    pool, other = object(), object()
+    args = {"input": {"context": {"notify_request": {"message": "approved"}}}}
+    register = dict(
+        email_guard=AsyncMock(), recipient_guard=AsyncMock(), park_pending_action=AsyncMock()
+    )
+    runtime = approvals_hooks.register_approval_hooks(
+        pool,
+        **register,
+        approved_execution_matches=lambda **kw: get_approval_execution_context(**kw) is not None,
+    )
+    token = set_approval_execution_context(
+        ApprovalExecutionContext(
+            action_id=uuid.uuid4(),
+            session_id=None,
+            actor="human:owner",
+            tool_name="route.execute",
+            tool_args_digest=approval_tool_args_digest(args),
+            authorized_task=asyncio.current_task(),
+        )
+    )
+    try:
+
+        def match(target=pool, name="route.execute", payload=args):
+            return approvals_hooks.is_approved_tool_execution(
+                target, tool_name=name, tool_args=payload
+            )
+
+        assert match()
+        assert not match(other)
+        assert not match(name="telegram_send_message")
+        assert not match(payload={"input": {"context": {"notify_request": {"message": "changed"}}}})
+
+        async def child():
+            return match()
+
+        assert not await asyncio.create_task(child())
+        replacement = approvals_hooks.register_approval_hooks(pool, **register)
+        approvals_hooks.unregister_approval_hooks(pool, runtime)
+        assert not match()
+        approvals_hooks.unregister_approval_hooks(pool, replacement)
+        assert not match()
+    finally:
+        reset_approval_execution_context(token)
+
+
 def test_process_global_hook_surface_is_not_available() -> None:
     """A foreign pool must never gain approvals through a global fallback."""
     legacy_names = (
@@ -42,9 +102,7 @@ async def test_pool_scoped_park_hook_does_not_leak_to_butler_without_approvals()
     """A module-enabled butler must not expose pending_actions to a foreign pool."""
     approvals_pool = object()
     finance_pool = object()
-    # The real park hook can return None after a durable INSERT when no push
-    # runtime is wired, so availability must not be inferred from this value.
-    park_hook = AsyncMock(return_value=None)
+    park_hook = AsyncMock(side_effect=_admitted_park)
     runtime = approvals_hooks.register_approval_hooks(
         approvals_pool,
         email_guard=AsyncMock(),
@@ -63,13 +121,13 @@ async def test_pool_scoped_park_hook_does_not_leak_to_butler_without_approvals()
         }
 
         assert not approvals_hooks.is_approval_parking_available(finance_pool)
-        foreign_result = await approvals_hooks.park_pending_action(finance_pool, **kwargs)
-        assert foreign_result is None
+        with pytest.raises(RuntimeError, match="parking is unavailable"):
+            await approvals_hooks.park_pending_action(finance_pool, **kwargs)
         park_hook.assert_not_awaited()
 
         assert approvals_hooks.is_approval_parking_available(approvals_pool)
         owner_result = await approvals_hooks.park_pending_action(approvals_pool, **kwargs)
-        assert owner_result is None
+        assert owner_result.action_id == kwargs["action_id"]
         park_hook.assert_awaited_once()
     finally:
         approvals_hooks.unregister_approval_hooks(approvals_pool, runtime)
@@ -139,14 +197,14 @@ async def test_concurrently_enabled_pools_dispatch_each_hook_to_its_own_runtime(
     first_recipient = AsyncMock(
         return_value=approvals_hooks.EmailGuardDecision(allowed=False, reason="first_recipient")
     )
-    first_park = AsyncMock(return_value="first_park")
+    first_park = AsyncMock(side_effect=_admitted_park)
     second_email = AsyncMock(
         return_value=approvals_hooks.EmailGuardDecision(allowed=False, reason="second_email")
     )
     second_recipient = AsyncMock(
         return_value=approvals_hooks.EmailGuardDecision(allowed=False, reason="second_recipient")
     )
-    second_park = AsyncMock(return_value="second_park")
+    second_park = AsyncMock(side_effect=_admitted_park)
     first_runtime = approvals_hooks.register_approval_hooks(
         first_pool,
         email_guard=first_email,
@@ -204,8 +262,8 @@ async def test_concurrently_enabled_pools_dispatch_each_hook_to_its_own_runtime(
         assert second_email_result.reason == "second_email"
         assert first_recipient_result.reason == "first_recipient"
         assert second_recipient_result.reason == "second_recipient"
-        assert first_park_result == "first_park"
-        assert second_park_result == "second_park"
+        assert first_park_result.action_id == park_kwargs["action_id"]
+        assert second_park_result.action_id == park_kwargs["action_id"]
         assert approvals_hooks.is_approval_parking_available(first_pool)
         assert approvals_hooks.is_approval_parking_available(second_pool)
         for hook, pool in (
@@ -241,7 +299,7 @@ async def test_older_module_shutdown_preserves_replacement_pool_hooks(
     old_recipient = AsyncMock(
         return_value=approvals_hooks.EmailGuardDecision(allowed=False, reason="old_recipient")
     )
-    old_park = AsyncMock(return_value="old_park")
+    old_park = AsyncMock(side_effect=_admitted_park)
     replacement_email = AsyncMock(
         return_value=approvals_hooks.EmailGuardDecision(allowed=False, reason="replacement_email")
     )
@@ -251,7 +309,7 @@ async def test_older_module_shutdown_preserves_replacement_pool_hooks(
             reason="replacement_recipient",
         )
     )
-    replacement_park = AsyncMock(return_value="replacement_park")
+    replacement_park = AsyncMock(side_effect=_admitted_park)
     monkeypatch.setattr(email_guard, "check_email_recipient", old_email)
     monkeypatch.setattr(email_guard, "check_recipient", old_recipient)
     monkeypatch.setattr(park, "park_pending_action", old_park)
@@ -295,7 +353,7 @@ async def test_older_module_shutdown_preserves_replacement_pool_hooks(
 
         assert email_result.reason == "replacement_email"
         assert recipient_result.reason == "replacement_recipient"
-        assert park_result == "replacement_park"
+        assert isinstance(park_result.action_id, uuid.UUID)
         old_email.assert_not_awaited()
         old_recipient.assert_not_awaited()
         old_park.assert_not_awaited()
@@ -345,15 +403,16 @@ async def test_sole_module_shutdown_removes_its_pool_runtime(
         target="12345",
         **common_kwargs,
     )
-    park_result = await approvals_hooks.park_pending_action(
-        pool,
-        action_id=uuid.uuid4(),
-        tool_name="notify",
-        tool_args={"channel": "telegram"},
-        agent_summary="Missing channel identifier",
-        requested_at=datetime.now(UTC),
-        expires_at=None,
-    )
+    with pytest.raises(RuntimeError, match="parking is unavailable"):
+        await approvals_hooks.park_pending_action(
+            pool,
+            action_id=uuid.uuid4(),
+            tool_name="notify",
+            tool_args={"channel": "telegram"},
+            agent_summary="Missing channel identifier",
+            requested_at=datetime.now(UTC),
+            expires_at=None,
+        )
 
     assert not approvals_hooks.is_approval_parking_available(pool)
     assert email_result == approvals_hooks.EmailGuardDecision(
@@ -364,7 +423,6 @@ async def test_sole_module_shutdown_removes_its_pool_runtime(
         allowed=True,
         reason="no_approvals_module",
     )
-    assert park_result is None
     email_hook.assert_not_awaited()
     recipient_hook.assert_not_awaited()
     park_hook.assert_not_awaited()

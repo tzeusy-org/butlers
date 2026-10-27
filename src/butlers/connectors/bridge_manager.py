@@ -403,7 +403,7 @@ class BridgeSubprocessManager:
         except Exception:
             return {}
 
-    async def wait_until_connected(self, timeout: float | None = None) -> None:
+    async def wait_until_connected(self, timeout: float | None = None) -> None:  # noqa: ASYNC109 - callers pass timeout=; rename deferred (#4816)
         """Wait until a healthy bridge status reports ``connected``.
 
         Args:
@@ -441,20 +441,24 @@ class BridgeSubprocessManager:
         # dedicated startup poller sets readiness once the bridge is connected
         # or lands in a terminal degraded state.
         logger.info(
-            "Waiting up to %.0fs for bridge startup readiness …",
+            "Waiting up to %gs for bridge startup readiness …",
             self._config.startup_timeout_s,
         )
         startup_poll_task = asyncio.create_task(
             self._startup_poll_loop(), name="bridge-startup-poll"
         )
         try:
+            # One poll completes before the timer is armed. Otherwise a stall of the event
+            # loop longer than startup_timeout_s before the poller's first turn lets the
+            # timer win against a bridge that is already ready.
+            await self._startup_poll_once()
             await asyncio.wait_for(
                 self._startup_ready_event.wait(),
                 timeout=self._config.startup_timeout_s,
             )
         except TimeoutError:
             logger.error(
-                "Bridge did not become startup-ready within %.0fs",
+                "Bridge did not become startup-ready within %gs",
                 self._config.startup_timeout_s,
             )
             raise
@@ -532,7 +536,8 @@ class BridgeSubprocessManager:
         binary_path = shutil.which(self._config.binary)
         if binary_path is None:
             raise RuntimeError(
-                "whatsapp-bridge binary not found. Build with EXTRAS=whatsapp or install manually."
+                "whatsapp-bridge binary not found. "
+                "Rebuild the application image or install manually."
             )
 
         cmd = [binary_path, *self._config.args]
@@ -786,53 +791,62 @@ class BridgeSubprocessManager:
         while True:
             try:
                 await asyncio.sleep(self._STARTUP_POLL_INTERVAL_S)
+                if await self._startup_poll_once():
+                    break
             except asyncio.CancelledError:
                 break
 
-            if self._startup_ready_event.is_set():
-                break
+    async def _startup_poll_once(self) -> bool:
+        """Poll /status once; return True when the startup wait should stop.
 
-            # Use _poll_status but avoid marking transient 'connecting' as
-            # degraded — during startup the bridge has not yet finished
-            # establishing the WhatsApp session so connecting is expected.
-            if self._process is None or self._process.returncode is not None:
-                break
+        Stops when readiness is already set, the process is gone, or the bridge is
+        connected or in a terminal degraded state. Cancellation propagates to the caller.
+        """
+        if self._startup_ready_event.is_set():
+            return True
 
-            try:
-                data = await asyncio.wait_for(
-                    _http_get_unix(self._config.bridge_socket, _STATUS_ENDPOINT),
-                    timeout=10.0,
-                )
-                state = data.get("state", "unknown")
-                logger.debug("Bridge startup /status: state=%s", state)
-                if state == "connected":
-                    self._connected_event.set()
-                    self._startup_ready_event.set()
-                    break
-                if state == "pair_required":
-                    # A bridge sitting in pair_required is legitimately
-                    # waiting for a human to scan the QR — not a startup
-                    # failure. This always satisfies startup readiness,
-                    # regardless of startup_allow_degraded, so the ordinary
-                    # startup_timeout_s clock never tears down a bridge
-                    # mid-pairing (bu-7sh43). whatsmeow rotates the QR
-                    # itself; if nobody scans, the bridge's own pairing
-                    # timeout eventually exits rc=1, which _classify_exit
-                    # already treats as a genuine, expected failure.
-                    self._set_degraded("pair_required", terminal=True, awaiting_pairing=True)
-                    self._startup_ready_event.set()
-                    break
-                if self._config.startup_allow_degraded and state == "disconnected":
-                    self._set_degraded("Bridge status: disconnected")
-                    self._startup_ready_event.set()
-                    break
-                # 'connecting' is an expected transient state during startup —
-                # keep polling rather than entering degraded mode. Unknown
-                # states also keep polling until startup times out.
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                logger.debug("Bridge startup /status poll failed (retrying): %s", exc)
+        # Use _poll_status but avoid marking transient 'connecting' as
+        # degraded — during startup the bridge has not yet finished
+        # establishing the WhatsApp session so connecting is expected.
+        if self._process is None or self._process.returncode is not None:
+            return True
+
+        try:
+            data = await asyncio.wait_for(
+                _http_get_unix(self._config.bridge_socket, _STATUS_ENDPOINT),
+                timeout=10.0,
+            )
+            state = data.get("state", "unknown")
+            logger.debug("Bridge startup /status: state=%s", state)
+            if state == "connected":
+                self._connected_event.set()
+                self._startup_ready_event.set()
+                return True
+            if state == "pair_required":
+                # A bridge sitting in pair_required is legitimately
+                # waiting for a human to scan the QR — not a startup
+                # failure. This always satisfies startup readiness,
+                # regardless of startup_allow_degraded, so the ordinary
+                # startup_timeout_s clock never tears down a bridge
+                # mid-pairing (bu-7sh43). whatsmeow rotates the QR
+                # itself; if nobody scans, the bridge's own pairing
+                # timeout eventually exits rc=1, which _classify_exit
+                # already treats as a genuine, expected failure.
+                self._set_degraded("pair_required", terminal=True, awaiting_pairing=True)
+                self._startup_ready_event.set()
+                return True
+            if self._config.startup_allow_degraded and state == "disconnected":
+                self._set_degraded("Bridge status: disconnected")
+                self._startup_ready_event.set()
+                return True
+            # 'connecting' is an expected transient state during startup —
+            # keep polling rather than entering degraded mode. Unknown
+            # states also keep polling until startup times out.
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("Bridge startup /status poll failed (retrying): %s", exc)
+        return False
 
     async def _health_poll_loop(self) -> None:
         """Periodically poll /status and update connected/degraded state."""

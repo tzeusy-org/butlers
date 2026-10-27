@@ -24,18 +24,22 @@ from zoneinfo import ZoneInfo
 import pytest
 from asyncpg.exceptions import UndefinedTableError
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.models.audit import AuditLogEntry
 from butlers.api.routers import audit as audit_module
-from butlers.api.routers.audit import (
-    AuditTableNotAvailableError,
-    _get_db_manager,
-    append,
-    audit_log_appended_total,
-)
+from butlers.api.routers.audit import AuditTableNotAvailableError, append, audit_log_appended_total
 from butlers.core.credential_keys import normalize_credential_key
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
+from tests.migrations.test_core_279_audit_writer_integrity import (
+    _RUNTIME_ROLES,
+)
+from tests.migrations.test_core_279_audit_writer_integrity import (
+    audit_database as audit_database,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -650,7 +654,7 @@ def _make_audit_app(rows: list[dict], total: int | None = None) -> tuple:
     mock_db.pool.return_value = sw_pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app, mock_pool, mock_db
 
 
@@ -878,7 +882,7 @@ def test_list_audit_log_table_missing_returns_503():
     mock_db.credential_shared_pool.return_value = mock_pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     client = TestClient(app)
     resp = client.get("/api/audit-log")
     assert resp.status_code == 503
@@ -904,7 +908,7 @@ def _make_audit_app_single(row: dict | None) -> tuple:
     mock_db.credential_shared_pool.return_value = mock_pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app, mock_pool, mock_db
 
 
@@ -936,7 +940,7 @@ def test_get_audit_log_entry_table_missing_returns_503():
     mock_db.credential_shared_pool.return_value = mock_pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     client = TestClient(app)
     resp = client.get("/api/audit-log/1")
     assert resp.status_code == 503
@@ -1170,6 +1174,8 @@ def test_kind_privileged_sql_is_consequence_allowlist():
         "data.%",
         "webhook.%",
         "spend.%",
+        "runtime_config_patch",
+        "PUT /api/butlers/%/model-overrides",
     ):
         assert action_family in sql
     assert "result = 'error'" in sql
@@ -1233,8 +1239,10 @@ def test_kind_privileged_returns_mutation_rows():
         _sample_row(row_id=1, action="permission.set"),
         _sample_row(row_id=2, action="data.export"),
         _sample_row(row_id=3, action="webhook.create"),
+        _sample_row(row_id=4, action="runtime_config_patch"),
+        _sample_row(row_id=5, action="PUT /api/butlers/qa/model-overrides"),
     ]
-    app, _, _ = _make_audit_app(mutation_rows, total=3)
+    app, _, _ = _make_audit_app(mutation_rows, total=5)
     client = TestClient(app)
     resp = client.get("/api/audit-log?kind=privileged&limit=15")
     assert resp.status_code == 200
@@ -1243,6 +1251,8 @@ def test_kind_privileged_returns_mutation_rows():
     assert "permission.set" in actions
     assert "data.export" in actions
     assert "webhook.create" in actions
+    assert "runtime_config_patch" in actions
+    assert "PUT /api/butlers/qa/model-overrides" in actions
 
 
 # ---------------------------------------------------------------------------
@@ -1399,3 +1409,69 @@ def test_audit_log_credential_row_without_free_text_is_not_marked_redacted():
         _make_row(target="u:google", note=None, error=None, metadata=None)
     )
     assert entry.redacted is False
+
+
+# Real migrated append-only refusal; the unit owner excludes these DB instances.
+@pytest.mark.integration
+@pytest.mark.db
+@pytest.mark.parametrize("role", _RUNTIME_ROLES)
+def test_runtime_writer_and_append_only_survive_bootstrap(audit_database, role):
+    url, _ = audit_database
+    engine = create_engine(url)
+    marker = str(uuid.uuid4())
+    try:
+        with engine.begin() as connection:
+            # Role comes exclusively from this closed test matrix, not caller data.
+            connection.execute(text(f'SET LOCAL ROLE "{role}"'))
+            assert connection.execute(text("SELECT current_user")).scalar_one() == role
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT pg_has_role(session_user,'restore_drill_executor_audit_writer','SET')"
+                    )
+                ).scalar_one()
+                is False
+            )
+            row = connection.execute(
+                text("""
+                INSERT INTO public.audit_log(actor, action, target)
+                VALUES ('logical-owner', 'writer-boundary', :marker)
+                RETURNING id, writer_role
+            """),
+                {"marker": marker},
+            ).one()
+            assert row.writer_role == role
+        # An independent acquisition proves commit, not this transaction's view.
+        with engine.connect() as observer:
+            assert (
+                observer.execute(
+                    text("SELECT writer_role FROM public.audit_log WHERE id=:id"), {"id": row.id}
+                ).scalar_one()
+                == role
+            )
+        for sql in (
+            "UPDATE public.audit_log SET actor='forged' WHERE id=:id",
+            "DELETE FROM public.audit_log WHERE id=:id",
+            "TRUNCATE TABLE public.audit_log",
+            "INSERT INTO public.audit_log(actor,action,writer_role) "
+            "VALUES ('logical-owner','forged','restore_drill_writer')",
+            "INSERT INTO public.audit_log(actor,action,writer_role) "
+            "VALUES ('logical-owner','forged','restore_drill_executor_audit_writer')",
+        ):
+            with pytest.raises(DBAPIError) as refused, engine.begin() as connection:
+                connection.execute(text(f'SET LOCAL ROLE "{role}"'))
+                connection.execute(text(sql), {"id": row.id})
+            assert refused.value.orig.pgcode == "42501"
+        with engine.connect() as observer:
+            after = observer.execute(
+                text("SELECT actor,writer_role FROM public.audit_log WHERE id=:id"), {"id": row.id}
+            ).one()
+            assert tuple(after) == ("logical-owner", role)
+            assert (
+                observer.execute(
+                    text("SELECT count(*) FROM public.audit_log WHERE action='forged'")
+                ).scalar_one()
+                == 0
+            )
+    finally:
+        engine.dispose()

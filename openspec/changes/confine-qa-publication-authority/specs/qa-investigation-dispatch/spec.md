@@ -1,0 +1,128 @@
+## MODIFIED Requirements
+
+### Requirement: Worktree-Based Investigation
+Each investigation SHALL run in a dedicated disposable checkout branched off latest `main`, with QA-specific isolation and cleanup superseding shared worktree mechanisms. This applies to initial and follow-up investigations; general non-QA healing behavior is unchanged.
+
+#### Scenario: Worktree creation
+- **WHEN** an investigation is dispatched
+- **THEN** `git fetch origin main` is run first to ensure the latest `main` through trusted preparation outside the agent checkout
+- **AND** a disposable checkout is created under `.healing-worktrees/qa/<source_butler>/<fingerprint-prefix>-<epoch>/` (the fingerprint prefix is the first 12 hex characters)
+- **AND** the branch name follows the pattern `qa/<source_butler>/<fingerprint-prefix>-<epoch>`
+- **AND** the checkout has its own Git metadata and object database, no shared `.git` or object alternates; `create_healing_worktree(prefix="qa")` is not inherited as the required mechanism
+- **AND** the credential-free agent and any build/test descendants run inside the process/filesystem boundary required by RFC0015; helper-workspace behavior from Investigation Agent Sandbox is retained
+- **AND** publication remains unavailable if that boundary cannot be proven; a linked worktree or CWD restriction alone does not establish isolation
+
+#### Scenario: Worktree cleanup on completion
+- **WHEN** an investigation completes (any terminal status)
+- **THEN** the disposable checkout may be removed only after sealed artifacts, expected-head/branch/PR bindings, operation stages and unresolved lineage holds are retained outside it
+- **AND** the local branch is deleted if no PR was created, subject to that evidence-retention prerequisite
+- **AND** cleanup performs no implicit remote deletion, including on anonymization failure or rollback; remote cleanup requires separate operational authority outside the publisher action surface
+
+#### Scenario: Partial creation and stale recovery preserve publication holds
+- **WHEN** QA cleans partial creation state, tears down a checkout, or reaps stale or apparently orphaned work on startup
+- **THEN** cleanup SHALL retain the sealed artifact, expected-head/branch/PR binding, operation stage and unresolved lineage hold outside agent control
+- **AND** while an unresolved publication lineage hold exists, terminal status, missing attempt rows or elapsed time do not permit a fresh publication attempt, ref or PR without exact bound-resource read-only reconciliation and durable hold resolution
+- **AND** shared healing cleanup/reaper helpers and `delete_remote=True` confer no QA remote-deletion authority
+
+### Requirement: Investigation Agent Sandbox
+Investigation agents SHALL operate in a sandboxed environment without GitHub publication credentials and with no access to publisher or butler runtime secrets.
+
+ID: REQ-qa-investigation-dispatch-001
+Source: owner-adopted QA publication contract 90d904ee0e4cb9a8c2b23ca07739bf580d167fa9e2f1d7f0a5b0a59959b2d8e9; RFC0015
+Scope: v1-mandatory
+
+#### Scenario: Agent environment
+- **WHEN** the investigation agent is spawned in a worktree
+- **THEN** only the trusted deterministic publisher may resolve `BUTLERS_QA_GH_TOKEN`; investigation agents receive no GitHub credential or generic publication capability
+- **AND** if configured, the QA staffer resolves `BUTLERS_QA_GIT_AUTHOR_NAME` and `BUTLERS_QA_GIT_AUTHOR_EMAIL` and injects them as `GIT_AUTHOR_*` / `GIT_COMMITTER_*` so non-interactive `git commit` does not depend on per-worktree `git config`
+- **AND** the agent's environment contains only: `PATH`, and build-tool variables (`UV_CACHE_DIR`, etc.)
+- **AND** it does NOT have: butler DB connection strings, API keys, OAuth tokens, user data, or any `BUTLERS_*` env vars
+- **AND** it does NOT have MCP server connections (the spawner automatically sets empty MCP server config when `trigger_source="qa"`, preventing access to live production state and suppressing the Codex adapter's MCP-discovery retry path)
+- **AND** its filesystem scope is the worktree directory only
+
+#### Scenario: Agent runs from a QA helper workspace
+- **WHEN** the investigation agent is spawned in a worktree
+- **THEN** its current working directory is a QA-owned helper subdirectory inside the worktree, not the repository root
+- **AND** that helper directory contains a local `AGENTS.md` override that disables unrelated repo-level workflow instructions such as `bd` usage, generic session-close rules, or self-managed PR/push steps
+- **AND** the helper directory exposes the repo roots needed for normal QA commands (`src/`, `tests/`, `roster/`, `frontend/`, `pyproject.toml`, `uv.lock`) so repo-relative validation commands still work unchanged
+
+#### Scenario: Publication unavailable without an isolated publisher
+- **WHEN** an investigation agent succeeds with commits, or a follow-up agent finishes on an open PR
+- **THEN** no `git push` and no `gh pr create` runs, and there is no fallback that restores token injection
+- **AND** the investigation transitions to `failed` with reason `publication_unavailable`; a follow-up records the same reason in `last_follow_up_error` and the PR is left unchanged
+- **AND** the dispatcher keeps the token only for read-only PR-status polling and its own fetch/worktree preparation
+
+#### Scenario: Dispatcher git subprocesses in the shared clone are isolated
+- **WHEN** the dispatcher runs git against the shared clone or an agent worktree (main refresh, follow-up fetch, worktree create/remove, managed-clone refresh, commit diff snapshot, no-op branch detection)
+- **THEN** the subprocess runs with an allowlisted environment that carries no butler runtime secret, and command-line git config that neutralises hooks, fsmonitor, credential helpers, `core.sshCommand`, `core.askPass` and the `ext::` and `git://` transports
+- **AND** named-remote fetches pin `--upload-pack=git-upload-pack` and the commit diff snapshot passes `--no-ext-diff --no-textconv` and no-op branch detection passes `--no-show-signature`, so agent-planted `.git/config` commands and drivers never execute
+
+#### Scenario: GitHub credentials from secrets store
+- **WHEN** the QA staffer needs to create a PR
+- **THEN** it retrieves the GitHub token from the system secrets store at key `BUTLERS_QA_GH_TOKEN` (managed via the dashboard at /secrets)
+- **AND** the dedicated one-repository credential uses minimum documented provider grants; the trusted publisher confines effective operations to its attempt-bound branch publication, PR create/update and fixed sanitized labels
+- **AND** the agent and publisher action surface SHALL NOT merge, approve, review or queue; humans remain in the merge seat. Coarse provider grants may include greater permission, and trusted-publisher compromise remains an explicit residual risk, not provider-side absence of permission
+- **AND** if the secret is not found, the investigation completes but transitions to `failed` with reason `"no_gh_token"`
+- **AND** if GitHub authenticates the token but denies repository write authorization (`Permission to … denied` or HTTP 403), the investigation transitions to `failed` with the stable `git_auth_failed` class and content-blind guidance to verify repository scope and organization authorization
+
+#### Scenario: Process isolation gates publication
+- **WHEN** agent/build/test processes can inspect publisher memory, files, inherited descriptors, environment or IPC authority
+- **THEN** automated publication MUST remain disabled; removing GH_TOKEN alone is insufficient and no token-injection fallback is permitted
+
+
+### Requirement: Anonymized PR Pipeline
+Trusted deterministic publication SHALL create attempt-bound PRs from validated immutable agent proposals through the anonymization pipeline, ensuring no sensitive data reaches the public GitHub repository. **All personal details and sensitive data MUST be anonymized.**
+
+ID: REQ-qa-investigation-dispatch-002
+Source: owner-adopted QA publication contract 90d904ee0e4cb9a8c2b23ca07739bf580d167fa9e2f1d7f0a5b0a59959b2d8e9; RFC0015
+Scope: v1-mandatory
+
+#### Scenario: PR creation with anonymization
+- **WHEN** the investigation agent has committed fixes
+- **THEN** all tree/commit content, messages, author metadata, PR text and fixed labels are validated before first push to the server-bound repository/branch; the validated bytes cannot be swapped before use
+- **AND** the PR title and body are passed through `anonymize()` and `validate_anonymized()`
+- **AND** the PR labels are passed through the same `anonymize()` + `validate_anonymized()` gate (labels are externally visible on the public destination)
+- **AND** the PR is created via `gh pr create` with the sanitized labels (default `["self-healing", "automated"]`)
+- **AND** the PR body includes: root cause analysis, affected butler(s), fix summary, patrol cycle reference (patrol ID, not raw log content), and a note that it was auto-generated by the QA staffer
+
+#### Scenario: Committed proposal cannot be published
+- **WHEN** the investigation agent commits a diff but branch push or PR creation fails or its outcome is uncertain
+- **THEN** the dispatcher retains the sealed artifact, bounded diff, investigation notes and durable expected-head/resource/operation stage outside agent control before teardown
+- **AND** the case API derives `proposal_state = "unpublished"` only with definite proof that no PR exists and the retained diff is non-empty; absent local PR metadata alone is insufficient
+- **AND** an ambiguous outcome remains explicitly ambiguous pending exact bound-resource read-only reconciliation, with no blind retry, remote deletion or false published/unpublished claim
+- **AND** the attempt records only the actual sanitized failure or ambiguity category rather than claiming that no fix was produced
+- **AND** no credential value, token fragment, or raw authorization response is added to the proposal state
+
+#### Scenario: Anonymization validation failure
+- **WHEN** `validate_anonymized()` detects residual PII in PR content
+- **THEN** publication refuses before first push; any ambiguous pre-existing remote outcome is held for exact read-only reconciliation, never implicit deletion
+- **AND** the investigation transitions to `anonymization_failed`
+- **AND** a fixed sanitized failure category is recorded without raw provider errors or sensitive source content
+
+#### Scenario: PR description links back to dashboard
+- **WHEN** a PR is created and `[modules.qa].dashboard_base_url` is configured
+- **THEN** the PR body includes a link to the investigation detail page: `<dashboard_base_url>/qa/investigations/<attempt_id>`
+- **AND** if `dashboard_base_url` is not configured, the link is omitted (the dashboard may be on a private tailnet and the link would leak the hostname to a public PR)
+
+### Requirement: Anonymization-on-Egress Guarantee
+QA SHALL not allow `evidence_lines[]` content (or any raw log content) to reach any GitHub-bound payload. The PR title, PR body, PR labels, and any branch commit messages SHALL pass through `anonymize()` + `validate_anonymized()` before reaching `gh pr create` or `git commit -m`. The gate runs unconditionally (every destination is treated as public).
+
+ID: REQ-qa-investigation-dispatch-003
+Source: owner-adopted QA publication contract 90d904ee0e4cb9a8c2b23ca07739bf580d167fa9e2f1d7f0a5b0a59959b2d8e9; RFC0015
+Scope: v1-mandatory
+
+#### Scenario: PR pipeline cannot emit raw evidence lines
+- **WHEN** the investigation agent has emitted `investigation_notes` and the dispatcher constructs the PR title and body
+- **THEN** the PR title and body are composed from the anonymized fields the agent produced for that purpose (sanitized event summary, fingerprint reference, narrative summary), NOT from `evidence_lines[].msg`
+- **AND** the PR title and body pass through `anonymize()` then `validate_anonymized()`
+- **AND** `validate_anonymized()` failure refuses before first push without deleting a remote branch and transitions the attempt to `anonymization_failed`
+
+#### Scenario: PR labels are sanitized fail-closed
+- **WHEN** the dispatcher assembles the `--label` arguments for `gh pr create`
+- **THEN** each label is scrubbed via `anonymize()` and checked by `validate_anonymized()` before `gh pr create` runs
+- **AND** if any label still contains residual sensitive content, the flow blocks before the first external mutation, retains any previously published resource unchanged, and transitions the attempt to `anonymization_failed` (QA path also increments the anonymization-failure counter)
+- **AND** only the sanitized labels reach the `gh pr create --label` arguments
+
+#### Scenario: Unit-level boundary test
+- **WHEN** the test suite runs
+- **THEN** `tests/core/qa/test_anonymization_boundary.py` asserts that every code path that constructs `gh pr create` arguments or `git commit -m` messages invokes `anonymize()` immediately prior, and that no such path takes a parameter whose name or type aliases to `evidence_lines`

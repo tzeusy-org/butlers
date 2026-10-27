@@ -18,7 +18,7 @@
 import { format } from "date-fns";
 
 import type { CoreDateEntry } from "@/api/types";
-import { Badge } from "@/components/ui/badge";
+import { FactReporterLine } from "./FactReporterLine";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { useEntityCoreDates } from "@/hooks/use-entities";
 
@@ -63,11 +63,7 @@ function CoreDateRow({ entry }: { entry: CoreDateEntry }) {
         </span>
       </dd>
       <dd className="flex items-center gap-1.5 justify-self-end">
-        {entry.verified && (
-          <Badge variant="secondary" className="text-[10px]">
-            verified
-          </Badge>
-        )}
+        <FactReporterLine fact={entry} />
         <span className="text-muted-foreground text-[10px] capitalize">
           {entry.staleness_band}
         </span>

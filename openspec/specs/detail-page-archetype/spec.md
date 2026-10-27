@@ -4,7 +4,7 @@
 
 Defines the normative contract for every dashboard page that renders a single domain record. The `<Page archetype="detail">` shell (exported from `frontend/src/components/ui/page.tsx`) owns all chrome and state management — breadcrumbs, loading state, error state, not-found state, the `max-w-5xl` container, and the `<h1>` title row. Individual detail pages own body slots only.
 
-This spec is the authoritative reference for all seven detail-page-archetype adopters: Fact, Rule, Episode, Contact, Butler, Entity, and Connector detail pages. Design source: `about/lay-and-land/detail-page-audit.md` §5 "Proposed `<DetailPage>` Contract".
+This spec is the authoritative reference for all seven detail-page-archetype adopters: Fact, Rule, Episode, Contact, Butler, Entity, and Connector detail pages. Design source: `openspec/changes/archive/2026-05-31-detail-page-archetype/design.md`.
 
 ---
 
@@ -14,8 +14,7 @@ This spec is the authoritative reference for all seven detail-page-archetype ado
 
 Every dashboard page that renders a single domain record SHALL use the `<Page archetype="detail">` shell exported from `frontend/src/components/ui/page.tsx`. Pages (one fact, one rule, one episode, one butler, one entity, one connector) own body slots only; the shell owns all chrome and state management. (Contacts are no longer a distinct detail page; they are rendered through the entity detail page.)
 
-**Design source:** `about/lay-and-land/detail-page-audit.md` §5 "Proposed
-`<DetailPage>` Contract" and §3.2 "The justifying lines". The shell is the
+**Design source:** `openspec/changes/archive/2026-05-31-detail-page-archetype/design.md` (D2, six-tier body vocabulary). The shell is the
 implementation of that contract as the `Page` component with `archetype="detail"`.
 
 #### Scenario: Shell owns breadcrumbs
@@ -179,6 +178,6 @@ Primary mutation actions on a detail page (edit, delete, trigger) SHALL be rende
 
 - Non-Negotiable Rule 2 (The Page is a primitive — `about/heart-and-soul/design-language.md`)
 - Non-Negotiable Rule 3 (Information density is a deliberate dial)
-- `about/lay-and-land/detail-page-audit.md` §3, §4, §5 — design source and contract basis
+- `openspec/changes/archive/2026-05-31-detail-page-archetype/design.md` — design source and contract basis
 - `frontend/src/components/ui/page.tsx` — `<Page archetype="detail">` implementation
 - `about/craft-and-care/engineering-bar.md` — Explicitness over hidden magic

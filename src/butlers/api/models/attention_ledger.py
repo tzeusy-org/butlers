@@ -72,6 +72,7 @@ class AttentionSourceSummary(BaseModel):
     # on its own; a "failed" row is only retried if the caller explicitly
     # enqueued a retry envelope.
     failed: int
+    expired_unseen: int
     total: int
     # The marquee signal this endpoint exists for: a source with
     # suppressed > 0 and delivered == 0 over the window is silently failing

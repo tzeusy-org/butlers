@@ -632,13 +632,9 @@ class TestToolRegistration:
 
     def test_register_tools_function_exists(self):
         """register_tools function is importable from finance modules."""
-        import importlib.util
-        from pathlib import Path
+        import importlib
 
-        tools_path = Path(__file__).parent.parent / "modules" / "tools.py"
-        spec = importlib.util.spec_from_file_location("finance_module_tools", tools_path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = importlib.import_module("butlers.modules._roster_finance.tools")
 
         assert hasattr(module, "register_tools")
         assert callable(module.register_tools)
@@ -1299,7 +1295,7 @@ class TestUpdateTransactionEnhanced:
         `current_metadata` to {} in that case — doing so would silently drop
         all pre-existing metadata keys when the fallback warning is persisted.
         """
-        from butlers.db import _jsonb_encoder
+        from butlers.db import encode_jsonb
         from butlers.tools.finance.transactions import update_transaction
 
         await _install_category_fk(pool_v2)
@@ -1317,7 +1313,7 @@ class TestUpdateTransactionEnhanced:
         async with pool_v2.acquire() as conn:
             await conn.set_type_codec(
                 "jsonb",
-                encoder=_jsonb_encoder,
+                encoder=encode_jsonb,
                 decoder=_passthrough_decoder,
                 schema="pg_catalog",
                 format="binary",

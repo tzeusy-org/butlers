@@ -56,19 +56,31 @@ export interface FuzzyFilterOptions<T> {
   limit?: number;
 }
 
+export interface FuzzyFilterResult<T> {
+  /** The best matching rows, capped after sorting when a limit is supplied. */
+  items: T[];
+  /** Number of matching rows before the display cap is applied. */
+  total: number;
+}
+
 /**
  * Filter+sort `items` by fuzzy match quality against `query`. An empty query
  * returns `items` unfiltered (in their original order, capped at `limit`) —
- * callers decide whether to call this at all for the empty-query case.
+ * callers decide whether to call this at all for the empty-query case. The
+ * total is retained separately from the capped items so palette groups can
+ * explain what remains outside their visible window.
  */
 export function fuzzyFilter<T>(
   query: string,
   items: T[],
   { getLabel, getKeywords, limit }: FuzzyFilterOptions<T>,
-): T[] {
+): FuzzyFilterResult<T> {
   const trimmed = query.trim();
   if (trimmed.length === 0) {
-    return limit != null ? items.slice(0, limit) : items;
+    return {
+      items: limit != null ? items.slice(0, limit) : items,
+      total: items.length,
+    };
   }
 
   const scored: { item: T; score: number }[] = [];
@@ -86,5 +98,8 @@ export function fuzzyFilter<T>(
   }
   scored.sort((a, b) => b.score - a.score);
   const sorted = scored.map((s) => s.item);
-  return limit != null ? sorted.slice(0, limit) : sorted;
+  return {
+    items: limit != null ? sorted.slice(0, limit) : sorted,
+    total: sorted.length,
+  };
 }

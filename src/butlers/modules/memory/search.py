@@ -6,35 +6,17 @@ All functions accept an asyncpg connection pool and return ranked results.
 
 from __future__ import annotations
 
-import importlib.util
 import math
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
+
+from butlers.modules.memory.content_authority import RULE_ADMITTED_SQL
 
 if TYPE_CHECKING:
     from asyncpg import Pool
 
-# ---------------------------------------------------------------------------
-# Load sibling modules from disk (roster/ is not a Python package).
-# ---------------------------------------------------------------------------
-
-_MODULE_DIR = Path(__file__).resolve().parent
-
-
-def _load_module(name: str):
-    path = _MODULE_DIR / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_search_vector_mod = _load_module("search_vector")
-preprocess_search_query = _search_vector_mod.preprocess_search_query
-tsquery_sql = _search_vector_mod.tsquery_sql
+from butlers.modules.memory.search_vector import preprocess_search_query
 
 _VALID_TABLES = frozenset({"episodes", "facts", "rules"})
 # Tables that support scope filtering (facts/rules use `scope` column).
@@ -47,6 +29,49 @@ _TS_CONFIG = "english"
 
 # RRF fusion constant (standard value from the original RRF paper).
 _RRF_K = 60
+
+
+def _resolve_local_allowed_sensitivities(
+    allowed_sensitivities: list[str] | None,
+) -> list[str]:
+    """Fail closed to normal-only when a low-level caller omits policy."""
+    if allowed_sensitivities is None:
+        return [DEFAULT_CATALOG_SENSITIVITY]
+    return list(allowed_sensitivities)
+
+
+def _structured_filter_conditions(
+    table: str,
+    entity_id: str | None,
+    predicate: str | None,
+    params: list,
+    param_idx: int,
+) -> tuple[list[str], int, bool]:
+    """Build the SQL for the entity and predicate filters applied before ranking.
+
+    Returns ``(conditions, next_param_idx, matches_nothing)``.  An entity filter
+    matches a fact's subject (``entity_id``) or object (``object_entity_id``).
+    Only facts carry those columns, so either filter excludes rules and episodes
+    rather than being ignored; an unparseable entity id also matches nothing.
+    """
+    if entity_id is None and predicate is None:
+        return [], param_idx, False
+    if table != "facts":
+        return [], param_idx, True
+    conditions: list[str] = []
+    if entity_id is not None:
+        try:
+            entity_uuid = uuid.UUID(str(entity_id))
+        except ValueError:
+            return [], param_idx, True
+        conditions.append(f"(entity_id = ${param_idx} OR object_entity_id = ${param_idx})")
+        params.append(entity_uuid)
+        param_idx += 1
+    if predicate is not None:
+        conditions.append(f"predicate = ${param_idx}")
+        params.append(predicate)
+        param_idx += 1
+    return conditions, param_idx, False
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +87,9 @@ async def semantic_search(
     limit: int = 10,
     scope: str | None = None,
     tenant_id: str = "shared",
+    allowed_sensitivities: list[str] | None = None,
+    entity_id: str | None = None,
+    predicate: str | None = None,
 ) -> list[dict]:
     """Search by cosine similarity using pgvector.
 
@@ -72,6 +100,15 @@ async def semantic_search(
         limit: Max results (default 10).
         scope: Optional scope filter (only applied for facts/rules tables).
         tenant_id: Tenant scope for isolation (default 'shared').
+        allowed_sensitivities: The read ceiling applied in SQL
+            (``COALESCE(sensitivity, 'normal') = ANY(allowed_sensitivities)``)
+            — the same mechanism ``search_catalog`` uses for cross-butler
+            reads, generalized to every local table. Omission fails closed to
+            normal-only access; policy-aware callers pass their resolved set.
+        entity_id: Facts only. Keep rows whose subject or object entity is this id,
+            applied in SQL before the limit. Rules and episodes then match nothing.
+        predicate: Facts only. Keep rows with this predicate, applied in SQL before
+            the limit. Rules and episodes then match nothing.
 
     Returns:
         List of dicts with all table columns plus a ``similarity`` key
@@ -83,6 +120,7 @@ async def semantic_search(
     if table not in _VALID_TABLES:
         raise ValueError(f"Invalid table: {table!r}. Must be one of {sorted(_VALID_TABLES)}")
 
+    allowed_sensitivities = _resolve_local_allowed_sensitivities(allowed_sensitivities)
     embedding_str = str(query_embedding)
 
     # Build WHERE clause -------------------------------------------------
@@ -120,19 +158,54 @@ async def semantic_search(
     if table == "facts":
         conditions.append("validity IN ('active', 'fading')")
 
-    # Rules: exclude forgotten (metadata->>'forgotten' IS NOT TRUE).
+    # Rules: exclude forgotten (metadata->>'forgotten' IS NOT TRUE) and retired
+    # (retired_at IS NULL) rules — neither is a live standing order, and this
+    # is the evaluation-path guard that stops a retired rule from firing (it
+    # backs recall()/memory_context()'s "Active Rules" injection). Held rules
+    # (non-owner authority, not endorsed) are likewise not live standing orders.
     if table == "rules":
         conditions.append("(metadata->>'forgotten')::boolean IS NOT TRUE")
+        conditions.append("retired_at IS NULL")
+        conditions.append(RULE_ADMITTED_SQL)
+
+    # Read ceiling: applied in SQL, identical shape to the catalog's
+    # sensitivity filter (see resolve_allowed_sensitivities). every one of
+    # episodes/facts/rules carries a sensitivity column.
+    conditions.append(f"COALESCE(sensitivity, '{DEFAULT_CATALOG_SENSITIVITY}') = ANY(${param_idx})")
+    params.append(allowed_sensitivities)
+    param_idx += 1
+
+    extra, param_idx, matches_nothing = _structured_filter_conditions(
+        table, entity_id, predicate, params, param_idx
+    )
+    if matches_nothing:
+        return []
+    conditions.extend(extra)
 
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
 
-    sql = f"""
-        SELECT *, 1 - (embedding <=> $1) AS similarity
-        FROM {table}
-        {where}
-        ORDER BY embedding <=> $1
-        LIMIT ${param_idx}
-    """
+    if extra:
+        # A filtered vector leg must be exact.  Served from the HNSW index, the filter
+        # would apply after at most ``hnsw.ef_search`` nearest candidates and silently
+        # drop matching rows ranked below them.  The materialized CTE cannot use the ANN
+        # index, so the ordering is exact over exactly the filtered rows.
+        sql = f"""
+            WITH candidates AS MATERIALIZED (
+                SELECT * FROM {table} {where}
+            )
+            SELECT *, 1 - (embedding <=> $1) AS similarity
+            FROM candidates
+            ORDER BY embedding <=> $1
+            LIMIT ${param_idx}
+        """
+    else:
+        sql = f"""
+            SELECT *, 1 - (embedding <=> $1) AS similarity
+            FROM {table}
+            {where}
+            ORDER BY embedding <=> $1
+            LIMIT ${param_idx}
+        """
     params.append(limit)
 
     rows = await pool.fetch(sql, *params)
@@ -152,6 +225,9 @@ async def keyword_search(
     limit: int = 10,
     scope: str | None = None,
     tenant_id: str = "shared",
+    allowed_sensitivities: list[str] | None = None,
+    entity_id: str | None = None,
+    predicate: str | None = None,
 ) -> list[dict]:
     """Search by keyword using PostgreSQL full-text search.
 
@@ -165,6 +241,10 @@ async def keyword_search(
         limit: Max results (default 10).
         scope: Optional scope filter (only for facts/rules).
         tenant_id: Tenant scope for isolation (default 'shared').
+        allowed_sensitivities: See ``semantic_search`` — same read ceiling,
+            applied in SQL.
+        entity_id: See ``semantic_search``.
+        predicate: See ``semantic_search``.
 
     Returns:
         List of dicts with keys: all table columns plus 'rank'.
@@ -176,6 +256,7 @@ async def keyword_search(
     if table not in _VALID_TABLES:
         raise ValueError(f"Invalid table: {table!r}. Must be one of {sorted(_VALID_TABLES)}")
 
+    allowed_sensitivities = _resolve_local_allowed_sensitivities(allowed_sensitivities)
     cleaned_query = preprocess_search_query(query_text)
     if not cleaned_query:
         return []
@@ -210,8 +291,22 @@ async def keyword_search(
     if table == "facts":
         conditions.append("validity IN ('active', 'fading')")
 
+    # See semantic_search above for why both exclusions apply.
     if table == "rules":
         conditions.append("(metadata->>'forgotten')::boolean IS NOT TRUE")
+        conditions.append("retired_at IS NULL")
+        conditions.append(RULE_ADMITTED_SQL)
+
+    conditions.append(f"COALESCE(sensitivity, '{DEFAULT_CATALOG_SENSITIVITY}') = ANY(${param_idx})")
+    params.append(allowed_sensitivities)
+    param_idx += 1
+
+    extra, param_idx, matches_nothing = _structured_filter_conditions(
+        table, entity_id, predicate, params, param_idx
+    )
+    if matches_nothing:
+        return []
+    conditions.extend(extra)
 
     where = " AND ".join(conditions)
 
@@ -242,6 +337,9 @@ async def hybrid_search(
     limit: int = 10,
     scope: str | None = None,
     tenant_id: str = "shared",
+    allowed_sensitivities: list[str] | None = None,
+    entity_id: str | None = None,
+    predicate: str | None = None,
 ) -> list[dict]:
     """Hybrid search combining semantic and keyword search via RRF.
 
@@ -261,6 +359,10 @@ async def hybrid_search(
         limit: Max results per search method and for final output.
         scope: Optional scope filter.
         tenant_id: Tenant scope for isolation (default 'shared').
+        allowed_sensitivities: Read ceiling forwarded to both search methods.
+            Omission fails closed to normal-only access.
+        entity_id: Forwarded to both search methods (see ``semantic_search``).
+        predicate: Forwarded to both search methods (see ``semantic_search``).
 
     Returns:
         List of dicts with ``rrf_score``, ``semantic_rank``, and
@@ -272,6 +374,8 @@ async def hybrid_search(
     if table not in _VALID_TABLES:
         raise ValueError(f"Invalid table: {table!r}. Must be one of {sorted(_VALID_TABLES)}")
 
+    allowed_sensitivities = _resolve_local_allowed_sensitivities(allowed_sensitivities)
+
     # Run both searches
     semantic_results = await semantic_search(
         pool,
@@ -280,6 +384,9 @@ async def hybrid_search(
         limit=limit,
         scope=scope,
         tenant_id=tenant_id,
+        allowed_sensitivities=allowed_sensitivities,
+        entity_id=entity_id,
+        predicate=predicate,
     )
     keyword_results = await keyword_search(
         pool,
@@ -288,6 +395,9 @@ async def hybrid_search(
         limit=limit,
         scope=scope,
         tenant_id=tenant_id,
+        allowed_sensitivities=allowed_sensitivities,
+        entity_id=entity_id,
+        predicate=predicate,
     )
 
     # Build rank maps keyed by id
@@ -469,15 +579,17 @@ async def recall(
     weights: CompositeWeights | None = None,
     tenant_id: str = "shared",
     filters: dict[str, Any] | None = None,
+    read_policy: CatalogReadPolicy | None = None,
 ) -> list[dict]:
     """High-level composite-scored retrieval of relevant facts and rules.
 
     This is the primary retrieval entry point. It:
     1. Embeds the topic text
-    2. Runs hybrid search on both facts and rules tables
+    2. Runs hybrid search on both facts and rules tables, ceiling-filtered in SQL
     3. Computes composite scores (relevance, importance, recency, confidence)
     4. Filters by minimum effective confidence
-    5. Applies optional structured filters as AND conditions
+    5. Applies optional structured filters as AND conditions (``entity_id``, matching
+       a fact's subject or object, and ``predicate`` in SQL before ranking)
     6. Bumps reference counts on returned results
     7. Returns results sorted by composite score descending
 
@@ -492,15 +604,46 @@ async def recall(
         tenant_id: Tenant scope for isolation (default 'shared').
         filters: Optional dict of AND-conditions (scope, entity_id, predicate,
             source_butler, time_from, time_to, retention_class, sensitivity).
-            Unrecognized keys are silently ignored.
+            Unrecognized keys are silently ignored. An explicit ``sensitivity``
+            value above ``read_policy``'s ceiling raises
+            ``SensitivityAuthorizationError`` rather than returning an empty list.
+        read_policy: Server-held read ceiling. When omitted, loaded from this
+            pool's ``runtime_config`` (fail-closed to ``normal`` if unset) —
+            the same ceiling ``search_catalog`` uses, generalized to local
+            recall. Callers within one context/session assembly (e.g.
+            ``memory_context``) should load this once and pass it explicitly
+            so every fetch in that assembly agrees on one ceiling.
 
     Returns:
         List of dicts with ``composite_score`` and ``memory_type`` added.
         Sorted by composite_score descending.
+
+    Raises:
+        SensitivityAuthorizationError: If ``filters['sensitivity']`` names a
+            level above ``read_policy``'s ceiling.
     """
+    if read_policy is None:
+        read_policy = await load_catalog_read_policy(pool)
+
+    explicit_sensitivity = filters.get("sensitivity") if filters else None
+    if (
+        explicit_sensitivity is not None
+        and explicit_sensitivity not in read_policy.allowed_sensitivities
+    ):
+        raise SensitivityAuthorizationError(
+            f"sensitivity={explicit_sensitivity!r} exceeds read ceiling "
+            f"{read_policy.allowed_sensitivities!r}"
+        )
+
+    allowed_sensitivities = list(read_policy.allowed_sensitivities)
     query_embedding = embedding_engine.embed(topic)
 
-    # Search both facts and rules
+    # The entity and predicate filters narrow the candidate set in SQL, before the
+    # per-source limit; filtering the top-N afterwards would lose rows ranked below it.
+    entity_filter = filters.get("entity_id") if filters else None
+    predicate_filter = filters.get("predicate") if filters else None
+
+    # Search both facts and rules — ceiling and structured filters applied in SQL.
     facts_results = await hybrid_search(
         pool,
         topic,
@@ -509,6 +652,9 @@ async def recall(
         limit=limit,
         scope=scope,
         tenant_id=tenant_id,
+        allowed_sensitivities=allowed_sensitivities,
+        entity_id=entity_filter,
+        predicate=predicate_filter,
     )
     rules_results = await hybrid_search(
         pool,
@@ -518,6 +664,9 @@ async def recall(
         limit=limit,
         scope=scope,
         tenant_id=tenant_id,
+        allowed_sensitivities=allowed_sensitivities,
+        entity_id=entity_filter,
+        predicate=predicate_filter,
     )
 
     # Tag each result with its memory type
@@ -554,9 +703,12 @@ async def recall(
     # Sort by composite score descending
     scored.sort(key=lambda x: -x["composite_score"])
 
-    # Apply structured filters as AND conditions (after scoring, before limit)
+    # Apply the remaining structured filters as AND conditions (after scoring, before
+    # limit).  entity_id and predicate were already applied in SQL; re-applying
+    # entity_id here would drop edge facts matched through their object entity.
     if filters:
-        scored = _apply_filters(scored, filters)
+        post_filters = {k: v for k, v in filters.items() if k not in ("entity_id", "predicate")}
+        scored = _apply_filters(scored, post_filters)
 
     scored = scored[:limit]
 
@@ -691,6 +843,7 @@ async def search(
     min_confidence: float = 0.0,
     tenant_id: str = "shared",
     filters: dict[str, Any] | None = None,
+    read_policy: CatalogReadPolicy | None = None,
 ) -> list[dict]:
     """General-purpose search across memory types.
 
@@ -711,13 +864,19 @@ async def search(
         tenant_id: Tenant scope for isolation (default 'shared').
         filters: Optional dict of AND-conditions (scope, entity_id, predicate,
             source_butler, time_from, time_to, retention_class, sensitivity).
-            Unrecognized keys are silently ignored.
+            Unrecognized keys are silently ignored. An explicit ``sensitivity``
+            value above ``read_policy``'s ceiling raises
+            ``SensitivityAuthorizationError``.
+        read_policy: Server-held read ceiling. When omitted, loaded from this
+            pool's ``runtime_config`` (fail-closed to ``normal`` if unset).
 
     Returns:
         List of dicts with 'memory_type' added, sorted by relevance.
 
     Raises:
         ValueError: If mode or types are invalid.
+        SensitivityAuthorizationError: If ``filters['sensitivity']`` names a
+            level above ``read_policy``'s ceiling.
     """
     if mode not in _VALID_SEARCH_MODES:
         raise ValueError(f"Invalid mode: {mode!r}. Must be one of {sorted(_VALID_SEARCH_MODES)}")
@@ -731,6 +890,20 @@ async def search(
                     f"Invalid type: {t!r}. Must be one of {sorted(_VALID_SEARCH_TYPES)}"
                 )
 
+    if read_policy is None:
+        read_policy = await load_catalog_read_policy(pool)
+
+    explicit_sensitivity = filters.get("sensitivity") if filters else None
+    if (
+        explicit_sensitivity is not None
+        and explicit_sensitivity not in read_policy.allowed_sensitivities
+    ):
+        raise SensitivityAuthorizationError(
+            f"sensitivity={explicit_sensitivity!r} exceeds read ceiling "
+            f"{read_policy.allowed_sensitivities!r}"
+        )
+
+    allowed_sensitivities = list(read_policy.allowed_sensitivities)
     all_results: list[dict] = []
 
     # Embed once for semantic/hybrid modes
@@ -743,15 +916,34 @@ async def search(
 
         if mode == "semantic":
             results = await semantic_search(
-                pool, query_embedding, table, limit=limit, scope=scope, tenant_id=tenant_id
+                pool,
+                query_embedding,
+                table,
+                limit=limit,
+                scope=scope,
+                tenant_id=tenant_id,
+                allowed_sensitivities=allowed_sensitivities,
             )
         elif mode == "keyword":
             results = await keyword_search(
-                pool, query, table, limit=limit, scope=scope, tenant_id=tenant_id
+                pool,
+                query,
+                table,
+                limit=limit,
+                scope=scope,
+                tenant_id=tenant_id,
+                allowed_sensitivities=allowed_sensitivities,
             )
         else:  # hybrid
             results = await hybrid_search(
-                pool, query, query_embedding, table, limit=limit, scope=scope, tenant_id=tenant_id
+                pool,
+                query,
+                query_embedding,
+                table,
+                limit=limit,
+                scope=scope,
+                tenant_id=tenant_id,
+                allowed_sensitivities=allowed_sensitivities,
             )
 
         # Tag with memory type
@@ -789,35 +981,59 @@ async def search(
 
 
 # ---------------------------------------------------------------------------
-# Cross-butler catalog search
+# Server-held read ceiling — generalized across every local read path
+# (recall, search, memory_context) as well as the cross-butler catalog.
 # ---------------------------------------------------------------------------
 
 _CATALOG_TS_CONFIG = "english"
 _CATALOG_RRF_K = 60
 
-# Cross-butler catalog sensitivity / authorization model.
+# Sensitivity / authorization model shared by every memory read path.
 #
 # Sensitivity values are ordered from least to most sensitive. A caller's
 # authorization is expressed as the *highest* level it may view; it receives
 # every level up to and including that ceiling. The default ceiling is
 # ``normal`` so a caller that does not explicitly request a higher level (or
-# whose authorization is unknown) only ever sees ``normal`` entries.
+# whose authorization is unknown) only ever sees ``normal`` entries. This is
+# the same single server-held ceiling (``runtime_config.catalog_read_sensitivity``)
+# for both the cross-butler catalog AND this butler's own local recall/search/
+# memory_context — the read ceiling is a property of every memory read path,
+# not of the catalog alone.
 #
 # Fail-closed semantics:
-#   * an unrecognized authorization ceiling collapses to ``normal``-only;
-#   * catalog rows whose ``sensitivity`` is NULL are treated as ``normal``
-#     (the canonical source tables default to ``normal``);
-#   * catalog rows carrying a value outside this hierarchy are never returned,
+#   * an unrecognized authorization ceiling collapses to ``normal``-only and
+#     is flagged via ``CatalogReadPolicy.policy_defaulted``;
+#   * rows whose ``sensitivity`` is NULL are treated as ``normal`` (the
+#     canonical source tables default to ``normal``);
+#   * rows carrying a value outside this hierarchy are never returned,
 #     because they cannot be proven to sit at or below the caller's ceiling.
 CATALOG_SENSITIVITY_LEVELS: tuple[str, ...] = ("normal", "pii", "confidential")
 DEFAULT_CATALOG_SENSITIVITY = "normal"
 
 
 class CatalogReadPolicy(NamedTuple):
-    """Server-held catalog authority resolved to persisted sensitivity values."""
+    """Server-held read authority resolved to persisted sensitivity values.
+
+    Despite the name (kept for backward compatibility), this governs every
+    local read path in addition to the cross-butler catalog — see
+    ``resolve_catalog_read_policy``.
+    """
 
     authority: str
     allowed_sensitivities: tuple[str, ...]
+    # True when the input ceiling was unrecognized and fail-closed defaulting
+    # kicked in, as opposed to a caller genuinely holding "normal" authority.
+    policy_defaulted: bool = False
+
+
+class SensitivityAuthorizationError(PermissionError):
+    """Raised when an explicit sensitivity filter exceeds the caller's read ceiling.
+
+    Structured filters (see ``_apply_filters``) are the one place a caller can
+    directly name a sensitivity value. Silently returning an empty result set
+    for an over-reaching request would be indistinguishable from "no matches";
+    raising makes the authorization boundary explicit instead.
+    """
 
 
 _CATALOG_READ_AUTHORITIES: dict[str, tuple[str, ...]] = {
@@ -833,16 +1049,22 @@ def resolve_catalog_read_policy(read_ceiling: str) -> CatalogReadPolicy:
 
     ``internal`` deliberately maps onto the existing ``pii`` sensitivity tier;
     the catalog's persisted sensitivity vocabulary remains unchanged. Unknown
-    held values fail closed to normal-only access.
+    held values fail closed to normal-only access and set ``policy_defaulted``.
     """
     allowed = _CATALOG_READ_AUTHORITIES.get(read_ceiling)
     if allowed is None:
-        return CatalogReadPolicy("normal", (DEFAULT_CATALOG_SENSITIVITY,))
-    return CatalogReadPolicy(read_ceiling, allowed)
+        return CatalogReadPolicy("normal", (DEFAULT_CATALOG_SENSITIVITY,), policy_defaulted=True)
+    return CatalogReadPolicy(read_ceiling, allowed, policy_defaulted=False)
 
 
 async def load_catalog_read_policy(pool: Pool) -> CatalogReadPolicy:
-    """Load the current butler's held catalog authority from runtime_config."""
+    """Load the current butler's held read authority from runtime_config.
+
+    This single server-held value is the read ceiling for every memory read
+    path on this butler's pool — catalog search, ``recall``, ``search``, and
+    ``memory_context`` all resolve it the same way and apply the same
+    ``allowed_sensitivities`` set.
+    """
     read_ceiling = await pool.fetchval(
         "SELECT catalog_read_sensitivity FROM runtime_config LIMIT 1"
     )

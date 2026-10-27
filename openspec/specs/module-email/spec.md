@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The Email module provides email MCP tools for inbox search, message reading, sending, and replying using IMAP and SMTP, with classification pipeline integration for incoming message routing.
+The Email module provides email MCP tools for inbox search, message reading, sending, and replying using IMAP and SMTP. Incoming message classification and routing are handled by `GmailConnector` via the connector-based ingestion pipeline, not by this module.
 
 ## Requirements
 
@@ -29,8 +29,7 @@ The module registers MCP tools for inbox operations and message send/reply.
 
 ### Requirement: EmailConfig with Credential Scoping
 
-The implementation SHALL provide the behavior described by this requirement.
-Configuration supports independent enable/disable per identity scope with configurable env var names for credentials.
+Configuration SHALL support independent enable/disable per identity scope with configurable env var names for credentials.
 
 #### Scenario: Config structure
 
@@ -47,8 +46,7 @@ Configuration supports independent enable/disable per identity scope with config
 
 ### Requirement: Credential Resolution
 
-The implementation SHALL provide the behavior described by this requirement.
-Credentials are resolved at startup via CredentialStore (DB-first, then env) and cached.
+Credentials SHALL be resolved at startup via CredentialStore (DB-first, then env) and cached.
 
 #### Scenario: Startup credential resolution
 
@@ -64,8 +62,7 @@ Credentials are resolved at startup via CredentialStore (DB-first, then env) and
 
 ### Requirement: IMAP Inbox Search
 
-The implementation SHALL provide the behavior described by this requirement.
-Email inbox search uses IMAP SEARCH commands via stdlib `imaplib`.
+Email inbox search SHALL use IMAP SEARCH commands via stdlib `imaplib`.
 
 #### Scenario: Search inbox
 
@@ -76,8 +73,7 @@ Email inbox search uses IMAP SEARCH commands via stdlib `imaplib`.
 
 ### Requirement: IMAP Message Reading
 
-The implementation SHALL provide the behavior described by this requirement.
-Full message reading via IMAP FETCH.
+The module SHALL support full message reading via IMAP FETCH.
 
 #### Scenario: Read a message
 
@@ -117,3 +113,23 @@ handled by `GmailConnector` via the connector-based pipeline.
 - **AND** incoming email reaches butlers through `GmailConnector` and the
   connector-based ingestion pipeline rather than through a module-side
   classification tool
+
+### Requirement: Email Effect Permission Availability
+
+Email send and reply paths SHALL read the `email.send` permission before SMTP, including native Messenger commands executed immediately or after approval. This requirement refines Email Tools and SMTP Email Sending without changing recipient approval rules.
+
+#### Scenario: Readable permission state
+- **WHEN** the permission lookup succeeds with no row or `granted=true`
+- **THEN** sending MAY proceed through the existing independent approval and SMTP path
+- **AND** a readable `granted=false` row SHALL refuse the send as an explicit permission denial
+
+#### Scenario: Unavailable permission state
+- **WHEN** the permission pool is missing, the lookup fails, or its row is malformed
+- **THEN** send and reply SHALL raise a typed transient permission-unavailable error before SMTP traffic
+- **AND** no successful-send result SHALL be recorded
+- **AND** a later explicit retry or deferred execution SHALL read current permission state again, without an automatic retry by this guard
+
+#### Scenario: Safe Messenger refusal before delivery
+- **WHEN** a Messenger native email command is refused because permission state is unavailable
+- **THEN** the response SHALL report a retryable unavailable error and existing `not_attempted` pre-transport policy evidence
+- **AND** the availability error and logs SHALL exclude recipients, message content, row reasons and raw database exception text

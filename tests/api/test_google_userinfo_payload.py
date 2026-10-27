@@ -43,7 +43,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from butlers.api.app import create_app
+from butlers.api.deps import get_db_optional
 from butlers.api.routers import oauth as oauth_module
 from butlers.api.routers.oauth import (
     _clear_state_store,
@@ -54,6 +54,7 @@ from butlers.api.routers.oauth import (
     _UserinfoError,
 )
 from butlers.google_account_registry import GoogleAccountNotFoundError
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
@@ -312,7 +313,7 @@ class _Harness:
 async def _call_site_one(harness: _Harness) -> httpx.Response:
     """Drive ``oauth_google_callback`` over HTTP, the way Google reaches it."""
     app = create_app()
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: MagicMock()
+    app.dependency_overrides[get_db_optional] = lambda: MagicMock()
     state = _generate_state()
     _store_state(state)
 

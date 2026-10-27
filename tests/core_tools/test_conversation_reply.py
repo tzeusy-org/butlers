@@ -20,6 +20,7 @@ from uuid import uuid4
 import pytest
 
 from butlers.core_tools._base import ToolContext
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
 
@@ -143,7 +144,16 @@ async def test_conversation_reply_errors_when_persistence_raises(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("sources", [[], [""], ["   "]])
+@pytest.mark.parametrize(
+    "sources",
+    [
+        [],
+        [""],
+        ["   "],
+        [{"label": "Unknown", "target": "/not-a-shell-route"}],
+        ["x" * 201],
+    ],
+)
 async def test_empty_or_blank_sources_are_rejected_with_guidance(sources):
     """An answer-lane reply claiming sources but providing none must error —
     an unsourced 'answer' is indistinguishable from a fabricated one."""
@@ -191,6 +201,100 @@ async def test_non_empty_sources_persists(monkeypatch):
     }
     fake_create.assert_awaited_once()
     assert fake_create.await_args.kwargs["sources"] == ["finance.get_budget", "transaction#a1b2c3"]
+
+
+async def test_structured_sources_are_normalized_and_author_is_server_derived(monkeypatch):
+    """Navigation trust and authorship are established by the server boundary."""
+    conv_id = uuid4()
+    message_id = uuid4()
+    fake_create = AsyncMock(return_value={"id": message_id, "role": "assistant"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", fake_create)
+
+    tool = _register_and_grab(pool=AsyncMock(), butler_name="finance")
+
+    result = await tool(
+        conversation_id=str(conv_id),
+        message="The budget is on track.",
+        sources=[
+            {"label": "Budget detail", "target": "/spend"},
+            {
+                "label": "Session detail",
+                "target": "/sessions/123e4567-e89b-12d3-a456-426614174000",
+            },
+            {"label": "External reference", "target": "https://example.com/reference"},
+            "finance.get_budget",
+        ],
+    )
+
+    assert result["status"] == "ok"
+    assert fake_create.await_args.kwargs["citations"] == [
+        {"label": "Budget detail", "target": "/spend", "kind": "internal"},
+        {
+            "label": "Session detail",
+            "target": "/sessions/123e4567-e89b-12d3-a456-426614174000",
+            "kind": "internal",
+        },
+        {
+            "label": "External reference",
+            "target": "https://example.com/reference",
+            "kind": "external",
+        },
+        {"label": "finance.get_budget", "target": None, "kind": "unlinked"},
+    ]
+    assert fake_create.await_args.kwargs["sources"] == [
+        "Budget detail",
+        "Session detail",
+        "External reference",
+        "finance.get_budget",
+    ]
+    assert fake_create.await_args.kwargs["routed_butler"] == "finance"
+
+
+async def test_unknown_structured_route_is_dropped_without_echoing_it(monkeypatch, caplog):
+    fake_create = AsyncMock(return_value={"id": uuid4(), "role": "assistant"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", fake_create)
+    tool = _register_and_grab(pool=AsyncMock())
+
+    result = await tool(
+        conversation_id=str(uuid4()),
+        message="Grounded answer.",
+        sources=[
+            {"label": "Known", "target": "/spend"},
+            {"label": "private sentinel label", "target": "/not-a-shell-route/sentinel"},
+        ],
+    )
+
+    assert result["status"] == "ok"
+    assert fake_create.await_args.kwargs["citations"] == [
+        {"label": "Known", "target": "/spend", "kind": "internal"}
+    ]
+    assert "citation_source_rejected" in caplog.text
+    assert "reason_code=route_not_allowlisted" in caplog.text
+    assert "rejected_count=1" in caplog.text
+    assert "private sentinel" not in caplog.text
+    assert "/not-a-shell-route" not in caplog.text
+
+
+async def test_over_budget_target_rejects_whole_call_without_persistence_or_echo(monkeypatch):
+    fake_create = AsyncMock(return_value={"id": uuid4(), "role": "assistant"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", fake_create)
+    tool = _register_and_grab(pool=AsyncMock())
+    private_target = "/private-budget-sentinel/" + "x" * 2048
+
+    result = await tool(
+        conversation_id=str(uuid4()),
+        message="Grounded answer.",
+        sources=[
+            {"label": "Known", "target": "/spend"},
+            {"label": "private budget label", "target": private_target},
+        ],
+    )
+
+    assert result["status"] == "error"
+    assert "size limit" in result["error"]
+    assert "private budget label" not in result["error"]
+    assert "private-budget-sentinel" not in result["error"]
+    fake_create.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -292,3 +396,93 @@ async def test_conversation_reply_omits_session_id_and_tool_calls_without_contex
     assert result["status"] == "ok"
     assert fake_create.await_args.kwargs["session_id"] is None
     assert fake_create.await_args.kwargs["tool_calls"] is None
+
+
+# ---------------------------------------------------------------------------
+# Knowledge-gap capture on a sourceless decline (bu-q7vx1q.9)
+# ---------------------------------------------------------------------------
+
+
+def _gap_env(monkeypatch, *, routing_context, hook_result=None):
+    """Persisting reply + ambient routing context + a recording memory hook."""
+    conv_id, request_id, entity_id = uuid4(), uuid4(), uuid4()
+    fake_create = AsyncMock(return_value={"id": uuid4(), "role": "assistant"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", fake_create)
+    monkeypatch.setattr(
+        "butlers.core_tools._conversation_reply.get_current_runtime_session_routing_context",
+        lambda: routing_context(request_id),
+    )
+    hook = AsyncMock(return_value=hook_result or {"status": "recorded", "gap_id": "g1"})
+    monkeypatch.setattr("butlers.core.memory_hooks.record_knowledge_gap", hook)
+    pool = fake_pool(fetchval="What is Mei's daughter's name?")
+    return SimpleNamespace(
+        conv_id=conv_id, request_id=request_id, entity_id=entity_id, hook=hook, pool=pool
+    )
+
+
+def _dashboard(request_id):
+    return {"request_id": str(request_id), "request_context": {"source_channel": "dashboard"}}
+
+
+async def test_decline_gap_takes_origin_from_routing_context_and_question_from_thread(monkeypatch):
+    env = _gap_env(monkeypatch, routing_context=_dashboard)
+    tool = _register_and_grab(pool=env.pool)
+
+    result = await tool(
+        conversation_id=str(env.conv_id),
+        message="I don't know that yet.",
+        gap={"entity_id": str(env.entity_id), "predicate": "child_name"},
+    )
+
+    assert result["status"] == "ok"
+    assert result["gap"] == {"status": "recorded", "gap_id": "g1"}
+    env.hook.assert_awaited_once_with(
+        "finance",
+        entity_id=env.entity_id,
+        predicate="child_name",
+        question_summary="What is Mei's daughter's name?",
+        conversation_id=env.conv_id,
+        request_id=env.request_id,
+        channel="dashboard",
+    )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "routing_context", "reason"),
+    [
+        ({"sources": ["finance.get_budget"]}, _dashboard, "without sources"),
+        ({}, lambda _rid: None, "no routing context"),
+    ],
+)
+async def test_gap_is_refused_but_the_decline_still_persists(
+    monkeypatch, kwargs, routing_context, reason
+):
+    env = _gap_env(monkeypatch, routing_context=routing_context)
+    tool = _register_and_grab(pool=env.pool)
+
+    result = await tool(
+        conversation_id=str(env.conv_id),
+        message="An answer.",
+        gap={"entity_id": str(env.entity_id), "predicate": "child_name"},
+        **kwargs,
+    )
+
+    assert result["status"] == "ok"
+    assert result["gap"]["status"] == "refused"
+    assert reason in result["gap"]["error"]
+    env.hook.assert_not_awaited()
+
+
+async def test_gap_hook_failure_never_blocks_the_decline(monkeypatch):
+    env = _gap_env(monkeypatch, routing_context=_dashboard)
+    env.hook.side_effect = RuntimeError("memory pool gone")
+    tool = _register_and_grab(pool=env.pool)
+
+    result = await tool(
+        conversation_id=str(env.conv_id),
+        message="I don't know that yet.",
+        gap={"entity_id": str(env.entity_id), "predicate": "child_name"},
+    )
+
+    assert result["status"] == "ok"
+    assert result["gap"]["status"] == "error"

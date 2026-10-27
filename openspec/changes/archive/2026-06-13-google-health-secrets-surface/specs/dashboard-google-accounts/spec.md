@@ -35,7 +35,7 @@ This requirement is a security invariant. It MUST hold regardless of how many Go
 #### Scenario: Owner-default inventory surfaces only the primary Google account
 
 - **WHEN** `GET /api/secrets/inventory` is called without an `?identity=` parameter (owner-default projection)
-- **AND** the system has two or more connected Google accounts (e.g. a primary `uniquosity@gmail.com` and a non-primary `tzeuse@gmail.com`)
+- **AND** the system has two or more connected Google accounts (e.g. a primary `owner@example.com` and a non-primary `owner.secondary@example.com`)
 - **THEN** the response SHALL include exactly one `google_oauth_refresh` entry in the `user` array
 - **AND** that entry SHALL correspond to the primary account (`is_primary = true` on `public.google_accounts`)
 - **AND** the non-primary account's `google_oauth_refresh` entry SHALL NOT appear in the response

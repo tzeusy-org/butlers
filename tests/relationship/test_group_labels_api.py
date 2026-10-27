@@ -8,10 +8,8 @@ Covers:
 - GET /relationship/groups — list groups includes labels field
 - GET /relationship/groups/{id} — get group includes labels field
 
-Pattern: create_app() causes dynamic modules to be loaded and wired via
-wire_db_dependencies. After create_app(), the relationship router module is
-available in sys.modules["relationship_api_router"]. We override its
-_get_db_manager via app.dependency_overrides using the module's own function.
+Pattern: create_app() loads the relationship router dynamically while all
+routers share the public get_db dependency used by these overrides.
 """
 
 from __future__ import annotations
@@ -24,8 +22,9 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -83,7 +82,7 @@ def _make_app(pool):
     rel_module = sys.modules.get("relationship_api_router")
     if rel_module is None:
         raise RuntimeError("relationship_api_router not found in sys.modules after create_app()")
-    app.dependency_overrides[rel_module._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     return app
 
 

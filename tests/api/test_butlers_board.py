@@ -13,8 +13,8 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 
-from butlers.api.deps import ButlerConnectionInfo, get_pricing
-from butlers.api.routers.butlers import _cadence_label, _get_db_manager
+from butlers.api.deps import ButlerConnectionInfo, get_db, get_pricing
+from butlers.api.routers.butlers import _cadence_label
 from butlers.core.pricing import ModelPricing, PricingConfig
 
 from .conftest import make_mock_mcp_manager, make_test_app
@@ -137,8 +137,10 @@ class _FakeSwitchboardPool:
     def __init__(self, *, rows: list[dict] | None = None, fails: bool = False) -> None:
         self.rows = rows or []
         self.fails = fails
+        self.last_sql: str | None = None
 
     async def fetch(self, sql, *args):
+        self.last_sql = sql
         if self.fails:
             raise RuntimeError("registry unreachable")
         return list(self.rows)
@@ -188,7 +190,7 @@ def _build_app(configs, db, *, online: bool = True):
         configs=configs,
         mcp_manager=make_mock_mcp_manager(online=online),
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(
         models={"claude-x": ModelPricing(input_price_per_token=0.001, output_price_per_token=0.002)}
     )
@@ -334,6 +336,59 @@ async def test_board_quarantined_row_surfaces_reason_and_red_tone():
     assert row["cell_tone"] == "red"
     assert row["quarantine_reason"] == "3 consecutive heartbeat misses"
     assert resp.json()["data"]["aggregates"]["quarantined"] == 1
+
+
+async def test_board_uses_receiver_health_and_policy_when_legacy_heartbeat_is_old(monkeypatch):
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+    now = _now()
+    switchboard = _FakeSwitchboardPool(
+        rows=[
+            {
+                **_registry_row("health", last_seen_at=now - timedelta(seconds=2)),
+                "legacy_last_seen_at": now - timedelta(hours=2),
+                "eligibility_state": "active",
+            },
+            _registry_row(
+                "finance",
+                last_seen_at=now - timedelta(seconds=2),
+                eligibility_state="quarantined",
+                quarantined_at=now - timedelta(minutes=1),
+                quarantine_reason="protected_policy:quarantined",
+            ),
+        ]
+    )
+    configs = [
+        ButlerConnectionInfo(name="health", port=41103),
+        ButlerConnectionInfo(name="finance", port=41105),
+    ]
+    db = _FakeDb(
+        switchboard=switchboard,
+        butlers={"health": _FakeButlerPool(), "finance": _FakeButlerPool()},
+    )
+    response = await _get_board(_build_app(configs, db))
+    rows = {row["name"]: row for row in response.json()["data"]["rows"]}
+
+    assert response.status_code == 200
+    assert "c.healthy_observed_at AS last_seen_at" in switchboard.last_sql
+    assert "c.policy_state" in switchboard.last_sql
+    assert "r.last_seen_at" not in switchboard.last_sql
+    assert rows["health"]["eligibility"] == "active"
+    assert rows["health"]["heartbeat_age_seconds"] < 300
+    assert rows["finance"]["eligibility"] == "quarantined"
+    assert rows["finance"]["quarantine_reason"] == "protected_policy:quarantined"
+
+
+async def test_board_flag_off_reads_legacy_projection(monkeypatch):
+    monkeypatch.delenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", raising=False)
+    switchboard = _FakeSwitchboardPool(rows=[_registry_row("health", last_seen_at=_now())])
+    configs = [ButlerConnectionInfo(name="health", port=41103)]
+    db = _FakeDb(switchboard=switchboard, butlers={"health": _FakeButlerPool()})
+
+    response = await _get_board(_build_app(configs, db))
+
+    assert response.status_code == 200
+    assert "FROM butler_registry" in switchboard.last_sql
+    assert "butler_registry_control_plane" not in switchboard.last_sql
 
 
 async def test_board_future_last_seen_at_beyond_tolerance_degrades_to_unknown():

@@ -11,8 +11,9 @@ data (``daily_rollups``, ``daily_rollup_flags``, ``episode_entities``) and:
    at 1.0 by ``store_fact``), and decay (via ``permanence``);
 2. writes self-reminder facts marking low-confidence day blocks for
    re-reconciliation once more evidence lands;
-3. PROPOSES recurring-companion enrichment to the ``relationship`` butler over
-   MCP (switchboard-routed ``post_mail``) — never a direct cross-schema write.
+3. PROPOSES recurring-companion enrichment through an injected
+   ``propose_enrichment_fn`` (no production transport is wired today) — never a
+   direct cross-schema write.
 
 Invariants (the §8.6 acceptance contract):
 
@@ -39,7 +40,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from butlers.chronicler.aggregations import LANES, lane_for_activity
+from butlers.chronicler.aggregations import LANES, lane_for_activity, sources_for_lane
 from butlers.chronicler.balance import (
     DEFAULT_BASELINE_LOOKBACK_DAYS,
     LaneBalance,
@@ -543,28 +544,73 @@ async def run_day_close_writeback(
             pool, start_date=baseline_start, end_date=baseline_end
         )
         flags = await storage.list_daily_rollup_flags(pool, local_date=day_date)
+        baseline_flags = await storage.list_daily_rollup_flags_range(
+            pool, start_date=baseline_start, end_date=baseline_end
+        )
     except Exception:
         logger.exception(
             "chronicler writeback: rollup fetch failed for %s; skipping write-back", day_date
         )
         return WriteBackResult()
 
-    day_seconds_by_lane = {r.lane: r.seconds for r in day_rollups}
+    # Rollups deliberately zero-fill every lane for the balance API. That is
+    # not evidence of a measured zero for durable behavioral claims. Preserve
+    # numeric zero when it has a real sample, rather than testing truthiness.
+    dark_by_date: dict[date, set[str]] = {day_date: set()}
+    for flag_date, flag in [
+        *((day_date, flag) for flag in flags),
+        *((flag.local_date, flag) for flag in baseline_flags),
+    ]:
+        if flag.flag_type == "feeder_dark":
+            dark_by_date.setdefault(flag_date, set()).update(flag.detail.get("dark_sources", []))
+
+    def supported(row: Any) -> bool:
+        return (
+            row.timezone == timezone
+            and row.episode_count > 0
+            and not (sources_for_lane(row.lane) & dark_by_date.get(row.local_date, set()))
+        )
+
+    day_seconds_by_lane = {
+        r.lane: r.seconds for r in day_rollups if r.local_date == day_date and supported(r)
+    }
     baseline_by_lane: dict[str, list[int]] = {lane: [] for lane in LANES}
     for r in baseline_rollups:
-        if r.lane in baseline_by_lane:
+        if (
+            r.lane in baseline_by_lane
+            and baseline_start <= r.local_date <= baseline_end
+            and supported(r)
+        ):
             baseline_by_lane[r.lane].append(r.seconds)
 
-    balances = compute_daily_balance(day_seconds_by_lane, baseline_by_lane)
+    balances = [
+        b
+        for b in compute_daily_balance(day_seconds_by_lane, baseline_by_lane)
+        if b.lane in day_seconds_by_lane
+    ]
 
     insights = synthesize_lane_skew_insights(day_date, balances)
-    sleep_window = [*baseline_by_lane.get("sleep", []), day_seconds_by_lane.get("sleep", 0)]
+    # The pure synthesis text describes consecutive calendar days. Missing
+    # dates cannot be compressed into a confident shorter debt window.
+    sleep_by_day = {
+        row.local_date: row.seconds
+        for row in baseline_rollups
+        if row.lane == "sleep"
+        and baseline_start <= row.local_date <= baseline_end
+        and supported(row)
+    }
+    expected_days = {baseline_start + timedelta(days=i) for i in range(baseline_lookback_days)}
+    sleep_window = (
+        [*(sleep_by_day[day] for day in sorted(expected_days)), day_seconds_by_lane["sleep"]]
+        if "sleep" in day_seconds_by_lane and set(sleep_by_day) == expected_days
+        else []
+    )
     sleep_debt = synthesize_sleep_debt_insight(
         day_date,
         sleep_daily_seconds=sleep_window,
         sleep_baseline_seconds=_mean(baseline_by_lane.get("sleep", [])),
     )
-    if sleep_debt is not None:
+    if sleep_debt is not None and "sleep" in day_seconds_by_lane:
         insights.append(sleep_debt)
 
     self_reminders = synthesize_self_reminders(day_date, flags)
@@ -628,53 +674,6 @@ def build_chronicler_fact_writer(pool: Any, embedding_engine: Any) -> StoreFactF
     return _write
 
 
-def build_relationship_enrichment_proposer(
-    switchboard_client_getter: Callable[[], Any],
-) -> ProposeEnrichmentFn:
-    """Return a proposer that hands enrichment to relationship over MCP.
-
-    ``switchboard_client_getter`` is read lazily at call time (the switchboard
-    connection is established after the scheduler loop starts, and the day-close
-    hook fires ~once daily long after). Uses the switchboard's ``post_mail``
-    tool to deliver a structured, non owner-facing proposal to the relationship
-    butler's mailbox. The relationship butler decides whether/how to assert it
-    through its OWN authoritative writer; the chronicler never touches
-    ``relationship.entity_facts``. A missing client is a silent no-op.
-    """
-
-    async def _propose(proposal: EnrichmentProposal) -> Any:
-        switchboard_client = switchboard_client_getter()
-        if switchboard_client is None:
-            logger.debug(
-                "chronicler writeback: no switchboard client; skipping enrichment proposal for %s",
-                proposal.entity_id,
-            )
-            return None
-        return await switchboard_client.call_tool(
-            "post_mail",
-            {
-                "target_butler": RELATIONSHIP_BUTLER,
-                "sender": SOURCE_BUTLER,
-                "sender_channel": "butler",
-                "subject": "Recurring-companion enrichment proposal",
-                "body": proposal.message,
-                "metadata": {
-                    "kind": "enrichment_proposal",
-                    "predicate": proposal.predicate,
-                    "entity_id": proposal.entity_id,
-                    "distinct_days": proposal.distinct_days,
-                    "episode_count": proposal.episode_count,
-                    "window_start": proposal.window_start.isoformat(),
-                    "window_end": proposal.window_end.isoformat(),
-                    "dedup_key": proposal.dedup_key,
-                    **proposal.metadata,
-                },
-            },
-        )
-
-    return _propose
-
-
 __all__ = [
     "COMPANION_MIN_DISTINCT_DAYS",
     "PREDICATE_LANE_SKEW",
@@ -688,7 +687,6 @@ __all__ = [
     "InsightFact",
     "WriteBackResult",
     "build_chronicler_fact_writer",
-    "build_relationship_enrichment_proposer",
     "execute_writeback",
     "fetch_companion_copresence",
     "run_day_close_writeback",

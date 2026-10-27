@@ -72,7 +72,7 @@ Projection means materializing events from multiple sources into a unified read 
 - `alembic/versions/core/core_076_calendar_event_columns_and_entities.py`
 - `tests/modules/test_module_calendar.py`
 - `tests/modules/test_calendar_reminder_integration.py`
-- `docs/frontend/backend-api-contract.md`
+- `docs/api_and_protocols/response-conventions.md`
 
 ### Sample Q&A
 

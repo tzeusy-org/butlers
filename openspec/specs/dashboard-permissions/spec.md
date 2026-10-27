@@ -19,16 +19,36 @@ The dashboard SHALL have a page at `/settings/permissions` rendered in the Dispa
   - **Webhooks table**: list with add/edit/test/delete actions.
 
 #### Scenario: Matrix cell flip requires reason
-- **WHEN** a user flips a matrix cell from off to on or on to off
-- **THEN** a modal prompts for a `reason` text field
+- **WHEN** a user flips an explicit or inherited matrix cell from off to on or on to off
+- **THEN** the native cell button remains keyboard-operable and opens a modal that prompts for a `reason` text field
+- **AND** inherited cells remain visibly dim before mutation rather than being disabled, while explicit cells render foreground
 - **AND** the modal's submit button is disabled while `reason.trim()` is empty
 - **AND** on submit, `PUT /api/permissions/{butler}/{perm}` is called with `{granted, reason}`.
+
+#### Scenario: First inherited mutation becomes an explicit foreground cell
+- **WHEN** an operator submits a valid first grant or revoke for an inherited cell
+- **THEN** the matrix optimistically renders the requested `granted` value as explicit foreground state
+- **AND** a failed write restores the previous inherited dim state
+- **AND** a successful write retains the explicit state without requiring a new permissions model.
 
 #### Scenario: Audit reel filters operational noise
 - **WHEN** the audit reel loads its last-15 window
 - **THEN** it requests a privileged-action-only view (e.g. `GET /api/audit-log?limit=15&kind=privileged`) so that high-frequency operational rows — butler/switchboard heartbeats and routine GET traffic — are excluded
 - **AND** the rows shown are mutation/security actions (`permission.set`, `data.export`, `webhook.create|update|delete|test`, and similar), so a reader of a security surface sees security-relevant activity rather than heartbeat spam
 - **AND** when no privileged actions exist yet, the reel shows its empty state rather than padding with noise.
+
+#### Scenario: Audit reel distinguishes no history from an unavailable source
+- **WHEN** the privileged audit request succeeds with zero entries
+- **THEN** the reel SHALL show its calm no-history state and SHALL NOT render a degraded or retry state
+- **WHEN** the privileged audit request fails and no cached response is available
+- **THEN** the reel SHALL name the source as unavailable or degraded and provide a retry action that re-queries the privileged audit window
+- **AND** the reel MUST NOT render its no-history state, or imply that the failed request proves an empty audit history.
+
+#### Scenario: Audit reel retains cached rows under a degraded refresh
+- **WHEN** a previously successful privileged audit response is cached and a subsequent refresh fails
+- **THEN** the reel SHALL retain the cached privileged-action rows
+- **AND** it SHALL visibly label the source as unavailable or degraded and provide a retry action
+- **AND** it MUST NOT render its no-history state while the query is errored.
 
 ### Requirement: Permissions Matrix API
 The dashboard SHALL expose CRUD over the permissions matrix.
@@ -40,7 +60,7 @@ The dashboard SHALL expose CRUD over the permissions matrix.
 
 #### Scenario: Inherited vs explicit cells
 - **WHEN** a butler × permission pair has **no explicit row** in `public.permissions`
-- **THEN** that cell is returned with `inherited: true` and `granted` set to the system default for that permission, so the UI can render it dim/non-editable to distinguish a default from an operator-set value
+- **THEN** that cell is returned with `inherited: true` and `granted` set to the system default for that permission, so the UI can render it dim and allow the owner to create an explicit override
 - **AND** a pair that **does** have a row is returned with `inherited: false` (explicit), rendered foreground.
 
 #### Scenario: Set permission requires reason
@@ -49,6 +69,14 @@ The dashboard SHALL expose CRUD over the permissions matrix.
 - **AND** if `reason` is empty or missing, the response is `422 Unprocessable Entity` with body `{detail: {error: "reason_required"}}` (FastAPI wraps the `HTTPException.detail` payload; the frontend reads `body.detail.error`)
 - **AND** on success, `audit.append("permission.set", target=f"{butler}.{perm}", note=reason)` is invoked
 - **AND** the response includes the updated cell.
+
+#### Scenario: Mutation rejects values outside the live matrix vocabulary
+- **WHEN** `PUT /api/permissions/{butler}/{perm}` names a permission outside `ENFORCED_PERMISSIONS`
+- **THEN** the response is `422 Unprocessable Entity` with body `{detail: {error: "permission_not_enforced"}}`
+- **AND** no permissions row, `permission.set` audit row, or webhook dispatch is written.
+- **WHEN** the permission is enforced but `butler` has no row in `butler_registry`
+- **THEN** the response is `422 Unprocessable Entity` with body `{detail: {error: "butler_not_registered"}}`
+- **AND** no permissions row, `permission.set` audit row, or webhook dispatch is written.
 
 #### Scenario: Reason field rejects credential patterns
 - **WHEN** `PUT /api/permissions/{butler}/{perm}` is called with a `reason` that matches the case-insensitive pattern `(password|token|secret|api[_-]?key|credential|private[_-]?key)`
@@ -60,8 +88,32 @@ The dashboard SHALL expose CRUD over the permissions matrix.
 - **WHEN** an inherited cell is flipped
 - **THEN** the resulting row in `public.permissions` is explicit (not inherited) and the matrix re-fetch shows the cell as foreground.
 
+### Requirement: Runtime Permission Enforcement
+An explicit row SHALL decide the pair for every caller: `granted = true` allows, and `granted = false` denies with the row's recorded reason, so `require_permission` raises `PermissionDenied`.
+
+ID: REQ-dashboard-permissions-002
+Source: bu-30sah4 effect permission availability; bu-svqpzo.3 fail-closed permission, spend and pause state; RFC 0038 D7, D10
+Scope: v1-mandatory
+
+#### Scenario: Explicit grant allows
+- **WHEN** the read returns a row with `granted = true` for the butler and permission
+- **THEN** `check_permission` returns `allowed=True` and `explicit=True`
+
+#### Scenario: Explicit revoke denies
+- **WHEN** the read returns a row with `granted = false`
+- **THEN** `check_permission` returns `allowed=False`, `explicit=True` and the row's reason
+- **AND** `require_permission` raises `PermissionDenied`
+
+#### Scenario: Effect paths refuse an unreadable store
+- **WHEN** an email, calendar or Telegram effect path checks its permission and the pool is missing, the read raises, or the row is malformed
+- **THEN** `require_permission` raises `PermissionUnavailable` before the external effect
+
 ### Requirement: Data Operations API
 The dashboard SHALL expose data export and wipe endpoints under strict guards.
+
+ID: REQ-dashboard-permissions-001
+Source: bu-8ptawc owner data export correction; v1 owner data-export promise
+Scope: v1-mandatory
 
 #### Scenario: Encrypted export
 - **WHEN** `POST /api/data/export {scope}` is called with `scope ∈ {all, memory, audit, config}` (`full` accepted as an alias of `all`)
@@ -74,9 +126,12 @@ The dashboard SHALL expose data export and wipe endpoints under strict guards.
 - **THEN** the archive contains the actual data for that scope, never an empty/near-empty file behind a success response:
   - `memory` → the memory module's facts/rules/episodes data
   - `audit` → `public.audit_log`
-  - `config` → runtime/config tables (`public.runtime_config`, `public.model_catalog`, `public.permissions`)
+  - `config` → runtime/config tables (each registered butler’s own-schema `runtime_config`, read through its own pool and ordered by `butler_name`, plus `public.model_catalog` and `public.permissions`); the combined runtime rows retain the logical archive member `public_runtime_config.ndjson`
   - `all` → the union of every scope above
 - **AND** a scope that resolves to zero rows is reported as such (explicit empty marker), but a *known* scope MUST NOT silently map to "no tables" — the export must cover the data the scope name promises.
+- **AND** the `memory` scope reads the own memory schema of every butler that runs the memory module, one file per butler and table named `<butler>_memory_<table>.ndjson`.
+- **AND** when a butler configured with the memory module has no available database pool, the `memory` and `all` exports fail with HTTP 503 naming the unavailable butlers instead of returning a partial archive.
+- **AND** when no registered butler has a memory schema, the `memory` and `all` exports fail with HTTP 500 and an explicit message instead of returning an archive without memory data.
 
 #### Scenario: Wipe feature disabled
 - **WHEN** the `/settings/permissions` page renders
@@ -84,13 +139,6 @@ The dashboard SHALL expose data export and wipe endpoints under strict guards.
 - **WHEN** `DELETE /api/data/wipe` is called while the feature is disabled
 - **THEN** the endpoint refuses with `503 Service Unavailable` body `{error: "wipe_disabled"}` and performs no destruction, regardless of the phrase supplied
 - **AND** no schemas or tables are dropped.
-
-> **Deferred — re-enable requirements (do NOT build now; tracked as a non-ready backlog bead).**
-> When the wipe feature is re-enabled it MUST satisfy all of:
-> - **Atomicity**: drop every butler schema, model catalog, runtime config, permissions, spend ledger, webhooks, then audit log, wrapped in a **single SQL transaction**; any failed `DROP` rolls the whole thing back (`500 {error: "wipe_partial_failure", failed_at}`), never a partial wipe reported as success.
-> - **Phrase guard**: exact match of `WIPE EVERYTHING IRREVERSIBLY` (no trim, no case-fold) → else `422 {error: "phrase_mismatch"}`.
-> - **Fail-closed auth**: reject without a valid `X-API-Key` (`401`) before any phrase check; `503 {error: "auth_unconfigured"}` when `DASHBOARD_API_KEY` is unset. This is the single carve-out from the network-trust doctrine, justified by the irreversibility of the action.
-> - A non-transactional `audit.append("data.wipe")` attempt row is written BEFORE the transaction so the attempt survives a rollback.
 
 ### Requirement: Webhooks Registry API
 The dashboard SHALL expose CRUD and a test action for webhooks.

@@ -33,7 +33,7 @@ const STATE_CASES = [
   { state: "scope_mismatch", label: "scope mismatch", color: "var(--amber-text"  },
   { state: "expiring",       label: "expiring",       color: "var(--amber-text"  },
   { state: "warn",           label: "unverified",     color: "var(--mfg"    },
-  { state: "rotating",       label: "rotating…",      color: "var(--amber-text"  },
+  { state: "rotating",       label: "rotating…",      color: "var(--mfg"    },
   { state: "ok",             label: "healthy",        color: "var(--green"  },
   { state: "failed",         label: "failed",         color: "var(--red"    },
   { state: "never_set",      label: "not set",        color: "var(--mfg"    },

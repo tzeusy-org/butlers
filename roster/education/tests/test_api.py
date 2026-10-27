@@ -20,9 +20,9 @@ import asyncpg
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_mcp_manager
+from butlers.api.deps import get_db, get_mcp_manager
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -184,9 +184,9 @@ def _app_with_mock_pool(
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     # Override the dependency for the dynamically-loaded education router
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "education" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "education":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     return app
@@ -1266,6 +1266,40 @@ class TestUpdateMindMapStatus:
 
         assert resp.status_code == 200
         assert resp.json()["status"] == "active"
+
+    async def test_lifecycle_refusal_is_409_with_reason_and_no_success_read(self):
+        from butlers.tools.education.mind_maps import MindMapLifecycleError
+
+        app = _app_with_mock_pool(AsyncMock())
+        edu = _get_education_module(app)
+        for target, reason in [
+            ("active", "A curriculum with no concepts cannot be activated"),
+            ("completed", "Cannot transition from draft to completed"),
+        ]:
+            with (
+                patch.object(
+                    edu,
+                    "mind_map_update_status",
+                    AsyncMock(side_effect=MindMapLifecycleError(reason)),
+                ),
+                patch.object(edu, "mind_map_get", AsyncMock()) as read,
+            ):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.put(
+                        f"/api/education/mind-maps/{_MAP_ID}/status", json={"status": target}
+                    )
+                assert response.status_code == 409
+                assert response.json()["detail"] == reason
+                read.assert_not_awaited()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.put(
+                f"/api/education/mind-maps/{_MAP_ID}/status", json={"status": "draft"}
+            )
+        assert response.status_code == 422
 
     async def test_invalid_status_returns_422(self):
         """Invalid status value should return 422."""
@@ -2499,34 +2533,50 @@ class TestListSourceMaterial:
     """The registry side of the node-detail source-annotation lookup.
 
     The dashboard resolves each ``metadata.source_refs`` entry against this
-    list. An ID missing from it is a dangling reference the UI must label as
-    unregistered, so this endpoint must never invent or omit a record.
+    endpoint by passing the source_ids named on the node it is rendering
+    (bu-sovji: batch-by-id, not a full-registry fetch). An ID missing from
+    the response is a dangling reference the UI must label as unregistered,
+    so a requested ID must never be invented, and a registry miss must never
+    be reported the same way as a registry failure.
     """
 
-    async def test_returns_registered_sources(self):
+    def _mock_pool_with_registry(self, registry: dict[str, dict]) -> AsyncMock:
+        """A pool whose ``fetchval`` answers ``state_get`` for each source key."""
         mock_pool = AsyncMock()
-        mock_pool.fetch = AsyncMock(
-            return_value=[
-                _MockRecord(
-                    {
-                        "key": "education/source/src-1",
-                        "value": {
-                            "title": "Structure and Interpretation of Computer Programs",
-                            "authors": ["Harold Abelson", "Gerald Jay Sussman"],
-                            "type": "book",
-                            "url": "https://example.test/sicp",
-                            "registered_at": "2026-08-21T00:00:00+00:00",
-                        },
-                    }
-                )
-            ]
-        )
+
+        async def _fetchval(query: str, key: str):
+            del query
+            prefix = "education/source/"
+            if not key.startswith(prefix):
+                return None
+            return registry.get(key[len(prefix) :])
+
+        mock_pool.fetchval = AsyncMock(side_effect=_fetchval)
+        return mock_pool
+
+    async def test_returns_only_the_requested_sources(self):
+        registry = {
+            "src-1": {
+                "title": "Structure and Interpretation of Computer Programs",
+                "authors": ["Harold Abelson", "Gerald Jay Sussman"],
+                "type": "book",
+                "url": "https://example.test/sicp",
+                "registered_at": "2026-08-21T00:00:00+00:00",
+            },
+            "src-2": {
+                "title": "RFC 793",
+                "authors": [],
+                "type": "documentation",
+                "registered_at": "2026-08-21T00:00:00+00:00",
+            },
+        }
+        mock_pool = self._mock_pool_with_registry(registry)
         app = _app_with_mock_pool(mock_pool)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/education/sources")
+            resp = await client.get("/api/education/sources?source_ids=src-1")
 
         assert resp.status_code == 200
         assert resp.json() == [
@@ -2540,37 +2590,70 @@ class TestListSourceMaterial:
             }
         ]
 
-    async def test_empty_registry_returns_empty_list(self):
-        mock_pool = AsyncMock()
-        mock_pool.fetch = AsyncMock(return_value=[])
+    async def test_requested_id_missing_from_registry_is_omitted_not_errored(self):
+        """A dangling reference must come back as a miss, never an error or a fabricated row."""
+        mock_pool = self._mock_pool_with_registry({})
         app = _app_with_mock_pool(mock_pool)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/education/sources")
+            resp = await client.get("/api/education/sources?source_ids=src-removed")
 
         assert resp.status_code == 200
         assert resp.json() == []
 
+    async def test_resolves_multiple_comma_separated_ids(self):
+        registry = {
+            "src-1": {
+                "title": "Structure and Interpretation of Computer Programs",
+                "authors": [],
+                "type": "book",
+                "registered_at": "2026-08-21T00:00:00+00:00",
+            },
+            "src-2": {
+                "title": "RFC 793",
+                "authors": [],
+                "type": "documentation",
+                "registered_at": "2026-08-21T00:00:00+00:00",
+            },
+        }
+        mock_pool = self._mock_pool_with_registry(registry)
+        app = _app_with_mock_pool(mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/education/sources?source_ids=src-1,src-2,src-missing")
+
+        assert resp.status_code == 200
+        assert {row["source_id"] for row in resp.json()} == {"src-1", "src-2"}
+
     async def test_optional_fields_absent_are_null(self):
         """A record registered without a URL must report null, not a guess."""
-        mock_pool = AsyncMock()
-        mock_pool.fetch = AsyncMock(
-            return_value=[
-                _MockRecord(
-                    {
-                        "key": "education/source/src-2",
-                        "value": {
-                            "title": "RFC 793",
-                            "authors": [],
-                            "type": "documentation",
-                            "registered_at": "2026-08-21T00:00:00+00:00",
-                        },
-                    }
-                )
-            ]
-        )
+        registry = {
+            "src-2": {
+                "title": "RFC 793",
+                "authors": [],
+                "type": "documentation",
+                "registered_at": "2026-08-21T00:00:00+00:00",
+            },
+        }
+        mock_pool = self._mock_pool_with_registry(registry)
+        app = _app_with_mock_pool(mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/education/sources?source_ids=src-2")
+
+        body = resp.json()
+        assert body[0]["url"] is None
+        assert body[0]["authors"] == []
+
+    async def test_missing_source_ids_param_returns_422(self):
+        """A batch lookup with nothing to resolve is a caller error, not a trivial miss."""
+        mock_pool = self._mock_pool_with_registry({})
         app = _app_with_mock_pool(mock_pool)
 
         async with httpx.AsyncClient(
@@ -2578,9 +2661,7 @@ class TestListSourceMaterial:
         ) as client:
             resp = await client.get("/api/education/sources")
 
-        body = resp.json()
-        assert body[0]["url"] is None
-        assert body[0]["authors"] == []
+        assert resp.status_code == 422
 
     async def test_pool_unavailable_returns_503(self):
         """A 503 keeps the UI honest: it cannot classify refs it never resolved."""
@@ -2590,6 +2671,6 @@ class TestListSourceMaterial:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/education/sources")
+            resp = await client.get("/api/education/sources?source_ids=src-1")
 
         assert resp.status_code == 503

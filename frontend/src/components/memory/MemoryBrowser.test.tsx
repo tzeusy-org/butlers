@@ -15,6 +15,7 @@ import {
   useEpisodes,
   useFacts,
   useMemoryInspect,
+  useRetryEpisodeConsolidation,
   useRules,
 } from "@/hooks/use-memory";
 import type { Episode, MemoryInspectResult } from "@/api/types";
@@ -24,6 +25,7 @@ vi.mock("@/hooks/use-memory", () => ({
   useFacts: vi.fn(),
   useRules: vi.fn(),
   useMemoryInspect: vi.fn(),
+  useRetryEpisodeConsolidation: vi.fn(),
 }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -49,6 +51,10 @@ function makeEpisode(overrides: Partial<Episode> = {}): Episode {
     last_referenced_at: null,
     expires_at: null,
     metadata: {},
+    consolidation_attempts: 0,
+    last_consolidation_error: null,
+    dead_letter_reason: null,
+    next_consolidation_retry_at: null,
     ...overrides,
   };
 }
@@ -67,6 +73,13 @@ function primeBrowse(episodes: Episode[]) {
     },
   } as unknown as UseEpisodesResult);
   vi.mocked(useMemoryInspect).mockReturnValue(emptyPage as unknown as UseInspectResult);
+  // Every rendered episode row calls this hook unconditionally (bu-6t8ix.2's
+  // retry-consolidation verb); an idle stub keeps rows rendering normally.
+  vi.mocked(useRetryEpisodeConsolidation).mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useRetryEpisodeConsolidation>);
 }
 
 describe("MemoryBrowser", () => {
@@ -209,6 +222,7 @@ describe("MemoryBrowser", () => {
           last_evaluated_at: null,
           tags: [],
           metadata: {},
+          retired_at: null,
         },
       },
     ];

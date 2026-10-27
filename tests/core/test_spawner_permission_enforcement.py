@@ -8,7 +8,7 @@ gate that consults the matrix's ``spawn`` permission:
 - Spawn BLOCKED when the butler's ``spawn`` permission is explicitly revoked.
 - Spawn ALLOWED when the ``spawn`` permission is granted.
 - Spawn ALLOWED when no explicit row exists (default-allow / opt-in deny).
-- The permission check is skipped without a pool / on TOML fallback.
+- Pool-free direct mode skips permission; a live catalog miss fails before the gate.
 
 Mirrors the spend-ceiling harness in test_spawner_ceiling_enforcement.py.
 
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -31,7 +31,8 @@ from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
 
-pytestmark = pytest.mark.unit
+pytest_plugins = ("tests.core.spawner_fixtures",)
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("spawner_catalog_candidate")]
 
 _FAKE_CATALOG_ID = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
 _SESSION_ID = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000002")
@@ -56,6 +57,7 @@ class _MockAdapter(RuntimeAdapter):
     def binary_name(self) -> str:
         return "mock"
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -198,7 +200,6 @@ class TestSpawnerPermissionEnforcement:
                 new_callable=AsyncMock,
                 return_value=_ceiling_unset(),
             ),
-            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
         ):
             mock_create.return_value = _SESSION_ID
             result = await Spawner(
@@ -240,7 +241,6 @@ class TestSpawnerPermissionEnforcement:
                 new_callable=AsyncMock,
                 return_value=_ceiling_unset(),
             ),
-            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
         ):
             mock_create.return_value = _SESSION_ID
             result = await Spawner(
@@ -251,10 +251,10 @@ class TestSpawnerPermissionEnforcement:
         assert result.output == "default output"
         assert adapter.invoke_calls == 1
 
-    async def test_permission_not_checked_without_pool_or_toml_fallback(
+    async def test_permission_not_checked_without_pool_or_catalog_selection(
         self, tmp_path: Path
     ) -> None:
-        """Permission check skipped when pool=None or catalog returns None (TOML fallback)."""
+        """Pool-free direct mode runs; a live catalog miss refuses before permission."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
@@ -267,7 +267,7 @@ class TestSpawnerPermissionEnforcement:
         mock_perm.assert_not_called()
         assert result.success is True
 
-        # TOML fallback (catalog returns None) → permission check not called.
+        # A live catalog miss fails before permission or runtime invocation.
         mock_pool = AsyncMock()
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
@@ -287,4 +287,5 @@ class TestSpawnerPermissionEnforcement:
                 runtime=_MockAdapter(result_text="ok"),
             ).trigger("hi", "tick")
         mock_perm2.assert_not_called()
-        assert result2.success is True
+        assert result2.success is False
+        assert result2.error == "ModelResolutionError: no_eligible_catalog_entries"

@@ -13,7 +13,8 @@
 // than a duplicate one, distinguished by a small ledger badge per row.
 // Also surfaces, per infra condition, how many QA dispatches it suppressed
 // (useInfraConditionSuppressionCounts -> GET /api/healing/dispatch-events?
-// decision=infra_condition_open), joined on the shared fingerprint identity
+// decision=infra_condition_open&fingerprint=...), using each filtered total
+// rather than a sample of the newest global events
 // -- the concrete "link to the condition that suppressed them" slice 3 asks
 // for. Owner conditions have no QA-dispatch suppression concept, so that
 // chip is only ever computed/shown for ledger="infra" rows.
@@ -27,17 +28,23 @@
 // structured fields, plus a filter across the two classes. Everything about
 // the non-commitment rendering path is deliberately untouched: a row with no
 // commitment metadata takes exactly the same code it took before.
+//
+// bu-py5jgj: fleet-control and overdue-QA rows may carry `attention`, the
+// linked owner-alert delivery status (REQ-butler-control-plane-liveness-007).
+// It renders as one fixed-copy line under the row; only "sent" reads as
+// delivered, and "unavailable" marks the tile degraded. Display only: there
+// is deliberately no resend control here.
 // ---------------------------------------------------------------------------
 
 import { useMemo, useState } from "react"
 
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+  Tile,
+  TileContent,
+  TileDescription,
+  TileHeader,
+  TileTitle,
+} from "@/components/ui/Tile"
 import { SourceDegradedNote } from "@/components/ui/query-boundary"
 import { Skeleton } from "@/components/ui/skeleton"
 import { StateDot, type DispatchState } from "@/components/ui/StateDot"
@@ -47,7 +54,7 @@ import { useRelationshipEntitiesByIds } from "@/hooks/use-entities"
 import { useInfraConditionSuppressionCounts } from "@/hooks/use-healing"
 import { formatDurationCompact } from "@/lib/format-duration"
 import { cn } from "@/lib/utils"
-import type { ConditionEntry } from "@/api/types"
+import type { ConditionAttention, ConditionEntry } from "@/api/types"
 
 // ---------------------------------------------------------------------------
 // Commitment metadata convention (butlers/core/commitments.py)
@@ -136,31 +143,39 @@ interface DecoratedCondition {
 
 function TileSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Standing Conditions</CardTitle>
-        <CardDescription>Infrastructure outages and owner-facing concerns tracked by the reliability ledger</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile loading>
+      <TileHeader>
+        <TileTitle>Standing Conditions</TileTitle>
+        <TileDescription>Infrastructure outages and owner-facing concerns tracked by the reliability ledger</TileDescription>
+      </TileHeader>
+      <TileContent>
         <div data-testid="standing-conditions-skeleton" className="space-y-2">
           <Skeleton className="h-5 w-48" />
           <Skeleton className="h-5 w-40" />
           <Skeleton className="h-5 w-44" />
         </div>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
-function TileFrame({ children, testId }: { children: React.ReactNode; testId?: string }) {
+function TileFrame({
+  children,
+  testId,
+  degraded = false,
+}: {
+  children: React.ReactNode
+  testId?: string
+  degraded?: boolean
+}) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Standing Conditions</CardTitle>
-        <CardDescription>Infrastructure outages and owner-facing concerns tracked by the reliability ledger</CardDescription>
-      </CardHeader>
-      <CardContent data-testid={testId}>{children}</CardContent>
-    </Card>
+    <Tile degraded={degraded}>
+      <TileHeader>
+        <TileTitle>Standing Conditions</TileTitle>
+        <TileDescription>Infrastructure outages and owner-facing concerns tracked by the reliability ledger</TileDescription>
+      </TileHeader>
+      <TileContent data-testid={testId}>{children}</TileContent>
+    </Tile>
   )
 }
 
@@ -190,8 +205,7 @@ function supersedingIdentityVersion(condition: ConditionEntry): number | null {
  * still standing. A deadline in the past on an already-resolved commitment is
  * history, not a warning, so only a still-standing commitment can be overdue.
  *
- * A standalone module-level function (same shape as DecisionsPage's
- * resolveExportAsOfIsWarn and ButlerActivityTab's window helper) so the
+ * A standalone module-level function, like ButlerActivityTab's window helper, so the
  * react-hooks/purity rule does not flag a direct Date.now() call inside a
  * component body. Reading the clock here rather than threading a `now` prop
  * down from the tile also keeps the freshness of the comparison local to the
@@ -285,6 +299,53 @@ function CommitmentDetail({
   )
 }
 
+// ---------------------------------------------------------------------------
+// Linked owner-alert status (docs/operations/runtime-attention.md, Owner status)
+// ---------------------------------------------------------------------------
+
+/** Fixed copy per status; `warn` marks every status that is not a calm, known state. */
+const ATTENTION_COPY: Record<string, { label: string; warn: boolean }> = {
+  pending: { label: "Owner alert queued", warn: false },
+  worker_unavailable: { label: "Owner alert queued; no delivery worker is running", warn: true },
+  sending: { label: "Owner alert sending; delivery not confirmed", warn: false },
+  sent: { label: "Owner alert delivered", warn: false },
+  failed: { label: "Owner alert not delivered", warn: true },
+  uncertain: { label: "Owner alert may not have arrived; it is not resent automatically", warn: true },
+  unavailable: { label: "Owner alert status unknown", warn: true },
+  not_raised: { label: "No owner alert has been raised for this condition", warn: true },
+  within_grace: { label: "Owner alert waits for the attention grace", warn: false },
+}
+
+function attentionCopy(status: string): { label: string; warn: boolean } {
+  // An unrecognized future status is shown as-is and never as delivered.
+  return Object.hasOwn(ATTENTION_COPY, status)
+    ? ATTENTION_COPY[status]
+    : { label: `Owner alert status: ${status}`, warn: true }
+}
+
+function ConditionAttentionLine({ attention }: { attention: ConditionAttention }) {
+  const { label, warn } = attentionCopy(attention.status)
+  const delivered = attention.status === "sent"
+  const at = delivered ? attention.delivered_at : attention.created_at
+  return (
+    <div
+      className={cn("mt-0.5 text-xs", warn ? "text-destructive font-medium" : "text-muted-foreground")}
+      data-testid="condition-attention"
+      data-status={attention.status}
+    >
+      {label}
+      {at ? (
+        <>
+          {delivered ? " " : " · raised "}
+          <Time value={at} mode="relative" />
+        </>
+      ) : null}
+      {attention.safe_reason ? ` · ${attention.safe_reason}` : null}
+      {attention.outbox_retained === false ? " · last recorded state" : null}
+    </div>
+  )
+}
+
 function ConditionRow({
   condition,
   commitment,
@@ -332,6 +393,7 @@ function ConditionRow({
           isResolved={isResolved}
         />
       ) : null}
+      {condition.attention ? <ConditionAttentionLine attention={condition.attention} /> : null}
       <div className="text-muted-foreground text-xs">
         {isResolved ? (
           supersededByVersion !== null ? (
@@ -415,7 +477,7 @@ function ConditionFilterToggle({
               "inline-flex items-center justify-center px-2 py-1",
               "font-mono text-[10px] uppercase tabular-nums",
               "transition-colors",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-background focus-visible:ring-offset-1",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-background focus-visible:ring-offset-1",
               isActive && "bg-foreground text-background",
               !isActive && "bg-transparent text-foreground hover:bg-muted",
               "first:rounded-l-sm last:rounded-r-sm",
@@ -465,14 +527,20 @@ function collectCounterpartyIds(conditions: ConditionEntry[]): string[] {
 export function StandingConditionsTile() {
   const infraQuery = useSystemConditions({ limit: 20 })
   const ownerQuery = useSystemConditions({ limit: 20, ledger: "owner" })
-  const { counts: suppressedCounts, isError: suppressionCountsError } =
-    useInfraConditionSuppressionCounts()
   const [filter, setFilter] = useState<ConditionFilter>("all")
 
   // Counterparty ids are read off the raw query payloads rather than the
   // merged list below, because this hook must run before the early returns.
   const infraConditions = infraQuery.data?.data.conditions
   const ownerConditions = ownerQuery.data?.data.conditions
+  const suppressionFingerprints = !infraQuery.isError && infraQuery.data?.data.conditions_available
+    ? (infraConditions ?? []).filter((condition) => condition.ledger === "infra").map((condition) => condition.fingerprint)
+    : []
+  const {
+    counts: suppressedCounts,
+    isError: suppressionCountsError,
+    isLoading: suppressionCountsLoading,
+  } = useInfraConditionSuppressionCounts(suppressionFingerprints)
   const counterpartyIds = useMemo(
     () => collectCounterpartyIds([...(infraConditions ?? []), ...(ownerConditions ?? [])]),
     [infraConditions, ownerConditions],
@@ -494,7 +562,7 @@ export function StandingConditionsTile() {
 
   if (infraQuery.isError && ownerQuery.isError) {
     return (
-      <TileFrame testId="standing-conditions-error">
+      <TileFrame testId="standing-conditions-error" degraded>
         <SourceDegradedNote label="Standing conditions" detail="could not be reached" />
       </TileFrame>
     )
@@ -507,7 +575,7 @@ export function StandingConditionsTile() {
 
   if (!infraAvailable && !ownerAvailable) {
     return (
-      <TileFrame testId="standing-conditions-degraded">
+      <TileFrame testId="standing-conditions-degraded" degraded>
         <SourceDegradedNote label="Standing conditions" detail="reliability ledger unavailable" />
       </TileFrame>
     )
@@ -530,6 +598,13 @@ export function StandingConditionsTile() {
     condition,
     commitment: commitmentFields(condition),
   }))
+  // A source that could not report alert delivery, or an active paging condition that no
+  // alert covers, is a degraded read, never calm.
+  const attentionUnavailable = merged.some(
+    (condition) =>
+      condition.attention?.status === "unavailable" ||
+      (condition.attention?.status === "not_raised" && condition.state !== "resolved"),
+  )
   const visible = sortForDisplay(
     decorated.filter(({ commitment }) =>
       filter === "all"
@@ -541,7 +616,12 @@ export function StandingConditionsTile() {
   )
 
   return (
-    <TileFrame testId="standing-conditions-content">
+    <TileFrame
+      testId="standing-conditions-content"
+      degraded={
+        !infraAvailable || !ownerAvailable || suppressionCountsError || attentionUnavailable
+      }
+    >
       {!infraAvailable ? (
         <SourceDegradedNote
           className="mb-2"
@@ -564,6 +644,10 @@ export function StandingConditionsTile() {
           label="QA dispatch suppression counts"
           testId="standing-conditions-suppression-degraded"
         />
+      ) : suppressionCountsLoading ? (
+        <p role="status" className="mb-2 text-xs text-muted-foreground">
+          Loading QA dispatch suppression counts.
+        </p>
       ) : null}
       {merged.length === 0 ? (
         <p className="text-muted-foreground text-sm">No standing conditions recorded.</p>
@@ -591,9 +675,9 @@ export function StandingConditionsTile() {
                   suppressedCount={
                     condition.ledger !== "infra"
                       ? null
-                      : suppressionCountsError
+                      : suppressionCountsError || suppressionCountsLoading
                         ? null
-                        : (suppressedCounts.get(condition.fingerprint) ?? 0)
+                        : (suppressedCounts.get(condition.fingerprint) ?? null)
                   }
                 />
               ))}

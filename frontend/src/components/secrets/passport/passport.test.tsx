@@ -162,8 +162,9 @@ import {
   MOCK_PROVIDERS,
   MOCK_IDENTITIES,
 } from "./mock-data.ts";
-import type { SpineEntry } from "./types.ts";
-import { buildSpineEntries } from "./spine-builder.ts";
+import type { CredentialState, SpineEntry } from "./types.ts";
+import { buildSpineEntries, compareSpineEntries } from "./spine-builder.ts";
+import { SPINE_GROUP_BY_STATE, SPINE_GROUP_ORDER } from "./constants.ts";
 import { useSpotifyStatus } from "@/hooks/use-spotify.ts";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -236,7 +237,6 @@ describe("SpineRow: one-row-template uniformity", () => {
     label: "Test Credential",
     state: "ok",
     subline: "verified 14:00",
-    lastTouchOrder: 0,
   };
 
   const userEntry: SpineEntry = {
@@ -478,10 +478,11 @@ describe("Spine sublines make no usage claim [bu-hd1vs]", () => {
     expect(byLabel.get("Gemini CLI")).toBe("not set");
   });
 
-  it("gives every user row one fixed rank, since none has a last-touch signal", () => {
-    const userRanks = spine.filter((e) => e.family === "user").map((e) => e.lastTouchOrder);
-    expect(userRanks.length).toBeGreaterThan(0);
-    expect(new Set(userRanks)).toEqual(new Set([800]));
+  it("projects no synthetic last-touch ordering", () => {
+    expect(spine.length).toBeGreaterThan(0);
+    for (const entry of spine) {
+      expect(entry).not.toHaveProperty("lastTouchOrder");
+    }
   });
 });
 
@@ -509,7 +510,7 @@ describe("SpineSearch", () => {
 });
 
 describe("SortPicker", () => {
-  it("renders three sort options", () => {
+  it("renders only severity and alpha sort options", () => {
     const entries = buildSpineEntries(MOCK_INVENTORY, "tze");
     const html = renderToStaticMarkup(
       <Spine
@@ -526,8 +527,79 @@ describe("SortPicker", () => {
       />,
     );
     expect(html).toContain('data-sort-mode="severity"');
-    expect(html).toContain('data-sort-mode="recency"');
     expect(html).toContain('data-sort-mode="alpha"');
+    expect(html).not.toContain('data-sort-mode="recency"');
+  });
+});
+
+describe("state-first spine ordering", () => {
+  it("maps every CredentialState exactly once into the five adopted groups", () => {
+    const states: CredentialState[] = [
+      "ok",
+      "expired",
+      "revoked",
+      "expiring",
+      "scope_mismatch",
+      "warn",
+      "checking",
+      "authorization_needed",
+      "rotating",
+      "never_set",
+      "failed",
+    ];
+
+    expect(SPINE_GROUP_ORDER).toEqual([
+      "needs-hand",
+      "in-progress",
+      "stale",
+      "ready",
+      "not-set",
+    ]);
+    expect(Object.keys(SPINE_GROUP_BY_STATE).sort()).toEqual([...states].sort());
+    expect(states.map((state) => [state, SPINE_GROUP_BY_STATE[state]])).toEqual([
+      ["ok", "ready"],
+      ["expired", "needs-hand"],
+      ["revoked", "needs-hand"],
+      ["expiring", "needs-hand"],
+      ["scope_mismatch", "needs-hand"],
+      ["warn", "stale"],
+      ["checking", "in-progress"],
+      ["authorization_needed", "needs-hand"],
+      ["rotating", "in-progress"],
+      ["never_set", "not-set"],
+      ["failed", "needs-hand"],
+    ]);
+  });
+
+  it("keeps severity primary and applies deterministic mode-specific tie breaks", () => {
+    const entry = (
+      key: string,
+      family: SpineEntry["family"],
+      label: string,
+      state: CredentialState,
+    ): SpineEntry => ({ key, family, label, state, mono: false, subline: state });
+    const entries = [
+      entry("u:beta", "user", "Beta", "failed"),
+      entry("s:zulu", "system", "Zulu", "expired"),
+      entry("s:same", "system", "Same", "failed"),
+      entry("c:same-b", "cli", "Same", "failed"),
+      entry("c:same-a", "cli", "Same", "failed"),
+    ];
+
+    expect([...entries].sort((a, b) => compareSpineEntries(a, b, "severity")).map((e) => e.key))
+      .toEqual(["s:zulu", "c:same-a", "c:same-b", "s:same", "u:beta"]);
+    expect([...entries].sort((a, b) => compareSpineEntries(a, b, "alpha")).map((e) => e.key))
+      .toEqual(["s:zulu", "u:beta", "c:same-a", "c:same-b", "s:same"]);
+
+    const duplicateFocus = [
+      { ...entry("u:google", "user", "Google", "ok"), identity: "zeta" },
+      { ...entry("u:google", "user", "Google", "ok"), identity: "alpha" },
+    ];
+    expect(
+      duplicateFocus
+        .sort((a, b) => compareSpineEntries(a, b, "alpha"))
+        .map((item) => item.identity),
+    ).toEqual(["alpha", "zeta"]);
   });
 });
 
@@ -1270,7 +1342,7 @@ describe("OwnTracksDrawer: token generate/regenerate + webhook URL", () => {
 
   it("marks the status dot active when state=connected", () => {
     const html = renderInRouter(<OwnTracksDrawerContent />);
-    expect(html).toContain('aria-label="active"');
+    expect(html).toContain('aria-label="OwnTracks: connected"');
   });
 
   it("does not mark the status dot active for a non-connected state (e.g. stale)", async () => {
@@ -1282,8 +1354,8 @@ describe("OwnTracksDrawer: token generate/regenerate + webhook URL", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
     const html = renderInRouter(<OwnTracksDrawerContent />);
-    expect(html).toContain('aria-label="idle"');
-    expect(html).not.toContain('aria-label="active"');
+    expect(html).toContain('aria-label="OwnTracks: stale"');
+    expect(html).not.toContain('aria-label="OwnTracks: connected"');
   });
 
   it("renders webhook URL display", () => {
@@ -1585,4 +1657,72 @@ describe("WhatsAppDrawer: QR pairing + status + disconnect", () => {
     const html = renderInRouter(<WhatsAppDrawer onClose={() => undefined} inline />);
     expect(html).not.toContain("dismiss");
   });
+});
+
+function mockConnectorState<T extends { data?: object }>(hook: () => T, state: string) {
+  const previous = hook();
+  vi.mocked(hook).mockReturnValueOnce({ ...previous, data: { ...previous.data, state } } as T);
+}
+
+describe("Connector drawer semantic signals", () => {
+  it.each([
+    ["owntracks", "connected", "green"], ["owntracks", "no_events", "amber"],
+    ["owntracks", "stale", "amber"], ["owntracks", "offline", "red"], ["owntracks", "not_configured", "dim"],
+    ["spotify", "connected", "green"], ["spotify", "error", "red"], ["spotify", "unconfigured", "dim"],
+    ["spotify", "authorization_needed", "amber"], ["spotify", "needs_reauth", "amber"],
+    ["whatsapp", "connected", "green"], ["whatsapp", "disconnected", "dim"],
+    ["whatsapp", "pair_required", "amber"], ["whatsapp", "not_configured", "dim"],
+  ])("%s %s exposes its true state and only one signal", async (provider, state, token) => {
+    const owntracks = await import("@/hooks/use-owntracks.ts");
+    const spotify = await import("@/hooks/use-spotify.ts");
+    const whatsapp = await import("@/hooks/use-whatsapp.ts");
+    const hooks = {owntracks: owntracks.useOwnTracksStatus, spotify: spotify.useSpotifyStatus, whatsapp: whatsapp.useWhatsAppStatus};
+    const components = {owntracks: OwnTracksDrawerContent, spotify: SpotifyDrawerContent, whatsapp: WhatsAppDrawerContent};
+    const key = provider as keyof typeof hooks;
+    mockConnectorState<ReturnType<(typeof hooks)[keyof typeof hooks]>>(hooks[key], state);
+    const Component = components[key];
+    const doc = new DOMParser().parseFromString(renderInRouter(<Component />), "text/html");
+    const mark = doc.querySelector(`[data-${provider}-status-dot]`) as HTMLElement;
+    expect(mark.getAttribute("role")).toBe("img");
+    expect(mark.getAttribute("aria-label")).toBe(`${({owntracks: "OwnTracks", spotify: "Spotify", whatsapp: "WhatsApp"})[key]}: ${state.replaceAll("_", " ")}`);
+    expect(mark.style.backgroundColor).toBe(({green: "var(--green)", amber: "var(--amber)", red: "var(--red)", dim: "var(--dim)"})[token as "green" | "amber" | "red" | "dim"]);
+    const signals = [...doc.querySelectorAll<HTMLElement>("*")].filter(el => /var\(--(?:red|amber|green)(?:-text)?\)/.test(el.getAttribute("style") ?? ""));
+    expect(signals).toEqual(token === "dim" ? [] : [mark]);
+  });
+});
+
+it("WhatsApp pairing retains its status mark and neutral confirmation copy", async () => {
+  const hooks = await import("@/hooks/use-whatsapp.ts");
+  const { default: userEvent } = await import("@testing-library/user-event");
+  const originalStatus = vi.mocked(hooks.useWhatsAppStatus).getMockImplementation()!;
+  const originalStart = vi.mocked(hooks.useWhatsAppPairStart).getMockImplementation()!;
+  const originalPoll = vi.mocked(hooks.useWhatsAppPairPoll).getMockImplementation()!;
+  const refetch = vi.fn();
+  vi.mocked(hooks.useWhatsAppStatus).mockReturnValue({
+    ...hooks.useWhatsAppStatus(), refetch,
+    data: { state: "disconnected", phone: null, paired_at: null, last_sync_at: null, bridge_running: true },
+  } as ReturnType<typeof hooks.useWhatsAppStatus>);
+  vi.mocked(hooks.useWhatsAppPairStart).mockReturnValue({
+    isPending: false, reset: vi.fn(),
+    mutate: (_: unknown, options: { onSuccess: (data: {qr_data_uri: string; expires_at: string}) => void }) => options.onSuccess({qr_data_uri: "data:image/png;base64,AA==", expires_at: "2099-01-01T00:00:00Z"}),
+  } as unknown as ReturnType<typeof hooks.useWhatsAppPairStart>);
+  vi.mocked(hooks.useWhatsAppPairPoll).mockReturnValue({
+    data: {status: "paired", phone: "+1 *** *** 0100"}, isLoading: false, error: null,
+  } as ReturnType<typeof hooks.useWhatsAppPairPoll>);
+  const view = render(<QueryClientProvider client={new QueryClient()}><MemoryRouter><WhatsAppDrawerContent /></MemoryRouter></QueryClientProvider>);
+  try {
+    const user = userEvent.setup();
+    view.getByRole("button", {name: "pair device"}).focus();
+    await user.keyboard("{Enter}");
+    expect(refetch).toHaveBeenCalledOnce();
+    expect(view.getByText("+1 *** *** 0100").getAttribute("style")).toContain("color: var(--mfg)");
+    const mark = view.getByRole("img", {name: "WhatsApp: disconnected"});
+    expect(mark.style.backgroundColor).toBe("var(--dim)");
+    expect(view.queryByAltText("WhatsApp pairing QR code")).toBeNull();
+  } finally {
+    view.unmount();
+    vi.mocked(hooks.useWhatsAppStatus).mockImplementation(originalStatus);
+    vi.mocked(hooks.useWhatsAppPairStart).mockImplementation(originalStart);
+    vi.mocked(hooks.useWhatsAppPairPoll).mockImplementation(originalPoll);
+  }
 });

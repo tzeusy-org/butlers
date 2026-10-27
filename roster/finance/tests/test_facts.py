@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS predicate_registry (
 """
 _DDL_FACTS = """
 CREATE TABLE IF NOT EXISTS facts (
+    content_authority TEXT, authority_entity_id UUID,
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     subject             TEXT NOT NULL,
     predicate           TEXT NOT NULL,
@@ -101,6 +102,7 @@ CREATE TABLE IF NOT EXISTS facts (
 """
 _DDL_EPISODES = """
 CREATE TABLE IF NOT EXISTS episodes (
+    content_authority TEXT, authority_entity_id UUID,
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     butler           TEXT NOT NULL,
     session_id       UUID,

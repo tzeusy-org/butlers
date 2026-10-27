@@ -10,7 +10,7 @@ beads, and in-flight epics. Backward compatibility waived.
 
 **Full per-agent dossiers** (verdicts, JARVIS gaps, ideal designs, all findings with file:line
 evidence, ecosystem proposals with integration points) live in
-[`2026-07-04-jarvis-pursuit-data.json`](2026-07-04-jarvis-pursuit-data.json) — query one agent with
+`git show b23d5b76afab:docs/redesigns/2026-07-04-jarvis-pursuit-data.json` — query one agent with
 `jq '.audits[] | select(.page=="<key>")' <file>` (ecosystem lenses use keys `eco:*`, sweeps `cross:*`).
 
 ## Headline

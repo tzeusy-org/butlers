@@ -1,21 +1,28 @@
 /**
  * ButlerManagementTab — Phase 7 fold-in (§9.1–§9.4).
  *
- * Renders the six sections defined in the ButlersExpanded design:
+ * Renders the five sections defined in the ButlersExpanded design:
  *   §1  Identity & routing   — fallback chain, schedule, ceiling, approvals, timeout, concurrency
  *   §2  System prompt        — serif body + version caption + edit modal
- *   §3  Tools matrix         — tool · description · scope · on toggles
- *   §4  Memory access        — short / mid / long read/write tiles
- *   §5  Activity stripe      — 24h sessions per hour
- *   §6  Kill switch          — 30s grace confirmation
+ *   §3  Memory access        — short / mid / long read/write tiles
+ *   §4  Activity stripe      — 24h sessions per hour
+ *   §5  Kill switch          — 30s grace confirmation
  */
 
 import { useState } from "react";
 import { Link } from "react-router";
 import { toast } from "sonner";
 
-import { useButlerMemoryAccess, useButlerPrompt, useButlerPromptHistory, useButlerTools, useKillButler, useUpdateButlerPrompt } from "@/hooks/use-butler-management";
+import {
+  useButlerEffectivePrompt,
+  useButlerMemoryAccess,
+  useButlerPrompt,
+  useButlerPromptHistory,
+  useKillButler,
+  useUpdateButlerPrompt,
+} from "@/hooks/use-butler-management";
 import { useButlerHourlyActivity } from "@/hooks/use-butler-analytics";
+import { useRuntimeConfig } from "@/hooks/use-butlers";
 import { useResolveModel } from "@/hooks/use-model-catalog";
 import { useModalChoreography } from "@/hooks/use-modal-choreography";
 import { bucketHourInZone } from "@/lib/hourly-buckets";
@@ -167,6 +174,21 @@ function ConfigRow({ label, value }: { label: string; value: React.ReactNode }) 
 // §1 Identity & routing (static from runtime config)
 // ---------------------------------------------------------------------------
 
+// Tiers each memory read ceiling admits (mirrors the server-held read policy).
+const MEMORY_CEILING_ADMITS: Record<string, string> = {
+  normal: "normal only",
+  internal: "normal + pii",
+  confidential: "all tiers",
+};
+
+function memoryCeilingLabel(value: unknown): string {
+  if (typeof value === "string" && Object.hasOwn(MEMORY_CEILING_ADMITS, value)) {
+    return `${value} · ${MEMORY_CEILING_ADMITS[value]}`;
+  }
+  // Missing or unrecognized values fail closed to the lowest ceiling.
+  return `normal · ${MEMORY_CEILING_ADMITS.normal} (default, fail-closed)`;
+}
+
 function IdentitySection({ butlerName }: { butlerName: string }) {
   // Model + per-session timeout are owned by the model catalog (resolved per
   // complexity tier), not runtime_config — core_073 moved session_timeout_s onto
@@ -174,6 +196,7 @@ function IdentitySection({ butlerName }: { butlerName: string }) {
   // read-only here and defer all model/timeout editing to the Models tab.
   const { data: resolved, isLoading } = useResolveModel(butlerName, DEFAULT_COMPLEXITY);
   const r = resolved?.data;
+  const { data: runtimeConfig, isLoading: runtimeLoading } = useRuntimeConfig(butlerName);
 
   return (
     <Section n={1} title="Identity & routing" hint="model, fallback chain, schedule, ceilings">
@@ -205,6 +228,18 @@ function IdentitySection({ butlerName }: { butlerName: string }) {
                     : "—"
               }
             />
+            <ConfigRow
+              label="Memory read ceiling"
+              value={
+                runtimeLoading
+                  ? "…"
+                  : runtimeConfig
+                    ? memoryCeilingLabel(runtimeConfig.catalog_read_sensitivity)
+                    : // No runtime_config row (fetch error, paused or disabled query): the
+                      // server's real ceiling is unknown, so claim nothing about it.
+                      "—"
+              }
+            />
           </div>
           <p className="mt-3 font-serif text-xs italic leading-relaxed text-muted-foreground">
             On primary failure the runtime tries each fallback in order with a 2s timeout. After
@@ -230,6 +265,11 @@ function IdentitySection({ butlerName }: { butlerName: string }) {
 
 function SystemPromptSection({ butlerName }: { butlerName: string }) {
   const { data, isLoading } = useButlerPrompt(butlerName);
+  const {
+    data: effectiveData,
+    isLoading: effectiveLoading,
+    isError: effectiveError,
+  } = useButlerEffectivePrompt(butlerName);
   const [showEdit, setShowEdit] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
 
@@ -237,12 +277,33 @@ function SystemPromptSection({ butlerName }: { butlerName: string }) {
   const version = pv?.version ?? 0;
   const prompt = pv?.prompt ?? "";
   const updatedBy = pv?.updated_by ?? "—";
+  const effective = effectiveData?.data;
+  const composedPrompt = effective?.effective_prompt ?? "";
+  let driftHint = "Prompt: receipt pending";
+  if (effectiveError || effective?.status === "unavailable") {
+    driftHint = "Prompt: receipt unavailable";
+  } else if (effective?.status === "corrupt") {
+    driftHint = "Prompt: corrupt receipt";
+  } else if (effective?.drift_status === "matches_git" && effective.roster_digest) {
+    driftHint = `Prompt: matches git @${effective.roster_digest.slice(0, 12)}`;
+  } else if (effective?.drift_status === "drifted") {
+    driftHint = `Prompt: drifted since ${effective.drifted_since ?? "last receipt"}`;
+  }
+  let promptExplanation =
+    "Preview shows composed runtime instructions. The existing editor changes the mutable base prompt; it does not edit roster files or this receipt.";
+  if (effective?.status === "corrupt") {
+    promptExplanation =
+      "Stored receipt verification failed, so runtime prompt content is withheld. The existing authoring prompt remains separately editable.";
+  } else if (effectiveError || !composedPrompt) {
+    promptExplanation =
+      "No verified composed runtime prompt is available. The existing authoring prompt remains separately editable and is not shown as a runtime receipt.";
+  }
 
   return (
     <Section
       n={2}
       title="System prompt"
-      hint={version > 0 ? `version ${version}` : "no prompt set"}
+      hint={driftHint}
       right={
         version > 0 ? (
           <div className="flex gap-3">
@@ -265,17 +326,28 @@ function SystemPromptSection({ butlerName }: { butlerName: string }) {
         ) : null
       }
     >
-      {isLoading ? (
+      {isLoading || effectiveLoading ? (
         <div className="h-20 w-full rounded bg-muted" />
       ) : (
         <>
+          {(effectiveError || effective?.status === "unavailable") && (
+            <p className="mb-2 text-xs text-destructive">Composed prompt unavailable.</p>
+          )}
           <div className="max-w-[72ch] rounded border border-border bg-muted/20 px-4 py-3 font-serif text-sm leading-relaxed text-foreground">
-            {prompt || <span className="italic text-muted-foreground">No system prompt configured.</span>}
+            {composedPrompt || (
+              <span className="italic text-muted-foreground">Effective prompt unavailable.</span>
+            )}
           </div>
           <div className="mt-2.5 flex items-center gap-3 font-mono text-[10px] text-muted-foreground">
-            {prompt && (
+            {composedPrompt && (
               <>
-                <span>tokens · {Math.round(prompt.length / 4)}</span>
+                <span>tokens · {Math.round(composedPrompt.length / 4)}</span>
+                {effective?.total_bytes != null && (
+                  <>
+                    <span>·</span>
+                    <span>{effective.total_bytes.toLocaleString()} bytes</span>
+                  </>
+                )}
                 <span>·</span>
                 <span>last edit · {updatedBy}</span>
               </>
@@ -289,6 +361,14 @@ function SystemPromptSection({ butlerName }: { butlerName: string }) {
               edit prompt →
             </button>
           </div>
+          {effective?.changed_sources && effective.changed_sources.length > 0 && (
+            <p className="mt-2 font-mono text-[10px] text-destructive">
+              changed sources · {effective.changed_sources.join(", ")}
+            </p>
+          )}
+          <p className="mt-2 max-w-[72ch] text-[11px] text-muted-foreground">
+            {promptExplanation}
+          </p>
         </>
       )}
 
@@ -464,7 +544,7 @@ function PromptEditModal({
           </button>
         </div>
         <textarea
-          className="h-64 w-full resize-none rounded border border-border bg-muted/20 p-3 font-serif text-sm leading-relaxed focus:outline-none focus:ring-1 focus:ring-ring"
+          className="h-64 w-full resize-none rounded border border-border bg-muted/20 p-3 font-serif text-sm leading-relaxed focus:outline-none focus:ring-1 focus:ring-focus"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           placeholder="Enter system prompt…"
@@ -492,65 +572,7 @@ function PromptEditModal({
 }
 
 // ---------------------------------------------------------------------------
-// §3 Tools matrix
-// ---------------------------------------------------------------------------
-
-function ToolsSection({ butlerName }: { butlerName: string }) {
-  const { data, isLoading } = useButlerTools(butlerName);
-  const tools = data?.data ?? [];
-
-  return (
-    <Section
-      n={3}
-      title="Tools & integrations"
-      hint={
-        tools.length > 0
-          ? `${tools.filter((t) => t.allowed).length}/${tools.length} allowed`
-          : "no tools configured"
-      }
-    >
-      {isLoading ? (
-        <div className="h-24 w-full rounded bg-muted" />
-      ) : tools.length === 0 ? (
-        <p className="font-mono text-[11px] text-muted-foreground">
-          No tool grants configured for this butler.
-        </p>
-      ) : (
-        <>
-          <div className="grid grid-cols-[10rem_1fr_1fr_2.5rem] gap-3 border-b border-border pb-2">
-            <MonoCaption>tool</MonoCaption>
-            <MonoCaption>description</MonoCaption>
-            <MonoCaption>scope</MonoCaption>
-            <MonoCaption>on</MonoCaption>
-          </div>
-          {tools.map((t) => (
-            <div
-              key={t.name}
-              className="grid grid-cols-[10rem_1fr_1fr_2.5rem] items-center gap-3 border-b border-border/50 py-2.5 last:border-b-0"
-            >
-              <span className="font-mono text-[11px] text-foreground">{t.name}</span>
-              <span className="text-xs text-muted-foreground">{t.description ?? "—"}</span>
-              <span className="font-mono text-[10px] text-muted-foreground">{t.scope ?? "—"}</span>
-              <span className="flex justify-end">
-                <span
-                  className={cn(
-                    "h-4 w-4 rounded-full border",
-                    t.allowed
-                      ? "border-[var(--green)] bg-[var(--green)]/30"
-                      : "border-border bg-transparent",
-                  )}
-                />
-              </span>
-            </div>
-          ))}
-        </>
-      )}
-    </Section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// §4 Memory access
+// §3 Memory access
 // ---------------------------------------------------------------------------
 
 function MemoryAccessSection({ butlerName }: { butlerName: string }) {
@@ -560,7 +582,7 @@ function MemoryAccessSection({ butlerName }: { butlerName: string }) {
   const tiers = ["short", "mid", "long"] as const;
 
   return (
-    <Section n={4} title="Memory access" hint="which tiers this butler may read, write, and owns">
+    <Section n={3} title="Memory access" hint="which tiers this butler may read, write, and owns">
       {isLoading ? (
         <div className="h-20 w-full rounded bg-muted" />
       ) : (
@@ -621,7 +643,7 @@ function MemoryAccessSection({ butlerName }: { butlerName: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// §5 Activity stripe (24h)
+// §4 Activity stripe (24h)
 // ---------------------------------------------------------------------------
 
 function ActivityStripeSection({ butlerName }: { butlerName: string }) {
@@ -644,7 +666,7 @@ function ActivityStripeSection({ butlerName }: { butlerName: string }) {
 
   return (
     <Section
-      n={5}
+      n={4}
       title="Activity · last 24 hours"
       hint="hour-buckets"
       right={
@@ -682,7 +704,7 @@ function ActivityStripeSection({ butlerName }: { butlerName: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// §6 Kill switch
+// §5 Kill switch
 // ---------------------------------------------------------------------------
 
 function KillSwitchSection({ butlerName }: { butlerName: string }) {
@@ -699,7 +721,7 @@ function KillSwitchSection({ butlerName }: { butlerName: string }) {
   }
 
   return (
-    <Section n={6} title="Kill switch" hint="graceful shutdown with configurable grace window">
+    <Section n={5} title="Kill switch" hint="graceful shutdown with configurable grace window">
       <div className="flex items-center gap-4">
         <button
           type="button"
@@ -756,7 +778,6 @@ export default function ButlerManagementTab({ butlerName }: Props) {
     <div className="divide-y divide-border">
       <IdentitySection butlerName={butlerName} />
       <SystemPromptSection butlerName={butlerName} />
-      <ToolsSection butlerName={butlerName} />
       <MemoryAccessSection butlerName={butlerName} />
       <ActivityStripeSection butlerName={butlerName} />
       <KillSwitchSection butlerName={butlerName} />

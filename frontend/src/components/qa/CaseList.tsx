@@ -81,7 +81,7 @@ export function CaseList({
                 type="button"
                 onClick={() => onSelect(qaCase.id)}
                 className={cn(
-                  "grid w-full grid-cols-[12px_1fr_14px] gap-3 border-l-2 border-transparent py-3 pl-3 pr-1 text-left transition-colors duration-fast hover:bg-muted/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg",
+                  "grid w-full grid-cols-[12px_1fr_14px] gap-3 border-l-2 border-transparent py-3 pl-3 pr-1 text-left transition-colors duration-fast hover:bg-muted/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
                   active && "border-l-2 border-foreground bg-white/[0.04]",
                 )}
                 data-testid={`qa-case-row-${qaCase.id}`}
@@ -132,7 +132,7 @@ export function CaseList({
                     sessionTraceDoor.traceCount === 1 ? "" : "s"
                   } for QA case ${qaCase.short_id}`}
                   data-testid={`qa-case-session-door-${qaCase.id}`}
-                  className="mb-2 ml-7 inline-flex min-h-6 items-center gap-1 font-mono text-[9.5px] uppercase tracking-[0.12em] text-muted-foreground underline decoration-[var(--border-strong)] underline-offset-4 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg"
+                  className="mb-2 ml-7 inline-flex min-h-6 items-center gap-1 font-mono text-[9.5px] uppercase tracking-[0.12em] text-muted-foreground underline decoration-[var(--border-strong)] underline-offset-4 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
                 >
                   {sessionTraceDoor.traceCount} trace
                   {sessionTraceDoor.traceCount === 1 ? "" : "s"}

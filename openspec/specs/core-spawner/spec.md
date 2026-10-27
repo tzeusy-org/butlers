@@ -158,9 +158,12 @@ The spawner SHALL use an `asyncio.Semaphore` with a configurable concurrency lim
 - **THEN** the invocation is rejected immediately with a queue-full error
 
 ### Requirement: Spawner Session Lifecycle
-Each invocation creates a session record before the runtime call and completes it after, regardless of success or failure. Sessions are trace-correlated via OpenTelemetry span context. After completing a runtime invocation, the spawner SHALL check `runtime.last_process_info` and, if non-null and a session_id and database pool are available, write the process metadata to the `session_process_logs` table via `session_process_log_write()`. This applies to both the success path (after `session_complete` with `success=True`) and the error path (after `session_complete` with `success=False`). The write is best-effort: exceptions are caught and logged at DEBUG level without affecting the session result or propagating to the caller. On the error path, after all existing error handling (session_complete, process log, runtime reset, audit entry), the spawner SHALL invoke the self-healing dispatcher as a **fallback** — this catches hard crashes where the butler agent never got a chance to call the `report_error` MCP tool.
+Each invocation creates a session record before the runtime call and completes it after, regardless of success or failure. Sessions are trace-correlated via OpenTelemetry span context. After completing a runtime invocation, the spawner SHALL check `runtime.last_process_info` and, if non-null and a session_id and database pool are available, write the process metadata to the `session_process_logs` table via `session_process_log_write()`. This applies to both the success path (after `session_complete` with `success=True`) and the error path (after `session_complete` with `success=False`). The write is best-effort: exceptions are caught and logged at DEBUG level without affecting the session result or propagating to the caller. The error path SHALL preserve ordinary failure evidence and cleanup without dispatching a per-butler investigation; QA owns independent session/log discovery under RFC 0015.
+On the normal-completion (non-raising) path the spawner SHALL additionally run delivery accounting (see the **Interactive Reply Delivery Accounting** requirement) before persisting the session. Delivery accounting MAY downgrade the persisted session record to `success=False` even though the runtime invocation itself completed cleanly. Because this runs on the success path and does not raise, it SHALL NOT trigger same-tier failover or a per-butler investigation dispatcher.
 
-On the normal-completion (non-raising) path the spawner SHALL additionally run delivery accounting (see the **Interactive Reply Delivery Accounting** requirement) before persisting the session. Delivery accounting MAY downgrade the persisted session record to `success=False` even though the runtime invocation itself completed cleanly. Because this runs on the success path and does not raise, it SHALL NOT trigger same-tier failover or the self-healing fallback dispatcher.
+ID: REQ-core-spawner-005
+Source: RFC 0015 centralized QA discovery/dispatch; bu-1fe7xv rounds 3-4; core-spawner existing session evidence contract
+Scope: v1-mandatory
 
 #### Scenario: Successful session
 - **WHEN** a runtime invocation completes successfully
@@ -169,19 +172,9 @@ On the normal-completion (non-raising) path the spawner SHALL additionally run d
 
 #### Scenario: Failed session — spawner fallback dispatch
 - **WHEN** a runtime invocation raises an exception
-- **THEN** `session_complete()` is called with `success=False`, the error message, and duration
+- **THEN** `session_complete()` is called with `success=False`, the original error message, and duration
 - **AND** the runtime adapter's `reset()` method is called for cleanup
-- **AND** the self-healing dispatcher is invoked via `asyncio.create_task()` as a **fallback** with the raw exception, traceback, session_id, butler config, and trigger_source
-
-#### Scenario: Fallback is secondary to module path
-- **WHEN** a butler agent called `report_error` during its session for the same error before the session crashed
-- **AND** the spawner fallback also fires for the same exception
-- **THEN** the novelty gate deduplicates — the second dispatch (fallback) sees the active attempt from the first (module) and appends the session ID instead of creating a duplicate
-
-#### Scenario: Dispatcher receives exception and traceback
-- **WHEN** the spawner invokes the fallback dispatcher from the except block
-- **THEN** it captures `sys.exc_info()` BEFORE any cleanup code runs
-- **AND** passes the live traceback to `dispatch_healing()` for fingerprinting
+- **AND** no per-butler investigation task is created by the Spawner
 
 #### Scenario: Process log written after successful runtime invocation
 - **WHEN** the spawner completes a runtime invocation successfully
@@ -197,38 +190,72 @@ On the normal-completion (non-raising) path the spawner SHALL additionally run d
 - **WHEN** the `session_process_log_write()` call raises any exception
 - **THEN** the exception is logged at DEBUG level and the spawner continues normally
 
+#### Scenario: Fallback is secondary to module path
+- **WHEN** a registered relay reports an agent-observed error and a runtime invocation independently fails
+- **THEN** the report is received through the centralized QA boundary and ordinary Spawner failure evidence remains available
+- **AND** no additional per-butler fallback investigation is dispatched
+
+#### Scenario: Dispatcher receives exception and traceback
+- **WHEN** a runtime raises an exception with traceback evidence
+- **THEN** the Spawner preserves its ordinary failure, process and captured-tool evidence without passing an exception/traceback to a local investigation dispatcher
+- **AND** agent-reported structured exceptions retain fingerprint/traceback handling at the centralized report_error relay boundary
+
 #### Scenario: Healing dispatcher failure is non-fatal
-- **WHEN** the fallback dispatcher task raises an exception
-- **THEN** the exception is logged at WARNING level
-- **AND** the original `SpawnerResult` is unaffected (already returned)
+- **WHEN** QA reception is unavailable while a runtime invocation fails
+- **THEN** the original session error, reset and finally cleanup remain authoritative
+- **AND** no per-butler fallback dispatcher is invoked or allowed to mask that error
 
 #### Scenario: Finally block exceptions do not trigger healing
 - **WHEN** an exception occurs in the spawner's `finally` block (metrics, span cleanup, context clearing)
 - **THEN** no healing dispatch occurs for that exception
 
 ### Requirement: Trigger Source Tracking
-Valid trigger sources are: `tick`, `external`, `trigger`, `route`, `healing`, and `schedule:<task-name>`. The trigger source SHALL be passed through to session creation for audit.
+Valid trigger sources include `tick`, `external`, `trigger`, `route`, `qa`, and `schedule:<task-name>`. Historical `healing` provenance SHALL remain readable and its existing isolation/recursion safeguards SHALL remain intact; it SHALL NOT enable the retired local dispatcher. The trigger source SHALL be passed through to session creation for audit.
+
+ID: REQ-core-spawner-006
+Source: core-spawner trigger audit; RFC 0015 centralized QA; bu-lsxqb0.6 and bu-1fe7xv rounds 3-4
+Scope: v1-mandatory
 
 #### Scenario: Schedule trigger source
 - **WHEN** a task named `daily_digest` fires via the scheduler
 - **THEN** the session's `trigger_source` is `"schedule:daily_digest"`
 
 #### Scenario: Healing trigger source
-- **WHEN** the self-healing module or fallback dispatcher spawns an investigation agent
-- **THEN** the session's `trigger_source` is `"healing"`
+- **WHEN** an existing session carries historical `trigger_source="healing"` provenance
+- **THEN** its original trigger source remains unchanged
+- **AND** neither the core QA relay nor the Spawner crash handler starts a local investigation
+- **AND** new centralized QA investigations retain `trigger_source="qa"`
 
 #### Scenario: Healing sessions skip fallback dispatcher
 - **WHEN** a session with `trigger_source = "healing"` fails
-- **THEN** the spawner fallback dispatcher is NOT invoked (no recursive healing)
-- **AND** the spawner's except block checks `trigger_source` BEFORE creating the dispatch task
+- **THEN** its failure remains recorded without invoking a per-butler fallback dispatcher
+- **AND** the centralized QA self-recursion barrier remains authoritative for QA-origin findings
 
 ### Requirement: Credential Isolation
-The spawner SHALL build an explicit environment dict for the runtime process containing only: `PATH` (for shebang resolution), declared `[butler.env]` vars, module credential vars, and CLI auth provider credentials (e.g. `ANTHROPIC_API_KEY` for the Claude runtime). Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or API keys entered via the dashboard Settings → CLI Runtime Authentication card, depending on the provider's `auth_mode`. Credentials SHALL be resolved DB-first via `CredentialStore.resolve()` with env-var fallback. Undeclared env vars SHALL NOT leak through.
+The spawner SHALL build an explicit environment dict containing only `PATH` (for shebang resolution), declared `[butler.env]` required/optional variables, distributed-tracing variables, and the selected runtime's authentication material. Runtime authentication uses CLI-level OAuth tokens (device-code flow) or the selected provider's configured API key, depending on its `auth_mode`. Declared variables SHALL be resolved through `CredentialStore.resolve()` when a store is present, without implicit environment fallback; the no-store path MAY resolve them from the process environment. Owner-auth and administrative database variables SHALL always be withheld, even if declared.
+
+Module channel credentials SHALL NOT be added merely because a module declares or resolves them. Module credential validation and daemon-side resolution SHALL remain available to the modules. An operator MAY explicitly declare a channel variable in `[butler.env]`; that declaration remains subject to the owner-auth and administrative-variable exclusions. Undeclared host variables SHALL NOT leak through, and an explicit empty environment SHALL NOT become ambient environment inheritance at the runtime adapter.
+
+Source: RFC 0038 D3 and D18; bu-13itjw legacy credential isolation
+Scope: v1-mandatory
+
+ID: REQ-core-spawner-010
 
 #### Scenario: Only declared credentials are passed
-- **WHEN** the spawner builds the runtime environment
-- **THEN** only `PATH`, declared `[butler.env]` vars, and declared module credential vars are included
-- **AND** other host environment variables are excluded
+- **WHEN** the spawner builds a normal runtime environment
+- **THEN** only `PATH`, declared `[butler.env]` variables, tracing, and selected runtime authentication are included
+- **AND** undeclared module channel credentials and other host environment variables are excluded
+- **AND** daemon-side module validation and credential resolution remain unchanged
+
+#### Scenario: Explicitly declared channel variable
+- **WHEN** an operator declares a module channel variable in `[butler.env]`
+- **THEN** the variable is resolved by the normal declared-variable path
+- **AND** owner-auth and administrative database variables remain withheld
+
+#### Scenario: Empty runtime environment
+- **WHEN** the spawner supplies an empty environment mapping
+- **THEN** the runtime adapter preserves that explicit mapping rather than inheriting the daemon environment
+- **AND** invocation-local MCP configuration variables MAY be added without inheriting unrelated host variables
 
 ### Requirement: Pre-Launch and Prewarm Codex Auth Synchronization
 The Codex adapter SHALL perform live Codex device-auth reconciliation before
@@ -325,6 +352,13 @@ When the memory module is enabled, the Spawner SHALL fetch memory context via `f
 - **THEN** the Spawner SHALL call `store_session_episode()` once for that
   output after normal session completion
 
+#### Scenario: Episode storage carries trigger and routing context
+- **WHEN** the Spawner stores a session episode
+- **THEN** it SHALL pass the invocation's routing context (not the session
+  output's text) to `store_session_episode()` so the memory module can stamp the episode's
+  server-derived content authority (see module-memory "Content authority and
+  steering-class admission")
+
 #### Scenario: Failed session remains ineligible for automatic episode persistence
 - **WHEN** memory is enabled and a runtime invocation fails
 - **THEN** the Spawner SHALL NOT call `store_session_episode()` regardless of
@@ -351,25 +385,87 @@ The system prompt is read from `CLAUDE.md` in the butler's config directory. Inc
 - **THEN** the failure is logged at WARNING level
 - **AND** the invocation proceeds with the system prompt without context preamble
 
+### Requirement: Blind-Spot Preamble Injection
+The spawner SHALL inject a composed-prompt layer summarizing the health of each module-declared "expected signal" — a signal a module has registered in `public.expected_signals` as a name it expects to arrive on a cadence. The layer is added after the context preamble and before routing instructions. Declared signal-key patterns are resolved per butler from a static per-module registry (`MODULE_BLIND_SPOT_SIGNAL_PATTERNS` in `blind_spot_declarations.py`), keyed by enabled module name.
+
+Evaluation SHALL be fail-closed by construction: `evaluate_declared_signals()` re-evaluates each declared signal fresh and catches any exception, setting `query_failed=True` rather than raising or silently omitting results.
+
+Behavior:
+- silent (no preamble layer) when there are no declared signal patterns for the butler's enabled modules, or when every declared signal currently evaluates PRESENT and the query itself succeeded.
+- byte-identical composed prompt to a butler with no declared blind-spot signals when every declared signal is PRESENT.
+- typed block naming each non-PRESENT signal's `signal_key`, `producer`, `last_observed_at`, and the evaluator's `now` clock, when at least one declared signal is not PRESENT.
+- explicit "source health could not be evaluated" text (`BLIND_SPOT_QUERY_FAILED_TEXT`) instead of any signal detail, when the query itself raised.
+
+The layer SHALL be gated by a per-butler kill switch: `runtime_config.blind_spot_preamble_enabled` (added by migration `core_228`, default `true`). Reading the flag SHALL be fail-open — if the runtime_config accessor raises, or the column does not yet exist on an unmigrated schema, the layer defaults to enabled.
+
+`GET /api/butlers/{name}` SHALL project the identical evaluation (`declared_signal_patterns()` + `evaluate_declared_signals()`) so the dashboard's `blind_spots` field never disagrees with what the next spawned session's prompt will say.
+
+#### Scenario: No declared signals means byte-identical prompt
+- **WHEN** a butler's enabled modules declare no blind-spot signal patterns
+- **THEN** `_compose_system_prompt()` receives `blind_spot_preamble=None`
+- **AND** the composed prompt is unchanged from a butler with the blind-spot feature absent
+
+#### Scenario: All declared signals present means byte-identical prompt
+- **WHEN** every signal_key_like_pattern-matched row in `public.expected_signals` evaluates to `measurability="present"`
+- **THEN** `fetch_blind_spot_preamble()` returns `None`
+- **AND** the composed system prompt is unchanged from today's
+
+#### Scenario: Non-present signal renders a typed block
+- **WHEN** at least one declared signal evaluates to `absent` or `unmeasurable`
+- **THEN** the composed prompt includes a block naming that signal's key, producer, last_observed_at (or "never observed"), and the evaluator's clock
+
+#### Scenario: Query failure renders the fail-closed disclosure
+- **WHEN** `evaluate_declared_signals()` catches an exception while querying or re-evaluating expected signals
+- **THEN** the composed prompt's blind-spot layer reads "source health could not be evaluated" instead of omitting the layer or fabricating signal state
+
+#### Scenario: Kill switch disables the layer
+- **WHEN** `runtime_config.blind_spot_preamble_enabled` is `false` for a butler
+- **THEN** the spawner SHALL NOT call `fetch_blind_spot_preamble()` and no blind-spot layer is added, regardless of declared signal state
+
+#### Scenario: Dashboard and prompt agree
+- **WHEN** `GET /api/butlers/{name}` is called for a butler with a non-present declared signal
+- **THEN** the response's `blind_spots` list contains that signal
+- **AND** the next spawned session for that butler carries the same signal in its composed prompt's blind-spot layer
+
 ### Requirement: Dynamic Model Resolution at Spawn Time
 The spawner SHALL resolve the model dynamically at spawn time using the model catalog instead of reading a static model from `butler.toml`. The `trigger()` method gains a `complexity` parameter that drives model selection. The spawner MAY use same-tier failover only after the initial catalog candidate has been selected.
 
 #### Scenario: Trigger with complexity parameter
-- **WHEN** `trigger(prompt, trigger_source, complexity="high")` is called
-- **THEN** the spawner calls `resolve_model(butler_name, "high")` to determine the runtime type, model ID, and extra args
+- **WHEN** `trigger(prompt, trigger_source, complexity="reasoning")` is called
+- **THEN** the spawner calls `resolve_model(butler_name, "reasoning")` to determine the runtime type, model ID, and extra args
 
 #### Scenario: Trigger without complexity parameter
 - **WHEN** `trigger(prompt, trigger_source)` is called without a complexity parameter
-- **THEN** the complexity defaults to `medium`
+- **THEN** the complexity defaults to `workhorse`
 
-#### Scenario: Catalog resolution overrides static fallback model
+#### Scenario: Catalog resolution selects the invocation model
 - **WHEN** `resolve_model()` returns a result
 - **THEN** the returned `runtime_type`, `model_id`, and `extra_args` are used for the invocation
-- **AND** the module-private `_FALLBACK_MODEL_ID` constant in `butlers.core.spawner` is ignored
 
-#### Scenario: Catalog empty fallback to static defaults
+#### Scenario: Catalog empty fails closed
 - **WHEN** `resolve_model()` returns `None` (no matching entries) or fails
-- **THEN** the spawner falls back to the module-private `_FALLBACK_MODEL_ID` constant paired with `DEFAULT_RUNTIME_TYPE` from `butlers.core.runtimes`; these are hard-coded last-resort constants, not butler-scoped config
+- **THEN** a live Spawner with a database pool returns `ModelResolutionError: catalog_unavailable` or `ModelResolutionError: no_eligible_catalog_entries` before invocation because catalog-keyed permission, quota, ceiling, breaker, and provenance gates cannot run
+- **AND** an explicit pool-free direct-adapter harness may invoke `DEFAULT_RUNTIME_TYPE` with no explicit model only after its adapter baseline satisfies the dispatch intent
+- **AND** it never pairs a hard-coded provider model with a different provider's runtime
+
+#### Scenario: Populated catalog with no fitting candidate fails closed
+- **WHEN** intent-aware resolution returns no selection and its receipt contains excluded catalog candidates
+- **THEN** the spawner returns a pre-invocation `ModelResolutionError` naming the bounded failure class and required capability findings
+- **AND** the failed `SpawnerResult` retains the prompt-free resolution receipt
+- **AND** no runtime adapter, speculative failover candidate, or fake model dispatch attempt is invoked
+
+#### Scenario: Unregistered catalog runtime fails closed
+- **WHEN** a selected initial or failover catalog entry names an unregistered runtime type
+- **THEN** an initial selection returns `ModelResolutionError: unregistered_runtime_type` before invocation
+- **AND** an unregistered failover candidate records a non-invoked `runtime_failure` attempt, excludes that catalog entry, and continues the bounded same-tier search
+- **AND** if no registered same-tier candidate remains, the logical session ends with ordinary failover exhaustion
+- **AND** it does not substitute the default runtime while retaining the incompatible catalog model
+
+#### Scenario: Post-resolution overrides preserve original intent fit
+- **WHEN** a spend rule or private-content policy replaces the initially selected catalog entry
+- **THEN** the spawner verifies that the replacement was fit-eligible for the original dispatch intent and effective tier before receipt projection, prewarm, session creation, or runtime invocation
+- **AND** a replacement recorded as `excluded_hard_fit` returns `ModelResolutionError: post_resolution_selection_unfit`
+- **AND** its original capability exclusions remain present in the failed result's resolution receipt
 
 #### Scenario: Runtime args sourced only from the catalog
 - **WHEN** catalog resolution returns `extra_args`
@@ -378,7 +474,7 @@ The spawner SHALL resolve the model dynamically at spawn time using the model ca
 
 #### Scenario: Session record includes model resolution metadata
 - **WHEN** a session is created via `session_create()`
-- **THEN** the session record includes: the resolved `model` (model_id from catalog or the static fallback constant), `runtime_type`, `complexity` tier, and resolution source (`catalog` or `static_fallback`)
+- **THEN** the session record includes: the resolved `model` (catalog model ID, or NULL in explicit pool-free direct-adapter mode), `runtime_type`, `complexity` tier, and resolution source (`catalog` or `direct_runtime`)
 
 #### Scenario: Initial catalog candidate establishes failover tier
 - **WHEN** `resolve_model()` returns a catalog result for a trigger
@@ -386,11 +482,12 @@ The spawner SHALL resolve the model dynamically at spawn time using the model ca
   failover tier for the logical session
 - **AND** subsequent automatic failover attempts SHALL use only that exact tier
 
-#### Scenario: Catalog resolution failure uses static fallback
+#### Scenario: Catalog resolution failure fails closed
 - **WHEN** initial catalog resolution returns `None` for every eligible tier or raises
   before a catalog candidate is selected
-- **THEN** the spawner SHALL use the existing static fallback behavior
+- **THEN** a live pooled spawner SHALL refuse invocation with a `ModelResolutionError`
 - **AND** same-tier model failover SHALL NOT run because no catalog tier was established
+- **AND** explicit pool-free direct-adapter mode remains a test-harness path, not a live fallback
 
 ### Requirement: Runtime Failure Classification
 The spawner SHALL classify runtime failures before deciding whether automatic model
@@ -424,6 +521,8 @@ failover is safe.
 ### Requirement: Logical Session Attempt Orchestration
 The spawner SHALL keep automatic model failover attempts bounded and auditable.
 
+Each provider invocation SHALL produce attempt-grained spend evidence: the spawner writes the dispatch-attempt row first, then writes exactly one token-usage row referencing that attempt. Parseable provider usage is `measured`; absence of parseable usage is `unmeasurable` with NULL token buckets.
+
 #### Scenario: Successful fallback completes logical session once
 - **WHEN** the primary model fails with a failover-eligible error
 - **AND** a fallback model succeeds
@@ -442,6 +541,12 @@ The spawner SHALL keep automatic model failover attempts bounded and auditable.
   catalog candidates
 - **AND** no catalog entry SHALL be invoked more than once for the same logical session
 
+#### Scenario: Timeout without usage remains visible
+- **WHEN** a provider invocation times out and no token usage can be parsed
+- **THEN** the spawner SHALL write the invocation's dispatch-attempt provenance
+- **AND** SHALL write one linked `usage_source='unmeasurable'` ledger row
+- **AND** monthly spend surfaces SHALL identify that attempt as unpriced rather than presenting the measured subtotal as complete
+
 ### Requirement: Drain for Shutdown
 The spawner SHALL support `stop_accepting()` to reject new triggers and `drain(timeout)` to wait for in-flight sessions to complete, cancelling remaining sessions after timeout.
 
@@ -454,7 +559,7 @@ The spawner SHALL support `stop_accepting()` to reject new triggers and `drain(t
 - **THEN** remaining in-flight tasks are cancelled
 
 ### Requirement: Healing Session Semaphore Bypass
-When the spawner's `trigger()` is called with `trigger_source = "healing"`, the per-butler session semaphore SHALL be bypassed. The global semaphore SHALL still be acquired. This is essential for the module path where the calling session is still holding the per-butler semaphore.
+When the spawner's `trigger()` is called with `trigger_source = "healing"`, the per-butler session semaphore SHALL be bypassed. The global semaphore SHALL still be acquired. This retained isolation behavior does not register or enable the retired local dispatcher.
 
 #### Scenario: Healing bypasses per-butler semaphore
 - **WHEN** `trigger(prompt, trigger_source="healing")` is called and the per-butler semaphore has 0 available slots
@@ -477,40 +582,44 @@ When spawning a healing agent session (`trigger_source = "healing"`), the spawne
 - **AND** includes `PATH` for tool discovery
 - **AND** no other butler-specific credentials or env vars are passed
 
-### Requirement: Healing Configuration in butler.toml
-The spawner SHALL support healing-related configuration that the self-healing module and fallback dispatcher both read.
+### Requirement: Core QA Relay Availability
+The daemon SHALL register `report_error` and `get_healing_status` as logged core tools on every roster, independently of module declarations and `core_groups`. The retired `self_healing` module, its configuration and its skill SHALL NOT be required or registered. The Spawner SHALL have no local healing fallback.
 
-#### Scenario: Default healing config
-- **WHEN** `butler.toml` has no `[modules.self_healing]` section
-- **THEN** the self-healing module is not loaded and the spawner fallback is also disabled
-
-#### Scenario: Healing config fields
-- **WHEN** `[modules.self_healing]` is present
-- **THEN** the following fields are recognized:
-  - `enabled` (bool, default: `true`) — module loaded
-  - `severity_threshold` (int, default: `2`)
-  - `max_concurrent` (int, default: `2`)
-  - `cooldown_minutes` (int, default: `60`)
-  - `circuit_breaker_threshold` (int, default: `5`)
-  - `timeout_minutes` (int, default: `30`)
-
-#### Scenario: Spawner fallback uses module config
-- **WHEN** the spawner fallback fires for a hard crash
-- **THEN** it reads the self-healing module's config for gate thresholds
-- **AND** if the module is not loaded, the fallback is also disabled (no separate `[healing]` section needed)
-
-### Requirement: Spawner resolves hot config fields per-spawn from the model catalog
-The Spawner SHALL resolve the hot fields (model, runtime_type, args, session_timeout_s) on every `trigger()` call rather than reading them from the static `ButlerConfig`. As of migration `core_073` these fields live on `public.model_catalog` (resolved per complexity tier), not on the `runtime_config` table. The Spawner calls `resolve_model_with_effective_tier()` (`src/butlers/core/model_routing.py`) to obtain the catalog entry id, runtime_type, args, and session_timeout_s for the chosen tier. The `RuntimeConfigAccessor` is still consulted, but only for cold fields (core_groups, max_concurrent, max_queued).
-
-Note: an earlier design sourced these hot fields from `RuntimeConfigAccessor.get()`. That path was superseded by the catalog (core_073). The scenarios below reflect the catalog-based reality.
-
-Source: RFC 0001 §Trigger Pipeline, RFC 0002 §Core Tools, migration core_073
+ID: REQ-core-spawner-007
+Source: RFC 0015 centralized QA; approved-A QA retirement bu-dss7he.1; REQ-core-spawner-006
 Scope: v1-mandatory
 
-#### Scenario: Model resolved from the catalog with a constant fallback
+#### Scenario: Core relay without module configuration
+- **WHEN** a daemon starts without `[modules.self_healing]`, including a staffer or a daemon with no enabled core groups
+- **THEN** both core QA tools are registered with trusted daemon identity and read-only history pool
+- **AND** `error_message`, `traceback`, and `context` retain sensitive argument metadata and normal tool-call logging/session/trace binding
+- **AND** no local investigation, startup recovery, reaper or publisher is installed
+
+#### Scenario: Late transport and cache ownership
+- **WHEN** a report is submitted after Switchboard client creation or replacement
+- **THEN** the relay resolves the daemon's current client and binds its sixty-second QA availability cache to that exact client
+- **AND** Switchboard may use its own registered local MCP transport
+- **AND** no reporting argument selects source identity or publication authority
+
+#### Scenario: Confirmed reception and bounded refusal
+- **WHEN** a core report is submitted
+- **THEN** fingerprinting, severity, summary truncation and relay response shapes remain compatible
+- **AND** QA availability and routing share one two-second absolute deadline
+- **AND** only confirmed QA reception returns `accepted=true`; missing QA, malformed/error envelopes or unconfirmed transport return an honest refusal without local fallback
+- **AND** a timeout does not promise cancellation of already-buffered reception or license a blind replay
+- **AND** QA alone retains triage, concurrency, cooldown, breaker, timeout and publication policy
+
+### Requirement: Spawner resolves hot config fields per-spawn from the model catalog
+The Spawner SHALL resolve the hot fields (model, runtime_type, args, session_timeout_s) on every `trigger()` call rather than reading them from the static `ButlerConfig`. These fields live on `public.model_catalog` (resolved per complexity tier), not on the `runtime_config` table. The Spawner calls `resolve_model_with_effective_tier()` (`src/butlers/core/model_routing.py`) to obtain the catalog entry id, runtime_type, args, and session_timeout_s for the chosen tier. The `RuntimeConfigAccessor` is still consulted, but only for cold fields (core_groups, max_concurrent, max_queued).
+
+Source: RFC 0001 §Trigger Pipeline, RFC 0002 §Core Tools, migration core_073
+
+#### Scenario: Model resolved from the catalog
 - **WHEN** `trigger()` is called
 - **THEN** the Spawner SHALL resolve the model from `public.model_catalog` via `resolve_model_with_effective_tier()`
-- **AND** if catalog resolution fails or returns no result, the Spawner SHALL fall back to the module-level `_FALLBACK_MODEL_ID` constant (`src/butlers/core/spawner.py`), not the toml config
+- **AND** if catalog resolution fails or returns no result, a live Spawner with a database pool SHALL return a pre-invocation `ModelResolutionError`
+- **AND** only explicit pool-free direct-adapter mode may invoke the registered runtime with no explicit model after capability fit
+- **AND** a populated no-winner receipt SHALL return a pre-invocation `ModelResolutionError`
 
 #### Scenario: Runtime type from the catalog
 - **WHEN** `trigger()` is called
@@ -544,7 +653,6 @@ Scope: v1-mandatory
 The Spawner SHALL read `max_concurrent` and `max_queued` from the accessor once at construction time. These values are used to size the asyncio.Semaphore and queue limit.
 
 Source: RFC 0001 §Concurrency Control
-Scope: v1-mandatory
 
 #### Scenario: Concurrency limit from DB
 - **WHEN** the Spawner is constructed
@@ -626,18 +734,18 @@ These thresholds are spawner-level parameters / module constants, not `RuntimeCo
 
 ### Requirement: Interactive Reply Delivery Accounting
 On the normal-completion (non-raising) path, the spawner SHALL evaluate whether a route-triggered interactive session attempted a reply via `notify()` but delivered nothing, and SHALL persist that session record with `success=False` and a human-readable reason in the session `error` column.
-
-This is a **third session outcome**, distinct from the two in the Spawner Session Lifecycle requirement: the runtime invocation completed successfully (it did not raise), yet the user received no reply. It is detected on the success path, NOT via a raised exception. Therefore it SHALL NOT trigger same-tier model failover and SHALL NOT trigger the self-healing fallback dispatcher. This is the explicit difference from the "Failed session - spawner fallback dispatch" scenario, which DOES heal: an undelivered interactive reply is not a crash, and re-running the runtime would not have helped.
-
+This is a **third session outcome**: the runtime invocation returned normally but the user received no reply. It is detected on the success path and SHALL NOT trigger same-tier model failover or a per-butler investigation dispatcher. Ordinary crash evidence and centralized QA discovery remain separate.
 The in-memory `SpawnerResult.success` SHALL remain `True` for this outcome so that downstream memory extraction and the route reply flow are unaffected; only the persisted session record reflects the undelivered delivery.
-
 **Delivered-status set.** A `notify()` tool-call counts as delivered only when its captured result is a dict whose `status` is in the delivered set `{ok, deferred}`. Every other outcome is undelivered, including legacy suppression results, `pending_approval`, `pending_missing_identifier`, `error`, a record whose `outcome` is `error`, and a record with no result dict at all (the schema-rejection / null-result incident shape). `deferred` is delivered because the notification is persisted to the deferred queue with a concrete `deliver_at` and will be attempted later.
-
 **Scope guards** (deliberately conservative, to avoid false positives):
 - only sessions whose `trigger_source` is `route` are considered;
 - only sessions whose captured routing-context source channel is in the interactive set (`telegram_bot`, `whatsapp`) are considered;
 - a session that made zero `notify()` attempts is left alone (the runtime may have legitimately decided no reply was warranted);
 - if any single `notify()` attempt delivered, the session is not flagged.
+
+ID: REQ-core-spawner-008
+Source: core-spawner delivery accounting; RFC 0015 central dispatch; bu-1fe7xv rounds 3-4
+Scope: v1-mandatory
 
 #### Scenario: Undelivered interactive reply recorded as failed without healing
 - **WHEN** a `route`-triggered session whose source channel is `telegram_bot` completes successfully without raising

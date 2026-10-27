@@ -40,14 +40,6 @@ COPY --from=go-builder /out/whatsapp-bridge /usr/local/bin/whatsapp-bridge
 # Optional: extra dependency groups (e.g. "live-listener")
 ARG EXTRAS=""
 
-# Git commit SHA this image was built from (bu-9r3hd.2 deployments ledger).
-# Baked into the image as an env var so the running process can record its
-# own provenance in public.deployments (see src/butlers/core/deployments.py).
-# Passed via --build-arg GIT_SHA=$(git rev-parse HEAD) in scripts/compose.sh;
-# defaults to "unknown" for builds that don't set it (e.g. plain `docker build .`).
-ARG GIT_SHA="unknown"
-ENV GIT_SHA=${GIT_SHA}
-
 # Extra system deps for optional features
 RUN if echo "$EXTRAS" | grep -q "live-listener"; then \
       apt-get update && apt-get install -y --no-install-recommends libportaudio2 \
@@ -57,19 +49,16 @@ RUN if echo "$EXTRAS" | grep -q "live-listener"; then \
 # 1. Dependency manifests (changes less often than source)
 COPY pyproject.toml uv.lock ./
 
-# 2. Source code (must be present before uv sync — local editable package)
-COPY src/ src/
-
-# 3. Install production dependencies (always include whatsapp extra — just qrcode)
-#    UV_TORCH_BACKEND=cpu: use CPU-only PyTorch wheels — avoids pulling
-#    NVIDIA CUDA packages that can't install in slim containers.
-ENV UV_TORCH_BACKEND=cpu
+# 2. Frozen production dependencies use the explicit CPU source in pyproject.
+#    Keep source out of this layer so source-only edits reuse installed wheels.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    if [ -n "$EXTRAS" ]; then \
-      uv sync --frozen --no-dev --extra whatsapp --extra "$EXTRAS"; \
-    else \
-      uv sync --frozen --no-dev --extra whatsapp; \
-    fi
+    uv sync --frozen --no-dev --no-install-project \
+      ${EXTRAS:+--extra "$EXTRAS"}
+
+# 3. Source code, then install the local package itself (fast).
+COPY src/ src/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev ${EXTRAS:+--extra "$EXTRAS"}
 
 # 4. Supporting files (alembic, scripts — change rarely)
 COPY alembic/alembic.ini alembic.ini
@@ -78,6 +67,15 @@ COPY scripts/ scripts/
 COPY roster/ roster/
 COPY pricing.toml pricing.toml
 COPY model_catalog_defaults.toml model_catalog_defaults.toml
+
+# Git commit SHA this image was built from (bu-9r3hd.2 deployments ledger).
+# Baked into the image as an env var so the running process can record its
+# own provenance in public.deployments (see src/butlers/core/deployments.py).
+# Passed via --build-arg GIT_SHA=$(git rev-parse HEAD) in scripts/compose.sh;
+# defaults to "unknown" for builds that don't set it (e.g. plain `docker build .`).
+# Declared last: it changes every commit and invalidates every later layer.
+ARG GIT_SHA="unknown"
+ENV GIT_SHA=${GIT_SHA}
 
 # --frozen: don't re-sync at runtime. --no-dev: skip dev deps.
 ENTRYPOINT ["uv", "run", "--frozen", "--no-dev", "butlers"]

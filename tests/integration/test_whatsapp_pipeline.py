@@ -17,9 +17,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from fastmcp import FastMCP
 
-from butlers.api.app import create_app
-from butlers.api.routers.whatsapp import _get_bridge_socket_path, _get_db_manager
+from butlers.api.deps import get_db
+from butlers.api.routers.whatsapp import _get_bridge_socket_path
 from butlers.connectors.bridge_manager import DEFAULT_INVALIDATED_SESSION_THRESHOLD_S
 from butlers.connectors.whatsapp_user_client import (
     WhatsAppUserClientConnector,
@@ -27,6 +28,8 @@ from butlers.connectors.whatsapp_user_client import (
     normalize_message_text,
 )
 from butlers.modules.whatsapp import WhatsAppModule
+from butlers.testing.mcp import registered_tools
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.integration
 
@@ -34,39 +37,6 @@ pytestmark = pytest.mark.integration
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_mock_mcp() -> tuple[Any, dict[str, Any]]:
-    """Return (mock_mcp, tools_dict) where tools_dict captures registered tool functions."""
-
-    class FakeTool:
-        def __init__(self, name: str, fn: Any) -> None:
-            self.name = name
-            self.fn = fn
-
-        def __call__(self, *args: Any, **kwargs: Any) -> Any:
-            return self.fn(*args, **kwargs)
-
-    class MockMCP:
-        def __init__(self) -> None:
-            self._tools: dict[str, FakeTool] = {}
-
-        def tool(self, *_args: Any, **kwargs: Any) -> Any:
-            declared_name: str | None = kwargs.get("name")
-
-            def decorator(fn: Any) -> Any:
-                tool_name = declared_name or fn.__name__
-                fake = FakeTool(tool_name, fn)
-                self._tools[tool_name] = fake
-                return fn
-
-            return decorator
-
-        async def get_tool(self, name: str) -> FakeTool | None:
-            return self._tools.get(name)
-
-    mcp = MockMCP()
-    return mcp, mcp._tools
 
 
 def _make_bridge_sse_event(
@@ -301,8 +271,9 @@ class TestModuleToolRegistration:
     async def test_no_tools_when_send_tools_false(self):
         """Default (send_tools=false) and explicit false register no tools."""
         module = WhatsAppModule()
-        mcp, tools = _make_mock_mcp()
+        mcp = FastMCP("whatsapp-pipeline")
         await module.register_tools(mcp=mcp, config=None, db=None, butler_name="test-butler")
+        tools = await registered_tools(mcp)
         assert len(tools) == 0
 
         await module.register_tools(
@@ -311,18 +282,20 @@ class TestModuleToolRegistration:
             db=None,
             butler_name="test-butler",
         )
+        tools = await registered_tools(mcp)
         assert len(tools) == 0
 
     async def test_tools_registered_when_send_tools_true(self):
         """send_tools=true (disabled/enabled): tools registered; disabled returns error, enabled executes."""
         module = WhatsAppModule()
-        mcp, tools = _make_mock_mcp()
+        mcp = FastMCP("whatsapp-pipeline")
         await module.register_tools(
             mcp=mcp,
             config={"send_tools": True, "send_enabled": False},
             db=None,
             butler_name="test-butler",
         )
+        tools = await registered_tools(mcp)
         assert "whatsapp_send_message" in tools and "whatsapp_reply_to_message" in tools
 
         send_result = await tools["whatsapp_send_message"](recipient="+15551234567", text="hello")
@@ -331,13 +304,14 @@ class TestModuleToolRegistration:
 
         # Re-register with send_enabled=true
         module2 = WhatsAppModule()
-        mcp2, tools2 = _make_mock_mcp()
+        mcp2 = FastMCP("whatsapp-pipeline")
         await module2.register_tools(
             mcp=mcp2,
             config={"send_tools": True, "send_enabled": True},
             db=None,
             butler_name="test-butler",
         )
+        tools2 = await registered_tools(mcp2)
         mock_send = AsyncMock(return_value={"message_id": "wa-msg-123", "status": "sent"})
         module2._send_message = mock_send
         result = await tools2["whatsapp_send_message"](recipient="+15551234567", text="hello")
@@ -358,15 +332,20 @@ class _GateTestPool:
         self.approval_events: list[dict[str, Any]] = []
 
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
+        if "public.resolve_owner_triple" in query and len(args) >= 2:
+            candidates = {
+                str(value).split(":", 1)[1].lower() for value in args[1] if ":" in str(value)
+            }
+            matches = [
+                contact
+                for (_channel_type, channel_value), contact in self._contacts.items()
+                if channel_value.lower() in candidates
+            ]
+            entity_ids = {contact.get("entity_id") for contact in matches}
+            if len(entity_ids) != 1 or not matches or "owner" not in matches[0].get("roles", []):
+                return None
+            return {"entity_id": matches[0].get("entity_id"), "is_primary": True}
         if "relationship.entity_facts" in query and args:
-            if '"primary"' in query and len(args) == 3:
-                # is_primary_contact query (bead 7): SELECT "primary" FROM relationship.entity_facts
-                # WHERE subject=$1 AND predicate=$2 AND object=$3
-                channel_value = str(args[2])
-                found = any(ci_val == channel_value for (ci_type, ci_val) in self._contacts)
-                if not found:
-                    return None
-                return {"primary": True}
             if "ef.subject" in query and "entity_facts ef" in query and len(args) >= 2:
                 # resolve_contact_by_channel: SELECT ef.subject AS entity_id, e.canonical_name, ...
                 # WHERE ef.predicate=$1 AND ef.object=$2
@@ -458,7 +437,7 @@ class TestApprovalGateWhatsApp:
                 }
             }
         )
-        mcp, tools = _make_mock_mcp()
+        mcp = FastMCP("whatsapp-pipeline")
 
         @mcp.tool()
         async def whatsapp_send_message(recipient: str, text: str) -> dict:
@@ -469,20 +448,27 @@ class TestApprovalGateWhatsApp:
             gated_tools={"whatsapp_send_message": GatedToolConfig(risk_tier="medium")},
         )
         await apply_approval_gates(mcp=mcp, approval_config=approval_config, pool=pool)
+        tools = await registered_tools(mcp)
         result = await tools["whatsapp_send_message"](recipient=owner_jid, text="hi owner")
         assert result.get("status") not in (None, "pending_approval")
         action = next(iter(pool.pending_actions.values()))
         assert action["decided_by"] == "role:owner"
         assert action["status"] in (ActionStatus.APPROVED.value, ActionStatus.EXECUTED.value)
 
-    async def test_external_jid_pends_for_whatsapp_send(self):
+    async def test_external_jid_pends_for_whatsapp_send(self, monkeypatch):
         """whatsapp_send_message to an unknown (external) JID results in pending approval."""
         from butlers.config import ApprovalConfig, GatedToolConfig
         from butlers.modules.approvals.gate import apply_approval_gates
+        from butlers.testing.approval_parking_fake import record_pending_action
+
+        monkeypatch.setattr(
+            "butlers.modules.approvals.gate.park_pending_action",
+            record_pending_action,
+        )
 
         external_jid = "19998887777@s.whatsapp.net"
         pool = _GateTestPool()
-        mcp, tools = _make_mock_mcp()
+        mcp = FastMCP("whatsapp-pipeline")
 
         @mcp.tool()
         async def whatsapp_send_message(recipient: str, text: str) -> dict:
@@ -492,7 +478,13 @@ class TestApprovalGateWhatsApp:
             enabled=True,
             gated_tools={"whatsapp_send_message": GatedToolConfig(risk_tier="medium")},
         )
-        await apply_approval_gates(mcp=mcp, approval_config=approval_config, pool=pool)
+        await apply_approval_gates(
+            mcp=mcp,
+            approval_config=approval_config,
+            pool=pool,
+            butler_name="messenger",
+        )
+        tools = await registered_tools(mcp)
         result = await tools["whatsapp_send_message"](
             recipient=external_jid,
             text="hello",
@@ -528,7 +520,7 @@ class TestDashboardPairAPI:
     def whatsapp_app(self, mock_db_manager):
         app = create_app(api_key="")
         app.dependency_overrides[_get_bridge_socket_path] = lambda: "/tmp/test-wa-bridge.sock"
-        app.dependency_overrides[_get_db_manager] = lambda: mock_db_manager
+        app.dependency_overrides[get_db] = lambda: mock_db_manager
         yield app
         app.dependency_overrides.clear()
 
@@ -629,7 +621,7 @@ class TestDashboardPairAPI:
         fake_pool.fetchrow = AsyncMock(return_value={"endpoint_identity": "whatsapp:+12025551234"})
         mock_db = MagicMock()
         mock_db.pool.return_value = fake_pool
-        whatsapp_app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        whatsapp_app.dependency_overrides[get_db] = lambda: mock_db
 
         with (
             patch(
@@ -700,7 +692,7 @@ class TestDashboardPairAPI:
         fake_pool.fetchrow = AsyncMock(return_value={"endpoint_identity": "whatsapp:+12025551234"})
         mock_db = MagicMock()
         mock_db.pool.return_value = fake_pool
-        whatsapp_app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        whatsapp_app.dependency_overrides[get_db] = lambda: mock_db
 
         with (
             patch(

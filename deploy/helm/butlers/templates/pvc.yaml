@@ -1,0 +1,19 @@
+{{- $sc := .Values.storage.storageClassName }}
+{{- range $name, $size := dict "logs" .Values.storage.logsSize "backups" .Values.storage.backupsSize "runtime-home" .Values.butlersUp.runtimeHome.size "wa-bridge" "64Mi" }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+  labels:
+    {{- include "butlers.labels" $ | nindent 4 }}
+  annotations:
+    # Never delete data volumes on `helm uninstall`.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: {{ $sc }}
+  resources:
+    requests:
+      storage: {{ $size }}
+{{- end }}

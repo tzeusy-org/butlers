@@ -33,6 +33,18 @@ def _ambient_dnd_action_identity(ctx: Context | None) -> uuid.UUID | None:
     return uuid.uuid5(_DND_ACTION_NAMESPACE, f"general.context.dnd.v1:{normalized_request_id}")
 
 
+async def _require_bound_owner(pool: Any) -> None:
+    """Resolve the actual invocation; neither tool text nor a locator is authority."""
+    from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
+    from butlers.modules.memory.content_authority import is_owner_class, resolve_content_authority
+
+    if not get_current_runtime_session_routing_context():
+        raise PermissionError("Context mutation requires a verified bound owner invocation")
+    authority = await resolve_content_authority(pool)
+    if not is_owner_class(authority.authority):
+        raise PermissionError("Context mutation requires a verified bound owner invocation")
+
+
 def _dnd_receipt_payload(receipt: Any) -> dict[str, Any]:
     """Expose durable DND ordering evidence without raw DND audit content."""
     return {
@@ -62,6 +74,7 @@ def register_tools(mcp: Any, module: Any) -> None:
     from butlers import context_bus as _ctx
     from butlers.tools.general import collections as _coll
     from butlers.tools.general import items as _items
+    from butlers.tools.general import vocabulary as _vocab
 
     # =============================================================
     # Situational context-bus tools (RFC 0009)
@@ -118,6 +131,7 @@ def register_tools(mcp: Any, module: Any) -> None:
         callers cannot put user text into its receipt/audit. Raises on an
         invalid or unauthorized signal type.
         """
+        await _require_bound_owner(module._get_pool())
         if signal_type == "dnd":
             if hours is not None:
                 raise ValueError(
@@ -162,6 +176,7 @@ def register_tools(mcp: Any, module: Any) -> None:
         is omitted, it is derived from the injected MCP request context. The
         durable correlation is always derived from that UUID.
         """
+        await _require_bound_owner(module._get_pool())
         clear_kwargs: dict[str, Any] = {
             "butler_name": "general",
             "signal_type": signal_type,
@@ -206,6 +221,36 @@ def register_tools(mcp: Any, module: Any) -> None:
     ) -> list[dict[str, Any]]:
         """Export all items from a collection as a list of dicts."""
         return await _coll.collection_export(module._get_pool(), collection_name)
+
+    @mcp.tool()
+    async def collection_declare(
+        name: str,
+        shape_description: str,
+        aliases: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Declare an ordinary collection with a required shape and optional aliases.
+
+        Adopts the ordinary collection of exactly that name or creates it.
+        Spellings differing only by case, spacing or punctuation share one
+        declaration: declaring a variant returns the existing one
+        (``declared`` false). An alias already declared for another collection
+        refuses without a write. Declaring is optional: item_create still
+        creates an absent collection by name.
+        """
+        return await _vocab.collection_declare(
+            module._get_pool(), name, shape_description, aliases=aliases
+        )
+
+    @mcp.tool()
+    async def collection_resolve(name: str) -> dict[str, Any]:
+        """Resolve a collection name, or suggest near matches to choose from.
+
+        Only an exact collection name or an exact declared alias resolves.
+        Anything else returns ``collection: null`` with suggestions; a
+        suggestion is never selected automatically, so confirm with the owner
+        (or use its exact name) before filing into it.
+        """
+        return await _vocab.collection_resolve(module._get_pool(), name)
 
     # =============================================================
     # Item tools

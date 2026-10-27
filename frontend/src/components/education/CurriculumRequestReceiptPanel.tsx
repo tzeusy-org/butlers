@@ -1,5 +1,5 @@
 import { Link } from "react-router";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
@@ -139,12 +139,12 @@ function ReceiptShell({
   children: React.ReactNode;
 }) {
   return (
-    <Card data-testid="curriculum-receipt">
-      <CardHeader className="flex flex-row items-center justify-between gap-2">
-        <CardTitle>Curriculum request</CardTitle>
+    <Section data-testid="curriculum-receipt">
+      <SectionHeader className="flex flex-row items-center justify-between gap-2">
+        <SectionTitle>Curriculum request</SectionTitle>
         {badge}
-      </CardHeader>
-      <CardContent>
+      </SectionHeader>
+      <SectionContent>
         <div
           role="status"
           aria-live="polite"
@@ -153,8 +153,8 @@ function ReceiptShell({
         >
           {children}
         </div>
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -169,19 +169,19 @@ export default function CurriculumRequestReceiptPanel({
   // here would be fabricated calm: the request may well be running.
   if (isError || (data && !data.receipts_available)) {
     return (
-      <Card data-testid="curriculum-receipt">
-        <CardHeader>
-          <CardTitle>Curriculum request</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section data-testid="curriculum-receipt">
+        <SectionHeader>
+          <SectionTitle>Curriculum request</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <SourceDegradedNote
             label="Curriculum request status"
             detail="unavailable, so an in-flight request cannot be shown"
             onRetry={() => void refetch()}
             testId="curriculum-receipt-unavailable"
           />
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 

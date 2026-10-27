@@ -11,10 +11,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import anyio
 from croniter import croniter
@@ -26,6 +26,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
+    Db,
     MCPClientManager,
     get_butler_configs,
     get_mcp_manager,
@@ -33,6 +34,7 @@ from butlers.api.deps import (
 )
 from butlers.api.models import (
     ApiResponse,
+    BlindSpotSignal,
     ButlerConfigResponse,
     ButlerDetail,
     ButlerSummary,
@@ -48,13 +50,14 @@ from butlers.api.models import (
     TriggerRequest,
     TriggerResponse,
 )
-from butlers.api.read_models.butlers_v1 import query_sessions_24h
+from butlers.api.read_models.butlers import query_sessions_24h
 from butlers.api.routers.audit import log_audit_entry
 from butlers.config import ConfigError, load_config
 from butlers.core.pricing import PricingConfig, estimate_session_cost
 from butlers.core.sessions import sessions_summary
 from butlers.tools.switchboard.registry.registry import (
     _derive_eligibility_state,
+    receiver_route_cutover_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,11 +76,6 @@ _DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[4] / "roster"
 def _get_roster_dir() -> Path:
     """Return the roster directory path. Override in tests."""
     return _DEFAULT_ROSTER_DIR
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub -- overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +146,7 @@ async def _fetch_sessions_24h(
 ) -> dict[str, int]:
     """Return a mapping of butler_name -> session count for the last 24 hours.
 
-    Delegates to :func:`~butlers.api.read_models.butlers_v1.query_sessions_24h`
+    Delegates to :func:`~butlers.api.read_models.butlers.query_sessions_24h`
     from the versioned read-model boundary.  This call is best-effort: any DB
     or query failure returns an empty mapping so the list endpoint stays
     available when the DB is unhealthy.
@@ -165,7 +163,8 @@ async def _fetch_sessions_24h(
 async def list_butlers(
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ButlerSummary]]:
     """Return all discovered butlers with live status and 24h session counts."""
     config_names = [info.name for info in configs]
@@ -251,6 +250,47 @@ async def _fetch_registered_duration(
     return max(elapsed, 0.0)
 
 
+async def _fetch_blind_spots(
+    db: DatabaseManager,
+    butler_name: str,
+    modules: dict[str, Any],
+) -> tuple[list[BlindSpotSignal], datetime | None, bool]:
+    """Return the same declared-signal blind-spot projection the spawner injects.
+
+    Derives its patterns from :func:`butlers.core.blind_spot_declarations.declared_signal_patterns`
+    and evaluates them via :func:`butlers.core.expected_signals.evaluate_declared_signals` --
+    the exact functions the spawner's preamble injection calls (bu-2jtfw.13 AC5:
+    this endpoint and the injected preamble must never disagree).
+
+    Returns an empty, non-failed projection when the butler's pool is
+    unavailable or it has no eligible declared dependencies.
+    """
+    from butlers.core.blind_spot_declarations import declared_signal_patterns
+    from butlers.core.expected_signals import evaluate_declared_signals
+
+    patterns = declared_signal_patterns(modules)
+    if not patterns:
+        return [], None, False
+
+    try:
+        pool = db.pool(butler_name)
+    except KeyError:
+        return [], None, False
+
+    snapshot = await evaluate_declared_signals(pool, signal_key_like_patterns=patterns)
+    signals = [
+        BlindSpotSignal(
+            signal_key=s.signal_key,
+            producer=s.producer,
+            last_observed_at=s.last_observed_at,
+            state=s.state.value,
+            unmeasurable_reason=s.unmeasurable_reason,
+        )
+        for s in snapshot.signals
+    ]
+    return signals, snapshot.evaluated_at, snapshot.query_failed
+
+
 def _build_process_facts(
     connection_info: ButlerConnectionInfo,
     roster_dir: Path,
@@ -258,14 +298,15 @@ def _build_process_facts(
 ) -> ProcessFacts:
     """Assemble process facts from stable topology sources.
 
-    - ``container_name``: derived from the ``BUTLERS_HOST`` env var (the MCP
-      host the dashboard uses to reach butler daemons). Absent when unset or
-      resolves to ``localhost``.
+    - ``container_name``: the resolved MCP endpoint host, including the
+      separate Switchboard service. Absent for local loopback.
     - ``port``: from ``ButlerConnectionInfo.port``.
     - ``registered_duration_seconds``: seconds since switchboard registration.
     - ``config_path``: roster-relative path, e.g. ``roster/general/butler.toml``.
     """
-    host = os.environ.get("BUTLERS_HOST", "localhost")
+    from urllib.parse import urlparse
+
+    host = urlparse(connection_info.sse_url).hostname
     container_name: str | None = host if host and host != "localhost" else None
 
     toml_path = roster_dir / connection_info.name / "butler.toml"
@@ -363,6 +404,28 @@ _DEFAULT_STALE_SECONDS = 5 * 60
 # tolerance the deleted bespoke butler_registry CASE used
 # (`last_seen_at > NOW() + INTERVAL '5 minutes' THEN 'degraded'`).
 _CLOCK_SKEW_TOLERANCE_SECONDS = 5 * 60
+
+_BOARD_RECEIVER_REGISTRY_SQL = """
+    SELECT r.name, c.healthy_observed_at AS last_seen_at,
+           CASE WHEN c.policy_state != 'active' THEN 'quarantined'
+                WHEN c.observed_state = 'healthy'
+                 AND c.observed_boot_epoch = c.boot_epoch
+                 AND c.route_compatible IS TRUE AND c.accepting_routes IS TRUE
+                THEN 'active' ELSE 'stale' END AS eligibility_state,
+           CASE WHEN c.policy_state != 'active' THEN c.policy_changed_at
+                ELSE NULL END AS quarantined_at,
+           CASE WHEN c.policy_state != 'active'
+                THEN 'protected_policy:' || c.policy_state
+                ELSE NULL END AS quarantine_reason,
+           r.liveness_ttl_seconds
+    FROM butler_registry AS r
+    JOIN butler_registry_control_plane AS c USING (name)
+"""
+_BOARD_LEGACY_REGISTRY_SQL = """
+    SELECT name, last_seen_at, eligibility_state, quarantined_at,
+           quarantine_reason, liveness_ttl_seconds
+    FROM butler_registry
+"""
 
 
 class BoardRow(BaseModel):
@@ -634,9 +697,13 @@ async def _fetch_board_row(
     if registry_source_error or reg is None:
         eligibility = "unavailable"
     else:
-        # Derive eligibility from freshness (TTL staleness) rather than raw stored state.
-        # This mirrors the freshness rule used in _derive_eligibility_state.
-        eligibility = _derive_eligibility_state(reg, now=now)
+        # Receiver state/compatibility can deny a target while its last good
+        # observation remains recent. Freshness can only narrow an active row.
+        eligibility = (
+            "stale"
+            if reg["eligibility_state"] == "stale"
+            else _derive_eligibility_state(reg, now=now)
+        )
 
     quarantine_reason = reg["quarantine_reason"] if reg else None
     quarantined_dt = (
@@ -812,7 +879,8 @@ def _compute_board_aggregates(
 async def get_butlers_board(
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     pricing: PricingConfig = Depends(get_pricing),
 ) -> ApiResponse[BoardResponse]:
     """Return the consolidated fleet status board in one round trip.
@@ -827,12 +895,13 @@ async def get_butlers_board(
     registry_source_error = False
     try:
         sw_pool = db.pool("switchboard")
+        registry_query = (
+            _BOARD_RECEIVER_REGISTRY_SQL
+            if receiver_route_cutover_enabled()
+            else _BOARD_LEGACY_REGISTRY_SQL
+        )
         registry_rows = await asyncio.wait_for(
-            sw_pool.fetch(
-                "SELECT name, last_seen_at, eligibility_state, quarantined_at, quarantine_reason,"
-                " liveness_ttl_seconds"
-                " FROM butler_registry"
-            ),
+            sw_pool.fetch(registry_query),
             timeout=_STATUS_TIMEOUT_S,
         )
         for row in registry_rows:
@@ -880,7 +949,8 @@ async def get_butler_detail(
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
     roster_dir: Path = Depends(_get_roster_dir),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ButlerDetail]:
     """Return detailed information for a single butler.
 
@@ -899,8 +969,8 @@ async def get_butler_detail(
     butler_dir = roster_dir / name
     try:
         config = load_config(butler_dir)
-    except ConfigError:
-        raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
+    except ConfigError as exc:
+        raise HTTPException(status_code=404, detail=f"Butler not found: {name}") from exc
 
     modules = [
         ModuleInfo(name=mod_name, enabled=True, config=mod_cfg or None)
@@ -915,6 +985,9 @@ async def get_butler_detail(
     last_session_started_at = await _fetch_last_session_started_at(db, name)
     registered_duration = await _fetch_registered_duration(db, name)
     process_facts = _build_process_facts(connection_info, roster_dir, registered_duration)
+    blind_spots, blind_spots_evaluated_at, blind_spots_query_failed = await _fetch_blind_spots(
+        db, name, config.modules
+    )
 
     detail = ButlerDetail(
         name=config.name,
@@ -930,6 +1003,9 @@ async def get_butler_detail(
         sessions_24h=sessions_map.get(name, 0),
         last_session_started_at=last_session_started_at,
         process_facts=process_facts,
+        blind_spots=blind_spots,
+        blind_spots_evaluated_at=blind_spots_evaluated_at,
+        blind_spots_query_failed=blind_spots_query_failed,
     )
 
     return ApiResponse[ButlerDetail](data=detail)
@@ -1021,7 +1097,9 @@ async def get_butler_config(
         butler_toml = tomllib.loads(toml_path.read_bytes().decode())
     except (tomllib.TOMLDecodeError, OSError) as exc:
         logger.error("Failed to read butler.toml for %s: %s", name, exc)
-        raise HTTPException(status_code=500, detail=f"Failed to read config for butler: {name}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to read config for butler: {name}"
+        ) from exc
 
     config_response = ButlerConfigResponse(
         butler_toml=butler_toml,
@@ -1137,19 +1215,19 @@ async def list_butler_mcp_tools(
             client.list_tools(),
             timeout=_MCP_LIST_TOOLS_TIMEOUT_S,
         )
-    except ButlerUnreachableError:
-        raise HTTPException(status_code=503, detail=f"Butler '{name}' is unreachable")
-    except TimeoutError:
+    except ButlerUnreachableError as exc:
+        raise HTTPException(status_code=503, detail=f"Butler '{name}' is unreachable") from exc
+    except TimeoutError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"MCP tool listing for butler '{name}' timed out",
-        )
+        ) from exc
     except Exception as exc:
         logger.warning("Unexpected MCP list_tools failure for %s", name, exc_info=True)
         raise HTTPException(
             status_code=502,
             detail=f"Failed to list MCP tools for butler '{name}': {exc}",
-        )
+        ) from exc
 
     if not isinstance(raw_tools, list):
         logger.warning(
@@ -1192,13 +1270,13 @@ async def call_butler_mcp_tool(
             client.call_tool(tool_name, request.arguments),
             timeout=_MCP_CALL_TIMEOUT_S,
         )
-    except ButlerUnreachableError:
-        raise HTTPException(status_code=503, detail=f"Butler '{name}' is unreachable")
-    except TimeoutError:
+    except ButlerUnreachableError as exc:
+        raise HTTPException(status_code=503, detail=f"Butler '{name}' is unreachable") from exc
+    except TimeoutError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"MCP tool call '{tool_name}' to butler '{name}' timed out",
-        )
+        ) from exc
     except Exception as exc:
         logger.warning(
             "Unexpected MCP tool call failure for %s.%s",
@@ -1209,7 +1287,7 @@ async def call_butler_mcp_tool(
         raise HTTPException(
             status_code=502,
             detail=f"MCP tool call '{tool_name}' failed for butler '{name}': {exc}",
-        )
+        ) from exc
 
     raw_text = _extract_mcp_result_text(result)
     parsed_result = _parse_mcp_result_payload(raw_text)
@@ -1413,8 +1491,8 @@ async def get_butler_modules(
     butler_dir = roster_dir / name
     try:
         config = load_config(butler_dir)
-    except ConfigError:
-        raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
+    except ConfigError as exc:
+        raise HTTPException(status_code=404, detail=f"Butler not found: {name}") from exc
 
     module_names = list(config.modules.keys())
 
@@ -1440,7 +1518,8 @@ async def trigger_butler(
     request: TriggerRequest,
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TriggerResponse]:
     """Trigger a runtime session on the named butler with the provided prompt.
 
@@ -1466,22 +1545,22 @@ async def trigger_butler(
             client.call_tool("trigger", trigger_args),
             timeout=_TRIGGER_TIMEOUT_S,
         )
-    except ButlerUnreachableError:
+    except ButlerUnreachableError as exc:
         await log_audit_entry(
             db, name, "trigger", summary, result="error", error="Butler unreachable"
         )
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' is unreachable",
-        )
-    except TimeoutError:
+        ) from exc
+    except TimeoutError as exc:
         await log_audit_entry(
             db, name, "trigger", summary, result="error", error="Request timed out"
         )
         raise HTTPException(
             status_code=503,
             detail=f"Trigger request to butler '{name}' timed out",
-        )
+        ) from exc
 
     # Parse the MCP tool result
     session_id: str | None = None
@@ -1528,7 +1607,8 @@ async def force_butler_tick(
     name: str,
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TickResponse] | JSONResponse:
     """Force a scheduler tick on the specified butler.
 

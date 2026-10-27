@@ -8,8 +8,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from butlers.core.expected_signals import (
+    BLIND_SPOT_QUERY_FAILED_TEXT,
     ExpectedSignalState,
+    evaluate_declared_signals,
     evaluate_expected_signal,
+    format_blind_spot_preamble,
     measurement_producer,
     measurement_producer_identity,
     upsert_expected_signal,
@@ -268,3 +271,84 @@ def test_measurement_identity_requires_one_exact_corroborated_endpoint() -> None
         [rows[0], ("google_health", "google_health:user:sibling")]
     ) == ("unknown", None)
     assert measurement_producer_identity([("owner_log", None)]) == ("owner", None)
+
+
+# ---------------------------------------------------------------------------
+# evaluate_declared_signals / format_blind_spot_preamble (bu-2jtfw.13)
+# ---------------------------------------------------------------------------
+
+
+async def test_no_declared_patterns_short_circuits_without_querying() -> None:
+    pool = AsyncMock()
+
+    snapshot = await evaluate_declared_signals(pool, signal_key_like_patterns=(), now=_NOW)
+
+    assert snapshot.signals == ()
+    assert snapshot.query_failed is False
+    pool.fetch.assert_not_called()
+    assert format_blind_spot_preamble(snapshot) is None
+
+
+async def test_all_present_declared_signals_yield_no_preamble() -> None:
+    pool = AsyncMock()
+    pool.fetch.return_value = [
+        {
+            "signal_key": "health:measurement-gap:weight",
+            "producer": "owner",
+            "producer_endpoint_identity": None,
+            "expected_cadence_seconds": int(timedelta(days=14).total_seconds()),
+            "last_observed_at": _NOW - timedelta(days=1),
+        }
+    ]
+
+    snapshot = await evaluate_declared_signals(
+        pool, signal_key_like_patterns=("health:measurement-gap:%",), now=_NOW
+    )
+
+    assert snapshot.signals == ()
+    assert snapshot.query_failed is False
+    assert format_blind_spot_preamble(snapshot) is None
+
+
+async def test_absent_declared_signal_is_named_with_producer_and_clock() -> None:
+    pool = AsyncMock()
+    pool.fetch.return_value = [
+        {
+            "signal_key": "health:measurement-gap:weight",
+            "producer": "owner",
+            "producer_endpoint_identity": None,
+            "expected_cadence_seconds": int(timedelta(days=14).total_seconds()),
+            "last_observed_at": _NOW - timedelta(days=30),
+        }
+    ]
+
+    snapshot = await evaluate_declared_signals(
+        pool, signal_key_like_patterns=("health:measurement-gap:%",), now=_NOW
+    )
+
+    assert len(snapshot.signals) == 1
+    assert snapshot.signals[0].state is ExpectedSignalState.ABSENT
+
+    preamble = format_blind_spot_preamble(snapshot)
+    assert preamble is not None
+    assert "signal=health:measurement-gap:weight" in preamble
+    assert "producer=owner" in preamble
+    assert f"last_observed_at={(_NOW - timedelta(days=30)).isoformat()}" in preamble
+    assert _NOW.isoformat() in preamble  # evaluator's own clock
+
+
+async def test_declared_signal_query_failure_is_fail_closed_not_omitted() -> None:
+    """The query itself erroring must say so, never silently look all-clear."""
+    pool = AsyncMock()
+    pool.fetch.side_effect = RuntimeError("connection reset")
+
+    snapshot = await evaluate_declared_signals(
+        pool, signal_key_like_patterns=("health:measurement-gap:%",), now=_NOW
+    )
+
+    assert snapshot.query_failed is True
+    assert snapshot.signals == ()
+
+    preamble = format_blind_spot_preamble(snapshot)
+    assert preamble is not None
+    assert BLIND_SPOT_QUERY_FAILED_TEXT in preamble.lower()

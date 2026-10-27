@@ -24,7 +24,7 @@ from butlers.core.channel_reactions import (
     REACTION_IN_PROGRESS,
     REACTION_SUCCESS,
 )
-from butlers.core.permissions import NOTIFY_PERMISSION, require_permission
+from butlers.core.permissions import NOTIFY_PERMISSION, PermissionUnavailable, require_permission
 from butlers.modules.base import Module
 from butlers.telegram_api import (
     TelegramReplyMarkupValidationError,
@@ -47,6 +47,33 @@ REACTION_TO_EMOJI = {
     REACTION_SUCCESS: "\U0001f44d",
     REACTION_FAILURE: "\U0001f47e",
 }
+
+
+class TelegramProviderResponseError(RuntimeError):
+    """Telegram returned no provider-confirmed message receipt."""
+
+    def __init__(self, message: str, *, provider_rejected: bool = False) -> None:
+        super().__init__(message)
+        self.provider_rejected = provider_rejected
+
+
+def _telegram_send_failure_category(exc: BaseException) -> str:
+    """Return a fixed, credential-safe audit category for a send failure."""
+    if isinstance(exc, httpx.TimeoutException):
+        return "telegram_transport_timeout"
+    if isinstance(exc, httpx.TransportError):
+        return "telegram_transport_error"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return "telegram_provider_http_error"
+    if isinstance(exc, TelegramProviderResponseError):
+        return "telegram_provider_response_invalid"
+    if isinstance(exc, TelegramReplyMarkupValidationError):
+        return "telegram_reply_markup_invalid"
+    if isinstance(exc, PermissionUnavailable):
+        return "telegram_permission_unavailable"
+    if type(exc).__name__ == "PermissionDenied":
+        return "telegram_permission_denied"
+    return "telegram_internal_error"
 
 
 def _validate_env_var_name(value: str, *, scope: str, field_name: str) -> str:
@@ -143,12 +170,24 @@ def _markdown_to_telegram_html(text: str) -> str:
     return text
 
 
+def _telegram_error_text(exc: httpx.HTTPStatusError) -> str:
+    """Return Telegram's ``description`` for a failed call, or the status line."""
+    try:
+        body = exc.response.json()
+    except Exception:
+        return str(exc)
+    description = body.get("description") if isinstance(body, dict) else None
+    return description if isinstance(description, str) else str(exc)
+
+
 class TelegramModule(Module):
     """Telegram module providing identity-prefixed Telegram MCP tools.
 
     Output-only: provides send/reply tools and webhook setup.
     Ingestion is owned by TelegramBotConnector via the canonical ingest API.
     """
+
+    supports_inert_link_delivery = True
 
     def __init__(self) -> None:
         self._config: TelegramConfig = TelegramConfig()
@@ -160,17 +199,11 @@ class TelegramModule(Module):
         # bot-scope from CredentialStore.
         self._resolved_credentials: dict[str, str] = {}
 
-    @property
-    def name(self) -> str:
-        return "telegram"
+    name = "telegram"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return TelegramConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
 
     @property
     def credentials_env(self) -> list[str]:
@@ -180,9 +213,6 @@ class TelegramModule(Module):
             envs.append(self._config.bot.token_env)
         # User-scope credentials come from owner entity_info, not butler_secrets.
         return envs
-
-    def migration_revisions(self) -> str | None:
-        return None  # No custom tables needed
 
     def _get_bot_token(self) -> str:
         """Resolve Telegram bot token from startup-cached credentials.
@@ -251,9 +281,23 @@ class TelegramModule(Module):
             """React to a Telegram message with an emoji."""
             return await module._react_to_message(chat_id, message_id, emoji)
 
+        async def telegram_edit_message_text(
+            chat_id: str, message_id: int, text: str
+        ) -> dict[str, Any]:
+            """Edit the text of a message this bot already sent.
+
+            Used to amend a proactive insight in place when the fact it asserted
+            stopped being true. A Telegram 400 (message too old, unchanged, or
+            not editable) is returned as ``{"edited": false, "error_code": 400}``
+            rather than raised, so the caller can fall back to folding the
+            correction into its next digest.
+            """
+            return await module._edit_message_text_or_reject(chat_id, message_id, text)
+
         mcp.tool()(telegram_send_message)
         mcp.tool()(telegram_reply_to_message)
         mcp.tool()(telegram_react_to_message)
+        mcp.tool()(telegram_edit_message_text)
 
     async def on_startup(
         self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
@@ -369,6 +413,9 @@ class TelegramModule(Module):
         text: str,
         reply_to_message_id: int | None = None,
         reply_markup: dict[str, Any] | None = None,
+        *,
+        render_links_inert: bool = False,
+        server_built_reply_markup: bool = False,
     ) -> dict[str, Any]:
         """Call Telegram sendMessage API.
 
@@ -381,50 +428,89 @@ class TelegramModule(Module):
         Reuses the same ``notify`` capability the notify() gate enforces rather
         than introducing a parallel ``telegram.send`` key (no migration needed).
         Mirrors the spawn gate: consult the matrix at the decision point before
-        any Telegram traffic. require_permission fails open, so a DB error never
-        wedges delivery.
+        any Telegram traffic. Unavailable permission state raises a transient error
+        before delivery.
         """
-        validated_reply_markup = validate_telegram_reply_markup(reply_markup)
-        await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
-        url = f"{self._base_url()}/sendMessage"
-        payload: dict[str, Any] = {
-            "chat_id": chat_id,
-            "text": _markdown_to_telegram_html(text),
-            "parse_mode": "HTML",
-        }
-        if reply_to_message_id is not None:
-            payload["reply_to_message_id"] = reply_to_message_id
-        if validated_reply_markup is not None:
-            payload["reply_markup"] = validated_reply_markup
-        client = self._get_client()
-        resp = await client.post(url, json=payload)
-        if resp.status_code >= 400:
-            body = resp.text
+        audit_summary: dict[str, Any] = {"chat_id": chat_id, "text_length": len(text)}
+        response_status: int | None = None
+        try:
+            validated_reply_markup = validate_telegram_reply_markup(
+                reply_markup,
+                render_links_inert=render_links_inert,
+                server_built=server_built_reply_markup,
+            )
+            await require_permission(
+                self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
+            )
+            url = f"{self._base_url()}/sendMessage"
+            payload: dict[str, Any] = {
+                "chat_id": chat_id,
+                "text": _markdown_to_telegram_html(text),
+                "parse_mode": "HTML",
+            }
+            if render_links_inert:
+                # Explicit preformatted entities exclude URL/text_link entities.
+                # Telegram offsets/lengths count UTF-16 code units, not codepoints.
+                payload.pop("parse_mode")
+                payload["text"] = text
+                payload["entities"] = [
+                    {"type": "pre", "offset": 0, "length": len(text.encode("utf-16-le")) // 2}
+                ]
+                payload["link_preview_options"] = {"is_disabled": True}
+            if reply_to_message_id is not None:
+                payload["reply_to_message_id"] = reply_to_message_id
+            if validated_reply_markup is not None:
+                payload["reply_markup"] = validated_reply_markup
+            client = self._get_client()
+            resp = await client.post(url, json=payload)
+            response_status = resp.status_code
+            resp.raise_for_status()
             try:
-                detail = resp.json().get("description", body)
-            except Exception:
-                detail = body
+                data = resp.json()
+            except Exception as exc:
+                raise TelegramProviderResponseError(
+                    "telegram_provider_response: invalid JSON"
+                ) from exc
+            if not isinstance(data, dict) or data.get("ok") is not True:
+                raise TelegramProviderResponseError(
+                    "telegram_provider_response: provider did not confirm delivery",
+                    provider_rejected=isinstance(data, dict) and data.get("ok") is False,
+                )
+            result = data.get("result")
+            message_id = result.get("message_id") if isinstance(result, dict) else None
+            if not isinstance(message_id, int) or isinstance(message_id, bool) or message_id <= 0:
+                raise TelegramProviderResponseError(
+                    "telegram_provider_response: invalid message_id"
+                )
+        except Exception as exc:
+            failure_category = _telegram_send_failure_category(exc)
+            if isinstance(exc, PermissionUnavailable):
+                logger.error("Telegram sendMessage blocked: category=%s", failure_category)
+                # The guard already logged this refusal. An audit retry through the
+                # unavailable pool could expose the raw DB traceback in its fallback log.
+                raise
             logger.error(
-                "Telegram sendMessage failed: status=%d chat_id=%r detail=%s",
-                resp.status_code,
+                "Telegram sendMessage failed: category=%s status=%s chat_id=%r",
+                failure_category,
+                response_status,
                 chat_id,
-                detail,
             )
             await write_audit_entry(
                 self._audit_pool,
                 self._butler_name,
                 "telegram_send",
-                {"chat_id": chat_id, "text_length": len(text)},
+                audit_summary,
                 result="error",
-                error=f"HTTP {resp.status_code}: {detail}",
+                error=failure_category,
             )
-            resp.raise_for_status()
-        data: dict[str, Any] = resp.json()
+            raise
+
+        audit_summary["provider_message_id"] = message_id
         await write_audit_entry(
             self._audit_pool,
             self._butler_name,
             "telegram_send",
-            {"chat_id": chat_id, "text_length": len(text)},
+            audit_summary,
         )
         return data
 
@@ -434,6 +520,8 @@ class TelegramModule(Module):
         message_id: int,
         text: str,
         reply_markup: dict[str, Any] | None = None,
+        *,
+        render_links_inert: bool = False,
     ) -> dict[str, Any]:
         """Reply to a specific Telegram message."""
         return await self._send_message(
@@ -441,11 +529,14 @@ class TelegramModule(Module):
             text,
             reply_to_message_id=message_id,
             reply_markup=reply_markup,
+            **({"render_links_inert": True} if render_links_inert else {}),
         )
 
     async def _edit_message_text(self, chat_id: str, message_id: int, text: str) -> dict[str, Any]:
         """Edit a sent Telegram message while preserving its current keyboard."""
-        await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
+        await require_permission(
+            self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
+        )
         return await edit_telegram_message_text(
             self._get_client(),
             self._base_url(),
@@ -454,9 +545,23 @@ class TelegramModule(Module):
             text=_markdown_to_telegram_html(text),
         )
 
+    async def _edit_message_text_or_reject(
+        self, chat_id: str, message_id: int, text: str
+    ) -> dict[str, Any]:
+        """Edit a sent message; a Telegram 400 is a structured rejection, not an error."""
+        try:
+            data = await self._edit_message_text(chat_id, message_id, text)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 400:
+                raise
+            return {"edited": False, "error_code": 400, "description": _telegram_error_text(exc)}
+        return {"edited": True, **data} if isinstance(data, dict) else {"edited": True}
+
     async def _remove_inline_keyboard(self, chat_id: str, message_id: int) -> dict[str, Any]:
         """Remove a sent Telegram message's inline keyboard."""
-        await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
+        await require_permission(
+            self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
+        )
         return await remove_telegram_inline_keyboard(
             self._get_client(),
             self._base_url(),

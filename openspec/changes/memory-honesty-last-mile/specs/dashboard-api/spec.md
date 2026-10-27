@@ -87,6 +87,20 @@ or direct execution endpoint. Its target lookup and mutation SHALL be limited
 to recovery-eligible sources: a pool whose memory relation is in its owning
 butler schema, excluding a distinct private override such as Chronicler's
 `chronicler_mem`.
+The central `dashboard-owner-auth` boundary SHALL admit a valid configured
+`X-API-Key` or a valid server-managed owner session before protected body reads,
+domain-pool acquisition, caches or handlers. Passkey verification issues a session;
+it is not a new per-route credential. Cookie-backed unsafe actions additionally
+require independent synchronizer CSRF and exact Origin validation. Unavailable
+authoritative auth state returns safe `503`; missing, expired, revoked or invalid
+caller authority returns `401`. An absent API key alone is not unavailability when
+healthy keyless session authority exists. Domain checks remain mandatory after
+central authentication; auth-store reads necessary for verification are distinct
+from forbidden pre-authentication domain access.
+
+ID: REQ-dashboard-api-057
+Source: dashboard-owner-auth successor design D1-D9; existing dashboard-api behavior preserved except explicit owner-auth supersession
+Scope: v1-mandatory
 
 #### Scenario: Authorized owner queues a dead-letter episode
 
@@ -112,8 +126,12 @@ butler schema, excluding a distinct private override such as Chronicler's
 
 #### Scenario: Requeue rejects unauthorized callers without target disclosure
 
-- **WHEN** a caller is not authorized as the dashboard owner
-- **THEN** the endpoint MUST return 403 with the stable `owner_required` code
+- **WHEN** a caller carries no valid owner authority, or a cookie-backed request fails the
+  exact-Origin or synchronizer-CSRF check
+- **THEN** the central `dashboard-owner-auth` boundary MUST reject it before the handler
+  runs: 401 `UNAUTHORIZED` for missing, expired, revoked or invalid authority, 403
+  `FORBIDDEN` for an Origin or CSRF admission failure, and safe 503 `AUTH_UNAVAILABLE` when
+  authoritative auth state is unavailable
 - **AND** it MUST NOT disclose whether the requested episode exists, is
   dead-lettered, or belongs to a reachable pool
 

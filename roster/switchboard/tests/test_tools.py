@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import errno
+import logging
 import shutil
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 from opentelemetry import trace
@@ -306,6 +309,101 @@ async def test_route_to_unknown_butler(pool):
     assert result["retryable"] is False
 
 
+async def _registered_route_tool(pool):
+    """Use the discovered module's real registrar and FastMCP tool registry."""
+    from fastmcp import FastMCP
+
+    from butlers.modules.registry import default_registry
+
+    module = default_registry()._modules["switchboard"]()
+    mcp = FastMCP("switchboard-route-boundary")
+    await module.register_tools(mcp, None, SimpleNamespace(pool=pool), "switchboard")
+    return await mcp.get_tool("route")
+
+
+async def test_route_refuses_runtime_session_before_target_contact(caplog):
+    """The registered generic proxy refuses either existing session signal."""
+    from unittest.mock import AsyncMock
+
+    from butlers.core import fact_authority
+    from butlers.core.tool_call_capture import (
+        reset_current_runtime_session_id,
+        set_current_runtime_session_id,
+    )
+    from butlers.guards import _McpRuntimeSessionGuard
+
+    pool = AsyncMock()
+    tool = await _registered_route_tool(pool)
+    target = AsyncMock(return_value={"status": "ok"})
+    arguments = {
+        "target_butler": "finance",
+        "tool_name": "get_data",
+        "args": {},
+        "source_butler": "daemon-spoof",
+        "allow_stale": True,
+        "allow_quarantined": True,
+    }
+    expected = {"error": "route_refused_for_session", "retryable": False}
+    results = []
+    caplog.set_level(logging.WARNING)
+
+    async def app(scope, receive, send):
+        results.append(await tool.fn(**arguments))
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        pass
+
+    guard = _McpRuntimeSessionGuard(app, butler_name="switchboard")
+    invocation = await fact_authority.register_invocation(
+        "switchboard", "route-session", source_endpoint=None, routed=True
+    )
+    try:
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.route.resolve_routing_target",
+                new=AsyncMock(return_value=({"endpoint_url": "http://target/mcp"}, None)),
+            ),
+            patch("butlers.tools.switchboard.routing.route._call_butler_tool", new=target),
+        ):
+            context = set_current_runtime_session_id("route-session")
+            try:
+                # Repeated attempts, caller labels and overrides cannot enlarge access.
+                for _ in range(2):
+                    results.append(await tool.fn(**arguments))
+            finally:
+                reset_current_runtime_session_id(context)
+            for query, headers in (
+                (b"runtime_session_id=route-session", []),
+                (b"", [(fact_authority.INVOCATION_HEADER.encode(), invocation.encode())]),
+            ):
+                await guard(
+                    {
+                        "type": "http",
+                        "method": "POST",
+                        "path": "/mcp",
+                        "query_string": query,
+                        "headers": headers,
+                    },
+                    receive,
+                    send,
+                )
+            assert results == [expected] * 4
+            target.assert_not_awaited()
+            assert pool.mock_calls == []
+            assert (
+                sum(
+                    record.levelno == logging.WARNING and "route-session" in record.getMessage()
+                    for record in caplog.records
+                )
+                == 4
+            )
+    finally:
+        fact_authority.settle_invocation(invocation)
+
+
 async def test_route_to_known_butler_success(pool):
     """route calls the target butler and returns the result on success."""
     from butlers.tools.switchboard import register_butler, route
@@ -322,6 +420,34 @@ async def test_route_to_known_butler_success(pool):
     assert result["result"] == {"status": "ok", "data": 42}
     assert result["transport"] == {"outcome": "confirmed", "retryable": False}
     assert captured["endpoint_url"] == "http://localhost:41200/mcp"
+
+    assert await _daemon_route_controls(pool, result, mock_call)
+
+
+async def _daemon_route_controls(pool, result, mock_call):
+    """Exercise added daemon/in-process paths without rewriting existing proof."""
+    from butlers.core.tool_call_capture import (
+        get_current_runtime_session_id,
+        reset_current_runtime_session_id,
+        set_current_runtime_session_id,
+    )
+    from butlers.tools.switchboard import route
+
+    assert get_current_runtime_session_id() is None
+    tool = await _registered_route_tool(pool)
+    with patch("butlers.tools.switchboard.routing.route._call_butler_tool", new=mock_call):
+        daemon_result = await tool.fn(
+            target_butler="target", tool_name="get_data", args={"key": "x"}
+        )
+    assert daemon_result == result
+    context = set_current_runtime_session_id("in-process-session")
+    try:
+        in_process = await route(pool, "target", "get_data", {"key": "x"}, call_fn=mock_call)
+        assert in_process == result
+    finally:
+        reset_current_runtime_session_id(context)
+
+    return True
 
 
 class _RouteConnectionFailure(ConnectionError):
@@ -872,6 +998,47 @@ async def test_route_dispatch_span_contains_request_context(pool, otel_provider)
     assert span.attributes["routing.fanout_mode"] == "ordered"
     assert span.attributes["routing.attempt"] == 2
     assert span.attributes["routing.outcome"] == "success"
+
+
+async def test_route_dispatch_counter_carries_connector_provenance(pool, otel_provider):
+    """The Prometheus fanout source is labeled from canonical ingest provenance."""
+    from butlers.tools.switchboard import register_butler, route
+
+    await register_butler(pool, "metricattrs", "http://localhost:8610/sse")
+    telemetry = MagicMock()
+    telemetry.attrs.side_effect = lambda **attributes: attributes
+
+    async def ok_call(endpoint_url, tool_name, args):
+        return "ok"
+
+    with patch(
+        "butlers.tools.switchboard.routing.route.get_switchboard_telemetry",
+        return_value=telemetry,
+    ):
+        await route(
+            pool,
+            "metricattrs",
+            "get_data",
+            {
+                "source_metadata": {
+                    "channel": "email",
+                    "provider": "gmail",
+                    "identity": "gmail:account-1",
+                }
+            },
+            call_fn=ok_call,
+        )
+
+    telemetry.subroute_dispatched.add.assert_called_once_with(
+        1,
+        {
+            "source": "connector",
+            "destination_butler": "metricattrs",
+            "fanout_mode": "ordered",
+            "schema_version": "route.v1",
+            "outcome": "attempted",
+        },
+    )
 
 
 async def test_route_span_error_on_failure(pool, otel_provider):
@@ -1743,7 +1910,17 @@ async def test_deliver_telegram_success(deliver_pool):
     await register_butler(deliver_pool, "messenger", "http://localhost:41100/sse", "Messenger", [])
 
     async def mock_call(endpoint_url, tool_name, args):
-        return {"ok": True, "message_id": 42}
+        return {
+            "schema_version": "route_response.v1",
+            "status": "ok",
+            "result": {
+                "notify_response": {
+                    "schema_version": "notify_response.v1",
+                    "status": "ok",
+                    "delivery": {"channel": "telegram", "delivery_id": "42"},
+                }
+            },
+        }
 
     result = await deliver(
         deliver_pool,
@@ -1766,7 +1943,8 @@ async def test_deliver_telegram_success(deliver_pool):
 
     assert result["status"] == "sent"
     assert "notification_id" in result
-    assert result["result"] == {"ok": True, "message_id": 42}
+    assert result["delivery_id"] == "42"
+    assert result["result"]["delivery"] == {"channel": "telegram", "delivery_id": "42"}
 
     # Verify notification was logged
     row = await deliver_pool.fetchrow(
@@ -1793,7 +1971,17 @@ async def test_deliver_email_success(deliver_pool):
 
     async def mock_call(endpoint_url, tool_name, args):
         captured_args.append({"tool_name": tool_name, "args": args})
-        return {"status": "sent"}
+        return {
+            "schema_version": "route_response.v1",
+            "status": "ok",
+            "result": {
+                "notify_response": {
+                    "schema_version": "notify_response.v1",
+                    "status": "ok",
+                    "delivery": {"channel": "email", "delivery_id": "smtp-accepted-1"},
+                }
+            },
+        }
 
     result = await deliver(
         deliver_pool,
@@ -1818,6 +2006,7 @@ async def test_deliver_email_success(deliver_pool):
 
     assert result["status"] == "sent"
     assert "notification_id" in result
+    assert result["delivery_id"] == "smtp-accepted-1"
 
     # Verify notify.v1 dispatch to messenger route.execute.
     assert len(captured_args) == 1

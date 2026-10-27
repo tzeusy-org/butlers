@@ -1,4 +1,4 @@
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Section, SectionContent, SectionHeader } from "@/components/ui/Section";
 import { Skeleton } from "@/components/ui/skeleton";
 
 interface CardSkeletonProps {
@@ -16,21 +16,21 @@ interface CardSkeletonProps {
  */
 export function CardSkeleton({ showHeader = true, lines = 3 }: CardSkeletonProps) {
   return (
-    <Card>
+    <Section>
       {showHeader && (
-        <CardHeader>
+        <SectionHeader>
           <Skeleton className="h-5 w-40" />
           <Skeleton className="h-4 w-64" />
-        </CardHeader>
+        </SectionHeader>
       )}
-      <CardContent className="space-y-3">
+      <SectionContent className="space-y-3">
         {Array.from({ length: lines }, (_, i) => (
           <Skeleton
             key={i}
             className={`h-4 ${i === lines - 1 ? "w-3/4" : "w-full"}`}
           />
         ))}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }

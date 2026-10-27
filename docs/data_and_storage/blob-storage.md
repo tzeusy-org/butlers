@@ -90,7 +90,7 @@ docker compose up -d postgres minio minio-setup
 
 Configure via the dashboard secrets UI at `/secrets`:
 
-- `BLOB_S3_ENDPOINT_URL` = `http://tzehouse-synology.parrot-hen.ts.net:3900`
+- `BLOB_S3_ENDPOINT_URL` = `http://tzehouse-synology.example.ts.net:3900`
 - `BLOB_S3_BUCKET` = `butlers-blobs`
 - `BLOB_S3_REGION` = `garage`
 - `BLOB_S3_ACCESS_KEY_ID` / `BLOB_S3_SECRET_ACCESS_KEY` from Bitwarden

@@ -22,6 +22,7 @@
  * (rendered below the ledger, no scrim) rather than a modal overlay.
  */
 
+import { useCallback, useRef } from "react";
 import { Link } from "react-router";
 import { X } from "lucide-react";
 
@@ -133,11 +134,19 @@ export interface TimelineEventDrawerProps {
 }
 
 export function TimelineEventDrawer({ event, onClose }: TimelineEventDrawerProps) {
+  const explicitCloseRef = useRef(false);
+  const handleClose = useCallback(() => {
+    explicitCloseRef.current = true;
+    onClose();
+  }, [onClose]);
+  const shouldRestoreFocus = useCallback(() => explicitCloseRef.current, []);
+
   // trapFocus: false — this is an inline disclosure panel below the ledger,
   // not a scrim-covering dialog, so Tab should stay free to leave it.
   const { rootRef, initialFocusRef, onKeyDown } = useModalChoreography<HTMLHeadingElement>({
-    onClose,
+    onClose: handleClose,
     trapFocus: false,
+    shouldRestoreFocus,
   });
 
   return (
@@ -153,7 +162,7 @@ export function TimelineEventDrawer({ event, onClose }: TimelineEventDrawerProps
       {/* Focus lands here on open (tabIndex=-1: programmatically focusable,
           not a Tab stop); visually hidden since the header row below already
           carries the same information for sighted users. */}
-      <h2 ref={initialFocusRef} tabIndex={-1} className="sr-only focus:outline-none">
+      <h2 ref={initialFocusRef} tabIndex={-1} className="sr-only">
         Event detail: {event.butler}, {event.type}
       </h2>
       <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
@@ -164,7 +173,7 @@ export function TimelineEventDrawer({ event, onClose }: TimelineEventDrawerProps
         </span>
         <button
           type="button"
-          onClick={onClose}
+          onClick={handleClose}
           className="ml-auto rounded p-1 hover:bg-muted transition-colors"
           aria-label="Close drawer"
           data-testid="drawer-close-button"

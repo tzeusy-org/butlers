@@ -88,16 +88,36 @@ The system SHALL maintain a child table tracking each launched runtime session w
 - **AND** `healing_attempts.healing_session_id` points to the most recently launched runtime session for backward compatibility
 
 ### Requirement: Dispatch Decision Tracking
-The system SHALL distinguish dispatch decisions from launched execution attempts.
+
+The system SHALL distinguish dispatch decisions from launched execution
+attempts. `public.healing_attempts` SHALL remain execution history and SHALL
+NOT be used as the durable infrastructure-condition ledger.
 
 #### Scenario: Dispatch decision schema
 - **WHEN** the migration creates `public.healing_dispatch_events`
-- **THEN** the table contains: `id` (UUID PK), `fingerprint` (TEXT NOT NULL), `butler_name` (TEXT NOT NULL), `decision` (TEXT NOT NULL), `reason` (TEXT), `attempt_id` (UUID NULL FK to `healing_attempts.id`), `created_at` (TIMESTAMPTZ NOT NULL DEFAULT now())
+- **THEN** the table contains: `id` (UUID PK), `fingerprint` (TEXT NOT NULL),
+  `butler_name` (TEXT NOT NULL), `decision` (TEXT NOT NULL), `reason` (TEXT),
+  `attempt_id` (UUID NULL FK to `healing_attempts.id`), `created_at`
+  (TIMESTAMPTZ NOT NULL DEFAULT now())
 
 #### Scenario: Gate rejection before launch
-- **WHEN** cooldown, concurrency cap, circuit breaker, or no-model prevents a healing workflow from launching a runtime session
+- **WHEN** cooldown, concurrency cap, circuit breaker, or no-model prevents a
+  healing workflow from launching a runtime session
 - **THEN** a `healing_dispatch_events` row is inserted describing the decision
-- **AND** no `healing_attempts` row is marked `failed` solely because of that gate rejection
+- **AND** no `healing_attempts` row is marked `failed` solely because of that
+  gate rejection
+
+#### Scenario: Active infrastructure condition is a decision-only rejection
+- **WHEN** QA dispatch determines after normal eligibility and before
+  `create_or_join_attempt` that an `infra_state` finding matches an active
+  infrastructure condition
+- **THEN** it inserts a `healing_dispatch_events` row with
+  `decision = infra_condition_open`, a sanitized condition reason, and
+  `attempt_id = NULL`
+- **AND** the row is a dispatch decision rather than a healing attempt,
+  execution failure, runtime session, or worktree record
+- **AND** repeated active findings remain separately auditable as decisions
+  while no new `healing_attempts` row is created or mutated by this rejection
 
 ### Requirement: Session ID Accumulation
 When a new session fails with a fingerprint that already has an active (non-terminal) healing attempt, the failing session's ID SHALL be appended to the existing attempt's `session_ids` array.
@@ -157,8 +177,7 @@ On dispatcher startup (daemon boot), the system SHALL recover from incomplete he
 
 ### Requirement: Workflow Deadline Authority
 
-The implementation SHALL provide the behavior described by this requirement.
-The `workflow_deadline_at` field is the authoritative deadline reference for multi-session recovery workflows.
+The `workflow_deadline_at` field SHALL be the authoritative deadline reference for multi-session recovery workflows.
 
 #### Scenario: Deadline is set at row creation
 - **WHEN** a `healing_attempts` row is inserted for a launched workflow
@@ -225,14 +244,11 @@ The system SHALL expose API endpoints for healing attempt visibility.
 - **WHEN** `GET /api/healing/attempts/{attempt_id}` is called
 - **THEN** it returns the full healing attempt record including linked session IDs
 
-#### Scenario: Retry a failed attempt
-- **WHEN** `POST /api/healing/attempts/{attempt_id}/retry` is called for an attempt with terminal status
-- **THEN** a new healing attempt is created for the same fingerprint, bypassing cooldown
-- **AND** the original attempt's status is unchanged
-
-#### Scenario: Retry a non-terminal attempt is rejected
-- **WHEN** `POST /api/healing/attempts/{attempt_id}/retry` is called for an attempt with status `investigating`
-- **THEN** the request is rejected with HTTP 409 Conflict
+#### Scenario: Retired Retry route has no effects
+- **WHEN** an authenticated stale client posts to `/api/healing/attempts/{attempt_id}/retry`, for terminal, active, missing or publication-held history, including concurrent or replayed requests
+- **THEN** the ordinary absent-route response is HTTP 404
+- **AND** no attempt is inserted or changed, no dispatch/background task is scheduled and no daemon MCP call is made
+- **AND** list/detail history, fingerprints, breaker/reset audit and current QA admission/publication holds remain intact
 
 #### Scenario: Reset circuit breaker
 - **WHEN** `POST /api/healing/circuit-breaker/reset` is called

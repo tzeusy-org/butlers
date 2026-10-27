@@ -18,14 +18,27 @@ The finance butler SHALL provide transaction, subscription, bill tracking, bill�
 - **AND** the finance butler SHALL NOT expose a standalone `track_bill_fact` tool; all bill writes (table + SPO mirror) go through `track_bill`
 
 ### Requirement: Finance Butler Schedules
-The finance butler SHALL run bill/anomaly/budget/subscription intelligence as deterministic jobs that propose insight candidates through the switchboard insight broker, rather than prompt-mode tasks that notify directly.
+The finance butler SHALL run bill/anomaly/budget/subscription intelligence as deterministic jobs that propose insight candidates through the switchboard insight broker, rather than prompt-mode tasks that notify directly, and SHALL run the deterministic SimpleFIN bridge as a separate ledger-sync job.
 
 #### Scenario: Scheduled task inventory
 - **WHEN** the finance butler daemon is running
-- **THEN** it SHALL execute four `dispatch_mode = "job"` schedules for intelligence-driven alerts: `insight-scan` (`0 7 * * *`), `bill-reconciliation-sweep` (`15 21 * * 0`), `anomaly-insight-scan` (`0 21 * * *`), and `monthly-finance-digest` (`0 9 1 * *`)
-- **AND** each job proposes candidates via `propose_insight_candidate()` for the switchboard's insight broker to dedup/cooldown/budget/deliver, rather than calling `notify()` directly
-- **AND** this replaced six prior prompt-mode tasks that called `notify()` directly — `upcoming-bills-check` (15 21 * * 0), `subscription-renewal-alerts` (20 21 * * 0), `monthly-spending-summary` (0 9 1 * *), `anomaly-digest` (0 21 * * *), `budget-status-check` (0 9 * * 1), and `subscription-audit-monthly` (0 10 1 * *) — via the bu-rvz2o migration (PR #2991, merged 678a29596); see `finance-alerts/spec.md` "Alert Scheduled Task Definitions" for the full old-task -> new-job mapping and dedup-key/priority details
-- **AND** the finance butler additionally runs `daily_briefing_contribution` (`55 6 * * *`) and `calendar_overlay_contribution` (`50 6 * * *`), which are unrelated to the bu-rvz2o migration (pre-existing cross-butler briefing/calendar contributions, not direct-notify alert tasks)
+- **THEN** it SHALL execute these `dispatch_mode = "job"` schedules, each resolving to the named handler:
+
+  | Schedule | Cron | Handler |
+  | --- | --- | --- |
+  | `insight-scan` | `0 7 * * *` | `run_insight_scan` |
+  | `bill-reconciliation-sweep` | `15 21 * * 0` | `run_bill_reconciliation_sweep` |
+  | `anomaly-insight-scan` | `0 21 * * *` | `run_anomaly_insight_scan` |
+  | `monthly-finance-digest` | `0 9 1 * *` | `run_monthly_finance_digest` |
+  | `cost-claim-reconciliation-sweep` | `40 4 * * *` | `run_cost_claim_reconciliation_sweep` |
+  | `simplefin-sync` | `17 4 * * *` | `run_simplefin_sync` |
+  | `daily_briefing_contribution` | `55 6 * * *` | cross-butler briefing contribution |
+  | `calendar_overlay_contribution` | `50 6 * * *` | cross-butler calendar overlay contribution |
+
+- **AND** each intelligence job (`insight-scan`, `bill-reconciliation-sweep`, `anomaly-insight-scan`, `monthly-finance-digest`) SHALL propose candidates via `propose_insight_candidate()` for the switchboard's insight broker to dedup/cooldown/budget/deliver, rather than calling `notify()` directly; what each job proposes is specified in `finance-alerts/spec.md`
+- **AND** `simplefin-sync` SHALL run with `job_name = "simplefin_sync"` and deterministically synchronize its Finance-owned ledger without calling `propose_insight_candidate()`, `notify()`, Switchboard routing, or an LLM runtime
+- **AND** `cost-claim-reconciliation-sweep` SHALL deterministically reconcile shared cost claims against Finance evidence without an LLM session (see `finance-cost-claims/spec.md`)
+- **AND** it SHALL NOT execute the six retired prompt-mode schedules that called `notify()` directly: `upcoming-bills-check` (15 21 * * 0), `subscription-renewal-alerts` (20 21 * * 0), `monthly-spending-summary` (0 9 1 * *), `anomaly-digest` (0 21 * * *), `budget-status-check` (0 9 * * 1), and `subscription-audit-monthly` (0 10 1 * *)
 
 ### Requirement: Finance Butler Skills
 The finance butler SHALL have bill reminder, spending review, data import, and intelligence skills.
@@ -44,7 +57,7 @@ Financial data SHALL use precise numeric types, ISO currency codes, and tiered d
 #### Scenario: Composite deduplication for non-email sources
 - **WHEN** a transaction is recorded without a `source_message_id` and without an `external_id`
 - **THEN** deduplication SHALL use the tiered UNIQUE partial index strategy on `finance.transactions`: Priority 1 `(account_id, external_id)`, Priority 2 `(source_message_id, merchant, amount, posted_at)`, Priority 3 `(account_id, posted_at, amount, merchant)` as fallback
-- **AND** the `sha256` composite hash approach SHALL no longer be used
+- **AND** deduplication SHALL NOT use a `sha256` composite hash
 - **AND** the existing `source_message_id`-based deduplication SHALL remain as Priority 2
 
 ### Requirement: Finance Memory Taxonomy
@@ -75,7 +88,7 @@ The finance butler runtime instances SHALL follow additional behavioral guidelin
 - **THEN** the runtime SHALL inform the user about the minimum data requirements
 - **AND** it SHALL suggest importing historical data using the `historical-data-import` skill if no historical import has been performed
 
-### Requirement: CRUD-to-SPO migration -- finance domain (bu-ddb.4)
+### Requirement: Finance data stored in dedicated tables with SPO mirror
 The finance butler SHALL store transactions and bills in dedicated `finance.*` tables as primary storage, with SPO facts as a secondary fire-and-forget mirror for memory/recall.
 
 #### Scenario: Transaction tools as dedicated table wrappers with SPO mirroring
@@ -186,7 +199,7 @@ against recent transactions as a backstop for payments recorded without an
 inline match.
 
 #### Scenario: bill-reconciliation-sweep reconciles before reporting
-- **WHEN** the `bill-reconciliation-sweep` job (`15 21 * * 0`, `run_bill_reconciliation_sweep`; formerly the prompt-mode `upcoming-bills-check` task, renamed and converted to a deterministic job by bu-rvz2o / PR #2991) runs
+- **WHEN** the `bill-reconciliation-sweep` job runs
 - **THEN** it SHALL call `reconcile_bills(lookback_days=90)` before evaluating its other results
 - **AND** auto-settled bills SHALL be proposed as a `bill-reconciled` insight candidate (priority 35, informational)
 - **AND** ambiguous confirm-tier matches SHALL be proposed as a `bill-reconcile-candidate` insight candidate (priority 55) needing owner confirmation
@@ -222,7 +235,6 @@ wording.
 
 ID: REQ-butler-finance-001
 Source: RFC 0012 §Expected-signal producer provenance; RFC 0029 §Initial adoption
-Scope: v1-mandatory
 
 #### Scenario: Gmail provenance requires server ingress attestation
 

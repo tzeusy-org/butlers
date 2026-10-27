@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 import { cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 
@@ -58,4 +59,21 @@ describe("AutonomySuggestionsBanner", () => {
       "/approvals/approval-42",
     );
   });
+});
+
+it("demotion Section is flat and retains keyboard recovery controls", async () => {
+  const confirm = vi.fn(), dismiss = vi.fn();
+  render(<MemoryRouter><AutonomySuggestionsBanner suggestions={[{...V2_PROMOTION, suggestion_type: "demotion"}]} onConfirm={confirm} onDismiss={dismiss} /></MemoryRouter>);
+  const section = screen.getByText("Review Standing Rule").closest("section")!;
+  expect(section.className).not.toMatch(/(?:bg|border)-\[var\(--(?:amber|red)/);
+  expect(screen.getByText("Execution failed")).toBeTruthy();
+  expect(screen.getByText(V2_PROMOTION.scope_description)).toBeTruthy();
+  const user = userEvent.setup();
+  await user.tab();
+  expect(document.activeElement).toBe(screen.getByRole("button", {name: "Revoke rule"}));
+  await user.keyboard("{Enter}");
+  expect(confirm).toHaveBeenCalledWith(V2_PROMOTION.id);
+  await user.tab();
+  await user.keyboard("{Enter}");
+  expect(dismiss).toHaveBeenCalledWith(V2_PROMOTION.id);
 });

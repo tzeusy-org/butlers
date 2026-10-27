@@ -357,6 +357,52 @@ class TestDeliverTelegramSuccess:
 # ---------------------------------------------------------------------------
 
 
+class TestAmendDelivery:
+    """amend_delivery() edits a delivered Telegram message through channel routing."""
+
+    async def _amend(self, tool_result: dict[str, Any]) -> tuple[dict[str, Any], list[dict]]:
+        from butlers.tools.switchboard.notification.deliver import amend_delivery
+
+        pool = _make_mock_pool(
+            fetchrow_side_effect=[
+                _registry_row("chatter", "http://localhost:41103/sse"),
+                _registry_row("chatter", "http://localhost:41103/sse"),
+                _notif_id_row(),
+            ],
+        )
+        captured: list[dict] = []
+
+        async def mock_call(endpoint_url, tool_name, args):
+            captured.append({"tool": tool_name, "args": args})
+            return tool_result
+
+        result = await amend_delivery(
+            pool, chat_id="123456", message_id=77, text="~~Due~~", call_fn=mock_call
+        )
+        return result, captured
+
+    async def test_routes_the_edit_tool_with_the_stored_message_id(self) -> None:
+        result, captured = await self._amend({"edited": True, "ok": True})
+
+        assert result == {"status": "edited"}
+        assert captured == [
+            {
+                "tool": "telegram_edit_message_text",
+                "args": {"chat_id": "123456", "message_id": 77, "text": "~~Due~~"},
+            }
+        ]
+
+    async def test_a_telegram_400_is_reported_rejected_so_the_caller_folds(self) -> None:
+        result, _ = await self._amend({"edited": False, "error_code": 400})
+
+        assert result == {"status": "rejected"}
+
+    async def test_an_unrecognised_result_is_an_error_not_a_claimed_edit(self) -> None:
+        result, _ = await self._amend({"ok": True})
+
+        assert result["status"] == "error"
+
+
 class TestDeliverEmailSuccess:
     """deliver() should route email messages correctly."""
 
@@ -979,7 +1025,16 @@ class TestDeliverNotifyRouting:
 
         async def mock_call(endpoint_url, tool_name, args):
             captured.append({"endpoint_url": endpoint_url, "tool_name": tool_name, "args": args})
-            return {"status": "ok", "result": {"notify_response": {"status": "ok"}}}
+            return {
+                "status": "ok",
+                "result": {
+                    "notify_response": {
+                        "schema_version": "notify_response.v1",
+                        "status": "ok",
+                        "delivery": {"channel": "telegram", "delivery_id": "tg-42"},
+                    }
+                },
+            }
 
         notify_request = {
             "schema_version": "notify.v1",
@@ -1012,6 +1067,7 @@ class TestDeliverNotifyRouting:
         routed_payload = captured[0]["args"]
         assert routed_payload["target"]["butler"] == "messenger"
         assert routed_payload["input"]["context"]["notify_request"]["origin_butler"] == "health"
+        assert "recovery" not in routed_payload["input"]["context"]["notify_request"]
         assert (
             routed_payload["input"]["context"]["notify_request"]["request_context"]["request_id"]
             == "018f52f3-9d8a-7ef2-8f2d-9fb6b32f12aa"
@@ -1025,6 +1081,87 @@ class TestDeliverNotifyRouting:
         assert inner_ctx["source_endpoint_identity"] == "switchboard-bot"
         assert inner_ctx["source_sender_identity"] == "user-123"
         assert inner_ctx["source_thread_identity"] == "chat-123"
+
+        # Spec: REQ-core-notify-032; a routed, bound refusal owns the failed-row reference.
+        import copy
+
+        from butlers.core.approval_review import ApprovalReview
+        from butlers.tools.switchboard.notification.log import log_notification
+
+        action_id = uuid.uuid4()
+        request_id = notify_request["request_context"]["request_id"]
+        refusal = {
+            "schema_version": "route_response.v1",
+            "status": "error",
+            "request_context": {"request_id": request_id},
+            "error": {"class": "validation_error", "message": "Parked", "retryable": False},
+            "result": {
+                "notify_response": {
+                    "schema_version": "notify_response.v1",
+                    "status": "error",
+                    "request_context": {"request_id": request_id},
+                    "delivery": {"channel": "telegram"},
+                    "error": {"class": "validation_error", "message": "Parked", "retryable": False},
+                    "approval_review": ApprovalReview(action_id).as_dict(),
+                }
+            },
+        }
+        mutants = [refusal]
+        for area, key, value in (
+            ("outer", "request_id", str(uuid.uuid4())),
+            ("context", "request_id", str(uuid.uuid4())),
+            ("delivery", "channel", "email"),
+            ("reference", "butler", "relationship"),
+            ("reference", "action_id", "not-a-uuid"),
+            ("reference", "extra", "private"),
+        ):
+            mutant = copy.deepcopy(refusal)
+            nested = mutant["result"]["notify_response"]
+            target = {
+                "outer": mutant["request_context"],
+                "context": nested["request_context"],
+                "delivery": nested["delivery"],
+                "reference": nested["approval_review"],
+            }[area]
+            target[key] = value
+            mutants.append(mutant)
+        for index, response in enumerate(mutants):
+            attempt_pool = _make_mock_pool(
+                fetchrow_side_effect=[
+                    [],
+                    _registry_row("messenger"),
+                    _notif_id_row(),
+                ]
+            )
+            failed = await deliver(
+                attempt_pool,
+                source_butler="health",
+                notify_request=notify_request,
+                metadata={"approval_review": ApprovalReview(action_id).as_dict()},
+                call_fn=AsyncMock(return_value=response),
+            )
+            assert failed["status"] == "failed"
+            insert = next(
+                call
+                for call in attempt_pool.fetchrow.await_args_list
+                if "INSERT INTO switchboard.notifications" in call.args[0]
+            )
+            if index == 0:
+                assert insert.args[-1] == ApprovalReview(action_id).as_dict()
+                assert "approval_review" in insert.args[0]
+                assert insert.args[6] == "failed"
+            else:
+                assert len(insert.args) == 10  # SQL + the unchanged nine ordinary parameters
+                assert "approval_review" not in insert.args[0]
+        with pytest.raises(TypeError):
+            await log_notification(
+                pool,
+                "health",
+                "telegram",
+                "synthetic",
+                "Synthetic",
+                approval_review=ApprovalReview(action_id),
+            )
 
     async def test_notify_route_context_preserves_request_id_lineage(self) -> None:
         """Route envelope request_id matches the original notify request_context request_id."""
@@ -1041,7 +1178,16 @@ class TestDeliverNotifyRouting:
 
         async def mock_call(endpoint_url, tool_name, args):
             captured.append({"endpoint_url": endpoint_url, "tool_name": tool_name, "args": args})
-            return {"status": "ok", "result": {"notify_response": {"status": "ok"}}}
+            return {
+                "status": "ok",
+                "result": {
+                    "notify_response": {
+                        "schema_version": "notify_response.v1",
+                        "status": "ok",
+                        "delivery": {"channel": "telegram", "delivery_id": "tg-43"},
+                    }
+                },
+            }
 
         original_request_id = "018f52f3-9d8a-7ef2-8f2d-9fb6b32f12aa"
         notify_request = {
@@ -1436,9 +1582,7 @@ class TestWriteOutboundMessageInbox:
         """Derives thread identity from delivery.recipient for telegram send-intent."""
 
         from butlers.tools.switchboard import _write_outbound_message_inbox
-        from butlers.tools.switchboard.routing.contracts import (
-            NotifyRequestV1,
-        )
+        from butlers.tools.switchboard.contracts import NotifyRequestV1
 
         pool = AsyncMock()
         delivered_at = datetime(2026, 3, 19, 13, 21, 0, tzinfo=UTC)
@@ -1467,15 +1611,45 @@ class TestWriteOutboundMessageInbox:
         req_ctx = call_args[0][2]
         assert isinstance(req_ctx, dict)
         assert req_ctx["source_thread_identity"] == "206570151"
+        assert req_ctx["external_conversation_id"] == "telegram:206570151"
         assert req_ctx["source_sender_identity"] == "relationship"
         assert req_ctx["source_channel"] == "telegram_bot"
+
+    async def test_whatsapp_send_intent_lands_in_namespaced_chat_history(self) -> None:
+        """A proactive WhatsApp send shares the whatsapp:<jid> key of the chat's inbound rows."""
+
+        from butlers.tools.switchboard import _write_outbound_message_inbox
+        from butlers.tools.switchboard.contracts import NotifyRequestV1
+
+        pool = AsyncMock()
+        notify_request = NotifyRequestV1.model_validate(
+            {
+                "schema_version": "notify.v1",
+                "origin_butler": "relationship",
+                "delivery": {
+                    "intent": "send",
+                    "channel": "whatsapp",
+                    "message": "On my way",
+                    "recipient": "6591234567@s.whatsapp.net",
+                },
+            }
+        )
+
+        await _write_outbound_message_inbox(
+            pool,
+            notify_request=notify_request,
+            delivered_at=datetime(2026, 10, 8, 9, 0, 0, tzinfo=UTC),
+        )
+
+        pool.execute.assert_awaited_once()
+        req_ctx = pool.execute.call_args[0][2]
+        assert req_ctx["source_thread_identity"] == "6591234567@s.whatsapp.net"
+        assert req_ctx["external_conversation_id"] == "whatsapp:6591234567@s.whatsapp.net"
 
     async def test_skips_when_no_thread_and_no_recipient(self) -> None:
         """Skips write when neither thread identity nor recipient is available."""
         from butlers.tools.switchboard import _write_outbound_message_inbox
-        from butlers.tools.switchboard.routing.contracts import (
-            NotifyRequestV1,
-        )
+        from butlers.tools.switchboard.contracts import NotifyRequestV1
 
         pool = AsyncMock()
         notify_request = NotifyRequestV1.model_validate(
@@ -1504,7 +1678,7 @@ class TestWriteOutboundMessageInbox:
         """Derives thread identity from recipient when request_context lacks it."""
 
         from butlers.tools.switchboard import _write_outbound_message_inbox
-        from butlers.tools.switchboard.routing.contracts import NotifyRequestV1
+        from butlers.tools.switchboard.contracts import NotifyRequestV1
 
         pool = AsyncMock()
         delivered_at = datetime(2026, 3, 20, 1, 31, 0, tzinfo=UTC)
@@ -1540,14 +1714,44 @@ class TestWriteOutboundMessageInbox:
         assert isinstance(req_ctx, dict)
         # Thread identity derived from delivery.recipient
         assert req_ctx["source_thread_identity"] == "206570151"
+        assert req_ctx["external_conversation_id"] == "telegram:206570151"
         # source_channel from request_context (not derived)
         assert req_ctx["source_channel"] == "telegram_bot"
         assert req_ctx["source_sender_identity"] == "health"
 
+    async def test_reply_without_conversation_key_joins_the_delivered_chat(self) -> None:
+        """A reply context that dropped external_conversation_id still lands in chat history."""
+        from butlers.tools.switchboard import _write_outbound_message_inbox
+        from butlers.tools.switchboard.contracts import NotifyRequestV1
+
+        pool = AsyncMock()
+        notify_request = NotifyRequestV1.model_validate(
+            {
+                "schema_version": "notify.v1",
+                "origin_butler": "health",
+                "delivery": {"intent": "reply", "channel": "telegram", "message": "Done."},
+                "request_context": {
+                    "request_id": _make_uuid7(),
+                    "source_channel": "telegram_bot",
+                    "source_endpoint_identity": "telegram:bot",
+                    "source_sender_identity": "user456",
+                    "source_thread_identity": "-100555:42",
+                },
+            }
+        )
+
+        await _write_outbound_message_inbox(
+            pool, notify_request=notify_request, delivered_at=datetime.now(UTC)
+        )
+
+        req_ctx = pool.execute.call_args[0][2]
+        assert req_ctx["source_thread_identity"] == "-100555:42"
+        assert req_ctx["external_conversation_id"] == "telegram:-100555"
+
     async def test_writes_outbound_row_when_thread_identity_present(self) -> None:
         """Writes outbound row to message_inbox when source_thread_identity is available."""
         from butlers.tools.switchboard import _write_outbound_message_inbox
-        from butlers.tools.switchboard.routing.contracts import NotifyRequestV1
+        from butlers.tools.switchboard.contracts import NotifyRequestV1
 
         pool = AsyncMock()
         delivered_at = datetime(2026, 2, 18, 10, 5, 0, tzinfo=UTC)
@@ -1567,6 +1771,7 @@ class TestWriteOutboundMessageInbox:
                     "source_endpoint_identity": "telegram:bot",
                     "source_sender_identity": "user123",
                     "source_thread_identity": "12345678:999",
+                    "external_conversation_id": "telegram:12345678",
                 },
             }
         )
@@ -1594,6 +1799,7 @@ class TestWriteOutboundMessageInbox:
         assert isinstance(req_ctx, dict)
         assert req_ctx["source_channel"] == "telegram_bot"
         assert req_ctx["source_thread_identity"] == "12345678:999"
+        assert req_ctx["external_conversation_id"] == "telegram:12345678"
         assert req_ctx["source_sender_identity"] == "relationship"
 
         raw_payload = pos_args[3]
@@ -1608,7 +1814,7 @@ class TestWriteOutboundMessageInbox:
     async def test_swallows_db_error_without_propagating(self) -> None:
         """DB error during outbound write is logged but never propagates."""
         from butlers.tools.switchboard import _write_outbound_message_inbox
-        from butlers.tools.switchboard.routing.contracts import NotifyRequestV1
+        from butlers.tools.switchboard.contracts import NotifyRequestV1
 
         pool = AsyncMock()
         pool.execute.side_effect = Exception("DB connection lost")

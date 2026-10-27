@@ -6,9 +6,9 @@ audit (bu-33dm2) sit permanently `offline` yet cannot be removed because
 ingestion history still references them:
 
 - `google_health:degraded` — placeholder identity, offline since 2026-06-07
-- `google_health:user:uniquosity@gmail.com:<uuid>` — never heartbeated
+- `google_health:user:owner@example.com:<uuid>` — never heartbeated
 - `owntracks:unknown` — offline since 2026-05-13, superseded by per-device ids
-- `home_assistant:homeassistant.parrot-hen.ts.net:443` — offline since
+- `home_assistant:homeassistant.example.ts.net:443` — offline since
   2026-05-24, superseded by the `v-on-shenton` host
 
 They inflate the offline count on every fleet-health rollup and add permanent

@@ -41,12 +41,14 @@ from butlers.core.tool_call_capture import (
 )
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.execution_context import get_approval_execution_context
-from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
+from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, tool_registrar
 
 from .actuation import (
+    DATA_TARGET_SELECTORS,
     ActuationRisk,
-    classify_actuation,
+    effective_actuation_risk,
     rollback_hint,
+    snapshot_actuation_arguments,
     target_entity_ids,
     verify_post_condition,
 )
@@ -152,6 +154,9 @@ class CachedEntityRegistryEntry:
 # ---------------------------------------------------------------------------
 
 
+_SAFETY_WATCH_TTL_S = 60.0
+
+
 class HomeAssistantConfig(ToolGroupMixin, BaseModel):
     """Configuration for the Home Assistant module.
 
@@ -218,6 +223,12 @@ class HomeAssistantModule(Module):
         self._db: Any = None
         self._switchboard_client: Any | None = None
 
+        # ---- Safety sentinel edge hook (bu-jv1moa.6) ----
+        self._safety_watch_ids: frozenset[str] = frozenset()
+        self._safety_watch_loaded_at: float = float("-inf")
+        self._safety_refresh_task: asyncio.Task[None] | None = None
+        self._safety_edge_tasks: dict[str, asyncio.Task[None]] = {}
+
         # ---- WebSocket state ----
         self._ws_session: Any | None = None  # aiohttp.ClientSession
         self._ws_connection: Any | None = None  # aiohttp.ClientWebSocketResponse
@@ -252,9 +263,7 @@ class HomeAssistantModule(Module):
     # Module ABC
     # ------------------------------------------------------------------
 
-    @property
-    def name(self) -> str:
-        return "home_assistant"
+    name = "home_assistant"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -472,12 +481,7 @@ class HomeAssistantModule(Module):
         self._db = db
         module = self  # capture for closures
 
-        # Build a group-aware tool decorator: returns @mcp.tool() when the
-        # group is enabled, or a no-op passthrough when disabled.
-        def _tool(group: str):
-            if group_enabled(self._config, group):
-                return mcp.tool()
-            return lambda fn: fn  # no-op — function defined but not registered
+        _tool = tool_registrar(mcp, self._config)
 
         async def ha_get_entity_state(entity_id: str) -> dict[str, Any] | None:
             """Return the current state of a Home Assistant entity.
@@ -531,6 +535,10 @@ class HomeAssistantModule(Module):
                 Optional target specification (entity_id, area_id, device_id).
             data:
                 Optional service-specific data payload.
+
+            Automatic reversible calls require explicit same-domain entities
+            and allowlisted typed data. Bulk, unknown-data and unknown-unit
+            calls park for exact owner approval; data cannot override target.
             """
             return await module._call_service(
                 domain=domain, service=service, target=target, data=data
@@ -1065,6 +1073,7 @@ class HomeAssistantModule(Module):
                     entity_id,
                     new_state.get("state"),
                 )
+                self._schedule_safety_edge_check(entity_id)
 
         elif event_type == "area_registry_updated":
             logger.debug("HomeAssistantModule: area_registry_updated event; refreshing.")
@@ -1073,6 +1082,88 @@ class HomeAssistantModule(Module):
         elif event_type == "entity_registry_updated":
             logger.debug("HomeAssistantModule: entity_registry_updated event; refreshing.")
             self._schedule_registry_refresh("entity")
+
+    # ------------------------------------------------------------------
+    # Safety sentinel edge hook (bu-jv1moa.6)
+    # ------------------------------------------------------------------
+
+    def _schedule_safety_edge_check(self, entity_id: str) -> None:
+        """Hand a watched sensor's state change to the safety sentinel, off the WS read loop.
+
+        Only entities the owner declared in ``home.safety_watch`` do any work; the declared set
+        is cached in memory and refreshed at most once a minute.  The check itself waits out the
+        debounce and reconciles through the same engine as the five-minute job, so the two
+        dedupe on the ``public.owner_conditions`` ledger.  Read-only: nothing here calls Home
+        Assistant.
+        """
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+        loop = asyncio.get_running_loop()
+        if loop.time() - self._safety_watch_loaded_at > _SAFETY_WATCH_TTL_S and (
+            self._safety_refresh_task is None or self._safety_refresh_task.done()
+        ):
+            self._safety_refresh_task = asyncio.create_task(self._refresh_safety_watch_ids(pool))
+        if entity_id not in self._safety_watch_ids:
+            return
+        existing = self._safety_edge_tasks.get(entity_id)
+        if existing is not None and not existing.done():
+            return  # the pending check reads the cache when it wakes, so it sees the latest state
+        task = asyncio.create_task(self._run_safety_edge_check(pool, entity_id))
+        self._safety_edge_tasks[entity_id] = task
+
+        def _cleanup(done: asyncio.Task[None]) -> None:
+            if self._safety_edge_tasks.get(entity_id) is done:
+                self._safety_edge_tasks.pop(entity_id, None)
+
+        task.add_done_callback(_cleanup)
+
+    async def _refresh_safety_watch_ids(self, pool: Any) -> None:
+        from butlers.jobs.home_safety import load_watch
+
+        try:
+            self._safety_watch_ids = frozenset(e.entity_id for e in await load_watch(pool))
+            self._safety_watch_loaded_at = asyncio.get_running_loop().time()
+        except Exception:
+            logger.warning("HomeAssistantModule: safety watch refresh failed", exc_info=True)
+
+    def _read_safety_reading(self, entity_id: str) -> Any:
+        from butlers.jobs.home_safety import SensorReading
+
+        cached = self._entity_cache.get(entity_id)
+        if cached is None:
+            return None
+        try:
+            since = datetime.fromisoformat(cached.last_changed) if cached.last_changed else None
+        except ValueError:
+            since = None
+        if since is not None and since.tzinfo is None:
+            since = since.replace(tzinfo=UTC)
+        return SensorReading(state=cached.state, since=since)
+
+    async def _run_safety_edge_check(self, pool: Any, entity_id: str) -> None:
+        from butlers.core.tool_call_capture import (
+            reset_current_switchboard_client,
+            set_current_switchboard_client,
+        )
+        from butlers.jobs.home_safety import edge_check, send_urgent_notify
+
+        token = set_current_switchboard_client(self._switchboard_client)
+        try:
+            await edge_check(
+                pool,
+                entity_id,
+                read_reading=lambda: self._read_safety_reading(entity_id),
+                notify=lambda message: send_urgent_notify(pool, message),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "HomeAssistantModule: safety edge check failed for %s", entity_id, exc_info=True
+            )
+        finally:
+            reset_current_switchboard_client(token)
 
     def _schedule_registry_refresh(self, registry_type: str) -> None:
         """Refresh HA registries off the WS read loop to avoid self-deadlock."""
@@ -1133,7 +1224,7 @@ class HomeAssistantModule(Module):
     async def _ws_command(
         self,
         command: dict[str, Any],
-        timeout: float = 10.0,
+        timeout: float = 10.0,  # noqa: ASYNC109 - HAStatisticsClient command_sender keyword; rename deferred (#4816)
     ) -> dict[str, Any]:
         """Send a WebSocket command and await the correlated result.
 
@@ -1716,6 +1807,9 @@ class HomeAssistantModule(Module):
                 "alphanumeric characters and underscores."
             )
 
+        # Bind the same detached JSON command through classification, approval,
+        # persistence and transport before the first suspension point.
+        target, data = snapshot_actuation_arguments(target, data)
         client = self._get_client()
         pool = getattr(self._db, "pool", None) if self._db is not None else None
         if pool is None:
@@ -1723,15 +1817,13 @@ class HomeAssistantModule(Module):
                 "Home Assistant actuation refused: durable receipt storage is unavailable"
             )
 
-        payload: dict[str, Any] = {}
-        # Merge data first so that the explicit target argument always wins if
-        # data happens to also carry a "target" key.
-        if data is not None:
-            payload.update(data)
-        if target is not None:
-            payload["target"] = target
-
-        risk = classify_actuation(domain, service)
+        units = {
+            entity_id: self._entity_cache[entity_id].attributes.get("temperature_unit")
+            for entity_id in target_entity_ids(target)
+            if entity_id in self._entity_cache
+        }
+        effective = effective_actuation_risk(domain, service, target, data, temperature_units=units)
+        risk = effective.risk
         approval_context = get_approval_execution_context(
             tool_name="ha_call_service",
             tool_args={"domain": domain, "service": service, "target": target, "data": data},
@@ -1751,6 +1843,7 @@ class HomeAssistantModule(Module):
                 data=data,
                 risk=risk,
                 session_id=session_id,
+                why=effective.approval_reason,
             )
             return {
                 "status": "pending_approval",
@@ -1758,6 +1851,14 @@ class HomeAssistantModule(Module):
                 "risk": risk.value,
                 "message": f"{domain}.{service} requires explicit owner approval",
             }
+
+        # Approval permits the exact command; it does not choose precedence
+        # between two target sources or authorize silently dropping either one.
+        if target is not None and DATA_TARGET_SELECTORS.intersection(data or {}):
+            raise ValueError("Home Assistant actuation refused: ambiguous target sources")
+        payload: dict[str, Any] = dict(data) if data is not None else {}
+        if target is not None:
+            payload["target"] = target
 
         if approval_context is not None:
             prior_effect_possible = await pool.fetchrow(
@@ -2057,6 +2158,7 @@ class HomeAssistantModule(Module):
         data: dict[str, Any] | None,
         risk: ActuationRisk,
         session_id: uuid.UUID | None,
+        why: str | None = None,
     ) -> uuid.UUID:
         """Park a consequential call through the approvals module's sole choke point."""
         if not approvals_hooks.is_approval_parking_available(pool):
@@ -2064,12 +2166,7 @@ class HomeAssistantModule(Module):
 
         action_id = uuid.uuid4()
         now = datetime.now(UTC)
-        tool_args = json.loads(
-            json.dumps(
-                {"domain": domain, "service": service, "target": target, "data": data},
-                default=str,
-            )
-        )
+        tool_args = {"domain": domain, "service": service, "target": target, "data": data}
         await approvals_hooks.park_pending_action(
             pool,
             action_id=action_id,
@@ -2079,7 +2176,7 @@ class HomeAssistantModule(Module):
             requested_at=now,
             expires_at=now + timedelta(hours=24),
             session_id=session_id,
-            why=f"{domain}.{service} crosses the physical-world {risk.value} boundary",
+            why=why or f"{domain}.{service} crosses the physical-world {risk.value} boundary",
             evidence=[],
             blast_radius="self",
             reversibility="irreversible" if risk is ActuationRisk.PROTECTED else "compensable",

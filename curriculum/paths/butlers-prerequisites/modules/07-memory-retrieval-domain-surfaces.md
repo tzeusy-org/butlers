@@ -111,7 +111,7 @@ Specs and doctrine are governance artifacts. They explain intended behavior, sco
 
 - `roster/*/MANIFESTO.md`
 - `roster/*/tools/`
-- `docs/frontend/backend-api-contract.md`
+- `docs/api_and_protocols/response-conventions.md`
 - `docs/frontend/data-access-and-refresh.md`
 - `frontend/src/api/client.ts`
 - `about/`

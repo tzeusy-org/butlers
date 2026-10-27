@@ -37,6 +37,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from butlers.credential_store import resolve_owner_telegram_recipient
+from butlers.modules.approvals.notifications import dashboard_base_url
 from butlers.modules.base import Module, ToolGroupMixin, ToolMeta
 from butlers.tools.switchboard.runtime_attention.outbox import RuntimeAttentionOutbox
 from butlers.tools.switchboard.runtime_attention.worker import (
@@ -72,7 +73,7 @@ class SwitchboardModuleConfig(ToolGroupMixin, BaseModel):
 
     Tool groups
     -----------
-    routing : list_butlers, route, post_mail, correct_route, deliver
+    routing : list_butlers, route, correct_route, deliver
     lifecycle : connector_disconnect
     extraction : log_extraction, extraction_log_list, extraction_log_undo
     backfill : create_backfill_job, backfill_pause, backfill_cancel,
@@ -93,20 +94,11 @@ class SwitchboardModule(Module):
         self._db: Any = None
         self._runtime_attention_task: asyncio.Task[None] | None = None
 
-    @property
-    def name(self) -> str:
-        return "switchboard"
+    name = "switchboard"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return SwitchboardModuleConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        return None  # switchboard tables already exist via separate migrations
 
     def tool_metadata(self) -> dict[str, ToolMeta]:
         """Declare the connector identity as safety-critical for approval rules."""
@@ -136,6 +128,7 @@ class SwitchboardModule(Module):
         transport = build_messenger_transport(
             pool,
             resolve_recipient=functools.partial(resolve_owner_telegram_recipient, pool),
+            dashboard_base_url=dashboard_base_url(),
         )
         worker = RuntimeAttentionDeliveryWorker(repository, transport)
         self._runtime_attention_task = asyncio.create_task(

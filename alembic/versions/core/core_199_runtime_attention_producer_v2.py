@@ -69,15 +69,20 @@ _V2_CATALOG_SQL = """
           AND model_breaker.prosecdef
           AND fleet_halt.prosecdef
           AND debounce_marker.prosecdef
-          AND model_breaker.proconfig = ARRAY[
-              'search_path=pg_catalog, public, pg_temp'
-          ]::text[]
-          AND fleet_halt.proconfig = ARRAY[
-              'search_path=pg_catalog, public, pg_temp'
-          ]::text[]
-          AND debounce_marker.proconfig = ARRAY[
-              'search_path=pg_catalog, public, pg_temp'
-          ]::text[]
+          -- bu-mms5xl: the finalizer pins pg_catalog, pg_temp on every init-db
+          -- rerun; a database not yet rebootstrapped still carries the old path.
+          AND model_breaker.proconfig::text[] IN (
+              ARRAY['search_path=pg_catalog, pg_temp'],
+              ARRAY['search_path=pg_catalog, public, pg_temp']
+          )
+          AND fleet_halt.proconfig::text[] IN (
+              ARRAY['search_path=pg_catalog, pg_temp'],
+              ARRAY['search_path=pg_catalog, public, pg_temp']
+          )
+          AND debounce_marker.proconfig::text[] IN (
+              ARRAY['search_path=pg_catalog, pg_temp'],
+              ARRAY['search_path=pg_catalog, public, pg_temp']
+          )
           AND EXISTS (
               SELECT 1
               FROM pg_trigger AS marker_trigger

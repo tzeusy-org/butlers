@@ -205,21 +205,22 @@ from uuid import UUID
 
 import httpx
 from asyncpg.exceptions import InvalidSchemaNameError, PostgresError, UndefinedTableError
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from butlers._sql_utils import escape_like_pattern
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
+from butlers.api.deps import Db
 from butlers.api.models import ApiMeta, ApiResponse
-from butlers.api.models.audit import (
-    PROBE_FAILURE_VOCABULARY as PROBE_FAILURE_VOCABULARY,  # re-export; see below
-)
-from butlers.api.models.audit import clamp_failure_category
 from butlers.api.models.cli_auth import CLIAuthSessionState
 from butlers.api.routers import audit as audit_router
 from butlers.cli_auth.registry import PROVIDERS
 from butlers.cli_auth.session import CLIAuthSession, store_session
+from butlers.core.audit import (
+    PROBE_FAILURE_VOCABULARY as PROBE_FAILURE_VOCABULARY,  # re-export; see below
+)
+from butlers.core.audit import clamp_failure_category
 from butlers.core.credential_keys import normalize_credential_key
 from butlers.core.runtime_probe_control.keys import RESERVED_SIGNING_KEY_SECRET_NAME
 from butlers.credential_store import CredentialStore
@@ -230,11 +231,6 @@ from butlers.spotify_credentials import SPOTIFY_MANAGED_ENTITY_INFO_TYPES
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/secrets", tags=["secrets"])
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -827,16 +823,13 @@ class SystemSecretSummary(BaseModel):
     regardless of credential family, because that text can echo a provider
     response or the credential's own content.
 
-    ``key``, ``category`` and ``description`` deliberately survive. They are
-    operator-authored labels for infrastructure keys rather than evidence
-    derived from credential content, and the passport has no other way to name
-    a system row. Whether they belong behind the same projection is an open
-    policy question, not a decided one (bu-iph56).
+    ``key`` survives as the raw operator-chosen identifier that lets the
+    passport name a system row. ``category`` and ``description`` remain on the
+    internal record and on the selected system detail payload, but are omitted
+    from this broader inventory projection as partial metadata minimization.
     """
 
     key: str
-    category: str = "general"
-    description: str | None = None
     state: str  # 'ok' | 'warn' | 'failing' | 'expired' | 'never_set'
     fingerprint: str | None = None  # sha256[:8] hex, computed on-read
     last_verified: datetime | None = None
@@ -866,8 +859,6 @@ def _content_blind_system(record: SystemSecret) -> SystemSecretSummary:
     """
     return SystemSecretSummary(
         key=record.key,
-        category=record.category,
-        description=record.description,
         state=record.state,
         fingerprint=record.fingerprint,
         last_verified=record.last_verified,
@@ -898,8 +889,6 @@ class CliRuntimeSummary(BaseModel):
     """
 
     key: str
-    category: str = "cli"
-    description: str | None = None
     state: str  # 'ok' | 'warn' | 'failing' | 'expired' | 'never_set'
     fingerprint: str | None = None  # sha256[:8] hex, computed on-read
     issued: datetime | None = None
@@ -919,8 +908,6 @@ def _content_blind_cli(record: CliRuntime) -> CliRuntimeSummary:
     """
     return CliRuntimeSummary(
         key=record.key,
-        category=record.category,
-        description=record.description,
         state=record.state,
         fingerprint=record.fingerprint,
         issued=record.issued,
@@ -1043,20 +1030,19 @@ class SystemCredentialDetail(BaseModel):
     one row, one published shape. ``SystemSecretDetail`` stays internal so the
     probe and delete routes can keep reading the unprojected row.
 
-    Field parity with ``SystemSecretSummary`` is deliberate — the inventory and
-    the detail read publish the same ``s:`` row, so they publish the same
-    fields:
+    The detail payload intentionally carries a richer selected-row projection
+    than ``SystemSecretSummary``. Both read the same ``s:`` row, but the broad
+    inventory omits operator-authored labels while this per-credential detail
+    keeps them for the selected credential:
 
     - The probe's free-text ``message``, ``last_test_message``, and every audit
       ``note`` are dropped (owner decision, 2026-08-13): audit / probe /
       failure free text can echo a provider response or the credential's own
       content, whichever credential family it belongs to.
-    - ``key``, ``category`` and ``description`` survive for the reason recorded
-      on ``SystemSecretSummary``: they are operator-authored labels for
-      infrastructure keys rather than evidence derived from credential content,
-      and the passport has no other way to name a system row. Whether they
-      belong behind the same projection is an open policy question for both
-      surfaces at once, not one this endpoint answers alone.
+    - ``key``, ``category`` and ``description`` remain available here as the
+      selected system credential's operator-authored identity and metadata.
+      This deliberate inventory/detail asymmetry is the adopted partial
+      metadata-minimization contract.
 
     ``breaks`` is absent rather than projected. Nothing has ever populated it
     on ``SystemSecretDetail``, and an always-empty passthrough of
@@ -1153,10 +1139,11 @@ class CliCredentialDetail(BaseModel):
     ``last_used`` is absent rather than shipped as an always-null placeholder —
     nothing persists it. The probe's free-text ``message`` and
     ``last_test_message`` are dropped for the same reason as on
-    ``SystemCredentialDetail``. ``label`` survives for the reason
-    ``description`` survives on ``CliRuntimeSummary``: it is the row's only
-    human-readable name and the inventory already publishes it for these same
-    rows — the same open policy question, not a separate one.
+    ``SystemCredentialDetail``. ``label`` survives here as the selected CLI
+    credential's human-readable name, even though the broader inventory
+    projection omits the source ``description`` field. This deliberate
+    inventory/detail asymmetry is part of the adopted partial
+    metadata-minimization contract.
     """
 
     # Identity
@@ -1992,6 +1979,9 @@ _SYSTEM_KEY_USED_BY: dict[str, tuple[str, ...]] = {
     "BUTLER_TELEGRAM_TOKEN": ("telegram",),
     "APPROVAL_CALLBACK_SECRET": ("approvals", "telegram"),
     "APPROVAL_CALLBACK_CONNECTOR_TOKEN": ("approvals", "telegram"),
+    # Finance payment-destination fingerprint key (bu-s11n0s.21) — HMAC key resolved
+    # once at FinanceModule startup; absent means bill destinations read as unverifiable.
+    "FINANCE_PAYMENT_DESTINATION_KEY": ("finance",),
     # S3-compatible blob storage — core infra wired at butler startup
     # (lifecycle.py, api/routers/blob_storage.py), not a single opt-in module.
     "BLOB_S3_ENDPOINT_URL": ("blob_storage",),
@@ -2340,14 +2330,14 @@ async def _fetch_user_secrets(
 
     google_entity_ids = [
         str(row["entity_id"])
-        for row, provider in zip(rows, providers_by_row)
+        for row, provider in zip(rows, providers_by_row, strict=True)
         if provider == "google"
     ]
     google_scopes_map = await _fetch_google_granted_scopes(pool, google_entity_ids)
     google_expiry_map = await _fetch_google_test_mode_expiry(pool, google_entity_ids)
 
     results: list[UserSecret] = []
-    for row, provider in zip(rows, providers_by_row):
+    for row, provider in zip(rows, providers_by_row, strict=True):
         value: str | None = row["value"]
         last_test_ok: bool | None = row["last_test_ok"]
         entity_id = str(row["entity_id"])
@@ -2802,7 +2792,8 @@ async def get_inventory(
             "When omitted, defaults to the owner entity (projection-lens semantics)."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[InventoryData]:
     """Return the aggregated secrets inventory for the passport-book /secrets page.
 
@@ -2831,9 +2822,10 @@ async def get_inventory(
     ``UserSecretSummary`` whose scope evidence is published as
     ``CAPABILITY_VOCABULARY`` categories and whose provider slug is clamped to
     ``USER_PROVIDER_VOCABULARY``, and the persisted credential type and label
-    never reach the wire either. System and CLI rows keep their operator-authored
-    ``key`` / ``category`` / ``description`` labels; whether those belong behind
-    the same projection is an open policy question, not a decided one.
+    never reach the wire either. System and CLI rows retain their raw
+    operator-chosen ``key`` while omitting ``category`` and ``description`` as
+    partial metadata minimization; those labels remain available on selected
+    detail payloads.
 
     meta.failing_count / meta.unverified_count are computed server-side from
     a deduplicated row set (bu-976n0): failing_count counts genuinely broken
@@ -3415,7 +3407,8 @@ async def get_user_credential(
             "When omitted, defaults to the owner entity (projection-lens semantics)."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[UserSecretDetail]:
     """Return full evidence payload for a single user-scoped credential.
 
@@ -3459,7 +3452,8 @@ async def get_user_credential(
 )
 async def get_system_credential(
     key: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SystemCredentialDetail]:
     """Return the content-blind evidence payload for one system credential.
 
@@ -3536,7 +3530,8 @@ async def get_system_credential(
 )
 async def get_cli_credential(
     credential_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CliCredentialDetail]:
     """Return the content-blind evidence payload for one CLI runtime token.
 
@@ -3638,7 +3633,8 @@ async def get_audit_history(
             f"(default {_AUDIT_DEFAULT_LIMIT}, max {_AUDIT_MAX_LIMIT})."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[AuditEvent]]:
     """Return recent audit events for a single credential.
 
@@ -3823,7 +3819,8 @@ async def get_breaks_catalogue(
             "available in meta.by_provider."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[BreakEntry]]:
     """Return feature catalogue rows for the WhatBreaks affordance.
 
@@ -5167,7 +5164,8 @@ async def rotate_user_credential(
             "Entity UUID for the credential to rotate. When omitted, defaults to the owner entity."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[UserSecretDetail]:
     """Rotate (replace) the stored value for a user-scoped credential.
 
@@ -5309,7 +5307,8 @@ async def disconnect_user_credential(
             "When omitted, defaults to the owner entity."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[DisconnectStatus]:
     """Disconnect (remove) a user-scoped credential.
 
@@ -5427,7 +5426,7 @@ async def disconnect_user_credential(
 # ``last_test_message`` cache column, and the audit row — withheld from the
 # caller, not destroyed.
 #
-# The tuple itself now lives in ``butlers.api.models.audit`` (bu-vhie6): the
+# The tuple itself now lives in ``butlers.core.audit`` (bu-vhie6): the
 # same closed vocabulary is what ``public.audit_log.failure_category`` stores
 # at rest, and ``routers/audit`` cannot import this router.  It is re-exported
 # here so ``secrets_v2.PROBE_FAILURE_VOCABULARY`` keeps resolving for every
@@ -5493,7 +5492,8 @@ async def probe_user_credential(
             "Entity UUID for the credential to probe. When omitted, defaults to the owner entity."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TestResult]:
     """Probe a user-scoped credential and record the test result.
 
@@ -5835,7 +5835,8 @@ async def reauthorize_user_credential(
             "When omitted, defaults to the owner entity."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ReauthorizeResponse]:
     """Initiate an OAuth (re)authorization dance for a user-scoped credential.
 
@@ -6123,7 +6124,8 @@ async def _write_system_audit(
 async def set_system_credential(
     key: str,
     body: SystemSetRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SystemCredentialDetail]:
     """Set (first-time), rotate (update existing), or override (per-butler) a system credential.
 
@@ -6409,7 +6411,8 @@ async def set_system_credential(
 )
 async def probe_system_credential(
     key: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TestResult]:
     """Probe a system credential and record the test result.
 
@@ -6685,7 +6688,8 @@ async def delete_system_credential(
             "or a butler name to remove the per-butler override row (audit: revoked)."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SystemDeleteStatus]:
     """Remove a system credential row.
 
@@ -6973,7 +6977,8 @@ class CliRevokeResult(BaseModel):
 async def rotate_cli_credential(
     credential_id: str,
     body: CliRotateRequest | None = None,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CliRotateResult]:
     """Persist or rotate the secret value for a CLI runtime token.
 
@@ -7172,7 +7177,8 @@ async def rotate_cli_credential(
 )
 async def revoke_cli_credential(
     credential_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CliRevokeResult]:
     """Revoke (delete) a CLI runtime token.
 
@@ -7307,7 +7313,8 @@ class CliReauthorizeResponse(BaseModel):
 )
 async def reauthorize_cli_credential(
     credential_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CliReauthorizeResponse]:
     """Initiate (or resume) re-authentication for a CLI runtime provider.
 
@@ -7399,7 +7406,7 @@ async def reauthorize_cli_credential(
         try:
             await session.start()
             # Wait briefly for the device code to appear in stdout.
-            await session.wait(timeout=10.0)
+            await session.wait(timeout_s=10.0)
         except Exception as exc:  # noqa: BLE001
             if provider_def.name == "codex":
                 # Device-code subprocess errors can contain provider auth
@@ -7507,7 +7514,8 @@ class ProbeAllResponse(BaseModel):
     response_model=ApiResponse[ProbeAllResponse],
 )
 async def probe_all_credentials(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ProbeAllResponse]:
     """Sweep every probeable credential and report a per-row outcome.
 

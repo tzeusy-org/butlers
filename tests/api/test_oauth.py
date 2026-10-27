@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from butlers.api.deps import get_db_optional
 from butlers.api.models.oauth import OAuthCredentialState, OAuthCredentialStatus
 from butlers.api.routers import oauth as oauth_module
 from butlers.api.routers.oauth import (
@@ -104,7 +105,7 @@ def _make_app(
     pool.acquire = _acquire
     db_manager = MagicMock()
     db_manager.credential_shared_pool.return_value = pool
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
+    app.dependency_overrides[get_db_optional] = lambda: db_manager
     return app
 
 
@@ -255,12 +256,13 @@ async def test_start_sets_include_granted_scopes_for_incremental_auth(app):
 
 
 async def test_start_missing_credentials_returns_503(app):
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: None
+    app.dependency_overrides[get_db_optional] = lambda: None
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get("/api/oauth/google/start")
-    assert resp.status_code in (503, 500)
+    assert resp.status_code == 503
+    assert "location" not in resp.headers
 
 
 async def test_start_page_of_origin_empty_string_normalised_to_none(app):
@@ -387,7 +389,7 @@ async def test_scope_widening_unions_granted_scopes(app):
 
 def _shared_pool(app):
     """The pool ``_make_app`` wired in, so a test can control its fetchrow."""
-    return app.dependency_overrides[oauth_module._get_db_manager]().credential_shared_pool()
+    return app.dependency_overrides[get_db_optional]().credential_shared_pool()
 
 
 async def test_account_ref_resolves_to_the_stored_login_hint(app):
@@ -612,12 +614,14 @@ async def test_callback_provider_error_redirects_with_state_context(app, monkeyp
     assert _validate_and_consume_state(state) is None
 
 
-async def test_callback_provider_error_persists_observable_audit_outcome(app, monkeypatch):
+async def test_callback_provider_error_persists_observable_audit_outcome(
+    app, monkeypatch, synthetic_oauth_provider
+):
     """A callback failure must remain visible to the audit-derived Issues feed."""
     monkeypatch.delenv("OAUTH_DASHBOARD_URL", raising=False)
     _make_app(app)
     state = _generate_state()
-    _store_state(state, provider="spotify", page_of_origin="secrets")
+    _store_state(state, provider=synthetic_oauth_provider, page_of_origin="secrets")
     append = AsyncMock(return_value=1)
     monkeypatch.setattr(oauth_module._audit, "append", append)
 
@@ -625,7 +629,8 @@ async def test_callback_provider_error_persists_observable_audit_outcome(app, mo
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get(
-            "/api/oauth/spotify/callback", params={"error": "access_denied", "state": state}
+            f"/api/oauth/{synthetic_oauth_provider}/callback",
+            params={"error": "access_denied", "state": state},
         )
 
     assert resp.status_code == 302
@@ -703,7 +708,7 @@ async def test_oauth_status_returns_google_structure(app):
     pool.acquire = _acquire
     db_manager = MagicMock()
     db_manager.credential_shared_pool.return_value = pool
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
+    app.dependency_overrides[get_db_optional] = lambda: db_manager
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -957,7 +962,7 @@ def _make_callback_app(app):
     pool.acquire = _acquire
     db_manager = MagicMock()
     db_manager.credential_shared_pool.return_value = pool
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
+    app.dependency_overrides[get_db_optional] = lambda: db_manager
     return app, pool
 
 

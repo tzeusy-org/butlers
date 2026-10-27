@@ -27,10 +27,10 @@ class TestResolvedContact:
         assert ResolvedContact.__dataclass_params__.frozen
 
         fields = set(inspect.signature(ResolvedContact.__init__).parameters.keys()) - {"self"}
-        assert {"contact_id", "name", "roles", "entity_id"}.issubset(fields)
+        assert {"name", "roles", "entity_id"}.issubset(fields)
+        assert "contact_id" not in fields  # entity_id replaces the retired contact_id
 
         owner = ResolvedContact(
-            contact_id=uuid.uuid4(),
             name="Owner",
             roles=["owner"],
             entity_id=uuid.uuid4(),
@@ -38,7 +38,6 @@ class TestResolvedContact:
         assert "owner" in owner.roles
 
         no_entity = ResolvedContact(
-            contact_id=uuid.uuid4(),
             name="Linked",
             roles=[],
             entity_id=None,
@@ -53,20 +52,20 @@ class TestIdentityPreambleFormat:
         """Owner, known contact, and unknown sender preambles are bracket-enclosed with channel."""
         from butlers.identity import ResolvedContact, build_identity_preamble
 
-        cid, eid = uuid.uuid4(), uuid.uuid4()
-        owner = ResolvedContact(contact_id=cid, name="Owner", roles=["owner"], entity_id=eid)
+        eid = uuid.uuid4()
+        owner = ResolvedContact(name="Owner", roles=["owner"], entity_id=eid)
         p = build_identity_preamble(owner, "telegram")
         assert p.startswith("[Source: Owner") and p.endswith("]")
         assert f"entity_id: {eid}" in p and "via telegram" in p
 
         # Known contact
-        contact = ResolvedContact(contact_id=cid, name="Chloe", roles=[], entity_id=eid)
+        contact = ResolvedContact(name="Chloe", roles=[], entity_id=eid)
         pc = build_identity_preamble(contact, "email")
         assert "Chloe" in pc and "pending disambiguation" not in pc
 
         # Unknown sender
-        tcid, teid = uuid.uuid4(), uuid.uuid4()
-        pu = build_identity_preamble(None, "telegram", temp_contact_id=tcid, temp_entity_id=teid)
+        teid = uuid.uuid4()
+        pu = build_identity_preamble(None, "telegram", temp_entity_id=teid)
         assert "Unknown sender" in pu and "pending disambiguation" in pu
 
         # Minimal unknown sender
@@ -74,15 +73,13 @@ class TestIdentityPreambleFormat:
         assert "Unknown sender" in pm and "via discord" in pm
 
         # Owner without entity_id
-        owner_no_eid = ResolvedContact(
-            contact_id=cid, name="Owner", roles=["owner"], entity_id=None
-        )
+        owner_no_eid = ResolvedContact(name="Owner", roles=["owner"], entity_id=None)
         pne = build_identity_preamble(owner_no_eid, "telegram")
         assert "entity_id" not in pne
 
         # Channel via keyword across multiple channels
         for ch in ["telegram", "email", "discord", "whatsapp"]:
-            c = ResolvedContact(contact_id=uuid.uuid4(), name="T", roles=[], entity_id=None)
+            c = ResolvedContact(name="T", roles=[], entity_id=None)
             assert f"via {ch}" in build_identity_preamble(c, ch)
 
 
@@ -188,7 +185,6 @@ class TestOwnerBootstrap:
         from butlers.identity import ResolvedContact, build_identity_preamble
 
         owner_contact = ResolvedContact(
-            contact_id=uuid.uuid4(),
             name="Owner",
             roles=["owner"],
             entity_id=uuid.uuid4(),
@@ -256,12 +252,12 @@ class TestResolveOwnerChannelViaDefiner:
         assert contact.entity_id == entity_id
         assert is_primary is True
 
-        # The candidate array must include both the verbatim and telegram-prefixed forms.
+        # One typed universe includes both verbatim and prefixed handle forms.
         call = pool.fetchrow.await_args
         predicate, candidates = call.args[1], call.args[2]
-        assert predicate == "has-handle"
-        assert "206570151" in candidates
-        assert "telegram:206570151" in candidates
+        assert predicate == "owner-channel"
+        assert "has-handle:206570151" in candidates
+        assert "has-handle:telegram:206570151" in candidates
 
     async def test_no_match_returns_none(self):
         from unittest.mock import AsyncMock
@@ -296,3 +292,96 @@ class TestResolveOwnerChannelViaDefiner:
 
         result = await resolve_owner_channel_via_definer(pool, "telegram", "206570151")
         assert result is None
+
+
+class TestOwnerCorroborationPolicy:
+    """One shared policy governs all approval-gate channel resolution."""
+
+    async def test_direct_non_owner_is_authoritative(self):
+        from unittest.mock import AsyncMock, patch
+
+        from butlers.identity import (
+            ResolvedContact,
+            resolve_channel_contact_with_owner_corroboration,
+        )
+
+        direct = ResolvedContact(
+            name="External contact",
+            roles=["contact"],
+            entity_id=uuid.uuid4(),
+        )
+        owner_lookup = AsyncMock()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=direct),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=owner_lookup,
+            ),
+        ):
+            result = await resolve_channel_contact_with_owner_corroboration(
+                AsyncMock(), "email", "external@example.test"
+            )
+
+        assert result == direct
+        owner_lookup.assert_not_awaited()
+
+    async def test_owner_looking_direct_result_requires_definer_corroboration(self):
+        from unittest.mock import AsyncMock, patch
+
+        from butlers.identity import (
+            ResolvedContact,
+            resolve_channel_contact_with_owner_corroboration,
+        )
+
+        direct = ResolvedContact(
+            name="Owner-looking",
+            roles=["owner"],
+            entity_id=uuid.uuid4(),
+        )
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=direct),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            result = await resolve_channel_contact_with_owner_corroboration(
+                AsyncMock(), "telegram", "owner-looking"
+            )
+
+        assert result is None
+
+    async def test_schema_isolated_miss_accepts_only_definer_verified_owner(self):
+        from unittest.mock import AsyncMock, patch
+
+        from butlers.identity import (
+            ResolvedContact,
+            resolve_channel_contact_with_owner_corroboration,
+        )
+
+        verified_owner = ResolvedContact(
+            name=None,
+            roles=["owner"],
+            entity_id=uuid.uuid4(),
+        )
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(verified_owner, False)),
+            ),
+        ):
+            result = await resolve_channel_contact_with_owner_corroboration(
+                AsyncMock(), "email", "secondary-owner@example.test"
+            )
+
+        assert result == verified_owner

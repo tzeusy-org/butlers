@@ -69,6 +69,26 @@ a JSON diff. That is the same shape as the defect this guard exists to catch: a
 check credited with an answer it was never positioned to give. A removal earns
 its authority by having actually archived.
 
+A **later rewrite** also retires an older block's content. A ``## MODIFIED``
+block replaces the whole requirement, so when a later dated archive carries its
+own MODIFIED block for the same requirement, only the newest block is checked
+against the baseline. Supersession needs a strictly later date: blocks archived
+on the same day are all checked, whatever their directory suffixes sort as.
+Undated archive directories cannot be ordered and never supersede, or get
+superseded by, anything. Only a MODIFIED block supersedes; a later RENAMED block
+moves the header but rewrites nothing, so the older content must still land.
+
+Renamed capability homes
+------------------------
+An archived change may have written its deltas under a capability name that later became a
+different canonical directory (``education-mind-map`` is now ``module-education-mind-map``).
+``scripts/archived-capability-homes.json`` records those renames explicitly, one reviewed
+row per archived capability. It is consulted only when ``openspec/specs/<archived capability>/``
+does not exist, and the requirement name must then be present verbatim in the mapped spec;
+there is no fuzzy or global-name matching. A row whose target spec is missing, or whose
+archived capability still has its own spec, fails the whole run closed. When a later change
+moves a requirement's canonical home, it updates the row in the same PR.
+
 Baseline ratchet
 ----------------
 The pre-existing gaps mean this cannot be introduced as a hard gate, so
@@ -102,11 +122,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BASELINE_PATH = Path(__file__).resolve().parent / "archived-requirements-baseline.json"
+HOMES_NAME = "archived-capability-homes.json"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -118,6 +140,9 @@ from check_spec_overwrites import (  # noqa: E402
     parse_document,
     rename_map,
 )
+
+# Archive directories named ``YYYY-MM-DD-<change>`` carry their archive date.
+ARCHIVE_DATE = re.compile(r"^(\d{4}-\d{2}-\d{2})-")
 
 # Kind for "the requirement header itself never appeared in the baseline", as
 # opposed to the prose/scenario/clause kinds find_losses produces for a block
@@ -172,8 +197,67 @@ def build_rename_and_removal_index(
     return renames, removals
 
 
-def collect(root: Path) -> dict[str, list[Finding]]:
-    """Scan every archived change; return ``{change/spec/requirement: findings}``."""
+def archive_date(change_dir: Path) -> str | None:
+    match = ARCHIVE_DATE.match(change_dir.name)
+    return match.group(1) if match else None
+
+
+def latest_modified_dates(
+    archive_dir: Path, renames: dict[str, dict[str, str]]
+) -> dict[tuple[str, str], str]:
+    """``{(spec, requirement): newest archive date}`` over dated ``## MODIFIED`` blocks.
+
+    A MODIFIED block replaces the whole requirement, so a later archived block
+    legitimately overwrites an earlier one's content. Only dated archives take
+    part: an undated directory cannot be ordered, so it neither supersedes nor
+    is superseded.
+    """
+    newest: dict[tuple[str, str], str] = {}
+    for delta_file in sorted(archive_dir.glob("*/specs/*/spec.md")):
+        date = archive_date(delta_file.parents[2])
+        if date is None:
+            continue
+        spec = delta_file.parent.name
+        for requirement in requirements_under(delta_file.read_text("utf-8"), "MODIFIED"):
+            key = (spec, resolve_name(requirement, renames.get(spec, {})))
+            if date > newest.get(key, ""):
+                newest[key] = date
+    return newest
+
+
+def load_homes(path: Path) -> dict[str, str]:
+    """The reviewed ``{archived capability: current capability}`` map, or empty."""
+    if not path.exists():
+        return {}
+    return dict(json.loads(path.read_text("utf-8")))
+
+
+def home_errors(homes: dict[str, str], root: Path) -> list[str]:
+    """One message per map row that cannot be trusted; empty when every row is sound.
+
+    The map only ever redirects a lookup, so a row must point at a spec that exists
+    (``openspec/specs/<home>/spec.md``) and must name a capability whose own directory is
+    gone: a row for a capability that still has a canonical spec would silently shadow it.
+    """
+    specs_dir = root / "openspec" / "specs"
+    errors = []
+    for archived, home in sorted(homes.items()):
+        if (specs_dir / archived / "spec.md").exists():
+            errors.append(f'home row "{archived}": the capability still has its own spec')
+        if not (specs_dir / home / "spec.md").exists():
+            errors.append(
+                f'home row "{archived}" -> "{home}": openspec/specs/{home}/spec.md is missing'
+            )
+    return errors
+
+
+def collect(root: Path, homes: dict[str, str] | None = None) -> dict[str, list[Finding]]:
+    """Scan every archived change; return ``{change/spec/requirement: findings}``.
+
+    ``homes`` maps an archived capability whose spec directory no longer exists to the
+    capability that carries its requirements today (exact requirement names only).
+    """
+    homes = homes or {}
     specs_dir = root / "openspec" / "specs"
     changes_dir = root / "openspec" / "changes"
     archive_dir = changes_dir / "archive"
@@ -191,15 +275,26 @@ def collect(root: Path) -> dict[str, list[Finding]]:
     if not archive_dir.is_dir():
         return found
 
+    newest_modified = latest_modified_dates(archive_dir, renames)
+
     for change_dir in sorted(p for p in archive_dir.iterdir() if p.is_dir()):
+        date = archive_date(change_dir)
         for delta_file in sorted(change_dir.glob("specs/*/spec.md")):
             spec = delta_file.parent.name
             text = delta_file.read_text("utf-8")
-            baseline = baselines.get(spec, {})
+            # A capability that was renamed after archiving is looked up under its mapped
+            # current home, only when its own directory is gone.
+            baseline = baselines.get(spec) or (
+                baselines.get(homes[spec], {}) if spec in homes and spec not in baselines else {}
+            )
             spec_renames = renames.get(spec, {})
             spec_removals = removals.get(spec, set())
 
-            def landed(requirement: str) -> list[str] | None:
+            def landed(
+                requirement: str,
+                baseline: dict[str, list[str]] = baseline,
+                spec_renames: dict[str, str] = spec_renames,
+            ) -> list[str] | None:
                 """The baseline body for ``requirement``, or None if it is gone."""
                 return baseline.get(resolve_name(requirement, spec_renames))
 
@@ -212,6 +307,11 @@ def collect(root: Path) -> dict[str, list[Finding]]:
 
             for requirement, block_body in requirements_under(text, "MODIFIED").items():
                 if requirement in spec_removals:
+                    continue
+                newest = newest_modified.get((spec, resolve_name(requirement, spec_renames)))
+                if date is not None and newest is not None and newest > date:
+                    # A later archived MODIFIED block rewrote this requirement;
+                    # that block, not this one, is what the baseline must carry.
                     continue
                 baseline_body = landed(requirement)
                 key = f"{change_dir.name}/{spec}/{requirement}"
@@ -263,13 +363,30 @@ def main() -> int:
         help="Ratchet file of already-known gaps (default: %(default)s).",
     )
     parser.add_argument(
+        "--homes",
+        type=Path,
+        default=None,
+        help=(
+            "Map of renamed archived capabilities to their current spec "
+            f"(default: <root>/scripts/{HOMES_NAME})."
+        ),
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         help="Ignore the ratchet; any unlanded requirement fails.",
     )
     args = parser.parse_args()
 
-    found = collect(args.root)
+    homes = load_homes(args.homes or args.root / "scripts" / HOMES_NAME)
+    problems = home_errors(homes, args.root)
+    if problems:
+        print("Capability-home map is not sound (failing closed):")
+        for problem in problems:
+            print(f"  {problem}")
+        return 1
+
+    found = collect(args.root, homes)
     frozen = {} if args.strict else load_baseline(args.baseline)
 
     regressions: list[str] = []

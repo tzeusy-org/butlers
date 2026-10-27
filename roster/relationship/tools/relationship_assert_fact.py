@@ -38,6 +38,21 @@ Contract (Amendment 14 + spec §"Requirement: Central writer"):
    public signature (hardcoded to ``"relationship"``), and the dashboard API
    models reject trusted sources via a Pydantic field validator, so neither
    LLM sessions nor HTTP callers can spoof them.
+
+6. **Effective time (relationship-fact-effective-time)** — six optional
+   arguments carry when the relationship held (see
+   :mod:`butlers.tools.relationship.fact_temporal`). Omitted and ``None`` are
+   the same input. With none of them the call is *ordinary*: it targets the
+   default occurrence and preserves whatever packet that row already stores. A
+   non-null bound, precision or period id is an *explicit* packet for that
+   occurrence; ``corrects_fact_id`` selects a compare-and-swap *correction* of
+   one exact active row. Every version the writer inserts copies its packet
+   unchanged unless the call is an explicit correction, and ``validity`` never
+   derives from it. This is the **transition writer**: its targetless
+   ``ON CONFLICT DO NOTHING`` plus locked re-read works with the legacy
+   ``uq_ef_spo_active`` index, with both indexes, and with only the occurrence
+   index; and while the legacy index exists every temporal intent fails
+   ``temporal_cutover_pending`` before approval parking or any write.
 """
 
 from __future__ import annotations
@@ -45,6 +60,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -54,9 +70,21 @@ import asyncpg
 
 from butlers.core import entity_graph_edges
 from butlers.core.approvals_hooks import park_pending_action
+from butlers.core.fact_authority import FactWriteContext, current_fact_write_context
 from butlers.core.tool_call_capture import (
     get_current_approval_push_runtime,
     get_current_runtime_session_id,
+)
+from butlers.modules.approvals.execution_context import get_approval_execution_context
+from butlers.modules.memory.knowledge_gaps import close_matching_gaps
+from butlers.tools.relationship.fact_authority import (
+    IDENTITY_PREDICATES,
+    REPORT_COLUMNS,
+    locked_report,
+    report_sql_args,
+    should_hold_candidate,
+    stored_gap_authority,
+    stored_report,
 )
 from butlers.tools.relationship.fact_coverage import record_coverage
 from butlers.tools.relationship.fact_evidence import (
@@ -71,6 +99,25 @@ from butlers.tools.relationship.fact_evidence import (
 )
 from butlers.tools.relationship.fact_evidence import (
     validate_evidence as _validate_typed_evidence,
+)
+from butlers.tools.relationship.fact_temporal import (
+    CORRECTION_REQUIRED,
+    CORRECTION_STALE,
+    INVALID,
+    MUTATOR_UNSUPPORTED,
+    OCCURRENCE_AMBIGUOUS,
+    ORDINARY,
+    PACKET_COLUMNS,
+    UNKNOWN,
+    RequestMode,
+    TemporalError,
+    TemporalPacket,
+    TemporalRequest,
+    normalize_request,
+    parked_request,
+    require_temporal_admission,
+    temporal_bearing_sql,
+    wire_values,
 )
 
 logger = logging.getLogger(__name__)
@@ -268,6 +315,7 @@ class AssertOutcome(StrEnum):
     inserted = "inserted"  # brand-new active row
     unchanged = "unchanged"  # identical provenance — no write needed
     superseded = "superseded"  # old row retracted; new row inserted
+    candidate = "candidate"
     pending_approval = "pending_approval"  # owner carve-out triggered
 
 
@@ -361,12 +409,9 @@ async def validate_fact_fields_or_raise(
     Callers that assert a BATCH of facts inside one outer transaction (e.g.
     ``POST /entities``'s ``initial_facts`` loop) MUST pre-validate every fact
     in the batch with this function *before* starting that transaction.
-    Reason (bu-g27ib): :func:`park_pending_action` (the owner-push choke
-    point every parking fact routes through, bu-mda0r) writes its
-    ``pending_actions`` row -- and fires the owner push -- on its own
-    connection acquired from *pool*, independent of any caller-supplied
-    ``conn``/transaction, because the push path needs real ``pool.acquire()``
-    semantics. If an EARLIER fact in a batch parks (committing that row) and
+    Reason (bu-g27ib): :func:`park_pending_action` writes its action and
+    delivery intent in an independent transaction acquired from *pool*. If an
+    EARLIER fact in a batch parks (committing those rows) and
     a LATER fact in the same batch then raises ``ValueError`` (e.g. an
     unregistered predicate), rolling back the outer transaction does NOT
     undo the earlier park: the result is an orphaned ``pending_actions`` row
@@ -394,7 +439,10 @@ async def _create_pending_action(
     *,
     src: str,
     observed_at: datetime,
+    temporal_mode: RequestMode,
+    temporal_base_fact_id: uuid.UUID | None,
     dedup_match: dict[str, Any] | None = None,
+    fact_context: FactWriteContext | None = None,
     why: str | None = None,
     evidence: list[_EvidenceReference] | None = None,
 ) -> uuid.UUID:
@@ -414,9 +462,8 @@ async def _create_pending_action(
 
     Takes *pool* (not a caller-supplied ``conn``) because the actual insert
     routes through :func:`butlers.core.approvals_hooks.park_pending_action`,
-    the single choke point for PENDING inserts (bu-mda0r): it writes the row
-    AND attempts the owner-facing push in one call, and the push path needs
-    to acquire its own connection from a real pool (bu-g27ib). The dedup read
+    the single atomic admission point for PENDING inserts. It acquires its own
+    connection from a real pool (bu-g27ib). The dedup read
     has no transactional dependency on the caller's in-flight entity_facts
     write, so reading it from *pool* instead of the caller's ``conn`` is safe.
 
@@ -427,19 +474,44 @@ async def _create_pending_action(
     exemption, which is exactly the value an LLM session must never be able to
     supply (bu-vj46x). Keeping it server-side makes the replay read the source
     from a row only this function ever wrote.
+
+    *temporal_mode* and *temporal_base_fact_id* freeze how the parked temporal
+    packet was resolved (and against which active version) so approved replay
+    can refuse a stale one. A pending match must share them: the same canonical
+    packet resolved against a different base is a different question.
     """
+    if fact_context is not None and (
+        fact_context.original_entity_id is not None or fact_context.authority == "owner_device"
+    ):
+        async with pool.acquire() as capture_conn, capture_conn.transaction():
+            fact_context = await locked_report(
+                capture_conn,
+                fact_context,
+                subject=uuid.UUID(str(tool_args["subject"])),
+                object=tool_args["object"],
+                object_kind=tool_args["object_kind"],
+                src=src,
+            )
+
     if dedup_match is not None:
         existing = await pool.fetchval(
             """
-            SELECT id FROM pending_actions
-             WHERE tool_name = $1
-               AND status   = 'pending'
-               AND tool_args @> $2::jsonb
-             ORDER BY requested_at ASC
+            SELECT pa.id FROM pending_actions pa
+              JOIN relationship.fact_approval_context ctx ON ctx.action_id = pa.id
+             WHERE pa.tool_name = $1
+               AND pa.status   = 'pending'
+               AND pa.tool_args @> $2::jsonb
+               AND ctx.temporal_request_mode IS NOT DISTINCT FROM $3
+               AND ctx.temporal_base_fact_id IS NOT DISTINCT FROM $4
+               AND ctx.frozen_report IS NOT DISTINCT FROM $5::jsonb
+             ORDER BY pa.requested_at ASC
              LIMIT 1
             """,
             tool_name,
             dedup_match,
+            temporal_mode.value,
+            temporal_base_fact_id,
+            fact_context.to_record() if fact_context else None,
         )
         if existing is not None:
             return existing
@@ -461,7 +533,15 @@ async def _create_pending_action(
     # serializing double-encodes into a jsonb-typed STRING (bu-cymc4/bu-bstqu).
     safe_tool_args = json.loads(json.dumps(tool_args, default=str))
 
-    await _record_approval_context(pool, action_id=action_id, src=src, observed_at=observed_at)
+    await _record_approval_context(
+        pool,
+        action_id=action_id,
+        src=src,
+        observed_at=observed_at,
+        temporal_mode=temporal_mode,
+        temporal_base_fact_id=temporal_base_fact_id,
+        fact_context=fact_context,
+    )
 
     await park_pending_action(
         pool,
@@ -486,6 +566,9 @@ async def _record_approval_context(
     action_id: uuid.UUID,
     src: str,
     observed_at: datetime,
+    temporal_mode: RequestMode,
+    temporal_base_fact_id: uuid.UUID | None,
+    fact_context: FactWriteContext | None = None,
 ) -> None:
     """Record the server-written provenance of one parked fact write.
 
@@ -495,14 +578,30 @@ async def _record_approval_context(
     """
     await pool.execute(
         """
-        INSERT INTO relationship.fact_approval_context (action_id, src, observed_at)
-        VALUES ($1, $2, $3)
+        INSERT INTO relationship.fact_approval_context (
+            action_id, src, observed_at, temporal_request_mode, temporal_base_fact_id, frozen_report
+        )
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
         ON CONFLICT (action_id) DO NOTHING
         """,
         action_id,
         src,
         observed_at,
+        temporal_mode.value,
+        temporal_base_fact_id,
+        fact_context.to_record() if fact_context else None,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _FrozenResolution:
+    """The active version an approved ordinary request was resolved against.
+
+    ``None`` base means the default occurrence was empty when parked, so replay
+    may only create unknown there (or find the identical unknown row).
+    """
+
+    base_fact_id: uuid.UUID | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -521,6 +620,13 @@ class _ApprovedAction:
     observed_at: datetime | None
     evidence: list[_EvidenceReference]
     session_id: uuid.UUID | None
+    # The parked canonical temporal request, its exact wire form, and the
+    # frozen resolution replay must still observe (None for a pre-temporal
+    # action, which keeps plain ordinary semantics).
+    temporal: TemporalRequest
+    temporal_wire: dict[str, str | None]
+    frozen: _FrozenResolution | None
+    fact_context: FactWriteContext
 
 
 async def _resolve_approved_action(
@@ -549,7 +655,9 @@ async def _resolve_approved_action(
     row = await conn.fetchrow(
         """
         SELECT pa.tool_name, pa.tool_args, pa.status, pa.evidence, pa.session_id,
-               ctx.src AS ctx_src, ctx.observed_at AS ctx_observed_at
+               ctx.src AS ctx_src, ctx.observed_at AS ctx_observed_at,
+               ctx.temporal_request_mode, ctx.temporal_base_fact_id,
+               ctx.frozen_report, ctx.decision_report
         FROM pending_actions pa
         LEFT JOIN relationship.fact_approval_context ctx ON ctx.action_id = pa.id
         WHERE pa.id = $1
@@ -582,7 +690,54 @@ async def _resolve_approved_action(
             f"approval_action_id {action_id} was approved for a different triple; "
             "the write does not match what the owner approved."
         )
+    execution = get_approval_execution_context(
+        tool_name="relationship_assert_fact", tool_args=stored_args
+    )
+    if execution is None or execution.action_id != action_id:
+        raise ValueError("fact replay requires the real bound approval executor")
+    report_data = _as_json_object(row["frozen_report"])
+    report = (
+        FactWriteContext.from_record(report_data)
+        if report_data
+        else FactWriteContext(None, preserve=True)
+    )
+    decision_data = _as_json_object(row["decision_report"])
+    if report_data and not decision_data:
+        raise ValueError("fresh fact approval has no admitted owner decision lineage")
+    if decision_data:
+        from dataclasses import replace
 
+        from butlers.modules.approvals.execution_context import approval_tool_args_digest
+
+        if decision_data.get("action_id") != str(action_id) or decision_data.get(
+            "tool_args_digest"
+        ) != approval_tool_args_digest(stored_args):
+            raise ValueError("fact confirmation does not match the actual stored approval")
+        if decision_data.get("confirmation_source") == "standing_rule":
+            from butlers.tools.relationship.fact_authority import approved_rule_confirmation
+
+            decision = await approved_rule_confirmation(conn, action_id, decision_data)
+        else:
+            try:
+                event_id = uuid.UUID(decision_data["approval_event_id"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("fact confirmation has no recorded approval event") from exc
+            if not await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM approval_events WHERE event_id=$1 "
+                "AND action_id=$2 AND event_type='action_approved')",
+                event_id,
+                action_id,
+            ):
+                raise ValueError("fact confirmation does not match the recorded approval event")
+            decision = FactWriteContext.from_record(decision_data)
+        report = replace(
+            report,
+            confirmation_entity_id=decision.confirmation_entity_id,
+            confirmation_original_entity_id=decision.confirmation_original_entity_id,
+            confirmed_at=decision.confirmed_at,
+            confirmation_source=decision.confirmation_source,
+            preserve=True,
+        )
     stored_src = row["ctx_src"]
     if not isinstance(stored_src, str) or not stored_src:
         raise ValueError(
@@ -590,12 +745,18 @@ async def _resolve_approved_action(
             "the write cannot be attributed."
         )
 
+    mode = row["temporal_request_mode"]
+    temporal, temporal_wire = parked_request(stored_args, mode)
     return _ApprovedAction(
         action_id=action_id,
         src=stored_src,
         observed_at=row["ctx_observed_at"],
         evidence=normalize_evidence(_as_json_value(row["evidence"])),
         session_id=coerce_session_id(row["session_id"]),
+        temporal=temporal,
+        temporal_wire=temporal_wire,
+        frozen=None if mode is None else _FrozenResolution(row["temporal_base_fact_id"]),
+        fact_context=report,
     )
 
 
@@ -622,6 +783,68 @@ def _as_json_object(value: Any) -> dict[str, Any]:
 _MAX_UPSERT_ATTEMPTS = 5
 
 
+async def _lock_fact_entities(
+    conn: asyncpg.Connection,
+    subject: uuid.UUID,
+    object: str | None = None,
+    object_kind: str = "literal",
+) -> None:
+    """Lock the entity rows a fact write references, before any fact-row lock.
+
+    Lock order (bu-ab0zys): every ``relationship.entity_facts`` insert or
+    replacement takes ``public.entities`` rows first, in ascending id order,
+    and only then fact rows -- the order ``merge_entity_pair`` and
+    ``contact_merge`` already use (entities ``FOR UPDATE``, then facts). Without
+    it a replacement insert took the fact row first and the entity second (the
+    FK's implicit ``FOR KEY SHARE``), so a concurrent merge could deadlock
+    against it.
+
+    ``FOR KEY SHARE`` is the FK's own lock: it waits for a merge holding the
+    rows ``FOR UPDATE`` and blocks a merge from starting, but never conflicts
+    with another writer. The subject and, for ``object_kind='entity'``, the
+    object entity are locked; a missing entity row simply locks nothing.
+
+    Locking is all this does. A write that waits for a merge still proceeds
+    against the tombstoned source afterwards (``metadata.merged_into``); whether
+    the writer should refuse or follow the merge is bu-gm93xc.
+
+    Retract/verify-only paths write no FK column and take no entity lock, so
+    they cannot join the cycle. Must run inside the caller's transaction.
+    """
+    ids = {subject}
+    if object_kind == "entity" and object is not None:
+        try:
+            ids.add(uuid.UUID(object))
+        except ValueError:
+            pass  # the insert's own validation reports a malformed object id
+    await _lock_fact_entities_batch(conn, ids)
+
+
+async def _lock_fact_entities_batch(conn: asyncpg.Connection, ids: Iterable[uuid.UUID]) -> None:
+    """``FOR KEY SHARE`` every entity row in *ids* at once, in ascending id order.
+
+    One writer call locks only its own subject and object, so a caller that
+    makes several writer calls in ONE transaction (``promote_entity``'s
+    ``initial_facts`` loop) would otherwise lock their entities in body order
+    across calls, which a concurrent merge of two of them can deadlock against
+    (bu-7s41je). Such a caller takes every entity it will write against here,
+    once, before its first entity or fact lock; each per-call
+    :func:`_lock_fact_entities` then re-takes rows it already holds.
+    """
+    ordered = sorted(set(ids))
+    if not ordered:
+        return
+    await conn.execute(
+        """
+        SELECT id FROM public.entities
+        WHERE id = ANY($1::uuid[])
+        ORDER BY id
+        FOR KEY SHARE
+        """,
+        ordered,
+    )
+
+
 async def _insert_active_fact(
     conn: asyncpg.Connection,
     *,
@@ -637,38 +860,54 @@ async def _insert_active_fact(
     verified: bool,
     primary: bool | None,
     packet: EvidencePacket,
+    temporal: TemporalPacket = UNKNOWN,
+    fact_context: FactWriteContext | None = None,
+    validity: str = "active",
 ) -> uuid.UUID | None:
     """Insert a new ACTIVE row, returning its id, or ``None`` on conflict.
 
-    Uses ``ON CONFLICT ... DO NOTHING`` so a concurrent writer that already holds
-    the active (subject, predicate, object) slot is NEVER mutated in place —
-    crucially, ``conf`` and ``observed_at`` on the existing active row are left
-    untouched (spec: conf is immutable, superseded rows keep their observed_at).
-    A ``None`` return signals the caller to re-read and route the collision
+    Uses a TARGETLESS ``ON CONFLICT DO NOTHING`` so a concurrent writer that
+    already holds the active slot is NEVER mutated in place — crucially,
+    ``conf`` and ``observed_at`` on the existing active row are left untouched
+    (spec: conf is immutable, superseded rows keep their observed_at). A
+    ``None`` return signals the caller to re-read and route the collision
     through normal supersession.
+
+    Targetless on purpose (relationship-fact-effective-time): it names no
+    inference index, so the same statement is valid while the legacy
+    ``uq_ef_spo_active`` exists, while both it and the occurrence index exist,
+    and after a cutover leaves only the occurrence index.
 
     *packet* supplies the assertion provenance stamped onto the row
     (``assert_origin``/``assert_session_id``/``assert_action_id``): how this row
     came to be active, which runtime session authored it, and which approved
     action authorised it. It is written with the row, not after it, so a fact can
-    never exist with its provenance missing.
+    never exist with its provenance missing. *temporal* is the row's effective
+    packet, likewise immutable once written.
     """
+    if fact_context is None:
+        # Compatibility for private internal callers; a caller boolean never
+        # supplies content authority, even at this lower-level insertion seam.
+        fact_context = current_fact_write_context()
+        verified = fact_context.verified
     return await conn.fetchval(
-        """
+        f"""
         INSERT INTO relationship.entity_facts (
             id, subject, predicate, object, object_kind,
             src, conf, last_seen, observed_at, weight, verified, "primary",
             validity, created_at, updated_at,
-            assert_origin, assert_session_id, assert_action_id
+            assert_origin, assert_session_id, assert_action_id,
+            {PACKET_COLUMNS}, {REPORT_COLUMNS}
         )
         VALUES (
             gen_random_uuid(), $1, $2, $3, $4,
             $5, $6, $7, $8, $9, $10, $11,
-            'active', now(), now(),
-            $12, $13, $14
+            $20, now(), now(),
+            $12, $13, $14,
+            $15, $16, $17, $18, $19,
+            $21, $22, $23, $24, $25, $26, $27, $28
         )
-        ON CONFLICT (subject, predicate, object) WHERE validity = 'active'
-        DO NOTHING
+        ON CONFLICT DO NOTHING
         RETURNING id
         """,
         subject,
@@ -685,7 +924,118 @@ async def _insert_active_fact(
         packet.origin,
         packet.session_id,
         packet.action_id,
+        *temporal.sql_args(),
+        validity,
+        *report_sql_args(fact_context),
     )
+
+
+#: The active row of one effective occurrence (NULL period = default occurrence).
+_ACTIVE_OCCURRENCE_SQL = f"""
+    SELECT id, src, conf, verified, last_seen, {PACKET_COLUMNS}, {REPORT_COLUMNS}
+    FROM relationship.entity_facts
+    WHERE subject   = $1
+      AND predicate = $2
+      AND object    = $3
+      AND validity  = 'active'
+      AND effective_period_id IS NOT DISTINCT FROM $4
+"""
+
+
+def _same_assertion_fields(
+    row: asyncpg.Record,
+    *,
+    src: str,
+    conf: float,
+    verified: bool,
+    last_seen: datetime | None,
+) -> bool:
+    """The non-temporal provenance a re-assertion is compared on."""
+    return (
+        row["src"] == src
+        and row["conf"] == conf
+        and bool(row["verified"]) == verified
+        and row["last_seen"] == last_seen
+    )
+
+
+async def _active_occurrence(
+    conn: asyncpg.Connection,
+    *,
+    subject: uuid.UUID,
+    predicate: str,
+    object: str,
+    period_id: uuid.UUID | None,
+) -> asyncpg.Record | None:
+    return await conn.fetchrow(_ACTIVE_OCCURRENCE_SQL, subject, predicate, object, period_id)
+
+
+async def _supersede_and_replace(
+    conn: asyncpg.Connection,
+    *,
+    old_id: uuid.UUID,
+    temporal: TemporalPacket,
+    write: dict[str, Any],
+) -> uuid.UUID | None:
+    """Supersede *old_id* and insert its replacement carrying *temporal*.
+
+    Returns the replacement id, ``None`` when *old_id* was no longer active
+    (another writer superseded it first), or raises ``_SlotTaken`` when a
+    competing writer filled the occurrence between our UPDATE and INSERT.
+    """
+    status = await conn.execute(
+        """
+        UPDATE relationship.entity_facts
+        SET validity   = 'superseded',
+            updated_at = now()
+        WHERE id = $1
+          AND validity = 'active'
+        """,
+        old_id,
+    )
+    if status == "UPDATE 0":
+        return None
+
+    if write["object_kind"] == "entity":
+        # RFC 0031 (bu-8cdl1.8 Slice 2): the superseded row is no longer
+        # current -- its projected edge must go with it in the same
+        # transaction, or a supersession would leave two live edges for the
+        # same conceptual relationship.
+        await entity_graph_edges.delete_entity_graph_edge(
+            conn,
+            source_schema="relationship",
+            source_table="entity_facts",
+            source_id=old_id,
+        )
+
+    new_id = await _insert_active_fact(conn, **write, temporal=temporal)
+    if new_id is None:
+        raise _SlotTaken
+    await carry_evidence_forward(conn, from_fact_id=old_id, to_fact_id=new_id)
+    await persist_evidence(conn, fact_id=new_id, packet=write["packet"])
+    await _project(conn, fact_id=new_id, write=write)
+    return new_id
+
+
+class _SlotTaken(Exception):
+    """A competing writer filled the occurrence slot we just vacated."""
+
+
+async def _project(conn: asyncpg.Connection, *, fact_id: uuid.UUID, write: dict[str, Any]) -> None:
+    if write["object_kind"] == "entity":
+        # RFC 0031 (bu-8cdl1.8 Slice 2): project the entity-to-entity edge
+        # in the same transaction as the fact write -- a projection
+        # failure here fails this whole write, so the graph can never
+        # silently diverge from relationship.entity_facts.
+        await entity_graph_edges.project_entity_graph_edge(
+            conn,
+            source_schema="relationship",
+            source_table="entity_facts",
+            source_id=fact_id,
+            subject_entity_id=write["subject"],
+            predicate=write["predicate"],
+            object_entity_id=uuid.UUID(write["object"]),
+        )
 
 
 async def _upsert_fact(
@@ -703,6 +1053,9 @@ async def _upsert_fact(
     verified: bool,
     primary: bool | None,
     packet: EvidencePacket,
+    temporal: TemporalRequest = ORDINARY,
+    frozen: _FrozenResolution | None = None,
+    fact_context: FactWriteContext | None = None,
 ) -> AssertResult:
     """Perform the idempotency / supersession logic on *conn*.
 
@@ -722,40 +1075,144 @@ async def _upsert_fact(
     Concurrency contract (spec: conf immutable, observed_at preserved): every
     write goes through ``INSERT ... ON CONFLICT DO NOTHING``. We NEVER issue an
     in-place ``DO UPDATE`` that would overwrite ``conf``/``observed_at`` on an
-    existing active row. When the unique active-slot index rejects our insert
+    existing active row. When a unique active-slot index rejects our insert
     (another writer holds the slot), we re-read and retry, so the collision is
     resolved by normal supersession — the prior active row is marked
     ``superseded`` (keeping its own ``conf``/``observed_at``) before a fresh
     active row is inserted.
+
+    Effective time: idempotency and supersession are scoped to one effective
+    occurrence. An *ordinary* request (no temporal intent) targets the default
+    occurrence and resolves its packet from the stored row, so a known packet
+    is compared as-is and copied into any provenance replacement, never cleared.
+    An *explicit* request whose packet differs from the occupied occurrence is
+    refused (``temporal_correction_required``) rather than reinterpreted. A
+    *correction* is delegated to :func:`_correct_fact`. *frozen* is set for an
+    approved ordinary replay and must still hold (see :class:`_FrozenResolution`).
     """
-    for _ in range(_MAX_UPSERT_ATTEMPTS):
-        # 1. Check for an existing active row with the same (subject, predicate, object).
-        existing = await conn.fetchrow(
-            """
-            SELECT id, src, conf, verified, last_seen
-            FROM relationship.entity_facts
-            WHERE subject   = $1
-              AND predicate = $2
-              AND object    = $3
-              AND validity  = 'active'
-            """,
-            subject,
-            predicate,
-            object,
+    if temporal.mode is RequestMode.correction:
+        selected = await conn.fetchrow(
+            f"SELECT {REPORT_COLUMNS} FROM relationship.entity_facts WHERE id=$1",
+            temporal.corrects_fact_id,
         )
+        if selected is not None:
+            fact_context = stored_report(selected)
+    fact_context = await locked_report(
+        conn,
+        fact_context or current_fact_write_context(),
+        subject=subject,
+        object=object,
+        object_kind=object_kind,
+        src=src,
+    )
+    if predicate in IDENTITY_PREDICATES:
+        from butlers.tools.relationship.identity_slots import lock_identity_slot
+
+        await lock_identity_slot(conn, predicate, object, subject)
+    verified = fact_context.verified
+
+    write: dict[str, Any] = dict(
+        subject=subject,
+        predicate=predicate,
+        object=object,
+        object_kind=object_kind,
+        src=src,
+        conf=conf,
+        last_seen=last_seen,
+        observed_at=observed_at,
+        weight=weight,
+        verified=verified,
+        primary=primary,
+        packet=packet,
+        fact_context=fact_context,
+    )
+    if temporal.mode is RequestMode.correction:
+        return await _correct_fact(conn, request=temporal, write=write)
+    if await should_hold_candidate(conn, subject, predicate, fact_context):
+        existing = await _active_occurrence(
+            conn,
+            subject=subject,
+            predicate=predicate,
+            object=object,
+            period_id=temporal.packet.period_id,
+        )
+        if frozen is not None and temporal.mode is RequestMode.ordinary:
+            _verify_frozen_ordinary(existing, frozen)
+        resolved = temporal.packet
+        if existing is not None:
+            stored = TemporalPacket.from_row(existing)
+            if temporal.mode is RequestMode.explicit and stored != temporal.packet:
+                raise TemporalError(CORRECTION_REQUIRED, "active occurrence has a different packet")
+            if temporal.mode is RequestMode.ordinary:
+                resolved = stored
+        return await _upsert_candidate(
+            conn,
+            write,
+            resolved,
+            request_mode=temporal.mode,
+            active_packet=existing is not None,
+        )
+
+    period_id = temporal.packet.period_id
+    for _ in range(_MAX_UPSERT_ATTEMPTS):
+        # 1. Read the active row of this occurrence, if any.
+        existing = await _active_occurrence(
+            conn, subject=subject, predicate=predicate, object=object, period_id=period_id
+        )
+        if frozen is not None and temporal.mode is RequestMode.ordinary:
+            _verify_frozen_ordinary(existing, frozen)
 
         if existing is not None:
             old_id: uuid.UUID = existing["id"]
+            stored = TemporalPacket.from_row(existing)
+            if temporal.mode is RequestMode.explicit and stored != temporal.packet:
+                raise TemporalError(
+                    CORRECTION_REQUIRED,
+                    f"occurrence already holds a different effective packet on fact {old_id}; "
+                    "pass corrects_fact_id to replace it, or a new effective_period_id for "
+                    "a repeated period.",
+                )
+
+            if (
+                existing["content_authority"] is None
+                and fact_context.authority == "system"
+                and not fact_context.preserve
+                and _same_assertion_fields(
+                    existing,
+                    src=src,
+                    conf=conf,
+                    verified=existing["verified"],
+                    last_seen=last_seen,
+                )
+            ):
+                # Exact internal reobservation preserves the legacy unknown
+                # report. It neither backfills authority nor invents a version.
+                await persist_evidence(conn, fact_id=old_id, packet=packet)
+                return AssertResult(outcome=AssertOutcome.unchanged, fact_id=old_id)
+
+            if fact_context.preserve:
+                from dataclasses import replace
+
+                selected_report = stored_report(existing)
+                if selected_report.live_entity_id is None:
+                    fact_context = replace(fact_context, live_entity_id=None)
+                if not fact_context.confirmed_at:
+                    fact_context = selected_report
+                write["fact_context"] = fact_context
+                write["verified"] = fact_context.verified
+                verified = fact_context.verified
+            elif (
+                predicate in IDENTITY_PREDICATES
+                and existing["verified"]
+                and not fact_context.verified
+            ):
+                # An unconfirmed new report cannot replace an owner-active row.
+                return await _upsert_candidate(conn, write, stored)
 
             # 2. Compare provenance fields to detect supersession.
-            prov_changed = (
-                existing["src"] != src
-                or existing["conf"] != conf
-                or bool(existing["verified"]) != verified
-                or existing["last_seen"] != last_seen
-            )
-
-            if not prov_changed:
+            if _same_assertion_fields(
+                existing, src=src, conf=conf, verified=verified, last_seen=last_seen
+            ) and _same_report(existing, fact_context):
                 # Idempotent on the FACT: same identity + same provenance, so no
                 # new row. The evidence packet is still appended — a second
                 # source citing a reason for an already-known fact is new
@@ -765,114 +1222,216 @@ async def _upsert_fact(
                 return AssertResult(outcome=AssertOutcome.unchanged, fact_id=old_id)
 
             # 3. Supersession: retract the specific old row we just read, then
-            #    insert the replacement. The UPDATE is guarded on the row id AND
-            #    validity='active' so a racing supersession of the same row only
-            #    succeeds once; if we lose that race, rowcount is 0 and we retry.
-            status = await conn.execute(
-                """
-                UPDATE relationship.entity_facts
-                SET validity   = 'superseded',
-                    updated_at = now()
-                WHERE id = $1
-                  AND validity = 'active'
-                """,
-                old_id,
-            )
-            if status == "UPDATE 0":
-                # Another writer already superseded this row out from under us.
-                # Re-read and start over so we supersede the current active row.
-                continue
-
-            if object_kind == "entity":
-                # RFC 0031 (bu-8cdl1.8 Slice 2): the superseded row is no
-                # longer current -- its projected edge must go with it in the
-                # same transaction, or a supersession would leave two live
-                # edges for the same conceptual relationship.
-                await entity_graph_edges.delete_entity_graph_edge(
-                    conn,
-                    source_schema="relationship",
-                    source_table="entity_facts",
-                    source_id=old_id,
+            #    insert the replacement carrying the STORED effective packet.
+            #    The UPDATE is guarded on the row id AND validity='active' so a
+            #    racing supersession of the same row only succeeds once; if we
+            #    lose that race we re-read and retry.
+            try:
+                new_id = await _supersede_and_replace(
+                    conn, old_id=old_id, temporal=stored, write=write
                 )
-
-            new_id = await _insert_active_fact(
-                conn,
-                subject=subject,
-                predicate=predicate,
-                object=object,
-                object_kind=object_kind,
-                src=src,
-                conf=conf,
-                last_seen=last_seen,
-                observed_at=observed_at,
-                weight=weight,
-                verified=verified,
-                primary=primary,
-                packet=packet,
-            )
-            if new_id is None:
+            except _SlotTaken:
                 # A competing writer slipped a new active row into the slot
                 # between our UPDATE and our INSERT. We have already correctly
                 # superseded the row we observed; loop to supersede theirs too
                 # rather than overwriting it in place.
                 continue
-            await carry_evidence_forward(conn, from_fact_id=old_id, to_fact_id=new_id)
-            await persist_evidence(conn, fact_id=new_id, packet=packet)
-            if object_kind == "entity":
-                await entity_graph_edges.project_entity_graph_edge(
-                    conn,
-                    source_schema="relationship",
-                    source_table="entity_facts",
-                    source_id=new_id,
-                    subject_entity_id=subject,
-                    predicate=predicate,
-                    object_entity_id=uuid.UUID(object),
-                )
+            if new_id is None:
+                continue
             return AssertResult(outcome=AssertOutcome.superseded, fact_id=new_id)
 
         # 4. No existing active row → insert. DO NOTHING (never DO UPDATE) so a
         #    concurrent writer's active row is never mutated in place; on conflict
         #    we re-read and route the collision through supersession above.
-        new_id = await _insert_active_fact(
-            conn,
-            subject=subject,
-            predicate=predicate,
-            object=object,
-            object_kind=object_kind,
-            src=src,
-            conf=conf,
-            last_seen=last_seen,
-            observed_at=observed_at,
-            weight=weight,
-            verified=verified,
-            primary=primary,
-            packet=packet,
-        )
+        #    An ordinary request creates the unknown default occurrence.
+        new_id = await _insert_active_fact(conn, **write, temporal=temporal.packet)
         if new_id is None:
             # Lost the insert race: an active row now exists. Re-read so we either
             # report `unchanged` (identical provenance) or supersede it.
             continue
         await persist_evidence(conn, fact_id=new_id, packet=packet)
-        if object_kind == "entity":
-            # RFC 0031 (bu-8cdl1.8 Slice 2): project the entity-to-entity edge
-            # in the same transaction as the fact write -- a projection
-            # failure here fails this whole write, so the graph can never
-            # silently diverge from relationship.entity_facts.
-            await entity_graph_edges.project_entity_graph_edge(
-                conn,
-                source_schema="relationship",
-                source_table="entity_facts",
-                source_id=new_id,
-                subject_entity_id=subject,
-                predicate=predicate,
-                object_entity_id=uuid.UUID(object),
-            )
+        await _project(conn, fact_id=new_id, write=write)
         return AssertResult(outcome=AssertOutcome.inserted, fact_id=new_id)
 
     raise RuntimeError(
         "relationship_assert_fact: exhausted supersession retries under contention "
         f"for (subject={subject}, predicate={predicate}, object={object})."
     )
+
+
+def _verify_frozen_ordinary(existing: asyncpg.Record | None, frozen: _FrozenResolution) -> None:
+    """Refuse an approved ordinary replay whose resolved occurrence has moved on."""
+    if frozen.base_fact_id is not None:
+        if existing is None or existing["id"] != frozen.base_fact_id:
+            raise TemporalError(
+                CORRECTION_STALE,
+                f"the approved write preserved fact {frozen.base_fact_id}, which is no "
+                "longer the active default occurrence.",
+            )
+    elif existing is not None and TemporalPacket.from_row(existing).is_temporal_bearing:
+        raise TemporalError(
+            CORRECTION_STALE,
+            "the approved write expected an empty or unknown default occurrence, but "
+            f"fact {existing['id']} now holds a known effective packet.",
+        )
+
+
+async def _correct_fact(
+    conn: asyncpg.Connection,
+    *,
+    request: TemporalRequest,
+    write: dict[str, Any],
+) -> AssertResult:
+    """Compare-and-swap one exact active version to a complete desired packet.
+
+    The named row is locked ``FOR UPDATE``. If it is still active it is
+    superseded (keeping its own packet) and one replacement with the desired
+    packet, the same occurrence id and the carried-forward evidence becomes
+    active. Of two concurrent corrections naming the same row, the one that
+    locks it while active and commits first wins; the other re-reads it as
+    superseded and fails stale before its first write. An exact retry of an
+    already-applied correction returns the matching successor as unchanged.
+    """
+    target_id = request.corrects_fact_id
+    target = await conn.fetchrow(
+        f"""
+        SELECT id, subject, predicate, object, validity,
+               src, conf, verified, last_seen, {PACKET_COLUMNS}, {REPORT_COLUMNS}
+        FROM relationship.entity_facts
+        WHERE id = $1
+        FOR UPDATE
+        """,
+        target_id,
+    )
+    if target is None or (target["subject"], target["predicate"], target["object"]) != (
+        write["subject"],
+        write["predicate"],
+        write["object"],
+    ):
+        raise TemporalError(
+            INVALID,
+            f"corrects_fact_id {target_id} does not name a fact of this subject, "
+            "predicate and object.",
+        )
+    desired = _correction_packet(request, target)
+    from dataclasses import replace
+
+    selected_report = stored_report(target)
+    if write["fact_context"].live_entity_id is None:
+        selected_report = replace(selected_report, live_entity_id=None)
+    write["fact_context"] = selected_report
+    write["verified"] = write["fact_context"].verified
+    fields = {k: write[k] for k in ("src", "conf", "verified", "last_seen")}
+    if target["validity"] == "active":
+        if TemporalPacket.from_row(target) == desired and _same_assertion_fields(target, **fields):
+            await persist_evidence(conn, fact_id=target_id, packet=write["packet"])
+            return AssertResult(outcome=AssertOutcome.unchanged, fact_id=target_id)
+        try:
+            new_id = await _supersede_and_replace(
+                conn, old_id=target_id, temporal=desired, write=write
+            )
+        except _SlotTaken:
+            new_id = None
+        if new_id is None:
+            raise TemporalError(
+                CORRECTION_STALE,
+                f"fact {target_id} changed while it was being corrected; re-read and retry.",
+            )
+        return AssertResult(outcome=AssertOutcome.superseded, fact_id=new_id)
+
+    if target["validity"] == "superseded":
+        successor = await _active_occurrence(
+            conn,
+            subject=write["subject"],
+            predicate=write["predicate"],
+            object=write["object"],
+            period_id=desired.period_id,
+        )
+        if (
+            successor is not None
+            and TemporalPacket.from_row(successor) == desired
+            and _same_assertion_fields(successor, **fields)
+        ):
+            await persist_evidence(conn, fact_id=successor["id"], packet=write["packet"])
+            return AssertResult(outcome=AssertOutcome.unchanged, fact_id=successor["id"])
+
+    raise TemporalError(
+        CORRECTION_STALE,
+        f"fact {target_id} is no longer the active version of its occurrence; read the "
+        "current active fact and correct that id instead.",
+    )
+
+
+def _correction_packet(request: TemporalRequest, target: asyncpg.Record) -> TemporalPacket:
+    """The complete desired replacement: inherit, or match, the target's occurrence."""
+    occurrence = target["effective_period_id"]
+    supplied = request.packet.period_id
+    if supplied is not None and supplied != occurrence:
+        raise TemporalError(
+            INVALID,
+            "effective_period_id must match the corrected fact's occurrence; a different "
+            "period is a repeated occurrence, not a correction.",
+        )
+    return request.packet.with_period(occurrence)
+
+
+async def _resolve_for_parking(
+    conn: asyncpg.Connection,
+    request: TemporalRequest,
+    *,
+    subject: uuid.UUID,
+    predicate: str,
+    object: str,
+) -> tuple[TemporalPacket, uuid.UUID | None]:
+    """Resolve a request against current state before it is parked.
+
+    Returns the exact packet the owner will review and the active version it
+    was resolved against. An ordinary request over a known default occurrence
+    parks that stored packet rather than an all-null wire shape. Requests that
+    could never execute (a stale correction target, an explicit packet that
+    conflicts with its occupied occurrence) are refused here, before parking.
+    """
+    if request.mode is RequestMode.correction:
+        target = await conn.fetchrow(
+            f"""
+            SELECT id, subject, predicate, object, validity, {PACKET_COLUMNS}
+            FROM relationship.entity_facts WHERE id = $1
+            """,
+            request.corrects_fact_id,
+        )
+        if target is None or (target["subject"], target["predicate"], target["object"]) != (
+            subject,
+            predicate,
+            object,
+        ):
+            raise TemporalError(
+                INVALID,
+                f"corrects_fact_id {request.corrects_fact_id} does not name a fact of this "
+                "subject, predicate and object.",
+            )
+        if target["validity"] != "active":
+            raise TemporalError(
+                CORRECTION_STALE, f"fact {request.corrects_fact_id} is no longer active."
+            )
+        return _correction_packet(request, target), target["id"]
+
+    existing = await _active_occurrence(
+        conn,
+        subject=subject,
+        predicate=predicate,
+        object=object,
+        period_id=request.packet.period_id,
+    )
+    if existing is None:
+        return request.packet, None
+    stored = TemporalPacket.from_row(existing)
+    if request.mode is RequestMode.explicit and stored != request.packet:
+        raise TemporalError(
+            CORRECTION_REQUIRED,
+            f"occurrence already holds a different effective packet on fact {existing['id']}; "
+            "pass corrects_fact_id to replace it.",
+        )
+    return stored, existing["id"]
 
 
 async def _assert_on_conn(
@@ -891,6 +1450,8 @@ async def _assert_on_conn(
     verified: bool,
     primary: bool | None,
     wrap_transaction: bool,
+    temporal: TemporalRequest | None,
+    temporal_wire: dict[str, str | None],
     why: str | None = None,
     evidence: list[_EvidenceReference] | None = None,
     approval_action_id: uuid.UUID | None = None,
@@ -919,7 +1480,13 @@ async def _assert_on_conn(
         does anything (:func:`_resolve_approved_action`); once verified it both
         skips the gates the owner already cleared and supplies ``src``,
         ``observed_at``, evidence and session from the parked row.
+    temporal, temporal_wire:
+        The normalized temporal request of a fresh call, or ``None`` for an
+        approved replay, whose request is the parked canonical one; the replay's
+        raw wire values (*temporal_wire*) must equal the parked form exactly.
     """
+    fact_context = current_fact_write_context()
+    verified = fact_context.verified
     # Predicate validation (fast indexed lookup, runs on every call).
     await _validate_predicate(conn, predicate)
 
@@ -938,12 +1505,32 @@ async def _assert_on_conn(
         # are proposal-time gates, so an approved execution skips them and goes
         # straight to the write with the parked provenance.
         src = approved.src
+        fact_context = approved.fact_context
+        verified = fact_context.verified
         if approved.observed_at is not None:
             # The fact was observed when it was proposed, not when the owner got
             # round to approving it. Staleness bands read observed_at, so taking
             # the approval time here would make every approved fact look fresher
             # than the observation behind it.
             observed_at = approved.observed_at
+        if temporal_wire != approved.temporal_wire:
+            raise ValueError(
+                f"approval_action_id {approval_action_id} was approved for a different "
+                "effective-time packet; the write does not match what the owner approved."
+            )
+        temporal = approved.temporal
+    assert temporal is not None  # a fresh call always arrives normalized
+
+    if temporal.has_temporal_intent:
+        # Transition fence: checked before parking or any write, so no temporal
+        # approval can even be queued while the legacy index is live.
+        await require_temporal_admission(conn)
+        if predicate == PREFERS_CHANNEL_PREDICATE:
+            raise TemporalError(
+                MUTATOR_UNSUPPORTED,
+                "prefers-channel is single-valued and has no period-aware policy yet; "
+                "it accepts no effective-time arguments.",
+            )
 
     # Owner carve-out (RFC 0017 §2.3).
     # Exception: when *src* is a trusted source — either an owner-self source
@@ -958,31 +1545,23 @@ async def _assert_on_conn(
         and await _is_owner_entity(conn, subject)
         and src not in _OWNER_AUTO_APPLY_SOURCES
     ):
-        tool_args: dict[str, Any] = {
-            "subject": str(subject),
-            "predicate": predicate,
-            "object": object,
-            "object_kind": object_kind,
-            "conf": conf,
-            "verified": verified,
-        }
-        if last_seen is not None:
-            tool_args["last_seen"] = last_seen.isoformat()
-        if weight is not None:
-            tool_args["weight"] = weight
-        if primary is not None:
-            tool_args["primary"] = primary
-
         # Dedup probe: any pending row whose tool_args JSONB contains the same
-        # identity triple is the same approval request. Without this, a job
-        # like contact_info_reconciler that re-runs every 30 min creates a new
-        # pending row each tick until the owner acts.
-        dedup_match: dict[str, Any] = {
-            "subject": str(subject),
-            "predicate": predicate,
-            "object": object,
-            "object_kind": object_kind,
-        }
+        # identity triple and canonical temporal packet is the same approval
+        # request. Without this, a job like contact_info_reconciler that re-runs
+        # every 30 min creates a new pending row each tick until the owner acts.
+        parked = await _parked_arguments(
+            conn,
+            temporal,
+            subject=subject,
+            predicate=predicate,
+            object=object,
+            object_kind=object_kind,
+            conf=conf,
+            verified=verified,
+            last_seen=last_seen,
+            weight=weight,
+            primary=primary,
+        )
 
         summary = f"relationship_assert_fact: assert ({predicate}) on owner entity {subject}"
         # Default why/evidence when caller didn't supply richer context — keeps
@@ -1007,11 +1586,14 @@ async def _assert_on_conn(
         action_id = await _create_pending_action(
             pool,
             "relationship_assert_fact",
-            tool_args,
+            parked.tool_args,
             summary,
             src=src,
             observed_at=observed_at,
-            dedup_match=dedup_match,
+            temporal_mode=temporal.mode,
+            temporal_base_fact_id=parked.base_fact_id,
+            dedup_match=parked.dedup_match,
+            fact_context=fact_context,
             why=effective_why,
             evidence=effective_evidence,
         )
@@ -1034,30 +1616,30 @@ async def _assert_on_conn(
     # routed to pending_approval rather than writing a hard entity-to-entity edge.
     # This prevents inferred mis-extractions (e.g. "has a son" when untrue) from
     # silently writing incorrect parent-of/child-of/family-of edges.
-    # High-confidence (conf ≥ 0.8) kinship assertions from explicit statements
-    # proceed through the normal upsert path below.
-    if approved is None and predicate in _FAMILY_GATE_PREDICATES and conf < _FAMILY_GATE_CONF:
-        tool_args_gate: dict[str, Any] = {
-            "subject": str(subject),
-            "predicate": predicate,
-            "object": object,
-            "object_kind": object_kind,
-            "conf": conf,
-            "verified": verified,
-        }
-        if last_seen is not None:
-            tool_args_gate["last_seen"] = last_seen.isoformat()
-        if weight is not None:
-            tool_args_gate["weight"] = weight
-        if primary is not None:
-            tool_args_gate["primary"] = primary
-
-        dedup_match_gate: dict[str, Any] = {
-            "subject": str(subject),
-            "predicate": predicate,
-            "object": object,
-            "object_kind": object_kind,
-        }
+    # Actual owner-class reports retain the confidence threshold. Existing trusted
+    # internal/no-request SYSTEM writers retain their ordinary confidence policy.
+    # An unbound MCP or attributed third-party report never inherits that policy.
+    if (
+        approved is None
+        and predicate in _FAMILY_GATE_PREDICATES
+        and (
+            fact_context.authority not in {"owner", "owner_device", "system"}
+            or conf < _FAMILY_GATE_CONF
+        )
+    ):
+        parked_gate = await _parked_arguments(
+            conn,
+            temporal,
+            subject=subject,
+            predicate=predicate,
+            object=object,
+            object_kind=object_kind,
+            conf=conf,
+            verified=verified,
+            last_seen=last_seen,
+            weight=weight,
+            primary=primary,
+        )
         gate_why = why or (
             f"Low-confidence kinship claim: `{predicate}` (conf={conf:g}) must be "
             "confirmed before a hard entity edge is written. Approve if the relationship "
@@ -1085,11 +1667,14 @@ async def _assert_on_conn(
         action_id = await _create_pending_action(
             pool,
             "relationship_assert_fact",
-            tool_args_gate,
+            parked_gate.tool_args,
             gate_summary,
             src=src,
             observed_at=observed_at,
-            dedup_match=dedup_match_gate,
+            temporal_mode=temporal.mode,
+            temporal_base_fact_id=parked_gate.base_fact_id,
+            dedup_match=parked_gate.dedup_match,
+            fact_context=fact_context,
             why=gate_why,
             evidence=gate_evidence,
         )
@@ -1136,11 +1721,62 @@ async def _assert_on_conn(
         verified=verified,
         primary=primary,
         packet=packet,
+        temporal=temporal,
+        frozen=approved.frozen if approved is not None else None,
+        fact_context=fact_context,
     )
     if wrap_transaction:
         async with conn.transaction():
             return await _write_fact_with_receipts(conn, kwargs)
     return await _write_fact_with_receipts(conn, kwargs)
+
+
+@dataclass(frozen=True, slots=True)
+class _ParkedArguments:
+    tool_args: dict[str, Any]
+    dedup_match: dict[str, Any]
+    base_fact_id: uuid.UUID | None
+
+
+async def _parked_arguments(
+    conn: asyncpg.Connection,
+    temporal: TemporalRequest,
+    *,
+    subject: uuid.UUID,
+    predicate: str,
+    object: str,
+    object_kind: str,
+    conf: float,
+    verified: bool,
+    last_seen: datetime | None,
+    weight: int | None,
+    primary: bool | None,
+) -> _ParkedArguments:
+    """Build the replayable ``tool_args`` (and dedup probe) of a parked write.
+
+    All six temporal keys are always present in canonical form -- the packet
+    resolved against current state, JSON null for unknown/default -- so an
+    omitted and an explicit-null proposal park, deduplicate and replay
+    identically.
+    """
+    resolved, base_fact_id = await _resolve_for_parking(
+        conn, temporal, subject=subject, predicate=predicate, object=object
+    )
+    identity: dict[str, Any] = {
+        "subject": str(subject),
+        "predicate": predicate,
+        "object": object,
+        "object_kind": object_kind,
+        **temporal.tool_args(resolved),
+    }
+    tool_args: dict[str, Any] = {**identity, "conf": conf}
+    if last_seen is not None:
+        tool_args["last_seen"] = last_seen.isoformat()
+    if weight is not None:
+        tool_args["weight"] = weight
+    if primary is not None:
+        tool_args["primary"] = primary
+    return _ParkedArguments(tool_args=tool_args, dedup_match=identity, base_fact_id=base_fact_id)
 
 
 async def _write_fact_with_receipts(
@@ -1156,6 +1792,8 @@ async def _write_fact_with_receipts(
     it runs on the same connection inside the same transaction.
     """
     result = await _upsert_fact(conn, **kwargs)
+    if result.outcome is AssertOutcome.candidate:
+        return result
     await record_coverage(
         conn,
         subject=kwargs["subject"],
@@ -1164,7 +1802,38 @@ async def _write_fact_with_receipts(
         outcome="present",
         observed_at=kwargs["observed_at"],
     )
+    if result.outcome is not AssertOutcome.unchanged:
+        await _answer_knowledge_gaps(conn, kwargs, result)
     return result
+
+
+async def _answer_knowledge_gaps(
+    conn: asyncpg.Connection,
+    kwargs: dict[str, Any],
+    result: AssertResult,
+) -> None:
+    """Move an owner knowledge gap this write answers to ``answerable`` (bu-q7vx1q.9).
+
+    Same connection and transaction as the fact, so the gap never reads answered for a
+    write that rolled back.  The authority is derived from the session's routing context
+    here, never taken from the caller.
+    """
+
+    async def value() -> str | None:
+        if kwargs["object_kind"] != "entity":
+            return kwargs["object"]
+        return await conn.fetchval(
+            "SELECT canonical_name FROM public.entities WHERE id = $1::uuid", kwargs["object"]
+        )
+
+    await close_matching_gaps(
+        conn,
+        entity_id=kwargs["subject"],
+        predicate=kwargs["predicate"],
+        ref=f"entity_fact:{result.fact_id}",
+        value=value,
+        authority=lambda: stored_gap_authority(conn, result.fact_id),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1190,6 +1859,12 @@ async def relationship_assert_fact(
     why: str | None = None,
     evidence: list[_EvidenceReference] | None = None,
     approval_action_id: uuid.UUID | None = None,
+    effective_period_id: uuid.UUID | str | None = None,
+    effective_from: datetime | str | None = None,
+    effective_from_precision: str | None = None,
+    effective_to: datetime | str | None = None,
+    effective_to_precision: str | None = None,
+    corrects_fact_id: uuid.UUID | str | None = None,
 ) -> AssertResult:
     """Assert a fact triple in ``relationship.entity_facts``.
 
@@ -1251,6 +1926,18 @@ async def relationship_assert_fact(
         ``observed_at``, evidence and the originating session are taken from
         the parked row rather than from the caller — so an approved fact keeps
         the time it was observed, not the time it was approved.
+    effective_period_id, effective_from, effective_from_precision, effective_to, \
+effective_to_precision, corrects_fact_id:
+        Optional effective-time packet (relationship-fact-effective-time; see
+        :mod:`butlers.tools.relationship.fact_temporal`). ``None`` and omission
+        are identical. All ``None`` is an ordinary assertion that preserves the
+        default occurrence's stored packet. ``instant`` bounds need an explicit
+        offset; ``day``/``month``/``year`` bounds are civil ``YYYY-MM-DD`` /
+        ``YYYY-MM`` / ``YYYY`` values normalized to a half-open UTC interval.
+        ``corrects_fact_id`` replaces exactly that active version with the
+        complete supplied packet (all ``None`` = unknown). While the legacy
+        ``uq_ef_spo_active`` index exists, any of them non-null fails
+        ``temporal_cutover_pending`` before parking or writing.
 
     Returns
     -------
@@ -1264,7 +1951,13 @@ async def relationship_assert_fact(
         When *predicate* is not registered, or *conf* is outside [0, 1], or
         *object_kind* is not ``'literal'`` or ``'entity'``, or *evidence* is
         malformed, or *approval_action_id* does not identify an approved action
-        for exactly this triple.
+        for exactly this triple and effective-time packet.
+    TemporalError
+        (a ``ValueError``) with a stable ``code`` for a malformed packet
+        (``temporal_invalid``), the transition fence
+        (``temporal_cutover_pending``), a conflicting explicit packet
+        (``temporal_correction_required``) or a stale correction/replay
+        (``temporal_correction_stale``).
     """
     # --- Input validation (cheap; runs before any DB access) ---
     if object_kind not in ("literal", "entity"):
@@ -1273,6 +1966,17 @@ async def relationship_assert_fact(
         raise ValueError(f"conf must be in [0.0, 1.0]; got {conf!r}.")
     if evidence is not None:
         _validate_typed_evidence(evidence)
+    temporal_args: dict[str, Any] = dict(
+        effective_period_id=effective_period_id,
+        effective_from=effective_from,
+        effective_from_precision=effective_from_precision,
+        effective_to=effective_to,
+        effective_to_precision=effective_to_precision,
+        corrects_fact_id=corrects_fact_id,
+    )
+    # An approved replay carries the PARKED canonical packet, which is compared
+    # verbatim against the approval rather than re-normalized as fresh input.
+    temporal = None if approval_action_id is not None else normalize_request(**temporal_args)
 
     # Normalise legacy underscore predicate aliases to canonical hyphenated names.
     predicate = _PREDICATE_ALIAS_MAP.get(predicate, predicate)
@@ -1296,6 +2000,8 @@ async def relationship_assert_fact(
         why=why,
         evidence=evidence,
         approval_action_id=approval_action_id,
+        temporal=temporal,
+        temporal_wire=wire_values(**temporal_args),
     )
 
     if conn is not None:
@@ -1453,11 +2159,16 @@ async def retract_contact_info_fact(
 
     Notes
     -----
-    - Types that have no registered predicate mapping (e.g.
-      ``'telegram_chat_id'``, ``'address'``) are silently skipped — the
-      function returns ``None`` without touching the DB.
+    - Types that have no registered predicate mapping (e.g. ``'address'``)
+      are silently skipped — the function returns ``None`` without touching
+      the DB.  ``'telegram_chat_id'`` is mapped (to ``has-handle``; RFC 0004
+      Amendment 3) and retracts like any other handle.
     - The caller is responsible for supplying the correct ``ci_value``; the
       retraction is keyed on the exact string stored in ``object``.
+    - The selector names an SPO, not an effective occurrence. It retracts the
+      single active occurrence (keeping its effective packet); when more than
+      one occurrence is active it raises ``temporal_occurrence_ambiguous``
+      before any write rather than choosing one.
     """
     predicate = contact_info_type_to_predicate(ci_type)
     if predicate is None:
@@ -1465,20 +2176,37 @@ async def retract_contact_info_fact(
         return None
 
     async def _retract(c: asyncpg.Connection) -> uuid.UUID | None:
+        matches = await c.fetch(
+            """
+            SELECT id FROM relationship.entity_facts
+            WHERE subject   = $1
+              AND predicate = $2
+              AND object    = $3
+              AND validity  = 'active'
+            FOR UPDATE
+            """,
+            subject,
+            predicate,
+            ci_value,
+        )
+        if len(matches) > 1:
+            raise TemporalError(
+                OCCURRENCE_AMBIGUOUS,
+                f"{len(matches)} active effective occurrences match this contact value; "
+                "retract one by fact id.",
+            )
+        if not matches:
+            return None
         fact_id = await c.fetchval(
             """
             UPDATE relationship.entity_facts
             SET validity   = 'retracted',
                 updated_at = now()
-            WHERE subject   = $1
-              AND predicate = $2
-              AND object    = $3
-              AND validity  = 'active'
+            WHERE id = $1
+              AND validity = 'active'
             RETURNING id
             """,
-            subject,
-            predicate,
-            ci_value,
+            matches[0]["id"],
         )
         if fact_id is None:
             return None
@@ -1496,7 +2224,8 @@ async def retract_contact_info_fact(
         return await _retract(conn)
 
     async with pool.acquire() as acquired_conn:
-        return await _retract(acquired_conn)
+        async with acquired_conn.transaction():
+            return await _retract(acquired_conn)
 
 
 # ---------------------------------------------------------------------------
@@ -1609,6 +2338,43 @@ async def _entity_has_reachability_fact(
     )
 
 
+async def _fence_prefers_channel(conn: asyncpg.Connection, subject: uuid.UUID) -> None:
+    """Refuse a set/clear the legacy single-valued path cannot perform safely.
+
+    ``prefers-channel`` has no period-aware policy yet (``bu-4ss0u``), so its
+    predicate-wide supersession may only touch unknown default rows. A
+    temporal-bearing current row, or more than one active occurrence of one
+    channel, fails ``temporal_mutator_unsupported`` before any write. The rows
+    are locked so the check and the write see the same set.
+    """
+    fence = await conn.fetchrow(
+        f"""
+        WITH active_rows AS (
+            SELECT ef.object, {temporal_bearing_sql("ef")} AS temporal
+            FROM relationship.entity_facts ef
+            WHERE ef.subject   = $1
+              AND ef.predicate = $2
+              AND ef.validity  = 'active'
+            FOR UPDATE
+        )
+        SELECT COALESCE(bool_or(temporal), false) AS temporal,
+               COALESCE(max(n), 0) AS occurrences
+        FROM (
+            SELECT object, bool_or(temporal) AS temporal, count(*) AS n
+            FROM active_rows GROUP BY object
+        ) per_channel
+        """,
+        subject,
+        PREFERS_CHANNEL_PREDICATE,
+    )
+    if fence["temporal"] or fence["occurrences"] > 1:
+        raise TemporalError(
+            MUTATOR_UNSUPPORTED,
+            f"entity {subject} has a temporal or repeated prefers-channel occurrence; "
+            "the single-valued preference path cannot change it yet.",
+        )
+
+
 async def _supersede_active_prefers_channel(
     conn: asyncpg.Connection,
     subject: uuid.UUID,
@@ -1687,63 +2453,70 @@ async def assert_prefers_channel(
     channel = channel.strip()
 
     async def _do(c: asyncpg.Connection) -> AssertResult:
-        # Predicate must be registered (defensive — rel_022 seeds it).
         await _validate_predicate(c, PREFERS_CHANNEL_PREDICATE)
-
-        # 1. Reachability validation — reject a preference the entity can't honor.
         if not await _entity_has_reachability_fact(c, subject, channel):
-            raise ValueError(
-                f"Cannot prefer channel {channel!r} for entity {subject}: the entity "
-                f"has no active contact fact for that channel "
-                f"(expected a has-email / has-phone / has-handle of the {channel!r} "
-                f"family). Add the channel identity first, then set the preference."
-            )
-
-        # 2. Idempotency — same active channel already set → no write.
-        existing = await c.fetchrow(
-            """
-            SELECT id, src, conf, verified
-            FROM relationship.entity_facts
-            WHERE subject   = $1
-              AND predicate = $2
-              AND object    = $3
-              AND validity  = 'active'
-            """,
-            subject,
-            PREFERS_CHANNEL_PREDICATE,
-            channel,
+            raise ValueError(f"Cannot prefer channel {channel!r}: no active contact fact")
+        context = await locked_report(
+            c,
+            current_fact_write_context(),
+            subject=subject,
+            object=channel,
+            object_kind="literal",
+            src=src,
         )
-        if existing is not None and (
-            existing["src"] == src
-            and existing["conf"] == conf
-            and bool(existing["verified"]) == verified
+        from butlers.tools.relationship.fact_identity_decisions import lock_identity_slot
+
+        await lock_identity_slot(c, PREFERS_CHANNEL_PREDICATE, channel, subject)
+        await _fence_prefers_channel(c, subject)
+        packet = EvidencePacket(
+            items=(),
+            src=src,
+            origin="direct",
+            session_id=coerce_session_id(get_current_runtime_session_id()),
+        )
+        write = dict(
+            subject=subject,
+            predicate=PREFERS_CHANNEL_PREDICATE,
+            object=channel,
+            object_kind="literal",
+            src=src,
+            conf=conf,
+            last_seen=None,
+            observed_at=datetime.now(UTC),
+            weight=None,
+            verified=context.verified,
+            primary=None,
+            packet=packet,
+            fact_context=context,
+        )
+        if await should_hold_candidate(c, subject, PREFERS_CHANNEL_PREDICATE, context):
+            return await _upsert_candidate(c, write, UNKNOWN)
+        existing = await _active_occurrence(
+            c, subject=subject, predicate=PREFERS_CHANNEL_PREDICATE, object=channel, period_id=None
+        )
+        if (
+            existing is not None
+            and _same_assertion_fields(
+                existing, src=src, conf=conf, verified=context.verified, last_seen=None
+            )
+            and _same_report(existing, context)
         ):
-            return AssertResult(outcome=AssertOutcome.unchanged, fact_id=existing["id"])
-
-        # 3. Single-valued supersession — retire ALL prior active values (any
-        #    object), then insert the new active row.
+            return AssertResult(AssertOutcome.unchanged, existing["id"])
         superseded = await _supersede_active_prefers_channel(c, subject, validity="superseded")
-        new_id = await c.fetchval(
-            """
-            INSERT INTO relationship.entity_facts (
-                id, subject, predicate, object, object_kind,
-                src, conf, verified, validity, created_at, updated_at
-            )
-            VALUES (
-                gen_random_uuid(), $1, $2, $3, 'literal',
-                $4, $5, $6, 'active', now(), now()
-            )
-            RETURNING id
-            """,
-            subject,
-            PREFERS_CHANNEL_PREDICATE,
-            channel,
-            src,
-            conf,
-            verified,
+        new_id = await _insert_active_fact(c, **write)
+        if new_id is None:
+            raise RuntimeError("preferred-channel slot changed during the owned transaction")
+        await record_coverage(
+            c,
+            subject=subject,
+            predicate=PREFERS_CHANNEL_PREDICATE,
+            src=src,
+            outcome="present",
+            observed_at=write["observed_at"],
         )
-        outcome = AssertOutcome.superseded if superseded else AssertOutcome.inserted
-        return AssertResult(outcome=outcome, fact_id=new_id)
+        return AssertResult(
+            AssertOutcome.superseded if superseded else AssertOutcome.inserted, new_id
+        )
 
     if conn is not None:
         return await _do(conn)
@@ -1767,6 +2540,7 @@ async def retract_prefers_channel(
     """
 
     async def _do(c: asyncpg.Connection) -> int:
+        await _fence_prefers_channel(c, subject)
         return await _supersede_active_prefers_channel(c, subject, validity="retracted")
 
     if conn is not None:
@@ -1774,3 +2548,81 @@ async def retract_prefers_channel(
     async with pool.acquire() as acquired_conn:
         async with acquired_conn.transaction():
             return await _do(acquired_conn)
+
+
+def _same_report(row: Any, report: FactWriteContext) -> bool:
+    stored = stored_report(row)
+    # Re-observing an unchanged owner assertion keeps its first confirmation
+    # time. Approved/adopted confirmation has distinct frozen lineage and must
+    # still match exactly; a new reporter or provenance creates a new version.
+    owner_reobservation = (
+        stored.confirmation_source == report.confirmation_source == "owner_assertion"
+        and not report.preserve
+    )
+    # A live FK disappearing is availability only, not a new assertion.
+    return (
+        stored.authority,
+        stored.original_entity_id,
+        stored.entity_created_at,
+        stored.confirmation_original_entity_id,
+        stored.confirmed_at,
+        stored.confirmation_source,
+    ) == (
+        report.authority,
+        report.original_entity_id,
+        report.entity_created_at,
+        report.confirmation_original_entity_id,
+        stored.confirmed_at if owner_reobservation else report.confirmed_at,
+        report.confirmation_source,
+    )
+
+
+async def _upsert_candidate(
+    conn: Any,
+    write: dict[str, Any],
+    temporal: TemporalPacket,
+    *,
+    request_mode: RequestMode | None = None,
+    active_packet: bool = False,
+) -> AssertResult:
+    for _ in range(_MAX_UPSERT_ATTEMPTS):
+        row = await conn.fetchrow(
+            f"SELECT id,src,conf,verified,last_seen,{PACKET_COLUMNS},{REPORT_COLUMNS} "
+            "FROM relationship.entity_facts WHERE subject=$1 AND predicate=$2 AND object=$3 "
+            "AND validity='candidate' AND effective_period_id IS NOT DISTINCT FROM $4 FOR UPDATE",
+            write["subject"],
+            write["predicate"],
+            write["object"],
+            temporal.period_id,
+        )
+        if row is not None:
+            stored = TemporalPacket.from_row(row)
+            if request_mode is RequestMode.explicit and stored != temporal:
+                raise TemporalError(
+                    CORRECTION_REQUIRED, "candidate occurrence has a different packet"
+                )
+            if request_mode is RequestMode.ordinary:
+                if active_packet and stored != temporal:
+                    raise TemporalError(CORRECTION_REQUIRED, "candidate and active packets differ")
+                temporal = stored
+            if _same_assertion_fields(
+                row,
+                src=write["src"],
+                conf=write["conf"],
+                verified=write["verified"],
+                last_seen=write["last_seen"],
+            ) and _same_report(row, write["fact_context"]):
+                await persist_evidence(conn, fact_id=row["id"], packet=write["packet"])
+                return AssertResult(outcome=AssertOutcome.candidate, fact_id=row["id"])
+            await conn.execute(
+                "UPDATE relationship.entity_facts SET validity='superseded', "
+                "updated_at=now() WHERE id=$1 AND validity='candidate'",
+                row["id"],
+            )
+        new_id = await _insert_active_fact(conn, **write, temporal=temporal, validity="candidate")
+        if new_id:
+            if row is not None:
+                await carry_evidence_forward(conn, from_fact_id=row["id"], to_fact_id=new_id)
+            await persist_evidence(conn, fact_id=new_id, packet=write["packet"])
+            return AssertResult(outcome=AssertOutcome.candidate, fact_id=new_id)
+    raise RuntimeError("candidate contention exhausted")

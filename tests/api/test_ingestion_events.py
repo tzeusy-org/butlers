@@ -19,13 +19,175 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_pricing
-from butlers.api.routers.ingestion_events import _get_db_manager, _get_rollup_db_manager
+from butlers.api.deps import get_db, get_pricing
+from butlers.api.pagination import encode_cursor
 from butlers.core.pricing import PricingConfig
 
 pytestmark = pytest.mark.unit
 
 _NOW = datetime.now(tz=UTC)
+
+
+async def test_ingestion_read_budget_preserves_other_routes_and_releases_capacity(monkeypatch):
+    import asyncio
+
+    from fastapi import APIRouter
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    from butlers.api import ingestion_read_budget as budget
+
+    monkeypatch.setattr(budget, "_ADMISSION_TIMEOUT_S", 0.02)
+    metric_reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[metric_reader])
+    meter = provider.get_meter("test-ingestion-budget")
+    monkeypatch.setattr(budget, "_WAIT_SECONDS", meter.create_histogram("admission", unit="s"))
+    monkeypatch.setattr(budget, "_READ_SECONDS", meter.create_histogram("duration", unit="s"))
+    monkeypatch.setattr(budget, "_OUTCOMES", meter.create_counter("outcomes"))
+    app = FastAPI()
+    router = APIRouter(route_class=budget.IngestionReadBudgetRoute)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    active = 0
+
+    @router.get("/read")
+    async def read():
+        nonlocal active
+        active += 1
+        if active == 2:
+            entered.set()
+        await release.wait()
+        return {"ok": True}
+
+    @router.post("/write")
+    async def write():
+        return {"ok": True}
+
+    @app.get("/critical")
+    async def critical():
+        return {"ok": True}
+
+    app.include_router(router)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        reads = [asyncio.create_task(client.get("/read")) for _ in range(2)]
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            assert (await client.get("/critical")).status_code == 200
+            assert (await client.post("/write")).status_code == 200
+            busy = await client.get("/read")
+            assert busy.status_code == 503
+            assert busy.headers["retry-after"] == "1"
+            assert active == 2
+        finally:
+            release.set()
+            await asyncio.gather(*reads)
+        assert (await client.get("/read")).status_code == 200
+    captured = {
+        metric.name: metric.data.data_points
+        for resource in metric_reader.get_metrics_data().resource_metrics
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+    }
+    assert sum(point.count for point in captured["admission"]) == 4
+    assert sum(point.count for point in captured["duration"]) == 3
+    assert {point.attributes["outcome"]: point.value for point in captured["outcomes"]} == {
+        "busy": 1,
+        "ok": 3,
+    }
+    assert all(
+        set(point.attributes) <= {"operation", "outcome"}
+        for points in captured.values()
+        for point in points
+    )
+    provider.shutdown()
+
+
+async def test_ingestion_read_timeout_cancels_query_and_returns_capacity(monkeypatch):
+    import asyncio
+
+    from fastapi import APIRouter
+
+    from butlers.api import ingestion_read_budget as budget
+
+    monkeypatch.setattr(budget, "_READ_TIMEOUT_S", 0.02)
+    app = FastAPI()
+    router = APIRouter(route_class=budget.IngestionReadBudgetRoute)
+    cancelled = asyncio.Event()
+
+    @router.get("/slow")
+    async def slow():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    app.include_router(router)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        assert (await client.get("/slow")).status_code == 503
+        assert cancelled.is_set()
+        limiter = app.state.ingestion_read_limiter
+        for _ in range(2):
+            await asyncio.wait_for(limiter.acquire(), 0.1)
+        limiter.release()
+        limiter.release()
+
+
+async def test_ingestion_disconnect_cancels_read_before_deadline():
+    import asyncio
+
+    from fastapi import APIRouter
+
+    from butlers.api.ingestion_read_budget import IngestionReadBudgetRoute
+
+    app = FastAPI()
+    router = APIRouter(route_class=IngestionReadBudgetRoute)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    @router.get("/read")
+    async def read():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    app.include_router(router)
+    messages = []
+
+    async def receive():
+        await started.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        messages.append(message)
+
+    await asyncio.wait_for(
+        app(
+            {
+                "type": "http",
+                "asgi": {"version": "3.0"},
+                "http_version": "1.1",
+                "method": "GET",
+                "scheme": "http",
+                "path": "/read",
+                "root_path": "",
+                "query_string": b"",
+                "headers": [],
+                "server": ("test", 80),
+                "client": ("test", 1),
+            },
+            receive,
+            send,
+        ),
+        1,
+    )
+    assert cancelled.is_set()
+    assert messages[0]["status"] == 499
 
 
 def _make_event_row(*, event_id=None, status="ingested"):
@@ -64,7 +226,7 @@ def _app_with_mock_db(app: FastAPI, *, shared_pool=None, shared_pool_error=None)
         mock_db.credential_shared_pool.return_value = shared_pool
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
     mock_db.pool.side_effect = KeyError("No pool for butler: switchboard")
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
     return mock_db
 
@@ -83,12 +245,8 @@ async def test_list_returns_cursor_paginated_and_503_fallback(app):
         resp = await client.get("/api/ingestion/events")
     assert resp.status_code == 200
     body = resp.json()
-    assert "data" in body and "meta" in body
-    meta = body["meta"]
-    # Cursor pagination: next_cursor + has_more; no total field.
-    assert "next_cursor" in meta
-    assert "has_more" in meta
-    assert "total" not in meta
+    # Page envelope: items + next_cursor + limit; no total, offset or has_more.
+    assert set(body) == {"items", "next_cursor", "limit", "sources_degraded"}
 
     _app_with_mock_db(app, shared_pool_error=KeyError("no shared pool"))
     async with httpx.AsyncClient(
@@ -99,7 +257,7 @@ async def test_list_returns_cursor_paginated_and_503_fallback(app):
 
 
 # ---------------------------------------------------------------------------
-# Channel filter — channels CSV, source_channel compat, precedence
+# Channel filter — channels CSV
 # ---------------------------------------------------------------------------
 
 
@@ -107,27 +265,22 @@ async def test_list_returns_cursor_paginated_and_503_fallback(app):
     "query,expected_channels",
     [
         ("?channels=email,telegram", ["email", "telegram"]),
-        ("?source_channel=email", ["email"]),
-        # channels wins over deprecated source_channel when both are set
-        ("?channels=email&source_channel=telegram", ["email"]),
         # empty channels= is treated as no filter
         ("?channels=", None),
         # unknown channel forwarded verbatim (200, empty result — not an error)
         ("?channels=nonexistent_channel", ["nonexistent_channel"]),
-        # neither param → None
+        # no channels param → None
         ("", None),
     ],
     ids=[
         "channels-csv",
-        "source_channel-compat",
-        "channels-wins",
         "empty-no-filter",
         "unknown-forwarded",
         "absent-none",
     ],
 )
 async def test_channels_filter_forwarding(app, query, expected_channels):
-    """channels/source_channel resolve to the `channels` kwarg forwarded to core."""
+    """channels resolves to the `channels` kwarg forwarded to core."""
     _app_with_mock_db(app)
 
     with patch(
@@ -531,12 +684,9 @@ async def test_sender_contact_resolved(app):
     # resolve_contact_by_channel returns None (default) — we'll patch it
     _app_with_mock_db(app, shared_pool=pool)
 
-    from uuid import uuid4 as _uuid4
-
     from butlers.identity import ResolvedContact
 
     resolved = ResolvedContact(
-        contact_id=_uuid4(),
         name="Alice Smith",
         roles=[],
         entity_id=None,
@@ -863,7 +1013,7 @@ async def test_list_events_enriches_rows_with_sessions_and_sender(app):
             resp = await client.get("/api/ingestion/events")
 
     assert resp.status_code == 200
-    item = resp.json()["data"][0]
+    item = resp.json()["items"][0]
     assert item["tokens_in"] == 100
     assert item["tokens_out"] == 50
     assert item["session_count"] == 1
@@ -901,7 +1051,7 @@ async def test_list_events_explains_unavailable_replay_policy(app):
             resp = await client.get("/api/ingestion/events")
 
     assert resp.status_code == 200
-    item = resp.json()["data"][0]
+    item = resp.json()["items"][0]
     assert item["replay_safe"] is False
     assert item["replay_block_reason"] == "Replay safety could not be confirmed"
 
@@ -947,7 +1097,7 @@ async def test_list_events_enrichment_replaces_stale_denormalized_zero_with_unkn
             resp = await client.get("/api/ingestion/events")
 
     assert resp.status_code == 200
-    item = resp.json()["data"][0]
+    item = resp.json()["items"][0]
     assert item["cost_usd"] is None
     assert item["unpriced_session_count"] == 1
     assert item["no_usage_session_count"] == 1
@@ -975,7 +1125,7 @@ async def test_list_events_enrichment_fails_open_on_session_fan_out_error(app):
             resp = await client.get("/api/ingestion/events")
 
     assert resp.status_code == 200
-    item = resp.json()["data"][0]
+    item = resp.json()["items"][0]
     assert item["session_count"] == 0
     assert item["sessions"] == []
     assert item["tokens_in"] is None
@@ -996,7 +1146,7 @@ async def test_list_events_empty_page_skips_enrichment_calls(app):
             resp = await client.get("/api/ingestion/events")
 
     assert resp.status_code == 200
-    assert resp.json()["data"] == []
+    assert resp.json()["items"] == []
     mock_db.fan_out_with_status.assert_not_awaited()
 
 
@@ -1017,7 +1167,7 @@ def _app_with_mock_rollup_db(app: FastAPI, *, shared_pool=None, shared_pool_erro
             shared_pool.fetch = AsyncMock(return_value=[])
         mock_db.credential_shared_pool.return_value = shared_pool
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_rollup_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return mock_db
 
 
@@ -1146,7 +1296,7 @@ def _app_with_switchboard_pool(
     else:
         mock_db.pool.side_effect = KeyError("No pool for butler: switchboard")
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
     return mock_db
 
@@ -1315,24 +1465,130 @@ async def test_sort_cost_forwarded_to_core(app):
     assert call_kwargs.get("sort") == "cost"
 
 
-async def test_sort_cost_invalid_cursor_returns_422(app):
-    """GET /api/ingestion/events?sort=cost with a keyset cursor returns 422."""
+@pytest.mark.parametrize(
+    ("sort", "cursor"),
+    [
+        (
+            "cost",
+            encode_cursor(
+                (datetime(2026, 1, 1, tzinfo=UTC), uuid4()), scope="ingestion-events.cost"
+            ),
+        ),
+        ("cost", encode_cursor((-10,), scope="ingestion-events.cost")),
+        ("cost", "not-a-cursor"),
+        ("recent", "not-a-cursor"),
+        ("recent", encode_cursor((10,), scope="ingestion-events.recent")),
+        (
+            "recent",
+            encode_cursor(
+                (datetime(2026, 1, 1, tzinfo=UTC), uuid4()), scope="ingestion-events.recent"
+            )
+            + "x",
+        ),
+    ],
+    ids=[
+        "cost-foreign",
+        "negative-cost",
+        "cost-malformed",
+        "recent-malformed",
+        "recent-foreign",
+        "tampered",
+    ],
+)
+async def test_sort_cost_invalid_cursor_returns_400(app, sort, cursor):
+    """Core cursor errors retain the API's 400 for both list sort modes."""
     _app_with_mock_db(app)
-
-    # A valid keyset cursor (wrong type for cost sort)
-    import base64
-    import json
-
-    keyset_cursor = base64.urlsafe_b64encode(
-        json.dumps({"ra": "2026-01-01T00:00:00+00:00", "id": str(uuid4())}).encode()
-    ).decode()
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get(f"/api/ingestion/events?sort=cost&cursor={keyset_cursor}")
+        resp = await client.get("/api/ingestion/events", params={"sort": sort, "cursor": cursor})
 
-    assert resp.status_code == 422
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Invalid cursor"
+
+
+@pytest.mark.parametrize(
+    ("sort", "cursor", "accepted"),
+    [
+        ("recent", encode_cursor((_NOW, uuid4()), scope="ingestion-events.recent"), True),
+        ("recent", encode_cursor((_NOW, uuid4()), scope="memory-gaps"), False),
+        ("recent", encode_cursor((_NOW, uuid4()), scope="calendar-workspace"), False),
+        ("recent", encode_cursor((_NOW, uuid4()), scope="relationship-facts"), False),
+        ("recent", encode_cursor((_NOW, uuid4()), scope="timeline"), False),
+        (
+            "recent",
+            encode_cursor((_NOW, uuid4()), scope="ingestion-events.recent").replace(
+                ".", "!!!!.", 1
+            ),
+            False,
+        ),
+        (
+            "recent",
+            encode_cursor((_NOW, uuid4()), scope="ingestion-events.recent").replace(
+                ".", "    .", 1
+            ),
+            False,
+        ),
+        ("cost", encode_cursor((True,), scope="ingestion-events.cost"), False),
+        ("cost", encode_cursor((False,), scope="ingestion-events.cost"), False),
+        ("cost", encode_cursor((0,), scope="ingestion-events.cost"), True),
+        ("cost", encode_cursor((40,), scope="ingestion-events.cost"), True),
+        ("cost", encode_cursor((100,), scope="ingestion-events.cost"), True),
+    ],
+    ids=[
+        "native-keyset",
+        "foreign-memory",
+        "foreign-calendar",
+        "foreign-facts",
+        "foreign-timeline",
+        "punctuation",
+        "whitespace",
+        "bool-true",
+        "bool-false",
+        "offset-zero",
+        "offset-forty",
+        "offset-hundred",
+    ],
+)
+async def test_list_cursor_receiver_spelling_and_scalar_controls(app, sort, cursor, accepted):
+    db = _app_with_mock_db(app)
+    pool = db.credential_shared_pool.return_value
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # A caller-supplied scope never selects the receiver's expected scope.
+        response = await client.get(
+            "/api/ingestion/events",
+            params={"sort": sort, "cursor": cursor, "scope": "memory-gaps", "limit": 2},
+        )
+    assert response.status_code == (200 if accepted else 400)
+    if accepted:
+        assert response.json()["items"] == []
+        assert response.json()["limit"] == 2
+        pool.fetch.assert_awaited_once()
+    else:
+        assert response.json()["detail"] == "Invalid cursor"
+        pool.fetch.assert_not_awaited()
+
+
+async def test_list_does_not_relabel_unrelated_value_errors_as_cursor_errors(app):
+    _app_with_mock_db(app)
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        side_effect=ValueError("unrelated query failure"),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/ingestion/events")
+    assert response.status_code == 400
+    assert response.json()["error"] == {
+        "code": "VALIDATION_ERROR",
+        "message": "unrelated query failure",
+        "butler": None,
+        "details": None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1351,7 +1607,7 @@ async def test_event_rollup_writes_cost_usd_back(app):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = shared_pool
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
 
     rollup_with_sessions = {
@@ -1400,7 +1656,7 @@ async def test_event_rollup_does_not_write_unknown_cost_coverage(app):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = AsyncMock()
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
 
     unpriced_rollup = {
@@ -1453,7 +1709,7 @@ async def test_event_rollup_does_not_write_partial_cost_with_no_usage_sessions(a
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = AsyncMock()
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
 
     partial_rollup = {
@@ -1507,7 +1763,7 @@ async def test_event_rollup_writes_known_zero_cost_back(app):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = AsyncMock()
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
 
     known_zero_rollup = {
@@ -1562,7 +1818,7 @@ async def test_event_rollup_skips_write_when_no_sessions(app):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = AsyncMock()
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
 
     rollup_empty = {
@@ -1606,6 +1862,144 @@ async def test_event_rollup_skips_write_when_no_sessions(app):
 # UNION-across-partitions SQL correctness is covered by the real-Postgres
 # integration test (tests/integration/test_ingestion_events_histogram_db.py).
 # ---------------------------------------------------------------------------
+
+
+# REQ-dashboard-ingestion-dispatch-console-003: mocked section failures/current evidence; SQL is V3/V4.
+async def test_dropped_known_reports_counts_and_routes_before_catch_all(app):
+    """Readable counts survive current-evidence failures; empty authority is explicit."""
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    from butlers.core.known_contact_state import CLASSIFICATION_KEY, KnownContactSnapshot
+
+    pool = AsyncMock()
+    pool.fetchrow.return_value = {"dropped": 3, "episodes": 2}
+    pool.fetch.return_value = []
+    manager = _app_with_mock_db(app, shared_pool=pool)
+    registry = AsyncMock()
+    registry.fetch.return_value = []
+    manager.pool.side_effect = None
+    manager.pool.return_value = registry
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/ingestion/events/dropped-known", params={"window": "7d"})
+        assert resp.status_code == 200
+        positive = resp.json()
+        assert positive == {
+            "available": True,
+            "window": "7d",
+            "dropped": 3,
+            "episodes": 2,
+            "counts_available": True,
+            "classification_available": True,
+            "uncertain_drops": 0,
+            "availability_reason": "none",
+        }
+        assert "drop_context,important_dropped" in pool.fetchrow.await_args.args[0]
+        now = datetime.now(UTC)
+        instance = uuid4()
+        snapshot = KnownContactSnapshot(
+            state="loaded",
+            reason="none",
+            generation=2,
+            last_success_at=now,
+        )
+        runtime = {
+            "connector_type": "gmail",
+            "operational_role": "runtime_instance",
+            "archived_at": None,
+            "deleted_at": None,
+            "instance_id": instance,
+            "last_heartbeat_at": now,
+            "capabilities": {
+                CLASSIFICATION_KEY: {
+                    **snapshot.projection(),
+                    "instance_id": str(instance),
+                    "admission_epoch": str(uuid4()),
+                }
+            },
+        }
+        registry.fetch.return_value = [runtime]
+        assert (await client.get("/api/ingestion/events/dropped-known")).json()["available"] is True
+        for changes in [
+            {"operational_role": "unknown"},
+            {"capabilities": {}},
+            {"capabilities": "legacy-string"},
+            {"instance_id": uuid4()},
+            {"last_heartbeat_at": now - timedelta(seconds=301)},
+            {"last_heartbeat_at": now + timedelta(hours=1)},
+            {
+                "capabilities": {
+                    CLASSIFICATION_KEY: {
+                        **runtime["capabilities"][CLASSIFICATION_KEY],
+                        "generation": True,
+                    }
+                }
+            },
+            {
+                "capabilities": {
+                    CLASSIFICATION_KEY: {
+                        **runtime["capabilities"][CLASSIFICATION_KEY],
+                        "last_success_at": (now - timedelta(seconds=901)).isoformat(),
+                    }
+                }
+            },
+        ]:
+            registry.fetch.return_value = [runtime, {**runtime, **changes}]
+            unknown = (await client.get("/api/ingestion/events/dropped-known")).json()
+            assert unknown["available"] is False and unknown["dropped"] == 3
+            assert unknown["counts_available"] is True
+            assert unknown["availability_reason"] == "classification_unknown"
+        for excluded in [
+            {"operational_role": "checkpoint"},
+            {"archived_at": now},
+            {"deleted_at": now},
+            {"connector_type": "telegram_bot"},
+        ]:
+            registry.fetch.return_value = [{**runtime, **excluded, "capabilities": None}]
+            assert (await client.get("/api/ingestion/events/dropped-known")).json()[
+                "available"
+            ] is True
+        registry.fetch.return_value = [runtime]
+        pool.fetch.return_value = [{"classification": None}]
+        uncertain = (await client.get("/api/ingestion/events/dropped-known")).json()
+        assert uncertain["classification_available"] is True and uncertain["available"] is False
+        assert uncertain["uncertain_drops"] == 1 and uncertain["dropped"] == 3
+        assert uncertain["availability_reason"] == "historical_uncertainty"
+        pool.fetch.return_value = []
+        registry.fetch.side_effect = RuntimeError("private contact error-tail")
+        unreadable = (await client.get("/api/ingestion/events/dropped-known")).json()
+        assert unreadable["availability_reason"] == "registry_unavailable"
+        assert unreadable["available"] is False and unreadable["dropped"] == 3
+
+
+@pytest.mark.parametrize("failure", ["read_error", "no_pool"])
+async def test_dropped_known_degrades_instead_of_reading_zero(app, failure):
+    """A failed read says unavailable; it must never look like zero dropped."""
+    if failure == "read_error":
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(side_effect=RuntimeError("relation does not exist"))
+        _app_with_mock_db(app, shared_pool=pool)
+    else:
+        _app_with_mock_db(app, shared_pool_error=KeyError("shared"))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/ingestion/events/dropped-known")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "available": False,
+        "window": "24h",
+        "dropped": 0,
+        "episodes": 0,
+        "counts_available": False,
+        "classification_available": False,
+        "uncertain_drops": None,
+        "availability_reason": "counts_unavailable",
+    }
 
 
 async def test_histogram_routes_before_request_id_catch_all(app):

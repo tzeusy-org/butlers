@@ -1,0 +1,217 @@
+"""Helm render and bootstrap-secrets.sh guard for localSecrets.source (bu-viat6h.2)."""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+import yaml
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_CHART = _REPO_ROOT / "deploy" / "helm" / "butlers"
+_SCRIPT = _REPO_ROOT / "scripts" / "k8s" / "bootstrap-secrets.sh"
+_FIXTURE_VALUE = "fixture-secret-value-d41d8cd9"
+
+needs_helm = pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")
+# What site-helm-args.sh supplies for the retained runtime tracker boundary.
+_SITE = [
+    "--set", "trackerEgress.deniedCidrs={192.0.2.1/32,192.0.2.2/32}",
+]  # fmt: skip
+
+
+def _render(env: str, *extra: str) -> list[dict]:
+    result = subprocess.run(
+        ["helm", "template", "butlers", str(_CHART), "-f", str(_CHART / "values.yaml"),
+         "-f", str(_CHART / f"values.{env}.yaml"), "--set", "image.tag=t",
+         "--set", "frontendImage.tag=t", *_SITE, *extra],
+        capture_output=True, text=True, check=True,
+    )  # fmt: skip
+    return [d for d in yaml.safe_load_all(result.stdout) if d]
+
+
+def _external_secrets(docs: list[dict]) -> dict[str, dict]:
+    return {d["spec"]["target"]["name"]: d for d in docs if d["kind"] == "ExternalSecret"}
+
+
+def _without_external_secrets(docs: list[dict]) -> list[dict]:
+    return [d for d in docs if d["kind"] != "ExternalSecret"]
+
+
+@needs_helm
+@pytest.mark.parametrize("env", ["dev", "prod"])
+def test_source_bws_adds_exactly_the_two_listed_externalsecrets(env: str) -> None:
+    local = _render(env, "--set", "localSecrets.source=local")
+    bws = _render(env, "--set", "localSecrets.source=bws")
+
+    assert len(_external_secrets(local)) == 1
+    stores = _external_secrets(bws)
+    assert len(stores) == 3
+    assert {d["metadata"]["name"] for d in bws if d["kind"] == "ExternalSecret"} == set(stores)
+
+    probe = stores["butlers-runtime-probe-control"]["spec"]
+    env_es = stores["butlers-local-env"]["spec"]
+    assert {e["secretKey"] for e in probe["data"]} == {
+        "runtime_probe_control_signing_key",
+        "runtime_probe_control_verifiers",
+    }
+    # Dev does not provision DASHBOARD_API_KEY, so values.dev.yaml omits it.
+    expected_env = {"DASHBOARD_AUTH_DB_USER"} | ({"DASHBOARD_API_KEY"} if env == "prod" else set())
+    assert {e["secretKey"] for e in env_es["data"]} == expected_env
+    for spec in (probe, env_es):
+        assert spec["target"]["creationPolicy"] == "Owner"
+        assert "dataFrom" not in spec
+        assert all(e["remoteRef"]["key"] and "*" not in e["remoteRef"]["key"] for e in spec["data"])
+
+
+@needs_helm
+def test_source_bws_remote_keys_come_from_values_and_optional_key_can_be_omitted() -> None:
+    docs = _render(
+        "dev",
+        "--set", "localSecrets.source=bws",
+        "--set", "externalSecrets.runtimeProbeControl.signingKey=CUSTOM_SIGNER",
+        "--set", "externalSecrets.localEnv.DASHBOARD_API_KEY=",
+    )  # fmt: skip
+    stores = _external_secrets(docs)
+    probe_keys = {
+        e["secretKey"]: e["remoteRef"]["key"]
+        for e in stores["butlers-runtime-probe-control"]["spec"]["data"]
+    }
+    assert probe_keys["runtime_probe_control_signing_key"] == "CUSTOM_SIGNER"
+    env_keys = [e["secretKey"] for e in stores["butlers-local-env"]["spec"]["data"]]
+    assert env_keys == ["DASHBOARD_AUTH_DB_USER"]
+
+
+@needs_helm
+@pytest.mark.parametrize("env", ["dev", "prod"])
+def test_source_bws_leaves_every_workload_manifest_unchanged(env: str) -> None:
+    local = _without_external_secrets(_render(env, "--set", "localSecrets.source=local"))
+    bws = _without_external_secrets(_render(env, "--set", "localSecrets.source=bws"))
+    assert local == bws
+
+
+@needs_helm
+def test_dev_reads_every_secret_from_bws_under_the_butlers_runtime_prefix() -> None:
+    stores = _external_secrets(_render("dev"))
+    assert len(stores) == 3
+    remote_keys = [e["remoteRef"]["key"] for d in stores.values() for e in d["spec"]["data"]]
+    assert remote_keys
+    assert all(k.startswith("BUTLERS_RUNTIME_") for k in remote_keys), remote_keys
+
+
+@needs_helm
+def test_prod_keeps_its_legacy_bws_key_names() -> None:
+    stores = _external_secrets(_render("prod"))
+    assert len(stores) == 1
+    keys = {e["secretKey"]: e["remoteRef"]["key"] for e in stores["butlers-bws"]["spec"]["data"]}
+    assert keys == {
+        "POSTGRES_USER": "BUTLERS_DB_USER",
+        "POSTGRES_PASSWORD": "BUTLERS_DB_PASSWORD",
+        "DASHBOARD_AUTH_DB_PASSWORD": "DASHBOARD_AUTH_DB_PASSWORD",
+    }
+
+
+@needs_helm
+def test_signing_key_is_referenced_only_by_dashboard_api() -> None:
+    docs = _render("dev", "--set", "localSecrets.source=bws")
+    referencing = {
+        d["metadata"]["name"]
+        for d in docs
+        if d["kind"] != "ExternalSecret" and "runtime_probe_control_signing_key" in yaml.dump(d)
+    }
+    assert referencing == {"dashboard-api"}
+
+
+def _run_script(
+    tmp_path: Path, owner_kind: str, get_error: str = ""
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "calls"
+    calls.touch()
+    stub = fake_bin / "kubectl"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "kubectl %s\\n" "$*" >> "$TEST_CALLS"\n'
+        'case "$*" in *"get secret"*)\n'
+        '  [[ -z "$TEST_GET_ERROR" ]] || { printf "%s\\n" "$TEST_GET_ERROR" >&2; exit 1; }\n'
+        '  printf "%s\\n" "$TEST_OWNER_KIND"; exit 0;; esac\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    env_file = tmp_path / "env"
+    env_file.write_text(f"DASHBOARD_API_KEY={_FIXTURE_VALUE}\n", encoding="utf-8")
+    result = subprocess.run(
+        [str(_SCRIPT), "dev"],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "TEST_CALLS": str(calls),
+            "TEST_OWNER_KIND": owner_kind,
+            "TEST_GET_ERROR": get_error,
+            "BUTLERS_ENV_FILE": str(env_file),
+        },
+    )
+    return result, calls.read_text(encoding="utf-8")
+
+
+def test_bootstrap_refuses_externalsecret_owned_secret_without_applying(tmp_path: Path) -> None:
+    result, calls = _run_script(tmp_path, "ExternalSecret")
+
+    assert result.returncode != 0
+    assert "owned by an ExternalSecret" in result.stderr
+    assert "apply" not in calls and "create" not in calls
+    assert _FIXTURE_VALUE not in result.stdout + result.stderr + calls
+
+
+def test_bootstrap_still_applies_when_secret_is_not_externalsecret_owned(tmp_path: Path) -> None:
+    result, calls = _run_script(tmp_path, "")
+
+    assert result.returncode == 0, result.stderr
+    assert "apply -f -" in calls
+    assert _FIXTURE_VALUE not in result.stdout + result.stderr
+
+
+def test_bootstrap_treats_notfound_as_no_owner(tmp_path: Path) -> None:
+    result, calls = _run_script(tmp_path, "", 'Error from server (NotFound): secrets "x" not found')
+
+    assert result.returncode == 0, result.stderr
+    assert "apply -f -" in calls
+
+
+def test_bootstrap_fails_closed_on_non_notfound_kubectl_error(tmp_path: Path) -> None:
+    result, calls = _run_script(
+        tmp_path, "", 'Error from server (Forbidden): secrets "x" forbidden'
+    )
+
+    assert result.returncode != 0
+    assert "could not check ownership" in result.stderr
+    assert "apply" not in calls and "create" not in calls
+    assert _FIXTURE_VALUE not in result.stdout + result.stderr + calls
+
+
+@needs_helm
+@pytest.mark.parametrize("source", ["BWS", "bogus", ""])
+def test_invalid_source_fails_template_with_clear_message(source: str) -> None:
+    with pytest.raises(subprocess.CalledProcessError) as exc:
+        _render("dev", "--set", f"localSecrets.source={source}")
+    assert 'localSecrets.source must be "local" or "bws"' in exc.value.stderr
+
+
+def test_bootstrap_fails_closed_when_forbidden_text_merely_mentions_notfound(
+    tmp_path: Path,
+) -> None:
+    result, calls = _run_script(
+        tmp_path,
+        "",
+        'Error from server (Forbidden): secrets "x" is forbidden: User "NotFound" cannot get',
+    )
+
+    assert result.returncode != 0
+    assert "could not check ownership" in result.stderr
+    assert "apply" not in calls and "create" not in calls

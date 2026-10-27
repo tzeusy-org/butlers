@@ -16,8 +16,8 @@ explains the structural choices, and the [security doctrine](../../about/heart-a
 defines trust and approval boundaries.
 
 The [v1 scope](../../about/heart-and-soul/v1.md) separates current commitments
-from deferred ideas. The [v1 status](../../about/heart-and-soul/v1-status.md)
-records evidence against those commitments. This page deliberately carries no
+from deferred ideas and records a status line against its success criteria.
+This page deliberately carries no
 second feature inventory or production-readiness claim.
 
 ## Related Pages

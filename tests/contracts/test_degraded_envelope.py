@@ -47,21 +47,22 @@ import httpx
 import pytest
 
 import butlers.api.routers.settings_console as console_mod
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
     MCPClientManager,
     get_butler_configs,
+    get_db_optional,
     get_mcp_manager,
     get_pricing,
 )
-from butlers.api.routers.memory import _get_db_manager as _memory_get_db
-from butlers.api.routers.notifications import _get_db_manager as _notifications_get_db
-from butlers.api.routers.search import _get_db_manager as _search_get_db
-from butlers.api.routers.secrets_v2 import _get_db_manager as _secrets_get_db
+from butlers.api.deps import get_db as _memory_get_db
+from butlers.api.deps import get_db as _notifications_get_db
+from butlers.api.deps import get_db as _search_get_db
+from butlers.api.deps import get_db as _secrets_get_db
 from butlers.core.pricing import ModelPricing, PricingConfig
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 from tests.api.test_api_approvals import (
     _app_with_one_healthy_one_raising_butler,
 )
@@ -90,15 +91,6 @@ from tests.api.test_butlers_board import (
     _registry_row as _board_registry_row,
 )
 from tests.api.test_calendar_conflict_radar import _build_app as _make_conflicts_app
-from tests.api.test_calendar_dedup_review import (
-    _DUP_PARAMS,
-)
-from tests.api.test_calendar_dedup_review import (
-    _build_app as _make_duplicates_app,
-)
-from tests.api.test_calendar_dedup_review import (
-    _FakePool as _DedupFakePool,
-)
 from tests.api.test_calendar_workspace import (
     _audit_row,
     _workspace_event_row,
@@ -323,22 +315,6 @@ def _case_calendar_audit() -> DegradedCase:
         assert data["sources_available"] is False
 
     return DegradedCase("calendar_workspace_audit", _run)
-
-
-def _case_calendar_duplicates() -> DegradedCase:
-    async def _run() -> None:
-        with patch(
-            "butlers.api.routers.calendar_workspace._fetch_flattened_workspace_rows",
-            AsyncMock(side_effect=RuntimeError("pool down")),
-        ):
-            app, _db = _make_duplicates_app(create_app(), workspace_rows={}, pool=_DedupFakePool())
-            resp = await _request(app, "GET", "/api/calendar/workspace/duplicates", _DUP_PARAMS)
-        assert resp.status_code == 200
-        data = resp.json()["data"]
-        assert data["clusters"] == []
-        assert data["available"] is False
-
-    return DegradedCase("calendar_workspace_duplicates", _run)
 
 
 # ---------------------------------------------------------------------------
@@ -684,7 +660,7 @@ def _case_settings_console() -> DegradedCase:
             app.dependency_overrides[get_butler_configs] = lambda: _CONSOLE_BUTLERS
             app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
             app.dependency_overrides[get_pricing] = lambda: _CONSOLE_PRICING
-            app.dependency_overrides[console_mod._get_db_manager] = lambda: None
+            app.dependency_overrides[get_db_optional] = lambda: None
 
             spend_err_item = console_mod.AttentionItem(
                 id="subsystem_error:spend",
@@ -744,7 +720,6 @@ REGISTRY: list[DegradedCase] = [
     _case_calendar_entries(),
     _case_calendar_conflicts(),
     _case_calendar_audit(),
-    _case_calendar_duplicates(),
     _case_board(),
     _case_notifications_list(),
     _case_notifications_stats(),

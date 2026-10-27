@@ -17,12 +17,13 @@ Single-session detail is served ONLY by the cross-butler ``GET
 session ids are globally unique, and the global path resolves pinned rows and
 deep links without a ``?butler=`` hint. Cross-butler reads (list + detail
 fan-outs) go through the versioned read-model boundary in
-``butlers.api.read_models.sessions_v1`` rather than constructing ad-hoc SQL
+``butlers.api.read_models.sessions`` rather than constructing ad-hoc SQL
 inline.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import datetime
 from typing import Any, Literal
@@ -30,9 +31,10 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import TypeAdapter, ValidationError
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_pricing
+from butlers.api.deps import Db, get_pricing
 from butlers.api.models import (
     ApiMeta,
     ApiResponse,
@@ -51,21 +53,25 @@ from butlers.api.models.session import (
     LatencyStats,
     LinkedChatMessage,
     ProcessLog,
+    PromptProvenance,
     SessionAggregate,
     SessionAggregateButler,
     SessionAggregateTriggerSource,
     SessionDetail,
     SessionKindBreakdown,
     SessionKindItem,
+    SessionPromptReceipt,
 )
+from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.owner_time_bounds import owner_zoneinfo, resolve_owner_time_bound
-from butlers.api.read_models.sessions_v1 import (
+from butlers.api.read_models.sessions import (
     SUMMARY_COLUMNS,
     SessionDetailRow,
     SessionSummaryRow,
     decode_session_cursor,
     query_session_aggregate_fan_out,
     query_session_detail_fan_out,
+    query_session_prompt_receipt_fan_out,
     query_session_summaries_keyset_fan_out,
     query_session_trigger_breakdown_fan_out,
     row_to_summary,
@@ -79,10 +85,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 butler_sessions_router = APIRouter(prefix="/api/butlers", tags=["butlers", "sessions"])
 
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
+_PROMPT_PROVENANCE_ADAPTER = TypeAdapter(list[PromptProvenance])
+_PROMPT_DYNAMIC_SOURCES = (
+    "general_settings",
+    "situational_context",
+    "blind_spot_disclosure",
+    "switchboard_routing_instructions",
+    "memory_context",
+)
 
 
 def _get_pricing_optional() -> PricingConfig | None:
@@ -218,19 +228,45 @@ def _cost_usd_for_dto(dto: SessionSummaryRow, pricing: PricingConfig | None) -> 
     """Best-effort per-session USD cost, estimated from model + token counts.
 
     Reuses the same PricingConfig/estimate_session_cost primitives as the
-    spend and ingestion-events surfaces, computed from fields the summary
-    read-model (sessions_v1) already selects — no new SQL column, no
-    migration. Returns None (never a misleading 0.0) when pricing is
-    unavailable, the model is unknown, or the session has no token data yet
-    (e.g. a running session that hasn't recorded usage).
+    spend and ingestion-events surfaces, computed from the four disjoint
+    token buckets the summary read-model (sessions_v1) selects. Returns None
+    (never a misleading 0.0) when pricing is unavailable, the model is
+    unknown, or the session's usage evidence is incomplete.
     """
     if pricing is None or not dto.model:
         return None
+
+    # Cache evidence is nullable because legacy rows and adapters that do not
+    # report a bucket cannot distinguish an unknown count from a known zero.
+    # Do not price a partial four-bucket row by silently coalescing NULL.
+    if dto.cached_input_tokens is None or dto.cache_creation_tokens is None:
+        return None
+
+    # Cache evidence cannot prove that unknown base counters were zero. A
+    # cache-only estimate is valid only when both base counters are explicitly
+    # zero, preserving the existing one-sided input/output compatibility.
+    if dto.input_tokens is None and dto.output_tokens is None:
+        return None
+
     in_tok = dto.input_tokens or 0
     out_tok = dto.output_tokens or 0
+    cache_read_tok = dto.cached_input_tokens
+    cache_write_tok = dto.cache_creation_tokens
+
     if not in_tok and not out_tok:
-        return None
-    cost = estimate_session_cost(pricing, dto.model, in_tok, out_tok)
+        if dto.input_tokens != 0 or dto.output_tokens != 0:
+            return None
+        if not cache_read_tok and not cache_write_tok:
+            return None
+
+    cost = estimate_session_cost(
+        pricing,
+        dto.model,
+        in_tok,
+        out_tok,
+        cached_input_tokens=cache_read_tok,
+        cache_creation_tokens=cache_write_tok,
+    )
     return cost
 
 
@@ -248,6 +284,7 @@ def _dto_to_summary(dto: SessionSummaryRow, pricing: PricingConfig | None = None
         duration_ms=dto.duration_ms,
         model=dto.model,
         complexity=dto.complexity,
+        purpose_lane=dto.purpose_lane,
         input_tokens=dto.input_tokens,
         output_tokens=dto.output_tokens,
         cancelled_by_owner=dto.cancelled_by_owner,
@@ -278,6 +315,7 @@ def _dto_to_detail(dto: SessionDetailRow) -> SessionDetail:
         parent_session_id=dto.parent_session_id,
         complexity=dto.complexity,
         resolution_source=dto.resolution_source,
+        purpose_lane=dto.purpose_lane,
     )
 
 
@@ -290,6 +328,27 @@ async def _attach_session_extras(detail: SessionDetail, pool, session_id: UUID) 
     detail endpoints so both return an identical ``SessionDetail`` shape.
     """
     # Attach process log if available (best-effort — table may not exist yet)
+    try:
+        receipt = await pool.fetchval(
+            """
+            SELECT resolution_receipt
+            FROM public.model_dispatch_attempts
+            WHERE session_id = $1 AND resolution_receipt IS NOT NULL
+            ORDER BY attempt_index DESC, ts DESC, id DESC
+            LIMIT 1
+            """,
+            session_id,
+        )
+        detail.resolution_receipt = receipt if isinstance(receipt, dict) else None
+    except Exception:
+        # Pre-core_244 databases and sessions predating receipt capture both
+        # disclose the same honest absence to clients.
+        logger.debug(
+            "Could not fetch model-resolution receipt for session %s",
+            session_id,
+            exc_info=True,
+        )
+
     try:
         plog_row = await pool.fetchrow(
             """
@@ -391,7 +450,8 @@ async def list_sessions(
         ),
     ),
     request_id: str | None = Query(None, description="Filter by request_id"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     pricing: PricingConfig | None = Depends(_get_pricing_optional),
 ) -> KeysetResponse[SessionSummary]:
     """Return keyset-paginated sessions aggregated across all butler databases.
@@ -514,7 +574,8 @@ async def get_session_aggregate(
             "the common KPI-strip path never pays for it."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SessionAggregate]:
     """Return a filter-aware, window-true session rollup across all butlers.
 
@@ -601,10 +662,87 @@ async def get_session_aggregate(
 # ---------------------------------------------------------------------------
 
 
+@router.get("/{session_id}/prompt", response_model=ApiResponse[SessionPromptReceipt])
+async def get_session_prompt_receipt(
+    session_id: UUID,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
+) -> ApiResponse[SessionPromptReceipt]:
+    """Return the exact effective prompt to the authenticated dashboard owner.
+
+    This is a distinct, narrow fan-out so prompt content cannot enter the
+    ordinary session detail or list projections. A complete miss is a 404;
+    any miss over an incomplete fan-out is a 503 because the receipt may live
+    in an unreachable schema.
+    """
+    result = await query_session_prompt_receipt_fan_out(db, session_id)
+    if result.row is None or result.butler is None:
+        if result.degraded_sources:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Session prompt unavailable because one or more butler "
+                    "databases could not be queried."
+                ),
+            )
+        raise HTTPException(status_code=404, detail="Session prompt not found")
+
+    row = result.row
+    if row.effective_prompt is None and row.prompt_digest is None and row.prompt_provenance is None:
+        receipt = SessionPromptReceipt(
+            id=row.id,
+            butler=result.butler,
+            status="legacy_unavailable",
+            prompt_provenance=[],
+        )
+    else:
+        try:
+            if row.effective_prompt is None or row.prompt_digest is None:
+                raise ValueError("incomplete receipt")
+            prompt_bytes = row.effective_prompt.encode("utf-8")
+            if hashlib.sha256(prompt_bytes).hexdigest() != row.prompt_digest:
+                raise ValueError("digest mismatch")
+            provenance = _PROMPT_PROVENANCE_ADAPTER.validate_python(row.prompt_provenance)
+            sources = tuple(entry.source for entry in provenance)
+            if (
+                len(sources) <= len(_PROMPT_DYNAMIC_SOURCES)
+                or sources[-len(_PROMPT_DYNAMIC_SOURCES) :] != _PROMPT_DYNAMIC_SOURCES
+                or any(
+                    source != "system_prompt_history"
+                    and source != "generated_default"
+                    and not source.startswith("roster:")
+                    for source in sources[: -len(_PROMPT_DYNAMIC_SOURCES)]
+                )
+            ):
+                raise ValueError("unexpected prompt provenance sources")
+            receipt = SessionPromptReceipt(
+                id=row.id,
+                butler=result.butler,
+                status="captured",
+                effective_prompt=row.effective_prompt,
+                prompt_digest=row.prompt_digest,
+                prompt_provenance=provenance,
+                total_bytes=len(prompt_bytes),
+            )
+        except (TypeError, UnicodeEncodeError, ValidationError, ValueError):
+            receipt = SessionPromptReceipt(
+                id=row.id,
+                butler=result.butler,
+                status="corrupt",
+                prompt_provenance=[],
+            )
+    return ApiResponse[SessionPromptReceipt](
+        data=receipt,
+        meta=ApiMeta(sources_degraded=result.degraded_sources or None),
+    )
+
+
 @router.get("/{session_id}", response_model=ApiResponse[SessionDetail])
 async def get_session(
     session_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SessionDetail]:
     """Return full detail for a single session, resolving it across butlers.
 
@@ -679,7 +817,8 @@ async def list_butler_sessions(
         ),
     ),
     request_id: str | None = Query(None, description="Filter by request_id"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     pricing: PricingConfig | None = Depends(_get_pricing_optional),
 ) -> PaginatedResponse[SessionSummary]:
     """Return paginated sessions for a single butler.
@@ -692,11 +831,11 @@ async def list_butler_sessions(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     # Map bare day keys onto owner-timezone day boundaries (reuse this butler's
     # own pool to read the shared public general settings).
@@ -762,7 +901,8 @@ GROUP BY trigger_source
 async def get_butler_session_kinds(
     name: str,
     window_days: int = Query(7, ge=0, description="Rolling window in days (default 7)"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SessionKindBreakdown]:
     """Return session counts grouped by trigger_source for a rolling window.
 
@@ -774,11 +914,11 @@ async def get_butler_session_kinds(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     rows = await pool.fetch(_SESSION_KINDS_SQL, window_days)
 
@@ -813,7 +953,8 @@ _VALID_WINDOW_DAYS = {7, 30}
 async def get_butler_daily_activity(
     name: str,
     window_days: int = Query(7, description="Rolling window in days; must be 7 or 30"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[DailyActivity]:
     """Return daily session counts for a butler over a rolling 7- or 30-day window.
 
@@ -831,11 +972,11 @@ async def get_butler_daily_activity(
 
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     rows = await pool.fetch(_DAILY_ACTIVITY_SQL, window_days)
 
@@ -876,7 +1017,8 @@ ORDER BY 1 DESC
 async def get_butler_hourly_activity(
     name: str,
     window_hours: int = Query(24, ge=1, le=24, description="Rolling window in hours (default 24)"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[HourlyActivity]:
     """Return hourly session counts for a butler over a rolling window.
 
@@ -891,11 +1033,11 @@ async def get_butler_hourly_activity(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     rows = await pool.fetch(_HOURLY_ACTIVITY_SQL, window_hours)
 
@@ -943,7 +1085,8 @@ WHERE started_at >= NOW() - ($1 * INTERVAL '1 day')
 async def get_butler_latency_stats(
     name: str,
     window_days: int = Query(7, ge=1, le=365, description="Rolling window in days (default 7)"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[LatencyStats]:
     """Return latency percentile statistics for a butler over a rolling window.
 
@@ -956,11 +1099,11 @@ async def get_butler_latency_stats(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     row = await pool.fetchrow(_LATENCY_STATS_SQL, window_days)
 
@@ -996,7 +1139,8 @@ async def get_butler_friction_summary(
     period: Literal["today", "7d", "30d"] = Query(
         "today", description="Summary period: 'today', '7d', or '30d'"
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[FrictionSummary]:
     """Return typed friction-episode counts and session outcomes for a butler.
 
@@ -1009,11 +1153,11 @@ async def get_butler_friction_summary(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     friction = await _friction_summary(pool, period)
     outcomes = await _sessions_summary(pool, period)

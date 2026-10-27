@@ -146,6 +146,41 @@ Everything else in the table above is reconstructed by the bootstrap, expiring
 runtime state, or a deterministic projection rebuilt on the next detector run.
 No canonical source observation is excluded.
 
+### Forced-RLS cost-claim ledgers
+
+`public.cost_claims`, `public.cost_claim_resolutions`, and
+`public.cost_claim_events` are durable application evidence, not control-plane
+exceptions, so every published artifact preserves all of their rows. They cannot
+travel through ordinary `pg_dump` table-data output: the three tables use FORCE RLS,
+and globally enabling row-security would let an unrelated future policy silently
+filter another table.
+
+The producer therefore keeps ordinary `pg_dump` in its fail-loud
+`row_security=off` posture and excludes only these three tables' **data**, not their
+schema. It then appends a narrowly scoped staging block containing their rows as
+hex-wrapped JSON from the same exported PostgreSQL snapshot as the ordinary dump.
+Before writing either stream, it reads the catalogue in that same snapshot and
+requires the exact three tables to retain FORCE RLS plus exactly one permissive,
+non-restrictive `PUBLIC USING (true)` `FOR SELECT` policy each, with no other policy
+that applies to SELECT (including `FOR ALL`). A missing table, an extra restrictive
+read policy, or any narrower expression fails the run before publication.
+Every other unexcluded fenced relation still makes ordinary `pg_dump` fail.
+
+During restore, the staged rows pass through
+`public.cost_claim_restore_row(text, jsonb)`. This fixed `SECURITY DEFINER` function
+is owned by the same role as the ledgers, has no `PUBLIC` execute grant, accepts only
+the three named relations, and temporarily suppresses only the audit-trigger events
+that replaying historical claim and resolution rows would otherwise duplicate. The
+restore must already satisfy the ownership membership precondition below to assume
+that owner. A failure in this scoped replay enables `ON_ERROR_STOP` for the appended
+block and prevents certification; it is never treated as a partial success.
+
+The real PostgreSQL contract tests compare source and restored row counts for all
+three tables and independently compare FORCE RLS and owner posture. They also prove
+the restore function remains security-definer, shares the table owner, and is not
+publicly executable. No dump role receives `BYPASSRLS`, no runtime role receives a
+restore capability, and no ledger is downgraded to an exclusion.
+
 `tests/scripts/test_pg_dump_backup.py` pins that claim against a real
 bootstrapped database, in both directions: it fails if a fenced object appears
 that the script does not exclude (which would silently stop producing backups),
@@ -220,6 +255,16 @@ cluster superuser to rebuild the fences.
 real dumps and real clusters, including both rejected alternatives, so neither
 can be reintroduced without the test saying why it was rejected.
 
+A dump preserves each function's `proconfig`, so a dump taken before the
+definer search-path pins (core_252, sw_039 and the init-db finalizers) restores
+definers that still have a `CREATE`-able schema on their path. Bring a restored
+database to the current bootstrap and migration heads before exposing it. The
+catalog guard `tests/migrations/test_definer_search_path_pins.py` defines the
+end state: every `SECURITY DEFINER` path is exactly `pg_catalog, pg_temp`.
+On a live database, `GET /api/system/stored-functions` (`unpinned_definers`)
+lists any that are not, with the owner and remedy. See the definer search-path
+check in [runtime-attention.md](runtime-attention.md#check).
+
 ## Managed restore drill
 
 The `restore-drill-executor` is the only process allowed to perform the
@@ -266,8 +311,12 @@ repository, is never copied into `.env` as a value, and is mounted by Compose
 only at `/run/secrets/restore_drill_executor_password` in the executor
 container. Its content is UTF-8 with at most one terminal LF; embedded/multiple
 LF, CR, and NUL are rejected. The bootstrap procedure creates or repairs the distinct login with
-`LOGIN CREATEDB NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION` and maintains
-the normal-role `NOCREATEDB` boundary.
+`LOGIN CREATEDB NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS` and
+maintains the normal-role `NOCREATEDB` boundary. Every normal role it normalizes
+(the migration login, `butler_*_rw`, `connector_writer`, the optional calendar role
+and the restore-drill roles) also ends bootstrap `NOBYPASSRLS`, so forced
+row-level security binds them; online migration admission refuses with a bounded "missing or untrusted" error
+if any of them still has `BYPASSRLS`. Rerun `scripts/init-db.sql` to repair.
 
 When the executor uses `RESTORE_DRILL_EXECUTOR_SSLMODE=verify-ca` or
 `verify-full`, configure a separate, noncredential CA-root source file as
@@ -304,6 +353,15 @@ before calling the installer. The shared login gets neither protected-schema
 `CREATE` nor ownership-finalizer execution. A clean first install or retry, and
 a privileged rerun retaining that trusted admin owner, complete normally.
 
+`is_due()` and `record_result()` run with `search_path = pg_catalog, pg_temp`.
+The shared login can `CREATE` in `public`, and an unqualified catalog call
+such as `make_interval(secs => ...)` resolves to a better-matching `public`
+overload whenever `public` is on the definer's path. Today the owner's missing
+`public` USAGE also hides such a decoy, but the pin must not depend on that
+ACL. The finalizer re-applies the pin on every privileged rerun, so a database
+bootstrapped before this rule keeps `public` on the path until
+`scripts/init-db.sql` runs again.
+
 The fixed public audit projection uses a separate
 `restore_drill_executor_audit_writer` `NOLOGIN` security-definer rather than
 allowing the private ledger owner to insert into `public.audit_log`. Its only
@@ -316,6 +374,18 @@ the public projection, which is an availability denial: the enclosing
 retaining a partial or false recovery result. Repair the audited trigger through
 normal privileged database governance; never bypass the boundary by granting
 the private owner public-audit DML.
+
+The core audit-integrity stage (`core_279`) adds an insert-bound `writer_role`:
+the fixed definer projection above records
+`restore_drill_executor_audit_writer`, the role actually executing its INSERT.
+A normal runtime cannot supply that writer identity. Logical `actor` and event
+text remain descriptive and do not certify a restore result. The private
+executor ledger remains the sole authority. UPDATE/DELETE and TRUNCATE guards
+survive bootstrap's public-table grant replay, but the shared table owner can
+still alter those guards. Removing that hostile-owner capability belongs to
+the separate managed-topology security work; this stage does not certify it.
+See [audit writer integrity](../data_and_storage/audit-log.md) for transaction,
+rollback and stage boundaries.
 
 Do not bypass that managed procedure. In particular, do not issue ad hoc
 database-role changes, manually pre-create the scratch database, pass a shared
@@ -497,3 +567,15 @@ it is no longer running, preserve the authoritative ledger, audit projection,
 and backup volume, and use the reviewed migration and managed bootstrap
 procedures for any privilege remediation. A rollback must never restore a dump
 into the live application database or manually erase recovery evidence.
+
+## Implementation Notes
+
+- The reviewed bootstrap prerequisite applies to all supported online migrations,
+  including ordinary dev. [The operator procedure](../data_and_storage/reviewed-bootstrap.md)
+  separates configured privileged bootstrap from normal migrations and genuine
+  core195 repair. It neither enables this executor nor supplies its secret;
+  existing protected downgrade and data-preservation constraints still apply.
+
+- Host BusyBox differs from Alpine's (Ubuntu `busybox find` has no `-delete`): parse-check
+  `deploy/backup/pg_dump.sh` with `busybox ash -n` locally and execute it only in the
+  `postgres:17-alpine` image (`tests/scripts/test_pg_dump_backup.py`).

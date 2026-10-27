@@ -39,11 +39,11 @@ vi.mock("@/hooks/use-memory", () => ({
   useUpdateEntityInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useDeleteEntityInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useRevealEntitySecret: vi.fn(() => ({ mutate: vi.fn() })),
-  useSetLinkedContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useUnlinkContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
 vi.mock("@/hooks/use-entities", () => ({
+  ENTITY_CADENCE_REFRESH_MS: 30_000,
+  ENTITY_CADENCE_MAX_AGE_MS: 90_000,
   // EntityDetailPage renders EntityVerbRail (bu-6t8ix.4); its four write verbs each
   // call a mutation hook from this module. Inert here: these suites submit nothing,
   // the hooks only need to exist and report an idle state. Declared inline because a
@@ -79,6 +79,8 @@ vi.mock("@/hooks/use-entities", () => ({
     error: null,
   })),
   useEntityTimeline: vi.fn(() => ({ data: [], isLoading: false })),
+  useEntityActivity: vi.fn(() => ({ data: { pages: [{ items: [], total: 0, limit: 50, offset: 0, degraded: false, degraded_reason: null }], pageParams: [0] }, isLoading: false, isError: false, isRefetching: false, refetch: vi.fn(), fetchNextPage: vi.fn(), hasNextPage: false, isFetchingNextPage: false })),
+  useEntityCadence: vi.fn(() => ({ data: { window_days: 30, interaction_count: 0, completeness: "complete", has_more: false }, isLoading: false, isError: false })),
   useEntityGifts: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityLoans: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityMessageThreads: vi.fn(() => ({ data: [], isLoading: false })),
@@ -100,13 +102,6 @@ vi.mock("@/hooks/use-entities", () => ({
   useMergeRelationshipEntities: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
 }));
 
-vi.mock("@/hooks/use-contacts", () => ({
-  useContacts: vi.fn(() => ({ data: { contacts: [] } })),
-  useCreateContactInfo: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
-  useDeleteContactInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  usePatchContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  usePatchContactInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-}));
 
 vi.mock("@/components/relationship/OwnerSetupBanner", () => ({
   OwnerSetupBanner: () => null,
@@ -152,6 +147,10 @@ const PROVENANCE: EntityFact = {
   weight: 3,
   last_observed_at: "2020-01-01T00:00:00Z",
   verified: true,
+  confirmation_status: "owner_confirmed",
+  confirmed_at: "2020-01-01T00:00:00Z",
+  confirmed_by_entity_id: "entity-001",
+  confirmation_source: "dashboard_confirm",
   primary: true,
   validity: "active",
   created_at: "2020-01-01T00:00:00Z",
@@ -166,8 +165,6 @@ const ENTITY: EntityDetail = {
   aliases: [],
   roles: ["owner"],
   fact_count: 1,
-  linked_contact_id: null,
-  linked_contact_name: null,
   unidentified: false,
   source_butler: null,
   source_scope: null,
@@ -219,6 +216,8 @@ afterEach(() => {
 });
 
 describe("EntityDetailPage — editorial provenance reveal", () => {
+  // REQ-dashboard-relationship-003: mounted owner-confirmed versus legacy
+  // provenance display. These fixtures do not prove request authentication.
   it("keeps provenance hidden until the affordance is activated", () => {
     renderPage();
 
@@ -238,6 +237,24 @@ describe("EntityDetailPage — editorial provenance reveal", () => {
     expect(reveal.querySelector('[data-verified="true"]')).not.toBeNull();
     expect(reveal.querySelector('[data-staleness="stale"]')).not.toBeNull();
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
+
+    // The same raw verified bit on an unconfirmed legacy identity is honest
+    // historical provenance, not a genuine owner confirmation badge.
+    cleanup();
+    vi.mocked(useEntityFacts).mockReturnValue({
+      data: { items: [{ ...PROVENANCE, confirmation_status: "legacy_verified",
+        confirmed_at: null, confirmed_by_entity_id: null, confirmation_source: null }],
+      next_cursor: null, has_more: false },
+      isFetching: false,
+      error: null,
+    } as unknown as ReturnType<typeof useEntityFacts>);
+    renderPage();
+    fireEvent.click(screen.getByTestId("fact-provenance-toggle-fact-1"));
+    const legacy = screen.getByTestId("fact-provenance-reveal-fact-1");
+    expect(legacy.querySelector('[data-verified="true"]')).toBeNull();
+    expect(legacy.textContent).toContain("Legacy verification");
+    expect(legacy.textContent).toContain("relationship");
+    expect(legacy.querySelector('[data-staleness="stale"]')).not.toBeNull();
   });
 
   it("offers no affordance when the fact has no drill provenance", () => {

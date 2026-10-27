@@ -20,6 +20,11 @@ whether to honor it:
 This exercises the real query text against a live Postgres instance (not the
 substring-matching mocks in test_memory.py) so a regression that silently
 drops the ``metadata->>'forgotten'`` predicate is actually caught.
+
+bu-rjdihn extends the same live-Postgres fixtures to cover the sibling
+``retired_at`` soft-decommission signal (bu-6t8ix.3): retired rules must be
+annotated (not hidden) in list/inspect, and excluded from active-rule counts
+in stats with a separate ``retired_rules`` total.
 """
 
 from __future__ import annotations
@@ -31,8 +36,8 @@ from contextlib import asynccontextmanager
 import httpx
 import pytest
 
-from butlers.api.app import create_app
-from butlers.api.routers.memory import _get_db_manager
+from butlers.api.deps import get_db
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -50,6 +55,7 @@ pytestmark = [
 # stats assertion, mirroring test_memory_stats_consolidation_e2e.py).
 _RULES_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS episodes (
+    content_authority TEXT, authority_entity_id UUID,
     id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     consolidated         BOOLEAN NOT NULL DEFAULT false,
     consolidation_status TEXT    NOT NULL DEFAULT 'pending'
@@ -59,6 +65,7 @@ CREATE TABLE IF NOT EXISTS episode_tombstones (
     deleted_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS facts (
+    content_authority TEXT, authority_entity_id UUID,
     id       BIGSERIAL PRIMARY KEY,
     validity TEXT NOT NULL DEFAULT 'active'
 );
@@ -74,6 +81,7 @@ CREATE TABLE IF NOT EXISTS public.consolidation_runs (
     errors             INT NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS rules (
+    content_authority TEXT, authority_entity_id UUID, endorsed_at TIMESTAMPTZ, endorsed_by UUID,
     id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     content              TEXT NOT NULL,
     search_vector        tsvector,
@@ -92,7 +100,8 @@ CREATE TABLE IF NOT EXISTS rules (
     last_applied_at      TIMESTAMPTZ,
     last_evaluated_at    TIMESTAMPTZ,
     tags                 JSONB DEFAULT '[]'::jsonb,
-    metadata             JSONB DEFAULT '{}'::jsonb
+    metadata             JSONB DEFAULT '{}'::jsonb,
+    retired_at           TIMESTAMPTZ
 );
 """
 
@@ -114,7 +123,7 @@ class _SinglePoolDB:
 @asynccontextmanager
 async def _app_client(db: object):
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -127,11 +136,13 @@ async def _insert_rule(
     content: str,
     maturity: str,
     forgotten: bool = False,
+    retired: bool = False,
 ) -> uuid.UUID:
     rule_id = uuid.uuid4()
     metadata = {"forgotten": True} if forgotten else {}
     await pool.execute(
-        "INSERT INTO rules (id, content, maturity, metadata) VALUES ($1, $2, $3, $4)",
+        f"INSERT INTO rules (id, content, maturity, metadata, retired_at)"
+        f" VALUES ($1, $2, $3, $4, {'now()' if retired else 'NULL'})",
         rule_id,
         content,
         maturity,
@@ -224,3 +235,108 @@ async def test_inspect_rule_search_excludes_forgotten(provisioned_postgres_pool)
         assert resp.status_code == 200
         ids = {row["id"] for row in resp.json()["data"]}
         assert ids == {str(live_id)}
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_inspect_rule_total_counts_exactly_the_rows_it_returns(
+    provisioned_postgres_pool,
+) -> None:
+    """meta.total comes from a count(*) under the row filter, so a forgotten rule
+    is neither returned nor counted (bu-kqnum.14.5)."""
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(_RULES_SCHEMA_SQL)
+
+        await _insert_rule(pool, content="visible rule", maturity="proven")
+        await _insert_rule(pool, content="hidden rule", maturity="proven", forgotten=True)
+
+        db = _SinglePoolDB("memory", pool)
+        async with _app_client(db) as client:
+            resp = await client.get("/api/memory/inspect", params={"kind": "rule"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["meta"]["total"] == len(body["data"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# bu-rjdihn — retired rules (retired_at, bu-6t8ix.3) are annotated, not
+# hidden, in list/inspect, and excluded from active-rule counts in stats.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_stats_maturity_buckets_exclude_retired_rules(provisioned_postgres_pool) -> None:
+    """Each maturity bucket excludes retired rules; a separate retired_rules
+    field counts them instead of silently dropping them from any total."""
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(_RULES_SCHEMA_SQL)
+
+        await _insert_rule(pool, content="live candidate", maturity="candidate")
+        await _insert_rule(pool, content="retired candidate", maturity="candidate", retired=True)
+        await _insert_rule(pool, content="live proven", maturity="proven")
+        await _insert_rule(pool, content="another live proven", maturity="proven")
+        await _insert_rule(pool, content="retired proven", maturity="proven", retired=True)
+
+        db = _SinglePoolDB("memory", pool)
+        async with _app_client(db) as client:
+            resp = await client.get("/api/memory/stats")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+
+        # total_rules stays a raw table count (matches total_facts convention).
+        assert data["total_rules"] == 5
+        assert data["candidate_rules"] == 1
+        assert data["proven_rules"] == 2
+        assert data["retired_rules"] == 2
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_rules_includes_retired_with_retired_at_populated(
+    provisioned_postgres_pool,
+) -> None:
+    """GET /api/memory/rules (the standing-orders register) does NOT hide
+    retired rules by default (unlike forgotten) — it annotates them with
+    retired_at so the frontend can visually distinguish them."""
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(_RULES_SCHEMA_SQL)
+
+        live_id = await _insert_rule(pool, content="live rule", maturity="proven")
+        retired_id = await _insert_rule(
+            pool, content="retired rule", maturity="proven", retired=True
+        )
+
+        db = _SinglePoolDB("memory", pool)
+        async with _app_client(db) as client:
+            resp = await client.get("/api/memory/rules")
+
+        assert resp.status_code == 200
+        rows = {row["id"]: row for row in resp.json()["data"]}
+        assert {str(live_id), str(retired_id)} == set(rows)
+        assert rows[str(live_id)]["retired_at"] is None
+        assert rows[str(retired_id)]["retired_at"] is not None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_inspect_rule_search_includes_retired_with_retired_at_populated(
+    provisioned_postgres_pool,
+) -> None:
+    """GET /api/memory/inspect?kind=rule surfaces retired rules (unlike
+    forgotten ones, which it hard-excludes) with retired_at populated."""
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(_RULES_SCHEMA_SQL)
+
+        live_id = await _insert_rule(pool, content="visible live rule", maturity="proven")
+        retired_id = await _insert_rule(
+            pool, content="visible retired rule", maturity="proven", retired=True
+        )
+
+        db = _SinglePoolDB("memory", pool)
+        async with _app_client(db) as client:
+            resp = await client.get("/api/memory/inspect", params={"kind": "rule"})
+
+        assert resp.status_code == 200
+        rows = {row["id"]: row for row in resp.json()["data"]}
+        assert {str(live_id), str(retired_id)} == set(rows)
+        assert rows[str(retired_id)]["rule"]["retired_at"] is not None
+        assert rows[str(live_id)]["rule"]["retired_at"] is None

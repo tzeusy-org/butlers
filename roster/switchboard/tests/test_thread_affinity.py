@@ -11,10 +11,12 @@ See docs/switchboard/thread_affinity_routing.md for spec reference.
 from __future__ import annotations
 
 import time
+from dataclasses import FrozenInstanceError
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.testing.records import Record
 from butlers.tools.switchboard.triage.thread_affinity import (
     AffinityOutcome,
     AffinityResult,
@@ -55,27 +57,16 @@ def _mock_pool(rows: list[dict] | None = None, stale_exists: bool = False) -> As
     """Create a mock asyncpg pool that returns given rows for fetch."""
     pool = AsyncMock()
 
-    # Convert dicts to record-like objects with attribute access
-    class FakeRecord:
-        def __init__(self, data: dict) -> None:
-            self._data = data
-
-        def __getitem__(self, key: str) -> object:
-            return self._data[key]
-
-        def __len__(self) -> int:
-            return len(self._data)
-
     if rows is None:
         rows = []
 
-    fake_rows = [FakeRecord(r) for r in rows]
+    fake_rows = [Record(r) for r in rows]
 
     pool.fetch = AsyncMock(return_value=fake_rows)
 
     # fetchrow for stale check: return a fake row if stale_exists
     if stale_exists:
-        pool.fetchrow = AsyncMock(return_value=FakeRecord({"1": 1}))
+        pool.fetchrow = AsyncMock(return_value=Record({"1": 1}))
     else:
         pool.fetchrow = AsyncMock(return_value=None)
 
@@ -358,7 +349,7 @@ class TestAffinityResult:
 
     def test_frozen_result(self) -> None:
         r = AffinityResult(outcome=AffinityOutcome.HIT, target_butler="finance")
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             r.target_butler = "other"  # type: ignore[misc]
 
 
@@ -384,7 +375,7 @@ class TestThreadAffinitySettings:
 
     def test_frozen(self) -> None:
         s = ThreadAffinitySettings.defaults()
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             s.enabled = False  # type: ignore[misc]
 
 

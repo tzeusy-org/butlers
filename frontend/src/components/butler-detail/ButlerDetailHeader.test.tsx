@@ -478,7 +478,7 @@ describe("Scenario G: truthful schedule header facts", () => {
     expect(overdue.classList.contains("focus-visible:outline")).toBe(true)
     expect(overdue.classList.contains("focus-visible:outline-2")).toBe(true)
     expect(overdue.classList.contains("focus-visible:outline-offset-2")).toBe(true)
-    expect(overdue.classList.contains("focus-visible:outline-fg")).toBe(true)
+    expect(overdue.classList.contains("focus-visible:outline-focus")).toBe(true)
     expect(screen.getByTestId("butler-header-facts").textContent).not.toContain("next 3h ago")
   })
 

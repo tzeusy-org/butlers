@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from butlers.api.app import create_app
+from butlers.api.deps import get_db_optional
 from butlers.credential_store import CredentialStore
 from butlers.google_credentials import (
     KEY_CLIENT_ID,
@@ -18,6 +18,7 @@ from butlers.google_credentials import (
     resolve_google_credentials,
     store_app_credentials,
 )
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -92,9 +93,7 @@ def _make_db_manager(row: dict | None = None, execute_result: str = "DELETE 0"):
 def _make_api_client(db_manager=None) -> TestClient:
     app = create_app()
     if db_manager is not None:
-        from butlers.api.routers import oauth
-
-        app.dependency_overrides[oauth._get_db_manager] = lambda: db_manager
+        app.dependency_overrides[get_db_optional] = lambda: db_manager
     return TestClient(app, raise_server_exceptions=False)
 
 

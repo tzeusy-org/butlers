@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -11,6 +12,12 @@ from typing import Any
 from butlers.core.liveness import is_liveness_stale
 
 logger = logging.getLogger(__name__)
+
+#: Verbatim wording the blind-spot preamble uses when the declared-signal
+#: query itself fails. Deliberately named so a session is told what it
+#: cannot see rather than the layer silently vanishing (see
+#: :func:`evaluate_declared_signals` / :func:`format_blind_spot_preamble`).
+BLIND_SPOT_QUERY_FAILED_TEXT = "source health could not be evaluated"
 
 
 class ExpectedSignalState(StrEnum):
@@ -250,10 +257,150 @@ def measurement_producer_identity(
     return producer, next(iter(endpoints))
 
 
+@dataclass(frozen=True, slots=True)
+class BlindSpotSnapshot:
+    """Result of evaluating one butler's declared expected signals at spawn time.
+
+    ``evaluated_at`` is the evaluator's clock (not any individual signal's
+    ``last_observed_at``) so the preamble can name the instant the claim was
+    made. ``signals`` holds only the non-PRESENT evaluations — a butler with
+    every declared signal PRESENT gets an empty tuple, which is what makes the
+    happy-path preamble byte-identical to today's (see
+    :func:`format_blind_spot_preamble`). ``query_failed`` distinguishes "we
+    checked and everything is fine" from "we could not check" -- the two must
+    never look the same, or a query failure would silently present as an
+    all-clear.
+    """
+
+    evaluated_at: datetime
+    signals: tuple[ExpectedSignalEvaluation, ...]
+    query_failed: bool = False
+
+
+async def evaluate_declared_signals(
+    pool: Any,
+    *,
+    signal_key_like_patterns: Sequence[str],
+    now: datetime | None = None,
+) -> BlindSpotSnapshot:
+    """Evaluate every declared signal a butler depends on, fresh, at ``now``.
+
+    ``signal_key_like_patterns`` are SQL ``LIKE`` patterns (e.g.
+    ``"health:measurement-gap:%"``) naming the signal namespaces this butler
+    has declared a dependency on -- see
+    :mod:`butlers.core.blind_spot_declarations`. An empty sequence means the
+    butler has declared no dependencies eligible for this preamble; that is
+    not a failure and returns an empty, non-failed snapshot.
+
+    Each matching row is re-evaluated against ``now`` via
+    :func:`evaluate_expected_signal` rather than trusting its stored
+    ``measurability`` -- a row can be stale (last written well before its
+    cadence lapsed) without ever being re-touched, and staleness must be
+    judged at the spawn clock, not at the last write.
+
+    Unlike every other fetch helper in this package, this function is
+    deliberately **fail-closed**: a query error is caught and reported via
+    ``query_failed=True`` instead of degrading to an empty (falsely
+    reassuring) snapshot. Silently omitting this layer on error would be
+    indistinguishable from "every declared signal is present".
+    """
+    evaluated_at = _normalize_timestamp(now or datetime.now(UTC))
+    assert evaluated_at is not None
+
+    if not signal_key_like_patterns:
+        return BlindSpotSnapshot(evaluated_at=evaluated_at, signals=(), query_failed=False)
+
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT signal_key, producer, producer_endpoint_identity,
+                   expected_cadence_seconds, last_observed_at
+            FROM public.expected_signals
+            WHERE signal_key LIKE ANY($1::text[])
+            ORDER BY signal_key
+            """,
+            list(signal_key_like_patterns),
+        )
+    except Exception:  # noqa: BLE001 -- a failed check must never look like a clean one
+        logger.warning(
+            "Blind-spot declared-signal query failed for patterns=%s",
+            signal_key_like_patterns,
+            exc_info=True,
+        )
+        return BlindSpotSnapshot(evaluated_at=evaluated_at, signals=(), query_failed=True)
+
+    evaluations: list[ExpectedSignalEvaluation] = []
+    for row in rows:
+        evaluation = await evaluate_expected_signal(
+            pool,
+            signal_key=row["signal_key"],
+            producer=row["producer"],
+            producer_endpoint_identity=row["producer_endpoint_identity"],
+            expected_cadence=timedelta(seconds=row["expected_cadence_seconds"]),
+            last_observed_at=row["last_observed_at"],
+            now=evaluated_at,
+        )
+        if evaluation.state is not ExpectedSignalState.PRESENT:
+            evaluations.append(evaluation)
+
+    return BlindSpotSnapshot(
+        evaluated_at=evaluated_at,
+        signals=tuple(evaluations),
+        query_failed=False,
+    )
+
+
+def format_blind_spot_preamble(snapshot: BlindSpotSnapshot) -> str | None:
+    """Render a :class:`BlindSpotSnapshot` into a system-prompt block, or ``None``.
+
+    Returns ``None`` (no layer at all) exactly when there is nothing to say:
+    the query succeeded and every declared signal is PRESENT. This is what
+    keeps the composed system prompt byte-identical to today's whenever
+    nothing is actually blind. Any other outcome returns a typed block naming
+    the affected signal(s), their producer, ``last_observed_at``, and the
+    evaluator's own clock -- or, on a query failure, the fixed
+    :data:`BLIND_SPOT_QUERY_FAILED_TEXT` wording rather than silence.
+    """
+    if snapshot.query_failed:
+        return (
+            "## Source Health\n\n"
+            f"{BLIND_SPOT_QUERY_FAILED_TEXT.capitalize()} as of "
+            f"{snapshot.evaluated_at.isoformat()}. Treat every claim that would "
+            "depend on a declared signal as unconfirmed until this can be "
+            "re-checked."
+        )
+
+    if not snapshot.signals:
+        return None
+
+    lines = [
+        "## Source Health — Declared Blind Spots",
+        "",
+        f"Evaluated at {snapshot.evaluated_at.isoformat()} (evaluator clock). "
+        "The following declared signals are not confirmed current. State any "
+        "claim that depends on them as unmeasured, not as fact:",
+        "",
+    ]
+    for signal in snapshot.signals:
+        last_observed = (
+            signal.last_observed_at.isoformat() if signal.last_observed_at is not None else "never"
+        )
+        reason = f"; reason: {signal.unmeasurable_reason}" if signal.unmeasurable_reason else ""
+        lines.append(
+            f"- signal={signal.signal_key} producer={signal.producer} "
+            f"last_observed_at={last_observed} state={signal.state.value}{reason}"
+        )
+    return "\n".join(lines)
+
+
 __all__ = [
+    "BLIND_SPOT_QUERY_FAILED_TEXT",
+    "BlindSpotSnapshot",
     "ExpectedSignalEvaluation",
     "ExpectedSignalState",
+    "evaluate_declared_signals",
     "evaluate_expected_signal",
+    "format_blind_spot_preamble",
     "measurement_producer",
     "measurement_producer_identity",
     "upsert_expected_signal",

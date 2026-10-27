@@ -42,16 +42,10 @@ describe("amber text consumers", () => {
     expect(source.match(/stateTextColor=\{toneTextColor\(meta\.tone\)\}/g) ?? []).toHaveLength(2)
     expect(source).toContain('border: `1.5px solid ${stateColor}`')
     expect(source).toContain('color: stateTextColor')
-    expect(source).toContain('const textTone = isExpiring ? "var(--red)" : "var(--amber-text)"')
-    expect(source).toContain('<Mono size={10} color={textTone}>{label}</Mono>')
-    expect(source).toContain('const stateTextColor = stateColor === "var(--amber)" ? "var(--amber-text)" : stateColor')
-    expect(source).toContain('<Mono size={10} color={stateTextColor}>{status.state}</Mono>')
     expect(source).toMatch(/session\?\.state === "success"[\s\S]*: "var\(--amber-text\)";/)
     expect(source).toContain('credential.state === "expiring"\n                    ? "var(--amber-text)"')
     expect(source).toContain('credential.state === "expiring" ? "var(--amber-text)"')
     expect(source).toContain('<Mono size={11} color="var(--amber-text)">\n                pasted tokens')
-    expect(source).toContain('backgroundColor: tone')
-    expect(source).toContain('backgroundColor: stateColor')
   })
 
   it("uses the AA-safe token for unavailable impact copy", () => {

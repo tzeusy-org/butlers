@@ -42,6 +42,7 @@ from typing import Any, TypedDict
 
 import asyncpg
 
+from butlers.core.entity_posture import ACTIVE, MEMORIAL
 from butlers.core.state import state_delete, state_list, state_set
 from butlers.jobs.briefing import SGT, today_sgt
 
@@ -644,7 +645,11 @@ async def run_relationship_calendar_overlay_contribution(
     Both ``important_dates`` arms mirror the relationship briefing contribution:
     the contact-anchored path (``contact_id`` → ``contact_entity_map`` →
     ``entities``) and the entity-anchored path (``local_entity_id`` → ``entities``),
-    each gated on ``entities.listed = true``. Each date in the window gets an
+    each gated on ``entities.listed = true``. Posture (bu-q7vx1q.8) then shapes each
+    row: ``active`` people keep their ``birthday``/``important_date`` entries, a
+    ``memorial`` person's birthday becomes a low-priority ``remembrance`` entry
+    (no other date of theirs surfaces), and ``quiet``/``no_contact`` people
+    contribute nothing. Each date in the window gets an
     envelope (``has_entries=false`` when empty), entries are ordered
     priority-descending, writes upsert via ``state_set``, and stale past-date
     entries are pruned. No LLM session is spawned.
@@ -669,7 +674,8 @@ async def run_relationship_calendar_overlay_contribution(
     # birthday/important_date split happens in Python by label.
     date_rows = await pool.fetch(
         """
-        SELECT COALESCE(e.canonical_name, 'Unknown') AS name, id.label, id.month, id.day, id.year
+        SELECT COALESCE(e.canonical_name, 'Unknown') AS name, id.label, id.month, id.day, id.year,
+               e.posture
         FROM important_dates id
         JOIN contact_entity_map cem ON cem.contact_id = id.contact_id
         JOIN public.entities e ON e.id = cem.entity_id
@@ -683,7 +689,7 @@ async def run_relationship_calendar_overlay_contribution(
         UNION ALL
 
         SELECT COALESCE(e.canonical_name, 'Unknown') AS name,
-               id.label, id.month, id.day, id.year
+               id.label, id.month, id.day, id.year, e.posture
         FROM important_dates id
         JOIN public.entities e ON e.id = id.local_entity_id
         WHERE id.contact_id IS NULL
@@ -739,7 +745,7 @@ async def run_relationship_calendar_overlay_contribution(
     )
 
     entries_by_date: dict[str, list[OverlayEntry]] = {}
-    birthday_count = important_date_count = follow_up_count = 0
+    birthday_count = important_date_count = follow_up_count = remembrance_count = 0
 
     for row in date_rows:
         landing = date_index.get((row["month"], row["day"]))
@@ -749,6 +755,20 @@ async def run_relationship_calendar_overlay_contribution(
         days_until = (landing - today).days
         raw_label = row["label"]
         is_birthday = "birthday" in (raw_label or "").lower()
+        posture = row["posture"]
+        if posture == MEMORIAL and is_birthday:
+            entries_by_date.setdefault(date_str, []).append(
+                {
+                    "kind": "remembrance",
+                    "label": f"{row['name']}'s birthday (remembrance)",
+                    "priority": "low",
+                    "meta": {"person": row["name"], "month": row["month"], "day": row["day"]},
+                }
+            )
+            remembrance_count += 1
+            continue
+        if posture != ACTIVE:
+            continue
         kind = "birthday" if is_birthday else "important_date"
         entry: OverlayEntry = {
             "kind": kind,
@@ -818,6 +838,7 @@ async def run_relationship_calendar_overlay_contribution(
         "birthday_entries": birthday_count,
         "important_date_entries": important_date_count,
         "follow_up_entries": follow_up_count,
+        "remembrance_entries": remembrance_count,
         "total_entries": total_entries,
         "pruned": pruned,
     }

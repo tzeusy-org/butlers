@@ -10,7 +10,7 @@
  * Responsive layout:
  *   - < lg  (< 1024px): single column, narrative on top, index below.
  *   - ≥ lg  (≥ 1024px): two columns at 1.4fr / 1fr, gap 56px.
- *   Frame: <Page archetype="editorial"> (max-width 1280px, responsive padding).
+ *   Frame: <Page archetype="editorial"> (max-width 1280px, inheriting Shell's responsive gutter).
  *
  * Data sources (no backend aggregation endpoint required):
  *   useBriefing()           -- DateEyebrow, BriefingStatus, Headline, Elaboration
@@ -67,6 +67,8 @@ import {
 } from "@/hooks/use-approvals";
 import {
   useApprovalDecisionMutations,
+  ApprovalCallReview,
+  type ViewedApproval,
   UNDO_WINDOW_MS,
   type DecisionVerb,
 } from "@/hooks/use-approval-decisions.ts";
@@ -94,7 +96,7 @@ import { Elaboration } from "@/components/overview/Elaboration";
 import { Headline } from "@/components/overview/Headline";
 import { OperationsNowList } from "@/components/overview/OperationsNowList";
 import { RuntimeSummaryKpi } from "@/components/overview/RuntimeSummaryKpi";
-import { Section } from "@/components/overview/Section";
+import { Section } from "@/components/ui/Section";
 import { deriveOverviewTriageModel } from "@/components/overview/model";
 import { useTimezone } from "@/components/ui/timezone-context";
 
@@ -138,6 +140,9 @@ export default function DashboardPage() {
   // the full Trust Console, instead of firing irreversibly on click.
   const {
     approveMut,
+    review,
+    requestReview,
+    cancelReview,
     denyMut,
     deferMut,
     scheduledDecisions,
@@ -279,7 +284,7 @@ export default function DashboardPage() {
     ],
   );
 
-  // Cost surface (spec: dashboard-domain-pages — CostWidget + TopSessionsTable).
+  // Cost surface (spec: dashboard-overview — CostWidget + TopSessionsTable).
   // Reuse the same useSpendSummary("today") query already fetched for the
   // ButlerIndex per-butler annotations (same query key — cached, no extra
   // fetch). CostWidget shows the aggregate "Cost Today" total + the single
@@ -310,8 +315,8 @@ export default function DashboardPage() {
   // shows the inline "Approving in 5s · Undo" state instead of its verb
   // buttons (see AttentionList's pendingDecisionLabel).
   const approveAttention = useCallback(
-    (id: string) => scheduleDecision(id, "approve", () => approve(id)),
-    [approve, scheduleDecision],
+    (id: string) => { void requestReview(id); },
+    [requestReview],
   );
   const denyAttention = useCallback(
     (id: string) => scheduleDecision(id, "deny", () => deny({ id })),
@@ -345,7 +350,7 @@ export default function DashboardPage() {
           onApprove: () => approveAttention(id),
           onDeny: () => denyAttention(id),
           onDefer: () => deferAttention(id),
-          approvePending: approveMut.isPending && approveMut.variables === id,
+          approvePending: approveMut.isPending && approveMut.variables?.id === id,
           denyPending: denyMut.isPending && denyMut.variables?.id === id,
           deferPending: deferMut.isPending && deferMut.variables?.id === id,
         };
@@ -470,6 +475,10 @@ export default function DashboardPage() {
 
   return (
     <Page archetype="editorial" title="Overview">
+      <ApprovalCallReview review={review} onCancel={cancelReview} onConfirm={(view: ViewedApproval) => {
+        cancelReview();
+        scheduleDecision(view.id, "approve", () => approve(view));
+      }} />
       {/*
        * Responsive two-column editorial grid.
        * Narrow (< 1024px / lg): single column, narrative stacked above index.
@@ -563,7 +572,7 @@ export default function DashboardPage() {
       </div>
 
       {/*
-       * Cost surface (spec: dashboard-domain-pages — "Cost widget for dashboard
+       * Cost surface (spec: dashboard-overview — "Spend widget for dashboard
        * overview" + "Top sessions table"). Full-width band below the editorial
        * grid: the aggregate CostWidget (constrained to a half-width column) over
        * the most-expensive-sessions table.

@@ -24,13 +24,85 @@ from pydantic import ValidationError
 from butlers.modules.base import Module
 from butlers.modules.telegram import TelegramConfig, TelegramModule, _markdown_to_telegram_html
 
+# The retained historical permission-test narratives describe the original enforcement.
+# Effects now refuse unavailable state; the real-lookup availability test below covers
+# bu-30sah4's effect stage, before bu-svqpzo.3 changes remaining shared callers.
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _allow_effects_for_provider_tests(request, monkeypatch):
+    """Provider-only unit tests assume an available grant; gate tests use real reads."""
+    if request.cls is not TestTelegramSendPermissionEnforcement:
+        monkeypatch.setattr(
+            "butlers.modules.telegram.require_permission", AsyncMock(return_value=None)
+        )
+
 
 EXPECTED_TELEGRAM_TOOLS = {
     "telegram_send_message",
     "telegram_reply_to_message",
     "telegram_react_to_message",
+    "telegram_edit_message_text",
 }
+
+
+@pytest.mark.parametrize(
+    ("button", "inert", "server_built", "allowed"),
+    [
+        ({"url": "https://example.test"}, False, False, True),
+        ({"url": "https://example.test"}, True, False, False),
+        ({"url": "https://example.test"}, True, True, True),
+        ({"login_url": {"url": "https://example.test"}}, False, True, False),
+        ({"web_app": {"url": "https://example.test"}}, False, True, False),
+        ({"callback_data": "review:1"}, True, False, True),
+    ],
+)
+def test_reply_markup_refuses_identity_handoffs_and_inert_caller_links(
+    button, inert, server_built, allowed
+):
+    from butlers.telegram_api import (
+        TelegramReplyMarkupValidationError,
+        validate_telegram_reply_markup,
+    )
+
+    markup = {"inline_keyboard": [[{"text": "Open", **button}]]}
+    if allowed:
+        assert (
+            validate_telegram_reply_markup(
+                markup, render_links_inert=inert, server_built=server_built
+            )
+            is markup
+        )
+    else:
+        with pytest.raises(TelegramReplyMarkupValidationError):
+            validate_telegram_reply_markup(
+                markup, render_links_inert=inert, server_built=server_built
+            )
+
+
+async def test_inert_delivery_uses_explicit_pre_entities_and_disables_previews():
+    module = TelegramModule()
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {"ok": True, "result": {"message_id": 42}}
+    client = AsyncMock()
+    client.post.return_value = response
+    text = "😀 [click](https://example.test) <a href='https://evil.test'>link</a>"
+    with (
+        patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock),
+        patch.object(module, "_get_client", return_value=client),
+        patch.object(module, "_base_url", return_value="https://telegram.test"),
+    ):
+        await module._reply_to_message("123", 7, text, render_links_inert=True)
+    payload = client.post.await_args.kwargs["json"]
+    assert payload["text"] == text
+    assert "parse_mode" not in payload
+    assert payload["entities"] == [
+        {"type": "pre", "offset": 0, "length": len(text.encode("utf-16-le")) // 2}
+    ]
+    assert payload["link_preview_options"] == {"is_disabled": True}
+    assert payload["reply_to_message_id"] == 7
 
 
 @pytest.fixture
@@ -132,7 +204,7 @@ class TestInlineKeyboardSupport:
         }
         response = MagicMock()
         response.status_code = 200
-        response.json.return_value = {"ok": True}
+        response.json.return_value = {"ok": True, "result": {"message_id": 43}}
 
         with (
             patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock),
@@ -204,6 +276,57 @@ class TestInlineKeyboardSupport:
         }
 
 
+class TestEditMessageTextTool:
+    """bu-q7vx1q.5: amending a delivered insight edits the stored message in place."""
+
+    @staticmethod
+    def _response(status: int, body: dict[str, Any]) -> httpx.Response:
+        return httpx.Response(
+            status, json=body, request=httpx.Request("POST", "https://api.telegram.org/bot/x")
+        )
+
+    async def _edit(self, response: httpx.Response) -> tuple[dict[str, Any], AsyncMock]:
+        mod = TelegramModule()
+        with (
+            patch.object(mod, "_get_client") as mock_get_client,
+            patch.object(mod, "_base_url", return_value="https://api.telegram.org/bot<token>"),
+        ):
+            client = AsyncMock()
+            client.post = AsyncMock(return_value=response)
+            mock_get_client.return_value = client
+            result = await mod._edit_message_text_or_reject("123456", 77, "~~Due~~\nResolved")
+        return result, client.post
+
+    async def test_edits_the_stored_message_id(self) -> None:
+        result, post = await self._edit(self._response(200, {"ok": True, "result": {}}))
+
+        assert result["edited"] is True
+        assert post.await_args.args[0].endswith("/editMessageText")
+        assert post.await_args.kwargs["json"] == {
+            "chat_id": "123456",
+            "message_id": 77,
+            "text": "<s>Due</s>\nResolved",
+            "parse_mode": "HTML",
+        }
+
+    async def test_a_400_is_a_structured_rejection_so_the_caller_can_fall_back(self) -> None:
+        result, _ = await self._edit(
+            self._response(
+                400, {"ok": False, "description": "Bad Request: message can't be edited"}
+            )
+        )
+
+        assert result == {
+            "edited": False,
+            "error_code": 400,
+            "description": "Bad Request: message can't be edited",
+        }
+
+    async def test_a_non_400_failure_still_raises_so_the_caller_can_retry(self) -> None:
+        with pytest.raises(httpx.HTTPStatusError):
+            await self._edit(self._response(502, {"ok": False}))
+
+
 class TestTelegramSendAuditEmit:
     """telegram_send is emitted to dashboard_audit_log on outbound sendMessage."""
 
@@ -216,7 +339,7 @@ class TestTelegramSendAuditEmit:
         # Fake successful HTTP response
         fake_resp = MagicMock()
         fake_resp.status_code = 200
-        fake_resp.json.return_value = {"ok": True}
+        fake_resp.json.return_value = {"ok": True, "result": {"message_id": 44}}
 
         with (
             patch(
@@ -236,6 +359,95 @@ class TestTelegramSendAuditEmit:
         assert call_args.args[2] == "telegram_send"
         assert call_args.args[3]["chat_id"] == "123456"
         assert "text_length" in call_args.args[3]
+        assert call_args.args[3]["provider_message_id"] == 44
+
+    @pytest.mark.parametrize(
+        "provider_body",
+        [
+            {"ok": False, "description": "rejected"},
+            {"ok": True},
+            {"ok": True, "result": {}},
+            {"ok": True, "result": {"message_id": None}},
+            {"ok": True, "result": {"message_id": "42"}},
+            {"ok": True, "result": {"message_id": True}},
+            {"ok": True, "result": {"message_id": 0}},
+            {"ok": True, "result": {"message_id": -1}},
+        ],
+    )
+    async def test_http_200_without_valid_telegram_receipt_is_failure(
+        self, provider_body: dict[str, Any]
+    ) -> None:
+        mod = TelegramModule()
+        mod._butler_name = "test-butler"
+        mod.wire_audit_pool(MagicMock())
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = provider_body
+
+        with (
+            patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock) as audit,
+            patch.object(mod, "_get_client") as mock_get_client,
+            patch.object(mod, "_base_url", return_value="https://api.telegram.org/bot<token>"),
+        ):
+            client = AsyncMock()
+            client.post = AsyncMock(return_value=response)
+            mock_get_client.return_value = client
+
+            with pytest.raises(RuntimeError, match="telegram_provider_response"):
+                await mod._send_message("123456", "Hello")
+
+        audit.assert_awaited_once()
+        assert audit.await_args.kwargs["result"] == "error"
+        assert audit.await_args.kwargs["error"] == "telegram_provider_response_invalid"
+
+    async def test_non_json_http_200_is_failure_and_audited(self) -> None:
+        mod = TelegramModule()
+        mod._butler_name = "test-butler"
+        mod.wire_audit_pool(MagicMock())
+        response = MagicMock()
+        response.status_code = 200
+        response.json.side_effect = ValueError("not json")
+
+        with (
+            patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock) as audit,
+            patch.object(mod, "_get_client") as mock_get_client,
+            patch.object(mod, "_base_url", return_value="https://api.telegram.org/bot<token>"),
+        ):
+            client = AsyncMock()
+            client.post = AsyncMock(return_value=response)
+            mock_get_client.return_value = client
+
+            with pytest.raises(RuntimeError, match="telegram_provider_response"):
+                await mod._send_message("123456", "Hello")
+
+        audit.assert_awaited_once()
+        assert audit.await_args.kwargs["result"] == "error"
+        assert audit.await_args.kwargs["error"] == "telegram_provider_response_invalid"
+
+    async def test_transport_timeout_is_failure_and_audited(self) -> None:
+        mod = TelegramModule()
+        mod._butler_name = "test-butler"
+        mod.wire_audit_pool(MagicMock())
+        timeout = httpx.ReadTimeout(
+            "timeout",
+            request=httpx.Request("POST", "https://api.telegram.org/bot<token>/sendMessage"),
+        )
+
+        with (
+            patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock) as audit,
+            patch.object(mod, "_get_client") as mock_get_client,
+            patch.object(mod, "_base_url", return_value="https://api.telegram.org/bot<token>"),
+        ):
+            client = AsyncMock()
+            client.post = AsyncMock(side_effect=timeout)
+            mock_get_client.return_value = client
+
+            with pytest.raises(httpx.ReadTimeout):
+                await mod._send_message("123456", "Hello")
+
+        audit.assert_awaited_once()
+        assert audit.await_args.kwargs["result"] == "error"
+        assert audit.await_args.kwargs["error"] == "telegram_transport_timeout"
 
     async def test_audit_emitted_on_error(self) -> None:
         mod = TelegramModule()
@@ -355,7 +567,7 @@ class TestTelegramSendPermissionEnforcement:
 
         fake_resp = MagicMock()
         fake_resp.status_code = 200
-        fake_resp.json.return_value = {"ok": True}
+        fake_resp.json.return_value = {"ok": True, "result": {"message_id": 45}}
 
         with (
             patch(
@@ -373,15 +585,62 @@ class TestTelegramSendPermissionEnforcement:
 
             result = await mod._send_message("123456", "Hello world")
 
-        assert result == {"ok": True}
+        assert result == {"ok": True, "result": {"message_id": 45}}
         mock_client.post.assert_awaited_once()
         # Gate consulted the matrix with the notify capability.
         assert mock_require.await_args.args[2] == "notify"
 
+    async def test_real_permission_failures_block_all_mutations(self, caplog) -> None:
+        from butlers.core.permissions import PermissionUnavailable
+
+        mod = TelegramModule()
+        mod._butler_name = "test-butler"
+        pool = AsyncMock()
+        client = AsyncMock()
+        response = MagicMock()
+        response.json.return_value = {"ok": True, "result": {"message_id": 45}}
+        client.post.return_value = response
+        with (
+            patch.object(mod, "_get_client", return_value=client),
+            patch.object(mod, "_base_url", return_value="https://example.com/private-token"),
+            patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock) as audit,
+        ):
+            for failure in ("missing", "query", "malformed"):
+                mod._audit_pool = None if failure == "missing" else pool
+                pool.fetchrow.side_effect = (
+                    OSError("private-database-error") if failure == "query" else None
+                )
+                pool.fetchrow.return_value = {"granted": "false", "reason": "private-row"}
+                calls = (
+                    mod._send_message("private-recipient", "private-body"),
+                    mod._reply_to_message("private-recipient", 1, "private-body"),
+                    mod._edit_message_text("private-recipient", 1, "private-body"),
+                    mod._remove_inline_keyboard("private-recipient", 1),
+                )
+                for call in calls:
+                    with pytest.raises(PermissionUnavailable) as caught:
+                        await call
+                    rendered = repr(caught.value) + caplog.text + repr(audit.await_args_list)
+                    for private in (
+                        "private-recipient",
+                        "private-body",
+                        "private-token",
+                        "private-row",
+                        "private-database-error",
+                    ):
+                        assert private not in rendered
+                client.post.assert_not_awaited()
+                audit.assert_not_awaited()
+                assert "telegram_permission_unavailable" in caplog.text
+            for row in (None, {"granted": True, "reason": "granted"}):
+                pool.fetchrow.return_value = row
+                await mod._send_message("12345", "recovered")
+            assert client.post.await_count == 2
+
     def test_permission_pool_prefers_audit_then_db(self) -> None:
         """_permission_pool prefers the switchboard audit pool, then the butler pool."""
         mod = TelegramModule()
-        # No pools wired → None (fails open).
+        # No pools wired → None (unavailable to the effect gate).
         assert mod._permission_pool() is None
 
         # Butler pool only.

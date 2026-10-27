@@ -29,6 +29,7 @@ from butlers.modules.approvals.gate import (
     apply_approval_gates,
 )
 from butlers.modules.base import ToolMeta
+from butlers.testing.approval_parking_fake import record_pending_action
 
 pytestmark = pytest.mark.unit
 
@@ -36,11 +37,18 @@ TOOL = "email_send_message"
 RECIPIENT = "friend@example.com"
 
 
+@pytest.fixture(autouse=True)
+def _use_mock_pool_park_recorder(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        "butlers.modules.approvals.gate.park_pending_action",
+        record_pending_action,
+    )
+
+
 def _non_owner_contact():
     from butlers.identity import ResolvedContact
 
     return ResolvedContact(
-        contact_id=uuid.uuid4(),
         entity_id=uuid.uuid4(),
         name="Friend",
         roles=["contact"],
@@ -59,7 +67,7 @@ def _rule(arg_constraints: dict[str, Any]) -> dict[str, Any]:
 def _make_pool(rules: list[dict[str, Any]]) -> AsyncMock:
     pool = AsyncMock()
     pool.fetch = AsyncMock(return_value=rules)
-    pool.fetchrow = AsyncMock(return_value=None)
+    pool.fetchrow = AsyncMock(return_value={"id": uuid.uuid4()})  # use claimed
     pool.execute = AsyncMock(return_value=None)
     return pool
 
@@ -95,6 +103,7 @@ async def _call_gate(
         expiry_hours=72,
         risk_tier=MagicMock(value="medium"),
         rule_precedence=("contact_role", "standing_rule"),
+        butler_name="messenger",
         tool_meta=tool_meta,
     )
 
@@ -107,6 +116,10 @@ async def _call_gate(
         patch(
             "butlers.modules.approvals.gate.execute_approved_action",
             new=AsyncMock(return_value=ExecutionResult(success=True, result={"status": "sent"})),
+        ),
+        patch(
+            "butlers.modules.approvals.gate.park_pending_action",
+            new=record_pending_action,
         ),
     ):
         return await wrapper(**tool_args)
@@ -225,6 +238,7 @@ class TestGateArgumentSerialization:
             expiry_hours=72,
             risk_tier=MagicMock(value="medium"),
             rule_precedence=("contact_role", "standing_rule"),
+            butler_name="messenger",
         )
 
         with patch("butlers.modules.approvals.gate.record_approval_event", new=AsyncMock()):

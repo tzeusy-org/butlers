@@ -1,18 +1,18 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
-import type { Schedule } from "@/api/types.ts";
+import type { Schedule, ScheduleToggleResult } from "@/api/types.ts";
 import { ScheduleForm } from "@/components/schedules/ScheduleForm";
 import type { ScheduleFormValues } from "@/components/schedules/ScheduleForm";
 import { ScheduleTable } from "@/components/schedules/ScheduleTable";
 import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  Section,
+  SectionContent,
+  SectionDescription,
+  SectionHeader,
+  SectionTitle,
+} from "@/components/ui/Section";
 import {
   Dialog,
   DialogContent,
@@ -43,11 +43,20 @@ interface ButlerSchedulesTabProps {
 // ---------------------------------------------------------------------------
 
 export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabProps) {
+  // A cached sibling route can change the owner without unmounting this tab.
+  // Retire its fields, mutation state and callback lifetime as one instance.
+  return <ButlerSchedulesTabInstance key={butlerName} butlerName={butlerName} />;
+}
+
+function ButlerSchedulesTabInstance({ butlerName }: ButlerSchedulesTabProps) {
   const { data: schedulesResponse, isLoading, isError, error } = useSchedules(butlerName);
   const schedules = schedulesResponse?.data ?? [];
 
   // Form dialog state
   const [formOpen, setFormOpen] = useState(false);
+  const formEpoch = useRef(0);
+  const [formError, setFormError] = useState<string | null>(null);
+  useEffect(() => () => { formEpoch.current++; }, []);
   const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
 
   // Delete confirmation dialog state
@@ -63,30 +72,48 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
 
   // Track which schedule is currently being triggered
   const [triggeringId, setTriggeringId] = useState<string | null>(null);
+  const [togglingIds, setTogglingIds] = useState<ReadonlySet<string>>(new Set());
+  const [toggleReceipt, setToggleReceipt] = useState<ScheduleToggleResult | null>(null);
 
   // ---------------------------------------------------------------------------
   // Handlers
   // ---------------------------------------------------------------------------
 
   function handleAddClick() {
+    formEpoch.current++; setFormError(null);
     setEditingSchedule(null);
     setFormOpen(true);
   }
 
   function handleEdit(schedule: Schedule) {
+    formEpoch.current++; setFormError(null);
     setEditingSchedule(schedule);
     setFormOpen(true);
   }
 
-  function handleToggle(schedule: Schedule) {
-    toggleMutation.mutate(schedule.id, {
-      onSuccess: () => {
-        toast.success(`Schedule "${schedule.name}" ${schedule.enabled ? "disabled" : "enabled"}`);
-      },
-      onError: (err) => {
-        toast.error(`Failed to toggle schedule: ${err instanceof Error ? err.message : "Unknown error"}`);
-      },
-    });
+  async function handleToggle(schedule: Schedule) {
+    const requestedEnabled = !schedule.enabled;
+    setTogglingIds((pending) => new Set(pending).add(schedule.id));
+    setToggleReceipt(null);
+    try {
+      const response = await toggleMutation.mutateAsync({
+        scheduleId: schedule.id,
+        enabled: requestedEnabled,
+      });
+      const receipt = response.data;
+      setToggleReceipt(receipt);
+      toast.success(
+        `${receipt.observed_enabled ? "Event resumed" : "Event paused"} (Schedule "${schedule.name}" confirmed by server)`,
+      );
+    } catch (err) {
+      toast.error(`Failed to toggle schedule: ${err instanceof Error ? err.message : "Unknown error"}`);
+    } finally {
+      setTogglingIds((pending) => {
+        const remaining = new Set(pending);
+        remaining.delete(schedule.id);
+        return remaining;
+      });
+    }
   }
 
   function handleTrigger(schedule: Schedule) {
@@ -122,31 +149,24 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
     });
   }
 
-  function handleFormSubmit(values: ScheduleFormValues) {
-    if (editingSchedule) {
-      updateMutation.mutate(
-        { scheduleId: editingSchedule.id, body: values },
-        {
-          onSuccess: () => {
-            toast.success(`Schedule "${values.name}" updated`);
-            setFormOpen(false);
-            setEditingSchedule(null);
-          },
-          onError: (err) => {
-            toast.error(`Failed to update schedule: ${err instanceof Error ? err.message : "Unknown error"}`);
-          },
-        },
-      );
-    } else {
-      createMutation.mutate(values, {
-        onSuccess: () => {
-          toast.success(`Schedule "${values.name}" created`);
-          setFormOpen(false);
-        },
-        onError: (err) => {
-          toast.error(`Failed to create schedule: ${err instanceof Error ? err.message : "Unknown error"}`);
-        },
-      });
+  async function handleFormSubmit(values: ScheduleFormValues) {
+    const epoch = formEpoch.current;
+    setFormError(null);
+    try {
+      if (editingSchedule) {
+        await updateMutation.mutateAsync({ scheduleId: editingSchedule.id, body: values });
+        if (epoch === formEpoch.current) toast.success(`Schedule "${values.name}" updated`);
+      } else {
+        await createMutation.mutateAsync(values);
+        if (epoch === formEpoch.current) toast.success(`Schedule "${values.name}" created`);
+      }
+    } catch (err) {
+      if (epoch === formEpoch.current) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        setFormError(message);
+        toast.error(`Failed to ${editingSchedule ? "update" : "create"} schedule: ${message}`);
+      }
+      throw err;
     }
   }
 
@@ -156,16 +176,16 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
 
   if (isError) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Schedules</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Schedules</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <p className="text-sm text-destructive">
             Failed to load schedules: {error instanceof Error ? error.message : "Unknown error"}
           </p>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
@@ -175,15 +195,15 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
+      <Section>
+        <SectionHeader className="flex flex-row items-center justify-between">
           <div>
-            <CardTitle>Schedules</CardTitle>
-            <CardDescription>Scheduled tasks for this butler</CardDescription>
+            <SectionTitle>Schedules</SectionTitle>
+            <SectionDescription>Scheduled tasks for this butler</SectionDescription>
           </div>
           <Button onClick={handleAddClick}>Add schedule</Button>
-        </CardHeader>
-        <CardContent>
+        </SectionHeader>
+        <SectionContent>
           <ScheduleTable
             schedules={schedules}
             isLoading={isLoading}
@@ -192,31 +212,31 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
             onEdit={handleEdit}
             onDelete={handleDeleteClick}
             triggeringId={triggeringId}
+            togglingIds={togglingIds}
           />
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
+
+      {toggleReceipt && (
+        <p className="text-sm text-muted-foreground" role="status">
+          Server confirmed schedule &quot;{toggleReceipt.name}&quot; is {toggleReceipt.observed_enabled ? "enabled" : "disabled"}.
+          Audit receipt: {toggleReceipt.audit.action} ({toggleReceipt.audit.result}).
+        </p>
+      )}
 
       {/* Create / Edit form dialog */}
       <ScheduleForm
+        butlerName={butlerName}
         schedule={editingSchedule}
         open={formOpen}
         onOpenChange={(open) => {
+          formEpoch.current++; setFormError(null);
           setFormOpen(open);
           if (!open) setEditingSchedule(null);
         }}
         onSubmit={handleFormSubmit}
         isSubmitting={createMutation.isPending || updateMutation.isPending}
-        error={
-          createMutation.error
-            ? createMutation.error instanceof Error
-              ? createMutation.error.message
-              : "Failed to create schedule"
-            : updateMutation.error
-              ? updateMutation.error instanceof Error
-                ? updateMutation.error.message
-                : "Failed to update schedule"
-              : null
-        }
+        error={formError}
       />
 
       {/* Delete confirmation dialog */}

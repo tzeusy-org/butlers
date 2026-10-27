@@ -184,6 +184,8 @@ async def _bootstrap_pool(bootstrap_url: str) -> asyncpg.Pool:
     return await asyncpg.create_pool(bootstrap_url, min_size=1, max_size=1)
 
 
+# Spec: REQ-fleet-case-file-002
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_state_check_constraint_rejects_bogus_value(
     fresh_core_only_bootstrap_url: str,
@@ -201,6 +203,8 @@ async def test_state_check_constraint_rejects_bogus_value(
         await pool.close()
 
 
+# Spec: REQ-fleet-case-file-002
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_posture_check_constraint_rejects_bogus_value(
     fresh_core_only_bootstrap_url: str,
@@ -218,6 +222,8 @@ async def test_posture_check_constraint_rejects_bogus_value(
         await pool.close()
 
 
+# Spec: REQ-fleet-case-file-002
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_closed_requires_outcome(fresh_core_only_bootstrap_url: str) -> None:
     pool = await _bootstrap_pool(fresh_core_only_bootstrap_url)
@@ -233,6 +239,8 @@ async def test_closed_requires_outcome(fresh_core_only_bootstrap_url: str) -> No
         await pool.close()
 
 
+# Spec: REQ-fleet-case-file-002
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_non_closed_state_rejects_outcome(fresh_core_only_bootstrap_url: str) -> None:
     pool = await _bootstrap_pool(fresh_core_only_bootstrap_url)
@@ -248,6 +256,8 @@ async def test_non_closed_state_rejects_outcome(fresh_core_only_bootstrap_url: s
         await pool.close()
 
 
+# Spec: REQ-fleet-case-file-002
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_close_with_outcome_and_closed_at_succeeds(
     fresh_core_only_bootstrap_url: str,
@@ -269,6 +279,8 @@ async def test_close_with_outcome_and_closed_at_succeeds(
         await pool.close()
 
 
+# Spec: REQ-fleet-case-file-003
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_active_correlation_key_uniqueness_rejects_second_active_case(
     fresh_core_only_bootstrap_url: str,
@@ -293,6 +305,8 @@ async def test_active_correlation_key_uniqueness_rejects_second_active_case(
         await pool.close()
 
 
+# Spec: REQ-fleet-case-file-003
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_closed_case_does_not_block_reopening_same_correlation_key(
     fresh_core_only_bootstrap_url: str,
@@ -322,6 +336,8 @@ async def test_closed_case_does_not_block_reopening_same_correlation_key(
         await pool.close()
 
 
+# Spec: REQ-fleet-case-file-004
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_evidence_idempotent_per_contributor_kind_ref(
     fresh_core_only_bootstrap_url: str,
@@ -405,6 +421,8 @@ async def test_evidence_cascades_on_case_delete(fresh_core_only_bootstrap_url: s
         await pool.close()
 
 
+# Spec: REQ-fleet-case-file-006
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_switchboard_role_can_insert_case_other_roles_cannot(
     fresh_core_only_db_url: str, fresh_core_only_bootstrap_url: str
@@ -444,6 +462,178 @@ async def test_switchboard_role_can_insert_case_other_roles_cannot(
         await bootstrap_pool.close()
 
 
+# Spec: REQ-fleet-case-file-006
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
+@_asyncio_session
+async def test_switchboard_role_can_update_case_other_roles_cannot(
+    fresh_core_only_db_url: str, fresh_core_only_bootstrap_url: str
+) -> None:
+    # fleet_cases_update_switchboard carries both a USING and a WITH CHECK
+    # clause (identical predicates: current_user = 'butler_switchboard_rw').
+    # A disallowed role's UPDATE still comes back as a silent "UPDATE 0"
+    # rather than raising: USING excludes the row before it can be selected
+    # for update, so WITH CHECK is never reached to reject it either.
+    bootstrap_pool = await _bootstrap_pool(fresh_core_only_bootstrap_url)
+    try:
+        case_row = await bootstrap_pool.fetchrow(
+            """
+            INSERT INTO public.fleet_cases (correlation_key, state)
+            VALUES ('test:switchboard-updates', 'open')
+            RETURNING id
+            """
+        )
+        case_id = case_row["id"]
+
+        switchboard_conn = await asyncpg.connect(fresh_core_only_db_url)
+        try:
+            await switchboard_conn.execute("SET ROLE butler_switchboard_rw")
+            tag = await switchboard_conn.execute(
+                "UPDATE public.fleet_cases SET state = 'watching' WHERE id = $1", case_id
+            )
+            assert tag == "UPDATE 1"
+        finally:
+            await switchboard_conn.close()
+
+        other_conn = await asyncpg.connect(fresh_core_only_db_url)
+        try:
+            await other_conn.execute("SET ROLE butler_health_rw")
+            tag = await other_conn.execute(
+                "UPDATE public.fleet_cases SET state = 'closing' WHERE id = $1", case_id
+            )
+            assert tag == "UPDATE 0"
+        finally:
+            await other_conn.close()
+
+        state = await bootstrap_pool.fetchval(
+            "SELECT state FROM public.fleet_cases WHERE id = $1", case_id
+        )
+        assert state == "watching"
+    finally:
+        await bootstrap_pool.execute(
+            "DELETE FROM public.fleet_cases WHERE correlation_key = 'test:switchboard-updates'"
+        )
+        await bootstrap_pool.close()
+
+
+# Spec: REQ-fleet-case-file-006
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
+@_asyncio_session
+async def test_switchboard_role_can_insert_link_other_roles_cannot(
+    fresh_core_only_db_url: str, fresh_core_only_bootstrap_url: str
+) -> None:
+    bootstrap_pool = await _bootstrap_pool(fresh_core_only_bootstrap_url)
+    try:
+        case_row = await bootstrap_pool.fetchrow(
+            """
+            INSERT INTO public.fleet_cases (correlation_key, state)
+            VALUES ('test:link-insert-case', 'open')
+            RETURNING id
+            """
+        )
+        case_id = case_row["id"]
+
+        switchboard_conn = await asyncpg.connect(fresh_core_only_db_url)
+        try:
+            await switchboard_conn.execute("SET ROLE butler_switchboard_rw")
+            row = await switchboard_conn.fetchrow(
+                """
+                INSERT INTO public.fleet_case_links (case_id, link_kind, ref)
+                VALUES ($1, 'incident', 'test:switchboard-writes-link')
+                RETURNING id
+                """,
+                case_id,
+            )
+            assert row is not None
+        finally:
+            await switchboard_conn.close()
+
+        other_conn = await asyncpg.connect(fresh_core_only_db_url)
+        try:
+            await other_conn.execute("SET ROLE butler_health_rw")
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await other_conn.execute(
+                    """
+                    INSERT INTO public.fleet_case_links (case_id, link_kind, ref)
+                    VALUES ($1, 'incident', 'test:health-cannot-write-link')
+                    """,
+                    case_id,
+                )
+        finally:
+            await other_conn.close()
+    finally:
+        await bootstrap_pool.execute(
+            "DELETE FROM public.fleet_cases WHERE correlation_key = 'test:link-insert-case'"
+        )
+        await bootstrap_pool.close()
+
+
+# Spec: REQ-fleet-case-file-006
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
+@_asyncio_session
+async def test_switchboard_role_can_update_link_other_roles_cannot(
+    fresh_core_only_db_url: str, fresh_core_only_bootstrap_url: str
+) -> None:
+    # Same USING/WITH CHECK behavior as the fleet_cases UPDATE case above:
+    # fleet_case_links_update_switchboard also has both clauses (identical
+    # predicates), so a disallowed UPDATE is still a silent "UPDATE 0" —
+    # USING excludes the row before WITH CHECK is ever evaluated.
+    bootstrap_pool = await _bootstrap_pool(fresh_core_only_bootstrap_url)
+    try:
+        case_row = await bootstrap_pool.fetchrow(
+            """
+            INSERT INTO public.fleet_cases (correlation_key, state)
+            VALUES ('test:link-update-case', 'open')
+            RETURNING id
+            """
+        )
+        case_id = case_row["id"]
+        link_row = await bootstrap_pool.fetchrow(
+            """
+            INSERT INTO public.fleet_case_links (case_id, link_kind, ref)
+            VALUES ($1, 'incident', 'test:link-update-ref')
+            RETURNING id
+            """,
+            case_id,
+        )
+        link_id = link_row["id"]
+
+        switchboard_conn = await asyncpg.connect(fresh_core_only_db_url)
+        try:
+            await switchboard_conn.execute("SET ROLE butler_switchboard_rw")
+            tag = await switchboard_conn.execute(
+                "UPDATE public.fleet_case_links SET metadata = '{\"seen\": true}'::jsonb "
+                "WHERE id = $1",
+                link_id,
+            )
+            assert tag == "UPDATE 1"
+        finally:
+            await switchboard_conn.close()
+
+        other_conn = await asyncpg.connect(fresh_core_only_db_url)
+        try:
+            await other_conn.execute("SET ROLE butler_health_rw")
+            tag = await other_conn.execute(
+                "UPDATE public.fleet_case_links SET metadata = '{\"seen\": false}'::jsonb "
+                "WHERE id = $1",
+                link_id,
+            )
+            assert tag == "UPDATE 0"
+        finally:
+            await other_conn.close()
+
+        metadata = await bootstrap_pool.fetchval(
+            "SELECT metadata::text FROM public.fleet_case_links WHERE id = $1", link_id
+        )
+        assert metadata == '{"seen": true}'
+    finally:
+        await bootstrap_pool.execute(
+            "DELETE FROM public.fleet_cases WHERE correlation_key = 'test:link-update-case'"
+        )
+        await bootstrap_pool.close()
+
+
+# Spec: REQ-fleet-case-file-004
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_any_role_can_insert_evidence(
     fresh_core_only_db_url: str, fresh_core_only_bootstrap_url: str

@@ -14,8 +14,8 @@ import * as React from "react"
 import { cn } from "@/lib/utils"
 
 export interface EyebrowProps extends React.HTMLAttributes<HTMLElement> {
-  /** Rendered as <span> by default. Pass "div" for block-level use. */
-  as?: "span" | "div" | "p"
+  /** Rendered as <span> by default. Pass a heading or block tag as needed. */
+  as?: "span" | "div" | "p" | "h2" | "h3"
   children: React.ReactNode
 }
 
@@ -32,6 +32,7 @@ export interface EyebrowProps extends React.HTMLAttributes<HTMLElement> {
 export function Eyebrow({ as: Tag = "span", children, className, ...props }: EyebrowProps) {
   return (
     <Tag
+      data-slot="eyebrow"
       className={cn(
         // Font family and size — JetBrains Mono at 10px
         "font-mono text-[10px] font-normal",
@@ -40,7 +41,7 @@ export function Eyebrow({ as: Tag = "span", children, className, ...props }: Eye
         // Leading — compact (1.0 per spec)
         "leading-none",
         // Color — muted foreground (--mfg token)
-        "text-[var(--mfg,oklch(0.708_0_0))]",
+        "text-[var(--mfg)]",
         className,
       )}
       {...props}

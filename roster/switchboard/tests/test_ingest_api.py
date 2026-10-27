@@ -19,13 +19,7 @@ import asyncpg
 import pytest
 
 from butlers.api.conversation_envelope import build_dashboard_envelope
-from butlers.tools.switchboard.ingestion.ingest import (
-    IngestAcceptedResponse,
-    _compute_content_hash_key,
-    _compute_dedupe_key,
-    ingest_v1,
-)
-from butlers.tools.switchboard.routing.contracts import (
+from butlers.tools.switchboard.contracts import (
     IngestControlV1,
     IngestEnvelopeV1,
     IngestEventV1,
@@ -33,6 +27,12 @@ from butlers.tools.switchboard.routing.contracts import (
     IngestSenderV1,
     IngestSourceV1,
     parse_ingest_envelope,
+)
+from butlers.tools.switchboard.ingestion.ingest import (
+    IngestAcceptedResponse,
+    _compute_content_hash_key,
+    _compute_dedupe_key,
+    ingest_v1,
 )
 
 
@@ -194,6 +194,9 @@ async def pool(provisioned_postgres_pool):
                 policy_tier              TEXT NOT NULL,
                 triage_decision          TEXT,
                 triage_target            TEXT,
+                sender_authentication    TEXT
+                    CONSTRAINT ck_ingestion_events_sender_authentication
+                    CHECK (sender_authentication IN ('authenticated', 'unverified', 'failed')),
                 CONSTRAINT uq_ingestion_events_dedupe_key UNIQUE (dedupe_key)
             )
             """
@@ -212,6 +215,8 @@ def _make_telegram_envelope(
     idempotency_key: str | None = None,
 ) -> dict:
     """Helper to build a telegram ingest.v1 envelope."""
+    reply_target_ref = thread_id or "12345:1"
+    chat_id = reply_target_ref.partition(":")[0]
     return {
         "schema_version": "ingest.v1",
         "source": {
@@ -221,7 +226,8 @@ def _make_telegram_envelope(
         },
         "event": {
             "external_event_id": update_id,
-            "external_thread_id": thread_id,
+            "external_conversation_id": f"telegram:{chat_id}",
+            "reply_target_ref": reply_target_ref,
             "observed_at": datetime.now(UTC).isoformat(),
         },
         "sender": {
@@ -338,6 +344,9 @@ class TestIngestV1Basic:
         assert row["normalized_text"] == "Test message"
         assert _decode_jsonb(row["request_context"])["source_channel"] == "telegram_bot"
         assert _decode_jsonb(row["request_context"])["source_endpoint_identity"] == "test_bot"
+        assert _decode_jsonb(row["request_context"])["external_conversation_id"] == "telegram:12345"
+        assert _decode_jsonb(row["request_context"])["reply_target_ref"] == "12345:1"
+        assert _decode_jsonb(row["request_context"])["source_thread_identity"] == "12345:1"
         assert _decode_jsonb(row["request_context"])["source_sender_identity"] == "user_alice"
 
     async def test_ingest_email_envelope_success(self, pool: asyncpg.Pool) -> None:
@@ -407,6 +416,165 @@ class TestIngestV1Basic:
         assert message["text"] == "Hello world"
         assert message["metakey"] == "value"
         assert message["nested"] == {"inner": "ab"}
+
+    async def test_ingest_attachments_round_trip_media_type_size_dimensions(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        """A photo attachment's media_type/size_bytes/width/height persist and round-trip.
+
+        bu-2jtfw.7: a Telegram photo carries one IngestAttachment with a real
+        storage_ref; the caption (possibly "") is normalized_text, never a
+        synthesized "Photo" placeholder.
+        """
+        envelope = _make_telegram_envelope(
+            update_id="999003",
+            bot_id="test_bot",
+            sender_id="user_alice",
+            text="is this mold?",
+        )
+        envelope["payload"]["attachments"] = [
+            {
+                "media_type": "image/jpeg",
+                "storage_ref": "s3://test-bucket/connectors/2026/09/09/abc123.jpg",
+                "size_bytes": 204800,
+                "width": 800,
+                "height": 600,
+            }
+        ]
+
+        result = await ingest_v1(pool, envelope)
+        assert result.status == "accepted"
+
+        row = await pool.fetchrow(
+            "SELECT normalized_text, attachments FROM message_inbox WHERE id = $1",
+            result.request_id,
+        )
+        assert row is not None
+        assert row["normalized_text"] == "is this mold?"
+
+        attachments = _decode_jsonb(row["attachments"])
+        assert attachments == [
+            {
+                "media_type": "image/jpeg",
+                "storage_ref": "s3://test-bucket/connectors/2026/09/09/abc123.jpg",
+                "size_bytes": 204800,
+                "width": 800,
+                "height": 600,
+            }
+        ]
+
+    async def test_ingest_captionless_photo_normalized_text_is_empty_not_synthesized(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        """A captionless photo's normalized_text persists as "", never a placeholder."""
+        envelope = _make_telegram_envelope(
+            update_id="999004",
+            bot_id="test_bot",
+            sender_id="user_alice",
+            text="",
+        )
+        envelope["payload"]["attachments"] = [
+            {
+                "media_type": "image/jpeg",
+                "storage_ref": "s3://test-bucket/connectors/2026/09/09/def456.jpg",
+                "size_bytes": 51200,
+            }
+        ]
+
+        result = await ingest_v1(pool, envelope)
+        assert result.status == "accepted"
+
+        row = await pool.fetchrow(
+            "SELECT normalized_text FROM message_inbox WHERE id = $1",
+            result.request_id,
+        )
+        assert row is not None
+        assert row["normalized_text"] == ""
+
+
+class TestBearerMaterialQuarantine:
+    """OTP codes, magic links and Telegram login codes never persist (bu-q7vx1q.2)."""
+
+    async def _stored(self, pool: asyncpg.Pool, envelope: dict) -> asyncpg.Record:
+        result = await ingest_v1(pool, envelope)
+        row = await pool.fetchrow(
+            "SELECT raw_payload, normalized_text, lifecycle_state FROM message_inbox WHERE id = $1",
+            result.request_id,
+        )
+        assert row is not None
+        return row
+
+    async def test_gmail_otp_is_withheld_and_recorded(self, pool: asyncpg.Pool) -> None:
+        envelope = _make_email_envelope(
+            message_id="<otp-1@example.com>",
+            sender="no-reply@example.com",
+            subject="Verify",
+            body="Your code is 482913. It expires in 10 minutes. Order 12345678.",
+        )
+        row = await self._stored(pool, envelope)
+        raw = _decode_jsonb(row["raw_payload"])
+
+        assert "482913" not in row["normalized_text"]
+        assert "482913" not in json.dumps(raw)
+        assert "[auth-code withheld: example.com]" in row["normalized_text"]
+        assert "12345678" in row["normalized_text"]
+        assert row["lifecycle_state"] == "accepted"
+        assert raw["control"]["bearer_scrubbed"] is True
+        artifact = raw["bearer_artifacts"][0]
+        assert artifact["kind"] == "auth_code"
+        assert artifact["provider_domain"] == "example.com"
+        assert artifact["expires_hint"] == "10m"
+
+    async def test_magic_link_is_withheld(self, pool: asyncpg.Pool) -> None:
+        url = "https://acct.example.com/magic/Xk3j9Zq1Lm5Np7Rt2Vw4Yb6"
+        envelope = _make_email_envelope(message_id="<ml-1@example.com>", body=f"Sign in: {url}")
+        row = await self._stored(pool, envelope)
+
+        assert "Xk3j9Zq1Lm5Np7Rt2Vw4Yb6" not in row["normalized_text"]
+        assert "Xk3j9Zq1Lm5Np7Rt2Vw4Yb6" not in json.dumps(_decode_jsonb(row["raw_payload"]))
+        assert "[magic-link withheld: acct.example.com]" in row["normalized_text"]
+
+    async def test_telegram_login_code_from_service_sender_is_withheld(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        envelope = _make_telegram_envelope(
+            update_id="777001", sender_id="777000", text="Login code: 55123. Do not share."
+        )
+        row = await self._stored(pool, envelope)
+
+        raw = _decode_jsonb(row["raw_payload"])
+        assert "55123" not in row["normalized_text"]
+        assert "55123" not in json.dumps(raw)
+        assert raw["sender"]["identity"] == "777000"
+        assert raw["event"]["external_event_id"] == envelope["event"]["external_event_id"]
+        assert raw["event"]["observed_at"] == envelope["event"]["observed_at"]
+
+    async def test_ordinary_message_is_untouched_and_unflagged(self, pool: asyncpg.Pool) -> None:
+        envelope = _make_email_envelope(
+            message_id="<plain-1@example.com>", body="Dinner on 2026-10-03, order 12345678."
+        )
+        row = await self._stored(pool, envelope)
+        raw = _decode_jsonb(row["raw_payload"])
+
+        assert "12345678" in row["normalized_text"]
+        assert "bearer_scrubbed" not in raw["control"]
+        assert "bearer_artifacts" not in raw
+
+    async def test_detector_failure_holds_message_metadata_only(self, pool: asyncpg.Pool) -> None:
+        envelope = _make_email_envelope(
+            message_id="<fail-1@example.com>", body="Your code is 482913"
+        )
+        with patch(
+            "butlers.tools.switchboard.ingestion.ingest.scrub_stored_record",
+            side_effect=RuntimeError("boom"),
+        ):
+            row = await self._stored(pool, envelope)
+        raw = _decode_jsonb(row["raw_payload"])
+
+        assert "482913" not in json.dumps(raw) + row["normalized_text"]
+        assert raw["payload"]["raw"] is None
+        assert raw["control"]["bearer_scrub_failed"] is True
+        assert row["lifecycle_state"] == "metadata_ref"
 
 
 class TestIngestV1Deduplication:
@@ -540,6 +708,8 @@ class TestIngestV1DedupeKeyComputation:
             ),
             event=IngestEventV1(
                 external_event_id="123",
+                external_conversation_id="telegram:12345",
+                reply_target_ref="12345:1",
                 observed_at=datetime.now(UTC).isoformat(),
             ),
             sender=IngestSenderV1(identity="user_1"),
@@ -564,6 +734,8 @@ class TestIngestV1DedupeKeyComputation:
             ),
             event=IngestEventV1(
                 external_event_id="update_456",
+                external_conversation_id="telegram:12345",
+                reply_target_ref="12345:2",
                 observed_at=datetime.now(UTC).isoformat(),
             ),
             sender=IngestSenderV1(identity="user_2"),
@@ -688,8 +860,8 @@ def _make_evaluator_with_rules(rules: list[dict]):
 class TestPinnedTargetRouting:
     """Test the ``control.pinned_target`` envelope-pin bypass (bu-qk92y).
 
-    ``_load_available_butlers`` is patched at its import site
-    (``butlers.tools.switchboard.routing.classify``) since ``ingest_v1``
+    ``load_available_butlers`` is patched at its import site
+    (``butlers.tools.switchboard.registry.registry``) since ``ingest_v1``
     imports it lazily inside the pinned-target branch; there is no
     ``butler_registry`` table in this fixture's schema.
     """
@@ -703,7 +875,7 @@ class TestPinnedTargetRouting:
         )
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "finance"}]),
         ):
             result = await ingest_v1(pool, envelope)
@@ -750,7 +922,7 @@ class TestPinnedTargetRouting:
         )
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "finance"}, {"name": "travel"}]),
         ):
             result = await ingest_v1(pool, envelope, policy_evaluator=evaluator)
@@ -768,11 +940,12 @@ class TestPinnedTargetRouting:
             message_id="<pin-affinity-001@example.com>",
             sender="alerts@chase.com",
         )
-        envelope["event"]["external_thread_id"] = "thread-pin-001"
+        envelope["event"]["external_conversation_id"] = "thread-pin-001"
+        envelope["event"]["reply_target_ref"] = "thread-pin-001"
         envelope["control"]["pinned_target"] = "finance"
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "finance"}]),
         ):
             result = await ingest_v1(pool, envelope, enable_thread_affinity=True)
@@ -789,7 +962,7 @@ class TestPinnedTargetRouting:
         )
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "finance"}]),
         ):
             with pytest.raises(ValueError, match="does-not-exist"):
@@ -815,7 +988,7 @@ class TestPinnedTargetRouting:
         assert "pinned_target" not in envelope["control"]
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(side_effect=AssertionError("should not be called without a pin")),
         ):
             result = await ingest_v1(pool, envelope)
@@ -850,7 +1023,7 @@ class TestDashboardConversationEnvelope:
         )
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "relationship"}]),
         ):
             result = await ingest_v1(pool, envelope)
@@ -891,7 +1064,7 @@ class TestDashboardConversationEnvelope:
 
         # Switchboard is a staffer, never a candidate in the routable butler set.
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "relationship"}, {"name": "finance"}]),
         ):
             with pytest.raises(ValueError, match="switchboard"):
@@ -911,7 +1084,7 @@ class TestDashboardConversationEnvelope:
         )
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "relationship"}]),
         ):
             first_result = await ingest_v1(pool, first_envelope)
@@ -925,7 +1098,7 @@ class TestDashboardConversationEnvelope:
         )
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "relationship"}]),
         ):
             with pytest.raises(ValueError, match="ghost"):
@@ -971,14 +1144,14 @@ class TestDashboardConversationEnvelope:
         assert _compute_dedupe_key(first_model) == _compute_dedupe_key(retry_model)
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "relationship"}]),
         ):
             first_result = await ingest_v1(pool, first_envelope)
         assert first_result.duplicate is False
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "relationship"}]),
         ):
             retry_result = await ingest_v1(pool, retry_envelope)
@@ -1005,7 +1178,7 @@ class TestDashboardConversationEnvelope:
         )
 
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "relationship"}]),
         ):
             first_result = await ingest_v1(pool, first_envelope)
@@ -1018,10 +1191,49 @@ class TestDashboardConversationEnvelope:
             pinned_target="relationship",
         )
         with patch(
-            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            "butlers.tools.switchboard.registry.registry.load_available_butlers",
             new=AsyncMock(return_value=[{"name": "relationship"}]),
         ):
             retry_result = await ingest_v1(pool, retry_envelope)
 
         assert retry_result.duplicate is True
         assert retry_result.request_id == first_result.request_id
+
+
+class TestAutomatedKindPersistence:
+    """A connector's automated_kind marker is persisted under control (bu-s11n0s.18)."""
+
+    @staticmethod
+    def _tier2_envelope(message_id: str, **control: object) -> dict:
+        envelope = _make_email_envelope(message_id=message_id, subject="Out of office")
+        envelope["payload"] = {"raw": None, "normalized_text": "Subject: Out of office"}
+        envelope["control"] = {
+            "policy_tier": "default",
+            "ingestion_tier": "metadata",
+            **control,
+        }
+        return envelope
+
+    async def _control(self, pool: asyncpg.Pool, envelope: dict) -> dict:
+        result = await ingest_v1(pool, envelope)
+        row = await pool.fetchrow(
+            "SELECT raw_payload FROM message_inbox WHERE id = $1", result.request_id
+        )
+        assert row is not None
+        return _decode_jsonb(row["raw_payload"])["control"]
+
+    @pytest.mark.parametrize("kind", ["auto_reply", "bounce"])
+    async def test_automated_kind_is_stored_under_control(
+        self, pool: asyncpg.Pool, kind: str
+    ) -> None:
+        control = await self._control(
+            pool, self._tier2_envelope(f"<auto-{kind}@example.com>", automated_kind=kind)
+        )
+
+        assert control["automated_kind"] == kind
+        assert control["ingestion_tier"] == "metadata"
+
+    async def test_an_envelope_without_the_marker_stores_none(self, pool: asyncpg.Pool) -> None:
+        control = await self._control(pool, self._tier2_envelope("<no-marker@example.com>"))
+
+        assert "automated_kind" not in control

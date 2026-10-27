@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.core import fact_authority
 from butlers.switchboard_wiring import wire_pipelines
 
 pytestmark = pytest.mark.unit
@@ -35,6 +36,8 @@ async def test_wiring_enables_identity_and_uses_notify_v1_messenger_boundary():
     ):
         wire_pipelines(daemon, pool)
 
+    assert fact_authority.source_registry() is daemon._fact_source_registry
+    assert daemon._fact_source_registry.pool is pool
     kwargs = pipeline_cls.call_args.kwargs
     assert kwargs["enable_identity_resolution"] is True
     notify_owner_fn = kwargs["notify_owner_fn"]

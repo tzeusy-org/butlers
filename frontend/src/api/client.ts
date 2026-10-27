@@ -1,3 +1,5 @@
+import { ownerFetch } from "./owner-session";
+import { standingRuleHeaders } from "./approval-step-up";
 /**
  * Typed fetch wrapper for the Butlers dashboard API.
  *
@@ -5,6 +7,7 @@
  */
 
 import type {
+  CandidateIdentityFact,
   ApprovalAction,
   ApprovalActionsResponse,
   ApprovalActionParams,
@@ -22,6 +25,8 @@ import type {
   ApprovalsFlatListResponse,
   ApprovalsListResponse,
   ApprovalsPolicy,
+  UnroutableAttentionItem,
+  UnroutableRetryResult,
   AutonomySuggestion,
   AutonomySuggestionDismissRequest,
   AutonomySuggestionParams,
@@ -36,27 +41,20 @@ import type {
   ButlerSkill,
   ButlerSummary,
   CalendarAccountsResponse,
-  CalendarIcsExportParams,
-  CalendarIcsImportResponse,
   CalendarAuditParams,
   CalendarAuditResponse,
-  CalendarUndoResponse,
   CalendarDayBriefingResponse,
-  CalendarDedupRulesModel,
-  CalendarDedupRulesUpdateRequest,
-  CalendarDuplicatesParams,
-  CalendarDuplicatesResponse,
   ConflictScanParams,
   ConflictScanResponse,
-  CalendarKeepSeparateRequest,
-  CalendarKeepSeparateResponse,
+  CalendarInvitationsParams,
+  CalendarInvitationsResponse,
+  CalendarResponseRequest,
+  CalendarResponseReceipt,
   CalendarPrepResponse,
   CalendarSourceToggleRequest,
   CalendarProposalAcceptRequest,
   CalendarProposalActionResponse,
   CalendarSourceToggleResponse,
-  CalendarWorkspaceFindTimeRequest,
-  CalendarWorkspaceFindTimeResponse,
   CalendarWorkspaceMetaResponse,
   CalendarWorkspaceMutationResponse,
   CalendarWorkspaceParams,
@@ -74,9 +72,6 @@ import type {
   QuickAddParseResponse,
   SetPrimaryCalendarRequest,
   SetPrimaryCalendarResponse,
-  ContactDetail,
-  ContactListResponse,
-  ContactParams,
   SpendSummary,
   DailySpendResponse,
   TopSessionsResponse,
@@ -91,7 +86,7 @@ import type {
   DismissIssueResult,
   UndismissIssueResult,
   Label,
-  CursorPaginatedResponse,
+  CursorPage,
   AckFailedResult,
   NotificationActionResult,
   NotificationListResponse,
@@ -99,13 +94,17 @@ import type {
   NotificationStats,
   NotificationStatsParams,
   NotificationSummary,
+  MemoryPaginatedResponse,
   PaginatedResponse,
   Schedule,
   ScheduleCreate,
+  ScheduleToggleRequest,
+  ScheduleToggleResult,
   ScheduleUpdate,
   SearchResults,
   SessionAggregate,
   SessionDetail,
+  SessionPromptReceipt,
   SessionParams,
   SessionSummary,
   KeysetResponse,
@@ -113,6 +112,10 @@ import type {
   StateSetRequest,
   TimelineParams,
   TimelineResponse,
+  TimelineHistogramParams,
+  TimelineHistogramResponse,
+  TimelineAttentionParams,
+  TimelineAttentionResponse,
   ScheduleCostsResponse,
   TriggerResponse,
   TickResponse,
@@ -160,6 +163,7 @@ import type {
   EntityParams,
   EntitySummary,
   ExpectedSignalsResponse,
+  HealthBaselinesResponse,
   UpdateEntityRequest,
   EpisodeParams,
   Fact,
@@ -176,11 +180,9 @@ import type {
   ReembedRunResult,
   UpdateRetentionPoliciesRequest,
   RuleParams,
-  ContactPatchRequest,
   OwnerSetupStatus,
   IngestionEventSummary,
   IngestionEventSession,
-  IngestionEventRollup,
   IngestionEventReplayResponse,
   IngestionEventReplayHistoryEntry,
   BulkRetryEventsResponse,
@@ -190,6 +192,7 @@ import type {
   IngestionEventsParams,
   IngestionHistogramParams,
   IngestionHistogramResponse,
+  IngestionDroppedKnownSummary,
   IngestionWindowRollup,
   IngestionWindowRollupParams,
   IngestionRule,
@@ -210,6 +213,7 @@ import type {
   ContactSearchResponse,
   ModelCatalogEntry,
   ModelDeleteImpact,
+  AllowanceObservation,
   ModelAttentionObservation,
   ModelAttentionReissueResult,
   FleetHaltAttentionObservation,
@@ -220,7 +224,8 @@ import type {
   VerifyAllResult,
   ModelTestResult,
   ButlerModelOverride,
-  ButlerModelOverrideUpsert,
+  ButlerModelOverridesWrite,
+  ButlerModelOverrideReason,
   ResolveModelResponse,
   TokenLimitsRequest,
   TokenLimitsResponse,
@@ -242,6 +247,8 @@ import type {
   HomeAssistantConfigResponse,
   HomeAssistantDeleteResponse,
   HomeAssistantStatusResponse,
+  HomePersonMappingInput,
+  HomePersonMappingReceipt,
   DunbarRankingResponse,
   ConversationSummary,
   ConversationListParams,
@@ -322,16 +329,16 @@ import type {
   EntityLoan,
   EntityNote,
   EntityInteraction,
-  EntityReachOutDraft,
   CreateEntityNoteRequest,
   CreateEntityInteractionRequest,
   CreateEntityGiftRequest,
-  CreateEntityReachOutDraftRequest,
+  EntityActivityResponse,
   ActivityBinsResponse,
   DeltaFactsResponse,
   ViewMarkResponse,
   CoreDatesResponse,
   EntityTimelineItem,
+  EntityCadenceResponse,
   DunbarTierOverrideResponse,
   EntityFinderSearchResponse,
   NeighboursResponse,
@@ -360,12 +367,14 @@ import type {
   HeartbeatFacts,
   InsightDeliveryState,
   DriftFacts,
+  StoredFunctionFacts,
   ConditionsFacts,
   HealingDispatchEvent,
   DelegationLedgerEntry,
   SubscriptionEntry,
   DeliveryEntry,
   ReactionEntry,
+  ContractEntry,
   DeploymentFacts,
   ModuleStatus,
   Briefing,
@@ -385,8 +394,8 @@ import type {
   FinanceUpcomingBillsParams,
   FinanceBulkUpdateRequest,
   FinanceBulkUpdateResponse,
-  TravelTrip,
   TravelTripSummary,
+  TravelTripsResponse,
   TravelUpcomingModel,
   TravelTripsParams,
   TravelExpiringDocumentsResponse,
@@ -398,8 +407,8 @@ import type {
   HomeEnergyDataPoint,
   HomeTopConsumer,
   HomeCommandLogEntry,
-  ContactInteractionsResponse,
   OverdueContactsResponse,
+  PendingDebriefsResponse,
   ButlerLogsParams,
   ButlerLogsResponse,
   GeneralCollection,
@@ -418,13 +427,13 @@ import type {
   ActivityFeed,
   ActivityFeedParams,
   ButlerMemoryStats,
+  ButlerEffectivePrompt,
   PromptVersion,
   PromptUpdateRequest,
-  ButlerTool,
   MemoryAccess,
   KillRequest,
   KillResponse,
-  EntityFactsResponse,
+  EntityFact,
   EntityFactsParams,
   AddEntityContactRequest,
   AddEntityContactResponse,
@@ -505,6 +514,60 @@ export class ApiError extends Error {
 export const API_REQUEST_TIMEOUT_MS = 15_000;
 
 /**
+ * Map a failed response body onto ApiError fields -- the one mapping every
+ * client call shares (bu-mia49k).
+ *
+ * - ErrorResponse envelope `{ error: { code, message, details } }`.
+ * - FastAPI string detail `{ detail: "..." }`.
+ * - Pydantic validation list `{ detail: [{ msg }, ...] }`.
+ * - Structured dict detail `{ detail: { code?, message?, error?, ... } }`
+ *   (e.g. 409 temporal_mutator_unsupported, contact_fact_changed, the
+ *   unsafe-channel rejection): message is `detail.message`, else
+ *   `detail.error`, else the JSON of the dict; code is `detail.code`. The
+ *   raw dict stays on `detail` for callers that need structured fields
+ *   (e.g. bulk-retry's `unsafe_events`).
+ *
+ * A non-JSON body keeps the status-derived defaults.
+ */
+async function parseErrorBody(
+  response: Response,
+  fallbackMessage: string,
+): Promise<{ code: string; message: string; detail: unknown }> {
+  let code = "UNKNOWN_ERROR";
+  let message = response.statusText || fallbackMessage;
+  let detail: unknown;
+
+  try {
+    const body = await response.json();
+    if (body.error) {
+      code = (body as ErrorResponse).error.code;
+      message = (body as ErrorResponse).error.message;
+      detail = (body as ErrorResponse).error.details ?? undefined;
+    } else if (typeof body.detail === "string") {
+      message = body.detail;
+    } else if (Array.isArray(body.detail) && body.detail.length > 0) {
+      message = body.detail
+        .map((d: Record<string, unknown>) => String(d.msg ?? d.message ?? JSON.stringify(d)))
+        .join("; ");
+    } else if (body.detail !== null && typeof body.detail === "object") {
+      const det = body.detail as Record<string, unknown>;
+      message =
+        typeof det.message === "string"
+          ? det.message
+          : typeof det.error === "string"
+            ? det.error
+            : JSON.stringify(det);
+      if (typeof det.code === "string") code = det.code;
+      detail = det;
+    }
+  } catch {
+    // Response body is not valid JSON -- keep the status-derived defaults.
+  }
+
+  return { code, message, detail };
+}
+
+/**
  * Typed fetch wrapper that prepends `API_BASE_URL`, sets JSON headers,
  * aborts after {@link API_REQUEST_TIMEOUT_MS}, and throws {@link ApiError}
  * on non-ok responses (or on timeout).
@@ -545,7 +608,7 @@ export async function apiFetch<T>(
 
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await ownerFetch(url, {
       ...fetchOptions,
       signal: controller.signal,
       headers: {
@@ -572,38 +635,7 @@ export async function apiFetch<T>(
   }
 
   if (!response.ok) {
-    let code = "UNKNOWN_ERROR";
-    let message = response.statusText || "Request failed";
-    let detail: unknown;
-
-    try {
-      const body = await response.json();
-      if (body.error) {
-        code = (body as ErrorResponse).error.code;
-        message = (body as ErrorResponse).error.message;
-        detail = (body as ErrorResponse).error.details ?? undefined;
-      } else if (typeof body.detail === "string") {
-        // FastAPI HTTPException format: { "detail": "..." }
-        message = body.detail;
-      } else if (Array.isArray(body.detail) && body.detail.length > 0) {
-        // Pydantic ValidationError format: { "detail": [{ "msg": "..." }, ...] }
-        message = body.detail
-          .map((d: Record<string, unknown>) => String(d.msg ?? d.message ?? JSON.stringify(d)))
-          .join("; ");
-      } else if (body.detail !== null && typeof body.detail === "object") {
-        // FastAPI HTTPException with a dict detail (e.g. 409 unsafe-channel rejection).
-        // Surface the "error" field if present, otherwise JSON-stringify the whole detail.
-        // Keep the raw dict on `detail` too, so callers that need structured
-        // fields (e.g. bulk-retry's `unsafe_events`) don't have to re-parse
-        // the message string.
-        const det = body.detail as Record<string, unknown>;
-        message = typeof det.error === "string" ? det.error : JSON.stringify(det);
-        detail = det;
-      }
-    } catch {
-      // Response body is not valid JSON — fall through to defaults.
-    }
-
+    const { code, message, detail } = await parseErrorBody(response, "Request failed");
     throw new ApiError(code, message, response.status, detail);
   }
 
@@ -726,6 +758,13 @@ export function getSessionAggregate(
 /** Fetch a single session by ID (cross-butler). */
 export function getSession(id: string): Promise<ApiResponse<SessionDetail>> {
   return apiFetch<ApiResponse<SessionDetail>>(`/sessions/${encodeURIComponent(id)}`);
+}
+
+/** Fetch the separately protected effective-system-prompt receipt on demand. */
+export function getSessionPrompt(id: string): Promise<ApiResponse<SessionPromptReceipt>> {
+  return apiFetch<ApiResponse<SessionPromptReceipt>>(
+    `/sessions/${encodeURIComponent(id)}/prompt`,
+  );
 }
 
 /** Fetch sessions for a specific butler. */
@@ -1202,12 +1241,11 @@ export function triggerButlerSchedule(
 export function toggleButlerSchedule(
   name: string,
   scheduleId: string,
-): Promise<ApiResponse<Record<string, unknown>>> {
-  return apiFetch<ApiResponse<Record<string, unknown>>>(
+  body: ScheduleToggleRequest,
+): Promise<ApiResponse<ScheduleToggleResult>> {
+  return apiFetch<ApiResponse<ScheduleToggleResult>>(
     `/butlers/${encodeURIComponent(name)}/schedules/${encodeURIComponent(scheduleId)}/toggle`,
-    {
-      method: "PATCH",
-    },
+    { method: "PATCH", body: JSON.stringify(body) },
   );
 }
 
@@ -1433,8 +1471,11 @@ export function searchAll(query: string, limit?: number): Promise<ApiResponse<Se
 export async function getTimeline(params?: TimelineParams): Promise<TimelineResponse> {
   const sp = new URLSearchParams();
   if (params?.limit) sp.set("limit", String(params.limit));
+  if (params?.event) sp.set("event", params.event);
   if (params?.before) sp.set("before", params.before);
   if (params?.trace) sp.set("trace", params.trace);
+  if (params?.since) sp.set("since", params.since);
+  if (params?.until) sp.set("until", params.until);
   params?.butler?.forEach((b) => sp.append("butler", b));
   params?.event_type?.forEach((t) => sp.append("event_type", t));
   const qs = sp.toString();
@@ -1449,6 +1490,28 @@ export async function getTimeline(params?: TimelineParams): Promise<TimelineResp
       degraded_butlers: response.meta.degraded_butlers ?? [],
     },
   };
+}
+
+/** Fetch server-counted minute density for one bounded Timeline interval. */
+export function getTimelineHistogram(
+  params: TimelineHistogramParams,
+): Promise<TimelineHistogramResponse> {
+  const sp = new URLSearchParams({ since: params.since, until: params.until });
+  if (params.trace) sp.set("trace", params.trace);
+  params.butler?.forEach((butler) => sp.append("butler", butler));
+  params.event_type?.forEach((type) => sp.append("event_type", type));
+  return apiFetch<TimelineHistogramResponse>(`/timeline/histogram?${sp.toString()}`);
+}
+
+/** Fetch recent records created in the last 24 hours that are currently failed. */
+export function getTimelineAttention(
+  params?: TimelineAttentionParams,
+): Promise<TimelineAttentionResponse> {
+  const sp = new URLSearchParams();
+  if (params?.trace) sp.set("trace", params.trace);
+  params?.butler?.forEach((butler) => sp.append("butler", butler));
+  const qs = sp.toString();
+  return apiFetch<TimelineAttentionResponse>(qs ? `/timeline/attention?${qs}` : "/timeline/attention");
 }
 
 // ---------------------------------------------------------------------------
@@ -1491,30 +1554,6 @@ export function getCalendarWorkspaceMeta(): Promise<ApiResponse<CalendarWorkspac
 }
 
 /**
- * Fetch the cross-source duplicate clusters the read-model collapses, plus the
- * active dedup rules. Fail-open server-side: a read failure yields
- * `available: false` with an empty cluster list, never an error.
- */
-export function getCalendarWorkspaceDuplicates(
-  params: CalendarDuplicatesParams,
-): Promise<ApiResponse<CalendarDuplicatesResponse>> {
-  const sp = new URLSearchParams();
-  sp.set("view", params.view);
-  sp.set("start", params.start);
-  sp.set("end", params.end);
-  if (params.timezone != null && params.timezone !== "") sp.set("timezone", params.timezone);
-  params.butlers?.forEach((butler) => {
-    if (butler) sp.append("butlers", butler);
-  });
-  params.sources?.forEach((source) => {
-    if (source) sp.append("sources", source);
-  });
-  return apiFetch<ApiResponse<CalendarDuplicatesResponse>>(
-    `/calendar/workspace/duplicates?${sp.toString()}`,
-  );
-}
-
-/**
  * Scan the visible window for conflicts / overcommitment (the radar).
  *
  * Read-only and fail-open: a degraded response carries `issues_available=false`
@@ -1538,27 +1577,35 @@ export function getCalendarWorkspaceConflicts(
   );
 }
 
-/** Persist the cross-source dedup match-strategy / noisy-threshold settings. */
-export function patchCalendarDedupRules(
-  body: CalendarDedupRulesUpdateRequest,
-): Promise<ApiResponse<CalendarDedupRulesModel>> {
-  return apiFetch<ApiResponse<CalendarDedupRulesModel>>("/calendar/workspace/dedup-rules", {
-    method: "PATCH",
-    body: JSON.stringify(body),
-  });
+/** Read-only projected invitations; no provider/RSVP action. */
+export function getCalendarInvitations(
+  params: CalendarInvitationsParams,
+): Promise<ApiResponse<CalendarInvitationsResponse>> {
+  const sp = new URLSearchParams({ start: params.start, end: params.end });
+  if (params.timezone) sp.set("timezone", params.timezone);
+  if (params.limit != null) sp.set("limit", String(params.limit));
+  if (params.cursor) sp.set("cursor", params.cursor);
+  return apiFetch<ApiResponse<CalendarInvitationsResponse>>(
+    `/calendar/workspace/invitations?${sp.toString()}`,
+  );
 }
 
-/** Pin or unpin a duplicate cluster as keep-separate (per-cluster override). */
-export function setCalendarKeepSeparate(
-  body: CalendarKeepSeparateRequest,
-): Promise<ApiResponse<CalendarKeepSeparateResponse>> {
-  return apiFetch<ApiResponse<CalendarKeepSeparateResponse>>(
-    "/calendar/workspace/duplicates/keep-separate",
-    {
-      method: "POST",
-      body: JSON.stringify(body),
-    },
+/** Authenticated owner response through canonical preparation and approval. */
+export function getCalendarResponseReceipt(
+  commandId: string, sourceButler: string, inverse = false,
+): Promise<ApiResponse<CalendarResponseReceipt>> {
+  const query = new URLSearchParams({ source_butler: sourceButler, inverse: String(inverse) });
+  return apiFetch<ApiResponse<CalendarResponseReceipt>>(
+    `/calendar/workspace/responses/${encodeURIComponent(commandId)}?${query}`,
   );
+}
+
+export function respondToCalendarInvitation(
+  body: CalendarResponseRequest,
+): Promise<ApiResponse<CalendarResponseReceipt>> {
+  return apiFetch<ApiResponse<CalendarResponseReceipt>>("/calendar/workspace/respond", {
+    method: "POST", body: JSON.stringify(body),
+  });
 }
 
 /**
@@ -1619,19 +1666,6 @@ export function searchCalendarWorkspace(
   );
 }
 
-/** Find ranked open time slots for the "Find time" panel. */
-export function findCalendarWorkspaceTime(
-  body: CalendarWorkspaceFindTimeRequest,
-): Promise<ApiResponse<CalendarWorkspaceFindTimeResponse>> {
-  return apiFetch<ApiResponse<CalendarWorkspaceFindTimeResponse>>(
-    "/calendar/workspace/find-time",
-    {
-      method: "POST",
-      body: JSON.stringify(body),
-    },
-  );
-}
-
 /** Trigger calendar workspace sync globally or for a selected source. */
 export function syncCalendarWorkspace(
   body: CalendarWorkspaceSyncRequest,
@@ -1645,111 +1679,6 @@ export function syncCalendarWorkspace(
 /** List connected Google accounts joined with Google Calendar connector health. */
 export function getCalendarAccounts(): Promise<ApiResponse<CalendarAccountsResponse>> {
   return apiFetch<ApiResponse<CalendarAccountsResponse>>("/calendar/accounts");
-}
-
-/**
- * Resolve an API path to an absolute URL. `API_BASE_URL` is usually relative
- * (`/api`), but the ICS export/subscribe URLs must be absolute so they work in
- * an `<a download>` and when copied into an external calendar app.
- */
-function absoluteApiUrl(path: string): string {
-  if (/^https?:\/\//i.test(API_BASE_URL)) return `${API_BASE_URL}${path}`;
-  const origin =
-    typeof window !== "undefined" && window.location ? window.location.origin : "";
-  return `${origin}${API_BASE_URL}${path}`;
-}
-
-function calendarIcsExportSearchParams(
-  params: CalendarIcsExportParams,
-): URLSearchParams {
-  const sp = new URLSearchParams();
-  sp.set("view", params.view);
-  sp.set("start", params.start);
-  sp.set("end", params.end);
-  params.butlers?.forEach((butler) => {
-    if (butler) sp.append("butlers", butler);
-  });
-  params.sources?.forEach((source) => {
-    if (source) sp.append("sources", source);
-  });
-  if (params.status != null) sp.set("status", params.status);
-  if (params.source_type != null) sp.set("source_type", params.source_type);
-  return sp;
-}
-
-/**
- * Build the absolute download URL for the one-shot `.ics` export
- * (`GET /api/calendar/export/ics`). Mirrors the workspace `view` / range /
- * facet filters so the export matches what the user currently sees.
- */
-export function calendarIcsExportUrl(params: CalendarIcsExportParams): string {
-  return absoluteApiUrl(
-    `/calendar/export/ics?${calendarIcsExportSearchParams(params).toString()}`,
-  );
-}
-
-/**
- * Absolute `https`/`http` URL of the live subscribe feed
- * (`GET /api/calendar/subscribe.ics`) — a read-only, self-refreshing ICS feed an
- * external calendar app can subscribe to.
- */
-export function calendarSubscribeUrl(): string {
-  return absoluteApiUrl("/calendar/subscribe.ics");
-}
-
-/**
- * `webcal://` form of {@link calendarSubscribeUrl}. Most desktop/mobile calendar
- * apps register the `webcal:` scheme and add the feed as a live subscription
- * when the user opens this URL.
- */
-export function calendarSubscribeWebcalUrl(): string {
-  return calendarSubscribeUrl().replace(/^https?:\/\//i, "webcal://");
-}
-
-/**
- * Import an uploaded `.ics` file into a calendar-enabled butler, deduped against
- * existing workspace entries (`POST /api/calendar/import/ics`). Sends multipart
- * form-data; the browser sets the `Content-Type` boundary, so this does not go
- * through {@link apiFetch} (which forces a JSON content type).
- */
-export async function importCalendarIcs(args: {
-  file: File;
-  butlerName: string;
-  calendarId?: string | null;
-}): Promise<ApiResponse<CalendarIcsImportResponse>> {
-  const form = new FormData();
-  form.append("file", args.file);
-  form.append("butler_name", args.butlerName);
-  if (args.calendarId) form.append("calendar_id", args.calendarId);
-
-  const response = await fetch(`${API_BASE_URL}/calendar/import/ics`, {
-    method: "POST",
-    headers: { Accept: "application/json" },
-    body: form,
-  });
-
-  if (!response.ok) {
-    let code = "UNKNOWN_ERROR";
-    let message = response.statusText || "Import failed";
-    try {
-      const body = await response.json();
-      if (body.error) {
-        code = (body as ErrorResponse).error.code;
-        message = (body as ErrorResponse).error.message;
-      } else if (typeof body.detail === "string") {
-        message = body.detail;
-      } else if (Array.isArray(body.detail) && body.detail.length > 0) {
-        message = body.detail
-          .map((d: Record<string, unknown>) => String(d.msg ?? d.message ?? JSON.stringify(d)))
-          .join("; ");
-      }
-    } catch {
-      // Body is not JSON — keep the status-derived default.
-    }
-    throw new ApiError(code, message, response.status);
-  }
-
-  return (await response.json()) as ApiResponse<CalendarIcsImportResponse>;
 }
 
 /** Enable or disable a single calendar as a sync source. */
@@ -1887,27 +1816,6 @@ export function getCalendarWorkspaceEntry(
     `/calendar/workspace/entries/${encodeURIComponent(entryId)}${qs ? `?${qs}` : ""}`,
   );
 }
-
-/**
- * Reverse a single previously-applied calendar mutation —
- * POST /calendar/workspace/undo/{action_id}.
- *
- * The endpoint synthesizes the inverse mutation from the logged
- * ``calendar_action_log`` row and dispatches it with a freshly generated
- * server-side ``request_id`` (returned on the response); the client sends no
- * body. Throws {@link ApiError} with status 404 (unknown action), 409 (action
- * not ``applied`` / already undone), or 422 (missing pre-state or no
- * reconstructable inverse).
- */
-export function undoCalendarWorkspaceMutation(
-  actionId: string,
-): Promise<ApiResponse<CalendarUndoResponse>> {
-  return apiFetch<ApiResponse<CalendarUndoResponse>>(
-    `/calendar/workspace/undo/${encodeURIComponent(actionId)}`,
-    { method: "POST" },
-  );
-}
-
 /** Fetch paginated calendar mutation audit log entries. */
 export function getCalendarWorkspaceAudit(
   params?: CalendarAuditParams,
@@ -1926,58 +1834,9 @@ export function getCalendarWorkspaceAudit(
 // Relationship / CRM
 // ---------------------------------------------------------------------------
 
-/** Build URLSearchParams from contact query parameters. */
-function contactSearchParams(params?: ContactParams): URLSearchParams {
-  const sp = new URLSearchParams();
-  if (params?.q != null && params.q !== "") sp.set("q", params.q);
-  if (params?.label != null && params.label !== "") sp.set("label", params.label);
-  if (params?.archived) sp.set("archived", "true");
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  return sp;
-}
-
-/** Fetch a paginated list of contacts. */
-export function getContacts(params?: ContactParams): Promise<ContactListResponse> {
-  const qs = contactSearchParams(params).toString();
-  const path = qs ? `/relationship/contacts?${qs}` : "/relationship/contacts";
-  return apiFetch<ContactListResponse>(path);
-}
-
-/** Fetch a single contact by ID. */
-export function getContact(contactId: string): Promise<ContactDetail> {
-  return apiFetch<ContactDetail>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}`,
-  );
-}
-
-/** Update a contact's fields (full_name, nickname, company, job_title, roles). */
-export function patchContact(
-  contactId: string,
-  request: ContactPatchRequest,
-): Promise<ContactDetail> {
-  return apiFetch<ContactDetail>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}`,
-    { method: "PATCH", body: JSON.stringify(request) },
-  );
-}
-
 /** Get owner identity setup status. */
 export function getOwnerSetupStatus(): Promise<OwnerSetupStatus> {
   return apiFetch<OwnerSetupStatus>("/relationship/owner/setup-status");
-}
-
-/** Fetch chronological interaction thread for a contact (bu-iuol4.22). */
-export function getContactInteractions(
-  contactId: string,
-  limit?: number,
-): Promise<ContactInteractionsResponse> {
-  const sp = new URLSearchParams();
-  if (limit != null) sp.set("limit", String(limit));
-  const qs = sp.toString();
-  return apiFetch<ContactInteractionsResponse>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}/interactions${qs ? `?${qs}` : ""}`,
-  );
 }
 
 /** Fetch contacts that are overdue on their Dunbar tier cadence (bu-iuol4.22). */
@@ -1988,6 +1847,11 @@ export function getOverdueContacts(days?: number): Promise<OverdueContactsRespon
   return apiFetch<OverdueContactsResponse>(
     `/relationship/contacts/overdue${qs ? `?${qs}` : ""}`,
   );
+}
+
+/** Fetch prompted, unanswered meeting debriefs (bu-q7vx1q.63). */
+export function getPendingMeetingDebriefs(): Promise<PendingDebriefsResponse> {
+  return apiFetch<PendingDebriefsResponse>("/relationship/meeting-debriefs/pending");
 }
 
 /** Build URLSearchParams from group query parameters. */
@@ -2385,6 +2249,11 @@ export async function getMeasurementSources(): Promise<
   return res.sources ?? [];
 }
 
+/** Read stored Health usual ranges; a failed read remains explicitly unavailable. */
+export function getHealthBaselines(): Promise<HealthBaselinesResponse> {
+  return apiFetch<HealthBaselinesResponse>("/health/baselines");
+}
+
 /** Fetch liveness-qualified Health measurement expectations. */
 export function getExpectedSignals(): Promise<ExpectedSignalsResponse> {
   return apiFetch<ExpectedSignalsResponse>(
@@ -2427,21 +2296,29 @@ export function getInsightCandidates(
   ).then((r) => r.data);
 }
 
-/**
- * Fetch the open decision-bead digest for the dashboard Decisions lane
- * (bu-ckkpz.2).
- *
- * GET /api/decisions — returns the full envelope (not just `.data`) so
- * callers can read `meta.decisions_available`: `false` means the beads-export
- * digest could not be read (never a fabricated "no decisions waiting").
- */
-export function getDecisions(): Promise<import("./types").DecisionsListResponse> {
-  return apiFetch<import("./types").DecisionsListResponse>("/decisions");
-}
+/** Record one of the broker's bounded, reversible owner-feedback verbs. */
+type InsightFeedbackResult = {
+  status: "recorded";
+  verdict: import("./types").InsightFeedbackVerdict;
+  insight_id: string;
+  snooze_until: string | null;
+};
 
-/** Read one strict-allowlisted Bead detail from the mounted snapshot only. */
-export function getBeadDetail(id: string): Promise<import("./types").BeadDetailResponse> {
-  return apiFetch<import("./types").BeadDetailResponse>(`/beads/${encodeURIComponent(id)}`);
+export function submitInsightFeedback(
+  insightId: string,
+  verdict: import("./types").InsightFeedbackVerdict,
+  snoozeUntil?: string,
+): Promise<InsightFeedbackResult> {
+  const action = verdict === "not_now" ? "snooze" : verdict === "never" ? "mute" : "useful";
+  return apiFetch<ApiResponse<InsightFeedbackResult>>(
+    `/switchboard/insights/${encodeURIComponent(insightId)}/${action}`,
+    {
+      method: "POST",
+      ...(verdict === "not_now"
+        ? { body: JSON.stringify({ snooze_until: snoozeUntil }) }
+        : {}),
+    },
+  ).then((response) => response.data);
 }
 
 /** Fetch a paginated list of health research notes. */
@@ -2616,6 +2493,7 @@ function factSearchParams(params?: FactParams): URLSearchParams {
 /** Build URLSearchParams from rule query parameters. */
 function ruleSearchParams(params?: RuleParams): URLSearchParams {
   const sp = new URLSearchParams();
+  if (params?.held != null) sp.set("held", String(params.held));
   if (params?.q) sp.set("q", params.q);
   if (params?.scope) sp.set("scope", params.scope);
   if (params?.maturity) sp.set("maturity", params.maturity);
@@ -2639,9 +2517,9 @@ export function getMemoryStats(): Promise<MemoryStatsResponse> {
 /** Fetch a paginated list of episodes. */
 export function getEpisodes(
   params?: EpisodeParams,
-): Promise<PaginatedResponse<Episode>> {
+): Promise<MemoryPaginatedResponse<Episode>> {
   const qs = episodeSearchParams(params).toString();
-  return apiFetch<PaginatedResponse<Episode>>(
+  return apiFetch<MemoryPaginatedResponse<Episode>>(
     qs ? `/memory/episodes?${qs}` : "/memory/episodes",
   );
 }
@@ -2653,12 +2531,28 @@ export function getEpisode(episodeId: string): Promise<ApiResponse<Episode>> {
   );
 }
 
+/**
+ * Requeue a dead-lettered episode: resets consolidation_status to 'pending'
+ * (clearing attempts/lease/dead_letter_reason) so the next scheduled
+ * consolidation sweep reconsolidates it. POST /api/memory/episodes/{id}/requeue
+ * (bu-kqnum.14.3). Nothing is run by the request. Returns the refreshed
+ * episode. 409 if the episode is not dead_letter.
+ */
+export function retryEpisodeConsolidation(
+  episodeId: string,
+): Promise<ApiResponse<Episode>> {
+  return apiFetch<ApiResponse<Episode>>(
+    `/memory/episodes/${encodeURIComponent(episodeId)}/requeue`,
+    { method: "POST" },
+  );
+}
+
 /** Fetch a paginated list of facts. */
 export function getFacts(
   params?: FactParams,
-): Promise<PaginatedResponse<Fact>> {
+): Promise<MemoryPaginatedResponse<Fact>> {
   const qs = factSearchParams(params).toString();
-  return apiFetch<PaginatedResponse<Fact>>(
+  return apiFetch<MemoryPaginatedResponse<Fact>>(
     qs ? `/memory/facts?${qs}` : "/memory/facts",
   );
 }
@@ -2693,12 +2587,60 @@ export function retractFact(factId: string): Promise<ApiResponse<Fact>> {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Lifestyle taste ledger (bu-2jtfw.10)
+// ---------------------------------------------------------------------------
+
+import type {
+  TasteSummary,
+  TasteVerdict,
+  TasteVerdictsParams,
+  TasteWork,
+  TasteWorksParams,
+} from "./types.ts";
+
+function tasteWorksSearchParams(params?: TasteWorksParams): URLSearchParams {
+  const sp = new URLSearchParams();
+  if (params?.kind) sp.set("kind", params.kind);
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  return sp;
+}
+
+/** Fetch ledger-wide taste counts. GET /api/lifestyle/taste/summary. */
+export function getLifestyleTasteSummary(): Promise<ApiResponse<TasteSummary>> {
+  return apiFetch<ApiResponse<TasteSummary>>("/lifestyle/taste/summary");
+}
+
+/** Fetch a paginated list of taste-ledger works. */
+export function getLifestyleTasteWorks(
+  params?: TasteWorksParams,
+): Promise<PaginatedResponse<TasteWork>> {
+  const qs = tasteWorksSearchParams(params).toString();
+  return apiFetch<PaginatedResponse<TasteWork>>(
+    qs ? `/lifestyle/taste/works?${qs}` : "/lifestyle/taste/works",
+  );
+}
+
+/** Fetch a paginated list of owner-asserted taste verdicts. */
+export function getLifestyleTasteVerdicts(
+  params?: TasteVerdictsParams,
+): Promise<PaginatedResponse<TasteVerdict>> {
+  const sp = new URLSearchParams();
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch<PaginatedResponse<TasteVerdict>>(
+    qs ? `/lifestyle/taste/verdicts?${qs}` : "/lifestyle/taste/verdicts",
+  );
+}
+
 /** Fetch a paginated list of rules. */
 export function getRules(
   params?: RuleParams,
-): Promise<PaginatedResponse<MemoryRule>> {
+): Promise<MemoryPaginatedResponse<MemoryRule>> {
   const qs = ruleSearchParams(params).toString();
-  return apiFetch<PaginatedResponse<MemoryRule>>(
+  return apiFetch<MemoryPaginatedResponse<MemoryRule>>(
     qs ? `/memory/rules?${qs}` : "/memory/rules",
   );
 }
@@ -2707,6 +2649,17 @@ export function getRules(
 export function getRule(ruleId: string): Promise<ApiResponse<MemoryRule>> {
   return apiFetch<ApiResponse<MemoryRule>>(
     `/memory/rules/${encodeURIComponent(ruleId)}`,
+  );
+}
+
+/**
+ * Retire a rule: it stops firing but stays on the books (retired_at set).
+ * PATCH /api/memory/rules/{id}/retire (bu-6t8ix.3). Returns the refreshed rule.
+ */
+export function retireRule(ruleId: string): Promise<ApiResponse<MemoryRule>> {
+  return apiFetch<ApiResponse<MemoryRule>>(
+    `/memory/rules/${encodeURIComponent(ruleId)}/retire`,
+    { method: "PATCH" },
   );
 }
 
@@ -2773,14 +2726,14 @@ export function runReembed(
 /** Search memory (inspect). */
 export function inspectMemory(
   params?: MemoryInspectParams,
-): Promise<PaginatedResponse<MemoryInspectResult>> {
+): Promise<MemoryPaginatedResponse<MemoryInspectResult>> {
   const sp = new URLSearchParams();
   if (params?.q) sp.set("q", params.q);
   if (params?.kind) sp.set("kind", params.kind);
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
   const qs = sp.toString();
-  return apiFetch<PaginatedResponse<MemoryInspectResult>>(
+  return apiFetch<MemoryPaginatedResponse<MemoryInspectResult>>(
     qs ? `/memory/inspect?${qs}` : "/memory/inspect",
   );
 }
@@ -3013,27 +2966,30 @@ export function getEntityGifts(
   return apiFetch<EntityGift[]>(path);
 }
 
-/** Fetch reach-out drafts for a relationship entity (drafts only; nothing sent). */
-export function getEntityReachOutDrafts(
+/** Fetch interaction facts for a relationship entity, newest first. */
+export function getEntityInteractions(
   entityId: string,
   params?: { limit?: number; offset?: number },
-): Promise<EntityReachOutDraft[]> {
+): Promise<EntityInteraction[]> {
   const qs = new URLSearchParams();
   if (params?.limit != null) qs.set("limit", String(params.limit));
   if (params?.offset != null) qs.set("offset", String(params.offset));
   const path = qs.size
-    ? `/relationship/entities/${encodeURIComponent(entityId)}/reach-out-drafts?${qs}`
-    : `/relationship/entities/${encodeURIComponent(entityId)}/reach-out-drafts`;
-  return apiFetch<EntityReachOutDraft[]>(path);
+    ? `/relationship/entities/${encodeURIComponent(entityId)}/interactions?${qs}`
+    : `/relationship/entities/${encodeURIComponent(entityId)}/interactions`;
+  return apiFetch<EntityInteraction[]>(path);
 }
 
 // ---------------------------------------------------------------------------
-// Relationship butler: entity-level tab writes — the log-interaction,
-// gift-idea, and draft-reach-out operator verbs (bu-6t8ix.4).
+// Relationship butler: entity-level tab writes — the log-interaction and
+// gift-idea operator verbs (bu-6t8ix.4). A third verb, draft-reach-out
+// (getEntityReachOutDrafts/createEntityReachOutDraft), shipped alongside
+// these and was retired in bu-2jtfw.11, replaced by the prepared-action
+// mechanism surfaced on the insight digest.
 //
 // Each POST persists through the relationship butler's own fact-store tool, so
 // a dashboard-authored record is indistinguishable from a butler-authored one.
-// All four are owner-gated (403 `owner_required`) and answer 409 with an
+// Both are owner-gated (403 `owner_required`) and answer 409 with an
 // `existing_id` rather than writing a duplicate.
 // ---------------------------------------------------------------------------
 
@@ -3070,22 +3026,6 @@ export function createEntityGift(
   );
 }
 
-/**
- * Draft a reach-out message for a relationship entity.
- *
- * Drafts only. There is no send endpoint behind this call, and the backend
- * contacts no channel: `channel` records intent, not delivery.
- */
-export function createEntityReachOutDraft(
-  entityId: string,
-  request: CreateEntityReachOutDraftRequest,
-): Promise<EntityReachOutDraft> {
-  return apiFetch<EntityReachOutDraft>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/reach-out-drafts`,
-    { method: "POST", body: JSON.stringify(request) },
-  );
-}
-
 /** Fetch loans tab data for a relationship entity. */
 export function getEntityLoans(
   entityId: string,
@@ -3112,6 +3052,31 @@ export function getEntityTimeline(
     ? `/relationship/entities/${encodeURIComponent(entityId)}/timeline?${qs}`
     : `/relationship/entities/${encodeURIComponent(entityId)}/timeline`;
   return apiFetch<EntityTimelineItem[]>(path);
+}
+
+/** Fetch the canonical merged entity activity stream with cancellable pagination. */
+export function getEntityActivity(
+  entityId: string,
+  params?: { limit?: number; offset?: number; signal?: AbortSignal },
+): Promise<EntityActivityResponse> {
+  const qs = new URLSearchParams();
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  if (params?.offset != null) qs.set("offset", String(params.offset));
+  const path = qs.size
+    ? `/relationship/entities/${encodeURIComponent(entityId)}/activity?${qs}`
+    : `/relationship/entities/${encodeURIComponent(entityId)}/activity`;
+  return apiFetch<EntityActivityResponse>(path, { signal: params?.signal });
+}
+
+/** Fetch completeness-tagged interaction evidence for a rolling window. */
+export function getEntityCadence(
+  entityId: string,
+  windowDays: number,
+): Promise<EntityCadenceResponse> {
+  const qs = new URLSearchParams({ window_days: String(windowDays) });
+  return apiFetch<EntityCadenceResponse>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/cadence?${qs.toString()}`,
+  );
 }
 
 /** Fetch message thread summaries for a relationship entity. */
@@ -3443,7 +3408,7 @@ export function getPlexHalo(perType?: number): Promise<HaloResponse> {
 export function getEntityFacts(
   entityId: string,
   params?: EntityFactsParams,
-): Promise<EntityFactsResponse> {
+): Promise<CursorPage<EntityFact>> {
   const qs = new URLSearchParams();
   if (params?.predicate != null) qs.set("predicate", params.predicate);
   if (params?.validity != null) qs.set("validity", params.validity);
@@ -3453,7 +3418,7 @@ export function getEntityFacts(
   const path = qs.size
     ? `/relationship/entities/${encodeURIComponent(entityId)}/facts?${qs.toString()}`
     : `/relationship/entities/${encodeURIComponent(entityId)}/facts`;
-  return apiFetch<EntityFactsResponse>(path);
+  return apiFetch<CursorPage<EntityFact>>(path);
 }
 
 /**
@@ -3470,27 +3435,6 @@ export function getEntityFacts(
 export function getEntityConcentration(pred?: string): Promise<ConcentrationResponse> {
   const qs = pred ? `?pred=${encodeURIComponent(pred)}` : "";
   return apiFetch<ConcentrationResponse>(`/relationship/entities/concentration${qs}`);
-}
-
-/** Link a contact to an entity. */
-export function setEntityLinkedContact(
-  entityId: string,
-  contactId: string,
-): Promise<{ entity_id: string; contact_id: string }> {
-  return apiFetch<{ entity_id: string; contact_id: string }>(
-    `/memory/entities/${encodeURIComponent(entityId)}/linked-contact`,
-    { method: "PUT", body: JSON.stringify({ contact_id: contactId }) },
-  );
-}
-
-/** Unlink the contact from an entity. */
-export function unlinkEntityContact(
-  entityId: string,
-): Promise<void> {
-  return apiFetch<void>(
-    `/memory/entities/${encodeURIComponent(entityId)}/linked-contact`,
-    { method: "DELETE" },
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -3539,12 +3483,13 @@ export function getApprovalGatedTools(): Promise<ApiResponse<ApprovalGatedTool[]
   return apiFetch<ApiResponse<ApprovalGatedTool[]>>("/approvals/gated-tools");
 }
 
-export function createApprovalRule(
+export async function createApprovalRule(
   request: ApprovalRuleCreateRequest,
 ): Promise<ApiResponse<ApprovalRule>> {
+  const proof = await standingRuleHeaders("create", request);
   return apiFetch<ApiResponse<ApprovalRule>>("/approvals/rules", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...proof },
     body: JSON.stringify(request),
   });
 }
@@ -3557,12 +3502,13 @@ export function getApprovalRuleSuggestions(
   );
 }
 
-export function createApprovalRuleFromAction(
+export async function createApprovalRuleFromAction(
   request: ApprovalRuleFromActionRequest,
 ): Promise<ApiResponse<ApprovalRule>> {
+  const proof = await standingRuleHeaders("from_action", request);
   return apiFetch<ApiResponse<ApprovalRule>>("/approvals/rules/from-action", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...proof },
     body: JSON.stringify(request),
   });
 }
@@ -3601,15 +3547,28 @@ export function getApprovalsFlat(
   return apiFetch<ApprovalsFlatListResponse>(s ? `/approvals?${s}` : "/approvals");
 }
 
-export function getApprovalDetail(actionId: string): Promise<ApiResponse<ApprovalDetail>> {
+export function getUnroutableAttention(): Promise<ApiResponse<UnroutableAttentionItem[]>> {
+  return apiFetch<ApiResponse<UnroutableAttentionItem[]>>("/approvals/unroutable");
+}
+
+export function retryUnroutableAttention(
+  deadLetterId: string,
+): Promise<ApiResponse<UnroutableRetryResult>> {
+  return apiFetch<ApiResponse<UnroutableRetryResult>>(
+    `/approvals/unroutable/${encodeURIComponent(deadLetterId)}/retry`,
+    { method: "POST" },
+  );
+}
+
+export function getApprovalDetail(actionId: string, reviewSource?: string): Promise<ApiResponse<ApprovalDetail>> {
   return apiFetch<ApiResponse<ApprovalDetail>>(
-    `/approvals/${encodeURIComponent(actionId)}`,
+    `/approvals/${encodeURIComponent(actionId)}${reviewSource !== undefined ? `?review_source=${encodeURIComponent(reviewSource)}` : ""}`,
   );
 }
 
 export function approveApproval(
   actionId: string,
-  request?: ApprovalApproveRequest,
+  request: ApprovalApproveRequest,
 ): Promise<ApiResponse<ApprovalAction>> {
   return apiFetch<ApiResponse<ApprovalAction>>(
     `/approvals/${encodeURIComponent(actionId)}/approve`,
@@ -3723,12 +3682,13 @@ export function getAutonomySuggestions(
   );
 }
 
-export function confirmAutonomySuggestion(
+export async function confirmAutonomySuggestion(
   suggestionId: string,
 ): Promise<ApiResponse<AutonomySuggestion>> {
+  const proof = await standingRuleHeaders("promotion", { suggestion_id: suggestionId });
   return apiFetch<ApiResponse<AutonomySuggestion>>(
     `/approvals/suggestions/${encodeURIComponent(suggestionId)}/confirm`,
-    { method: "POST" },
+    { method: "POST", headers: proof },
   );
 }
 
@@ -3927,20 +3887,6 @@ import type {
 } from "./types.ts";
 
 /**
- * Google Health scope URLs. Full URLs (not short names) are stored on
- * ``public.google_accounts.granted_scopes`` exactly as Google returns
- * them in the token response, so scope-presence checks compare against
- * these exact strings. Kept in sync with:
- *   src/butlers/api/routers/oauth.py ::GOOGLE_SCOPE_SETS["health"]
- *   src/butlers/api/routers/google_health.py ::GOOGLE_HEALTH_SCOPE_URLS
- */
-export const GOOGLE_HEALTH_SCOPES = [
-  "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
-  "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
-  "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
-] as const;
-
-/**
  * Google may report the broader non-`.readonly` variant of a googlehealth
  * scope when the account already holds it, so granted-scope checks must match
  * by FAMILY rather than exact URL (mirrors
@@ -4084,10 +4030,6 @@ export function listAvailableConnectors(): Promise<{ data: ConnectorProfile[] }>
 }
 
 // ---------------------------------------------------------------------------
-// Thread affinity API
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Education
 // ---------------------------------------------------------------------------
 
@@ -4130,14 +4072,21 @@ export function getEducationMindMap(mindMapId: string): Promise<MindMap> {
 }
 
 /**
- * List every registered source.
+ * Resolve specific registered sources by ID.
  *
- * The node detail panel resolves each `metadata.source_refs` entry against
- * this list: a hit yields the source's title, a miss means the source was
- * removed and the reference must be shown as unregistered rather than cited.
+ * The node detail panel calls this with the `source_id`s named by one node's
+ * `metadata.source_refs`, never the whole registry: a hit yields the source's
+ * title, a miss means the source was removed and the reference must be shown
+ * as unregistered rather than cited. An empty `sourceIds` array resolves to
+ * `[]` without a request — there is nothing to look up.
  */
-export function getEducationSources(): Promise<EducationSourceMaterial[]> {
-  return apiFetch<EducationSourceMaterial[]>("/education/sources");
+export function getEducationSources(
+  sourceIds: string[],
+): Promise<EducationSourceMaterial[]> {
+  if (sourceIds.length === 0) return Promise.resolve([]);
+  const sp = new URLSearchParams();
+  sp.set("source_ids", sourceIds.join(","));
+  return apiFetch<EducationSourceMaterial[]>(`/education/sources?${sp.toString()}`);
 }
 
 /** Get frontier nodes for a mind map. */
@@ -4264,7 +4213,7 @@ export function getEducationMindMapAnalyticsTrend(
 }
 
 // ---------------------------------------------------------------------------
-// Connector statistics API (docs/connectors/statistics.md §6)
+// Ingestion connectors API (docs/connectors/statistics.md §6)
 // ---------------------------------------------------------------------------
 
 import type {
@@ -4275,14 +4224,14 @@ import type {
   ConnectorDaySummary,
   ConnectorDetail,
   ConnectorEventsResponse,
+  ConnectorFanoutResponse,
+  ConnectorFanoutRow,
   ConnectorIncidentsResponse,
   ConnectorRoutingRulesResponse,
   ConnectorScopeEntry,
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
-  ConnectorSummariesListResponse,
-  ConnectorSummariesMeta,
   ConnectorSummariesResponse,
   ConnectorSummary,
   IngestionPeriod,
@@ -4299,13 +4248,13 @@ export type {
   ConnectorDetail,
   ConnectorScopeEntry,
   ConnectorEventsResponse,
+  ConnectorFanoutResponse,
+  ConnectorFanoutRow,
   ConnectorIncidentsResponse,
   ConnectorRoutingRulesResponse,
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
-  ConnectorSummariesListResponse,
-  ConnectorSummariesMeta,
   ConnectorSummariesResponse,
   ConnectorSummary,
   IngestionPeriod,
@@ -4316,8 +4265,8 @@ export type {
 // Internal helpers — backend response shapes
 // ---------------------------------------------------------------------------
 
-/** Raw connector entry from GET /api/switchboard/connectors. */
-interface _BackendConnectorEntry {
+/** Flat connector detail payload returned by the canonical detail routes. */
+export interface _ConnectorDetailPayload {
   connector_type: string;
   endpoint_identity: string;
   instance_id: string | null;
@@ -4346,8 +4295,8 @@ interface _BackendConnectorEntry {
   hourly_events?: number[];
 }
 
-/** Raw timeseries row from GET /api/switchboard/connectors/:type/:id/stats. */
-interface _BackendStatsRow {
+/** Raw timeseries row returned by the canonical connector stats route. */
+export interface _BackendStatsRow {
   connector_type: string;
   endpoint_identity: string;
   /** ISO string for hourly rollup (period=24h). */
@@ -4369,8 +4318,8 @@ interface _BackendStatsRow {
  * Derive liveness string from last heartbeat timestamp.
  *
  * Mirrors butlers.core.liveness.derive_liveness (Python) exactly so
- * the same connector never disagrees between this switchboard-routed card
- * and any other reader (bu-27dxl.6.6) -- this was previously a 30-minute
+ * the same connector never disagrees between its detail card and any other
+ * reader (bu-27dxl.6.6) -- this was previously a 30-minute
  * stale cutoff, a full 15 minutes later than the backend's, which could
  * show "stale" here for a connector every other surface already reports
  * "offline":
@@ -4389,8 +4338,8 @@ function _deriveLiveness(lastHeartbeatAt: string | null): string {
   return "offline";
 }
 
-/** Map a backend ConnectorEntry to the frontend ConnectorSummary shape. */
-function _toConnectorSummary(entry: _BackendConnectorEntry): ConnectorSummary {
+/** Map a canonical flat detail payload to the frontend ConnectorSummary shape. */
+function _toConnectorSummary(entry: _ConnectorDetailPayload): ConnectorSummary {
   return {
     connector_type: entry.connector_type,
     endpoint_identity: entry.endpoint_identity,
@@ -4410,8 +4359,8 @@ function _toConnectorSummary(entry: _BackendConnectorEntry): ConnectorSummary {
   };
 }
 
-/** Map a backend ConnectorEntry to the frontend ConnectorDetail shape. */
-function _toConnectorDetail(entry: _BackendConnectorEntry): ConnectorDetail {
+/** Map a canonical flat detail payload to the frontend ConnectorDetail shape. */
+function _toConnectorDetail(entry: _ConnectorDetailPayload): ConnectorDetail {
   return {
     ..._toConnectorSummary(entry),
     instance_id: entry.instance_id,
@@ -4488,25 +4437,13 @@ function _toConnectorStats(
 // Public API functions
 // ---------------------------------------------------------------------------
 
-/** List all connectors with liveness and today's stats. */
-export async function listConnectorSummaries(): Promise<ConnectorSummariesListResponse> {
-  const resp = await apiFetch<{
-    data: _BackendConnectorEntry[];
-    meta: ConnectorSummariesMeta;
-  }>("/switchboard/connectors");
-  return {
-    ...resp,
-    data: (resp.data ?? []).map(_toConnectorSummary),
-  };
-}
-
 /** Get full detail for a single connector. */
 export async function getConnectorDetail(
   connectorType: string,
   endpointIdentity: string,
 ): Promise<ApiResponse<ConnectorDetail>> {
-  const resp = await apiFetch<ApiResponse<_BackendConnectorEntry>>(
-    `/switchboard/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}`,
+  const resp = await apiFetch<ApiResponse<_ConnectorDetailPayload>>(
+    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}`,
   );
   return {
     ...resp,
@@ -4521,7 +4458,7 @@ export async function getConnectorStats(
   period: IngestionPeriod = "24h",
 ): Promise<ApiResponse<ConnectorStats>> {
   const resp = await apiFetch<ApiResponse<_BackendStatsRow[]>>(
-    `/switchboard/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/stats?period=${period}`,
+    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/stats?period=${period}`,
   );
   // meta.hourly_events_available is false only on a genuine backend DB-query
   // failure (bu-c48im). Absent (older cached response) must NOT read as false.
@@ -4543,7 +4480,7 @@ export async function getConnectorStats(
  * Returns the connector list. Every field is DB-sourced — no Prometheus
  * dependency, so no `aggregates_available` flag on this response.
  */
-export async function getConnectorSummariesWithAggregates(): Promise<
+export async function getConnectorSummaries(): Promise<
   ApiResponse<ConnectorSummariesResponse>
 > {
   const resp = await apiFetch<ApiResponse<ConnectorSummariesResponse>>(
@@ -4554,13 +4491,28 @@ export async function getConnectorSummariesWithAggregates(): Promise<
 
 /**
  * GET /api/ingestion/pipeline?window=24h
- * Returns pipeline funnel stats from Prometheus (60s TTL cache).
+ * Returns pipeline funnel and independently available scrub estimates (60s TTL cache).
  * Always returns 200; aggregates_available=false when Prometheus is unreachable.
  */
 export async function getPipelineStats(
   window: "1h" | "24h" | "7d" = "24h",
 ): Promise<PipelineStats> {
   return apiFetch<PipelineStats>(`/ingestion/pipeline?window=${window}`);
+}
+
+/**
+ * GET /api/switchboard/ingestion/fanout?period=7d
+ *
+ * The route stays under Switchboard because it aggregates cross-butler
+ * delivery. Its explicit availability flag distinguishes a measured empty
+ * route set from an unreadable Prometheus source.
+ */
+export async function getConnectorFanout(
+  period: IngestionPeriod = "7d",
+): Promise<ConnectorFanoutResponse> {
+  return apiFetch<ConnectorFanoutResponse>(
+    `/switchboard/ingestion/fanout?period=${period}`,
+  );
 }
 
 /**
@@ -4628,8 +4580,8 @@ export async function updateConnectorSettings(
   endpointIdentity: string,
   settings: Record<string, unknown>,
 ): Promise<ApiResponse<ConnectorDetail>> {
-  const resp = await apiFetch<ApiResponse<_BackendConnectorEntry>>(
-    `/switchboard/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/settings`,
+  const resp = await apiFetch<ApiResponse<_ConnectorDetailPayload>>(
+    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/settings`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -4836,7 +4788,8 @@ export function searchContacts(
 /** List ingestion events with cursor pagination (GET /api/ingestion/events). */
 export async function listIngestionEvents(
   params?: IngestionEventsParams,
-): Promise<CursorPaginatedResponse<IngestionEventSummary>> {
+  signal?: AbortSignal,
+): Promise<CursorPage<IngestionEventSummary>> {
   const sp = new URLSearchParams();
   if (params?.limit !== undefined) sp.set("limit", String(params.limit));
   if (params?.cursor) sp.set("cursor", params.cursor);
@@ -4849,8 +4802,9 @@ export async function listIngestionEvents(
   if (params?.sort) sp.set("sort", params.sort);
   if (params?.trace_id) sp.set("trace_id", params.trace_id);
   const qs = sp.toString() ? `?${sp.toString()}` : "";
-  return apiFetch<CursorPaginatedResponse<IngestionEventSummary>>(
+  return apiFetch<CursorPage<IngestionEventSummary>>(
     `/ingestion/events${qs}`,
+    { signal },
   );
 }
 
@@ -4864,6 +4818,7 @@ export async function listIngestionEvents(
  */
 export async function getIngestionWindowRollup(
   params?: IngestionWindowRollupParams,
+  signal?: AbortSignal,
 ): Promise<IngestionWindowRollup> {
   const sp = new URLSearchParams();
   if (params?.from) sp.set("from", params.from);
@@ -4873,7 +4828,7 @@ export async function getIngestionWindowRollup(
   if (params?.q) sp.set("q", params.q);
   if (params?.trace_id) sp.set("trace_id", params.trace_id);
   const qs = sp.toString() ? `?${sp.toString()}` : "";
-  return apiFetch<IngestionWindowRollup>(`/ingestion/rollup${qs}`);
+  return apiFetch<IngestionWindowRollup>(`/ingestion/rollup${qs}`, { signal });
 }
 
 /**
@@ -4894,6 +4849,7 @@ export async function getIngestionWindowRollup(
  */
 export async function getIngestionEventsHistogram(
   params: IngestionHistogramParams,
+  signal?: AbortSignal,
 ): Promise<IngestionHistogramResponse> {
   const sp = new URLSearchParams();
   if (params.from) sp.set("from", params.from);
@@ -4905,33 +4861,45 @@ export async function getIngestionEventsHistogram(
   if (params.trace_id) sp.set("trace_id", params.trace_id);
   return apiFetch<IngestionHistogramResponse>(
     `/ingestion/events/histogram?${sp.toString()}`,
+    { signal },
+  );
+}
+
+/**
+ * Unanswered drops of messages from known contacts.
+ * GET /api/ingestion/events/dropped-known
+ *
+ * Degraded-honest: `available=false` means unknown, not zero.
+ */
+export async function getIngestionDroppedKnown(
+  window: "1h" | "24h" | "7d" = "24h",
+  signal?: AbortSignal,
+): Promise<IngestionDroppedKnownSummary> {
+  return apiFetch<IngestionDroppedKnownSummary>(
+    `/ingestion/events/dropped-known?window=${window}`,
+    { signal },
   );
 }
 
 /** Get a single ingestion event by request_id (GET /api/ingestion/events/{id}). */
 export async function getIngestionEvent(
   requestId: string,
+  signal?: AbortSignal,
 ): Promise<ApiResponse<IngestionEventDetail>> {
   return apiFetch<ApiResponse<IngestionEventDetail>>(
     `/ingestion/events/${encodeURIComponent(requestId)}`,
+    { signal },
   );
 }
 
 /** Get sessions for an ingestion event (GET /api/ingestion/events/{id}/sessions). */
 export async function getIngestionEventSessions(
   requestId: string,
+  signal?: AbortSignal,
 ): Promise<ApiResponse<IngestionEventSession[]>> {
   return apiFetch<ApiResponse<IngestionEventSession[]>>(
     `/ingestion/events/${encodeURIComponent(requestId)}/sessions`,
-  );
-}
-
-/** Get cost/token rollup for an ingestion event (GET /api/ingestion/events/{id}/rollup). */
-export async function getIngestionEventRollup(
-  requestId: string,
-): Promise<ApiResponse<IngestionEventRollup>> {
-  return apiFetch<ApiResponse<IngestionEventRollup>>(
-    `/ingestion/events/${encodeURIComponent(requestId)}/rollup`,
+    { signal },
   );
 }
 
@@ -4957,9 +4925,11 @@ export async function replayIngestionEvent(
  */
 export async function getIngestionEventReplays(
   requestId: string,
+  signal?: AbortSignal,
 ): Promise<ApiResponse<IngestionEventReplayHistoryEntry[]>> {
   return apiFetch<ApiResponse<IngestionEventReplayHistoryEntry[]>>(
     `/ingestion/events/${encodeURIComponent(requestId)}/replays`,
+    { signal },
   );
 }
 
@@ -4969,9 +4939,11 @@ export async function getIngestionEventReplays(
  */
 export async function getIngestionEventSenderContact(
   requestId: string,
+  signal?: AbortSignal,
 ): Promise<ApiResponse<IngestionEventSenderContact>> {
   return apiFetch<ApiResponse<IngestionEventSenderContact>>(
     `/ingestion/events/${encodeURIComponent(requestId)}/sender-contact`,
+    { signal },
   );
 }
 
@@ -4985,9 +4957,11 @@ export async function getIngestionEventSenderContact(
  */
 export async function getIngestionEventPayload(
   requestId: string,
+  signal?: AbortSignal,
 ): Promise<ApiResponse<IngestionEventPayload>> {
   return apiFetch<ApiResponse<IngestionEventPayload>>(
     `/ingestion/events/${encodeURIComponent(requestId)}/payload`,
+    { signal },
   );
 }
 
@@ -5043,6 +5017,10 @@ export function getModelAttention(): Promise<ApiResponse<ModelAttentionObservati
   return apiFetch<ApiResponse<ModelAttentionObservation>>("/settings/models/attention");
 }
 
+export function getModelAllowance(): Promise<ApiResponse<AllowanceObservation>> {
+  return apiFetch<ApiResponse<AllowanceObservation>>("/settings/models/allowance");
+}
+
 export function reissueModelAttention(
   episodeId: string,
 ): Promise<ApiResponse<ModelAttentionReissueResult>> {
@@ -5087,7 +5065,7 @@ export function listButlerModelOverrides(
 /** PUT /api/butlers/{name}/model-overrides — batch upsert overrides */
 export function upsertButlerModelOverrides(
   butlerName: string,
-  body: ButlerModelOverrideUpsert[],
+  body: ButlerModelOverridesWrite,
 ): Promise<ApiResponse<ButlerModelOverride[]>> {
   return apiFetch<ApiResponse<ButlerModelOverride[]>>(
     `/butlers/${encodeURIComponent(butlerName)}/model-overrides`,
@@ -5102,10 +5080,11 @@ export function upsertButlerModelOverrides(
 export function deleteButlerModelOverride(
   butlerName: string,
   overrideId: string,
+  body: ButlerModelOverrideReason,
 ): Promise<ApiResponse<{ deleted: boolean; id: string }>> {
   return apiFetch<ApiResponse<{ deleted: boolean; id: string }>>(
     `/butlers/${encodeURIComponent(butlerName)}/model-overrides/${encodeURIComponent(overrideId)}`,
-    { method: "DELETE" },
+    { method: "DELETE", body: JSON.stringify(body) },
   );
 }
 
@@ -5294,6 +5273,18 @@ export function deleteHomeAssistantConfig(): Promise<HomeAssistantDeleteResponse
   });
 }
 
+/** Submit exact private HA-person mappings as one atomic batch. */
+export function submitHomePersonMappings(
+  mappings: HomePersonMappingInput[],
+  idempotencyKey: string,
+): Promise<ApiResponse<HomePersonMappingReceipt>> {
+  return apiFetch<ApiResponse<HomePersonMappingReceipt>>("/home/person-mappings", {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify({ mappings }),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Dashboard conversation API
 // ---------------------------------------------------------------------------
@@ -5307,6 +5298,17 @@ export function listConversations(
   return apiFetch<ApiResponse<ConversationSummary[]>>(
     `/butlers/${encodeURIComponent(butlerName)}/conversations${qs}`,
   );
+}
+
+/**
+ * GET /api/conversations/{id} — cross-butler conversation identity lookup by
+ * id alone, regardless of owning butler_name (bu-0ynlk.11). Backs the
+ * /chat/:conversationId deep-link route and cmdk recent-thread recall.
+ * Raw (unwrapped) body — the response model carries no `data` envelope.
+ * Throws `ApiError` with `status === 404` when the id is unknown.
+ */
+export function getConversationById(conversationId: string): Promise<ConversationSummary> {
+  return apiFetch<ConversationSummary>(`/conversations/${encodeURIComponent(conversationId)}`);
 }
 
 /** GET /api/butlers/{name}/conversations/{id}/messages — message list for a conversation. */
@@ -5338,7 +5340,7 @@ export function searchConversations(
  */
 export function searchMessages(
   params: MessageSearchParams,
-): Promise<CursorPaginatedResponse<MessageSearchResult>> {
+): Promise<CursorPage<MessageSearchResult>> {
   const sp = new URLSearchParams();
   sp.set("q", params.q);
   if (params.limit !== undefined) sp.set("limit", String(params.limit));
@@ -5347,7 +5349,7 @@ export function searchMessages(
   if (params.butler) sp.set("butler", params.butler);
   if (params.from) sp.set("from", params.from);
   if (params.to) sp.set("to", params.to);
-  return apiFetch<CursorPaginatedResponse<MessageSearchResult>>(
+  return apiFetch<CursorPage<MessageSearchResult>>(
     `/conversations/messages/search?${sp.toString()}`,
   );
 }
@@ -5361,7 +5363,7 @@ export function createConversation(
   body: CreateConversationRequest,
   signal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(`${API_BASE_URL}/butlers/${encodeURIComponent(butlerName)}/conversations`, {
+  return ownerFetch(`${API_BASE_URL}/butlers/${encodeURIComponent(butlerName)}/conversations`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify(body),
@@ -5379,7 +5381,7 @@ export function sendMessage(
   body: SendMessageRequest,
   signal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(
+  return ownerFetch(
     `${API_BASE_URL}/butlers/${encodeURIComponent(butlerName)}/conversations/${encodeURIComponent(conversationId)}/messages`,
     {
       method: "POST",
@@ -5477,30 +5479,6 @@ export function disconnectSteamAccount(accountId: string): Promise<SteamDisconne
 // ---------------------------------------------------------------------------
 // Healing attempts API (used by QA investigation detail page)
 // ---------------------------------------------------------------------------
-
-export interface RetryHealingAttemptResponse {
-  attempt_id: string;
-  fingerprint: string;
-  status: string;
-  /**
-   * Whether a healing agent was actually scheduled to spawn. False in the
-   * typical dashboard deployment (no in-process spawner) — the row is merely
-   * queued. Do NOT claim the investigation was re-dispatched when false.
-   */
-  dispatched: boolean;
-  /** Truthful human-readable summary of what happened. */
-  detail: string;
-}
-
-/** POST /api/healing/attempts/:id/retry — create a new attempt for the same fingerprint */
-export function retryHealingAttempt(
-  attemptId: string,
-): Promise<RetryHealingAttemptResponse> {
-  return apiFetch<RetryHealingAttemptResponse>(
-    `/healing/attempts/${encodeURIComponent(attemptId)}/retry`,
-    { method: "POST" },
-  );
-}
 
 // ---------------------------------------------------------------------------
 // QA Staffer API
@@ -6056,6 +6034,16 @@ export function getDriftFacts(): Promise<ApiResponse<DriftFacts>> {
   return apiFetch<ApiResponse<DriftFacts>>("/system/drift");
 }
 
+/**
+ * Fetch the stored-function drift comparison (bu-bi5an).
+ *
+ * Always returns HTTP 200. `stored_function_check_available: false` means the
+ * comparison itself failed -- treat that as "unknown", not "clean".
+ */
+export function getStoredFunctionFacts(): Promise<ApiResponse<StoredFunctionFacts>> {
+  return apiFetch<ApiResponse<StoredFunctionFacts>>("/system/stored-functions");
+}
+
 /** Params for getSystemConditions(). */
 export interface SystemConditionsParams {
   /** "infra" (default) | "owner" -- bu-ep4ks.6 */
@@ -6177,6 +6165,16 @@ export function listDomainEventDeliveries(
   );
 }
 
+/** Atomically requeue one failed_permanent domain-event delivery. */
+export function replayDomainEventDelivery(
+  deliveryId: string,
+): Promise<ApiResponse<{ delivery_id: string; status: string }>> {
+  return apiFetch<ApiResponse<{ delivery_id: string; status: string }>>(
+    `/domain-events/deliveries/${encodeURIComponent(deliveryId)}/replay`,
+    { method: "POST" },
+  );
+}
+
 /**
  * Fetch the full reaction trace for one domain event from
  * GET /api/domain-events/events/{event_id}/reactions (bu-6jv4m.8), oldest
@@ -6187,6 +6185,26 @@ export function listDomainEventReactions(
 ): Promise<ApiResponse<ReactionEntry[]>> {
   return apiFetch<ApiResponse<ReactionEntry[]>>(
     `/domain-events/events/${encodeURIComponent(eventId)}/reactions`,
+  );
+}
+
+/** Params for listDomainEventContracts(). */
+export interface DomainEventContractsParams {
+  publisher?: string;
+}
+
+/**
+ * List materialized publisher-owned event contracts from
+ * GET /api/domain-events/contracts (bu-6jv4m.8).
+ */
+export function listDomainEventContracts(
+  params: DomainEventContractsParams = {},
+): Promise<ApiResponse<ContractEntry[]>> {
+  const query = new URLSearchParams();
+  if (params.publisher) query.set("publisher", params.publisher);
+  const qs = query.toString();
+  return apiFetch<ApiResponse<ContractEntry[]>>(
+    `/domain-events/contracts${qs ? `?${qs}` : ""}`,
   );
 }
 
@@ -6391,7 +6409,7 @@ export function patchFinanceBulkMetadata(
 /** List trips with optional status and date range filters, paginated. */
 export function getTravelTrips(
   params?: TravelTripsParams,
-): Promise<PaginatedResponse<TravelTrip>> {
+): Promise<TravelTripsResponse> {
   const sp = new URLSearchParams();
   if (params?.status) sp.set("status", params.status);
   if (params?.from_date) sp.set("from_date", params.from_date);
@@ -6399,7 +6417,7 @@ export function getTravelTrips(
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
   const qs = sp.toString();
-  return apiFetch<PaginatedResponse<TravelTrip>>(qs ? `/travel/trips?${qs}` : "/travel/trips");
+  return apiFetch<TravelTripsResponse>(qs ? `/travel/trips?${qs}` : "/travel/trips");
 }
 
 /** Fetch full trip summary (legs, accommodations, reservations, docs, timeline, alerts). */
@@ -6518,6 +6536,15 @@ export function getButlerPrompt(name: string): Promise<ApiResponse<PromptVersion
   return apiFetch<ApiResponse<PromptVersion>>(`/butlers/${name}/prompt`);
 }
 
+/** GET /api/butlers/{name}/prompt/effective — protected composed prompt + drift truth. */
+export function getButlerEffectivePrompt(
+  name: string,
+): Promise<ApiResponse<ButlerEffectivePrompt>> {
+  return apiFetch<ApiResponse<ButlerEffectivePrompt>>(
+    `/butlers/${encodeURIComponent(name)}/prompt/effective`,
+  );
+}
+
 /** PUT /api/butlers/{name}/prompt — update prompt, snapshots prior version. */
 export function updateButlerPrompt(
   name: string,
@@ -6542,11 +6569,6 @@ export function getButlerPromptHistory(
   return apiFetch<PaginatedResponse<PromptVersion>>(
     `/butlers/${name}/prompt/history${qs ? `?${qs}` : ""}`,
   );
-}
-
-/** GET /api/butlers/{name}/tools — list tool grants. */
-export function getButlerTools(name: string): Promise<ApiResponse<ButlerTool[]>> {
-  return apiFetch<ApiResponse<ButlerTool[]>>(`/butlers/${name}/tools`);
 }
 
 /** GET /api/butlers/{name}/memory-access — memory tier access metadata. */
@@ -7045,4 +7067,21 @@ export function deleteTimelineSavedView(id: string): Promise<void> {
   return apiFetch<void>(`/timeline/saved-views/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
+}
+
+
+export function getIdentityCandidates(entityId: string): Promise<{ facts: CandidateIdentityFact[] }> {
+  return apiFetch(`/relationship/entities/${encodeURIComponent(entityId)}/identity-candidates`);
+}
+
+export function decideIdentityCandidate(entityId: string, factId: string, decision: "adopt" | "reject"):
+  Promise<{ fact_id: string; decision: string; decided_at: string; replayed: boolean }> {
+  return apiFetch(`/relationship/entities/${encodeURIComponent(entityId)}/identity-facts/${encodeURIComponent(factId)}/${decision}`,
+    { method: "POST" });
+}
+
+export function getIdentityDecision(entityId: string, factId: string): Promise<{
+  fact_id: string; decision: "adopt" | "reject"; decided_at: string; replayed: boolean;
+}> {
+  return apiFetch(`/relationship/entities/${encodeURIComponent(entityId)}/identity-facts/${encodeURIComponent(factId)}/decision`);
 }

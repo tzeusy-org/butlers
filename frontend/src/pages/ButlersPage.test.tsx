@@ -354,12 +354,13 @@ describe("ButlersPage — quarantine restore", () => {
     expect(html).toMatch(/<button[^>]*>QUARANTINED<\/button>/);
   });
 
-  it("renders a restore chip for stale rows", () => {
+  it("renders stale rows without an operator restore action", () => {
     const rows = [makeRow({ name: "stale-butler", activity: "idle", eligibility: "stale" })];
     setHookState(rows, makeAggregates({ total: 1, butlerCount: 1 }));
     const html = renderPage();
-    // Stale chip shows "STALE" label (eligibility takes precedence over activity label)
-    expect(html).toMatch(/<button[^>]*>STALE<\/button>/);
+    // Stale health observations clear through the receiver, not policy writes.
+    expect(html).toMatch(/<span[^>]*>STALE<\/span>/);
+    expect(html).not.toMatch(/<button[^>]*>STALE<\/button>/);
   });
 });
 

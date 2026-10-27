@@ -7,8 +7,7 @@ The Google Calendar connector ingests calendar event changes (created, updated, 
 
 ### Requirement: Google Calendar Connector Identity and Authentication
 
-The implementation SHALL provide the behavior described by this requirement.
-The Google Calendar connector runs as a single process that discovers and manages all connected Google accounts with calendar scope. It authenticates each account independently via Google OAuth, resolving per-account credentials from the butler database.
+The Google Calendar connector SHALL run as a single process that discovers and manages all connected Google accounts with calendar scope. It authenticates each account independently via Google OAuth, resolving per-account credentials from the butler database.
 
 #### Scenario: Multi-account discovery at startup
 - **WHEN** the Google Calendar connector starts
@@ -39,8 +38,7 @@ The Google Calendar connector runs as a single process that discovers and manage
 
 ### Requirement: Incremental Sync via syncToken
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector uses Google Calendar API's incremental sync mechanism to detect changes efficiently.
+The connector SHALL use Google Calendar API's incremental sync mechanism to detect changes efficiently.
 
 #### Scenario: Initial full sync
 - **WHEN** the connector starts for an account with no persisted cursor
@@ -66,8 +64,7 @@ The connector uses Google Calendar API's incremental sync mechanism to detect ch
 
 ### Requirement: Event Change Classification
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector classifies each calendar change into an event type for the ingest envelope.
+The connector SHALL classify each calendar change into an event type for the ingest envelope.
 
 #### Scenario: Event created
 - **WHEN** an event appears in the sync response that was not previously known
@@ -88,8 +85,7 @@ The connector classifies each calendar change into an event type for the ingest 
 
 ### Requirement: Event Starting Soon Notifications
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector synthesizes time-triggered notifications for upcoming events.
+The connector SHALL synthesize time-triggered notifications for upcoming events.
 
 #### Scenario: Lead time configuration
 - **WHEN** the connector is configured
@@ -148,8 +144,7 @@ below.
 
 ### Requirement: SyncToken Cursor Persistence
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector tracks its position in Google Calendar's change stream via a persistent cursor.
+The connector SHALL track its position in Google Calendar's change stream via a persistent cursor.
 
 #### Scenario: Cursor model
 - **WHEN** the Google Calendar connector processes events
@@ -163,8 +158,7 @@ The connector tracks its position in Google Calendar's change stream via a persi
 
 ### Requirement: Source Filter Integration (Google Calendar)
 
-The implementation SHALL provide the behavior described by this requirement.
-The Google Calendar connector implements the ingestion policy gate using `IngestionPolicyEvaluator`.
+The Google Calendar connector SHALL implement the ingestion policy gate using `IngestionPolicyEvaluator`.
 
 #### Scenario: IngestionPolicyEvaluator instantiation
 - **WHEN** the Google Calendar connector initializes
@@ -180,8 +174,7 @@ The Google Calendar connector implements the ingestion policy gate using `Ingest
 
 ### Requirement: Multi-Account Connector Architecture
 
-The implementation SHALL provide the behavior described by this requirement.
-A single Google Calendar connector process manages concurrent poll loops for all connected Google accounts.
+A single Google Calendar connector process SHALL manage concurrent poll loops for all connected Google accounts.
 
 #### Scenario: Independent per-account loops
 - **WHEN** the connector manages accounts `personal@gmail.com` and `work@gmail.com`

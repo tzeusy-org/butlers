@@ -20,7 +20,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act } from 'react'
+import { act, useEffect, StrictMode } from 'react'
+import { MemoryRouter, useNavigate, type NavigateFunction } from 'react-router'
 import { createRoot, type Root } from 'react-dom/client'
 
 ;(
@@ -50,7 +51,7 @@ const mockTestMutateAsync = vi.fn(() =>
   }),
 )
 const mockUsePriorityContacts = vi.fn()
-const mockUseContacts = vi.fn()
+const mockUseRelationshipEntities = vi.fn()
 const mockAddPriorityMutate = vi.fn()
 const mockRemovePriorityMutate = vi.fn()
 const mockUseChannelDefault = vi.fn()
@@ -94,15 +95,15 @@ vi.mock('@/hooks/use-priority-contacts', () => ({
   useRemovePriorityContact: () => ({ mutate: mockRemovePriorityMutate }),
 }))
 
-vi.mock('@/hooks/use-contacts', () => ({
-  useContacts: () => mockUseContacts(),
+vi.mock('@/hooks/use-entities', () => ({
+  useRelationshipEntities: (params?: unknown) => mockUseRelationshipEntities(params),
 }))
 
 import type {
   PipelineStats,
   IngestionRule,
   PriorityContactEntry,
-  ContactSummary,
+  RelationshipEntitySummary,
 } from '@/api/types'
 import { ApiError } from '@/api/index.ts'
 import { FiltersPipeline } from './FiltersPipeline'
@@ -168,20 +169,22 @@ function makeArchivedRule(overrides: Partial<IngestionRule> = {}): IngestionRule
   })
 }
 
-function makeContactSummary(
-  overrides: Partial<ContactSummary> = {},
-): ContactSummary {
+function makeContactEntity(
+  overrides: Partial<RelationshipEntitySummary> = {},
+): RelationshipEntitySummary {
   return {
-    id: 'contact-001',
-    full_name: 'VIP Contact',
-    first_name: 'VIP',
-    last_name: 'Contact',
-    nickname: null,
-    email: 'vip@example.com',
-    phone: null,
-    labels: [],
-    last_interaction_at: null,
-    entity_id: null,
+    id: 'entity-001',
+    canonical_name: 'VIP Contact',
+    entity_type: 'person',
+    aliases: [],
+    roles: [],
+    metadata: {},
+    tier: null,
+    last_seen: null,
+    first_seen: null,
+    contact_fact_count: 1,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
     ...overrides,
   }
 }
@@ -218,7 +221,7 @@ function cleanup(root: Root, container: HTMLDivElement) {
 }
 
 function renderComponent(container: HTMLDivElement, root: Root, component: React.ReactElement) {
-  act(() => { root.render(component) })
+  act(() => { root.render(<MemoryRouter>{component}</MemoryRouter>) })
   return container
 }
 
@@ -269,9 +272,10 @@ function setupDefaultMocks(
     isError: false,
   })
 
-  mockUseContacts.mockReturnValue({
-    data: { contacts: [], total: 0 },
+  mockUseRelationshipEntities.mockReturnValue({
+    data: { items: [], total: 0, limit: 200, offset: 0 },
     isLoading: false,
+    isError: false,
   })
 
   mockUseChannelDefault.mockReturnValue({
@@ -947,8 +951,8 @@ describe('AC3: priority senders read + mutation (public.priority_contacts)', () 
   it('opens the add picker and calls onAdd with the selected contact id', () => {
     const onAdd = vi.fn()
     const candidates = [
-      makeContactSummary({ id: 'c-1', full_name: 'Alice', email: 'alice@example.com' }),
-      makeContactSummary({ id: 'c-2', full_name: 'Bob', email: 'bob@example.com' }),
+      makeContactEntity({ id: 'c-1', canonical_name: 'Alice' }),
+      makeContactEntity({ id: 'c-2', canonical_name: 'Bob' }),
     ]
 
     renderComponent(container, root, (
@@ -979,6 +983,57 @@ describe('AC3: priority senders read + mutation (public.priority_contacts)', () 
     })
 
     expect(onAdd).toHaveBeenCalledWith('c-2')
+  })
+
+  it('offers entities with contact facts and submits the entity id as contact_id', () => {
+    setupDefaultMocks()
+    mockUseRelationshipEntities.mockReturnValue({
+      data: {
+        items: [
+          makeContactEntity({ id: 'entity-alice', canonical_name: 'Alice Entity' }),
+          makeContactEntity({ id: 'entity-bob', canonical_name: 'Bob Entity' }),
+        ],
+        total: 2,
+        limit: 200,
+        offset: 0,
+      },
+      isLoading: false,
+      isError: false,
+    })
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    expect(mockUseRelationshipEntities).toHaveBeenCalledWith({ has: 'contact', limit: 200 })
+    const addBtn = container.querySelector('[data-testid="priority-senders-add"]')
+    act(() => { ;(addBtn as HTMLButtonElement).click() })
+    const select = container.querySelector(
+      '[data-testid="priority-senders-contact-select"]',
+    ) as HTMLSelectElement
+    expect(Array.from(select.options).map((option) => option.textContent)).toContain('Bob Entity')
+
+    act(() => { setInputValue(select, 'entity-bob') })
+    expect(mockAddPriorityMutate).toHaveBeenCalledWith(
+      { contact_id: 'entity-bob' },
+      expect.anything(),
+    )
+  })
+
+  it('renders an explicit error, not an empty picker, when candidates fail to load', () => {
+    setupDefaultMocks()
+    mockUseRelationshipEntities.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    })
+
+    renderComponent(container, root, <FiltersPipeline />)
+    const addBtn = container.querySelector('[data-testid="priority-senders-add"]')
+    act(() => { ;(addBtn as HTMLButtonElement).click() })
+
+    expect(
+      container.querySelector('[data-testid="priority-senders-candidates-error"]')?.textContent,
+    ).toContain('Contacts unavailable')
+    expect(container.querySelector('[data-testid="priority-senders-contact-select"]')).toBeNull()
   })
 
   it('renders error state when fetch fails', () => {
@@ -1858,5 +1913,151 @@ describe('bu-4utdw.9: channel defaults inline editor', () => {
     expect(footer.textContent).toContain('skip')
     expect(footer.textContent).not.toMatch(/\bdrop\b/)
     expect(footer.textContent).not.toMatch(/\bpreserve\b/)
+  })
+})
+
+// URL rule targets are navigation only, independent of the editor and mutations.
+describe('Connector routing-rule deep-link fidelity (bu-h40h2b.5.2.3)', () => {
+  let container: HTMLDivElement
+  let root: Root
+  let navigate: NavigateFunction
+  let scroll: ReturnType<typeof vi.fn>
+
+  function Harness() {
+    const routerNavigate = useNavigate()
+    useEffect(() => { navigate = routerNavigate }, [routerNavigate])
+    return <FiltersPipeline />
+  }
+
+  function renderTarget(id: string) {
+    act(() => root.render(
+      <MemoryRouter initialEntries={[`/ingestion/filters?rule=${encodeURIComponent(id)}`]}>
+        <StrictMode><Harness /></StrictMode>
+      </MemoryRouter>,
+    ))
+  }
+
+  function refresh() {
+    act(() => root.render(<MemoryRouter><StrictMode><Harness /></StrictMode></MemoryRouter>))
+  }
+
+  function row(id: string) {
+    return Array.from(container.querySelectorAll<HTMLElement>('[data-rule-id]'))
+      .find((element) => element.dataset.ruleId === id)
+  }
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+    setupDefaultMocks()
+    mockUpdateMutate.mockClear()
+    mockDeleteMutate.mockClear()
+    scroll = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll })
+  })
+
+  afterEach(() => {
+    cleanup(root, container)
+    delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView
+  })
+
+  it('decodes the exact active target, including disabled rules, and focuses only that row without mutations', () => {
+    const id = 'rule /+#?%'
+    setupDefaultMocks({}, [makeRule({ id: 'other' }), makeRule({ id, enabled: false })])
+    renderTarget(id)
+    expect(document.activeElement).toBe(row(id))
+    expect(row(id)?.getAttribute('aria-label')).toContain('Linked rule')
+    expect(row(id)?.dataset.linkedRule).toBe('true')
+    expect(row('other')?.dataset.linkedRule).not.toBe('true')
+    expect(scroll).toHaveBeenCalledTimes(1)
+    expect(mockUseIngestionRules.mock.calls.map(([params]) => params)).not.toContainEqual({ enabled: true })
+    expect(mockUpdateMutate).not.toHaveBeenCalled()
+    expect(mockDeleteMutate).not.toHaveBeenCalled()
+  })
+
+  it('waits for an asynchronous archived read, expands and focuses the exact archived row', () => {
+    let pending = true
+    mockUseIngestionRules.mockImplementation((params) => ({
+      data: params?.archived ? pending ? undefined : { data: [makeArchivedRule({ id: 'archived' })] } : { data: [] },
+      isLoading: params?.archived && pending,
+      isError: false,
+    }))
+    renderTarget('archived')
+    expect(container.textContent).not.toContain('Rule no longer exists')
+    expect(scroll).not.toHaveBeenCalled()
+    pending = false
+    refresh()
+    expect(container.querySelector('[data-testid="archived-rules-toggle"]')?.getAttribute('aria-expanded')).toBe('true')
+    expect(document.activeElement).toBe(row('archived'))
+    expect(scroll).toHaveBeenCalledTimes(1)
+    expect(mockUpdateMutate).not.toHaveBeenCalled()
+  })
+
+  it('reports absence only after complete reads and distinguishes incomplete or failed reads with retry', () => {
+    let state: 'incomplete' | 'failed' | 'complete' = 'incomplete'
+    const retryActive = vi.fn()
+    const retryArchived = vi.fn()
+    mockUseIngestionRules.mockImplementation((params) => ({
+      data: !params?.archived || state === 'complete' ? { data: [] } : undefined,
+      isLoading: false,
+      isError: params?.archived && state === 'failed',
+      refetch: params?.archived ? retryArchived : retryActive,
+    }))
+    renderTarget('missing')
+    expect(container.textContent).not.toContain('Rule no longer exists')
+    expect(container.querySelector('[data-testid="linked-rule-unavailable"]')).not.toBeNull()
+    state = 'failed'
+    refresh()
+    expect(container.querySelector('[data-testid="linked-rule-unavailable"]')).not.toBeNull()
+    act(() => (container.querySelector('[data-testid="linked-rule-unavailable"] button') as HTMLButtonElement).click())
+    expect(retryActive).toHaveBeenCalledTimes(1)
+    expect(retryArchived).toHaveBeenCalledTimes(1)
+    state = 'complete'
+    refresh()
+    expect(container.querySelector('[data-testid="linked-rule-missing"]')?.getAttribute('role')).toBe('status')
+    expect(container.textContent).toContain('Rule no longer exists')
+    expect(scroll).not.toHaveBeenCalled()
+  })
+
+  it('does not focus stale matches when either reader failed, and recovers on a successful read', () => {
+    let failed = true
+    mockUseIngestionRules.mockImplementation((params) => ({
+      data: { data: params?.archived ? [] : [makeRule({ id: 'target' }), makeRule({ id: 'other' })] },
+      isLoading: false,
+      isError: params?.archived && failed,
+    }))
+    renderTarget('target')
+    expect(scroll).not.toHaveBeenCalled()
+    expect(container.querySelector('[data-testid="linked-rule-unavailable"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="linked-rule-missing"]')).toBeNull()
+    failed = false
+    refresh()
+    expect(document.activeElement).toBe(row('target'))
+    expect(scroll).toHaveBeenCalledTimes(1)
+  })
+
+  it('moves focus once per target change while repeated links, refetches and archive expansion preserve later user focus', () => {
+    setupDefaultMocks({}, [makeRule({ id: 'first' }), makeRule({ id: 'second' })], [makeArchivedRule({ id: 'archived' })])
+    renderTarget('first')
+    expect(document.activeElement).toBe(row('first'))
+    const add = container.querySelector('[data-testid="filters-add-rule"]') as HTMLButtonElement
+    add.focus()
+    refresh()
+    act(() => navigate('/ingestion/filters?rule=first'))
+    expect(document.activeElement).toBe(add)
+    expect(scroll).toHaveBeenCalledTimes(1)
+    act(() => navigate('/ingestion/filters?rule=second'))
+    expect(document.activeElement).toBe(row('second'))
+    act(() => navigate('/ingestion/filters?rule=archived'))
+    expect(document.activeElement).toBe(row('archived'))
+    add.focus()
+    const toggle = container.querySelector('[data-testid="archived-rules-toggle"]') as HTMLButtonElement
+    act(() => toggle.click())
+    act(() => toggle.click())
+    expect(document.activeElement).toBe(add)
+    expect(scroll).toHaveBeenCalledTimes(3)
+    act(() => navigate('/ingestion/filters'))
+    act(() => navigate('/ingestion/filters?rule=first'))
+    expect(document.activeElement).toBe(row('first'))
+    expect(scroll).toHaveBeenCalledTimes(4)
   })
 })

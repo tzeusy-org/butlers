@@ -1,3 +1,5 @@
+import { fulfillEmptyApi } from "./fixtures/empty-api";
+import { mockJson, type ResponseOf } from "./fixtures/api-responses";
 /**
  * Playwright e2e spec — LiveStatusBadge honesty contract at the browser layer
  * (bu-ii0o7, discovered from bu-jad4j.5 / PR #3115).
@@ -57,8 +59,8 @@ async function mockHealthyApprovalMetrics(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        data: { total_pending: 0 },
+      body: mockJson("getApprovalMetrics", {
+        data: { total_pending: 0, total_approved_today: 0, total_rejected_today: 0, total_auto_approved_today: 0, total_expired_today: 0, auto_approval_rate: 0, rejection_rate: 0, failure_count_today: 0, active_rules_count: 0 },
         meta: {},
       }),
     });
@@ -75,15 +77,12 @@ async function mockHealthyApprovalMetrics(page: Page) {
  * state. 'events' is either a fixture array (200) or the number 500 (server
  * error → the head poll's isError → "Down").
  */
-async function mockIngestion(page: Page, events: unknown[] | 500) {
+async function mockIngestion(page: Page, events: ResponseOf<"listIngestionEvents">["items"] | 500) {
   // Catch-all FIRST (lowest LIFO precedence) — absorbs sidebar/histogram/rollup
   // requests (/api/butlers, /api/ingestion/events/histogram, etc.).
   await page.route("**/api/**", (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ data: [] }),
-    });
+    if (new URL(route.request().url()).pathname.startsWith("/api/auth/owner/")) return route.fallback();
+    return fulfillEmptyApi(route);
   });
 
   await mockHealthyApprovalMetrics(page);
@@ -95,11 +94,11 @@ async function mockIngestion(page: Page, events: unknown[] | 500) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ data: { resolved: false, name: null, raw: null } }),
+      body: mockJson("getIngestionEventSenderContact", { meta: {}, data: { resolved: false, name: null, raw: null } }),
     });
   });
   await page.route("**/api/ingestion/events/*/sessions", (route) => {
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [] }) });
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getIngestionEventSessions", { meta: {}, data: [] }) });
   });
 
   // Events list — registered LAST so it wins LIFO. 500 for the "Down" case.
@@ -115,7 +114,7 @@ async function mockIngestion(page: Page, events: unknown[] | 500) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ data: events, meta: { next_cursor: null, has_more: false } }),
+      body: mockJson("listIngestionEvents", { items: events, next_cursor: null, limit: 50 }),
     });
   });
 }
@@ -166,7 +165,7 @@ test.describe("LiveStatusBadge — /ingestion (events head poll)", () => {
 // /timeline (TimelinePage) — badge driven by useTimelineLedger's head poll
 // ---------------------------------------------------------------------------
 
-function timelineEvent(timestamp: string) {
+function timelineEvent(timestamp: string): ResponseOf<"getTimeline">["data"][number] {
   return {
     id: "11111111-0000-0000-0000-000000000001",
     type: "session",
@@ -185,24 +184,44 @@ const TIMELINE_META = {
   degraded_sources: [],
 };
 
+const TIMELINE_HISTOGRAM: ResponseOf<"getTimelineHistogram"> = {
+  data: [],
+  meta: {
+    since: "2026-07-04T13:00:00Z",
+    until: "2026-07-04T14:00:00Z",
+    bucket_seconds: 60,
+    availability: "complete",
+    expected_sources: 0,
+    healthy_sources: 0,
+    degraded_sources: [],
+    degraded_butlers: [],
+  },
+};
+
 /**
- * Mock GET /api/timeline (the head poll behind useTimelineLedger). `events` is
+ * Mock GET /api/timeline (the head poll behind useTimelineLedger) and its
+ * sibling histogram request. `events` is
  * a fixture array (200) or the number 500 (server error → isLiveFeedDown →
- * "Down"). The timeline-route glob does not cross a slash, so it never
- * intercepts /api/timeline/saved-views — that falls to the catch-all.
+ * "Down"). Route predicates are pathname-specific so the three response
+ * envelopes cannot be confused with each other.
  */
-async function mockTimeline(page: Page, events: unknown[] | 500) {
+async function mockTimeline(page: Page, events: ResponseOf<"getTimeline">["data"] | 500) {
   await page.route("**/api/**", (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ data: [] }),
-    });
+    if (new URL(route.request().url()).pathname.startsWith("/api/auth/owner/")) return route.fallback();
+    return fulfillEmptyApi(route);
   });
 
   await mockHealthyApprovalMetrics(page);
 
-  await page.route("**/api/timeline*", (route) => {
+  await page.route(/\/api\/timeline\/histogram(?:\?.*)?$/, (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: mockJson("getTimelineHistogram", TIMELINE_HISTOGRAM),
+    });
+  });
+
+  await page.route(/\/api\/timeline(?:\?.*)?$/, (route) => {
     if (events === 500) {
       route.fulfill({
         status: 500,
@@ -214,7 +233,7 @@ async function mockTimeline(page: Page, events: unknown[] | 500) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ data: events, meta: TIMELINE_META }),
+      body: mockJson("getTimeline", { data: events, meta: TIMELINE_META }),
     });
   });
 }

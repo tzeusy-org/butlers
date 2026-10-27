@@ -19,14 +19,24 @@ import asyncpg
 
 from butlers.core.approvals_hooks import park_pending_action
 from butlers.core.state import state_get, state_set
+from butlers.core.temporal.calendar_provenance import is_owner_attending
 from butlers.core.tool_call_capture import (
     get_current_approval_push_runtime,
     get_current_runtime_session_id,
 )
 from butlers.identity import resolve_contacts_by_channel_bulk
 from butlers.modules.approvals.command_contracts import MEMORY_RECLASSIFY_COMMAND
+from butlers.modules.approvals.park import park_prepared_action
 
 logger = logging.getLogger(__name__)
+
+
+async def run_loan_cost_claim_backfill(db_pool: asyncpg.Pool) -> dict[str, int]:
+    """Repair missing loan projections; idempotence makes scheduled retries safe."""
+    from butlers.tools.relationship.loans import backfill_loan_cost_claims
+
+    return await backfill_loan_cost_claims(db_pool)
+
 
 # Every pending_actions row these curation jobs park belongs to the
 # relationship butler -- they only ever run inside this daemon (bu-g27ib).
@@ -274,6 +284,10 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     (verbosity=off), no further candidates in that category are submitted and
     the job exits early.
 
+    Every category reads only ``posture = 'active'`` people: nobody the owner
+    marked memorial, quiet or no_contact is ever the subject of an insight, and a
+    failed posture read fails the scan instead of defaulting to active.
+
     Args:
         db_pool: Database connection pool.
 
@@ -305,6 +319,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         expires_at: datetime,
         cooldown_days: int | None = None,
         metadata: dict[str, Any] | None = None,
+        prepared_action_id: uuid.UUID | None = None,
     ) -> bool:
         """Submit one candidate; return False if verbosity=off (early-exit signal)."""
         stats["candidates_proposed"] += 1
@@ -318,6 +333,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             expires_at=expires_at,
             cooldown_days=cooldown_days,
             metadata=metadata,
+            prepared_action_id=prepared_action_id,
         )
         status = result.get("status", "error")
         if status == "accepted":
@@ -354,6 +370,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         JOIN contact_entity_map cem ON cem.contact_id = d.contact_id
         JOIN public.entities e ON e.id = cem.entity_id
         WHERE e.listed = true
+          AND e.posture = 'active'
         ORDER BY d.month, d.day
         """
     )
@@ -481,6 +498,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
            AND f.scope = 'relationship'
            AND f.validity = 'active'
         WHERE e.listed = true
+          AND e.posture = 'active'
         GROUP BY cem.contact_id, cem.entity_id, e.stay_in_touch_days, e.canonical_name
         ORDER BY e.canonical_name
         """
@@ -542,21 +560,52 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             priority = _STALE_PRIORITY_MODERATE  # 1–2x cadence
 
         dedup_key = f"relationship:stale-contact:{contact_id}:{year_week}"
-        message = (
+        why = (
             f"{contact_name} is overdue for a check-in "
             f"({int(days_since)} days since last interaction, "
             f"cadence: {effective_cadence} days)."
         )
 
+        # bu-2jtfw.11: park a prepared reach-out alongside the informational
+        # candidate, so the digest can offer a door instead of only stating
+        # the fact. Deliberately silent (park_prepared_action never pushes) --
+        # the owner sees it only through this candidate's door.
+        #
+        # Idempotent by design: the shared admission transaction resolves the
+        # durable winner for a concurrent or repeated semantic key.
+        prepared_dedup_key = f"relationship:prepared-reach-out:{contact_id}:{year_week}"
+        prepared_action_id = uuid.uuid4()
+        draft_message = (
+            f"Hey {contact_name}, it's been a while since we caught up -- how have you been?"
+        )
+        admission = await park_prepared_action(
+            db_pool,
+            action_id=prepared_action_id,
+            tool_name="notify",
+            tool_args={
+                "entity_id": str(entity_id),
+                "message": draft_message,
+                "intent": "send",
+            },
+            agent_summary=f"Prepared reach-out to {contact_name} (overdue check-in)",
+            requested_at=now_utc,
+            expires_at=stale_expires_at,
+            why=why,
+            origin_butler="relationship",
+            deduplication_key=prepared_dedup_key,
+        )
+        prepared_action_id = admission.action_id
+
         should_continue = await _submit(
             priority=priority,
             category="stale-contact",
             dedup_key=dedup_key,
-            message=message,
+            message=why,
             expires_at=stale_expires_at,
             # A stale-contact candidate concerns this entity, but its weekly
             # scan boundary is not an event date and must not drive clustering.
             metadata={"entity_id": str(entity_id)},
+            prepared_action_id=prepared_action_id,
         )
         if not should_continue:
             logger.info(
@@ -619,6 +668,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 JOIN contact_entity_map cem ON cem.contact_id = d.contact_id
                 JOIN public.entities e ON e.id = cem.entity_id
                 WHERE e.listed = true
+                  AND e.posture = 'active'
                   AND d.contact_id = ANY($1::uuid[])
                 ORDER BY d.month, d.day
                 """,
@@ -720,6 +770,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
            AND f.scope = 'relationship'
            AND f.validity = 'active'
         WHERE e.listed = true
+          AND e.posture = 'active'
         GROUP BY cem.contact_id, cem.entity_id, e.canonical_name
         HAVING COUNT(f.id) > 0
         ORDER BY e.canonical_name
@@ -870,7 +921,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     for recent inbound messages on user-to-person channels
     (``telegram_user_client``, ``whatsapp_user_client``, ``email``).
 
-    Groups by ``(source_thread_identity, source_channel,
+    Groups by ``(external_conversation_id, source_channel,
     source_endpoint_identity, DATE(received_at))``
     — a chat-centric view — rather than by individual sender.  Per RFC 0013 D4:
 
@@ -900,11 +951,10 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     On successful completion the job writes ``scan_window_end`` back to the state
     store so the next run continues from where this one left off.
 
-    **Calendar-based sync:** Queries ``public.calendar_events`` for confirmed
+    **Calendar-based sync:** Queries ``relationship.calendar_events`` for confirmed
     events within the scan window.  For each event, extracts the
     ``metadata->'attendees'`` JSONB array, resolves attendee emails to
-    contact_ids via ``relationship.entity_facts`` (``has-email`` →
-    ``public.contacts.entity_id``), and calls
+    entity IDs via active ``relationship.entity_facts`` ``has-email`` facts, and calls
     ``interaction_log()`` with ``type='calendar_event'``.  Events where the
     owner's RSVP is ``declined`` are skipped entirely.  The owner's own
     attendee entry (``self=true``) is excluded from attendee resolution.
@@ -1007,19 +1057,22 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     # -----------------------------------------------------------------------
     # Step 1: Query switchboard.message_inbox grouped by chat identity.
     #
-    # RFC 0013 D4: group by (source_thread_identity, source_channel, date)
-    # and collect the distinct set of senders per group.  Messages flagged
-    # as interaction_eligible=false are excluded before grouping.
+    # RFC 0013 D4: group by (chat identity, source_channel, date) and collect
+    # the distinct set of senders per group.  Messages flagged as
+    # interaction_eligible=false are excluded before grouping.
     #
-    # When source_thread_identity is NULL (legacy/connectors that don't set it),
-    # fall back to source_sender_identity as the grouping key so that each sender
-    # forms its own "chat" group rather than being merged into a NULL mega-group.
+    # The chat identity is external_conversation_id: source_thread_identity is
+    # the per-message reply target (bu-7exe4.2), so grouping on it would make
+    # every message its own chat.  Rows without either fall back to
+    # source_sender_identity so that each sender forms its own "chat" group
+    # rather than being merged into a NULL mega-group.
     # -----------------------------------------------------------------------
     try:
         rows = await db_pool.fetch(
             """
             SELECT
                 COALESCE(
+                    request_context ->> 'external_conversation_id',
                     request_context ->> 'source_thread_identity',
                     request_context ->> 'source_sender_identity'
                 )                                              AS thread_identity,
@@ -1064,8 +1117,13 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
               AND sender.identity IS NOT NULL
               AND sender.identity NOT IN ('unknown', 'multiple')
               AND COALESCE(request_context ->> 'interaction_eligible', 'true') != 'false'
+              -- Out-of-office replies, bounces and other automated mail are not the
+              -- contact reaching out.  Ingest classifies them and persists only
+              -- raw_payload.control.automated_kind, so read it from there.
+              AND COALESCE(raw_payload -> 'control' ->> 'automated_kind', '') = ''
             GROUP BY
                 COALESCE(
+                    request_context ->> 'external_conversation_id',
                     request_context ->> 'source_thread_identity',
                     request_context ->> 'source_sender_identity'
                 ),
@@ -1344,9 +1402,10 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     stats["errors"] += 1
 
     # -----------------------------------------------------------------------
-    # Step 4: Scan public.calendar_events for confirmed events within the
+    # Step 4: Scan relationship.calendar_events for confirmed events within the
     # scan window, extract attendees, and log interactions.
     # -----------------------------------------------------------------------
+    calendar_query_succeeded = False
     try:
         cal_rows = await db_pool.fetch(
             """
@@ -1355,7 +1414,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 title,
                 starts_at,
                 metadata
-            FROM public.calendar_events
+            FROM relationship.calendar_events
             WHERE status = 'confirmed'
               AND starts_at >= $1
               AND starts_at <= now()
@@ -1364,13 +1423,19 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             """,
             scan_window_start,
         )
+        calendar_query_succeeded = True
     except asyncpg.exceptions.UndefinedTableError:
-        logger.info(
-            "interaction_sync: public.calendar_events unavailable; skipping calendar-based sync"
+        logger.warning(
+            "interaction_sync: relationship.calendar_events unavailable (UndefinedTableError); "
+            "calendar scan incomplete"
         )
+        stats["errors"] += 1
         cal_rows = []
-    except Exception:
-        logger.exception("interaction_sync: failed to query public.calendar_events")
+    except Exception as exc:
+        logger.exception(
+            "interaction_sync: failed to query relationship.calendar_events (%s)",
+            type(exc).__name__,
+        )
         stats["errors"] += 1
         cal_rows = []
 
@@ -1408,14 +1473,8 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         if not isinstance(attendees_raw, list) or not attendees_raw:
             continue
 
-        # Check if the owner declined this event via their self=true attendee entry.
-        owner_declined = False
-        for att in attendees_raw:
-            if not isinstance(att, dict):
-                continue
-            if att.get("self") is True and att.get("responseStatus") == "declined":
-                owner_declined = True
-                break
+        # Same RSVP rule as the calendar conflict radar (shared helper).
+        owner_declined = not is_owner_attending(meta)
 
         if owner_declined:
             logger.debug(
@@ -1694,23 +1753,22 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                         )
                         stats["errors"] += 1
 
-    # Persist the end of this scan window as the next checkpoint. Fail-open for
-    # the same reasons as the read above (interaction_log() dedups, scheduler
-    # storm avoidance). Surface via stats["errors"] + WARNING logs so monitoring
-    # catches recurring write failures without turning a completed fallback scan
-    # into an ERROR-level job failure.
-    next_checkpoint = scan_window_end.isoformat()
-    try:
-        await state_set(db_pool, _INTERACTION_SYNC_STATE_KEY, next_checkpoint)
-    except Exception:
-        logger.warning(
-            "interaction_sync: failed to write checkpoint key=%s value=%s",
-            _INTERACTION_SYNC_STATE_KEY,
-            next_checkpoint,
-            exc_info=True,
-        )
-        stats["errors"] += 1
-
+    # A failed calendar read is not an empty successful scan. Preserve the
+    # bounded interval; committed message work deduplicates on the next run.
+    if calendar_query_succeeded:
+        next_checkpoint = scan_window_end.isoformat()
+        try:
+            await state_set(db_pool, _INTERACTION_SYNC_STATE_KEY, next_checkpoint)
+        except Exception:
+            logger.warning(
+                "interaction_sync: failed to write checkpoint key=%s value=%s",
+                _INTERACTION_SYNC_STATE_KEY,
+                next_checkpoint,
+                exc_info=True,
+            )
+            stats["errors"] += 1
+    else:
+        logger.warning("interaction_sync: calendar scan incomplete; checkpoint not advanced")
     logger.info(
         "Interaction sync complete: processed=%d, logged=%d, "
         "skipped_unresolved=%d, skipped_owner=%d, "
@@ -2707,12 +2765,8 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                         f"content_preview={content[:120]}",
                     )
                 ]
-                # park_pending_action is the single choke point for PENDING
-                # inserts: it writes the row AND attempts the owner-facing
-                # push in one call (bu-mda0r/bu-g27ib). Routed through *pool*
-                # (not *conn*) because the push path needs real pool
-                # semantics; the dedup read above has no transactional
-                # dependency on it.
+                # Atomic action + delivery-intent admission. The dedup read
+                # above has no transactional dependency on it.
                 await park_pending_action(
                     db_pool,
                     action_id=action_id,
@@ -2740,14 +2794,25 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     async def _auto_retract_owner_fact(fact_id: uuid.UUID) -> bool:
         """Soft-retract an owner-entity fact (mark validity='retracted').
 
-        Mirrors the memory_forget tool's retraction SQL. Idempotent: only flips
-        rows still 'active'. Returns True on success, False on DB error.
+        Idempotent: only flips rows still 'active', leaving an already
+        'retracted'/'superseded' row untouched -- unlike memory_forget's
+        unconditional UPDATE, which has no such guard. When a row is actually
+        flipped, cascades the same memory_catalog disownment + entity_graph_edges
+        deletion forget_memory() performs, in the same transaction (bu-9ltqm).
+        Returns True on success, False on DB error.
         """
+        from butlers.modules.memory.storage import cascade_fact_retraction
+
         try:
-            await db_pool.execute(
-                "UPDATE facts SET validity = 'retracted' WHERE id = $1 AND validity = 'active'",
-                fact_id,
-            )
+            async with db_pool.acquire() as conn:
+                async with conn.transaction():
+                    row = await conn.fetchrow(
+                        "UPDATE facts SET validity = 'retracted' "
+                        "WHERE id = $1 AND validity = 'active' RETURNING id",
+                        fact_id,
+                    )
+                    if row is not None:
+                        await cascade_fact_retraction(conn, [row["id"]])
             return True
         except Exception:
             logger.exception(
@@ -3089,7 +3154,7 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
         )
 
     exact_pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for name_key, group in name_groups.items():
+    for _name_key, group in name_groups.items():
         if len(group) < 2:
             continue
         stats["exact_groups_found"] += 1
@@ -3237,11 +3302,10 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 )
             ]
 
-            # The durable key closes the check-then-insert interval without
-            # holding a connection across the owner-push path. The approvals
-            # writer attempts a push only after a successful INSERT.
+            # The atomic admission helper owns the semantic-key race and
+            # returns the durable winner's action/intent pair.
             try:
-                await park_pending_action(
+                admission = await park_pending_action(
                     db_pool,
                     action_id=action_id,
                     tool_name="memory_entity_merge",
@@ -3262,10 +3326,13 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     approval_push_runtime=get_current_approval_push_runtime(),
                     deduplication_key=deduplication_key,
                 )
+                if admission.duplicate:
+                    existing = await _existing_action()
+                    if existing is not None:
+                        return _existing_outcome(existing)
+                    raise RuntimeError("duplicate approval admission has no active action")
             except asyncpg.UniqueViolationError:
-                # A concurrent curation run won the unique-key race. Resolve
-                # the durable winner rather than treating its benign conflict
-                # as an operator-visible job error.
+                # Compatibility fallback for a pre-approvals_015 schema.
                 existing = await _existing_action()
                 if existing is not None:
                     return _existing_outcome(existing)
@@ -3421,8 +3488,8 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
     also drains the historical backlog on each run.
 
     Only a *clean orphan* is touched -- provenance-tagged, not already tombstoned, and with
-    no references acquired since creation (mirrors the safety gate in
-    ``scripts/cleanup_bulk_email_identity_proposals.py``): no ``entity_facts`` as subject or
+    no references acquired since creation (the safety gate of the retired one-shot
+    ``cleanup_bulk_email_identity_proposals`` script): no ``entity_facts`` as subject or
     object-entity (an approved has-email
     proposal writes such a fact, so approved/graduated entities are excluded and left
     intact) and no live (pending/approved/executed) ``pending_actions`` subject. (Contact
@@ -3736,9 +3803,7 @@ async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]
                 )
             ]
 
-            # park_pending_action is the single choke point for PENDING
-            # inserts: it writes the row AND attempts the owner-facing push
-            # in one call (bu-mda0r/bu-g27ib).
+            # Atomic action + delivery-intent admission.
             await park_pending_action(
                 db_pool,
                 action_id=action_id,
@@ -4085,12 +4150,8 @@ async def run_episodic_predicate_curation(db_pool: asyncpg.Pool) -> dict[str, An
                     }
                 )
 
-                # park_pending_action is the single choke point for PENDING
-                # inserts: it writes the row AND attempts the owner-facing
-                # push in one call (bu-mda0r/bu-g27ib). Routed through *pool*
-                # (not *conn*) because the push path needs real pool
-                # semantics; the dedup read above has no transactional
-                # dependency on it.
+                # Atomic action + delivery-intent admission. The dedup read
+                # above has no transactional dependency on it.
                 await park_pending_action(
                     db_pool,
                     action_id=action_id,

@@ -25,9 +25,8 @@ import pytest
 from pydantic import ValidationError
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import MCPClientManager, get_mcp_manager
+from butlers.api.deps import MCPClientManager, get_db, get_mcp_manager
 from butlers.api.models.calendar_workspace import CalendarPrepAttendee
-from butlers.api.routers.calendar_workspace import _get_db_manager
 
 pytestmark = pytest.mark.unit
 
@@ -139,7 +138,7 @@ def _build_prep_app(
 
     mock_mgr.get_client = AsyncMock(side_effect=_get_client)
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     return app, mock_db, mock_mgr
 
@@ -253,6 +252,18 @@ def test_calendar_prep_attendee_validates_commitment_kind_and_direction():
     with pytest.raises(ValidationError):
         CalendarPrepAttendee.model_validate(
             {**base, "commitments": [_commitment(direction="invalid_direction")]}
+        )
+
+
+def test_calendar_prep_attendee_rejects_invalid_commitment_escalation_level():
+    """REQ-dashboard-api-054: commitment escalation follows the L0-L3 contract."""
+    with pytest.raises(ValidationError):
+        CalendarPrepAttendee.model_validate(
+            {
+                "entity_id": str(uuid4()),
+                "name": "Alice Tan",
+                "commitments": [_commitment(escalation_level="L4")],
+            }
         )
 
 

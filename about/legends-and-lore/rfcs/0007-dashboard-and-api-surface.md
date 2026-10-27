@@ -2,6 +2,8 @@
 
 **Status:** Accepted
 **Date:** 2026-03-24
+**Superseded in part at cutover by:** [RFC 0038](0038-goal-runtime-and-capability-authorization.md) (session, trigger and per-butler conversation endpoints and butler-unit views, D7 and D19; the API envelope, route discovery and domain surfaces remain).
+Governing doctrine: [v1.md, Dashboard](../../heart-and-soul/v1.md#dashboard) and [v1.md, Success Criteria](../../heart-and-soul/v1.md#success-criteria) item 6 (the dashboard shows goals, domain data, contacts and ingestion flow), with [vision.md rule 5, operational tuning is edited via the dashboard](../../heart-and-soul/vision.md#non-negotiable-rules).
 
 ## Summary
 
@@ -26,7 +28,7 @@ A personal AI agent system with multiple specialist butlers, connectors, schedul
 Butler-specific API routes are auto-discovered by `src/butlers/api/router_discovery.py`:
 
 1. Scan `roster/*/api/router.py` for Python files.
-2. Load each module via `importlib.util.spec_from_file_location`.
+2. Load each module through `butlers.roster_imports`, preserving its existing execution name, one module object per file, source-path checks and failed-load cleanup. The `butlers.api._roster` namespace aliases those actual router and model objects.
 3. Validate that the module exports a `router` variable of type `APIRouter`.
 4. Register discovered routers with the FastAPI application, prefixed with `/api/<butler_name>`.
 
@@ -34,7 +36,10 @@ Conventions:
 
 - Each `router.py` MUST export a module-level `router` variable (APIRouter instance).
 - No `__init__.py` needed in the `api/` directory.
-- DB dependencies are auto-wired via `wire_db_dependencies()`.
+- Core and discovered routers import the public `Db` dependency (or
+  `Depends(get_db)`) from `src/butlers/api/deps.py`. The `src/butlers/api/app.py`
+  lifespan initializes and shuts down its shared DatabaseManager singleton;
+  existing optional reads use `OptionalDb`/`get_db_optional()`.
 - Pydantic models SHOULD be co-located in `models.py` alongside `router.py`.
 - Butlers without `api/` directories are silently skipped.
 - Invalid router exports (missing `router` variable, wrong type) are logged as warnings and skipped.
@@ -96,7 +101,8 @@ Admission-control decisions that did not launch a runtime session (for example c
 
 | Endpoint | Response | Description |
 |----------|----------|-------------|
-| `GET /api/health` | `{"status": "ok"}` | Health check |
+| `GET /health`, `GET /api/health` | Process-status response | Lightweight process health; not fleet readiness |
+| `GET /ready` | Content-blind readiness response | Canonical semantic readiness; see 2026-09-23 amendment |
 | `GET /api/butlers` | `ApiResponse<ButlerSummary[]>` | All registered butlers |
 | `GET /api/butlers/{name}` | `ApiResponse<ButlerDetail>` | Butler detail |
 | `GET /api/butlers/{name}/config` | `ApiResponse<ButlerConfigResponse>` | Butler TOML config |
@@ -156,7 +162,9 @@ refetch, and never displays optimistic messages from another conversation.
 
 | Endpoint | Response | Description |
 |----------|----------|-------------|
-| `GET /api/timeline` | `TimelineResponse` | Cross-butler event stream (filters: limit, butler, event_type, before cursor) |
+| `GET /api/timeline` | `TimelineResponse` | Cross-butler event stream (filters: limit, event persisted-ID lookup, butler, event_type, trace, before cursor, paired since/until) |
+| `GET /api/timeline/histogram` | `TimelineHistogramResponse` | Content-blind server-counted minute density (required paired since/until; butler, event_type, trace) |
+| `GET /api/timeline/attention` | `TimelineAttentionResponse` | Content-blind recent records currently marked failed (captured last 24h; butler, trace) |
 | `GET /api/notifications` | `PaginatedResponse<NotificationSummary>` | Notification feed |
 | `GET /api/notifications/stats` | `ApiResponse<NotificationStats>` | Delivery statistics |
 | `GET /api/issues` | `ApiResponse<Issue[]>` | Grouped error issues |
@@ -209,38 +217,20 @@ control as Owner Attention Policy.
 
 ### Frontend Route Map
 
-| Route | Surface |
-|-------|---------|
-| `/` | Overview dashboard (topology, health, failed notifications, active issues) |
-| `/butlers` | Butler status cards |
-| `/butlers/:name` | Butler detail with tabbed interface |
-| `/butlers/calendar` | Calendar workspace (dual-view) |
-| `/sessions` | Cross-butler session list with filters |
-| `/sessions/:id` | Session detail |
-| `/traces` | Distributed trace index |
-| `/traces/:traceId` | Trace detail with span waterfall |
-| `/timeline` | Unified event stream |
-| `/notifications` | Notification center |
-| `/issues` | Active issues |
-| `/audit-log` | Operation history |
-| `/approvals` | Approval queue with decision workflows |
-| `/approvals/rules` | Standing approval rules |
-| `/contacts` | Contact list |
-| `/contacts/:contactId` | Contact detail with tabs |
-| `/groups` | Relationship groups |
-| `/health/*` | Health domain (measurements, medications, conditions, symptoms, meals, research) |
-| `/collections` | General collections |
-| `/entities` | Entity browser |
-| `/entities/:entityId` | Entity detail |
-| `/connectors` | Connector overview with volume chart and fanout matrix |
-| `/connectors/:type/:identity` | Connector detail with timeseries |
-| `/costs` | Cost and usage analysis |
-| `/memory` | Memory system (tier cards, browser, activity timeline) |
-| `/qa` | QA overview (status, patrols, known issues, investigations, circuit breaker) |
-| `/qa/patrols/:patrolId` | QA patrol detail |
-| `/qa/investigations/:attemptId` | QA investigation detail |
-| `/settings` | Local UI preferences |
-| `/system` | System ownership page (see Amendment 1) |
+`frontend/src/router-config.tsx` is the authoritative route table; the
+canonical route list is specified in `openspec/specs/dashboard-shell/spec.md`
+(§Canonical Route Map). This RFC fixes only the route-family contract:
+
+- Every route is a child of the root layout and shares the shell, header, error
+  boundary, and sidebar.
+- Each domain owns one route family (`/sessions/*`, `/entities/*`, `/health/*`,
+  `/qa/*`, `/settings/*`, `/ingestion/*`, ...), with list pages at the family
+  root and detail pages at `/<family>/:id`.
+- Sub-views are first-class child routes, not page-level `?tab=` state.
+- **Redirect policy.** A retired or renamed route is kept as a `<Navigate replace>`
+  compatibility redirect to its canonical successor (for example `/contacts` →
+  `/entities/index?has=contact`, `/costs` → `/spend`), never a 404, so bookmarks
+  and deep links keep working.
 
 ### Butler Detail Tabs
 
@@ -308,19 +298,15 @@ All routes render inside a common shell with:
 
 **Date:** 2026-05-03
 **Status:** Accepted
-**Implementing change:** `openspec/changes/archive/2026-06-13-system-page-capability/` (bu-ngfzz.*)
+**Implementing change:** `openspec/changes/archive/2026-06-13-system-page-capability/`
 
 Vertical E shipped the `/system` dashboard route and the `/api/system/*` API namespace. This amendment registers both in RFC 0007.
 
 ### Frontend Route
 
-Add to the Frontend Route Map under the Telemetry section:
+`/system` is the System ownership page (instance version, uptime, database size, backup recency, data-egress catalog, per-butler heartbeats).
 
-| Route | Surface |
-|-------|---------|
-| `/system` | System ownership page (instance version, uptime, database size, backup recency, data-egress catalog, per-butler heartbeats) |
-
-This route is registered in `frontend/src/router.tsx` alongside the Telemetry routes (`/traces`, `/timeline`) and appears in `frontend/src/components/layout/nav-config.ts` under the Telemetry nav section with no butler-presence filter (it is always visible). The page uses the `<Page archetype="overview">` shell.
+This route is registered in `frontend/src/router-config.tsx` alongside the Telemetry routes (`/traces`, `/timeline`) and appears in `frontend/src/components/layout/nav-config.ts` under the Telemetry nav section with no butler-presence filter (it is always visible). The page uses the `<Page archetype="overview">` shell.
 
 ### API Surface
 
@@ -332,7 +318,7 @@ Five ownership-fact endpoints are registered under `/api/system/`. Each endpoint
 | `GET /api/system/database` | `ApiResponse<DatabaseFacts>` | Total database size in bytes (`total_size_bytes`), per-butler-schema size breakdown (`schemas: SchemaSize[]`), and the ten largest tables (`largest_tables: TableSize[]`). `growth_rate_bytes_per_day` is always `null` in v1 (deferred to v2). Derived from PostgreSQL catalog queries (`pg_database_size`, `pg_total_relation_size`, `information_schema.tables`). Returns HTTP 503 if the catalog query fails. |
 | `GET /api/system/backups` | `ApiResponse<BackupFacts>` | Backup recency (`last_backup_at`, `last_backup_size_bytes`), source reachability (`backup_source_reachable: bool`), and recent backup history (`backup_history: BackupEvent[]`). Degrades gracefully: always returns HTTP 200 with `backup_source_reachable: false` and null fields when no backup strategy is configured. |
 | `GET /api/system/egress` | `ApiResponse<EgressCatalog>` | External-actor egress catalog: which external endpoints have received data from this instance, with `last_seen_at` and `total_calls` per actor (`actors: EgressActor[]`). `catalog_covers_from` communicates the oldest audit record used to build the catalog. **Owner-only**: returns HTTP 403 when the owner contact cannot be asserted. |
-| `GET /api/system/butlers/heartbeat` | `ApiResponse<HeartbeatFacts>` | Per-butler liveness snapshot from the switchboard registry (`butlers: ButlerHeartbeat[]`). Each entry carries `last_heartbeat_at`, `heartbeat_age_seconds`, `last_session_at`, and `active_session_count`. Reads from the registry; does not issue live MCP calls. Degrades gracefully per butler when a schema is unreachable (`error: "schema_unreachable"`). |
+| `GET /api/system/butlers/heartbeat` | `ApiResponse<HeartbeatFacts>` | Per-butler registry snapshot (`butlers: ButlerHeartbeat[]`) with session facts. The 2026-09-23 Amendment 3 supersedes daemon-authored heartbeat time as liveness authority: legacy `last_heartbeat_at`/age mean last successfully verified healthy receiver observation, `last_probe_at` means latest attempt, and effective status uses observation/policy rather than age alone. The endpoint remains a read projection, not a live probe. Degrades per butler when a schema is unreachable (`error: "schema_unreachable"`). |
 
 System-specific Pydantic response models (`InstanceFacts`, `DatabaseFacts`, `SchemaSize`, `TableSize`, `EgressCatalog`, `EgressActor`, `HeartbeatFacts`, `ButlerHeartbeat`) are defined in `src/butlers/api/routers/system.py`. The DB-free backup models and artifact/run-receipt reader (`BackupFacts`, `BackupEvent`, `BackupRunFacts`, `RestoreDrillFacts`) are owned by `src/butlers/core/backup_facts.py`; both the system route and QA infrastructure checks consume that lower-layer reader. The system router owns API composition and overlays the DB-backed restore-drill result. The router is registered in `src/butlers/api/app.py` (explicit include; the system router lives in the core `src/butlers/api/routers/` package rather than in a butler-specific `roster/*/api/` directory and is therefore not subject to butler auto-discovery).
 
@@ -372,43 +358,66 @@ Conformance with RFC 0005 (observability and telemetry):
 
 ---
 
-## Amendment 2: Snapshot-backed Bead Detail
+## Amendment 2: Snapshot-backed Bead Detail (withdrawn)
 
-**Date:** 2026-08-13
-**Status:** Accepted
-**Implementing change:** `openspec/changes/add-dashboard-bead-detail/` (bu-7a74e)
+**Date:** 2026-08-13; withdrawn by owner decision bu-g2zuv2 = A (2026-10-21).
 
-The dashboard adds a single read-only Bead drill-down without expanding its
-tracker trust boundary.
+The former bead-detail API and frontend destination are retired in source under
+bu-99t5s3.6. Their historical contract is available in Git history. No runtime
+snapshot mount, tracker reader or mutation interface remains authorized by this
+amendment. Approvals, QA and dashboard owner authentication retain their
+existing contracts. Retained decision tables require a separately reviewed
+drop only after code removal is deployed and all old readers and writers stop.
 
-### API Surface
+---
 
-`GET /api/beads/{id}` returns `ApiResponse<BeadDetail>` only from the existing
-read-only Beads JSONL export bind mount. There is no live `bd`, Dolt, GitHub,
-database, credential, external-network, or tracker-mutation bridge. Successful
-responses include `meta.export_as_of`, the source file mtime.
+## Amendment 3 (2026-09-23): Process Health and Semantic Readiness
 
-`BeadDetail` is an explicit allowlist: `id`, `title`, `status`, `priority`,
-`type`, `description`, `design`, `acceptance_criteria`, `labels`,
-`created_at`, `updated_at`, `started_at`, `closed_at`, `due_at`, bounded direct
-`dependencies`, and `external_ref`. A dependency summary is limited to 20
-source-order records and contains only `id`, `title`, `status`, `priority`, and
-`type`. Notes, metadata, comments, identities, credentials, raw records, raw
-edges, and arbitrary href values are never materialized.
+**Status:** Approved target contract in
+`openspec/changes/restore-butler-control-plane-liveness`; implementation
+remains separate from this amendment.
 
-The endpoint fully verifies bounded source readability before looking up the
-ID. Only a readable, sufficiently fresh snapshot with no matching ID returns
-`404 ErrorResponse{code: "BEAD_NOT_FOUND"}`. A missing, stale, oversized,
-unreadable, or malformed snapshot returns `503
-ErrorResponse{code: "BEAD_SNAPSHOT_UNAVAILABLE"}` with
-`error.details.export_as_of`, including `null` when no mtime is known. This
-prevents an unavailable source from becoming a fabricated not-found claim.
+`GET /health` and `GET /api/health` remain lightweight process checks. A 200
+there means the dashboard process is serving, not that PostgreSQL, routing,
+QA patrol, or the daemon fleet is ready. Docker liveness may continue to use
+`/health` without claiming deployment success.
 
-### Frontend Route and Navigation
+The canonical public `GET /ready` is a content-blind semantic readiness
+endpoint. Its response shape is HTTP 200 `{"ready":true}` only
+when ready, or HTTP 503 `{"ready":false,"checks":{...}}` otherwise. The
+fixed boolean check keys are `postgres`, `roster`, `observer`, `fleet`,
+`qa_patrol`, `supervisors`, and `route_canary`. `roster` means the exact
+configured expected set, `fleet` requires verified daemon identity,
+generation, compatibility, and acceptance, and `route_canary` consumes L3's
+read-only internal Switchboard preflight. That producer traverses the pure
+production selection/policy/endpoint resolver and makes one bounded identity
+GET to a server-selected fixed domain target, without a target MCP call or
+durable evidence write. It proves that control-plane path, not a transactional
+`route.execute` receipt or downstream success. Q4 alone implements the public
+route and exact owner-auth exception; Compose only consumes it. A
+bounded cached snapshot serves `/ready`; the public request cannot start probes or expensive
+database fanout. It reports no message content, credentials, internal
+endpoints, or unbounded diagnostic text. Partial or failed observations cannot
+be converted into a healthy aggregate. `qa_patrol` counts a completed
+scheduled `clean`, `findings_dispatched`, or genuine `suppressed` patrol only
+with current-config all-enabled-source success provenance; an `error`,
+`skipped_overlap`, synthetic `suppressed`, still-running, or ambiguous legacy
+record cannot renew freshness. A deployment may declare completion only after
+two distinct complete receiver-observer cycles and two distinct qualifying
+scheduled QA patrol completions after its window starts, while every sampled
+readiness verdict remains true beyond the longest configured liveness TTL.
+Two reads of one patrol do not count. The finite default timeout is derived
+from two configured QA patrol cadences plus the longest fleet TTL and a
+ten-minute margin (35 minutes at current defaults); a shorter configured
+timeout fails validation rather than reporting an impossible successful
+deployment.
+`supervisors` consumes only the process-fenced Dashboard lifespan-loop health
+projection; Switchboard's runtime-attention delivery worker has a separate
+linked condition/outbox availability state and is not implied healthy by it.
 
-`/beads/:id` is a same-origin, read-only detail route. It uses the standard
-detail shell and semantic, rule-separated content; it exposes source freshness
-and distinct loading, not-found, and unavailable states. It has no tracker
-mutation affordance. Decisions and escalation blockers build their targets
-only as `/beads/${encodeURIComponent(id)}`. `external_ref` is inert displayed
-text, never a link or fetched target.
+Owner authentication remains the central boundary for `/api/*`. The daemon
+observer consumes exact internal roster endpoints and cannot use an owner
+cookie, owner API key, or an anonymous heartbeat mutation. Public `/ready`
+does not confer routing or administrative authority. Exposing it to a separate
+external functional monitor is a later owner operation; the adopted minimal
+external `/api/health` monitor remains a different contract.

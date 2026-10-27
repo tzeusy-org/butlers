@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import uuid
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -69,9 +69,14 @@ def _make_pool(
 ) -> AsyncMock:
     """Build an AsyncMock behaving like an asyncpg.Pool (FIFO consumption)."""
     pool = AsyncMock()
+    acquisition = MagicMock()
+    acquisition.__aenter__ = AsyncMock(return_value=pool)
+    acquisition.__aexit__ = AsyncMock(return_value=False)
+    pool.acquire = MagicMock(return_value=acquisition)
+    pool.transaction = MagicMock(return_value=acquisition)
 
     if fetchrow_returns is not None:
-        pool.fetchrow = AsyncMock(side_effect=list(fetchrow_returns))
+        pool.fetchrow = AsyncMock(side_effect=list(fetchrow_returns) + list(fetchrow_returns[:1]))
     else:
         pool.fetchrow = AsyncMock(return_value=None)
 
@@ -83,7 +88,7 @@ def _make_pool(
     if fetchval_returns is not None:
         pool.fetchval = AsyncMock(side_effect=list(fetchval_returns))
     else:
-        pool.fetchval = AsyncMock(return_value=0)
+        pool.fetchval = AsyncMock(return_value=True)
 
     if execute_returns is not None:
         pool.execute = AsyncMock(side_effect=list(execute_returns))
@@ -132,7 +137,7 @@ def _edge(parent_id: str, child_id: str) -> dict[str, Any]:
 
 def _map_row(
     map_id: str | None = None,
-    status: str = "active",
+    status: str = "draft",
 ) -> dict[str, Any]:
     """Build a minimal mind map row dict."""
     return {
@@ -422,7 +427,7 @@ class TestCheckDagAcyclicity:
 def _make_generate_pool(
     *,
     map_id: str,
-    map_status: str = "active",
+    map_status: str = "draft",
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
     execute_count: int = 20,

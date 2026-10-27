@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 #: Default Wyoming transcription URL
-DEFAULT_WYOMING_URL = "tcp://wyoming-faster-whisper.parrot-hen.ts.net:10300"
+DEFAULT_WYOMING_URL = "tcp://localhost:10300"
 
 #: Minimum confidence threshold for accepting a transcription result
 DEFAULT_MIN_CONFIDENCE = 0.3
@@ -447,9 +447,9 @@ class WyomingTranscriptionClient(TranscriptionClient):
         if discard_reason is not None:
             _record_discarded(self._mic_name, discard_reason)
             logger.debug(
-                "WyomingTranscriptionClient: discarding result reason=%s text=%r (mic=%s)",
+                "WyomingTranscriptionClient: discarding result reason=%s chars=%d (mic=%s)",
                 discard_reason,
-                transcript_text[:50],
+                len(transcript_text),
                 self._mic_name,
             )
             return None

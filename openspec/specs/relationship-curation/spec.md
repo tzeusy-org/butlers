@@ -41,6 +41,17 @@ proposals or auto-applied changes MUST communicate its results via `notify()`.
 - **WHEN** a job produces proposals or auto-applied changes
 - **THEN** the summary MUST be delivered through `notify()` (not session text, which is discarded in a headless run)
 
+#### Scenario: Episodic fact reclassification proposal is replayable
+- **WHEN** episodic-predicate cleanup proposes changing a fact to volatile permanence
+- **THEN** it parks the exact registered Relationship `memory_reclassify` command
+- **AND** owner approval executes that command through the standard approvals executor
+- **AND** an inactive or missing fact produces a truthful execution failure rather than changing another fact or inventing a replacement command
+
+#### Scenario: Direct memory reclassification remains approval-gated
+- **WHEN** a normal Relationship caller invokes `memory_reclassify` for an active fact
+- **THEN** the native approval gate parks the exact command without changing the fact
+- **AND** owner approval replays the captured original handler exactly once
+
 ### Requirement: Curation autonomy boundary
 
 Every candidate mutation SHALL be classified as auto-apply, propose, or

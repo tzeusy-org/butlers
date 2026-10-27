@@ -30,13 +30,14 @@ import asyncpg
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.chronicler.contracts import INITIAL_SOURCES, seed_source_registry
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.storage import upsert_episode
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -117,9 +118,9 @@ def _build_app(pool: asyncpg.Pool):
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
 
     app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
+    for butler_name, _router_module in app.state.butler_routers:
         if butler_name == "chronicler":
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+            app.dependency_overrides[get_db] = lambda: mock_db
     return app
 
 

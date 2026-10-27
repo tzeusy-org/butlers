@@ -26,6 +26,7 @@ pytestmark = [
 
 _DDL_FACTS = """
 CREATE TABLE IF NOT EXISTS facts (
+    content_authority TEXT, authority_entity_id UUID,
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     subject             TEXT NOT NULL DEFAULT 'owner',
     predicate           TEXT NOT NULL,

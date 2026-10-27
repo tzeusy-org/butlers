@@ -8,8 +8,7 @@ The Pipeline module provides LLM-based message classification and routing for th
 
 ### Requirement: Ingestion Architecture
 
-The implementation SHALL provide the behavior described by this requirement.
-Live data enters the system through connectors and flows through the Switchboard before reaching any domain butler. Modules on individual butlers provide runtime data lookup — they do not participate in ingestion.
+Live data SHALL enter the system through connectors and flow through the Switchboard before reaching any domain butler. Modules on individual butlers provide runtime data lookup — they do not participate in ingestion.
 
 #### Scenario: End-to-end ingestion flow
 - **WHEN** an external message arrives (Telegram, email, API, etc.)
@@ -29,8 +28,7 @@ Live data enters the system through connectors and flows through the Switchboard
 
 ### Requirement: Modules Enable Runtime Data Lookup
 
-The implementation SHALL provide the behavior described by this requirement.
-Modules on domain butlers provide tools for querying and manipulating domain-specific data. They sync with external sources independently and serve the LLM CLI at query time.
+Modules on domain butlers SHALL provide tools for querying and manipulating domain-specific data. They sync with external sources independently and serve the LLM CLI at query time.
 
 #### Scenario: Calendar module as runtime lookup
 - **WHEN** a butler has the `calendar` module enabled
@@ -54,8 +52,7 @@ Modules on domain butlers provide tools for querying and manipulating domain-spe
 
 ### Requirement: Pipeline as Post-Triage LLM Router
 
-The implementation SHALL provide the behavior described by this requirement.
-The pipeline's sole responsibility is LLM-driven classification and routing for messages that pass through deterministic triage without a match. It runs exclusively on the Switchboard butler.
+The pipeline's sole responsibility SHALL be LLM-driven classification and routing for messages that pass through deterministic triage without a match. It runs exclusively on the Switchboard butler.
 
 #### Scenario: Pipeline receives pre-processed messages
 - **WHEN** a message passes through triage without matching any rule
@@ -84,12 +81,25 @@ The pipeline's sole responsibility is LLM-driven classification and routing for 
 
 ### Requirement: Conversation History for Routing Context
 
-The implementation SHALL provide the behavior described by this requirement.
-The pipeline loads channel-appropriate conversation history to improve LLM routing accuracy.
+The pipeline SHALL load channel-appropriate conversation history to improve LLM routing accuracy.
 
 #### Scenario: Realtime messaging history
 - **WHEN** the source channel is `telegram`, `whatsapp`, `slack`, or `discord`
 - **THEN** recent conversation history is loaded (max 15-minute window, max 30 messages) for routing context
+- **AND** realtime history SHALL select `message_inbox` rows only by `request_context ->> 'external_conversation_id'`, never by a per-message reply target or `source_thread_identity`
+
+#### Scenario: Consecutive messages in one chat share history
+- **WHEN** two Telegram messages from the same chat arrive with distinct reply targets
+- **THEN** the second message's realtime history SHALL include the first, because both carry the same `external_conversation_id`
+
+#### Scenario: Outbound rows join their conversation's history
+- **WHEN** a delivered outbound message is written to `message_inbox` for history
+- **THEN** its request context SHALL carry `external_conversation_id`: the notify request context's value when present, otherwise the key derived from the delivery target (for Telegram, `telegram:<chat_id>` of the chat the message was delivered to; for WhatsApp, `whatsapp:<chat_jid>`, including proactive sends)
+
+#### Scenario: Pre-split history remains readable
+- **WHEN** `message_inbox` holds rows written before connectors split conversation identity from reply targets
+- **THEN** a one-time migration SHALL have backfilled their `external_conversation_id` with the key the connector emits today (Telegram `telegram:<chat_id>` from the legacy `<chat_id>` or `<chat_id>:<message_id>` value, WhatsApp `whatsapp:<chat_jid>`, every other channel verbatim)
+- **AND** the stored `raw_payload.event` of rows still awaiting buffer recovery for the Telegram bot, Telegram user-client, and WhatsApp user-client channels SHALL carry both split fields
 
 #### Scenario: Email thread history
 - **WHEN** the source channel is `email`
@@ -101,8 +111,7 @@ The pipeline loads channel-appropriate conversation history to improve LLM routi
 
 ### Requirement: Concurrent Pipeline Session Isolation
 
-The implementation SHALL provide the behavior described by this requirement.
-The pipeline uses per-task context variables to prevent cross-contamination between concurrent routing sessions.
+The pipeline SHALL use per-task context variables to prevent cross-contamination between concurrent routing sessions.
 
 #### Scenario: Context isolation
 - **WHEN** multiple messages are routed concurrently through the pipeline

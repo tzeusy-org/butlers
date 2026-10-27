@@ -3,6 +3,12 @@
 This directory answers **WHERE**: where components live, how they connect, what
 boundaries exist, and how the system is deployed.
 
+**These pages are snapshots, not contracts.** Required behavior lives in
+`openspec/specs/`; inventories (butlers, modules, connectors, routes, ports)
+live in code and config, and these pages point at them rather than copying
+them. When a page and its source disagree, the source wins: fix the page in
+the same PR as the change that made it stale.
+
 ## Documents
 
 | Document | Question it answers |
@@ -14,7 +20,6 @@ boundaries exist, and how the system is deployed.
 | [integration.md](integration.md) | How do subsystems connect at their boundaries? |
 | [module-vs-butler.md](module-vs-butler.md) | What is the difference between a butler (daemon) and a module (pluggable tool surface)? |
 | [frontend.md](frontend.md) | Where does the dashboard's design language live -- shell, routes, page archetypes, component domains, token plumbing? |
-| [detail-page-audit.md](detail-page-audit.md) | Which existing detail page is the cleanest base for a shared `<DetailPage>` shell, and what gets migrated first? |
 
 ## Reading Order
 

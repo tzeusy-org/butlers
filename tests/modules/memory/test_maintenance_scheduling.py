@@ -42,6 +42,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 import asyncpg
 import pytest
 
+from butlers.config import ScheduleSpec
 from butlers.db import register_jsonb_codec
 from butlers.modules.memory import MemoryModule
 from butlers.scheduled_jobs import (
@@ -51,6 +52,7 @@ from butlers.scheduled_jobs import (
     _run_memory_consolidation_job,
     _run_memory_decay_sweep_job,
     _run_memory_episode_cleanup_job,
+    _run_memory_knowledge_gap_delivery_job,
     _run_memory_purge_superseded_job,
     get_deterministic_schedule_job_registry,
 )
@@ -81,6 +83,7 @@ _EXPECTED_MEMORY_JOB_NAMES = {
     "memory_decay_sweep",
     "memory_catalog_backfill",
     "memory_ann_observability",
+    "memory_knowledge_gap_delivery",
 }
 
 
@@ -264,6 +267,25 @@ class TestJobArgsValidation:
 
         assert result == {"health": "healthy"}
         run_ann_observability.assert_awaited_once_with(runtime_pool)
+
+    async def test_knowledge_gap_delivery_skips_a_schema_without_the_table(
+        self, monkeypatch
+    ) -> None:
+        runtime_pool = AsyncMock()
+        runtime_pool.fetchval.return_value = False
+        _register_runtime_pool(monkeypatch, runtime_pool)
+        monkeypatch.setattr(
+            "butlers.core.memory_hooks.resolve_memory_dispatch_butler_name", lambda: "general"
+        )
+        deliver = AsyncMock()
+        monkeypatch.setattr("butlers.modules.memory.knowledge_gaps.deliver_knowledge_gaps", deliver)
+
+        result = await _run_memory_knowledge_gap_delivery_job(pool=object(), job_args=None)
+
+        assert "skipped" in result
+        deliver.assert_not_awaited()
+        with pytest.raises(RuntimeError, match="does not accept job_args"):
+            await _run_memory_knowledge_gap_delivery_job(pool=object(), job_args={"x": 1})
 
     async def test_decay_sweep_rejects_any_job_args(self) -> None:
         with pytest.raises(RuntimeError, match="does not accept job_args"):
@@ -527,15 +549,36 @@ async def _pool_for(db_url: str) -> asyncpg.Pool:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(scope="module")
+def core_scheduler_db_url(postgres_container) -> str:
+    """Scheduler state uses its real current general-schema migration chain."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core"],
+        schemas={"core": "general"},
+    )
+
+
+async def _scheduler_pool_for(db_url: str) -> asyncpg.Pool:
+    return await asyncpg.create_pool(
+        dsn=db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "general,public"},
+    )
+
+
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.integration
 async def test_ensure_module_default_schedule_idempotent_and_toml_overrides_cadence(
-    core_memory_db_url: str,
+    core_scheduler_db_url: str,
 ) -> None:
     from butlers.core.scheduler import ensure_module_default_schedule, sync_schedules
 
-    pool = await _pool_for(core_memory_db_url)
+    pool = await _scheduler_pool_for(core_scheduler_db_url)
     try:
         await pool.execute("DELETE FROM scheduled_tasks WHERE name = 'memory_decay_sweep'")
         # First boot: creates the row.
@@ -585,12 +628,12 @@ async def test_ensure_module_default_schedule_idempotent_and_toml_overrides_cade
         await sync_schedules(
             pool,
             [
-                {
-                    "name": "memory_decay_sweep",
-                    "cron": "30 2 * * *",
-                    "dispatch_mode": "job",
-                    "job_name": "memory_decay_sweep",
-                }
+                ScheduleSpec(
+                    name="memory_decay_sweep",
+                    cron="30 2 * * *",
+                    dispatch_mode="job",
+                    job_name="memory_decay_sweep",
+                )
             ],
         )
         row = await pool.fetchrow(
@@ -957,6 +1000,7 @@ async def test_run_decay_sweep_expiry_marks_catalog_entry_stale(core_memory_db_u
             source_butler="health",
             enable_shared_catalog=True,
             source_schema="public",
+            content_authority="owner",
         )
 
         # Push both into the expiry band directly — store_fact/store_rule

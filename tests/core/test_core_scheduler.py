@@ -13,6 +13,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import shutil
@@ -28,6 +29,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
+from butlers.config import ScheduleSpec
 from butlers.core.model_routing import Complexity
 from butlers.daemon import ButlerDaemon
 from butlers.db import Database, register_jsonb_codec
@@ -56,14 +58,60 @@ def migrated_db_url(postgres_container) -> str:
         postgres_container,
         migration_db_name(),
         chains=["core"],
+        schemas={"core": "general"},
     )
 
 
 @pytest.fixture
-async def pool(migrated_db_url: str):
+def legacy_public_db_url(postgres_container) -> str:
+    """Model a fully current public-backed legacy DB, without runtime fallback.
+
+    Both definitions come from the real full core chain. core_050 upgrades
+    named butler schemas rather than public, so clone its current scheduler
+    table transparently for the explicit schema-less lifecycle/audit case.
+    This fresh administrative setup refuses data or unexpected dependencies.
+    """
+    from sqlalchemy import create_engine, text
+
+    from butlers.migrations import run_migrations
+
+    url = create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+    asyncio.run(run_migrations(url, chain="core", schema="general"))
+    engine = create_engine(url)
+    try:
+        with engine.begin() as connection:
+            assert not connection.execute(
+                text("SELECT EXISTS (SELECT 1 FROM public.scheduled_tasks)")
+            ).scalar_one()
+            connection.execute(text("DROP TABLE public.scheduled_tasks"))
+            connection.execute(
+                text(
+                    "CREATE TABLE public.scheduled_tasks "
+                    "(LIKE general.scheduled_tasks INCLUDING ALL)"
+                )
+            )
+    finally:
+        engine.dispose()
+    return url
+
+
+@pytest.fixture
+def scheduler_pool_source(request, migrated_db_url: str) -> tuple[str, str]:
+    """Keep the one explicit public-authority case separate from normal pools."""
+    if request.node.name == "test_legacy_lifecycle_recovery_derives_public_audit_identity":
+        return request.getfixturevalue("legacy_public_db_url"), "public"
+    return migrated_db_url, "general,public"
+
+
+@pytest.fixture
+async def pool(scheduler_pool_source: tuple[str, str]):
     """Return an asyncpg pool with scheduler table cleared between tests."""
     p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+        scheduler_pool_source[0],
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+        server_settings={"search_path": scheduler_pool_source[1]},
     )
     await p.execute("TRUNCATE TABLE scheduled_tasks CASCADE")
     yield p
@@ -144,8 +192,8 @@ async def test_sync_inserts_and_sets_next_run_at(pool):
     from butlers.core.scheduler import sync_schedules
 
     schedules = [
-        {"name": "daily-report", "cron": "0 9 * * *", "prompt": "Generate daily report"},
-        {"name": "weekly-digest", "cron": "0 8 * * 1", "prompt": "Send weekly digest"},
+        ScheduleSpec(name="daily-report", cron="0 9 * * *", prompt="Generate daily report"),
+        ScheduleSpec(name="weekly-digest", cron="0 8 * * 1", prompt="Send weekly digest"),
     ]
     await sync_schedules(pool, schedules)
 
@@ -164,16 +212,16 @@ async def test_sync_updates_changed_fields_and_disables_removed(pool):
     from butlers.core.scheduler import sync_schedules
 
     base = [
-        {"name": "keep-me", "cron": "0 9 * * *", "prompt": "keep"},
-        {"name": "change-me", "cron": "0 9 * * *", "prompt": "old prompt"},
-        {"name": "drop-me", "cron": "0 10 * * *", "prompt": "drop"},
+        ScheduleSpec(name="keep-me", cron="0 9 * * *", prompt="keep"),
+        ScheduleSpec(name="change-me", cron="0 9 * * *", prompt="old prompt"),
+        ScheduleSpec(name="drop-me", cron="0 10 * * *", prompt="drop"),
     ]
     await sync_schedules(pool, base)
 
     # Update change-me, drop drop-me
     updated = [
-        {"name": "keep-me", "cron": "0 9 * * *", "prompt": "keep"},
-        {"name": "change-me", "cron": "0 10 * * *", "prompt": "new prompt"},
+        ScheduleSpec(name="keep-me", cron="0 9 * * *", prompt="keep"),
+        ScheduleSpec(name="change-me", cron="0 10 * * *", prompt="new prompt"),
     ]
     await sync_schedules(pool, updated)
 
@@ -199,12 +247,9 @@ async def test_sync_removal_does_not_re_disable_a_concurrently_recovered_default
     await sync_schedules(
         pool,
         [
-            {
-                "name": name,
-                "cron": "0 3 * * *",
-                "dispatch_mode": "job",
-                "job_name": "memory_consolidation",
-            }
+            ScheduleSpec(
+                name=name, cron="0 3 * * *", dispatch_mode="job", job_name="memory_consolidation"
+            )
         ],
     )
 
@@ -221,7 +266,7 @@ async def test_sync_removal_does_not_re_disable_a_concurrently_recovered_default
             cron="0 3 * * *",
             job_name="memory_consolidation",
             owner_butler="legacy-general",
-            owner_schema="public",
+            owner_schema="general",
         )
 
     await sync_schedules(
@@ -250,7 +295,7 @@ async def test_sync_removal_does_not_re_disable_a_concurrently_recovered_default
         cron="0 3 * * *",
         job_name="memory_consolidation",
         owner_butler="legacy-general",
-        owner_schema="public",
+        owner_schema="general",
     )
     assert (
         await pool.fetchval(
@@ -287,12 +332,9 @@ async def test_legacy_lifecycle_recovery_derives_public_audit_identity(
     await sync_schedules(
         pool,
         [
-            {
-                "name": name,
-                "cron": "0 */6 * * *",
-                "dispatch_mode": "job",
-                "job_name": "memory_consolidation",
-            }
+            ScheduleSpec(
+                name=name, cron="0 */6 * * *", dispatch_mode="job", job_name="memory_consolidation"
+            )
         ],
     )
 
@@ -356,7 +398,7 @@ async def test_legacy_lifecycle_recovery_derives_public_audit_identity(
             "butlers.core.runtime_config.RuntimeConfigAccessor",
             return_value=runtime_config_accessor,
         ),
-        patch("butlers.lifecycle.get_adapter", return_value=lambda **kwargs: runtime),
+        patch("butlers.lifecycle.build_runtime_adapter", return_value=runtime),
         patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         patch("butlers.lifecycle.Spawner", return_value=spawner),
         patch("butlers.lifecycle.FastMCP", return_value=MagicMock()),
@@ -423,14 +465,14 @@ async def test_module_default_recovery_reclaims_only_disabled_toml_orphans_and_a
     await sync_schedules(
         pool,
         [
-            {
-                "name": name,
-                "cron": "17 4 * * *",
-                "dispatch_mode": "job",
-                "job_name": "memory_consolidation",
-                "job_args": {"batch_size": 17},
-                "complexity": "reasoning",
-            }
+            ScheduleSpec(
+                name=name,
+                cron="17 4 * * *",
+                dispatch_mode="job",
+                job_name="memory_consolidation",
+                job_args={"batch_size": 17},
+                complexity="reasoning",
+            )
         ],
     )
     await sync_schedules(pool, [])
@@ -518,12 +560,9 @@ async def test_module_default_recovery_rolls_back_when_audit_append_fails(pool, 
     await sync_schedules(
         pool,
         [
-            {
-                "name": name,
-                "cron": "15 3 * * *",
-                "dispatch_mode": "job",
-                "job_name": "memory_decay_sweep",
-            }
+            ScheduleSpec(
+                name=name, cron="15 3 * * *", dispatch_mode="job", job_name="memory_decay_sweep"
+            )
         ],
     )
     await sync_schedules(pool, [])
@@ -531,7 +570,7 @@ async def test_module_default_recovery_rolls_back_when_audit_append_fails(pool, 
     async def _audit_failure(*args, **kwargs):
         raise RuntimeError("audit unavailable")
 
-    monkeypatch.setattr("butlers.api.routers.audit.append", _audit_failure)
+    monkeypatch.setattr("butlers.core.audit.append", _audit_failure)
     with pytest.raises(RuntimeError, match="audit unavailable"):
         await ensure_module_default_schedule(
             pool,
@@ -569,12 +608,12 @@ async def test_module_default_recovery_concurrently_commits_one_transition_and_a
     await sync_schedules(
         pool,
         [
-            {
-                "name": name,
-                "cron": "30 3 * * *",
-                "dispatch_mode": "job",
-                "job_name": "memory_purge_superseded",
-            }
+            ScheduleSpec(
+                name=name,
+                cron="30 3 * * *",
+                dispatch_mode="job",
+                job_name="memory_purge_superseded",
+            )
         ],
     )
     await sync_schedules(pool, [])
@@ -624,7 +663,7 @@ async def test_module_default_recovery_attributes_same_name_across_butler_schema
         for schema in schemas:
             await admin.execute(f"CREATE SCHEMA {schema}")
             await admin.execute(
-                f"CREATE TABLE {schema}.scheduled_tasks (LIKE public.scheduled_tasks INCLUDING ALL)"
+                f"CREATE TABLE {schema}.scheduled_tasks (LIKE general.scheduled_tasks INCLUDING ALL)"
             )
             pools.append(
                 await asyncpg.create_pool(
@@ -645,12 +684,12 @@ async def test_module_default_recovery_attributes_same_name_across_butler_schema
             await sync_schedules(
                 pool,
                 [
-                    {
-                        "name": name,
-                        "cron": "45 3 * * *",
-                        "dispatch_mode": "job",
-                        "job_name": "memory_consolidation",
-                    }
+                    ScheduleSpec(
+                        name=name,
+                        cron="45 3 * * *",
+                        dispatch_mode="job",
+                        job_name="memory_consolidation",
+                    )
                 ],
             )
             await sync_schedules(pool, [])
@@ -711,18 +750,15 @@ async def test_module_default_recovery_reclaims_episode_cleanup_but_fences_db_ow
     await sync_schedules(
         pool,
         [
-            {
-                "name": active_name,
-                "cron": "5 1 * * *",
-                "dispatch_mode": "job",
-                "job_name": "memory_decay_sweep",
-            },
-            {
-                "name": cleanup_name,
-                "cron": "5 2 * * *",
-                "dispatch_mode": "job",
-                "job_name": cleanup_name,
-            },
+            ScheduleSpec(
+                name=active_name,
+                cron="5 1 * * *",
+                dispatch_mode="job",
+                job_name="memory_decay_sweep",
+            ),
+            ScheduleSpec(
+                name=cleanup_name, cron="5 2 * * *", dispatch_mode="job", job_name=cleanup_name
+            ),
         ],
     )
     await ensure_module_default_schedule(
@@ -741,12 +777,12 @@ async def test_module_default_recovery_reclaims_episode_cleanup_but_fences_db_ow
     await sync_schedules(
         pool,
         [
-            {
-                "name": active_name,
-                "cron": "5 1 * * *",
-                "dispatch_mode": "job",
-                "job_name": "memory_decay_sweep",
-            }
+            ScheduleSpec(
+                name=active_name,
+                cron="5 1 * * *",
+                dispatch_mode="job",
+                job_name="memory_decay_sweep",
+            )
         ],
     )
 
@@ -810,7 +846,7 @@ async def test_sync_default_timezone_pins_cron_to_local(pool):
     """sync_schedules computes next_run_at by evaluating cron in default_timezone."""
     from butlers.core.scheduler import sync_schedules
 
-    schedules = [{"name": "day-close", "cron": "5 1 * * *", "prompt": "summary; call notify()"}]
+    schedules = [ScheduleSpec(name="day-close", cron="5 1 * * *", prompt="summary; call notify()")]
     await sync_schedules(pool, schedules, default_timezone="Asia/Singapore")
 
     next_run_at = await pool.fetchval(
@@ -829,7 +865,7 @@ async def test_tick_advance_honors_row_timezone(pool):
 
     await sync_schedules(
         pool,
-        [{"name": "tz-task", "cron": "5 1 * * *", "prompt": "do it; call notify()"}],
+        [ScheduleSpec(name="tz-task", cron="5 1 * * *", prompt="do it; call notify()")],
     )
     # Make it due now and pin an explicit timezone on the row.
     await pool.execute(
@@ -860,7 +896,7 @@ async def test_tick_advance_follows_owner_default_for_utc_rows(pool):
 
     await sync_schedules(
         pool,
-        [{"name": "owner-default", "cron": "5 1 * * *", "prompt": "summary; call notify()"}],
+        [ScheduleSpec(name="owner-default", cron="5 1 * * *", prompt="summary; call notify()")],
     )
     # TOML insert leaves the DEFAULT 'UTC' on the column; make it due now.
     stored_tz = await pool.fetchval(
@@ -916,6 +952,72 @@ async def test_tick_dispatch_prompt_and_job(pool):
     call = dispatch2.calls[0]
     assert call["job_name"] == "eligibility_sweep" and call["job_args"] == {"batch_size": 25}
     assert "prompt" not in call and "complexity" not in call
+
+
+async def _exhaust_every_catalog_account(pool, reset_at: datetime) -> None:
+    """Mark every provider account the catalog draws on exhausted until ``reset_at``."""
+    await pool.execute(
+        """
+        INSERT INTO public.provider_allowance_states (account_key, state, reset_at, reset_source)
+        SELECT DISTINCT COALESCE(allowance_account, runtime_type), 'exhausted', $1::timestamptz, 'parsed'
+        FROM public.model_catalog
+        ON CONFLICT (account_key) DO UPDATE SET state = 'exhausted', reset_at = EXCLUDED.reset_at
+        """,
+        reset_at,
+    )
+
+
+@_asyncio_session
+async def test_tick_defers_prompt_task_to_allowance_reset_without_dispatching(pool):
+    """With every fit account exhausted, a due prompt task is deferred, never dispatched."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    reset_at = datetime.now(UTC) + timedelta(hours=2)
+    task_id = await schedule_create(pool, "allowance-task", "*/1 * * * *", "run this")
+    await pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", task_id, _past()
+    )
+    job_id = await schedule_create(
+        pool, "allowance-job", "*/1 * * * *", dispatch_mode="job", job_name="eligibility_sweep"
+    )
+    await pool.execute("UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", job_id, _past())
+    await _exhaust_every_catalog_account(pool, reset_at)
+    try:
+        dispatch = _Dispatch()
+        count = await tick(pool, dispatch, butler_name="general")
+        again = await tick(pool, dispatch, butler_name="general")
+    finally:
+        await pool.execute("TRUNCATE public.provider_allowance_states")
+
+    # Deterministic job-mode work does not use a model, so it still runs.
+    assert [c.get("job_name") for c in dispatch.calls] == ["eligibility_sweep"]
+    assert count == 1 and again == 0
+    row = await pool.fetchrow(
+        "SELECT next_run_at, last_result FROM scheduled_tasks WHERE id = $1", task_id
+    )
+    assert row["next_run_at"] == reset_at
+    assert row["last_result"]["outcome"] == "skipped_allowance"
+    assert row["last_result"]["deferred_until"] == reset_at.isoformat()
+
+
+@_asyncio_session
+async def test_tick_dispatches_normally_once_allowance_reset_passed(pool):
+    """An exhausted account whose reset is already past no longer defers anything."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    task_id = await schedule_create(pool, "allowance-lapsed", "*/1 * * * *", "run this")
+    await pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", task_id, _past()
+    )
+    await _exhaust_every_catalog_account(pool, datetime.now(UTC) - timedelta(minutes=1))
+    try:
+        dispatch = _Dispatch()
+        count = await tick(pool, dispatch, butler_name="general")
+    finally:
+        await pool.execute("TRUNCATE public.provider_allowance_states")
+
+    assert count == 1
+    assert dispatch.calls[0]["prompt"] == "run this"
 
 
 @_asyncio_session
@@ -1109,7 +1211,7 @@ async def test_tick_skips_disabled_continues_on_failure_and_timestamps(pool):
 
 @_asyncio_session
 async def test_tick_tolerates_legacy_schema_without_until_at(pool):
-    """tick() does not crash on long-lived scheduled_tasks tables missing until_at."""
+    """An incompatible migrated schema is visible; no legacy projection hides it."""
     from butlers.core.scheduler import tick
 
     async with pool.acquire() as conn:
@@ -1122,9 +1224,8 @@ async def test_tick_tolerates_legacy_schema_without_until_at(pool):
             )
             await conn.execute("ALTER TABLE scheduled_tasks DROP COLUMN IF EXISTS until_at")
 
-            count = await tick(conn, _Dispatch())
-
-            assert count == 0
+            with pytest.raises(asyncpg.UndefinedColumnError):
+                await tick(conn, _Dispatch())
         finally:
             await tx.rollback()
 
@@ -1170,6 +1271,25 @@ class _FakeEligibilityPool:
             "eligibility_updated_at": datetime.now(UTC),
             "agent_type": "butler",
         }
+
+
+@_asyncio_session
+async def test_receiver_scheduler_gate_uses_policy_when_legacy_heartbeat_expired(monkeypatch):
+    from butlers.core.scheduler import _butler_dispatch_gated
+
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+    eligibility_pool = AsyncMock()
+    eligibility_pool.fetchrow.return_value = {"policy_state": "active"}
+    with patch(
+        "butlers.tools.switchboard.registry.registry.resolve_routing_target",
+        new_callable=AsyncMock,
+    ) as legacy:
+        assert await _butler_dispatch_gated(eligibility_pool, "health") is None
+    legacy.assert_not_awaited()
+    assert "butler_registry_control_plane" in eligibility_pool.fetchrow.await_args.args[0]
+
+    eligibility_pool.fetchrow.return_value = {"policy_state": "quarantined"}
+    assert "administrative policy" in await _butler_dispatch_gated(eligibility_pool, "health")
 
 
 @_asyncio_session
@@ -1239,6 +1359,196 @@ async def test_tick_dispatches_when_no_eligibility_pool(pool):
 
 
 # ---------------------------------------------------------------------------
+# tick — QA local-schedule policy (REQ-staffer-qa-006/009)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def qa_policy_db_url(postgres_container) -> str:
+    """Core plus Switchboard (sw_038 producer) in the deployed schema shape."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "switchboard"],
+        schemas={"core": "qa", "switchboard": "switchboard"},
+    )
+
+
+@pytest.fixture
+async def qa_pools(qa_policy_db_url: str):
+    """Yield ``(owner, qa)``: the migration login and QA's runtime-role pool."""
+
+    async def as_qa_role(conn: asyncpg.Connection) -> None:
+        # Mirrors butlers.db.Database._setup_connection for the QA daemon.
+        await conn.execute('SET ROLE "butler_qa_rw"')
+
+    owner = await asyncpg.create_pool(
+        qa_policy_db_url,
+        min_size=1,
+        max_size=2,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "qa,public"},
+    )
+    qa = await asyncpg.create_pool(
+        qa_policy_db_url,
+        min_size=1,
+        max_size=2,
+        init=register_jsonb_codec,
+        setup=as_qa_role,
+        server_settings={"search_path": "qa,public"},
+    )
+    await owner.execute("TRUNCATE TABLE scheduled_tasks CASCADE")
+    await owner.execute(
+        "INSERT INTO switchboard.butler_registry (name, endpoint_url) "
+        "VALUES ('qa', 'http://qa:41100/mcp') ON CONFLICT (name) DO NOTHING"
+    )
+    yield owner, qa
+    await qa.close()
+    await owner.close()
+
+
+async def _set_qa_policy(owner: asyncpg.Pool, state: str, provenance: str) -> None:
+    await owner.execute(
+        "UPDATE switchboard.butler_registry_control_plane "
+        "SET policy_state = $1, policy_provenance = $2 WHERE name = 'qa'",
+        state,
+        provenance,
+    )
+
+
+class _PoisonPool:
+    """Any use proves QA consulted the audit/eligibility pool."""
+
+    def __getattr__(self, name: str) -> Any:
+        raise AssertionError(f"QA scheduler touched the eligibility pool via {name!r}")
+
+
+@_asyncio_session
+async def test_qa_policy_read_maps_every_result_to_a_typed_category(qa_pools):
+    """Each valid pair and each failure is one closed, content-blind category."""
+    from butlers.core.scheduler import QaSchedulePolicy, read_qa_schedule_policy
+
+    owner, qa = qa_pools
+    expected = {
+        ("active", "none"): QaSchedulePolicy.ALLOW,
+        ("active", "legacy_ttl"): QaSchedulePolicy.ALLOW,
+        ("active", "operator"): QaSchedulePolicy.ALLOW,
+        ("paused", "legacy_operator"): QaSchedulePolicy.ADMINISTRATIVE_HOLD,
+        ("paused", "operator"): QaSchedulePolicy.ADMINISTRATIVE_HOLD,
+        ("quarantined", "legacy_operator"): QaSchedulePolicy.ADMINISTRATIVE_HOLD,
+        ("quarantined", "operator"): QaSchedulePolicy.ADMINISTRATIVE_HOLD,
+        ("review_required", "operator"): QaSchedulePolicy.OWNER_REVIEW_HOLD,
+        ("review_required", "legacy_ambiguous"): QaSchedulePolicy.LEGACY_AMBIGUOUS,
+    }
+    # Each committed change is visible to the next read: nothing is cached.
+    for (state, provenance), category in expected.items():
+        await _set_qa_policy(owner, state, provenance)
+        assert await read_qa_schedule_policy(qa) is category
+
+    await _set_qa_policy(owner, "paused", "none")
+    assert await read_qa_schedule_policy(qa) is QaSchedulePolicy.MALFORMED
+    # The role-less migration login is not QA's runtime role.
+    assert await read_qa_schedule_policy(owner) is QaSchedulePolicy.DENIED
+    assert await read_qa_schedule_policy(None) is QaSchedulePolicy.UNAVAILABLE
+    await owner.execute("DELETE FROM switchboard.butler_registry_control_plane WHERE name = 'qa'")
+    try:
+        assert await read_qa_schedule_policy(qa) is QaSchedulePolicy.MISSING
+    finally:
+        await owner.execute(
+            "INSERT INTO switchboard.butler_registry_control_plane "
+            "(name, policy_state, policy_provenance) VALUES ('qa', 'active', 'none')"
+        )
+
+    leaky = AsyncMock()
+    leaky.fetch.side_effect = asyncpg.UndefinedFunctionError("qa_local_schedule_policy secret")
+    assert await read_qa_schedule_policy(leaky) is QaSchedulePolicy.UNAVAILABLE
+    leaky.fetch.side_effect = OSError("connection refused to db.internal:5432")
+    assert await read_qa_schedule_policy(leaky) is QaSchedulePolicy.UNAVAILABLE
+    leaky.fetch.side_effect = None
+    leaky.fetch.return_value = [{"policy_state": "active"}]
+    assert await read_qa_schedule_policy(leaky) is QaSchedulePolicy.MALFORMED
+    leaky.fetch.side_effect = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await read_qa_schedule_policy(leaky)
+
+
+@_asyncio_session
+@pytest.mark.parametrize("cutover_flag", ["0", "1"])
+async def test_qa_tick_rechecks_own_policy_before_each_dispatch(
+    qa_pools, monkeypatch, caplog, cutover_flag
+):
+    """TTL staleness admits; a mid-tick pause blocks later work, which resumes once."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", cutover_flag)
+    owner, qa = qa_pools
+    await _set_qa_policy(owner, "active", "legacy_ttl")
+    today = datetime.now(UTC).date()
+    for name, days in (("qa-deadline-1", 5), ("qa-deadline-2", 6)):
+        await schedule_create(
+            owner,
+            name,
+            "0 9 * * *",
+            name,
+            task_type="deadline",
+            target_date=today + timedelta(days=days),
+            lead_time_days=10,
+            alert_thresholds=[{"days_before": 7, "severity": "warning"}],
+        )
+    # Yearly cron: after the forced-due dispatch, next_run_at must not fall due again
+    # inside the test window, or the final tick would depend on the wall-clock minute.
+    cron_id = await schedule_create(owner, "qa-patrol", "0 0 1 1 *", "qa-patrol")
+    await owner.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", cron_id, _past()
+    )
+
+    first = _Dispatch()
+
+    async def dispatch(**kwargs: Any) -> Any:
+        # Barrier: the owner's pause commits while the first job is running.
+        result = await first(**kwargs)
+        if len(first.calls) == 1:
+            await _set_qa_policy(owner, "paused", "operator")
+        return result
+
+    poison = _PoisonPool()
+    with (
+        patch(
+            "butlers.tools.switchboard.registry.registry.resolve_routing_target",
+            side_effect=AssertionError("legacy resolver used"),
+        ),
+        caplog.at_level(logging.INFO, logger="butlers.core.scheduler"),
+    ):
+        assert await tick(qa, dispatch, butler_name="qa", eligibility_pool=poison) == 1
+        assert [c["trigger_source"] for c in first.calls] == ["deadline:qa-deadline-1"]
+        refusals = [r.getMessage() for r in caplog.records if "stopping" in r.getMessage()]
+        assert refusals and all(msg.endswith("administrative_hold") for msg in refusals)
+        assert "paused" not in caplog.text and "operator" not in caplog.text
+
+        rows = {
+            r["name"]: r
+            for r in await owner.fetch(
+                "SELECT name, next_run_at, last_run_at, fired_thresholds FROM scheduled_tasks"
+            )
+        }
+        assert rows["qa-deadline-1"]["fired_thresholds"]  # the launched job is untouched
+        assert rows["qa-deadline-2"]["fired_thresholds"] == []
+        assert rows["qa-patrol"]["last_run_at"] is None
+        assert rows["qa-patrol"]["next_run_at"] <= datetime.now(UTC)  # still due
+
+        await _set_qa_policy(owner, "active", "operator")
+        resumed = _Dispatch()
+        assert await tick(qa, resumed, butler_name="qa", eligibility_pool=poison) == 2
+        assert sorted(c["trigger_source"] for c in resumed.calls) == [
+            "deadline:qa-deadline-2",
+            "schedule:qa-patrol",
+        ]
+        again = _Dispatch()
+        assert await tick(qa, again, butler_name="qa", eligibility_pool=poison) == 0
+        assert again.calls == []
+
+
+# ---------------------------------------------------------------------------
 # schedule_create / update / delete
 # ---------------------------------------------------------------------------
 
@@ -1284,7 +1594,7 @@ async def test_schedule_create_and_list(pool):
 
     # Duplicate name raises
     await schedule_create(pool, "dup-name", "0 9 * * *", "first")
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError, match="already exists"):
         await schedule_create(pool, "dup-name", "0 10 * * *", "second")
 
 
@@ -1340,6 +1650,49 @@ async def test_schedule_update_and_delete(pool):
 
     await schedule_delete(pool, task_id)
     assert await pool.fetchrow("SELECT id FROM scheduled_tasks WHERE id = $1", task_id) is None
+
+
+@_asyncio_session
+async def test_schedule_toggle_requested_state_is_idempotent_under_concurrency(pool):
+    """Concurrent retries converge on one requested state, never double-flip."""
+    from butlers.core.scheduler import schedule_create, schedule_toggle
+
+    task_id = await schedule_create(pool, "toggle-concurrent", "0 9 * * *", "toggle me")
+
+    first, second = await asyncio.gather(
+        schedule_toggle(pool, task_id, enabled=False, stagger_key="test-butler"),
+        schedule_toggle(pool, task_id, enabled=False, stagger_key="test-butler"),
+    )
+
+    assert {first["status"], second["status"]} == {"updated", "unchanged"}
+    assert first["observed_enabled"] is False
+    assert second["observed_enabled"] is False
+    assert (
+        await pool.fetchval("SELECT enabled FROM scheduled_tasks WHERE id = $1", task_id) is False
+    )
+
+    retry = await schedule_toggle(pool, task_id, enabled=False, stagger_key="test-butler")
+    assert retry["status"] == "unchanged"
+    assert retry["outcome"] == "already_requested"
+
+
+@_asyncio_session
+async def test_schedule_toggle_reenable_recomputes_next_run(pool):
+    """Enabling a DB-owned row stores a fresh next occurrence."""
+    from butlers.core.scheduler import schedule_create, schedule_toggle
+
+    task_id = await schedule_create(pool, "toggle-reenable", "0 9 * * *", "toggle me")
+    await schedule_toggle(pool, task_id, enabled=False, stagger_key="test-butler")
+
+    result = await schedule_toggle(pool, task_id, enabled=True, stagger_key="test-butler")
+
+    assert result["status"] == "updated"
+    assert result["observed_enabled"] is True
+    assert result["next_run_at"] is not None
+    assert (
+        await pool.fetchval("SELECT next_run_at FROM scheduled_tasks WHERE id = $1", task_id)
+        is not None
+    )
 
 
 @_asyncio_session
@@ -1556,19 +1909,17 @@ async def test_sync_schedules_notify_validation(pool, caplog) -> None:
     from butlers.core.scheduler import sync_schedules
 
     schedules = [
-        {
-            "name": "good-prompt",
-            "cron": "0 8 * * *",
-            "dispatch_mode": "prompt",
-            "prompt": "Do something and notify(channel='telegram').",
-        },
-        {
-            "name": "bad-prompt",
-            "cron": "0 9 * * *",
-            "dispatch_mode": "prompt",
-            "prompt": "Do something quietly without alerting anyone.",
-        },
-        {"name": "job-task", "cron": "0 10 * * *", "dispatch_mode": "job", "job_name": "some-job"},
+        ScheduleSpec(
+            name="good-prompt",
+            cron="0 8 * * *",
+            prompt="Do something and notify(channel='telegram').",
+        ),
+        ScheduleSpec(
+            name="bad-prompt",
+            cron="0 9 * * *",
+            prompt="Do something quietly without alerting anyone.",
+        ),
+        ScheduleSpec(name="job-task", cron="0 10 * * *", dispatch_mode="job", job_name="some-job"),
     ]
     with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
         await sync_schedules(pool, schedules)

@@ -8,8 +8,7 @@ The Telegram module provides MCP tools for sending and replying to Telegram mess
 
 ### Requirement: Telegram Send/Reply Tools
 
-The implementation SHALL provide the behavior described by this requirement.
-The module registers MCP tools for send and reply operations.
+The module SHALL register MCP tools for send and reply operations.
 
 #### Scenario: Tool registration
 
@@ -18,11 +17,11 @@ The module registers MCP tools for send and reply operations.
   - `telegram_send_message` (send a message to a chat)
   - `telegram_reply_to_message` (reply to a specific message in a chat)
   - `telegram_react_to_message` (set an emoji reaction on a specific message via `chat_id`, `message_id`, `emoji`)
+  - `telegram_edit_message_text` (edit the text of a message the bot already sent via `chat_id`, `message_id`, `text`)
 
 ### Requirement: Output-Only Module Design
 
-The implementation SHALL provide the behavior described by this requirement.
-Ingestion is handled by the `TelegramBotConnector` via the canonical ingest API. The module does not register input tools.
+Ingestion SHALL be handled by the `TelegramBotConnector` via the canonical ingest API. The module does not register input tools.
 
 #### Scenario: No input tools registered
 
@@ -32,8 +31,7 @@ Ingestion is handled by the `TelegramBotConnector` via the canonical ingest API.
 
 ### Requirement: TelegramConfig with Credential Scoping
 
-The implementation SHALL provide the behavior described by this requirement.
-Configuration supports independent enable/disable per identity scope.
+Configuration SHALL support independent enable/disable per identity scope.
 
 #### Scenario: Config structure
 
@@ -49,8 +47,7 @@ Configuration supports independent enable/disable per identity scope.
 
 ### Requirement: Credential Resolution
 
-The implementation SHALL provide the behavior described by this requirement.
-Bot tokens are resolved at startup via CredentialStore (DB-first, then env) and cached.
+Bot tokens SHALL be resolved at startup via CredentialStore (DB-first, then env) and cached.
 
 #### Scenario: Startup credential resolution
 
@@ -87,8 +84,7 @@ The module uses httpx to call Telegram Bot API endpoints.
 
 ### Requirement: Lifecycle Reaction Emoji Support
 
-The implementation SHALL provide the behavior described by this requirement.
-The module supports setting Telegram reactions for ingest pipeline lifecycle events.
+The module SHALL support setting Telegram reactions for ingest pipeline lifecycle events.
 
 #### Scenario: React for ingest events
 
@@ -120,3 +116,34 @@ The Telegram module SHALL support sending a message with an inline keyboard so t
 - **WHEN** the owner taps Approve on the inline keyboard
 - **THEN** the corresponding pending action transitions to `approved` and executes via the standard approved-action executor
 - **AND** the originating message is updated to reflect the resolved state
+
+### Requirement: Edit Message Text Tool
+`telegram_edit_message_text` SHALL call Telegram `editMessageText` with the supplied `chat_id` and `message_id`, rendering `text` through the same Markdown-to-HTML conversion as sends (so `~~text~~` renders struck through). It SHALL be permission-gated by the same `notify` capability as sends. A Telegram HTTP 400 (message too old, unchanged, or not editable) SHALL be returned as `{"edited": false, "error_code": 400, "description": <Telegram description>}` and SHALL NOT raise; success returns `{"edited": true, ...}`; every other failure SHALL raise so the caller may retry.
+
+#### Scenario: Edit uses the stored message id
+- **WHEN** the tool is called with a stored `chat_id` and `message_id`
+- **THEN** one `editMessageText` request is sent carrying exactly those identifiers and the converted text
+
+#### Scenario: A 400 falls back instead of failing
+- **WHEN** Telegram answers HTTP 400
+- **THEN** the tool returns `edited=false` with `error_code=400` so the caller can fold the correction into a later digest
+
+### Requirement: Telegram Effect Permission Availability
+
+Existing `notify`-guarded send, reply, edit-text and inline-keyboard-removal paths SHALL read valid permission state before Telegram HTTP traffic. This requirement refines Telegram Send/Reply Tools and Edit Message Text Tool without changing recipient approval rules or introducing gates on unrelated operations.
+
+#### Scenario: Readable permission state
+- **WHEN** the lookup succeeds with no permission row or `granted=true`
+- **THEN** the operation MAY proceed through existing independent approvals
+- **AND** an explicit `granted=false` row SHALL continue to refuse the operation
+
+#### Scenario: Unavailable permission state
+- **WHEN** the permission pool is missing, the lookup fails, or its row is malformed
+- **THEN** the guarded operation SHALL raise a typed transient permission-unavailable error before HTTP traffic
+- **AND** the error and gate logs/audit category SHALL exclude recipient, message content, credential URLs, row reasons and raw database exception text
+- **AND** fresh retries and existing deferred native callbacks SHALL re-read permission state rather than reuse a cached grant
+
+#### Scenario: Messenger refusal is proven not attempted
+- **WHEN** a Messenger native Telegram command is refused because permission state is unavailable
+- **THEN** it SHALL report a retryable unavailable error with existing `not_attempted` pre-transport policy evidence
+- **AND** provider effects with uncertain delivery SHALL retain their existing terminal no-replay semantics

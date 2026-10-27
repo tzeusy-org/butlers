@@ -1,3 +1,4 @@
+import { mockJson } from "./fixtures/api-responses";
 /**
  * Floating chat widget e2e happy path [bu-p6ey8.3].
  *
@@ -22,9 +23,18 @@
  * Prerequisites:
  *   npm run test:e2e:install  (once)
  *   npm run build && npm run preview  (or Playwright starts preview automatically)
+ *
+ * Viewport: forced below the docked chat rail's >= 1280px xl threshold
+ * (bu-0ynlk.11 — RootLayout.tsx's CHAT_DOCK_MEDIA_QUERY) so the floating
+ * widget under test here stays the active chat surface. The Desktop Chrome
+ * device's default 1280x720 viewport sits exactly at that threshold, which
+ * makes ChatDock (not FloatingChatWidget) the mounted surface and this
+ * spec's `floating-chat-trigger` lookups time out.
  */
 
 import { test, expect } from "@playwright/test";
+
+const BELOW_DOCK_BREAKPOINT_VIEWPORT = { width: 1024, height: 768 };
 
 const CONVERSATION_ID = "11111111-1111-1111-1111-111111111111";
 const USER_TEXT = "Alice is child-of Bob — please record that.";
@@ -42,7 +52,7 @@ test("floating chat widget: open, send, see persisted reply", async ({ page }) =
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({ data: [], meta: { total: 0, limit: 20, offset: 0 } }),
+          body: mockJson("listConversations", { data: [], meta: { total: 0, limit: 20, offset: 0 } }),
         });
         return;
       }
@@ -85,7 +95,7 @@ test("floating chat widget: open, send, see persisted reply", async ({ page }) =
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({
+        body: mockJson("getConversationMessages", {
           data: [
             {
               id: "msg-1",
@@ -124,6 +134,7 @@ test("floating chat widget: open, send, see persisted reply", async ({ page }) =
     },
   );
 
+  await page.setViewportSize(BELOW_DOCK_BREAKPOINT_VIEWPORT);
   await page.goto("/", { timeout: 10_000 });
 
   await page.getByTestId("floating-chat-trigger").click();
@@ -174,7 +185,7 @@ test("floating chat widget: badges the trigger for a reply that arrived while cl
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({
+        body: mockJson("listConversations", {
           data: [
             {
               id: EXISTING_CONVERSATION_ID,
@@ -202,11 +213,12 @@ test("floating chat widget: badges the trigger for a reply that arrived while cl
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ data: [], meta: { total: 0, limit: 50, offset: 0 } }),
+        body: mockJson("getConversationMessages", { data: [], meta: { total: 0, limit: 50, offset: 0 } }),
       });
     },
   );
 
+  await page.setViewportSize(BELOW_DOCK_BREAKPOINT_VIEWPORT);
   await page.goto("/", { timeout: 10_000 });
 
   await expect(page.getByTestId("chat-widget-unread-badge")).toBeVisible();

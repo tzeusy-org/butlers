@@ -33,6 +33,8 @@
 import { useNavigate } from "react-router";
 
 import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
+import { MemoryPaginationFooter } from "@/components/memory/MemoryPaginationFooter";
+import { PoolsDegradedNote } from "@/components/memory/PoolsDegradedNote";
 import { Mono } from "@/components/ui/Mono";
 import { Pill } from "@/components/ui/Pill";
 import { RowLink } from "@/components/ui/RowLink";
@@ -135,6 +137,12 @@ export function DirectiveRow({ rule, index }: { rule: MemoryRule; index: number 
   // a 2px --red left sliver spanning the row. No background, no icon.
   const isAntiPattern = rule.maturity === "anti_pattern";
 
+  // Retired (bu-6t8ix.3, bu-rjdihn): a retired rule stays in this register
+  // (unlike forgotten, which the list excludes by default) but must read as
+  // decommissioned, not live — dim the row and label it, mirroring the
+  // SpendPage retired-schedule treatment rather than adding a new chip/icon.
+  const isRetired = rule.retired_at != null;
+
   // The whole row is the hit target → /memory/rules/:id. Kept on RowLink's
   // hasNestedInteractive (`<div role="link">`) branch — matching its sibling
   // FactsRegister row, which MUST use it (nested entity anchor) — so both
@@ -154,12 +162,13 @@ export function DirectiveRow({ rule, index }: { rule: MemoryRule; index: number 
         "grid cursor-pointer grid-cols-[44px_1fr_auto] items-baseline gap-x-3",
         // Generous 18px vertical padding — the most on the page (rules are read).
         "border-b border-[var(--border-soft)] px-1 py-[18px]",
-        "transition-colors hover:bg-[var(--bg-elev,transparent)]",
+        "transition-colors hover:bg-[var(--bg-elev)]",
         // 2px --red left sliver for anti_pattern rules; transparent otherwise so
         // the grid geometry never shifts between row kinds.
         "border-l-2",
         isAntiPattern ? "border-l-[var(--red)]" : "border-l-transparent",
         "text-fg",
+        isRetired && "opacity-60",
       )}
     >
       {/* §NN gutter — mono 11px muted, zero-padded */}
@@ -171,6 +180,14 @@ export function DirectiveRow({ rule, index }: { rule: MemoryRule; index: number 
       <div className="flex min-w-0 flex-col gap-1.5">
         <span className="line-clamp-2 text-[14px] leading-snug">
           {rule.content}
+          {isRetired && (
+            <span
+              className="ml-1.5 font-serif italic text-[11px] text-[var(--mfg)]"
+              data-testid={`rule-retired-${rule.id}`}
+            >
+              retired
+            </span>
+          )}
         </span>
         <TallyLine rule={rule} />
       </div>
@@ -208,55 +225,6 @@ function MaturityPills({
 }
 
 // ---------------------------------------------------------------------------
-// Pagination footer
-// ---------------------------------------------------------------------------
-
-/** `1–50 of 312` left, prev/next pills right. Mono dim, no numbered pages. */
-function PaginationFooter({
-  offset,
-  count,
-  total,
-  hasMore,
-  onOffset,
-}: {
-  offset: number;
-  count: number;
-  total: number;
-  hasMore: boolean;
-  onOffset: (next: number) => void;
-}) {
-  if (total === 0) return null;
-
-  const from = offset + 1;
-  const to = offset + count;
-  const atStart = offset === 0;
-
-  return (
-    <div className="flex items-baseline justify-between pt-1">
-      <Mono muted>
-        {formatNumeral(from)}–{formatNumeral(to)} of {formatNumeral(total)}
-      </Mono>
-      <div className="flex gap-1.5">
-        <Pill
-          selected={false}
-          disabled={atStart}
-          onClick={() => onOffset(Math.max(0, offset - RULES_PAGE_SIZE))}
-        >
-          prev
-        </Pill>
-        <Pill
-          selected={false}
-          disabled={!hasMore}
-          onClick={() => onOffset(offset + RULES_PAGE_SIZE)}
-        >
-          next
-        </Pill>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // RulesRegister
 // ---------------------------------------------------------------------------
 
@@ -281,7 +249,8 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
   // `all` is the unfiltered view; the API takes a concrete maturity string.
   const maturityFilter = maturity === "all" ? undefined : maturity;
 
-  const { data: response, isError, refetch } = useRules({
+  const { data: response, isError, isPending, refetch } = useRules({
+    ...(state.held === true ? { held: true } : {}),
     maturity: maturityFilter,
     scope: butlerScope,
     offset,
@@ -293,6 +262,7 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
   const rules = response?.data ?? [];
   const total = response?.meta?.total ?? 0;
   const hasMore = response?.meta?.has_more ?? false;
+  const poolsFailed = response?.meta?.pools_failed ?? [];
 
   // anti_pattern pinned top, then maturity rank, then confidence desc.
   const ordered = orderRules(rules);
@@ -305,6 +275,19 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
   return (
     <div className="flex flex-col gap-4">
       <MaturityPills maturity={maturity} onSelect={onSelectMaturity} />
+      {state.held === true && <div className="flex items-center gap-3">
+        <Voice>Guidance waiting for you</Voice>
+        <Pill selected={false} onClick={() => setState({ held: undefined, offset: 0 })}>
+          Show all guidance
+        </Pill>
+      </div>}
+
+      <PoolsDegradedNote
+        label="Rules"
+        poolsFailed={poolsFailed}
+        onRetry={() => void refetch()}
+        testId="memory-rules-degraded"
+      />
 
       {isError && ordered.length === 0 ? (
         // An errored fetch must not render "No standing orders yet." — a down
@@ -314,12 +297,17 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
           onRetry={() => void refetch()}
           testId="memory-rules-error"
         />
-      ) : ordered.length === 0 ? (
-        <Voice variant="italic" className="py-6">
-          {maturity === "all"
-            ? "No standing orders yet."
-            : "Nothing of this maturity."}
-        </Voice>
+      ) : ordered.length === 0 && poolsFailed.length === 0 ? (
+        // The calm empty copy is a verdict: only a completed response may say it.
+        !isPending && (
+          <Voice variant="italic" className="py-6">
+            {state.held === true
+              ? "No guidance waiting for you."
+              : maturity === "all"
+                ? "No standing orders yet."
+                : "Nothing of this maturity."}
+          </Voice>
+        )
       ) : (
         <div className="flex flex-col">
           {ordered.map((rule, i) => (
@@ -328,11 +316,13 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
         </div>
       )}
 
-      <PaginationFooter
+      <MemoryPaginationFooter
         offset={offset}
         count={ordered.length}
         total={total}
         hasMore={hasMore}
+        pageSize={RULES_PAGE_SIZE}
+        partial={poolsFailed.length > 0}
         onOffset={(next) => setState({ offset: next })}
       />
     </div>

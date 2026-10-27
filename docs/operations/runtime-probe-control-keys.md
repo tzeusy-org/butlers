@@ -227,8 +227,33 @@ dependency cycle.
 
 ## Activation
 
-Both documents are mounted by the canonical Compose stack, and the two sides are
-mounted differently on purpose.
+The live `butlers-dev` fleet uses the Kubernetes chart. The private signer and
+public verifier keyring remain separate process inputs in both deployment paths.
+
+### Kubernetes dev mounts
+
+The chart uses Secret `butlers-runtime-probe-control`, owned on dev by an
+ExternalSecret from BWS (`values.dev.yaml`: `localSecrets.source: bws`). It
+projects only the named file keys into each pod:
+
+| Deployment | Signing key | Verifier keyring |
+| --- | --- | --- |
+| `dashboard-api` | read-only Secret file, mode `0400` | read-only Secret file |
+| `butlers-up` | never mounted | read-only Secret file |
+| other runtime Deployments | never mounted | never mounted |
+
+The signer is `/run/secrets/runtime_probe_control_signing_key`; the verifier is
+`/run/secrets/runtime_probe_control_verifiers`. Both are `subPath` mounts, so a
+Secret refresh alone does not update a running process's snapshot. See
+[Kubernetes Deployment](kubernetes-deployment.md#deploy) for Secret ownership,
+provisioning and rotation. Host `*_FILE` variables do not reconfigure running
+pods. Although Kubernetes packages both documents in one Secret, `butlers-up`'s
+volume projects only the verifier key; it receives no private signer file.
+Mode `0400` does not isolate the key from a child running under the same identity.
+
+### Legacy Compose mounts
+
+For retained Compose deployments, the two sides are mounted differently on purpose.
 
 | Service | Signing key | Verifier keyring |
 | --- | --- | --- |
@@ -261,7 +286,9 @@ launcher a two-stage procedure for everyone, which this requirement forbids.
 
 ### Startup order
 
-The stack starts `migrations` → `dashboard-api` (healthy) → `oauth-gate`
+On Kubernetes, migrations run in `dashboard-api`'s initContainer, and
+`butlers-up`'s initContainers wait for the API health endpoint and OAuth gate.
+For Compose, the stack starts `migrations` → `dashboard-api` (healthy) → `oauth-gate`
 (completed) → `butlers-up`, so the signing side is up before the verifying side
 exists. That order is deliberate and the readiness gate is what makes it safe:
 the signer asks `GET …/readiness?kid=<kid>` and does not sign until Switchboard
@@ -286,12 +313,18 @@ the client signs nothing, even with a perfectly good mount present.
 
 Two rollbacks are safe, and neither reopens a local probe path:
 
-* **Unmount the documents** (clear both `*_FILE` variables and restart).
+* **Return legacy Compose to unprovisioned documents:** clear both `*_FILE`
+  variables and restart so the tracked placeholders replace the documents.
   Signing stops, Switchboard answers `503`, and model verification reports
   entries as *unavailable*. Nothing is written to the catalog.
 * **Revert the cutover commit.** The dashboard-local adapter comes back with
   it, so the guard above blocks signing in that image — the plane closes as the
   code reverts, in that order.
+
+Kubernetes has no host-file placeholder fallback: changing `*_FILE` variables
+has no effect on pods, while deleting the required Secret or file keys prevents
+pod startup. Use the release's documented Secret ownership and rotation path;
+do not treat a missing Secret as the Compose unprovisioned state.
 
 What is *not* safe is reverting the sandbox work while leaving the signer
 mounted; the guard exists precisely to make that combination inert.

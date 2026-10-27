@@ -29,7 +29,7 @@ export default function QaInvestigationDetailPage() {
     return (
       <div className="space-y-4">
         <Breadcrumbs items={[{ label: "QA", href: "/qa" }]} />
-        <p className="font-[family-name:var(--font-serif,serif)] text-sm italic text-muted-foreground">
+        <p className="font-[family-name:var(--font-serif)] text-sm italic text-muted-foreground">
           Investigation not found.
         </p>
       </div>
@@ -40,7 +40,7 @@ export default function QaInvestigationDetailPage() {
     return (
       <div className="space-y-4">
         <Breadcrumbs items={[{ label: "QA", href: "/qa" }]} />
-        <p className="font-[family-name:var(--font-serif,serif)] text-sm italic text-muted-foreground">
+        <p className="font-[family-name:var(--font-serif)] text-sm italic text-muted-foreground">
           Investigation not found.
         </p>
       </div>

@@ -14,11 +14,13 @@ from butlers.core.expected_signals import ExpectedSignalState
 from butlers.identity import ResolvedContact
 from butlers.tools.relationship import stale_contacts
 
+_THIS_FILE = Path(__file__).resolve()
+
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
 async def _apply_migrations(pool) -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = _THIS_FILE.parents[2]
     for filename in (
         "core_210_expected_signals.py",
         "core_211_expected_signal_endpoint_identity.py",
@@ -151,7 +153,6 @@ async def test_dead_attested_endpoint_is_unmeasurable_with_healthy_sibling(
             AsyncMock(
                 return_value={
                     (source_channel, source_identity): ResolvedContact(
-                        contact_id=None,
                         name="Friend",
                         roles=[],
                         entity_id=entity_id,
@@ -280,7 +281,6 @@ async def test_all_active_mapped_identities_make_mixed_contact_unmeasurable(
             AsyncMock(
                 return_value={
                     (channel, source_identity): ResolvedContact(
-                        contact_id=None,
                         name="Friend",
                         roles=[],
                         entity_id=entity_id,

@@ -163,7 +163,7 @@ export function AutonomyPanel() {
         </div>
         <button
           onClick={() => setCreateOpen(true)}
-          className="shrink-0 text-[10px] font-mono uppercase tracking-wide px-2 py-1 border border-border rounded hover:border-foreground/40 transition-colors"
+          className="shrink-0 text-[10px] font-mono uppercase tracking-wide px-2 py-1 border border-border rounded hover:border-foreground/40 transition-colors max-md:min-h-11 max-md:min-w-11"
         >
           + Rule
         </button>

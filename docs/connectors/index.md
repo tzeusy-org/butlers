@@ -2,7 +2,7 @@
 
 > **Scope:** External transport adapters that ingest messages into the system.
 > **Belongs here:** Connector architecture overview, per-connector profiles (setup, config, ingestion flow, cursors).
-> **Does NOT belong here:** Switchboard routing logic (see [Architecture](../architecture/routing.md)), module internals.
+> **Does NOT belong here:** Switchboard routing logic (see [Architecture](../concepts/switchboard-routing.md)), module internals.
 
 - [Overview](overview.md) — connector architecture, responsibilities, what connectors must/must not do
 
@@ -14,5 +14,6 @@
 - [Heartbeat](heartbeat.md) — connector health monitoring
 - [Live Listener](live-listener.md) — audio live listener connector
 - [OwnTracks](owntracks.md) — phone location setup, evidence cadence, and privacy notes
+- [WhatsApp](whatsapp.md) — WhatsApp bridge ownership, pairing, and operator setup
 - [Attachment Handling](attachment-handling.md) — file/media attachment processing
 - [Metrics](metrics.md) — connector metrics and statistics

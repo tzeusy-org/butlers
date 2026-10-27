@@ -1,17 +1,23 @@
 # Dashboard Data Layer and API
 
 ## Purpose
-Defines the complete data access layer connecting the Butlers dashboard frontend to backend infrastructure. This covers the FastAPI application factory, REST endpoint inventory across all domains, cross-butler database fan-out, MCP client proxy, butler-specific route auto-discovery, TanStack Query refresh patterns, SSE real-time streaming, OAuth bootstrap flow, generic secrets management, response envelope standards, and the pricing/cost estimation model. Together these form the single-pane-of-glass contract between the React frontend and the Python backend.
+Defines the complete data access layer connecting the Butlers dashboard frontend to backend infrastructure. This covers the FastAPI application factory, cross-domain route rules (the full route list is the generated OpenAPI schema), cross-butler database fan-out, MCP client proxy, butler-specific route auto-discovery, frontend query defaults, SSE real-time streaming, OAuth bootstrap flow, generic secrets management, response envelope standards, and the pricing/cost estimation model. Together these form the single-pane-of-glass contract between the React frontend and the Python backend.
+
 ## Requirements
+
 ### Requirement: FastAPI Application Factory
 The `create_app()` function in `src/butlers/api/app.py` SHALL build the FastAPI application with CORS middleware, lifespan handler, error handlers, static file serving, and router registration. The lifespan handler initializes `MCPClientManager`, `PricingConfig`, and `DatabaseManager` singletons on startup and tears them down on shutdown.
+
+ID: REQ-dashboard-api-070
+Source: bu-q11586.3 accepted S1 registry/dependency packet
+Scope: v1-mandatory
 
 #### Scenario: Application startup
 - **WHEN** the FastAPI lifespan starts
 - **THEN** `init_dependencies()` discovers all butlers from the roster directory and registers them in the `MCPClientManager` singleton
 - **AND** `init_pricing()` loads `pricing.toml` into the `PricingConfig` singleton
 - **AND** `init_db_manager()` creates asyncpg pools for each discovered butler plus the shared credential pool
-- **AND** `wire_db_dependencies()` overrides the `_get_db_manager` stub in every static and dynamic router module
+- **AND** core and dynamic router modules consume one public `get_db`/`Db` dependency backed by that singleton, with the existing optional/uninitialized-read adapter preserved
 
 #### Scenario: CORS configuration
 - **WHEN** `create_app(cors_origins=None)` is called
@@ -312,7 +318,11 @@ The session list/aggregate endpoints MUST interpret a bare `YYYY-MM-DD` `from_da
 - **AND** each operation records an audit log entry
 
 ### Requirement: Butler-Specific Route Auto-Discovery
-`src/butlers/api/router_discovery.py` SHALL scan `roster/{butler}/api/router.py` files and dynamically load them via `importlib`. Butler-specific routers extend the API surface without modifying core router registration code.
+`src/butlers/api/router_discovery.py` SHALL scan `roster/{butler}/api/router.py` files and dynamically load them via `importlib`. Butler-specific routers extend the API surface without modifying core router registration code. Direct butlers.api._roster.<butler>.router imports SHALL resolve on demand to the same actual router module used by explicit discovery, preserving the existing {butler_name}_api_router execution/cache identity. Its models namespace SHALL expose the router's actual local model objects. Installing the namespace resolver SHALL NOT mount or execute every router. Explicit discovery/create_app SHALL still mount the complete healthy router set and preserve dependency overrides, sorted traversal and optional invalid-router warnings/skips. Failed newly-created loads SHALL NOT be cached as successful routers, and explicit custom roster roots SHALL not reuse a different file solely by matching a butler name.
+
+ID: REQ-dashboard-api-066
+Source: bu-ly3lv5.4 released by bu-7lh5ew; performance-discipline; actual owning source and existing contract
+Scope: v1-mandatory
 
 #### Scenario: Discovery of butler routers
 - **WHEN** `discover_butler_routers()` is called
@@ -325,9 +335,19 @@ The session list/aggregate endpoints MUST interpret a bare `YYYY-MM-DD` `from_da
 - **AND** modules without `router` or with non-APIRouter exports are logged as warnings and skipped
 
 #### Scenario: DB dependency wiring
-- **WHEN** `wire_db_dependencies()` is called with dynamic modules
-- **THEN** each dynamic module with a `_get_db_manager` stub has it overridden with the `get_db_manager` singleton
-- **AND** the override applies via FastAPI's `dependency_overrides` mechanism
+- **WHEN** a dynamic module declares its database dependency
+- **THEN** it consumes the public `get_db`/`Db` singleton dependency shared with core routers
+- **AND** callers may override that public dependency via FastAPI's `dependency_overrides` mechanism
+
+#### Scenario: Namespace and discovery share the actual router
+- **WHEN** a butler router or models namespace is requested and explicit discovery later runs
+- **THEN** the requested router body has executed once and both paths share its actual module/model identities
+- **AND** the healthy router is mounted with its existing database dependency wiring
+
+#### Scenario: Invalid optional router remains visibly optional
+- **WHEN** explicit bulk discovery encounters an invalid optional router
+- **THEN** it warns and skips as already governed
+- **AND** direct import of a failing requested router does not return a partial successful module
 
 ### Requirement: Butler Discovery and Status Probing
 `src/butlers/api/routers/butlers.py` SHALL provide butler list and detail endpoints that combine static config discovery with live MCP status probing.
@@ -344,383 +364,6 @@ The session list/aggregate endpoints MUST interpret a bare `YYYY-MM-DD` `from_da
 #### Scenario: Butler config endpoint
 - **WHEN** `GET /api/butlers/{name}/config` is called
 - **THEN** `butler.toml` is parsed as a dict and returned along with raw text of `CLAUDE.md`, `AGENTS.md`, and `MANIFESTO.md` (null if missing)
-
-### Requirement: API Endpoint Inventory
-
-The API SHALL expose the following complete endpoint inventory, grouped by domain.
-
-#### Core System
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/health` | Health check |
-| GET | `/api/butlers` | List all butlers with live status |
-| GET | `/api/butlers/{name}` | Butler detail |
-| GET | `/api/butlers/{name}/config` | Butler configuration files |
-| GET | `/api/butlers/{name}/skills` | Butler skills (name + SKILL.md content) |
-| POST | `/api/butlers/{name}/trigger` | Trigger runtime session |
-| POST | `/api/butlers/{name}/tick` | Force scheduler tick |
-| GET | `/api/butlers/{name}/mcp/tools` | List MCP tools |
-| POST | `/api/butlers/{name}/mcp/call` | Invoke MCP tool |
-| GET | `/api/butlers/{name}/modules` | Module health status |
-| GET | `/api/butlers/{name}/module-states` | Module runtime states |
-| PUT | `/api/butlers/{name}/module-states/{module}/enabled` | Toggle module enabled state |
-
-#### Dashboard Conversations
-| Method | Path | Response | Purpose |
-|--------|------|----------|---------|
-| GET | `/api/butlers/{name}/conversations` | `PaginatedResponse<ConversationSummary>` | List conversations |
-| GET | `/api/butlers/{name}/conversations/search` | `PaginatedResponse<ConversationSearchResult>` | Search conversation history |
-| GET | `/api/butlers/{name}/conversations/summary` | `ConversationStats` | Conversation statistics |
-| POST | `/api/butlers/{name}/conversations` | `text/event-stream` | Create and submit an immutable dashboard user turn |
-| GET | `/api/butlers/{name}/conversations/{conversation_id}/messages` | `PaginatedResponse<ConversationMessage>` | List messages |
-| POST | `/api/butlers/{name}/conversations/{conversation_id}/messages` | `text/event-stream` | Submit a follow-up user turn |
-| PATCH | `/api/butlers/{name}/conversations/{conversation_id}` | `ConversationSummary` | Rename, archive, or unarchive a conversation |
-| POST | `/api/butlers/{name}/conversation-turns/{message_id}/cancel` | `ConversationCancelResponse` | Canonical durable Stop for one immutable user turn |
-| POST | `/api/butlers/{name}/conversations/{conversation_id}/cancel` | `ConversationCancelResponse` | Legacy compatibility Stop route; dashboard clients use the message-scoped route |
-
-#### Scenario: Dashboard conversation stream and Stop semantics
-- **WHEN** the dashboard submits a user turn
-- **THEN** the API opens durable control keyed by the immutable `message_id` before external ingress, and only the caller with the `dispatch` claim may invoke `ingest.v1`
-- **AND** a caller observing `accepted` observes the original request, while `pending` or `cancelling` yields `INGEST_IN_PROGRESS` plus `done` and never creates a replay
-- **AND** confirmed cancellation yields `SESSION_CANCELLED`; an unprovable recovered predecessor yields `TURN_OUTCOME_UNKNOWN`; both suppress automatic replay
-- **AND** the raw `ConversationCancelResponse` documents exactly one truthful Stop result (`cancelled`, `already_finished`, or unconfirmed), while non-2xx failures retain `ErrorResponse`
-
-#### Sessions
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/sessions` | Cross-butler paginated session list (fan-out) |
-| GET | `/api/sessions/{id}` | Cross-butler session detail (fan-out; the ONLY detail route) |
-| GET | `/api/butlers/{name}/sessions` | Butler-scoped paginated session list |
-
-Single-session detail is served ONLY by the cross-butler `GET /api/sessions/{id}`
-fan-out. Session ids are globally unique, so the global path resolves pinned
-rows and deep links without a `?butler=` hint; the butler-scoped detail route
-was removed (no compat shim).
-
-#### Ingestion Events
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/ingestion/events` | Cursor-paginated ingestion event list (`limit`, `cursor`, and primary `channels` filter; deprecated server-only `source_channel` compatibility) |
-| GET | `/api/ingestion/events/{requestId}` | Single ingestion event detail |
-| GET | `/api/ingestion/events/{requestId}/sessions` | All sessions attributed to this request ID across all butlers |
-| GET | `/api/ingestion/events/{requestId}/rollup` | Token/cost/butler topology rollup for this request ID |
-
-The ingestion-events list accepts an opaque `cursor` from the preceding response
-alongside `limit`; its response uses the cursor envelope
-`{ "data": T[], "meta": { "next_cursor": string | null, "has_more": boolean } }`
-and does not return `total` or `offset`. `channels` is the primary
-comma-separated source-channel filter. The server accepts the deprecated,
-single-value `source_channel` query parameter only as server-side compatibility;
-it is not exposed by the private frontend client. When both parameters are
-present, `channels` takes precedence over `source_channel`.
-
-#### Timeline
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/timeline` | Cross-butler unified event stream (cursor pagination) |
-
-#### Notifications
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/notifications` | Cross-butler paginated notification list |
-| GET | `/api/notifications/stats` | Aggregate notification statistics |
-| GET | `/api/butlers/{name}/notifications` | Butler-scoped notification list |
-| POST | `/api/notifications/{id}/retry` | Manually re-attempt a failed notification on the same channel |
-| POST | `/api/notifications/{id}/escalate` | Manually re-attempt a failed notification on the owner's alternate channel |
-
-#### Scenario: Notifications degraded source is named, not rendered as an all-clear
-- **WHEN** `GET /api/notifications` or `GET /api/notifications/stats` returns
-  HTTP 200 but the Switchboard notifications source was unreachable (so the
-  counts are zero placeholders and the list page is empty)
-- **THEN** the response carries `source_available: false` (following the
-  fleet-wide degraded-envelope convention); the field is absent or `true` when
-  the source answered
-- **AND** the frontend notifications page SHALL NOT render the fabricated zeros
-  as a truthful tally — the stats tiles show an em-dash (not a green `0.0%`
-  failure rate) and the feed shows a named `SourceDegradedNote` naming the
-  unreachable source rather than the calm "No notifications found" empty state
-- **AND** a reachable-but-empty source (`source_available` absent or `true`
-  with genuine zeros) keeps its honest zeros and empty state
-
-#### Scenario: Manual retry re-sends a failed notification and links the new attempt
-- **WHEN** `POST /api/notifications/{id}/retry` is called on a notification
-  whose stored `status` is `failed`
-- **THEN** the backend re-invokes delivery in-process (the same
-  approval-push-runtime pattern the dashboard-API process already uses to
-  call `deliver()` without a `switchboard_client` MCP connection), using the
-  envelope persisted at delivery time (`metadata.notify_request`) or, for
-  older rows that predate it, a synthetic envelope built from the row's own
-  `channel`/`recipient`/`message` columns
-- **AND** the original notification is flipped to `status = 'read'` with a
-  `metadata.retried_to` marker pointing at the new attempt's id, regardless
-  of whether the new attempt itself succeeds or fails again — a human has
-  acted on it either way, and a retry that fails again is its own new,
-  independently actionable row rather than a reason to leave the original
-  stuck in `failed`
-- **AND** the response reports the new attempt's own `status` (`sent` or
-  `failed`) and `error`, never a fabricated success for the original
-- **AND** a best-effort `public.attention_ledger` event is recorded
-  (`source="notify"`, `outcome="delivered"` or `"failed"`,
-  `notification_ref` set to the new attempt's id) so the manual action is
-  traceable the same way an automatic notify() outcome is
-- **AND** `GET /api/notifications?status=terminal_failed` and the aggregate
-  `failed` count in `GET /api/notifications/stats` no longer include the
-  original row afterward, since it is no longer `status = 'failed'`
-- **AND** `effective_status` on the original row reports `"retried"` (not
-  the generic `"read"`) so the UI communicates what happened, not just that
-  it was acknowledged
-
-#### Scenario: Manual retry rejects a non-failed notification
-- **WHEN** `POST /api/notifications/{id}/retry` or `.../escalate` is called
-  on a notification whose stored `status` is not `failed`
-- **THEN** the endpoint returns HTTP 409 without attempting delivery
-- **AND** HTTP 404 is returned when `{id}` does not exist, and HTTP 503 when
-  the Switchboard pool is unavailable
-
-#### Scenario: Concurrent or replayed retry/escalate never double-delivers
-- **WHEN** two `POST .../retry` (or two `.../escalate`) requests for the same
-  `{id}` race — a double-click, two open tabs, or a client resending after a
-  perceived timeout — and both observe `status = 'failed'` on their initial
-  read
-- **THEN** immediately before invoking real delivery, the backend atomically
-  claims the row with a single conditional `UPDATE notifications SET status
-  = 'read' WHERE id = $1 AND status = 'failed' RETURNING *`; only the first
-  request's `UPDATE` can match a `'failed'` row, so exactly one request
-  proceeds to redeliver and the loser's claim affects zero rows
-- **AND** the losing request returns HTTP 409 without invoking delivery — the
-  user is never sent the notification twice
-- **AND** because the claim (not delivery success) is what leaves `'failed'`
-  status, a delivery-adjacent failure after the claim — including
-  `_finalize_manual_action`'s own metadata-merge write failing after a
-  successful send — cannot leave the row re-claimable: a subsequent client
-  retry after such a failure also observes a non-`'failed'` status and gets
-  HTTP 409, never a second real send. The tradeoff is a possible orphaned row
-  (already `status = 'read'` but missing its `retried_to`/`escalated_to`
-  forward-link marker) rather than a duplicate delivery
-
-#### Scenario: Manual escalate re-sends on the owner's alternate channel
-- **WHEN** `POST /api/notifications/{id}/escalate` is called on a failed
-  `telegram` or `email` notification
-- **THEN** the backend swaps to the other channel (`telegram` -> `email`,
-  `email` -> `telegram`) and resolves the owner's contact for it via
-  `resolve_owner_entity_info` — the same owner-credential lookup the
-  dashboard's connector actions already use for owner-directed delivery
-- **AND** HTTP 422 is returned, without attempting delivery, when the
-  channel is neither `telegram` nor `email` (no alternate-channel resolver
-  is wired for other channels), or when the owner has no contact configured
-  for the alternate channel
-- **AND** on success the original notification is flipped to `status =
-  'read'` with a `metadata.escalated_to` marker, following the same
-  forward-link and ledger-recording contract as manual retry, and
-  `effective_status` reports `"escalated"`
-
-#### State Store
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/butlers/{name}/state` | List all state entries |
-| GET | `/api/butlers/{name}/state/{key}` | Get single state entry |
-| PUT | `/api/butlers/{name}/state/{key}` | Set state value (MCP proxy) |
-| DELETE | `/api/butlers/{name}/state/{key}` | Delete state entry (MCP proxy) |
-
-#### Schedules
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/butlers/{name}/schedules` | List schedules |
-| POST | `/api/butlers/{name}/schedules` | Create schedule (MCP proxy) |
-| PUT | `/api/butlers/{name}/schedules/{id}` | Update schedule (MCP proxy) |
-| DELETE | `/api/butlers/{name}/schedules/{id}` | Delete schedule (MCP proxy) |
-| PATCH | `/api/butlers/{name}/schedules/{id}/toggle` | Toggle schedule enabled (MCP proxy) |
-
-#### Schedule Execution Semantics
-- **WHEN** the dashboard displays or interprets schedule data
-- **THEN** `Schedule.source` describes the schedule origin (`toml` for TOML-defined, `db` for dashboard-created); it is NOT the execution mode
-- **AND** runtime-mode schedules (those with a `prompt`) execute through `spawner.trigger(..., trigger_source="schedule:<task-name>")` and correlate with `sessions` rows
-- **AND** native-mode schedules (those with `dispatch_mode = "job"` and `job_name`) execute deterministic Python jobs directly and may not create `sessions` rows
-- **AND** the dashboard treats schedule status fields (`enabled`, `next_run_at`, `last_run_at`) as authoritative regardless of execution mode
-- **AND** schedule failures for both execution modes surface through `GET /api/issues` as `scheduled_task_failure:<schedule-name>`
-
-#### Spend
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/spend/summary` | Aggregate cost summary (MCP fan-out) |
-| GET | `/api/spend/daily` | Daily cost time series (MCP fan-out) |
-| GET | `/api/spend/top-sessions` | Most expensive sessions (MCP fan-out) |
-| GET | `/api/spend/by-schedule` | Per-schedule cost analysis (MCP fan-out) |
-
-#### Memory
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/memory/stats` | Aggregated memory tier counts (fan-out) |
-| GET | `/api/memory/episodes` | Paginated episode list (fan-out) |
-| GET | `/api/memory/facts` | Paginated fact list with text search (fan-out) |
-| GET | `/api/memory/facts/{id}` | Single fact detail (fan-out) |
-| GET | `/api/memory/rules` | Paginated rule list with text search (fan-out) |
-| GET | `/api/memory/rules/{id}` | Single rule detail (fan-out) |
-| GET | `/api/memory/activity` | Recent memory activity interleaved (fan-out) |
-
-#### Approvals
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/approvals/actions` | Pending action queue |
-| GET | `/api/approvals/actions/executed` | Executed actions audit |
-| GET | `/api/approvals/actions/{id}` | Action detail |
-| POST | `/api/approvals/actions/{id}/approve` | Approve action and dispatch for execution |
-| POST | `/api/approvals/actions/{id}/reject` | Reject action with optional reason |
-| POST | `/api/approvals/actions/expire-stale` | Expire stale actions |
-| GET | `/api/approvals/rules` | Standing rule list |
-| GET | `/api/approvals/rules/{id}` | Rule detail |
-| POST | `/api/approvals/rules` | Create standing approval rule |
-| POST | `/api/approvals/rules/from-action` | Create rule from a pending action |
-| POST | `/api/approvals/rules/{id}/revoke` | Revoke (deactivate) rule |
-| GET | `/api/approvals/rules/suggestions/{actionId}` | Constraint suggestions |
-| GET | `/api/approvals/metrics` | Aggregate approval metrics |
-
-#### Scenario: Approvals degraded pools are named, not rendered as an empty queue
-- **WHEN** `GET /api/approvals` or `GET /api/approvals/history` fans out across
-  each butler's pool and one or more pools fail their query (a genuine error —
-  the request still returns HTTP 200 with the summaries from the pools that
-  answered)
-- **THEN** the response includes `meta.sources_degraded: string[]` naming the
-  dropped pools (following the fleet-wide degraded-envelope convention); the
-  field is absent or empty when every queried pool answered
-- **AND** the frontend approvals verdict opener SHALL NOT render the calm "No
-  approvals waiting." all-clear while a pool is degraded — it names the dropped
-  pools inline as a clause that suppresses the all-clear line
-- **AND** the approvals queue rail SHALL NOT render the "No pending approvals."
-  empty state as an all-clear while a pool is degraded — it names the dropped
-  pools via a `SourceDegradedNote` (in place of the empty state when zero rows
-  survived, above the rows when some did)
-- **AND** a reachable queue with `meta.sources_degraded` absent or empty keeps
-  its honest empty state and calm verdict
-
-#### Search
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/search` | Cross-butler ILIKE search (entities, contacts, sessions, state) |
-
-#### Audit Log
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/audit-log` | Paginated audit log from switchboard DB |
-
-#### Issues
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/issues` | Aggregated issues (reachability + audit errors) |
-
-#### Calendar Workspace
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/calendar/workspace` | Normalized calendar entries for time range |
-| GET | `/api/calendar/workspace/meta` | Workspace metadata (sources, lanes, writables) |
-| POST | `/api/calendar/workspace/sync` | Trigger provider/projection sync |
-| POST | `/api/calendar/workspace/user-events` | Create/update/delete user-view events (MCP) |
-| POST | `/api/calendar/workspace/butler-events` | Create/update/delete/toggle butler events (MCP) |
-| GET | `/api/calendar/workspace/audit` | Calendar mutation audit trail (read-only) |
-| POST | `/api/calendar/workspace/undo/{action_id}` | Reverse a previously-applied calendar mutation |
-
-#### OAuth
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/oauth/{provider}/start` | Begin OAuth flow for any provider (generalised; `provider=google` unchanged) |
-| GET | `/api/oauth/{provider}/callback` | Handle OAuth callback for any provider (generalised) |
-| GET | `/api/oauth/google/start` | Begin Google OAuth flow (redirect or JSON) |
-| GET | `/api/oauth/google/callback` | Handle Google OAuth callback |
-| GET | `/api/oauth/status` | OAuth credential status probe |
-| PUT | `/api/oauth/google/credentials` | Store Google app credentials |
-| GET | `/api/oauth/google/credentials` | Masked credential status |
-| DELETE | `/api/oauth/google/credentials` | Delete Google credentials |
-
-#### Secrets
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/butlers/{name}/secrets` | List secrets (metadata only, values masked) |
-| GET | `/api/butlers/{name}/secrets/{key}` | Single secret metadata |
-| PUT | `/api/butlers/{name}/secrets/{key}` | Upsert secret (write-only value) |
-| DELETE | `/api/butlers/{name}/secrets/{key}` | Delete secret |
-| GET | `/api/secrets/inventory` | Passport inventory (cli/system/user; `?identity=`) |
-| GET | `/api/secrets/user/{provider}` | User credential evidence (`?identity=`) |
-| GET | `/api/secrets/system/{key}` | System secret evidence |
-| GET | `/api/secrets/cli/{id}` | CLI runtime evidence |
-| POST | `/api/secrets/user/{provider}/reauthorize` | Begin reauthorize OAuth dance (`?identity=`) |
-| POST | `/api/secrets/user/{provider}/rotate` | Rotate user credential value (`?identity=`) |
-| POST | `/api/secrets/user/{provider}/disconnect` | Disconnect user credential (`?identity=`) |
-| POST | `/api/secrets/user/{provider}/probe` | Probe user credential (`?identity=`) |
-| POST | `/api/secrets/system/{key}` | Set/rotate/override system secret |
-| POST | `/api/secrets/system/{key}/probe` | Probe system secret |
-| DELETE | `/api/secrets/system/{key}` | Remove system secret/override (`?target=`) |
-| POST | `/api/secrets/cli/{id}/rotate` | Rotate CLI runtime (returns value once) |
-| POST | `/api/secrets/cli/{id}/revoke` | Revoke CLI runtime |
-| GET | `/api/secrets/audit/{scope}/{key}` | Per-credential audit history (`?limit=`) |
-| GET | `/api/secrets/breaks-catalogue` | Provider feature/break catalogue (`?provider=`) |
-
-#### SSE
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/events` | Server-Sent Events stream |
-
-### Requirement: TanStack Query Patterns
-The frontend SHALL use TanStack Query (`@tanstack/react-query`) via `frontend/src/hooks/` for all data fetching, with domain-specific stale times, refetch intervals, and mutation invalidation patterns.
-
-#### Scenario: Default query client configuration
-- **WHEN** the TanStack QueryClient is initialized (`frontend/src/lib/query-client.ts`)
-- **THEN** default `staleTime` is 30,000 ms (30s) and `retry` is 1
-
-#### Scenario: Domain-specific refetch intervals
-- **WHEN** hooks are used from the hooks directory
-- **THEN** the following refetch intervals are applied:
-
-| Domain | Interval | Hooks |
-|--------|----------|-------|
-| Butlers list | 30s | `useButlers` |
-| Sessions (list) | 30s | `useSessions`, `useButlerSessions` |
-| Schedules | 30s | `useSchedules` |
-| State entries | 30s | `useButlerState` |
-| Issues | 30s | `useIssues` |
-| Audit log | 30s | `useAuditLog` |
-| Ingestion events | 30s | `useIngestionEvents` |
-| Timeline | 30s (default, overridable) | `useTimeline` |
-| Health measurements | 30s | `useMeasurements`, `useMedications`, `useConditions`, `useSymptoms`, `useMeals`, `useResearch` |
-| Memory stats/episodes/facts/rules | 30s | `useMemoryStats`, `useEpisodes`, `useFacts`, `useRules` |
-| Switchboard routing/registry | 30s | `useRoutingLog`, `useRegistry` |
-| Backfill jobs | 30s | `useBackfillJobs`, `useBackfillJob` |
-| Connector detail | 30s | `useConnectorDetail` |
-| Calendar workspace | 5m while bus-connected / 30s fallback (default, overridable) | `useCalendarWorkspace`, `useCalendarOverlays`, `useCalendarDayBriefing`, `useCalendarProposals`, `useCalendarWorkspaceSearch`, `useCalendarWorkspaceMeta`, `useCalendarWorkspaceEntry`, `useCalendarDuplicates`, `useCalendarConflicts`, `useCalendarWorkspaceAudit` |
-| Spend summary | 60s | `useSpendSummary` |
-| Daily spend | 60s | `useDailySpend` |
-| Top sessions | 60s | `useTopSessions` |
-| Connectors list/summary | 60s | `useConnectorSummaries`, `useCrossConnectorSummary`, `useIngestionOverview`, `useConnectorStats` |
-| Connector fanout | 120s | `useConnectorFanout` |
-| Calendar workspace meta | 60s (default, overridable) | `useCalendarWorkspaceMeta` |
-| Memory activity | 15s | `useMemoryActivity` |
-| Backfill job progress (active) | 5s | `useBackfillJobProgress` (when status is pending/active) |
-| Backfill job progress (idle) | 30s | `useBackfillJobProgress` (when status is completed/cancelled/paused) |
-| Approval pending actions | 15s | `useApprovalActions` (when status filter is `pending`) |
-| Approval rules / executed audit | 60s | `useApprovalRules`, `useExecutedActions` |
-| No auto-interval | n/a | Notifications, contacts, groups, labels, butler config/skills, session detail, triage rules (use staleTime: 60s instead) |
-
-#### Scenario: Mutation invalidation pattern
-- **WHEN** a mutation hook succeeds (e.g., `useCreateSchedule`, `useSetState`, `useDeleteSecret`)
-- **THEN** the related query cache is invalidated via `queryClient.invalidateQueries({ queryKey: [...] })`
-- **AND** all mutations use `useMutation` with `onSuccess` callbacks for invalidation
-
-#### Scenario: Approval query key factory
-- **WHEN** approval hooks are used
-- **THEN** a structured key factory (`approvalKeys`) provides hierarchical keys: `["approvals", "actions", params]`, `["approvals", "rules", params]`, etc.
-- **AND** mutation success invalidates the parent `["approvals"]` prefix for broad cache busting
-
-#### Scenario: Debounced search
-- **WHEN** `useSearch(query)` is called
-- **THEN** the query is debounced by 300ms and only fires when the query length is at least 2 characters
-
-#### Scenario: Conditional query enablement
-- **WHEN** a hook receives a nullable identifier (e.g., `useButler(name)`)
-- **THEN** `enabled: !!identifier` prevents the query from executing until the identifier is available
-
-#### Scenario: Bus-aware polling for bus-covered hooks
-- **WHEN** a bus-covered query hook (e.g. sessions, approvals, spend, issues, notifications, messenger, timeline, butlers board, calendar workspace — see `event-cache-manifest.ts`) calls `useBusAwarePollInterval`
-- **THEN** it resolves `refetchInterval` from the shared fleet event bus's connection status: `POLL_BUS_RECONCILE_MS` (5 minutes) while connected, `POLL_BUS_DOWN_FALLBACK_MS` (30 seconds) while the bus is down/reconnecting
-- **AND** there is no user-facing control to change this cadence (the prior `useAutoRefresh`/`AutoRefreshToggle` mechanism retired — bu-01r64.3)
 
 ### Requirement: SSE Real-Time Streaming
 `src/butlers/api/routers/sse.py` SHALL provide a `GET /api/events` endpoint that streams Server-Sent Events to connected dashboard clients.
@@ -837,8 +480,11 @@ The dashboard API SHALL expose a `/api/secrets/*` namespace that backs the passp
 - **AND** capability evidence SHALL be published ONLY as members of the fixed vocabulary `calendar`, `gmail`, `drive`, `health`, `connectivity`, `other`; an input that maps to no known family SHALL become `other`, and the projection SHALL be a strict allowlist rather than a filtered passthrough of a persisted or provider-supplied string
 - **AND** the payload SHALL NOT contain any raw OAuth scope identifier, the persisted `entity_info.type` or `label`, the failure tail, a probe message, or an audit note — the credential's capabilities are published, never its content
 - **AND** the same content-blind payload backs `POST /api/secrets/user/<provider>/rotate`, so no mutation response reintroduces those fields
-- **AND** `GET /api/secrets/system/<key>` returns `ApiResponse<SystemSecret>` with `key`, `category`, `row_state` (one of `shared` / `local` / `missing`), `fingerprint`, `description`, `source`, `target`, `last_verified`, `used_by[]`, `breaks[]`, `test`, `audit[]`
-- **AND** `GET /api/secrets/cli/<id>` returns `ApiResponse<CliRuntime>` with `id`, `label`, `fingerprint`, `state`, `issued`, `expires`, `last_used`, `scopes_required`, `scopes_granted`, `test`
+- **AND** `GET /api/secrets/system/<key>` returns `ApiResponse<SystemCredentialDetail>` with `key`, `category`, `description`, `state`, `fingerprint`, `row_state` (one of `shared` / `local` / `missing`), `source`, `target`, `last_verified`, `used_by[]`, `test` (probe outcome), `audit[]`, `butler`
+- **AND** `GET /api/secrets/cli/<id>` returns `ApiResponse<CliCredentialDetail>` with `id`, `label`, `state`, `fingerprint`, `issued`, `expires`, `capabilities_required`, `capabilities_granted`, `test` (probe outcome)
+- **AND** both payloads SHALL be explicit field-by-field projections of the router's internal read record, on the same terms as the user payload above: no probe message (cached `last_test_message` or the probe row's free-text `message`), no audit note, and no raw OAuth scope identifier — the CLI payload publishes capability categories from the fixed vocabulary in place of `scopes_required` / `scopes_granted`, which nothing populates today and which a future writer therefore must not be able to leak by populating
+- **AND** fields with no authoritative source are absent rather than published as always-empty placeholders: the system payload drops `breaks[]` (never populated, and each entry would carry raw scopes) and the CLI payload drops `last_used`
+- **AND** `key`, `category`, and `description` continue to be published on these detail endpoints on exactly the operator-authored-naming grounds this requirement already establishes for the inventory rows above; the CLI payload's `label` is not an independent field but that same `description` column surfaced under the CLI field name (`_fetch_single_cli_secret` builds the record as `label=row["description"]`), so publishing it widens nothing this requirement does not already permit
 - **AND** none of these endpoints return raw secret values; values are returned only by explicit mutation endpoints in the specific cases defined below
 
 #### Scenario: User-credential detail refuses to fabricate empty audit history
@@ -955,7 +601,7 @@ material exists.
   recovery surface
 
 ### Requirement: Secrets Mutation Endpoints
-The `/api/secrets/*` namespace SHALL expose mutation endpoints for every action the passport page can dispatch. Every mutation SHALL write to `public.audit_log` (see `core-credentials` Audit Action Enum requirement) with an appropriate action value.
+The `/api/secrets/*` namespace SHALL expose mutation endpoints for every action the passport page can dispatch. Every mutation SHALL write to `public.audit_log` (see `core-credentials` "Audit Action Vocabulary for Credential Lifecycle") with an appropriate action value.
 
 #### Scenario: User credential mutations
 - **WHEN** `POST /api/secrets/user/<provider>/reauthorize?identity=<uuid>` is called
@@ -983,7 +629,10 @@ The `/api/secrets/*` namespace SHALL expose mutation endpoints for every action 
 
 #### Scenario: System credential mutations
 - **WHEN** `POST /api/secrets/system/<key>` is called with body `{ value, target: "shared" | "<butler>" }`
-- **THEN** the response is `ApiResponse<SystemSecret>` (updated)
+- **THEN** the response is `ApiResponse<SystemCredentialDetail>` (updated) — the same content-blind payload `GET /api/secrets/system/<key>` publishes for that row, built through the same explicit field-by-field projection of the router's internal read record, so a column added to the re-read query cannot reach a client without being consciously allowed through
+- **AND** the response SHALL NOT contain a probe message (the cached `last_test_message` column or the probe row's free-text `message`), an audit note, or a `breaks[]` entry — a write that re-reads the row it just wrote MUST NOT republish evidence the read route on the same row already withholds
+- **AND** audit evidence in that payload SHALL carry only `ts`, `actor`, and `action`; `breaks[]` is absent rather than published as an empty array, on the same grounds the read endpoints drop it (each entry would carry a free-text feature label and raw OAuth scopes, and nothing populates it)
+- **AND** `key`, `category`, and `description` continue to be published, unchanged from the read route: they are the operator-authored naming of an infrastructure key, and withholding them from the write response alone would split the contract for one row across two endpoints without closing a leak
 - **AND** when `target = "shared"` the value is written to the switchboard's `butler_secrets` table; when `target = "<butler>"` an override row is created in that butler's `butler_secrets` table
 - **AND** an audit row is written with action `set` (first-time create), `rotated` (existing key), or `overrode` (new override)
 - **AND** `POST /api/secrets/system/<key>/probe` returns `ApiResponse<TestResult>` and writes to probe-log + audit as in the User probe
@@ -1006,7 +655,11 @@ The `/api/secrets/*` namespace SHALL expose two read-side endpoints supporting t
 #### Scenario: Audit history endpoint
 - **WHEN** `GET /api/secrets/audit/<scope>/<key>?limit=50` is called (where `scope ∈ {user, system, cli}`)
 - **THEN** the response is `ApiResponse<AuditEvent[]>` with the most recent audit rows filtered to the credential
-- **AND** each `AuditEvent` includes `ts` (server pre-formatted relative timestamp), `actor`, `action`, `note` (serif-italic; verbatim stored note, never LLM-generated)
+- **AND** each `AuditEvent` includes `ts` (server pre-formatted relative timestamp), `actor`, and `action` (a short machine-readable verb), and nothing else
+- **AND** the payload SHALL NOT contain the stored audit `note` or any other free text carried on an audit row — including rows written by producers outside the secrets router, on exactly the terms `Secrets Inventory and Per-Credential Read Endpoints` already binds the inventory and per-credential reads to, because the note column carries provider and exception text verbatim (a failed probe persists `"Probe failed: <provider text>; probe_status=<token>"`)
+- **AND** the field SHALL be absent rather than published as an always-null placeholder, so no client can read the absence as "this event had no note"
+- **AND** the note SHALL NOT be read into the response path at all — the endpoint's query does not select it — so a projection change alone cannot reintroduce it
+- **AND** the free text SHALL still be persisted for operators: withholding it from the wire does not stop `public.audit_log`, `public.secret_probe_log`, or the `last_test_message` cache from recording the diagnostic
 - **AND** the default `limit` is 10; max is 50
 - **AND** the response includes a `meta.deep_link` field pointing to `/audit-log?key=<canonical-key>` for the full reel
 
@@ -1127,33 +780,10 @@ All endpoints under the new `/api/secrets/*` namespace and the generalised `/api
 - **AND** a genuinely-empty-but-healthy fan-out (no unavailable butlers, zero
   rows) keeps its honest empty state
 
-### Requirement: Audit Log
-`src/butlers/api/routers/audit.py` SHALL query the switchboard butler's `dashboard_audit_log` table and provide a `log_audit_entry()` helper for other routers to record write operations.
-
-#### Scenario: Read audit log
-- **WHEN** `GET /api/audit-log` is called
-- **THEN** paginated audit entries are returned from the switchboard DB
-- **AND** filters for `butler`, `operation`, `since`, `until` are supported
-
-#### Scenario: Filter by canonical credential key
-- **WHEN** `GET /api/audit-log?key=u:google&limit=50` is called
-- **THEN** the response is `PaginatedResponse<AuditLogEntry>` filtered to `public.audit_log` rows whose normalised `target` equals the canonical credential key `u:google`
-- **AND** the canonical credential-key format matches the focus-key format used by the `/secrets` page: `u:<provider>`, `s:<KEY>`, `c:<id>`
-- **AND** a normalisation function (defined in `core-credentials`) is applied to match against existing `target` values written by other writers (e.g. older audit rows that used non-canonical formats)
-- **AND** the existing `?since=`, `?actor=`, `?action=`, and `?limit=` query parameters remain functional and combinable with `?key=`
-- **AND** the response uses the existing `PaginatedResponse<T>` envelope (RFC 0007), not the `ApiResponse<T>` envelope
-
-#### Scenario: Unknown credential key returns empty page
-- **WHEN** `GET /api/audit-log?key=u:does-not-exist` is called
-- **THEN** the response is an empty `PaginatedResponse` with `meta.total = 0` and `meta.has_more = false`
-
-#### Scenario: Write audit entry
-- **WHEN** `log_audit_entry(db, butler, operation, request_summary)` is called by any router after a write operation
-- **THEN** an entry is inserted into `dashboard_audit_log` in the switchboard DB
-- **AND** errors in audit logging are silently swallowed (never break the primary operation)
-
 ### Requirement: Calendar Workspace
 `src/butlers/api/routers/calendar_workspace.py` provides a normalized calendar read surface, metadata endpoint, sync trigger, and mutation endpoints for both user-view and butler-view events. It SHALL additionally expose a read-only accounts surface (`GET /api/calendar/accounts`) and a per-calendar source enable/disable mutation (`POST /api/calendar/sources`); the sync trigger SHALL accept a `full` recovery flag and the metadata endpoint SHALL carry a per-source `error_kind` so the workspace can render the correct Recover/Reconnect CTA. No new table is introduced — source enable/disable reuses the existing `calendar_sources` projection rows, and the accounts surface reuses `public.google_accounts` plus the Google Calendar connector health.
+
+**Amendment (bu-q11586.7, owner decision bu-kf3n4i = A).** The workspace is an operator view. `POST /api/calendar/workspace/user-events` SHALL accept `action="create"` only (the quick-add confirmation); `update` and `delete` SHALL be rejected with HTTP 422. The dashboard API SHALL NOT expose duplicate review, dedup-rule or keep-separate writes, free-slot search (`find-time`), `.ics` export, subscribe or import, or a mutation-undo route. The workspace read keeps collapsing cross-source duplicates with the stored dedup rules and keep-separate pins. Every calendar MCP tool (`calendar_create_event`, `calendar_update_event`, `calendar_delete_event`, instance edits, attendees and proposals) stays registered and unchanged for butlers and chat.
 
 #### Scenario: Workspace read
 - **WHEN** `GET /api/calendar/workspace?view=user&start=...&end=...` is called
@@ -1397,7 +1027,7 @@ pattern and MUST NOT breach per-butler schema isolation.
   row (by `consolidated_at`), aggregated across butler pools
 
 ### Requirement: Issues Aggregation
-`src/butlers/api/routers/issues.py` SHALL aggregate live reachability problems and grouped audit-log error history into a single issues feed.
+`src/butlers/api/routers/issues.py` SHALL aggregate live reachability problems and grouped audit-log error history into a single issues feed, holding each acknowledgement against the condition's own recurrence epoch rather than the clock of the request that observed it.
 
 #### Scenario: Issue aggregation
 - **WHEN** `GET /api/issues` is called
@@ -1411,7 +1041,7 @@ pattern and MUST NOT breach per-butler schema isolation.
 - **THEN** the endpoint fetches one additional group only as an overflow sentinel, returns no more than the newest 500 audit-derived groups, and includes `meta.truncated: true`
 - **AND** live reachability issues remain independently included in the composed feed
 - **AND** when 500 or fewer audit groups match, `meta.truncated` is absent so the established complete-response envelope remains unchanged
-- **AND** the frontend SHALL render a `SourceDegradedNote` that says some audit-derived issues may be missing, rather than a calm "No issues recorded." all-clear, while `meta.truncated` is true
+- **AND** the frontend SHALL render a `SourceDegradedNote` that says some audit-derived issues may be missing, rather than the scoped all-clear empty state, while `meta.truncated` is true
 
 #### Scenario: Audit-derived issue group identity is window-independent and collision-resistant
 - **WHEN** an audit-derived `Issue` (`audit_error_group:*` / `scheduled_task_failure:*`) is built from a grouped audit-log row
@@ -1421,26 +1051,100 @@ pattern and MUST NOT breach per-butler schema isolation.
 - **AND** the reachability lane (`type == "unreachable"`) is unaffected and keeps composing `issue_key` as `type::butler` (`compute_issue_key`), since neither component there is a windowed aggregate
 
 #### Scenario: Issues degraded sources are named, not rendered as an all-clear
-- **WHEN** `GET /api/issues` runs its two DB-backed sources (grouped audit
-  errors and the acknowledgement watermarks) and one or more fail their query
-  for a genuine reason — a dropped connection, a timeout, a permission error —
-  the request still returns HTTP 200 with whatever the surviving source(s)
-  produced
+- **WHEN** `GET /api/issues` runs its DB-backed sources (grouped audit errors,
+  the acknowledgement watermarks, and the reachability condition ledger) and one
+  or more fail their query for a genuine reason — a dropped connection, a
+  timeout, a permission error — the request still returns HTTP 200 with whatever
+  the surviving source(s) produced
 - **THEN** the response includes `meta.sources_degraded: string[]` naming the
-  dropped source(s) (`audit-groups` and/or `acks`, following the fleet-wide
-  degraded-envelope convention); the field is absent or empty when every source
-  answered
-- **AND** a *legitimately-absent* source — a pre-migration `public.audit_log` or
-  `public.dismissed_issues` table surfaced as `UndefinedTableError` / a
-  "relation does not exist" error — is NOT flagged (classify-before-flagging),
-  so a genuinely empty feed is not falsely marked degraded
-- **AND** the frontend issues panel SHALL NOT render the calm "No issues
-  recorded." all-clear empty state while a source is degraded — it names the
-  dropped source(s) via a `SourceDegradedNote` (in place of the empty state when
-  zero issues survived, above the rows when some did)
+  dropped source(s) (`audit-groups`, `acks`, and/or `reachability-ledger`,
+  following the fleet-wide degraded-envelope convention); the field is absent or
+  empty when every source answered
+- **AND** a *legitimately-absent* source — a pre-migration `public.audit_log`,
+  `public.dismissed_issues`, or `public.butler_reachability_conditions` table
+  surfaced as `UndefinedTableError` / a "relation does not exist" error — is NOT
+  flagged (classify-before-flagging), so a genuinely empty feed is not falsely
+  marked degraded
+- **AND** the frontend issues panel SHALL NOT render its calm all-clear empty
+  state while a source is degraded — it names the dropped source(s) via a
+  `SourceDegradedNote` (in place of the empty state when zero issues survived,
+  above the rows when some did)
 - **AND** a reachable feed with `meta.sources_degraded` absent or empty keeps
   the honest empty state, and a hard transport error keeps the existing error
   state (the degraded note applies only to a 200 with a dropped source)
+
+#### Scenario: An uninterrupted outage is one condition with one stable onset
+- **WHEN** `GET /api/issues` probes a butler that is unreachable, repeatedly,
+  with no intervening successful probe
+- **THEN** every poll extends the SAME row in
+  `public.butler_reachability_conditions` — advancing `last_seen_at` and
+  `observations` but never `started_at` — via a single atomic upsert whose
+  conflict target is the partial unique index `(butler) WHERE resolved_at IS
+  NULL`, so two concurrent polls cannot open two competing episodes
+- **AND** the projected `Issue` carries that episode's onset as both
+  `first_seen_at` and `recurrence_at`, while `last_seen_at` reports when the
+  butler was last PROBED
+- **AND** an acknowledgement of that condition therefore continues to hold
+  across arbitrarily many subsequent polls
+
+#### Scenario: Recovery closes a condition and a later failure is a new recurrence
+- **WHEN** a butler that had an open reachability condition answers a probe
+- **THEN** that episode's `resolved_at` is stamped and it is never revived; a
+  second successful probe changes nothing further
+- **AND** a subsequent down transition opens a NEW episode whose `started_at` is
+  strictly later than the earlier acknowledgement's watermark, so the condition
+  correctly reappears in the active feed with no owner action
+
+#### Scenario: An acknowledgement is held against the recurrence epoch, not the observation clock
+- **WHEN** `list_issues` decides whether an acknowledged issue has recurred
+- **THEN** it compares the ack watermark against the issue's `recurrence_at`,
+  falling back to `last_seen_at` only when no separate epoch exists
+- **AND** for audit-derived groups `recurrence_at` IS `last_seen_at`, so the
+  established acknowledge-until-recurrence behaviour for that lane is unchanged
+- **AND** `POST /api/issues/dismiss` derives a reachability key's watermark
+  SERVER-side from the open episode's onset, ignoring any posted probe clock
+- **AND** when the ledger cannot be read for that derivation the endpoint
+  returns 503 and records no acknowledgement, rather than persisting one that is
+  guaranteed to lapse on the next poll
+
+#### Scenario: Issues empty copy names the scope it searched
+- **WHEN** the Issues page renders an empty result
+- **THEN** the panel's empty state and the verdict opener's all-clear name the
+  active scope — the time window plus any pinned group, severity, butler, or
+  text filter — instead of asserting a fleet-wide calm the request never
+  established
+- **AND** the page pins the feed to a single exact `issue_key` when the Audit
+  door's `?group=` deep link is followed, matching the whole key rather than a
+  substring, with a clearable affordance carrying an accessible name
+
+#### Scenario: The issues feed writes the ledger it reads
+- **WHEN** `GET /api/issues` completes a reachability probe round
+- **THEN** the same request records that round into
+  `public.butler_reachability_conditions` — the endpoint is the sole writer and
+  no background poller exists — and this side effect is documented at the
+  endpoint
+- **AND** a genuine failure of that write is surfaced through
+  `meta.sources_degraded`, never swallowed, so the feed cannot present a
+  request-time fallback onset as a durable acknowledgement
+
+#### Scenario: Issues page layout and issue rows
+- **WHEN** the operator navigates to `/issues`
+- **THEN** the page header reads "Issues" with subtitle "Grouped errors and warnings across all butlers, newest first."
+- **AND** each issue row shows its severity, the affected butler (or "N butlers" when the group spans more than one), description, occurrence count, and first-seen and last-seen times
+- **AND** an issue with a non-null `link` offers a "View" client-side link to the linked resource, and every active issue offers "Acknowledge"
+
+#### Scenario: Single-butler issues offer direct remediation
+- **WHEN** an issue names a single real butler
+- **THEN** a "Run schedule now" action forces that butler's scheduler to run immediately via `POST /api/butlers/{name}/tick`
+- **AND** when the issue's `type` is `"unreachable"`, a "Ping butler" action rechecks reachability immediately via a live `GET /api/butlers/{name}`
+- **AND** a multi-butler issue offers neither action, since there is no single butler to target
+
+#### Scenario: Acknowledgement holds until the group recurs
+- **WHEN** the operator acknowledges an issue
+- **THEN** the issue leaves the active list and the acknowledgement is persisted server-side via `POST /api/issues/dismiss`, keyed by the server-computed `issue_key` together with the issue's recurrence watermark
+- **AND** the acknowledgement holds across refreshes and browsers only until the group recurs past that watermark, after which the issue reappears in the active feed with no owner action
+- **AND** an acknowledgement recorded without a watermark, or for an issue type that never carries a timestamp, holds indefinitely
+- **AND** the acknowledged view (`include_dismissed=true`) lists only acknowledged issues and offers "Restore" to undo an acknowledgement before it lapses
 
 ### Requirement: Butler Eligibility Control
 Butler-specific routers that expose domain-specific API endpoints SHALL have them auto-discovered and mounted.
@@ -1449,63 +1153,6 @@ Butler-specific routers that expose domain-specific API endpoints SHALL have the
 - **WHEN** the switchboard butler has `roster/switchboard/api/router.py`
 - **THEN** its endpoints (e.g., routing log, registry, set eligibility) are auto-discovered and mounted
 - **AND** the frontend `useSetEligibility` mutation calls the switchboard-specific endpoint
-
-### Requirement: Ingestion Rules and Thread Affinity
-Frontend hooks SHALL manage unified ingestion rules and thread affinity settings via dedicated API endpoints. The previous triage-specific hooks (`useTriageRules`, `useCreateTriageRule`, etc.) and source filter hooks (`useSourceFilters`, `useCreateSourceFilter`, etc.) are replaced by unified ingestion rules hooks.
-
-#### Scenario: Ingestion rule management
-- **WHEN** ingestion rule hooks are used (`useIngestionRules`, `useCreateIngestionRule`, `useUpdateIngestionRule`, `useDeleteIngestionRule`)
-- **THEN** rules are fetched from `/api/switchboard/ingestion-rules` with `staleTime: 60s` (no refetchInterval by default)
-- **AND** mutations invalidate the `["ingestion-rules"]` query key family
-- **AND** optional scope filtering is supported via query params
-
-#### Scenario: Rule dry-run testing
-- **WHEN** `useTestIngestionRule` is called
-- **THEN** the mutation sends a test envelope to `/api/switchboard/ingestion-rules/test` without invalidating any cache
-
-#### Scenario: Thread affinity management
-- **WHEN** `useThreadAffinitySettings`, `useUpsertThreadAffinityOverride`, `useDeleteThreadAffinityOverride` hooks are used
-- **THEN** settings are fetched with `staleTime: 60s`
-- **AND** override mutations invalidate both settings and overrides query keys
-
-### Requirement: Backfill Job Management
-Frontend hooks in `use-backfill.ts` SHALL manage historical data backfill jobs with lifecycle operations.
-
-#### Scenario: Adaptive polling for active jobs
-- **WHEN** `useBackfillJobProgress(jobId, currentStatus)` is called
-- **THEN** polling interval is 5s when the job status is `pending` or `active`
-- **AND** polling interval falls back to 30s when the job is completed, cancelled, or paused
-
-#### Scenario: Lifecycle mutations
-- **WHEN** pause/cancel/resume mutations succeed
-- **THEN** three query key families are invalidated: `["backfill-jobs"]`, `["backfill-job", jobId]`, and `["backfill-job-progress", jobId]`
-
-### Requirement: Ingestion Analytics
-Frontend hooks in `use-ingestion.ts` SHALL provide multi-tab analytics for the ingestion monitoring page.
-
-#### Scenario: Shared query key strategy
-- **WHEN** the Overview and Connectors tabs share data
-- **THEN** both tabs reuse warm cache via the shared `ingestionKeys` factory
-- **AND** the key hierarchy is `["ingestion", "connectors-list"]`, `["ingestion", "connectors-summary", period]`, etc.
-
-#### Scenario: Lazy-loaded per-tab data
-- **WHEN** a tab is inactive
-- **THEN** its `enabled` flag prevents unnecessary fetches until the tab is activated
-
-### Requirement: Ingestion Timeline Tab Frontend Hooks
-TanStack Query hooks for the Timeline tab on the Ingestion page SHALL follow the same cache-key and stale-time conventions as existing ingestion hooks.
-
-#### Scenario: Ingestion events list hook
-- **WHEN** the Timeline tab renders on the Ingestion page
-- **THEN** `useIngestionEvents(filters)` fetches from `GET /api/ingestion/events` with a 30s stale time
-- **AND** the cache key hierarchy is `["ingestion", "events", filters]`
-
-#### Scenario: Request lineage hook
-- **WHEN** a user selects a specific ingestion event on the Timeline tab
-- **THEN** `useIngestionEventLineage(requestId)` fetches sessions and rollup data in parallel
-- **AND** the sessions cache key is `["ingestion", "events", requestId, "sessions"]`
-- **AND** the rollup cache key is `["ingestion", "events", requestId, "rollup"]`
-- **AND** both use a 30s stale time (no auto-refresh interval; use staleTime only, same as session detail)
 
 ### Requirement: Calendar Overlay Projection
 
@@ -1584,7 +1231,11 @@ The dashboard API SHALL expose a structured day-briefing ("tomorrow at a glance"
 
 ### Requirement: Meeting-Prep Rail Endpoint
 
-The dashboard API SHALL expose `GET /api/calendar/workspace/prep/{event_id}` returning the meeting-prep context (resolved attendees with relationship letter-marks, relationship notes, and last-met) for a selected calendar event. The endpoint MUST be sourced exclusively from the precomputed `calendar.v_prep_contributions` cached view: it MUST NOT issue a direct cross-schema query (e.g. `SELECT ... FROM relationship.*` / `health.*`) at request time and MUST NOT spawn an LLM session. It MUST merge contributions across contributing butlers by attendee `entity_id` (so a single attendee carries relationship context plus any future message context), skip envelopes whose payload `butler` disagrees with the view's hardcoded source column, and fail open to a structured empty payload (never HTTP 500) when no prep contribution exists.
+The dashboard API SHALL expose `GET /api/calendar/workspace/prep/{event_id}` returning the meeting-prep context (resolved attendees with relationship letter-marks, relationship notes, and last-met) for a selected calendar event. The endpoint MUST be sourced exclusively from the precomputed `calendar.v_prep_contributions` cached view: it MUST NOT issue a direct cross-schema query (e.g. `SELECT ... FROM relationship.*` / `health.*`) at request time and MUST NOT spawn an LLM session. It MUST merge contributions across contributing butlers by attendee `entity_id` (so a single attendee carries relationship context plus any future message context), skip envelopes whose payload `butler` disagrees with the view's hardcoded source column, and fail open to a structured empty payload (never HTTP 500) when no prep contribution exists. Each attendee in the response MUST also carry a `commitments` array. Each commitment entry MUST carry `kind` (promise, waiting_for, follow_up, obligation, decision), `direction` (owner_to_other, other_to_owner, self), `summary`, `deadline` (nullable ISO-8601), `escalation_level` as one of the established `L0`, `L1`, `L2`, or `L3` labels, and `fingerprint`. The endpoint MUST continue to read commitments exclusively from the precomputed cached view and MUST NOT query `public.owner_conditions` at request time.
+
+ID: REQ-dashboard-api-054
+Source: RFC 0026 §Out of Scope ("Moment Prep integration")
+Scope: v1-mandatory
 
 #### Scenario: Prep rail returns precomputed context
 - **WHEN** `GET /api/calendar/workspace/prep/{event_id}` is called for an event that has precomputed prep contributions
@@ -1614,117 +1265,30 @@ The dashboard API SHALL expose `GET /api/calendar/workspace/prep/{event_id}` ret
 - **WHEN** a row read from the view has a `value->>'butler'` that does not match the view's hardcoded `butler` source column
 - **THEN** that contribution is skipped with a warning log and excluded from the response
 
-### Requirement: Calendar ICS Export
+#### Scenario: Prep rail response includes commitments per attendee
 
-The dashboard API SHALL expose `GET /api/calendar/export/ics`, a read-only
-data-portability export that streams the calendar workspace entries for a date
-range as a `text/calendar` (iCalendar / VCALENDAR) file generated with the
-`icalendar` library. The export SHALL reuse the existing workspace
-read/projection and accept the same `view`, `butlers`, `sources`, `status`, and
-`source_type` filters as `GET /api/calendar/workspace`, so the exported set
-matches what the workspace read returns for the same inputs. Each entry SHALL
-become a VEVENT whose `SUMMARY` is the entry title verbatim — the `BUTLER:`
-prefix on butler-authored events MUST be preserved. The endpoint MUST perform no
-provider write, MUST NOT spawn an LLM session, and MUST NOT require a database
-migration. ICS subscribe (`webcal`) and `.ics` import are out of scope.
+- **WHEN** `GET /api/calendar/workspace/prep/{event_id}` is called for an event
+  whose precomputed prep contribution includes attendee commitments
+- **THEN** each attendee in the response carries a `commitments` array with
+  `kind`, `direction`, `summary`, `deadline`, `escalation_level`, and
+  `fingerprint` per entry
+- **AND** no on-demand query against `public.owner_conditions` occurs
 
-#### Scenario: Range exported as valid VCALENDAR
+#### Scenario: Prep rail response with no commitments
 
-- **WHEN** `GET /api/calendar/export/ics` is called with a valid `view`, `start`,
-  and `end`
-- **THEN** the response is `text/calendar` with a `Content-Disposition: attachment`
-  header and a body that parses as a valid VCALENDAR containing one VEVENT per
-  workspace entry in the range, each with `UID`, `DTSTART`, `DTEND`, and `SUMMARY`
+- **WHEN** the precomputed prep contribution has an empty `commitments` list for
+  an attendee (or the field is absent in a legacy envelope)
+- **THEN** the API response carries `commitments: []` for that attendee
+- **BECAUSE** the response model normalizes absent to empty for backward
+  compatibility with pre-commitment prep envelopes
 
-#### Scenario: Butler title prefix preserved
+#### Scenario: Commitment fields render correctly in the frontend prep rail
 
-- **WHEN** the exported range includes a butler-authored event whose title begins
-  with the `BUTLER:` prefix
-- **THEN** that event's VEVENT `SUMMARY` retains the `BUTLER:` prefix verbatim
-
-#### Scenario: Empty range yields an empty calendar
-
-- **WHEN** the requested range contains no entries
-- **THEN** the endpoint returns HTTP 200 with a valid VCALENDAR that contains no
-  VEVENT components, rather than an error
-
-#### Scenario: Invalid range rejected
-
-- **WHEN** `end` is not after `start`, or the range exceeds the 90-day maximum,
-  or a `status`/`source_type` facet value is unknown
-- **THEN** the endpoint returns HTTP 400 and writes nothing; a request missing
-  the required `start`/`end` parameters returns HTTP 422
-
-### Requirement: Calendar ICS Subscribe Feed
-
-The dashboard API SHALL expose `GET /api/calendar/subscribe.ics`, a read-only
-live ICS feed an external calendar application can subscribe to (for example via
-`webcal://`). On each fetch the endpoint SHALL re-render the **current** calendar
-workspace entries — over a rolling window relative to the request time (the
-default window is `now − 30 days … now + 60 days`, within the 90-day workspace
-range cap) — as a `text/calendar` (iCalendar / VCALENDAR) body generated with the
-`icalendar` library, reusing the same projection, the `view` / `butlers` /
-`sources` / `status` / `source_type` filters, and the `BUTLER:` title-prefix
-preservation as `GET /api/calendar/export/ics`. The response SHALL use
-`Content-Disposition: inline` so clients treat it as a subscription feed rather
-than a one-shot download. The endpoint MUST perform no provider write, MUST NOT
-spawn an LLM session, MUST NOT require a database migration, and MUST be served
-behind the same network boundary as the other dashboard/calendar endpoints (no
-new unauthenticated surface, no per-feed token).
-
-#### Scenario: Feed re-renders current workspace entries
-
-- **WHEN** `GET /api/calendar/subscribe.ics` is fetched
-- **THEN** the response is HTTP 200 `text/calendar` with a
-  `Content-Disposition: inline` header and a body that parses as a valid
-  VCALENDAR containing one VEVENT per current workspace entry in the rolling
-  window, each with `UID`, `DTSTART`, `DTEND`, and `SUMMARY`
-
-#### Scenario: Butler title prefix preserved
-
-- **WHEN** the feed window includes a butler-authored event whose title begins
-  with the `BUTLER:` prefix
-- **THEN** that event's VEVENT `SUMMARY` retains the `BUTLER:` prefix verbatim
-
-#### Scenario: Unknown facet rejected
-
-- **WHEN** a `status` or `source_type` facet value is unknown
-- **THEN** the endpoint returns HTTP 400 and writes nothing
-
-### Requirement: Calendar ICS Import With Dedup
-
-The dashboard API SHALL expose `POST /api/calendar/import/ics`, which accepts an
-uploaded `.ics` file plus a target `butler_name` (and optional `calendar_id`),
-parses its VEVENT components, and creates the events in the user calendar through
-the existing `calendar_create_event` MCP path. The import SHALL be **deduplicated
-against existing workspace entries** using the read-model's existing
-`(title, starts_epoch)` collapse key: an event whose collapse key matches an
-existing workspace entry — including every event when the same `.ics` is imported
-again — MUST be skipped rather than creating a duplicate. Duplicate VEVENTs within
-the uploaded file itself MUST also be collapsed. The endpoint SHALL return the
-`parsed`, `imported`, and `skipped_duplicates` counts, where
-`imported + skipped_duplicates == parsed`. The endpoint MUST require no database
-migration.
-
-#### Scenario: New events imported
-
-- **WHEN** a `.ics` containing events not present in the workspace is imported
-- **THEN** each such event is created via `calendar_create_event` and the
-  response reports `imported` equal to the number of new events with
-  `skipped_duplicates` of 0
-
-#### Scenario: Re-importing the same file is a no-op
-
-- **WHEN** a `.ics` whose events already exist in the workspace (the
-  `(title, starts_epoch)` collapse key matches existing entries) is imported
-- **THEN** no `calendar_create_event` call is made for those events and the
-  response reports `imported` of 0 with `skipped_duplicates` equal to the parsed
-  event count
-
-#### Scenario: Empty or invalid payload rejected
-
-- **WHEN** the uploaded file is empty or is not parseable as iCalendar
-- **THEN** the endpoint returns HTTP 400 and creates nothing
+- **WHEN** the prep rail component renders an attendee with active commitments
+- **THEN** each commitment is displayed as a row showing the kind icon,
+  direction indicator, summary text, deadline (when present), and its `L0` through
+  `L3` escalation label
+- **AND** commitments at `L2` or `L3` are visually emphasized
 
 ### Requirement: Prep Rail Surfaces Merged Message Context
 
@@ -1744,98 +1308,6 @@ open to a structured empty payload when no contribution exists.
 #### Scenario: Message context surfaced without request-time cross-butler read
 - **WHEN** the prep rail read serves an event with email message context
 - **THEN** the `message_context` is read only from `calendar.v_prep_contributions` (the precomputed cached view), with no on-demand `SELECT` against any sibling schema and no LLM/Gmail session opened while serving the request
-
-### Requirement: Calendar Duplicate-Cluster Review
-
-The dashboard API SHALL expose `GET /api/calendar/workspace/duplicates`, a
-read-only surface that exposes the cross-source duplicate clusters the workspace
-read-model collapses. For a `view` + `start` + `end` range it SHALL re-run the
-same two-pass dedup over the un-collapsed workspace rows and return every cluster
-of more than one member the dedup would collapse: the kept survivor (lowest
-keyset), the collapsed-away `duplicate_entries`, the `match_pass`
-(`origin_ref` | `title`) that grouped them, the `member_count`, and a
-`keep_separate` flag. Clusters with fewer members than the active
-`noisy_threshold` SHALL be omitted. The endpoint MUST be fail-open: any read
-failure SHALL yield HTTP 200 with `available=false` and an empty `clusters` list,
-never an HTTP 500. It MUST perform no provider write and MUST NOT spawn an LLM
-session.
-
-#### Scenario: Collapsed cluster exposed
-
-- **WHEN** the same event is synced into multiple butler schemas (identical
-  `origin_ref` + start) and `GET /api/calendar/workspace/duplicates` is called
-  for a range covering it
-- **THEN** the response contains one cluster with `match_pass="origin_ref"`,
-  `member_count` equal to the number of copies, a `kept_entry`, and the remaining
-  copies as `duplicate_entries`, and `available=true`
-
-#### Scenario: Below-threshold clusters omitted
-
-- **WHEN** a cluster's member count is less than the active `noisy_threshold`
-- **THEN** that cluster is not included in the returned `clusters` list
-
-#### Scenario: Fail-open on read failure
-
-- **WHEN** the underlying workspace read fails
-- **THEN** the endpoint returns HTTP 200 with `available=false` and an empty
-  `clusters` list rather than an error
-
-#### Scenario: Invalid range rejected
-
-- **WHEN** `end` is not after `start`, or the range exceeds the 90-day maximum
-- **THEN** the endpoint returns HTTP 400; a request missing the required
-  `start`/`end` parameters returns HTTP 422
-
-### Requirement: Calendar Dedup Rules
-
-The dashboard API SHALL expose `PATCH /api/calendar/workspace/dedup-rules` to
-persist the workspace-global cross-source dedup rules: a `match_strategy` of
-`exact` (origin-ref identity pass only), `balanced` (origin-ref + title/start
-collapse; the default), or `aggressive` (as `balanced` but normalising titles by
-stripping non-alphanumerics), and a `noisy_threshold` (minimum cluster size for
-the review surface to report a cluster, at least 2). Omitted fields SHALL be left
-unchanged. An unknown `match_strategy` SHALL be rejected without persisting. The
-live workspace read SHALL honor the persisted rules so that changing the strategy
-changes what the read collapses. The rules SHALL persist across requests.
-
-#### Scenario: Strategy and threshold persisted
-
-- **WHEN** `PATCH /api/calendar/workspace/dedup-rules` is called with a valid
-  `match_strategy` and `noisy_threshold`
-- **THEN** the endpoint returns HTTP 200 with the new rules and a subsequent read
-  of the rules returns the persisted values
-
-#### Scenario: Unknown strategy rejected
-
-- **WHEN** `PATCH /api/calendar/workspace/dedup-rules` is called with a
-  `match_strategy` outside `exact`/`balanced`/`aggressive`
-- **THEN** the endpoint rejects the request (HTTP 400 or 422) and does not change
-  the persisted rules
-
-### Requirement: Calendar Keep-Separate Override
-
-The dashboard API SHALL expose `POST /api/calendar/workspace/duplicates/keep-separate`
-to pin or unpin a duplicate cluster (identified by its `cluster_key`) so the
-dedup does not collapse it. When pinned (`keep_separate=true`) the workspace read
-SHALL keep all members of that cluster as distinct entries, and the review
-surface SHALL still report the cluster with its `keep_separate` flag set. When
-unpinned (`keep_separate=false`) the override SHALL be removed and the cluster
-SHALL collapse again under the active rules. Overrides SHALL persist across
-requests.
-
-#### Scenario: Pinned cluster is not collapsed
-
-- **WHEN** a cluster is pinned via `POST /api/calendar/workspace/duplicates/keep-separate`
-  with `keep_separate=true`
-- **THEN** the workspace read keeps every member of that cluster as a distinct
-  entry, and the duplicates surface still lists the cluster with
-  `keep_separate=true`
-
-#### Scenario: Unpin restores collapse
-
-- **WHEN** a previously-pinned cluster is unpinned with `keep_separate=false`
-- **THEN** the override is removed and the cluster collapses again under the
-  active dedup rules
 
 ### Requirement: Calendar Mutation Audit-Trail Read Endpoint
 
@@ -1898,91 +1370,6 @@ self-explaining and deep-linkable to the originating session.
   history — the frontend renders a "some sources unavailable" note. A clean
   fan-out (or a legitimately empty log) reports `sources_available: true`
   (default), and clients that ignore the field observe the prior shape.
-
-### Requirement: Calendar Mutation Undo Endpoint
-
-`src/butlers/api/routers/calendar_workspace.py` SHALL expose
-`POST /api/calendar/workspace/undo/{action_id}` that reverses a single previously
-logged calendar mutation. The endpoint SHALL synthesize the inverse mutation from
-the logged `calendar_action_log` row (`action_payload` plus the captured
-pre-mutation state in `action_result`) and dispatch it through the **existing**
-calendar MCP tools with a **fresh `request_id`**; it SHALL NOT introduce a new
-MCP tool and SHALL NOT reverse an action that was never applied, was already
-undone, or whose pre-state is unavailable.
-
-#### Scenario: Undo an update reverse-applies the captured pre-state
-
-- **WHEN** `POST /api/calendar/workspace/undo/{action_id}` is called for an
-  `applied` `workspace_user_update` row whose `action_result` carries the
-  pre-mutation event state
-- **THEN** an inverse `calendar_update_event` is dispatched that restores the
-  event's pre-state fields (title, start/end, timezone, location, description,
-  attendees, recurrence, calendar id, and linked people) with a freshly generated
-  `request_id`
-- **AND** an empty captured people set is dispatched as `entity_ids: []` plus
-  `clear_entity_ids: true`, so undo restores an originally-unlinked event rather
-  than preserving newly added links
-- **AND** the undo dispatch is itself recorded in `calendar_action_log` (so it is
-  idempotent and appears in the audit trail)
-- **AND** the response reports the undone `action_id`, the inverse tool invoked,
-  and the new `request_id`
-
-#### Scenario: Undo a delete recreates the event from the pre-image
-
-- **WHEN** the undone row is an `applied` `workspace_user_delete` whose
-  `action_result` carries the pre-deletion event state
-- **THEN** an inverse `calendar_create_event` is dispatched from the captured
-  pre-image with a fresh `request_id`, recreating the event and its linked people
-  on its home calendar
-
-#### Scenario: Undo a create deletes the created event
-
-- **WHEN** the undone row is an `applied` `workspace_user_create`
-- **THEN** an inverse `calendar_delete_event` is dispatched against the created
-  event id (from the row's `origin_ref`/`action_result`) with a fresh `request_id`
-
-#### Scenario: Undo of a non-applied action fails fast
-
-- **WHEN** `POST /api/calendar/workspace/undo/{action_id}` targets a row whose
-  `action_status` is `pending`, `failed`, or `noop`
-- **THEN** the endpoint returns a fail-fast error (HTTP 409) naming the row's
-  status and stating that only an `applied` mutation can be undone
-- **AND** no inverse mutation is dispatched
-
-#### Scenario: Undo of a missing or expired pre-state fails fast with diagnostics
-
-- **WHEN** the targeted row exists and is `applied` but its `action_result` lacks
-  the captured pre-mutation state (e.g. it was logged before pre-state capture, or
-  the event no longer exists to restore against)
-- **THEN** the endpoint returns a fail-fast error (HTTP 422) whose detail names
-  the `action_id`, the `action_type`, and the reason the inverse could not be
-  reconstructed (missing/expired pre-state)
-- **AND** no inverse mutation is dispatched
-- **BECAUSE** silently guessing an inverse on a single-owner calendar could
-  materialize a wrong event or a wrong restore
-
-#### Scenario: Undo of an unknown action id returns not found
-
-- **WHEN** `{action_id}` does not match any `calendar_action_log` row **and every
-  targeted calendar schema's owner-lookup fan-out responded successfully**
-- **THEN** the endpoint returns HTTP 404 and dispatches no mutation
-
-#### Scenario: Undo owner-lookup inconclusive on a source failure returns 503
-
-- **WHEN** `{action_id}` matches no returned row but at least one targeted calendar
-  schema's owner-lookup fan-out FAILED (so the owning schema may simply have been
-  unreachable)
-- **THEN** the endpoint returns HTTP 503 (retryable) naming that one or more
-  calendar sources were unavailable, and dispatches no mutation
-- **BECAUSE** a transient source failure MUST NOT be reported as a definitive 404
-  "this action does not exist" — that would fabricate absence from a degraded read
-
-#### Scenario: Repeated undo of the same action is rejected
-
-- **WHEN** `POST /api/calendar/workspace/undo/{action_id}` is called for an action
-  whose inverse mutation has already been dispatched and recorded
-- **THEN** the endpoint fails fast (HTTP 409) reporting the action was already
-  undone, rather than dispatching a second inverse
 
 ### Requirement: Calendar Workspace Single-Entry Lookup
 
@@ -2090,135 +1477,6 @@ The read MUST be fail-open and honest: a resolution-query failure SHALL NOT drop
 - **WHEN** a client that predates this change reads the workspace response
 - **THEN** it observes the prior `UnifiedCalendarEntry` shape unchanged, with entry-level `linked_people` defaulting to `[]`, and the response envelope's `people_source_available` defaulting to `true` (both optional/additive)
 
-#### Scenario: User event removes its final linked person
-- **WHEN** `POST /api/calendar/workspace/user-events` receives an `action="update"` payload with `entity_ids: []` and `clear_entity_ids: true`
-- **THEN** the dashboard API forwards both values unchanged to `calendar_update_event`
-- **AND** the calendar projection removes the event's existing people links
-- **AND** the API rejects a clear signal paired with omitted or non-empty `entity_ids`
-- **AND** a title-only update, or an empty `entity_ids` value without the explicit flag, preserves existing people links
-
-### Requirement: Decisions Digest Endpoint
-
-The dashboard API SHALL expose `GET /api/decisions` as a read-only
-`ApiResponse<DecisionBeadSummary[]>` wrapper around
-`butlers.jobs.decision_review.compute_decision_digest()`. The endpoint MUST
-NOT re-implement the label-only classifier, escalation calculation, or
-exported-JSONL reader; it MUST NOT call `bd`, Dolt, the convention linter, or
-any decision mutation/default-application path. An open decision is a
-non-epic bead with the `decision` label, and title text alone MUST NOT include
-a record.
-
-Each summary SHALL retain the existing `id`, `title`, `priority`, `created_at`,
-`age_hours`, and escalation fields, and SHALL additionally project:
-
-- `description`: the exported string description or `null` when it is absent
-  or not a string;
-- `options`: the ordered exported `metadata.decision.options` strings or
-  `null` when they cannot be trusted;
-- `default`: the exported `metadata.decision.default` string or `null` when it
-  cannot be trusted;
-- `due_at`: the exported native Beads `due_at` timestamp or `null` when it is
-  absent or invalid;
-- `structured_details_available`: whether the governed decision metadata and
-  native deadline are valid; and
-- `structured_details_unavailable_reason`: `null` when details are available,
-  otherwise a named missing or malformed source reason.
-
-The projection SHALL preserve option order. It SHALL mark structured details
-available only when `metadata.decision.options` is a non-empty ordered list of
-distinct non-blank strings, `metadata.decision.default` is a non-blank string
-that exactly matches an option, and `due_at` is a valid native timestamp. It
-MUST NOT sort, normalize, infer, apply, or silently replace an option/default
-or deadline. Missing decision metadata and malformed decision metadata SHALL
-remain distinguishable through the unavailable reason.
-
-The response `meta` SHALL retain `decisions_available: boolean`. Missing,
-stale, or unreadable exports SHALL return `data: []` with
-`decisions_available: false` and `unavailable_reason`; a readable export with
-zero decisions SHALL return `decisions_available: true` and an empty list.
-`meta.export_as_of` SHALL retain the export mtime whenever it can be stat'd,
-including a stale export. Open decisions SHALL remain oldest-first.
-
-#### Scenario: Valid structured context preserves order and the native deadline
-
-- **WHEN** a readable export contains an open decision with a string description,
-  ordered valid options, a matching default, and a valid `due_at`
-- **THEN** its API summary contains those values without reordering or inference
-- **AND** `structured_details_available` is `true`
-- **AND** `structured_details_unavailable_reason` is `null`
-
-#### Scenario: Malformed metadata is visible without degrading the whole export
-
-- **WHEN** a readable export contains an otherwise eligible decision whose
-  `metadata.decision.options` or default violates the decision convention
-- **THEN** the response still contains that decision and
-  `meta.decisions_available` remains `true`
-- **AND** that decision reports `structured_details_available: false` with a
-  named malformed-metadata reason
-- **AND** the endpoint MUST NOT turn the invalid source into a calm empty
-  options/default result
-
-#### Scenario: Missing structured metadata is distinct from malformed metadata
-
-- **WHEN** a readable export contains an eligible decision with no
-  `metadata.decision` mapping
-- **THEN** that decision reports `structured_details_available: false` with a
-  named missing-metadata reason
-- **AND** it is not reported as a malformed whole export
-
-#### Scenario: Degraded export never reads as an all-clear
-
-- **WHEN** the beads export is missing, stale, or unreadable
-- **THEN** `GET /api/decisions` returns HTTP 200 with `data: []`
-- **AND** `meta.decisions_available` is `false`
-- **AND** `meta.unavailable_reason` names the export failure
-
-#### Scenario: Escalated decision carries blocking detail
-
-- **WHEN** an open decision has blocked an open P1 bug or deploy-marked bead
-  for more than 48 hours
-- **THEN** its unchanged escalation fields describe the longest-blocked hit
-
-#### Scenario: A stale export still reports its known age
-
-- **WHEN** the export is readable but stale enough to set
-  `decisions_available: false`
-- **THEN** `meta.export_as_of` remains populated with the export mtime
-
-### Requirement: Scheduled Decision-Convention Lint Uses Live Candidates
-
-The scheduled full-export marker-lint selection SHALL select only `open`,
-`in_progress`, and `blocked` issues before linting. When
-`scripts/lint_decision_beads.py` receives a full export through
-`--check-unlabeled-markers` without explicit issue IDs, that filter SHALL
-apply to both decision-labeled records and unlabeled title-marker matches so
-closed history does not create a weekly owner-facing migration alert.
-
-The scheduled decision-review subprocess SHALL retain fail-closed handling:
-missing/unreadable inputs, unexpected exits, malformed output, or output whose
-result records are not `{id: str, title: str, ok: bool, violations: list[str]}`
-MUST return an unavailable scheduled result and record the existing failed
-attention-ledger path without raising. A successful zero-candidate result
-SHALL remain the normal `no_decisions` result. Explicit issue ids and ordinary
-non-strict `--status all` audits SHALL retain forensic historical visibility.
-
-#### Scenario: Closed malformed records do not enter the weekly lint lane
-
-- **WHEN** scheduled marker-mode lint reads a full export containing both an
-  open malformed candidate and a closed malformed candidate
-- **THEN** only the open candidate is returned as a lint violation
-- **AND** the closed record creates no owner-facing migration alert
-
-#### Scenario: Scheduled lint failure is unavailable rather than calm
-
-- **WHEN** the scheduled marker-mode lint script or input is unavailable, its
-  process exits unexpectedly, or its output is malformed
-- **THEN** the scheduled digest returns unavailable with a `data_unavailable:`
-  reason and continues scheduler processing without raising
-- **AND** it MUST NOT return `available: true` with `outcome: "no_decisions"`
-
----
-
 ### Requirement: Memory stats expose typed graph-health coverage
 
 `GET /api/memory/stats` SHALL add an additive `meta.graph_health` object with
@@ -2318,3 +1576,502 @@ The `/api/secrets/*` probe and reauthorize mutations SHALL publish credential ev
 - **AND** when the reference resolves to no credential, or its resolution fails, the dance SHALL continue hint-free rather than falling back to publishing the stored value
 - **AND** a first-time connect, where no stored account exists, SHALL produce a hint-free URL as before
 - **AND** this requirement binds what the reauthorize mutation may put on that URL; the `account_hint` parameter of `/api/oauth/<provider>/start` itself is unchanged and remains available to a caller that legitimately holds an account address (see `google-multi-account-oauth`)
+
+### Requirement: Session List Owner-Cancellation Discriminator
+
+The session-list API SHALL include `cancelled_by_owner: boolean` on every
+`SessionSummary` returned by `GET /api/sessions` and `GET
+/api/butlers/{name}/sessions`.
+The field SHALL be true only when the row is terminally unsuccessful and its
+stored outcome is the exact canonical owner-cancellation marker written by
+`Spawner.cancel_session()`. List responses SHALL NOT expose the raw `error`
+string to derive this presentation state.
+
+#### Scenario: Canonical owner cancellation is projected without error text
+
+- **WHEN** a session row has `success = false` and the canonical
+  owner-cancellation outcome
+- **THEN** both session-list routes return `cancelled_by_owner: true` for that
+  summary
+- **AND** neither response item contains an `error` field
+
+#### Scenario: Generic failure remains distinct
+
+- **WHEN** a terminal unsuccessful session has any error outcome other than
+  the canonical owner-cancellation marker
+- **THEN** both session-list routes return `cancelled_by_owner: false`
+
+#### Scenario: Non-terminal session is never labelled cancelled
+
+- **WHEN** a session is non-terminal (`success = null`)
+- **THEN** both session-list routes return `cancelled_by_owner: false`
+- **AND** their existing pagination envelopes and semantics remain unchanged
+
+### Requirement: Approval metrics identify partial source families
+
+`GET /api/approvals/metrics` SHALL distinguish a configured source family with
+zero rows from a `pending_actions` or `approval_rules` family that could not be
+fully read. It SHALL retain successful numeric contributions and expose failed
+source names in `meta.pending_actions_sources_degraded` and
+`meta.approval_rules_sources_degraded`, respectively. When either list is
+non-empty, `meta.sources_degraded` SHALL contain their de-duplicated union.
+Absent or empty family-specific lists mean that family's numeric zero is a
+truthful complete result.
+
+#### Scenario: No configured pools produce genuine zeroes
+
+- **WHEN** no registered approvals source has `pending_actions` or
+  `approval_rules`
+- **THEN** the endpoint returns its normal zero-valued metrics response
+- **AND** neither family is marked degraded
+- **AND** clients may treat `total_pending = 0` and `active_rules_count = 0` as
+  complete values.
+
+#### Scenario: A pending-actions pool fails after another succeeds
+
+- **WHEN** one `pending_actions` pool returns metrics and another cannot be
+  discovered or queried
+- **THEN** the endpoint returns HTTP 200 with the healthy pool's contributions
+- **AND** `meta.pending_actions_sources_degraded` names the failed pool
+- **AND** `meta.sources_degraded` names that failed pool
+- **AND** `total_pending` and every decision-derived metric are partial values,
+  never proof that the fleet has no pending approvals.
+
+#### Scenario: An approval-rules pool fails independently
+
+- **WHEN** all pending-actions pools return successfully but an
+  `approval_rules` pool cannot be discovered or queried
+- **THEN** the pending and decision metrics remain complete and usable
+- **AND** `meta.approval_rules_sources_degraded` names the failed pool
+- **AND** `active_rules_count` is treated as partial rather than a trustworthy
+  zero.
+
+### Requirement: Canonical Calendar Workspace Operational Ownership
+
+Aggregate Calendar Workspace source/read and global-sync surfaces SHALL select one deterministic operational owner for duplicate provider-source ledger rows while preserving the underlying cross-schema fan-out ledger unchanged.
+
+#### Scenario: Fresh core-capable owner wins a stale non-core duplicate
+
+- **WHEN** the same provider `source_key` is returned from multiple schemas and one copy is disabled or lacks the calendar `core` tool group while another enabled copy is core-capable
+- **THEN** `GET /api/calendar/workspace` source freshness and `GET /api/calendar/workspace/meta` connected/writable source data use the enabled core-capable copy
+- **AND** the selection prefers the latest successful/sync timestamp among otherwise eligible copies with deterministic schema/id tie-breaking
+- **AND** the router does not delete, update, or omit the raw duplicate rows from the versioned read-model boundary
+
+#### Scenario: Global sync batches by canonical owner
+
+- **WHEN** `POST /api/calendar/workspace/sync` is called with `all=true`
+- **THEN** the API selects canonical enabled provider rows and groups them by their selected `db_butler`
+- **AND** it sends at most one owner-wide queued force-sync request without `calendar_id` to each selected owner
+- **AND** it does not invoke non-core duplicate owners or issue one provider request per cross-schema duplicate
+
+### Requirement: Queued Calendar Workspace Sync Acknowledgement
+
+Calendar Workspace manual sync SHALL acknowledge durable queued execution separately from provider completion.
+
+#### Scenario: Global or source sync is accepted without waiting for provider I/O
+
+- **WHEN** `POST /api/calendar/workspace/sync` accepts one or more queued `calendar_force_sync` MCP acknowledgements
+- **THEN** it returns HTTP `202 Accepted` with per-owner/per-source targets whose `status` is `queued`, request correlation, and coalescing information
+- **AND** `triggered_count` counts accepted queued targets
+- **AND** `full=true` is forwarded as queued recovery intent but the response does not claim that recovery has already completed
+
+#### Scenario: Queue acknowledgement surfaces immediate dispatch failure honestly
+
+- **WHEN** a selected owner cannot be reached or rejects queued force-sync acceptance
+- **THEN** its target is returned with `status="failed"` and an actionable error while independently accepted targets remain visible
+- **AND** the API does not report a provider sync as completed merely because another owner accepted a command
+
+#### Scenario: Completion remains observable through existing calendar telemetry
+
+- **WHEN** a client receives a queued workspace-sync acknowledgement
+- **THEN** it uses source freshness and calendar action-log/audit status to observe the eventual `applied` or `failed` outcome
+- **AND** the frontend describes the acknowledgement as queued rather than completed or recovered
+
+### Requirement: Memory APIs Expose Truthful Source Episode State
+
+Memory API responses for facts, rules, and generic memory links SHALL expose a
+typed episode-reference state whenever an episode identifier is present. The
+state MUST be `available`, `expired`, or `unresolved`: `available` only when
+the live episode can be read; `expired` when a content-free tombstone proves
+deletion; and `unresolved` when neither relation establishes the source state.
+The API MUST NOT omit a retained identifier or describe it as no provenance
+solely because its episode is deleted.
+
+#### Scenario: Fact and rule retain an expired source reference
+
+- **WHEN** a fact or rule has a `source_episode_id` whose tombstone exists
+- **THEN** its API response MUST retain that identifier and return source state
+  `expired`
+- **AND** it MUST NOT return raw episode content or internal deletion details
+
+#### Scenario: Generic link reports expired episode endpoint
+
+- **WHEN** a memory-link endpoint is an episode whose tombstone exists
+- **THEN** the generic link API or tool response MUST mark that endpoint as
+  `expired`
+- **AND** the relation MUST remain visible as durable provenance evidence
+
+#### Scenario: Unknown source stays explicit
+
+- **WHEN** a fact, rule, or generic link names an episode identifier that is
+  neither live nor tombstoned
+- **THEN** the response MUST report source state `unresolved`
+- **AND** it MUST NOT claim that the source is available or absent by design
+
+### Requirement: Exact Audit-To-Issues Evidence Door
+`GET /api/issues/group-for-audit/{audit_id}` SHALL resolve one `public.audit_log` row to the exact Issues group the feed itself would compute, and SHALL state absence explicitly rather than returning an empty result the caller could render as calm.
+
+#### Scenario: A failure row resolves to the group identity the feed computes
+- **WHEN** `GET /api/issues/group-for-audit/{audit_id}` is called for an
+  `audit_log` row whose `result` is `error`
+- **THEN** the group is resolved through the same `normalized_errors` CTE the
+  feed uses, so the returned `issue_key` is byte-identical to the feed's and the
+  occurrence count includes every row that normalizes onto the same
+  `error_summary`
+- **AND** the response carries an `issues_href` that opens the Issues page on
+  exactly that one group, in the window the answer was computed in
+
+#### Scenario: The resolution window widens to contain the row
+- **WHEN** the caller does not pin a window
+- **THEN** the server selects the narrowest window from the Issues page's own
+  ladder (`24h`, `7d`, `30d`, `all`) that actually contains the audit row, so a
+  failure older than the page's seven-day default is not resolved against a view
+  that structurally cannot hold its group
+- **AND** the chosen window is returned with the answer and preserved by the
+  link, so the destination shows the group the answer describes
+
+#### Scenario: Absence is stated, and is distinct from an unavailable lookup
+- **WHEN** the named row is not an error row, or its group has no occurrences
+  inside the resolved window
+- **THEN** the response is `found: false` with a `reason` distinguishing the two
+  cases, and carries no link to a group that does not exist
+- **AND** when the lookup itself cannot be performed the endpoint returns 503,
+  never `found: false` — "we could not check" and "there is nothing there" are
+  different claims
+- **AND** an `audit_id` naming no row at all returns 404
+- **AND** the Audit Log renders these three outcomes as three distinct things: a
+  link, an explicit statement of absence naming its scope, and a
+  `SourceDegradedNote`
+
+### Requirement: Canonical CLI Authority Projection
+
+The Secrets inventory SHALL use a canonical shared CLI row as the health authority for a CLI credential key whenever that row exists. Same-key per-butler system rows are compatibility mirrors and SHALL NOT override the canonical state or inflate CLI-family failing/unverified counts. When no canonical CLI row exists, per-butler mirrors MAY supply the legacy display fallback and SHALL retain most-severe aggregation.
+
+#### Scenario: Canonical CLI health overrides stale mirrors
+
+- **WHEN** `cli[]` contains a credential key and `system[]` contains same-key `cli-auth` mirrors
+- **THEN** CLI-family state and KPI counts use the canonical `cli[]` row only
+- **AND** the raw per-source System evidence remains available without rewriting credential data
+
+#### Scenario: Legacy mirror remains visible without canonical state
+
+- **WHEN** no canonical `cli[]` row exists for a `cli-auth` key
+- **THEN** same-key per-butler mirrors remain eligible for the CLI display family
+- **AND** their most severe state determines the fallback display state
+
+### Requirement: Dashboard Query Defaults and Refresh
+
+The frontend SHALL fetch dashboard data through shared query hooks with a 30-second default stale time, at most one retry (never retrying an HTTP 401), no background refetch while the tab is hidden, and mutation success invalidating the reads it affects. Refresh cadence for bus-covered reads is specified in `dashboard-shell` "Bus-Aware Poll Architecture".
+
+#### Scenario: Default query behavior
+- **WHEN** a dashboard read runs with no per-hook override
+- **THEN** its data is considered fresh for 30 seconds
+- **AND** a failed read is retried at most once, and an HTTP 401 is not retried
+- **AND** interval refetches pause while the browser tab is hidden
+
+#### Scenario: Mutations refresh the reads they affect
+- **WHEN** a mutation succeeds
+- **THEN** the dashboard invalidates the cached reads whose data the mutation changed, so the affected views refetch without a manual reload
+
+#### Scenario: Debounced search
+- **WHEN** `useSearch(query)` is called
+- **THEN** the query is debounced by 300ms and only fires when the query length is at least 2 characters
+
+#### Scenario: Conditional query enablement
+- **WHEN** a hook receives a nullable identifier (e.g., `useButler(name)`)
+- **THEN** the query does not execute until the identifier is available
+
+### Requirement: Audit Log Credential-Key Filter
+
+`GET /api/audit-log?key=` SHALL filter `public.audit_log` rows by canonical credential key, using the same key format as the `/secrets` focus key and the normalisation defined in `core-credentials`. The full read contract is specified in `dashboard-audit-log` "Audit Log Read API".
+
+#### Scenario: Filter by canonical credential key
+- **WHEN** `GET /api/audit-log?key=u:google&limit=50` is called
+- **THEN** the response is `PaginatedResponse<AuditLogEntry>` filtered to `public.audit_log` rows whose normalised `target` equals the canonical credential key `u:google`
+- **AND** the canonical credential-key format matches the focus-key format used by the `/secrets` page: `u:<provider>`, `s:<KEY>`, `c:<id>`
+- **AND** a normalisation function (defined in `core-credentials`) is applied to match against existing `target` values written by other writers (including rows written in non-canonical formats)
+- **AND** `?since=`, `?actor=`, `?action=`, and `?limit=` are combinable with `?key=`
+- **AND** the response uses the `PaginatedResponse<T>` envelope (RFC 0007), not the `ApiResponse<T>` envelope
+
+#### Scenario: Unknown credential key returns empty page
+- **WHEN** `GET /api/audit-log?key=u:does-not-exist` is called
+- **THEN** the response is an empty `PaginatedResponse` with `meta.total = 0` and `meta.has_more = false`
+
+### Requirement: Cross-Domain API Route Rules
+
+The API SHALL publish its complete route inventory through the FastAPI-generated OpenAPI schema (`/openapi.json`); each route's request and response contract is owned by the per-domain requirement or capability spec that names it. This requirement carries only the cross-domain route rules below.
+
+#### Scenario: Single-session detail is served only by the cross-butler route
+- **WHEN** a client needs the detail of one session
+- **THEN** it calls the cross-butler fan-out `GET /api/sessions/{id}`, which resolves pinned rows and deep links without a `?butler=` hint because session ids are globally unique
+- **AND** no butler-scoped session detail route is mounted; `GET /api/butlers/{name}/sessions` serves only the butler-scoped list
+
+#### Scenario: Ingestion-events list uses the cursor envelope and channels filter
+- **WHEN** `GET /api/ingestion/events` is called with `limit` and an optional opaque `cursor` taken from the preceding response
+- **THEN** the response uses the shared `Page[T]` envelope `{ "items": T[], "next_cursor": string | null, "limit": integer }` and returns no `total`, `offset` or `has_more` (a non-null `next_cursor` means more rows remain)
+- **AND** a cursor that is malformed, tampered with, or issued by another endpoint is rejected with HTTP 400
+- **AND** `channels` is the primary comma-separated source-channel filter
+- **AND** there is no single-value channel alias; an empty `channels=` applies no channel filter
+
+#### Scenario: Schedule Execution Semantics
+- **WHEN** the dashboard displays or interprets schedule data
+- **THEN** `Schedule.source` describes the schedule origin (`toml` for TOML-defined, `db` for dashboard-created); it is NOT the execution mode
+- **AND** runtime-mode schedules (those with a `prompt`) execute through `spawner.trigger(..., trigger_source="schedule:<task-name>")` and correlate with `sessions` rows
+- **AND** native-mode schedules (those with `dispatch_mode = "job"` and `job_name`) execute deterministic Python jobs directly and may not create `sessions` rows
+- **AND** the dashboard treats schedule status fields (`enabled`, `next_run_at`, `last_run_at`) as authoritative regardless of execution mode
+- **AND** schedule failures for both execution modes surface through `GET /api/issues` as `scheduled_task_failure:<schedule-name>`
+
+#### Scenario: Dashboard conversation stream and Stop semantics
+- **WHEN** the dashboard submits a user turn
+- **THEN** the API opens durable control keyed by the immutable `message_id` before external ingress, and only the caller with the `dispatch` claim may invoke `ingest.v1`
+- **AND** a caller observing `accepted` observes the original request, while `pending` or `cancelling` yields `INGEST_IN_PROGRESS` plus `done` and never creates a replay
+- **AND** confirmed cancellation yields `SESSION_CANCELLED`; an unprovable recovered predecessor yields `TURN_OUTCOME_UNKNOWN`; both suppress automatic replay
+- **AND** the raw `ConversationCancelResponse` documents exactly one truthful Stop result (`cancelled`, `already_finished`, or unconfirmed), while non-2xx failures retain `ErrorResponse`
+
+#### Scenario: Notifications degraded source is named, not rendered as an all-clear
+- **WHEN** `GET /api/notifications` or `GET /api/notifications/stats` returns
+  HTTP 200 but the Switchboard notifications source was unreachable (so the
+  counts are zero placeholders and the list page is empty)
+- **THEN** the response carries `source_available: false` (following the
+  fleet-wide degraded-envelope convention); the field is absent or `true` when
+  the source answered
+- **AND** the frontend notifications page SHALL NOT render the fabricated zeros
+  as a truthful tally — the stats tiles show an em-dash (not a green `0.0%`
+  failure rate) and the feed shows a named `SourceDegradedNote` naming the
+  unreachable source rather than the calm "No notifications found" empty state
+- **AND** a reachable-but-empty source (`source_available` absent or `true`
+  with genuine zeros) keeps its honest zeros and empty state
+
+#### Scenario: Manual retry re-sends a failed notification and links the new attempt
+- **WHEN** `POST /api/notifications/{id}/retry` is called on a notification
+  whose stored `status` is `failed`
+- **THEN** the backend re-invokes delivery in-process (the same
+  approval-push-runtime pattern the dashboard-API process already uses to
+  call `deliver()` without a `switchboard_client` MCP connection), using the
+  envelope persisted at delivery time (`metadata.notify_request`) or, for
+  older rows that predate it, a synthetic envelope built from the row's own
+  `channel`/`recipient`/`message` columns
+- **AND** the original notification is flipped to `status = 'read'` with a
+  `metadata.retried_to` marker pointing at the new attempt's id, regardless
+  of whether the new attempt itself succeeds or fails again — a human has
+  acted on it either way, and a retry that fails again is its own new,
+  independently actionable row rather than a reason to leave the original
+  stuck in `failed`
+- **AND** the response reports the new attempt's own `status` (`sent` or
+  `failed`) and `error`, never a fabricated success for the original
+- **AND** a best-effort `public.attention_ledger` event is recorded
+  (`source="notify"`, `outcome="delivered"` or `"failed"`,
+  `notification_ref` set to the new attempt's id) so the manual action is
+  traceable the same way an automatic notify() outcome is
+- **AND** `GET /api/notifications?status=terminal_failed` and the aggregate
+  `failed` count in `GET /api/notifications/stats` no longer include the
+  original row afterward, since it is no longer `status = 'failed'`
+- **AND** `effective_status` on the original row reports `"retried"` (not
+  the generic `"read"`) so the UI communicates what happened, not just that
+  it was acknowledged
+
+#### Scenario: Manual retry rejects a non-failed notification
+- **WHEN** `POST /api/notifications/{id}/retry` or `.../escalate` is called
+  on a notification whose stored `status` is not `failed`
+- **THEN** the endpoint returns HTTP 409 without attempting delivery
+- **AND** HTTP 404 is returned when `{id}` does not exist, and HTTP 503 when
+  the Switchboard pool is unavailable
+
+#### Scenario: Concurrent or replayed retry/escalate never double-delivers
+- **WHEN** two `POST .../retry` (or two `.../escalate`) requests for the same
+  `{id}` race — a double-click, two open tabs, or a client resending after a
+  perceived timeout — and both observe `status = 'failed'` on their initial
+  read
+- **THEN** immediately before invoking real delivery, the backend atomically
+  claims the row with a single conditional `UPDATE notifications SET status
+  = 'read' WHERE id = $1 AND status = 'failed' RETURNING *`; only the first
+  request's `UPDATE` can match a `'failed'` row, so exactly one request
+  proceeds to redeliver and the loser's claim affects zero rows
+- **AND** the losing request returns HTTP 409 without invoking delivery — the
+  user is never sent the notification twice
+- **AND** because the claim (not delivery success) is what leaves `'failed'`
+  status, a delivery-adjacent failure after the claim — including
+  `_finalize_manual_action`'s own metadata-merge write failing after a
+  successful send — cannot leave the row re-claimable: a subsequent client
+  retry after such a failure also observes a non-`'failed'` status and gets
+  HTTP 409, never a second real send. The tradeoff is a possible orphaned row
+  (already `status = 'read'` but missing its `retried_to`/`escalated_to`
+  forward-link marker) rather than a duplicate delivery
+
+#### Scenario: Manual escalate re-sends on the owner's alternate channel
+- **WHEN** `POST /api/notifications/{id}/escalate` is called on a failed
+  `telegram` or `email` notification
+- **THEN** the backend swaps to the other channel (`telegram` -> `email`,
+  `email` -> `telegram`) and resolves the owner's contact for it via
+  `resolve_owner_entity_info` — the same owner-credential lookup the
+  dashboard's connector actions already use for owner-directed delivery
+- **AND** HTTP 422 is returned, without attempting delivery, when the
+  channel is neither `telegram` nor `email` (no alternate-channel resolver
+  is wired for other channels), or when the owner has no contact configured
+  for the alternate channel
+- **AND** on success the original notification is flipped to `status =
+  'read'` with a `metadata.escalated_to` marker, following the same
+  forward-link and ledger-recording contract as manual retry, and
+  `effective_status` reports `"escalated"`
+
+#### Scenario: Approvals degraded pools are named, not rendered as an empty queue
+- **WHEN** `GET /api/approvals` or `GET /api/approvals/history` fans out across
+  each butler's pool and one or more pools fail their query (a genuine error —
+  the request still returns HTTP 200 with the summaries from the pools that
+  answered)
+- **THEN** the response includes `meta.sources_degraded: string[]` naming the
+  dropped pools (following the fleet-wide degraded-envelope convention); the
+  field is absent or empty when every queried pool answered
+- **AND** the frontend approvals verdict opener SHALL NOT render the calm "No
+  approvals waiting." all-clear while a pool is degraded — it names the dropped
+  pools inline as a clause that suppresses the all-clear line
+- **AND** the approvals queue rail SHALL NOT render the "No pending approvals."
+  empty state as an all-clear while a pool is degraded — it names the dropped
+  pools via a `SourceDegradedNote` (in place of the empty state when zero rows
+  survived, above the rows when some did)
+- **AND** a reachable queue with `meta.sources_degraded` absent or empty keeps
+  its honest empty state and calm verdict
+
+### Requirement: Explicit Unanswered Calendar Invitations
+
+GET /api/calendar/workspace/invitations SHALL return only current projected
+provider occurrences with a literal self=true attendee whose exact needsAction
+status has explicit provider provenance. The endpoint SHALL be read-only and
+preserve every existing workspace and RSVP/transparency radar scenario.
+
+ID: REQ-dashboard-api-067
+Source: bu-q7vx1q.17; explicit-status preserving adjudication; RFC 0006; dashboard-design-language
+Scope: v1-mandatory
+
+#### Scenario: Only explicit unanswered occurrences are admitted
+- **WHEN** the projection includes unanswered, accepted, declined, tentative, no-self, missing/malformed/legacy status, self-organizer, solo and cancelled occurrences
+- **THEN** only genuinely explicit unanswered occurrences with another party are returned with stable instance entry IDs
+- **AND** ambiguous status candidates are omitted and admission is unavailable rather than fabricated empty
+- **AND** valid response_status or raw responseStatus is supported only with literal true explicit-status provenance
+
+#### Scenario: Deduplication precedes eligibility and pagination
+- **WHEN** duplicate provider copies or a stale unanswered copy coexist with a newer accepted copy
+- **THEN** the current workspace dedup strategy and keep-separate rules are applied before eligibility and keyset page slicing
+- **AND** deterministic operational source ownership is retained without rewriting physical ledgers
+- **AND** the start/end window is ordered and at most 90 days, limit is 1..200, and remaining eligible rows expose has_more and next_cursor
+- **AND** malformed or wrong-window/timezone cursors are refused
+- **AND** relevant current same-origin tombstones and moved copies participate before final window filtering, so newer cancelled or out-of-window copies cannot resurrect stale invitations
+
+#### Scenario: Organizer and conflict evidence are honest
+- **WHEN** an invitation is listed
+- **THEN** its organizer is the projected event organizer, a labelled organizer-attendee fallback, or explicitly unknown
+- **AND** a conflict door identifies only a real radar issue whose events include that canonical entry ID
+- **AND** missing or degraded conflict evidence is unknown, never an invented conflict-free verdict
+
+#### Scenario: Failed sources retain successful data without calm
+- **WHEN** any events, operational-source or conflict read fails, or candidate status admission is unknown
+- **THEN** HTTP 200 retains successful invitation rows and observed issue doors with issues_available=false and named content-blind sources_degraded
+- **AND** only complete available empty reads return issues_available=true with an empty list
+
+#### Scenario: Calendar strip preserves loading and partial evidence
+- **WHEN** the Calendar page reads its visible window
+- **THEN** the opener shows invitation rows and organizer labels with keyboard-operable entry and earned conflict doors
+- **AND** loading and unavailable invitation sources suppress the Calendar calm verdict; retained rows survive refresh/error
+- **AND** only available nonloading empty reads say no unanswered invitations, and bounded remaining pages remain reachable
+- **AND** the strip adds no provider mutation or RSVP action; entry details retain existing server-derived permission boundaries
+
+### Requirement: Approval origin survives list and detail projection
+
+The authenticated approval read API SHALL preserve explicit server-stored prepared origin in every list, history and detail projection used by the approval rail and selected dossier, using additive nullable `origin: "prepared" | null` classification. Only the exact stored string `"prepared"` SHALL establish Prepared; absent, legacy, malformed or unrecognized origin SHALL remain unknown, never inferred from action status, an absent push or a missing delivery receipt. The API SHALL preserve existing read availability, redaction, authorization, action identity and delivery-failure truth; origin SHALL confer no decision, execution, delivery, retry or provider authority.
+
+ID: REQ-dashboard-api-068
+Source: prepared-approval-origin-presentation/design.md; heart-and-soul/security.md Approval Gates; owner-released run13 S3 (bu-3b6goa)
+Scope: v1-mandatory
+
+#### Scenario: Persisted prepared origin reaches every approval projection
+
+- **WHEN** an owning producer has persisted an action with exact `origin="prepared"` and that action is read through the paginated action list, flat or history summary and selected detail
+- **THEN** each applicable response preserves the same explicit prepared classification for the same action
+- **AND** intended digest-only non-send remains distinct from a confirmed failed push.
+
+#### Scenario: Unknown origin cannot be inferred from absence
+
+- **WHEN** a readable action has absent, legacy, malformed or unrecognized origin, including an action with no push outcome or delivery receipt
+- **THEN** summary and detail return `origin=null` and no projection invents prepared origin
+- **AND** existing status, independently observed delivery failure and unknown delivery evidence retain their own meaning.
+
+#### Scenario: Unavailable origin source preserves incomplete coverage
+
+- **WHEN** an eligible approval source or selected-detail read fails or is degraded
+- **THEN** the API retains the existing named degraded or unavailable response contract instead of fabricating an action, Prepared classification or complete empty result
+- **AND** successful other-source rows retain their own observed origin without certifying complete coverage.
+
+#### Scenario: Origin projection preserves redaction and action authority
+
+- **WHEN** an authenticated reader inspects a prepared action containing sensitive tool arguments or execution data, or an unauthorized reader attempts the same read
+- **THEN** existing redaction and read authorization rules remain enforced
+- **AND** neither origin nor delivery context exposes recipient identity, callback material, action keys, raw provider responses or raw errors
+- **AND** no origin field changes approval, execution, retry or provider permissions.
+
+#### Scenario: Repeated reads preserve action identity without mutation
+
+- **WHEN** a prepared action is repeatedly read or a selected dossier is changed to another action
+- **THEN** origin remains bound to the actual action ID and owning source returned by that read
+- **AND** the read creates no approval, push, execution, origin backfill or other persistent mutation.
+
+### Requirement: Approved Calendar Invitation Response Surface
+
+The dashboard API SHALL expose authenticated occurrence-only POST /api/calendar/workspace/respond and mounted Accept/Decline/Tentative controls using one typed mutation handler. A verified click MUST compose the exact canonical pending command with the existing approval decision and owning shared executor, never raw provider dispatch or a caller bypass. Pending, rejected, uncertain, noop, applied and projection-unavailable outcomes MUST remain distinct.
+
+ID: REQ-dashboard-api-069
+Source: bu-q7vx1q.18 original AC2,5,6; dashboard owner auth; module-calendar Approval-Bound Self Invitation Response; design.md
+Scope: v1-mandatory
+
+#### Scenario: Verified owner click decides and dispatches the exact parked command
+
+- **WHEN** an authenticated owner submits a valid response for an eligible workspace occurrence
+- **THEN** POST /api/calendar/workspace/respond parks the canonical owning command and uses the existing verified decision and shared executor for that exact pending id/digest
+- **AND** no standing rule or caller bypass is created
+- **AND** no effect precedes approved execution
+
+#### Scenario: Invalid admission is not a fabricated absence or authority
+
+- **WHEN** lookup is degraded/ambiguous, source identity changed, or caller injects actor, account, recipient, ETag or approval id
+- **THEN** the API refuses effect with a safe truthful admission error
+- **AND** missing capability is distinct from an empty invitation list
+- **AND** invitation response capability and the displayed owning butler belong to the retained physical entry; a fresher copy without response capability does not borrow a different source owner
+- **AND** it performs no backfill, OAuth scope expansion or provider mutation
+
+#### Scenario: Response controls share one typed handler
+
+- **WHEN** the owner activates Accept, Decline or Tentative by keyboard, palette or contextual control
+- **THEN** one handler submits one response command and acknowledges pending state
+- **AND** double click reuses the request key
+- **AND** focus and accessible control names are preserved
+
+#### Scenario: Pending or uncertain response remains truthful
+
+- **WHEN** approval is pending/rejected or the provider effect is uncertain
+- **THEN** the mounted workspace keeps honest invitation/decision state and offers the matching review/error door
+- **AND** it adds no optimistic accepted badge, success receipt
+- **AND** degraded projection remains visible
+- **AND** GET /api/calendar/workspace/responses/{command_id} reads the source-qualified durable receipt without approving or dispatching a command
+- **AND** inverse=true follows only the original command's retained inverse claim and verifies its reciprocal binding, including after the invitation leaves the inbox
+- **AND** an unavailable inverse read retains the last receipt and never replays the original response or reserves a replacement inverse
+
+#### Scenario: Applied receipt is distinct from current projection
+
+- **WHEN** the own provider result verifies response while projection is unavailable or stale
+- **THEN** the API and mounted workspace show the applied receipt and projection availability separately
+- **AND** a replacement source/entry cannot receive the stale response
+
+#### Scenario: Existing permission and radar behavior survives
+
+- **WHEN** response verbs and receipts are added to the calendar workspace
+- **THEN** existing invitation explicit-status admission, radar, entry details, CRUD permissions and loading/partial/clean-empty contracts remain intact
+- **AND** the new operation does not infer consent from missing response/push data or alter provider/tool defaults

@@ -372,7 +372,7 @@ async def test_concluded_emitted_once_on_ok_parse(
     assert len(concluded) == 1
     assert concluded[0]["attempt_id"] == attempt_id
     assert concluded[0]["text"] == payload["hypothesis"]
-    assert concluded[0]["detail"].startswith("confidence n/a: ")
+    assert concluded[0]["detail"].startswith("proposal rationale: ")
     assert payload["why_this_fix"][:80] in concluded[0]["detail"]
 
 

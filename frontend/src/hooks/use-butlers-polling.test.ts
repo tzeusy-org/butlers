@@ -56,7 +56,7 @@ vi.mock("@/lib/event-bus", () => ({
 }));
 
 import { useQuery } from "@tanstack/react-query";
-import { useButlers } from "@/hooks/use-butlers";
+import { useButlers, useButlersBoard } from "@/hooks/use-butlers";
 import { useApprovalMetrics } from "@/hooks/use-approvals";
 
 // ---------------------------------------------------------------------------
@@ -130,6 +130,31 @@ describe("useButlers -- 30s polling fake-timer alignment (bu-insd4.3)", () => {
     vi.advanceTimersByTime(30_000);
 
     expect(captured).toBe(30_000);
+  });
+});
+
+describe("useButlersBoard -- receiver liveness polling", () => {
+  beforeEach(() => {
+    vi.mocked(useQuery).mockClear();
+  });
+
+  it("bounds both healthy-to-stale and stale-to-healthy updates to 30s", () => {
+    useButlersBoard();
+
+    expect(vi.mocked(useQuery)).toHaveBeenCalledTimes(1);
+    const options = vi.mocked(useQuery).mock.calls[0][0];
+    expect(options.queryKey).toEqual(["butlers", "board"]);
+    // One fixed interval is independent of the prior cached state, so it
+    // detects a new stale verdict and a recovery on the next poll.
+    expect(options.refetchInterval).toBe(30_000);
+  });
+
+  it("leaves the separate butlers list polling at its established cadence", () => {
+    useButlers();
+    expect(vi.mocked(useQuery)).toHaveBeenCalledWith(
+      // eslint-disable-next-line no-restricted-syntax -- assert the separate list's actual 30s cadence
+      expect.objectContaining({ queryKey: ["butlers"], refetchInterval: 30_000 }),
+    );
   });
 });
 

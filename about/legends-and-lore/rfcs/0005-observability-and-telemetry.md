@@ -2,10 +2,11 @@
 
 **Status:** Accepted
 **Date:** 2026-03-24
+Governing doctrine: [v1.md, What v1 Is](../../heart-and-soul/v1.md#what-v1-is) (OpenTelemetry observability is a named v1 capability) and [vision.md rule 4, the daemon must be testable, debuggable and predictable](../../heart-and-soul/vision.md#non-negotiable-rules).
 
 ## Summary
 
-Butlers uses OpenTelemetry for distributed tracing and metrics, exported via OTLP HTTP to Grafana Alloy, which forwards traces to Tempo and metrics to Prometheus-compatible storage. Trace continuity across process boundaries is maintained through three mechanisms: `TRACEPARENT` environment variable injection into spawned LLM processes, `ContextVar`-based active session context for MCP tool span parenting, and cross-butler trace context propagation via route envelope fields. All tools are instrumented via the `tool_span` primitive. Higher-level recovery workflows emit phase-level spans and metrics, while admission-control decisions are tracked separately from launched execution failures. A metrics catalog of counters, histograms, and UpDownCounters covers spawner, buffer, route, scheduler, switchboard, and recovery domains with strict low-cardinality discipline.
+Butlers uses OpenTelemetry for distributed tracing and metrics, exported via OTLP HTTP to an OpenTelemetry Collector (`otel-collector`), which forwards traces to Tempo and metrics to Prometheus via `remote_write`. Trace continuity across process boundaries is maintained through three mechanisms: `TRACEPARENT` environment variable injection into spawned LLM processes, `ContextVar`-based active session context for MCP tool span parenting, and cross-butler trace context propagation via route envelope fields. All tools are instrumented via the `tool_span` primitive. Higher-level recovery workflows emit phase-level spans and metrics, while admission-control decisions are tracked separately from launched execution failures. A metrics catalog of counters, histograms, and UpDownCounters covers spawner, buffer, route, scheduler, switchboard, and recovery domains with strict low-cardinality discipline.
 
 ## Motivation
 
@@ -197,7 +198,7 @@ On startup, `ButlerMetrics.ensure_registered()` emits zero-value adds on key UpD
 ## Integration
 
 - **RFC 0001:** Telemetry initialized at phase 2. Spawner metrics track concurrency and session lifecycle.
-- **RFC 0002:** All tool registrations pass through the logging proxy, which creates OTel spans via `tool_span`.
+- **RFC 0002:** Core tool registrations pass through `_ToolCallLoggingMCP`, which logs and captures calls without creating spans; module tool registrations pass through `_SpanWrappingMCP`, which creates `butler.tool.<name>` spans via `tool_span` in addition to logging and capturing.
 - **RFC 0003:** Trace context propagates through route envelopes. Switchboard metrics cover ingestion, triage, and thread affinity.
 - **RFC 0007:** The dashboard traces page provides a distributed trace index and span waterfall visualization.
 

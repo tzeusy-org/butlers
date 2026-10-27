@@ -148,21 +148,28 @@ _TRUSTED_FINALIZED_INTERFACE_SQL_TEMPLATE = """
           AND active_switchboard_role.prosecdef
           AND outbox_guard.prosecdef
           AND delivery_lease_guard.prosecdef
-          AND model_breaker.proconfig = ARRAY[
-              'search_path=pg_catalog, public, pg_temp'
-          ]::text[]
-          AND fleet_halt.proconfig = ARRAY[
-              'search_path=pg_catalog, public, pg_temp'
-          ]::text[]
-          AND active_switchboard_role.proconfig = ARRAY[
-              'search_path=pg_catalog, public, pg_temp'
-          ]::text[]
-          AND outbox_guard.proconfig = ARRAY[
-              'search_path=pg_catalog, public, pg_temp'
-          ]::text[]
-          AND delivery_lease_guard.proconfig = ARRAY[
-              'search_path=pg_catalog, public, pg_temp'
-          ]::text[]
+          -- bu-mms5xl: the finalizer pins pg_catalog, pg_temp on every init-db
+          -- rerun; a database not yet rebootstrapped still carries the old path.
+          AND model_breaker.proconfig::text[] IN (
+              ARRAY['search_path=pg_catalog, pg_temp'],
+              ARRAY['search_path=pg_catalog, public, pg_temp']
+          )
+          AND fleet_halt.proconfig::text[] IN (
+              ARRAY['search_path=pg_catalog, pg_temp'],
+              ARRAY['search_path=pg_catalog, public, pg_temp']
+          )
+          AND active_switchboard_role.proconfig::text[] IN (
+              ARRAY['search_path=pg_catalog, pg_temp'],
+              ARRAY['search_path=pg_catalog, public, pg_temp']
+          )
+          AND outbox_guard.proconfig::text[] IN (
+              ARRAY['search_path=pg_catalog, pg_temp'],
+              ARRAY['search_path=pg_catalog, public, pg_temp']
+          )
+          AND delivery_lease_guard.proconfig::text[] IN (
+              ARRAY['search_path=pg_catalog, pg_temp'],
+              ARRAY['search_path=pg_catalog, public, pg_temp']
+          )
           AND installer.proowner = admin_schema.nspowner
           AND finalizer.proowner = admin_schema.nspowner
           AND rollback_interface.proowner = admin_schema.nspowner
@@ -599,6 +606,22 @@ _TRUSTED_FINALIZED_INTERFACE_SQL_TEMPLATE = """
                     trigger_row.tgname <> 'runtime_attention_outbox_guard_trigger'
                     OR trigger_row.tgfoid <> outbox_guard.oid
                 )
+                -- core_253 (bu-giazn6) adds exactly one more bootstrap trigger:
+                -- the condition-marker sync, bound to its owner-run definer.
+                AND NOT (
+                    trigger_row.tgname = 'runtime_attention_condition_marker_sync_trigger'
+                    AND EXISTS (
+                        SELECT 1
+                        FROM pg_proc AS marker_sync
+                        WHERE marker_sync.oid = trigger_row.tgfoid
+                          AND marker_sync.pronamespace = public_schema.oid
+                          AND marker_sync.proname = 'runtime_attention_sync_condition_marker'
+                          AND marker_sync.pronargs = 0
+                          AND marker_sync.prorettype = 'trigger'::regtype
+                          AND marker_sync.prosecdef
+                          AND marker_sync.proowner = outbox_owner.oid
+                    )
+                )
           )
           AND NOT EXISTS (
               SELECT 1
@@ -641,6 +664,47 @@ def _has_trusted_finalized_interface(bind: sa.Connection) -> bool:
             _TRUSTED_BOOTSTRAP_FINALIZED_INTERFACE_SQL,
         )
     )
+
+
+def protected_rollback_preflight_passes(bind: sa.Connection) -> bool:
+    """Return whether this exact protected boundary can be rolled back now.
+
+    Later revisions with non-transactional downgrade work use this same proof
+    before crossing that work.  Keeping the predicate here prevents a partial
+    copy from drifting away from core_198's role, catalog, and ACL contract.
+    """
+    if bool(bind.execute(sa.text(_EXACT_ROLLBACK_READY_ABSENCE_SQL)).scalar_one()):
+        return True
+    if not (
+        bool(bind.execute(sa.text(_TRUSTED_BOOTSTRAP_ROLLBACK_SQL)).scalar_one())
+        and _has_trusted_finalized_interface(bind)
+    ):
+        return False
+
+    # Mirror rollback_interface's durable-evidence refusal before a later
+    # migration can enter autocommit. The trusted rollback proof above also
+    # requires the v2 producer controls to be absent, so ordinary producers
+    # cannot create new evidence after this point. Lock and recheck to cover a
+    # writer that began before the operator established that rollback-ready
+    # state; the relation lock remains held through this migration transaction.
+    if not bool(bind.execute(sa.text(_DURABLE_EVIDENCE_ABSENT_SQL)).scalar_one()):
+        return False
+    bind.execute(sa.text(_LOCK_DURABLE_EVIDENCE_SQL))
+    return bool(bind.execute(sa.text(_DURABLE_EVIDENCE_ABSENT_SQL)).scalar_one())
+
+
+_DURABLE_EVIDENCE_ABSENT_SQL = """
+    SELECT
+        NOT EXISTS (SELECT 1 FROM public.runtime_attention_outbox)
+        AND NOT EXISTS (SELECT 1 FROM public.runtime_attention_delivery_lease)
+"""
+
+_LOCK_DURABLE_EVIDENCE_SQL = """
+    LOCK TABLE
+        public.runtime_attention_outbox,
+        public.runtime_attention_delivery_lease
+    IN ACCESS EXCLUSIVE MODE
+"""
 
 
 _TRUSTED_BOOTSTRAP_INSTALLER_SQL = """

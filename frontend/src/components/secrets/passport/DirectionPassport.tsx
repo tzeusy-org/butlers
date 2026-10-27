@@ -57,7 +57,7 @@ function ProbeAllButton({
       aria-busy={isPending}
       data-probe-all="true"
       aria-label={`Probe all ${count} credentials`}
-      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-mono text-[11px] cursor-pointer border transition-colors leading-tight disabled:pointer-events-none disabled:opacity-60"
+      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-mono text-[11px] cursor-pointer border transition-colors leading-tight disabled:pointer-events-none disabled:opacity-60 max-md:min-h-11 max-md:min-w-11"
       style={{
         background: "transparent",
         color: "var(--fg)",
@@ -111,7 +111,7 @@ function KpiCell({
       <span
         className="tabular-nums"
         style={{
-          fontFamily: "var(--font-sans, 'Inter Tight', sans-serif)",
+          fontFamily: "var(--font-sans)",
           fontSize: 22,
           fontWeight: 500,
           letterSpacing: "-0.02em",
@@ -168,7 +168,15 @@ export function DirectionPassport({
   // ── URL state ───────────────────────────────────────────────────────────
   const focusParam = searchParams.get("focus");
   const identityParam = searchParams.get("identity");
-  const sortParam = searchParams.get("sort") as SpineSortMode | null;
+  const sortParam = searchParams.get("sort");
+
+  // A Telegram (or any) deep link arrives with ?focus=: on a phone the targeted page leads the
+  // single column and takes focus, instead of sitting below the whole spine.
+  const [enteredWithFocus] = React.useState(() => focusParam !== null);
+  const pageRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (enteredWithFocus) pageRef.current?.focus({ preventScroll: true });
+  }, [enteredWithFocus]);
 
   // Active identity: URL param or first identity (owner).
   const defaultIdentity = inventory.identities[0]?.id ?? "";
@@ -201,7 +209,6 @@ export function DirectionPassport({
           provider: "spotify",
           state: spotifyState,
           mono: false,
-          lastTouchOrder: 800,
           subline: "connector-managed",
         });
       }
@@ -228,7 +235,8 @@ export function DirectionPassport({
     return pickDefaultKey(entries);
   }, [focusParam, entries]);
 
-  const sortMode: SpineSortMode = sortParam ?? "severity";
+  const sortMode: SpineSortMode =
+    sortParam === "severity" || sortParam === "alpha" ? sortParam : "severity";
 
   // ── Search ──────────────────────────────────────────────────────────────
   const [search, setSearch] = React.useState("");
@@ -387,7 +395,7 @@ export function DirectionPassport({
               <h1
                 className="m-0"
                 style={{
-                  fontFamily: "var(--font-sans, 'Inter Tight', sans-serif)",
+                  fontFamily: "var(--font-sans)",
                   fontSize: 32,
                   fontWeight: 500,
                   letterSpacing: "-0.025em",
@@ -503,8 +511,8 @@ export function DirectionPassport({
 
         {/* Book body: spine + page */}
         <div
-          className="grid flex-1 min-h-0"
-          style={{ gridTemplateColumns: "296px 1fr" }}
+          className="grid flex-1 min-h-0 grid-cols-1 md:grid-cols-[296px_1fr] max-md:[&>nav]:max-h-72"
+          data-testid="passport-book-body"
         >
           <Spine
             entries={entries}
@@ -520,7 +528,15 @@ export function DirectionPassport({
             providers={inventory.providers}
           />
 
-          <div className="overflow-y-auto min-w-0">
+          <div
+            ref={pageRef}
+            tabIndex={-1}
+            aria-label="Credential page"
+            data-testid="passport-page"
+            className={`overflow-y-auto min-w-0 outline-none focus-visible:ring-[3px] focus-visible:ring-focus${
+              enteredWithFocus ? " max-md:order-first" : ""
+            }`}
+          >
             {addOpen ? (
               <PassportAddPanel
                 ownerEntityId={inventory.ownerEntityId}

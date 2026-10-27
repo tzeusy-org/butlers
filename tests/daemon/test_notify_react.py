@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -9,10 +10,34 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
+from butlers.core_tools._routing import _extract_delivery_id
 from butlers.daemon import ButlerDaemon
-from butlers.tools.switchboard.routing.contracts import parse_notify_request
+from butlers.tools.switchboard.contracts import parse_notify_request
 
 pytestmark = pytest.mark.unit
+
+
+def test_confirmed_telegram_reaction_keeps_an_operation_receipt() -> None:
+    request_id = "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b"
+
+    assert (
+        _extract_delivery_id(
+            channel="telegram",
+            intent="react",
+            adapter_result={"ok": True, "result": True},
+            fallback_request_id=request_id,
+        )
+        == f"telegram-reaction:{request_id}"
+    )
+    assert (
+        _extract_delivery_id(
+            channel="telegram",
+            intent="react",
+            adapter_result={"ok": False, "result": False},
+            fallback_request_id=request_id,
+        )
+        is None
+    )
 
 
 @pytest.fixture
@@ -71,14 +96,23 @@ def _patch_infra() -> dict[str, Any]:
     """Patch infrastructure dependencies for daemon tests."""
     mock_conn = AsyncMock()
     mock_conn.execute = AsyncMock(return_value=None)
+    # Git defaults and the runtime row agree: no conditional update or audit append.
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
 
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock()
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    mock_conn.transaction = MagicMock(return_value=transaction)
+
+    @asynccontextmanager
+    async def mock_acquire():
+        yield mock_conn
+
     mock_pool = AsyncMock()
     # Support `async with pool.acquire() as conn:` for _ensure_owner_entity
-    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_pool.acquire = mock_acquire
     mock_pool.fetchval = AsyncMock(return_value=None)
     mock_pool.execute = AsyncMock(return_value=None)
     mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
@@ -101,7 +135,7 @@ def _patch_infra() -> dict[str, Any]:
 
     mock_adapter = MagicMock()
     mock_adapter.binary_name = "claude"
-    mock_adapter_cls = MagicMock(return_value=mock_adapter)
+    mock_adapter_builder = MagicMock(return_value=mock_adapter)
 
     return {
         "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
@@ -127,7 +161,9 @@ def _patch_infra() -> dict[str, Any]:
         "recover_route_inbox": patch.object(
             ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
         ),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
+        ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
     }
 
@@ -168,7 +204,7 @@ class TestNotifyReactIntent:
             patches["connect_switchboard"],
             patches["create_audit_pool"],
             patches["recover_route_inbox"],
-            patches["get_adapter"],
+            patches["build_runtime_adapter"],
             patches["shutil_which"],
         ):
             daemon = ButlerDaemon(butler_dir)
@@ -434,7 +470,7 @@ class TestNotifyReactIntent:
             patches["connect_switchboard"],
             patches["create_audit_pool"],
             patches["recover_route_inbox"],
-            patches["get_adapter"],
+            patches["build_runtime_adapter"],
             patches["shutil_which"],
         ):
             daemon = ButlerDaemon(butler_dir)

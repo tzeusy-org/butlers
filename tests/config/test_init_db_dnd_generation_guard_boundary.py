@@ -180,7 +180,7 @@ def test_dnd_catalog_expectation_includes_the_trusted_bootstrap_owner_proof() ->
 def test_dnd_mutation_replay_lookup_qualifies_the_receipt_column() -> None:
     """A PL/pgSQL result column must not collide with the receipt lookup column."""
     source = _INIT_DB.read_text(encoding="utf-8")
-    private_start = source.index("CREATE FUNCTION dnd_generation_private.mutate(")
+    private_start = source.index("CREATE OR REPLACE FUNCTION dnd_generation_private.mutate(")
     gateway_start = source.index("CREATE FUNCTION public.context_dnd_mutate(", private_start)
     private_mutation = source[private_start:gateway_start]
 
@@ -329,7 +329,7 @@ def test_dnd_gateway_checks_active_role_before_private_definer() -> None:
     assert "SECURITY INVOKER" in source
     assert "IF current_user = 'butler_general_rw'" in source
     assert "ELSIF current_user = 'butler_switchboard_rw'" in source
-    assert "CREATE FUNCTION dnd_generation_private.mutate(" in source
+    assert "CREATE OR REPLACE FUNCTION dnd_generation_private.mutate(" in source
     assert "CREATE FUNCTION dnd_generation_private.canonical_json(p_document JSONB)" in source
     assert "SECURITY DEFINER" in source
     assert "current_setting('role', true)" in source
@@ -378,7 +378,7 @@ def test_dnd_correlation_is_derived_from_its_opaque_mutation_identity() -> None:
         "CREATE UNIQUE INDEX dnd_generation_mutations_generation_key", audit_start
     )
     audit = source[audit_start:audit_end]
-    private_start = source.index("CREATE FUNCTION dnd_generation_private.mutate(")
+    private_start = source.index("CREATE OR REPLACE FUNCTION dnd_generation_private.mutate(")
     gateway_start = source.index("CREATE FUNCTION public.context_dnd_mutate(", private_start)
     private_mutation = source[private_start:gateway_start]
     installer_end = source.index(
@@ -568,3 +568,40 @@ def test_dnd_postgres_suite_treats_a_filtered_direct_update_as_no_effect() -> No
 
     assert "return_rowcount=True" in direct_update
     assert "assert direct_dnd_update_rowcount == 0" in gateway_test
+
+
+def test_dnd_private_mutation_has_one_pinned_pgcrypto_free_source() -> None:
+    """bu-mzm3su.1: the body is pinned, uses built-in sha256, and reruns re-adopt it.
+
+    pgcrypto lives in ``public``, so an unqualified ``digest()`` cannot resolve
+    under ``pg_catalog, pg_temp``.  Both the first install and every finalizer
+    rerun must go through the single installer so an upgraded database
+    converges on the committed body.
+    """
+    source = _INIT_DB.read_text(encoding="utf-8")
+    header = "CREATE OR REPLACE FUNCTION dnd_generation_private.mutate("
+    assert source.count(header) == 1
+    installer_start = source.index(
+        "CREATE OR REPLACE FUNCTION dnd_generation_admin.install_private_mutation()"
+    )
+    installer_end = source.index("$dnd_install_private_mutation$;", installer_start)
+    installer = source[installer_start:installer_end]
+    assert header in installer
+    assert installer.count("SET search_path = pg_catalog, pg_temp") == 2
+    assert "search_path = pg_catalog, public" not in installer
+    assert "digest(" not in installer
+    assert installer.count("sha256(") == 4
+
+    finalizer_start = source.index(
+        "CREATE OR REPLACE FUNCTION dnd_generation_admin.finalize_interface()"
+    )
+    finalizer = source[
+        finalizer_start : source.index("CREATE OR REPLACE FUNCTION", finalizer_start + 1)
+    ]
+    readopt = finalizer.index("PERFORM dnd_generation_admin.install_private_mutation();")
+    pin = finalizer.index("'ALTER FUNCTION dnd_generation_private.mutate(")
+    assert readopt < pin
+    install_start = source.index(
+        "CREATE OR REPLACE FUNCTION dnd_generation_admin.install_interface()"
+    )
+    assert "PERFORM dnd_generation_admin.install_private_mutation();" in source[install_start:]

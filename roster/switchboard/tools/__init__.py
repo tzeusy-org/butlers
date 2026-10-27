@@ -4,6 +4,13 @@ Re-exports all public symbols so that ``from butlers.tools.switchboard import X`
 continues to work as before.
 """
 
+from butlers.tools.switchboard.contracts import (
+    ApprovalRequestActionV1,
+    IngestEnvelopeV1,
+    NotifyRequestV1,
+    parse_ingest_envelope,
+    parse_notify_request,
+)
 from butlers.tools.switchboard.extraction.audit_log import (
     extraction_log_list,
     extraction_log_undo,
@@ -35,19 +42,13 @@ from butlers.tools.switchboard.registry.registry import (
 )
 from butlers.tools.switchboard.registry.sweep import run_eligibility_sweep
 from butlers.tools.switchboard.routing.contracts import (
-    ApprovalRequestActionV1,
-    IngestEnvelopeV1,
-    NotifyRequestV1,
     RouteEnvelopeV1,
     RouteRequestContextV1,
-    parse_ingest_envelope,
-    parse_notify_request,
     parse_route_envelope,
 )
 from butlers.tools.switchboard.routing.route import (
     _call_butler_tool,
     _log_routing,
-    post_mail,
     route,
 )
 from butlers.tools.switchboard.routing.telemetry import (
@@ -83,7 +84,6 @@ __all__ = [
     "parse_ingest_envelope",
     "parse_notify_request",
     "parse_route_envelope",
-    "post_mail",
     "register_butler",
     "reset_switchboard_telemetry_for_tests",
     "resolve_routing_target",

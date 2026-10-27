@@ -1,0 +1,6 @@
+# Rendered manifests from `make template-*`
+_templates/
+# Packaged charts
+*.tgz
+# Per-operator overrides; may hold credentials
+values.local.yaml

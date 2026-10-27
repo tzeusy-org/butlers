@@ -14,6 +14,13 @@ Scope: v1-mandatory
 - **AND** the resolved model and `session_timeout_s` are shown read-only with an "edit in models" link to the Models tab
 - **AND** `tool_exposure_policy` SHALL be shown as an editable `Eager filtered` or `Automatic verified discovery` choice with concise fallback guidance
 
+#### Scenario: Card distinguishes declaration, decision, and registration
+- **WHEN** the user opens the Management tab for a butler
+- **THEN** the card SHALL show Git-declared, runtime-effective, and actually registered counts
+- **AND** any non-empty diff SHALL name the missing or widened tools/groups and the effective source
+- **AND** a bounded module registration error SHALL name each declared-but-not-registered tool, its module, and the exception type
+- **AND** an unavailable declaration snapshot SHALL be named explicitly instead of displaying dashes as an unknown all-clear
+
 #### Scenario: Cold fields show restart badge
 - **WHEN** a cold field (core_groups, max_concurrent, max_queued) is displayed
 - **THEN** the field SHALL show a visual indicator that changes require a daemon restart
@@ -22,7 +29,10 @@ Scope: v1-mandatory
 
 - **WHEN** `tool_exposure_policy` is displayed or changed
 - **THEN** the card SHALL state that the setting applies to newly planned sessions without a daemon restart
-- **AND** `auto` SHALL be described as verified-native-when-available with eager fallback, not as a guarantee that native discovery will run
+- **AND** `auto` SHALL be described as verified-native-when-available with a
+  separately verified eager fallback only when one is available, otherwise the
+  tuple is unavailable/ineligible, not as a guarantee that native discovery
+  will run
 
 #### Scenario: Unavailable policy is not presented as active
 
@@ -61,9 +71,3 @@ Scope: v1-mandatory
 - **WHEN** the policy PATCH fails validation, transport, or persistence
 - **THEN** the UI SHALL show an actionable error and retain or restore the last server-confirmed policy
 - **AND** it SHALL not claim that the edited value is active
-
-## Source References
-
-- Non-Negotiable Rule 5 (operational tuning is DB-backed)
-- RFC 0007 (dashboard and API surface)
-- RFC 0027 (runtime tool surface discovery and exposure)

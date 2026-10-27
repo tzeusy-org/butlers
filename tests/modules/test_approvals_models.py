@@ -157,17 +157,10 @@ def _unique_db_name() -> str:
 
 
 def _create_db(postgres_container, db_name: str) -> str:
-    from sqlalchemy import create_engine, text
+    """Use checked-in bootstrap and its configured ordinary migration login."""
+    from butlers.testing.migration import create_migration_db
 
-    admin_url = postgres_container.get_connection_url()
-    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
-    with engine.connect() as conn:
-        safe = db_name.replace('"', '""')
-        conn.execute(text(f'CREATE DATABASE "{safe}"'))
-    engine.dispose()
-    host = postgres_container.get_container_host_ip()
-    port = postgres_container.get_exposed_port(5432)
-    return f"postgresql://{postgres_container.username}:{postgres_container.password}@{host}:{port}/{db_name}"
+    return create_migration_db(postgres_container, db_name)
 
 
 def _table_exists(db_url: str, table_name: str) -> bool:
@@ -229,6 +222,22 @@ class TestApprovalsMigration:
 
         db_name = _unique_db_name()
         db_url = _create_db(postgres_container, db_name)
+
+        from sqlalchemy import create_engine, text
+
+        from butlers.bootstrap_prerequisite import check_bootstrap_database
+
+        check_bootstrap_database(db_url)
+        with create_engine(db_url).connect() as connection:
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT NOT rolsuper AND NOT rolcreaterole AND NOT rolcreatedb "
+                        "AND NOT rolreplication FROM pg_catalog.pg_roles WHERE rolname = current_user"
+                    )
+                ).scalar_one()
+                is True
+            )
 
         asyncio.run(run_migrations(db_url, chain="approvals"))
 

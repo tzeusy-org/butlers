@@ -11,7 +11,8 @@ Surfaces seven ownership-fact domains:
     GET /api/system/deployments    -- current + recent deployment ledger entries
     GET /api/system/drift          -- migration-drift sentinel (bu-9r3hd.1)
     GET /api/system/stored-functions -- deployed stored-function bodies vs
-                                       the configured bootstrap source (bu-bi5an)
+                                       the configured bootstrap source (bu-bi5an),
+                                       plus unpinned definer search paths (bu-hefzis)
     GET /api/system/conditions     -- standing condition ledger: infra (bu-27dxl.6.2) or
                                        owner-facing (bu-ep4ks.6), selected via ?ledger=
 
@@ -36,7 +37,12 @@ comparison surfaces as commits_behind_available=False, never a fabricated
 the configured bootstrap source (``scripts/init-db.sql`` by default) and
 compares each committed function body against the body deployed in pg_proc.
 Bodies can carry operator-supplied literals, so the envelope carries function
-names and short digests only -- never a body.
+names and short digests only -- never a body. The same response also reports
+every SECURITY DEFINER whose search_path is not exactly ``pg_catalog, pg_temp``
+(``unpinned_definers``: signature, owner, deployed path, remedy), read from
+pg_proc via butlers.core.definer_search_path. That check is independent of the
+body comparison: ``definer_check_available=False`` with an empty list means the
+catalog read failed, never an all-clear.
 /api/system/drift is also read-only from this router's perspective: it computes
 the comparison live on each request (butlers.jobs.deploy_drift.compute_drift_report)
 and reads (never writes) the first-detected/escalated debounce markers the
@@ -71,18 +77,29 @@ from pathlib import Path
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from opentelemetry import trace
-from prometheus_client import Counter
 from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerConnectionInfo, get_butler_configs
+from butlers.api.deps import ButlerConnectionInfo, Db, get_butler_configs
 from butlers.api.models import ApiResponse
-from butlers.api.read_models.insights_v1 import query_insight_delivery_state
+from butlers.api.read_models.insights import query_insight_delivery_state
+from butlers.api.runtime_attention_status import (
+    CONDITION_ATTENTION_GRACE,
+    CONDITION_ATTENTION_PASS_ALLOWANCE,
+    condition_attention_status,
+    safe_reason,
+)
 from butlers.core.backup_facts import (
     BACKUP_DIR_ENV,
     BackupFacts,
     RestoreDrillFacts,
     read_backup_facts_from_dir,
+)
+from butlers.core.fleet_conditions import (
+    FLEET_FINGERPRINT,
+    FLEET_SOURCE,
+    QA_PATROL_OVERDUE_FINGERPRINT,
+    QA_PATROL_SOURCE,
 )
 
 logger = logging.getLogger(__name__)
@@ -90,73 +107,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/system", tags=["system"])
 
 
-# ---------------------------------------------------------------------------
-# Prometheus counters — one per endpoint so Grafana can track request load
-# per system tile. Module-scoped so the registry stays consistent across
-# hot-reloads in dev. Counter names follow the pattern:
-# system_<domain>_reads_total (e.g. system_instance_reads_total).
-# ---------------------------------------------------------------------------
-
-system_instance_reads_total = Counter(
-    "system_instance_reads_total",
-    "Number of GET /api/system/instance requests.",
-)
-
-system_database_reads_total = Counter(
-    "system_database_reads_total",
-    "Number of GET /api/system/database requests.",
-)
-
-system_backups_reads_total = Counter(
-    "system_backups_reads_total",
-    "Number of GET /api/system/backups requests.",
-)
-
-system_egress_reads_total = Counter(
-    "system_egress_reads_total",
-    "Number of GET /api/system/egress requests.",
-)
-
-system_butlers_heartbeat_reads_total = Counter(
-    "system_butlers_heartbeat_reads_total",
-    "Number of GET /api/system/butlers/heartbeat requests.",
-)
-
-system_insight_delivery_reads_total = Counter(
-    "system_insight_delivery_reads_total",
-    "Number of GET /api/system/insights/delivery-state requests.",
-)
-
-system_deployments_reads_total = Counter(
-    "system_deployments_reads_total",
-    "Number of GET /api/system/deployments requests.",
-)
-
-system_drift_reads_total = Counter(
-    "system_drift_reads_total",
-    "Number of GET /api/system/drift requests.",
-)
-
-system_stored_functions_reads_total = Counter(
-    "system_stored_functions_reads_total",
-    "Number of GET /api/system/stored-functions requests.",
-)
-
-system_conditions_reads_total = Counter(
-    "system_conditions_reads_total",
-    "Number of GET /api/system/conditions requests.",
-)
-
-
 # Module-level start time recorded when this module is first imported.
 # The lifespan startup imports all routers, so this approximates the
 # FastAPI lifespan start time closely enough for v1.
 _PROCESS_START: datetime = datetime.now(UTC)
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub -- overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +195,20 @@ class StoredFunctionEntry(BaseModel):
     deployed_digests: list[str]
 
 
+class UnpinnedDefinerEntry(BaseModel):
+    """One SECURITY DEFINER whose search_path is not exactly ``pg_catalog, pg_temp``.
+
+    ``remedy`` is ``migrations`` when the connecting (migration) login owns the
+    function, otherwise ``init_db`` (re-run ``scripts/init-db.sql`` as a
+    cluster superuser). ``search_path`` is ``None`` when none is set.
+    """
+
+    function: str
+    owner: str
+    search_path: str | None
+    remedy: str
+
+
 class StoredFunctionFacts(BaseModel):
     """Deployed stored-function bodies vs the configured bootstrap source (bu-bi5an).
 
@@ -258,6 +226,10 @@ class StoredFunctionFacts(BaseModel):
     ``stored_function_check_available=False`` means the comparison itself
     failed. Per the fleet-wide degraded-envelope convention that is never
     rendered as a truthful all-clear.
+
+    ``unpinned_definers`` (bu-hefzis) is a separate check: ``is_drifted`` keeps
+    meaning body drift only. ``definer_check_available=False`` means the
+    catalog read failed, independently of ``stored_function_check_available``.
     """
 
     checked_at: str
@@ -266,6 +238,8 @@ class StoredFunctionFacts(BaseModel):
     not_deployed: list[str]
     matched_count: int
     stored_function_check_available: bool
+    unpinned_definers: list[UnpinnedDefinerEntry] = []
+    definer_check_available: bool = False
 
 
 class SchemaSize(BaseModel):
@@ -355,6 +329,22 @@ class InsightDeliveryState(BaseModel):
     last_delivery_at: str | None
 
 
+class ConditionAttention(BaseModel):
+    """Linked owner-attention delivery for a fleet or overdue-QA condition.
+
+    ``status`` is one of ``butlers.api.runtime_attention_status``'s fixed
+    statuses. Only ``sent`` means delivered; ``sending`` and ``uncertain`` never
+    do, and nothing on this surface can trigger a resend.
+    """
+
+    status: str
+    episode_id: str | None = None
+    created_at: str | None = None
+    delivered_at: str | None = None
+    safe_reason: str | None = None
+    outbox_retained: bool | None = None
+
+
 class ConditionEntry(BaseModel):
     """One episode row from public.infra_conditions or public.owner_conditions.
 
@@ -385,6 +375,9 @@ class ConditionEntry(BaseModel):
     recovered_after_s: float | None
     summary: str | None
     metadata: dict | None
+    # Only for the fleet-control and QA-patrol-overdue identities; ``None``
+    # elsewhere and before the condition's first attention append.
+    attention: ConditionAttention | None = None
 
 
 class ConditionsFacts(BaseModel):
@@ -448,7 +441,6 @@ async def get_instance_facts() -> ApiResponse[InstanceFacts]:
     Version is read from importlib.metadata or the package __version__
     constant. Falls back to 'unknown' rather than raising a 500.
     """
-    system_instance_reads_total.inc()
     try:
         version = importlib.metadata.version("butlers")
     except importlib.metadata.PackageNotFoundError:
@@ -480,7 +472,7 @@ async def get_instance_facts() -> ApiResponse[InstanceFacts]:
 #: origin/main" for the Deployment card: the baked ``butlers-app`` image
 #: never includes a ``.git`` checkout (see Dockerfile), so the running
 #: dashboard-api process cannot run `git` against its own history.
-_GITHUB_REPO = "Tzeusy/butlers"
+_GITHUB_REPO = "tzeusy-org/butlers"
 _GITHUB_COMPARE_TIMEOUT_S = 5.0
 
 #: Repeated /system page loads must not hammer GitHub's anonymous rate limit
@@ -547,7 +539,8 @@ def _deployment_row_to_record(row: dict) -> DeploymentRecord:
 
 @router.get("/deployments", response_model=ApiResponse[DeploymentFacts])
 async def get_deployment_facts(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[DeploymentFacts]:
     """Return the current (most recent) deployment plus recent history.
 
@@ -558,11 +551,12 @@ async def get_deployment_facts(
     `current: null` / `recent: []`, not an error. HTTP 503 is reserved for an
     actual query failure (permission denied, connection error).
     """
-    system_deployments_reads_total.inc()
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     from butlers.core.deployments import get_current_deployment, list_recent_deployments
 
@@ -571,7 +565,7 @@ async def get_deployment_facts(
         recent_rows = await list_recent_deployments(pool)
     except Exception as exc:
         logger.warning("Failed to query deployments ledger: %s", exc)
-        raise HTTPException(status_code=503, detail="Deployments ledger query failed")
+        raise HTTPException(status_code=503, detail="Deployments ledger query failed") from exc
 
     commits_behind_main: int | None = None
     if current_row is not None:
@@ -594,7 +588,8 @@ async def get_deployment_facts(
 
 @router.get("/drift", response_model=ApiResponse[DriftFacts])
 async def get_drift_facts(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[DriftFacts]:
     """Return the migration-drift sentinel's current comparison (bu-9r3hd.1).
 
@@ -610,8 +605,6 @@ async def get_drift_facts(
     a failed comparison sets drift_check_available=False with every other
     field zeroed, rather than a fabricated all-clear or a 503.
     """
-    system_drift_reads_total.inc()
-
     from butlers.jobs.deploy_drift import (
         compute_drift_report,
         get_drift_escalation_state,
@@ -668,7 +661,8 @@ async def get_drift_facts(
 
 @router.get("/stored-functions", response_model=ApiResponse[StoredFunctionFacts])
 async def get_stored_function_facts(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[StoredFunctionFacts]:
     """Return the stored-function body comparison (bu-bi5an).
 
@@ -681,8 +675,7 @@ async def get_stored_function_facts(
     a failed comparison sets stored_function_check_available=False with every
     other field zeroed, rather than a fabricated all-clear or a 503.
     """
-    system_stored_functions_reads_total.inc()
-
+    from butlers.core.definer_search_path import compute_unpinned_definers
     from butlers.core.stored_function_drift import compute_stored_function_drift
 
     try:
@@ -690,6 +683,25 @@ async def get_stored_function_facts(
     except Exception:
         logger.warning("stored-function facts: comparison failed", exc_info=True)
         report = None
+
+    try:
+        definer_report = await compute_unpinned_definers(db.pool("switchboard"))
+    except Exception:
+        logger.warning("stored-function facts: definer search-path check failed", exc_info=True)
+        definer_report = None
+    definer_available = definer_report is not None and definer_report.is_available
+    definer_fields = {
+        "unpinned_definers": [
+            UnpinnedDefinerEntry(
+                function=entry.signature,
+                owner=entry.owner,
+                search_path=entry.search_path,
+                remedy=entry.remedy,
+            )
+            for entry in (definer_report.entries if definer_available else ())
+        ],
+        "definer_check_available": definer_available,
+    }
 
     if report is None or not report.is_available:
         return ApiResponse(
@@ -704,6 +716,7 @@ async def get_stored_function_facts(
                 not_deployed=[],
                 matched_count=0,
                 stored_function_check_available=False,
+                **definer_fields,
             )
         )
 
@@ -723,6 +736,7 @@ async def get_stored_function_facts(
             not_deployed=[entry.function for entry in report.not_deployed],
             matched_count=len(report.matched),
             stored_function_check_available=True,
+            **definer_fields,
         )
     )
 
@@ -734,7 +748,8 @@ async def get_stored_function_facts(
 
 @router.get("/database", response_model=ApiResponse[DatabaseFacts])
 async def get_database_facts(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[DatabaseFacts]:
     """Return PostgreSQL catalog size facts for the current database.
 
@@ -745,19 +760,20 @@ async def get_database_facts(
 
     Returns HTTP 503 on any catalog query failure.
     """
-    system_database_reads_total.inc()
     try:
         # Use the switchboard pool (it has pg catalog read access from the
         # shared database; all butlers share one PostgreSQL database).
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     try:
         total_bytes: int = await pool.fetchval("SELECT pg_database_size(current_database())") or 0
     except Exception as exc:
         logger.warning("Failed to query database size: %s", exc)
-        raise HTTPException(status_code=503, detail="Database catalog query failed")
+        raise HTTPException(status_code=503, detail="Database catalog query failed") from exc
 
     # Per-schema breakdown: only butler-owned schemas (exclude public, pg_*,
     # information_schema). Table count via information_schema.
@@ -792,7 +808,7 @@ async def get_database_facts(
         ]
     except Exception as exc:
         logger.warning("Failed to query schema sizes: %s", exc)
-        raise HTTPException(status_code=503, detail="Schema size query failed")
+        raise HTTPException(status_code=503, detail="Schema size query failed") from exc
 
     # Top 10 tables by total relation size across all non-system schemas
     try:
@@ -823,7 +839,7 @@ async def get_database_facts(
         ]
     except Exception as exc:
         logger.warning("Failed to query table sizes: %s", exc)
-        raise HTTPException(status_code=503, detail="Table size query failed")
+        raise HTTPException(status_code=503, detail="Table size query failed") from exc
 
     return ApiResponse(
         data=DatabaseFacts(
@@ -846,7 +862,8 @@ _RESTORE_DRILL_LEDGER_UNAVAILABLE_DETAIL = "restore drill ledger unavailable"
 
 @router.get("/backups", response_model=ApiResponse[BackupFacts])
 async def get_backup_facts(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[BackupFacts]:
     """Return backup recency, verified artifact health, and restore-drill state.
 
@@ -875,8 +892,6 @@ async def get_backup_facts(
 
     Graceful degradation: always returns HTTP 200, never HTTP 503.
     """
-    system_backups_reads_total.inc()
-
     backup_dir_env = os.environ.get(BACKUP_DIR_ENV, "").strip()
     facts = read_backup_facts_from_dir(Path(backup_dir_env) if backup_dir_env else None)
 
@@ -964,7 +979,7 @@ async def _assert_owner_contact(pool) -> None:
         raise HTTPException(
             status_code=403,
             detail={"code": "owner_required", "message": "Owner contact assertion failed"},
-        )
+        ) from exc
 
     roles = row["roles"] if row is not None and row["roles"] else []
     if "owner" not in roles:
@@ -981,7 +996,8 @@ async def _assert_owner_contact(pool) -> None:
 
 @router.get("/egress", response_model=ApiResponse[EgressCatalog])
 async def get_egress_catalog(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[EgressCatalog]:
     """Return the data-egress catalog for this instance (owner-only).
 
@@ -995,11 +1011,12 @@ async def get_egress_catalog(
     Only the owner contact may view the egress catalog. Non-owner callers
     receive HTTP 403. See _assert_owner_contact() for the assertion logic.
     """
-    system_egress_reads_total.inc()
     try:
         sw_pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     # Owner-contact assertion (non-negotiable privacy contract)
     await _assert_owner_contact(sw_pool)
@@ -1025,7 +1042,7 @@ async def get_egress_catalog(
             )
         except Exception as exc:
             logger.warning("Egress catalog query failed: %s", exc)
-            raise HTTPException(status_code=503, detail="Egress catalog query failed")
+            raise HTTPException(status_code=503, detail="Egress catalog query failed") from exc
 
         # Derive catalog_covers_from from the oldest first_seen_at already in the result set.
         # No second query needed -- we already have min(created_at) per operation above.
@@ -1114,12 +1131,13 @@ async def get_egress_catalog(
 
 @router.get("/butlers/heartbeat", response_model=ApiResponse[HeartbeatFacts])
 async def get_butlers_heartbeat(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
 ) -> ApiResponse[HeartbeatFacts]:
     """Return per-butler liveness registry snapshots and session facts.
 
-    Reads from the switchboard's butler_registry table for heartbeat timestamps
+    Reads receiver-verified healthy timestamps from the Switchboard control plane
     and fans out to per-butler schema sessions tables for session facts. Does
     not issue live MCP calls to any butler.
 
@@ -1130,20 +1148,30 @@ async def get_butlers_heartbeat(
     If a butler's schema is unreachable, its session fields are null/0 and
     the entry is included with error='schema_unreachable'.
     """
-    system_butlers_heartbeat_reads_total.inc()
     try:
         sw_pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
-    # Fetch liveness registry: butler name -> last_seen_at
+    # A failed receiver probe never advances the cutover timestamp. Flag-off
+    # deployments still report their legacy routing projection.
     try:
-        registry_rows = await sw_pool.fetch(
-            "SELECT name, last_seen_at FROM butler_registry ORDER BY name ASC"
+        from butlers.tools.switchboard.registry.registry import receiver_route_cutover_enabled
+
+        registry_query = (
+            "SELECT r.name, c.healthy_observed_at AS last_seen_at"
+            " FROM butler_registry AS r"
+            " LEFT JOIN butler_registry_control_plane AS c USING (name)"
+            " ORDER BY r.name ASC"
+            if receiver_route_cutover_enabled()
+            else "SELECT name, last_seen_at FROM butler_registry ORDER BY name ASC"
         )
+        registry_rows = await sw_pool.fetch(registry_query)
     except Exception as exc:
         logger.warning("Failed to query butler_registry: %s", exc)
-        raise HTTPException(status_code=503, detail="Butler registry query failed")
+        raise HTTPException(status_code=503, detail="Butler registry query failed") from exc
 
     # Build registry map
     registry: dict[str, datetime | None] = {
@@ -1231,7 +1259,8 @@ async def get_butlers_heartbeat(
 
 @router.get("/insights/delivery-state", response_model=ApiResponse[InsightDeliveryState])
 async def get_insight_delivery_state(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[InsightDeliveryState]:
     """Return the current state of the proactive insight delivery pipeline.
 
@@ -1252,11 +1281,12 @@ async def get_insight_delivery_state(
     Returns HTTP 200 with zero counts when the insight_candidates table does not
     yet exist (pre-migration deployment); no error is raised.
     """
-    system_insight_delivery_reads_total.inc()
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     _zero_state = InsightDeliveryState(queued=0, delivered=0, failed=0, last_delivery_at=None)
 
@@ -1291,10 +1321,65 @@ async def get_insight_delivery_state(
 
 
 VALID_LEDGERS = frozenset({"infra", "owner"})
+_ATTENTION_IDENTITIES = frozenset(
+    {
+        (FLEET_SOURCE, FLEET_FINGERPRINT),
+        (QA_PATROL_SOURCE, QA_PATROL_OVERDUE_FINGERPRINT),
+    }
+)
 
 
-def _condition_row_to_entry(row: dict, *, ledger: str) -> ConditionEntry:
+async def _condition_attention_by_id(
+    db: DatabaseManager,
+) -> dict[str, ConditionAttention] | None:
+    """Read linked attention through the content-blind projection; ``None`` if unreadable."""
+    try:
+        rows = await db.credential_shared_pool().fetch(
+            "SELECT * FROM public.observe_runtime_attention_conditions()"
+        )
+    except Exception as exc:  # noqa: BLE001 - reduced to a typed degraded status
+        logger.warning("Condition attention observation unavailable (%s)", type(exc).__name__)
+        return None
+    return {
+        str(row["condition_id"]): ConditionAttention(
+            status=condition_attention_status(row),
+            episode_id=str(row["episode_id"]),
+            created_at=row["created_at"].isoformat(),
+            delivered_at=row["delivered_at"].isoformat() if row["delivered_at"] else None,
+            safe_reason=safe_reason(row["delivery_error_class"], row["delivery_error_detail"]),
+            outbox_retained=row["outbox_retained"],
+        )
+        for row in rows
+    }
+
+
+def _attention_for(
+    row: dict, attention: dict[str, ConditionAttention] | None, *, now: datetime | None = None
+) -> ConditionAttention | None:
+    if (row["source"], row["fingerprint"]) not in _ATTENTION_IDENTITIES:
+        return None
+    if attention is None:
+        return ConditionAttention(status="unavailable")
+    marker = attention.get(str(row["id"]))
+    if marker is not None:
+        return marker
+    # No marker: a page is due only once the producer's grace and one controller pass elapse.
+    due_after = CONDITION_ATTENTION_GRACE + CONDITION_ATTENTION_PASS_ALLOWANCE
+    detected = row["first_detected_at"]
+    resolved = row.get("resolved_at")
+    if resolved is not None:
+        # Resolved before a page could be due: nothing should have paged.
+        return ConditionAttention(status="not_raised") if resolved - detected > due_after else None
+    if (now or datetime.now(UTC)) - detected > due_after:
+        return ConditionAttention(status="not_raised")
+    return ConditionAttention(status="within_grace")
+
+
+def _condition_row_to_entry(
+    row: dict, *, ledger: str, attention: ConditionAttention | None = None
+) -> ConditionEntry:
     return ConditionEntry(
+        attention=attention,
         ledger=ledger,
         id=str(row["id"]),
         source=row["source"],
@@ -1326,7 +1411,8 @@ async def get_conditions(
     state: str | None = Query(None, description="Filter by state. One of: open, aging, resolved."),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ConditionsFacts]:
     """Return standing conditions from a durable ledger (bu-27dxl.6.2 / bu-ep4ks.6).
 
@@ -1346,8 +1432,6 @@ async def get_conditions(
     ``conditions_available=False`` with an empty list, never a fabricated
     all-clear.
     """
-    system_conditions_reads_total.inc()
-
     if ledger not in VALID_LEDGERS:
         allowed = ", ".join(sorted(VALID_LEDGERS))
         raise HTTPException(
@@ -1369,8 +1453,10 @@ async def get_conditions(
 
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     try:
         total, rows = await list_conditions(
@@ -1380,9 +1466,22 @@ async def get_conditions(
         logger.warning("%s_conditions query failed (degraded state returned): %s", ledger, exc)
         return ApiResponse(data=ConditionsFacts(conditions=[], total=0, conditions_available=False))
 
+    attention = None
+    if ledger == "infra" and any(
+        (r["source"], r["fingerprint"]) in _ATTENTION_IDENTITIES for r in rows
+    ):
+        attention = await _condition_attention_by_id(db)
+
     return ApiResponse(
         data=ConditionsFacts(
-            conditions=[_condition_row_to_entry(r, ledger=ledger) for r in rows],
+            conditions=[
+                _condition_row_to_entry(
+                    r,
+                    ledger=ledger,
+                    attention=_attention_for(r, attention) if ledger == "infra" else None,
+                )
+                for r in rows
+            ],
             total=total,
             conditions_available=True,
         )

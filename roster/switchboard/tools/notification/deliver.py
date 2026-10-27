@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import uuid
@@ -12,17 +13,35 @@ import asyncpg
 from opentelemetry import trace
 from pydantic import ValidationError
 
+from butlers.conversation_identity import telegram_conversation_id, whatsapp_conversation_id
+from butlers.core.approval_delivery_transport import (
+    RecoveryAuthorityError,
+    TrustedRecoveryContext,
+)
+from butlers.core.approval_review import review_from_notify_refusal
 from butlers.core.tool_call_capture import get_current_runtime_session_id
-from butlers.tools.switchboard.notification.log import log_notification
-from butlers.tools.switchboard.routing.contracts import (
+from butlers.tools.switchboard.contracts import (
     NotifyRequestV1,
-    RouteRequestContextV1,
     parse_notify_request,
+)
+from butlers.tools.switchboard.notification.log import (
+    _log_notification_with_review,
+    log_notification,
+)
+from butlers.tools.switchboard.notification.self_links import resolve_self_links
+from butlers.tools.switchboard.registry.registry import (
+    expected_route_target,
+    receiver_route_cutover_enabled,
+    resolve_control_plane_target,
+)
+from butlers.tools.switchboard.routing.contracts import (
+    RouteRequestContextV1,
     parse_route_envelope,
 )
 from butlers.tools.switchboard.routing.route import route
-from butlers.tools.switchboard.routing.transport import (
+from butlers.tools.switchboard.transport import (
     PROVIDER_REJECTED,
+    TRANSPORT_CONNECTION_LOST,
     TransportResult,
     transport_result_from_envelope,
 )
@@ -108,7 +127,9 @@ def _build_notify_route_envelope(
         "target": {"butler": MESSENGER_BUTLER_NAME, "tool": "route.execute"},
         "input": {
             "prompt": _NOTIFY_ROUTE_PROMPT,
-            "context": {"notify_request": notify_request.model_dump(mode="json")},
+            "context": {
+                "notify_request": notify_request.model_dump(mode="json", exclude_none=True)
+            },
         },
     }
 
@@ -138,6 +159,9 @@ async def _log_notification_best_effort(pool: asyncpg.Pool, **kwargs: Any) -> st
     DSN or credential material.
     """
     try:
+        review = kwargs.pop("approval_review", None)
+        if review is not None:
+            return await _log_notification_with_review(pool, approval_review=review, **kwargs)
         return await log_notification(pool, **kwargs)
     except Exception as exc:  # noqa: BLE001 - evidence write is best-effort
         logger.warning("notification_log write failed (%s)", type(exc).__name__)
@@ -153,6 +177,34 @@ def _transport_fragment(transport: TransportResult | None) -> dict[str, Any]:
     return {"transport": transport.as_dict()} if transport is not None else {}
 
 
+def _outbound_conversation_id(
+    notify_request: NotifyRequestV1, thread_identity: str, source_channel: str
+) -> str:
+    """Return the history key an outbound row shares with its conversation's inbound rows.
+
+    A caller that carried the inbound ``external_conversation_id`` forward is
+    authoritative. Otherwise the key is derived from where the message went: a
+    Telegram delivery lands in the chat named by the recipient or by the reply
+    target's ``<chat_id>`` prefix, and a WhatsApp delivery in the chat JID. Both
+    match the keys connectors emit and sw_041 backfilled.
+    """
+    ctx = notify_request.request_context
+    if ctx is not None and ctx.external_conversation_id is not None:
+        return ctx.external_conversation_id
+    if notify_request.delivery.channel == "telegram":
+        return telegram_conversation_id(thread_identity.partition(":")[0])
+    if notify_request.delivery.channel == "whatsapp" or source_channel in (
+        "whatsapp",
+        "whatsapp_user_client",
+    ):
+        return (
+            thread_identity
+            if thread_identity.startswith("whatsapp:")
+            else whatsapp_conversation_id(thread_identity)
+        )
+    return thread_identity
+
+
 async def _write_outbound_message_inbox(
     pool: asyncpg.Pool,
     *,
@@ -163,19 +215,21 @@ async def _write_outbound_message_inbox(
 
     For reply-intent messages the thread identity comes from request_context.
     For send-intent messages (proactive notifications) the thread identity is
-    derived from delivery.recipient when the channel is telegram — the recipient
-    IS the chat_id that the message was delivered to.
+    derived from delivery.recipient when the channel is telegram or whatsapp —
+    the recipient IS the chat_id / chat JID that the message was delivered to.
 
     Errors are logged but never propagate — the delivery has already succeeded.
     """
+    if notify_request.recovery is not None:
+        return
     ctx = notify_request.request_context
     thread_identity = ctx.source_thread_identity if ctx is not None else None
 
-    # Derive thread identity from delivery.recipient for telegram send-intent
-    # notifications that lack explicit thread context.
+    # Derive thread identity from delivery.recipient for telegram and whatsapp
+    # send-intent notifications that lack explicit thread context.
     if thread_identity is None:
         delivery = notify_request.delivery
-        if delivery.channel == "telegram" and delivery.recipient:
+        if delivery.channel in ("telegram", "whatsapp") and delivery.recipient:
             thread_identity = delivery.recipient
 
     if thread_identity is None:
@@ -199,6 +253,9 @@ async def _write_outbound_message_inbox(
         "source_endpoint_identity": f"butler:{origin_butler}",
         "source_sender_identity": origin_butler,
         "source_thread_identity": thread_identity,
+        "external_conversation_id": _outbound_conversation_id(
+            notify_request, thread_identity, source_channel
+        ),
     }
     raw_payload = {
         "content": message_text,
@@ -246,6 +303,8 @@ async def _deliver_via_notify_request(
     call_fn: Any | None,
     session_id: str | None = None,
 ) -> dict[str, Any]:
+    if notify_request.recovery is not None:
+        raise RuntimeError("approval recovery cannot enter generic notification delivery")
     channel = notify_request.delivery.channel
     # Prefer explicit delivery recipient; fall back to thread identity from
     # request context (e.g. Telegram chat_id for reply-intent notifications).
@@ -254,7 +313,7 @@ async def _deliver_via_notify_request(
         recipient = notify_request.request_context.source_thread_identity or ""
     message = notify_request.delivery.message
     log_metadata = dict(metadata or {})
-    log_metadata["notify_request"] = notify_request.model_dump(mode="json")
+    log_metadata["notify_request"] = notify_request.model_dump(mode="json", exclude_none=True)
     log_metadata["request_context"] = request_context.model_dump(mode="json")
 
     # Create a switchboard-scoped context for the route.v1 envelope so the
@@ -286,6 +345,11 @@ async def _deliver_via_notify_request(
         call_fn=call_fn,
     )
 
+    review = review_from_notify_refusal(
+        route_result.get("result"),
+        request_id=str(request_context.request_id),
+        channel=channel,
+    )
     transport = transport_result_from_envelope(route_result)
 
     if "error" in route_result:
@@ -316,6 +380,7 @@ async def _deliver_via_notify_request(
             error=error_msg,
             session_id=session_id,
             trace_id=_current_trace_id(),
+            approval_review=review,
         )
         result: dict[str, Any] = {
             "notification_id": notification_id,
@@ -327,7 +392,52 @@ async def _deliver_via_notify_request(
         }
         return result
 
-    notify_response = _extract_notify_response(route_result.get("result"))
+    route_response = route_result.get("result")
+    if not isinstance(route_response, dict) or route_response.get("status") != "ok":
+        route_error = route_response.get("error") if isinstance(route_response, dict) else None
+        if isinstance(route_error, dict):
+            error_msg = str(route_error.get("message") or "Messenger route rejected delivery.")
+            error_class = str(route_error.get("class") or "route_error")
+        else:
+            error_msg = "Messenger returned no successful delivery response."
+            error_class = "invalid_route_response"
+        notification_id = await _log_notification_best_effort(
+            pool,
+            source_butler=source_butler,
+            channel=channel,
+            recipient=recipient,
+            message=message,
+            metadata=log_metadata,
+            status="failed",
+            error=error_msg,
+            session_id=session_id,
+            trace_id=_current_trace_id(),
+            approval_review=review,
+        )
+        nested_transport = (
+            transport_result_from_envelope(route_response)
+            if isinstance(route_response, dict)
+            else None
+        )
+        explicit_application_rejection = (
+            isinstance(route_response, dict)
+            and route_response.get("status") == "error"
+            and isinstance(route_response.get("error"), dict)
+            and error_class in {"validation_error", "delivery_error", "policy_denied"}
+        )
+        failure_transport = nested_transport or (
+            PROVIDER_REJECTED if explicit_application_rejection else TRANSPORT_CONNECTION_LOST
+        )
+        return {
+            "notification_id": notification_id,
+            "status": "failed",
+            "error": error_msg,
+            "error_class": error_class,
+            "retryable": False,
+            **_transport_fragment(failure_transport),
+        }
+
+    notify_response = _extract_notify_response(route_response)
     if isinstance(notify_response, dict) and notify_response.get("status") == "error":
         error_payload = notify_response.get("error")
         if isinstance(error_payload, dict):
@@ -353,6 +463,7 @@ async def _deliver_via_notify_request(
             error=error_msg,
             session_id=session_id,
             trace_id=_current_trace_id(),
+            approval_review=review,
         )
         return {
             "notification_id": notification_id,
@@ -362,6 +473,47 @@ async def _deliver_via_notify_request(
             "retryable": retryable,
             **_transport_fragment(transport),
         }
+
+    delivery_receipt = (
+        notify_response.get("delivery") if isinstance(notify_response, dict) else None
+    )
+    delivery_id = (
+        delivery_receipt.get("delivery_id") if isinstance(delivery_receipt, dict) else None
+    )
+    receipt_channel = (
+        delivery_receipt.get("channel") if isinstance(delivery_receipt, dict) else None
+    )
+    if (
+        not isinstance(notify_response, dict)
+        or notify_response.get("status") != "ok"
+        or receipt_channel != channel
+        or not isinstance(delivery_id, (str, int))
+        or isinstance(delivery_id, bool)
+        or not str(delivery_id).strip()
+    ):
+        error_msg = "Messenger delivery confirmation was missing or malformed."
+        notification_id = await _log_notification_best_effort(
+            pool,
+            source_butler=source_butler,
+            channel=channel,
+            recipient=recipient,
+            message=message,
+            metadata=log_metadata,
+            status="failed",
+            error=error_msg,
+            session_id=session_id,
+            trace_id=_current_trace_id(),
+        )
+        return {
+            "notification_id": notification_id,
+            "status": "failed",
+            "error": error_msg,
+            "error_class": "invalid_delivery_receipt",
+            "retryable": False,
+            **_transport_fragment(TRANSPORT_CONNECTION_LOST),
+        }
+
+    log_metadata["delivery_id"] = str(delivery_id)
 
     # Messenger confirmed delivery. Everything below is bookkeeping and must
     # not be able to turn a delivered message back into a failure.
@@ -387,9 +539,132 @@ async def _deliver_via_notify_request(
     return {
         "notification_id": notification_id,
         "status": "sent",
-        "result": notify_response or route_result.get("result"),
+        "delivery_id": str(delivery_id),
+        "result": notify_response,
         **_transport_fragment(transport),
     }
+
+
+def _safe_recovery_result(
+    classification: str,
+    reason_code: str | None = None,
+    provider_reference: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"classification": classification}
+    if reason_code is not None:
+        payload["reason_code"] = reason_code
+    if provider_reference is not None:
+        payload["provider_reference"] = provider_reference
+    return payload
+
+
+def _recovery_authority_refusal() -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "error": "Approval recovery authority rejected.",
+        "retryable": False,
+    }
+
+
+async def _authenticate_recovery_request(
+    pool: asyncpg.Pool,
+    *,
+    envelope_payload: dict[str, Any],
+    source_butler: str,
+    trusted_source: str | None,
+    verified_context: TrustedRecoveryContext | None,
+) -> tuple[NotifyRequestV1, RouteRequestContextV1, TrustedRecoveryContext] | None:
+    """Authenticate recovery before emitting caller-derived observability."""
+    # Legacy caller/claimed principal text cannot establish a source row.
+    if verified_context is None:
+        return None
+    try:
+        notify_request = parse_notify_request(envelope_payload)
+        recovery = notify_request.recovery
+        if (
+            recovery is None
+            or verified_context.issuer != source_butler
+            or notify_request.origin_butler != verified_context.issuer
+        ):
+            raise RecoveryAuthorityError("recovery source principal does not match issuer")
+        trusted = verified_context
+        trusted.validate()
+        if any(
+            getattr(recovery, key) != value
+            for key, value in trusted.as_internal_dict().items()
+            if key not in {"issuer", "owning_schema"}
+        ):
+            raise RecoveryAuthorityError("source admission does not match request")
+    except (RecoveryAuthorityError, ValidationError):
+        return None
+
+    try:
+        if receiver_route_cutover_enabled():
+            expected = expected_route_target(trusted.issuer)
+            if expected is None:
+                return None
+            decision = await resolve_control_plane_target(pool, expected)
+            if decision.state != "ready":
+                return None
+        else:
+            registered = await pool.fetchval(
+                """
+                SELECT name FROM switchboard.butler_registry
+                WHERE name = $1 AND eligibility_state = 'active'
+                """,
+                trusted.issuer,
+            )
+            if registered != trusted.issuer:
+                return None
+    except Exception:
+        return None
+
+    request_context = notify_request.request_context or _default_notify_request_context(
+        trusted.issuer
+    )
+    return notify_request, request_context, trusted
+
+
+async def _deliver_recovery_via_notify_request(
+    pool: asyncpg.Pool,
+    *,
+    notify_request: NotifyRequestV1,
+    request_context: RouteRequestContextV1,
+    trusted: TrustedRecoveryContext,
+    call_fn: Any | None,
+) -> dict[str, Any]:
+    """Route recovery without touching generic notification persistence."""
+    route_context = RouteRequestContextV1.model_validate(
+        {
+            "request_id": str(request_context.request_id),
+            "received_at": (request_context.received_at or datetime.now(UTC)).isoformat(),
+            "source_channel": "mcp",
+            "source_endpoint_identity": "switchboard",
+            "source_sender_identity": trusted.issuer,
+        }
+    )
+    route_payload = _build_notify_route_envelope(notify_request, request_context=route_context)
+    route_result = await route(
+        pool,
+        target_butler=MESSENGER_BUTLER_NAME,
+        tool_name="route.execute",
+        args=route_payload,
+        source_butler=trusted.issuer,
+        internal_context={"_trusted_approval_recovery": trusted.as_internal_dict()},
+        call_fn=call_fn,
+    )
+    notify_response = _extract_notify_response(route_result.get("result"))
+    if isinstance(notify_response, dict):
+        handoff = notify_response.get("handoff")
+        if isinstance(handoff, dict):
+            return {"status": "recovery", "handoff": handoff}
+
+    transport = transport_result_from_envelope(route_result)
+    if transport is not None and transport.retryable:
+        handoff = _safe_recovery_result("safe_retry", "transport_unavailable")
+    else:
+        handoff = _safe_recovery_result("ambiguous", "provider_outcome_unknown")
+    return {"status": "recovery", "handoff": handoff}
 
 
 async def deliver(
@@ -402,6 +677,9 @@ async def deliver(
     notify_request: dict[str, Any] | None = None,
     *,
     call_fn: Any | None = None,
+    trusted_source: str | None = None,
+    verified_context: TrustedRecoveryContext | None = None,
+    content_requires_inert_links: bool = False,
 ) -> dict[str, Any]:
     """Deliver a notification through the specified channel.
 
@@ -437,6 +715,42 @@ async def deliver(
         on success, or ``{"notification_id": "<uuid>", "status": "failed",
         "error": "<description>"}`` on failure.
     """
+    envelope_payload: dict[str, Any] | None = notify_request
+    if isinstance(envelope_payload, dict) and envelope_payload.get("recovery") is not None:
+        authenticated = await _authenticate_recovery_request(
+            pool,
+            envelope_payload=envelope_payload,
+            source_butler=source_butler,
+            trusted_source=trusted_source,
+            verified_context=verified_context,
+        )
+        if authenticated is None:
+            return _recovery_authority_refusal()
+        parsed_notify, request_context, trusted = authenticated
+        from butlers.core.delivery_rendering import delivery_content_requires_inert_links
+
+        # Authenticate the original source-admitted envelope first. Rendering
+        # authority is a separate private sender fact, never its public flag.
+        parsed_notify = parsed_notify.model_copy(
+            update={
+                "render_links_inert": (
+                    delivery_content_requires_inert_links() or content_requires_inert_links is True
+                )
+            }
+        )
+        tracer = trace.get_tracer("butlers")
+        with tracer.start_as_current_span("switchboard.deliver") as span:
+            span.set_attribute("source_butler", trusted.issuer)
+            span.set_attribute("channel", parsed_notify.delivery.channel)
+            span.set_attribute("target_butler", MESSENGER_BUTLER_NAME)
+            return await _deliver_recovery_via_notify_request(
+                pool,
+                notify_request=resolve_self_links(parsed_notify),
+                request_context=request_context,
+                trusted=trusted,
+                call_fn=call_fn,
+            )
+
     tracer = trace.get_tracer("butlers")
     with tracer.start_as_current_span("switchboard.deliver") as span:
         span.set_attribute("source_butler", source_butler)
@@ -444,7 +758,6 @@ async def deliver(
         # Resolve session_id from runtime context for notification tracing.
         session_id = get_current_runtime_session_id()
 
-        envelope_payload: dict[str, Any] | None = notify_request
         if envelope_payload is None and source_butler != "switchboard":
             error_msg = (
                 "notify.v1 envelope required for specialist delivery. "
@@ -454,10 +767,24 @@ async def deliver(
             return {"error": error_msg, "status": "failed"}
 
         if envelope_payload is not None:
+            from butlers.core.delivery_rendering import delivery_content_requires_inert_links
+
+            # The input envelope is a tool argument. Only deterministic, internal
+            # sender facts can supply this field at the Switchboard boundary.
+            envelope_payload = {
+                **envelope_payload,
+                "render_links_inert": (
+                    delivery_content_requires_inert_links() or content_requires_inert_links is True
+                ),
+            }
             try:
                 parsed_notify = parse_notify_request(envelope_payload)
             except ValidationError as exc:
-                error_msg = f"Invalid notify.v1 envelope: {exc}"
+                error_msg = (
+                    "Invalid approval recovery request."
+                    if envelope_payload.get("recovery") is not None
+                    else f"Invalid notify.v1 envelope: {exc}"
+                )
                 span.set_status(trace.StatusCode.ERROR, error_msg)
                 return {"error": error_msg, "status": "failed"}
 
@@ -478,7 +805,7 @@ async def deliver(
 
             return await _deliver_via_notify_request(
                 pool,
-                notify_request=parsed_notify,
+                notify_request=resolve_self_links(parsed_notify),
                 request_context=request_context,
                 source_butler=source_butler,
                 metadata=metadata,
@@ -615,3 +942,79 @@ async def deliver(
             "result": route_result.get("result"),
             **_transport_fragment(transport_result_from_envelope(route_result)),
         }
+
+
+def _find_edit_verdict(value: Any, depth: int = 0) -> bool | None:
+    """Locate the ``edited`` flag ``telegram_edit_message_text`` returns, however wrapped."""
+    if depth > 6:
+        return None
+    if isinstance(value, str) and value.lstrip().startswith(("{", "[")):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    if isinstance(value, dict):
+        edited = value.get("edited")
+        if isinstance(edited, bool):
+            return edited
+        children: Any = value.values()
+    elif isinstance(value, list):
+        children = value
+    else:
+        return None
+    for child in children:
+        verdict = _find_edit_verdict(child, depth + 1)
+        if verdict is not None:
+            return verdict
+    return None
+
+
+async def amend_delivery(
+    pool: asyncpg.Pool,
+    *,
+    chat_id: str,
+    message_id: int,
+    text: str,
+    source_butler: str = "switchboard",
+    call_fn: Any | None = None,
+) -> dict[str, Any]:
+    """Edit a previously delivered Telegram message in place (bu-q7vx1q.5).
+
+    Routes ``telegram_edit_message_text`` to the butler that owns the telegram
+    module, exactly as :func:`deliver` routes a send, so transport stays in the
+    channel module. Returns ``{"status": "edited"}`` when Telegram accepted the
+    edit, ``{"status": "rejected"}`` when it refused (a 400: message too old or
+    not editable -- the caller folds the correction into its next digest), and
+    ``{"status": "error", "error": ...}`` for anything transient or unroutable
+    (the caller may retry).
+    """
+    rows = await pool.fetch(
+        """
+        SELECT name FROM switchboard.butler_registry
+        WHERE modules::jsonb @> $1::jsonb
+        ORDER BY name
+        """,
+        ["telegram"],
+    )
+    if not rows:
+        return {"status": "error", "error": "No butler with 'telegram' module found in registry"}
+    last_error = "unroutable"
+    for row in rows:
+        route_result = await route(
+            pool,
+            target_butler=str(row["name"]),
+            tool_name="telegram_edit_message_text",
+            args={"chat_id": chat_id, "message_id": message_id, "text": text},
+            source_butler=source_butler,
+            call_fn=call_fn,
+        )
+        if "error" in route_result:
+            last_error = str(route_result["error"])
+            continue
+        edited = _find_edit_verdict(route_result.get("result"))
+        if edited is True:
+            return {"status": "edited"}
+        if edited is False:
+            return {"status": "rejected"}
+        return {"status": "error", "error": "unrecognised edit result"}
+    return {"status": "error", "error": last_error}

@@ -97,15 +97,17 @@ class TestStafferVsButlerDistinction:
         assert ButlerType.STAFFER.value == "staffer", (
             "ButlerType.STAFFER must equal 'staffer' for routing exclusion to work (RFC 0003)"
         )
-        # Verify the routing classify module references ButlerType to filter staffers.
+        # Verify the classifier's candidate loader references the staffer type to filter staffers.
         import inspect as _inspect
 
+        from butlers.tools.switchboard.registry.registry import load_available_butlers
         from butlers.tools.switchboard.routing import classify
 
-        src = _inspect.getsource(classify)
+        assert classify._load_available_butlers is load_available_butlers
+        src = _inspect.getsource(load_available_butlers)
         assert "staffer" in src.lower(), (
-            "routing classify must reference 'staffer' type to exclude staffers from "
-            "LLM classification (RFC 0003)"
+            "the classifier's candidate loader must reference 'staffer' type to exclude "
+            "staffers from LLM classification (RFC 0003)"
         )
 
     def test_staffers_excluded_from_briefing_contribution(self):
@@ -240,10 +242,34 @@ class TestStafferTypeInRegistry:
         'The Switchboard dispatches to the named target regardless of type.'
         Calling notify() with target='messenger' routes to the Messenger staffer.
         """
-        from butlers.daemon import CORE_TOOL_NAMES
+        from unittest.mock import MagicMock
 
-        # The notify core tool must be present in the daemon's tool registration,
-        # confirming it can dispatch to named targets including staffers.
-        assert "notify" in CORE_TOOL_NAMES, (
-            "notify must be a core tool so any butler can dispatch to the Messenger (RFC 0003)"
+        from butlers.config import ButlerType
+        from butlers.core_tools import ToolContext
+        from butlers.core_tools._notifications import register_notification_tools
+
+        registrations: list[tuple[str, str]] = []
+
+        def core_tool(group: str, **tool_kwargs):
+            def register(fn):
+                registrations.append((tool_kwargs.get("name", fn.__name__), group))
+                return fn
+
+            return register
+
+        register_notification_tools(
+            ToolContext(
+                daemon=MagicMock(),
+                pool=MagicMock(),
+                spawner=MagicMock(),
+                butler_name="general",
+                butler_type=ButlerType.BUTLER,
+                is_switchboard=False,
+                is_messenger=False,
+                route_metrics=MagicMock(),
+            ),
+            MagicMock(),
+            core_tool,
         )
+
+        assert ("notify", "notifications") in registrations

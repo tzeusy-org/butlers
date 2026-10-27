@@ -10,7 +10,8 @@ import {
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
-import { useMindMaps } from "@/hooks/use-education";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
+import { useMindMap, useMindMaps } from "@/hooks/use-education";
 import MindMapGraph from "@/components/education/MindMapGraph";
 import NodeDetailPanel from "@/components/education/NodeDetailPanel";
 import CurriculumActions from "@/components/education/CurriculumActions";
@@ -25,8 +26,19 @@ import QuizHistoryList from "@/components/education/QuizHistoryList";
 import type { EducationNodeSelection } from "@/components/education/types";
 
 export default function EducationPage() {
-  const { data: mindMapsResponse, isLoading, isError, refetch } = useMindMaps({ status: "active" });
-  const mindMaps = useMemo(() => mindMapsResponse?.data ?? [], [mindMapsResponse]);
+  // Filter before the server paginates: newer terminal maps must not consume
+  // either eligible status's list budget and hide learning or setup curricula.
+  const activeMaps = useMindMaps({ status: "active" });
+  const draftMaps = useMindMaps({ status: "draft" });
+  const mindMaps = useMemo(() => Array.from(new Map(
+    [activeMaps.data, draftMaps.data]
+      .flatMap((response) => response ? response.data : [])
+      .filter((map) => map.status === "active" || map.status === "draft")
+      .map((map) => [map.id, map]),
+  ).values()), [activeMaps.data, draftMaps.data]);
+  const isLoading = activeMaps.isLoading || draftMaps.isLoading;
+  const isError = activeMaps.isError || draftMaps.isError;
+  const refetch = () => Promise.all([activeMaps.refetch(), draftMaps.refetch()]);
 
   const [selectedMapId, setSelectedMapId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -39,12 +51,22 @@ export default function EducationPage() {
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (mindMaps.length > 0 && !selectedMapId) {
-      setSelectedMapId(mindMaps[0].id);
+      setSelectedMapId((mindMaps.find((map) => map.status === "active") ?? mindMaps[0]).id);
     }
   }, [mindMaps, selectedMapId]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  const selectedMap = mindMaps.find((m) => m.id === selectedMapId) ?? null;
+  const selectedDetailQuery = useMindMap(selectedMapId);
+  // A status mutation invalidates both the list and detail queries. Keep the
+  // selected curriculum reachable when it leaves the eligible list, using only
+  // the detail belonging to this selection (never a previous query's data).
+  const selectedMapDetail = selectedDetailQuery.data?.id === selectedMapId
+    ? selectedDetailQuery.data : undefined;
+  const selectedMap = selectedMapDetail ?? mindMaps.find((m) => m.id === selectedMapId) ?? null;
+  const selectableMaps = selectedMap && !mindMaps.some((map) => map.id === selectedMap.id)
+    ? [...mindMaps, selectedMap] : mindMaps;
+  const selectedDetailUnavailable = !!selectedMapId && (selectedDetailQuery.isError
+    || (!selectedMapDetail && !selectedDetailQuery.isLoading));
 
   const handleNodeSelection = useCallback((selection: EducationNodeSelection) => {
     setSelectedMapId(selection.mindMapId);
@@ -81,7 +103,7 @@ export default function EducationPage() {
   );
   useRegisterCommands(educationCommands);
 
-  if (isLoading) {
+  if (isLoading || (selectableMaps.length === 0 && selectedDetailQuery.isLoading)) {
     return (
       <div className="space-y-6">
         <h1 className="text-2xl font-bold tracking-tight">Education</h1>
@@ -97,7 +119,7 @@ export default function EducationPage() {
   // cache so a background-refetch error keeps the last-good curriculum list
   // visible (React Query never clears data on error) rather than blanking a
   // populated page.
-  if (isError && mindMaps.length === 0) {
+  if ((isError || selectedDetailUnavailable) && selectableMaps.length === 0) {
     return (
       <div className="space-y-6">
         <h1 className="text-2xl font-bold tracking-tight">Education</h1>
@@ -109,7 +131,10 @@ export default function EducationPage() {
           <p className="text-sm text-destructive">
             Couldn't reach the education service. Retry.
           </p>
-          <Button variant="outline" onClick={() => void refetch()}>
+          <Button variant="outline" onClick={() => {
+            void refetch();
+            if (selectedMapId) void selectedDetailQuery.refetch();
+          }}>
             Retry
           </Button>
         </div>
@@ -117,7 +142,7 @@ export default function EducationPage() {
     );
   }
 
-  if (mindMaps.length === 0) {
+  if (selectableMaps.length === 0) {
     return (
       <div className="space-y-6">
         <h1 className="text-2xl font-bold tracking-tight">Education</h1>
@@ -156,6 +181,11 @@ export default function EducationPage() {
       </div>
 
       {receiptPanel}
+      {activeMaps.isError && <SourceDegradedNote label="Active curricula" onRetry={() => void refetch()} />}
+      {draftMaps.isError && <SourceDegradedNote label="Setting-up curricula" onRetry={() => void refetch()} />}
+      {selectedDetailUnavailable && (
+        <SourceDegradedNote label="Selected curriculum" onRetry={() => void selectedDetailQuery.refetch()} />
+      )}
 
       {/* Mind map selector */}
       <Select value={selectedMapId ?? ""} onValueChange={handleMindMapSelection}>
@@ -163,9 +193,9 @@ export default function EducationPage() {
           <SelectValue placeholder="Select a curriculum" />
         </SelectTrigger>
         <SelectContent>
-          {mindMaps.map((m) => (
+          {selectableMaps.map((m) => (
             <SelectItem key={m.id} value={m.id}>
-              {m.title}
+              {m.title}{m.status === "draft" ? " (Setting up)" : ""}
             </SelectItem>
           ))}
         </SelectContent>
@@ -188,6 +218,7 @@ export default function EducationPage() {
             <CurriculumActions
               mindMapId={selectedMap.id}
               status={selectedMap.status}
+              nodeCount={selectedMapDetail?.nodes.length}
             />
           )}
           {selectedMapId && (

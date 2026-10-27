@@ -1,104 +1,101 @@
 # General Butler
 
-> **Purpose:** Flexible catch-all assistant for freeform data storage, retrieval, and organization using collections and items.
-> **Audience:** Contributors and operators.
-> **Prerequisites:** [Concepts](../concepts/butler-lifecycle.md), [Architecture](../architecture/butler-daemon.md).
+The catch-all second brain. It stores anything that has no specialist home as schema-free
+items in named collections, and it is Switchboard's safe fallback target when classification is
+uncertain, so no message is dropped.
 
-## Overview
+- **Identity and scope:** [`roster/general/MANIFESTO.md`](../../roster/general/MANIFESTO.md)
+- **Required behavior:** [`butler-general` spec](../../openspec/specs/butler-general/spec.md)
+- **Schedules, modules, and port:** [`roster/general/butler.toml`](../../roster/general/butler.toml)
 
-The General Butler is the system's digital second brain -- the place where anything that does not belong to a specialist domain can be stored, organized, and retrieved. Lists, notes, random data, ideas, recipes, contacts, dreams, book recommendations -- whatever the user needs to remember, the General Butler holds it in typed collections.
+## Ordinary-Only Collections
 
-It also serves as the safe fallback for Switchboard routing. When the classifier is uncertain about which specialist should handle a request, the General Butler receives it and stores the information in a freeform collection rather than letting it drop.
+General's generic tools and dashboard API see only **ordinary** collections
+([RFC 0037](../../about/legends-and-lore/rfcs/0037-general-capture-and-private-source-boundaries.md),
+migration `gen_003`). The boundary is passive: General never classifies a collection private and
+does not implement private custody.
 
-## Profile
+- **Classification:** `collections.custody_private` defaults to `false`. A collection that is
+  `true`, or that is flagged ordinary but holds an item with the reserved `possession_profile`
+  key, is excluded from every generic list, search, export, count and statistic. An exact read or
+  id-based write of such a collection behaves exactly like one for a missing id. Generic input
+  can never set the flag or write `possession_profile`, and a classification can never be
+  cleared.
+- **One predicate:** `roster/general/tools/source_authority.py` owns the ordinary-parent
+  predicate and the lock order: parent collection first, then item. The MCP tools and
+  `roster/general/api/router.py` share both.
+- **Name namespace:**
+  - Uniqueness among ordinary names comes from the partial index
+    `collections_ordinary_name_key`. It sits beside the legacy global `UNIQUE (name)` constraint,
+    which keeps deployed `ON CONFLICT (name)` writers working; General never drops that
+    constraint.
+  - While the legacy constraint still holds, any private collection makes every name-based call
+    refuse with the same fixed "unavailable" error. This covers create, declare, resolve, export
+    and search by name, and it stops a name-specific conflict from revealing a private
+    collection.
+  - After a separately released custody cutover removes global uniqueness, a name used only by
+    a private collection behaves exactly like an unused name.
+  - A schema without this contract answers "unavailable" (HTTP 503 on the dashboard) instead of
+    serving unfiltered reads.
 
-| Property | Value |
-|----------|-------|
-| **Port** | 41101 |
-| **Schema** | `general` |
-| **Modules** | calendar, contacts, general, memory |
-| **Runtime** | codex (gpt-5.4-mini) |
+## Vocabulary
 
-## Schedule
+`collection_declare(name, shape_description, aliases)` records an explicit ordinary collection
+with a required, non-blank shape. Spellings that differ only by case, spacing, `_`/`-` or
+punctuation share one normalized key. The database enforces its uniqueness among ordinary
+collections, so concurrent variant declarations converge on one entry.
 
-| Task | Cron | Description |
-|------|------|-------------|
-| `memory_consolidation` | `0 */6 * * *` | Consolidate episodic memory into durable facts |
-| `memory_episode_cleanup` | `0 4 * * *` | Prune expired episodic memory entries |
-| `eod-tomorrow-prep` | `0 15 * * *` | End-of-day briefing: fetch tomorrow's calendar events, compose a preparation summary with timeline, free blocks, and heads-up notes, and deliver via Telegram |
+`collection_resolve(name)` resolves only:
 
-## Tools
+- an exact ordinary collection name, or
+- an exact declared spelling.
 
-The General Butler exposes collection and item management tools alongside standard core tools:
+Normalized and fuzzy near matches come back only as `suggestions`, never as a guessed collection.
 
-- **`collection_create / list / delete`** -- Manage named collections that group related items.
-- **`item_create`** -- Store any freeform JSON data in a collection, creating the collection first when needed.
-- **`item_get / update / delete`** -- CRUD on individual items within collections.
-- **`item_search`** -- Find items using JSONB containment queries.
-- **`collection_export`** -- Export all items from a collection.
-- **Calendar tools** -- `calendar_list_events`, `get_event`, `create_event`, `update_event` for catch-all scheduling that does not belong to a specialist domain.
+`item_create` and `collection_create` keep their absent-name creation; declaring is optional. No
+vocabulary is seeded, renamed or consolidated automatically.
 
-Items support deep-merge on update, meaning nested objects merge recursively rather than being replaced wholesale.
+## Source Versions
 
-## Key Behaviors
+Every generic item mutation appends an immutable row to `source_versions` in the same
+transaction. The row records the item, parent collection, version number, sha256 digest of the
+item projection, and the parent's `eligibility_generation`. Deletes append a content-free
+tombstone. The table rejects `UPDATE`, `DELETE` and `TRUNCATE`.
 
-**Flexible Storage.** Collections can hold any JSON-structured data. The General Butler does not impose a fixed schema on stored items -- it adapts to whatever the user provides.
+`read_source_version` returns a stored version only while:
 
-**Proactive Organization.** When running in interactive mode (Telegram), the General Butler suggests collections, tagging, and grouping when it detects patterns in the data being stored. It extracts facts liberally from casual notes.
+- the item still exists under an ordinary parent, and
+- that parent's eligibility generation still matches the version.
 
-**Contacts Sync.** The contacts module syncs with Google Contacts every 15 minutes (with a full sync every 6 days), making contact data available for cross-domain use.
+Classifying a parent advances its generation, so stored history never outlives privacy.
+`item_create_versioned` accepts an acquired connection, so a caller such as the future capture
+service can commit the item, its version and its own receipt in one transaction.
 
-**End-of-Day Prep.** Every day at 15:00 (SGT), the General Butler fetches the next day's calendar events and sends a structured preparation summary via Telegram with a timeline, free blocks, and heads-up notes for anything unusual.
+## Rollback
 
-## Interaction Patterns
+Downgrading `gen_003` refuses while any private collection or globally duplicated collection name
+exists. It never resets flags or renames, merges or deletes rows to fit. Otherwise it restores the
+global name constraint and drops the passive representation. The `source_versions` and vocabulary
+tables are dropped only when empty; if they hold rows, they stay in place unused, and a later
+re-upgrade picks them up again.
 
-**Direct user interaction** via Telegram or email for general-purpose data storage and retrieval. Users say things like "add milk to the shopping list" or "save this recipe" and the General Butler stores the data in the appropriate collection.
+## Explicit Context and Prompt Values
 
-**Switchboard fallback target.** When the routing classifier is uncertain, requests land here. The General Butler captures the information rather than losing it.
+The context tools follow the adopted [context-security contract](../concepts/context-security.md).
+`check_context` remains a data read; model-mediated `set_context` and `clear_context`
+require the server-verified invocation bound to the actual owner or authenticated
+owner device. A session locator, tool argument or claimed source label is not
+that binding. Canonical DND mutation identity, replay and receipt rules still apply.
 
-**Interactive response modes** range from quick emoji reactions (for simple additions) to substantive answers (for queries about stored data) to follow-up suggestions (for organizing patterns).
-
-## Verification
-
-To confirm the General Butler's collection store, schedule, and fallback routing are operating as described:
-
-```bash
-# 1. Confirm the butler is listening on the expected port
-curl -s http://localhost:41101/health | python3 -m json.tool
-# Expected: {"status": "ok", ...}
-
-# 2. Verify the general schema has collections and items tables
-psql -h localhost -U butlers -d butlers -c \
-  "SELECT table_name FROM information_schema.tables
-   WHERE table_schema = 'general'
-   ORDER BY table_name;"
-# Expected: collections, items (plus core tables: state, scheduled_tasks, sessions, session_process_logs)
-
-# 3. Confirm items store arbitrary JSON (schema-free)
-psql -h localhost -U butlers -d butlers -c \
-  "SELECT column_name, data_type FROM information_schema.columns
-   WHERE table_schema = 'general' AND table_name = 'items'
-   AND column_name = 'data';"
-# Expected: data_type = 'jsonb' -- not a fixed typed column
-
-# 4. Verify the eod-tomorrow-prep task is seeded at 15:00 UTC (23:00 SGT)
-psql -h localhost -U butlers -d butlers -c \
-  "SELECT name, cron, enabled FROM general.scheduled_tasks
-   WHERE name = 'eod-tomorrow-prep';"
-# Expected: cron = '0 15 * * *', enabled = true
-
-# 5. Confirm Switchboard routes unknown messages to General as fallback
-# Inspect routing_log for rows where target_butler = 'general' from uncertain classifications
-psql -h localhost -U butlers -d butlers -c \
-  "SELECT target_butler, routing_reason, COUNT(*)
-   FROM switchboard.routing_log
-   WHERE target_butler = 'general'
-   GROUP BY target_butler, routing_reason
-   ORDER BY count DESC LIMIT 5;"
-# Expected: rows present showing General as the fallback target for unclassified requests
-```
+General's deterministic Calendar job emits only `meeting/busy` or `focused/focused`.
+It never publishes an event title in the context value, metadata or result. An
+exact returned row witnessed by that producer in the same process/pool can render
+the typed value in the prompt preamble. Legacy rows, foreign pools, restarts,
+expiry, changes and finite cache eviction fall back to type/confidence only;
+matching stored labels do not confer provenance. No new signal or authority is
+introduced.
 
 ## Related Pages
 
 - [Switchboard Butler](switchboard.md) -- routes messages here as the default fallback
-- [Relationship Butler](relationship.md) -- handles contact-specific data that goes beyond General's freeform model
+- [Relationship Butler](relationship.md) -- owns contact data beyond General's freeform model

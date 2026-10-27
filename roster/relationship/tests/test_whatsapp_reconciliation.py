@@ -19,6 +19,7 @@ import butlers.tools.relationship.whatsapp_reconciliation as reconciliation
 from butlers.testing.schema_standins import (
     CONTACT_ENTITY_MAP,
     ENTITY_PREDICATE_REGISTRY,
+    ENTITY_REBIND_LOG,
     PENDING_ACTIONS,
 )
 from butlers.tools.relationship.entity_merge import (
@@ -33,6 +34,7 @@ from butlers.tools.relationship.whatsapp_reconciliation import (
     build_whatsapp_reconciliation_plan,
     validate_empty_shell_locked,
 )
+from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 pytestmark = [
     pytest.mark.integration,
@@ -89,6 +91,7 @@ async def reconciliation_pool(provisioned_postgres_pool):
             """
         )
         await pool.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
+        await pool.execute(ENTITY_REBIND_LOG.ddl(schema="public"))
         await pool.execute(
             """
             CREATE TABLE relationship.entity_facts (
@@ -118,6 +121,7 @@ async def reconciliation_pool(provisioned_postgres_pool):
             WHERE validity = 'active'
             """
         )
+        await apply_evidence_schema(pool)
         await pool.execute(
             """
             CREATE TABLE relationship.facts (
@@ -754,6 +758,8 @@ async def test_apply_revalidates_drift_under_lock_before_writing(
     assert await pool.fetchval("SELECT count(*) FROM relationship.merge_reviews") == 0
 
 
+# Relies on a PostgreSQL statement_timeout firing; it never fires in the faketime legs' shifted server.
+@pytest.mark.faketime_fragile
 async def test_locked_guard_serializes_new_decisions_and_protected_references(
     reconciliation_pool,
 ) -> None:

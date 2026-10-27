@@ -22,9 +22,9 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.sessions import _get_db_manager as _sessions_get_db
+from butlers.api.deps import get_db as _sessions_get_db
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -366,6 +366,8 @@ def _make_summary_record(*, success):
         "complexity": None,
         "input_tokens": 0,
         "output_tokens": 0,
+        "cached_input_tokens": None,
+        "cache_creation_tokens": None,
         "cancelled_by_owner": False,
     }
     m = MagicMock()

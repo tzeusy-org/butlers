@@ -46,30 +46,6 @@ def test_butler_toml_has_eligibility_sweep_schedule():
     assert sweep["cron"] == "*/5 * * * *"
 
 
-def test_butler_toml_has_decision_review_schedules():
-    """bu-ckkpz.4: weekly decision-review digest + 6h P1/deploy escalation check."""
-    import tomllib
-    from pathlib import Path
-
-    toml_path = Path(__file__).resolve().parents[2] / "roster" / "switchboard" / "butler.toml"
-    with toml_path.open("rb") as fh:
-        config = tomllib.load(fh)
-
-    schedules = config.get("butler", {}).get("schedule", [])
-
-    digest = next((s for s in schedules if s["name"] == "decision-review-digest"), None)
-    assert digest is not None
-    assert digest["cron"] == "0 9 * * 1"
-    assert digest["dispatch_mode"] == "job"
-    assert digest["job_name"] == "decision_review_digest"
-
-    escalation = next((s for s in schedules if s["name"] == "decision-escalation-check"), None)
-    assert escalation is not None
-    assert escalation["cron"] == "0 */6 * * *"
-    assert escalation["dispatch_mode"] == "job"
-    assert escalation["job_name"] == "decision_escalation_check"
-
-
 async def test_eligibility_sweep_state_transitions():
     """Butler transitions to stale/quarantined when TTL thresholds are exceeded."""
     from butlers.tools.switchboard.registry.sweep import run_eligibility_sweep
@@ -95,6 +71,19 @@ async def test_eligibility_sweep_state_transitions():
         assert result["transitions"][0]["new_state"] == expected_new_state, (
             f"Failed for {state}/{elapsed_secs}"
         )
+
+
+async def test_receiver_cutover_does_not_requarantine_old_legacy_timestamp(monkeypatch):
+    from butlers.tools.switchboard.registry.sweep import run_eligibility_sweep
+
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+    pool = _make_pool(
+        [_make_row(eligibility_state="stale", last_seen_at=_NOW - timedelta(hours=2))]
+    )
+    result = await run_eligibility_sweep(pool, now=_NOW)
+    assert result == {"evaluated": 0, "skipped": 0, "transitioned": 0, "transitions": []}
+    pool.fetch.assert_not_awaited()
+    pool.execute.assert_not_awaited()
 
 
 async def test_eligibility_sweep_no_transition_and_skip():

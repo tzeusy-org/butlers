@@ -198,7 +198,8 @@ Roles live on `public.entities.roles` and are read directly from the entity. The
 
 When two entities are merged via `entity_merge()`, the target entity MUST inherit all roles from the source entity (union, deduplicated).
 
-**Implementation note:** `entity_merge()` in `src/butlers/modules/memory/tools/entities.py` implements role union in step 3b of the merge transaction.
+**Implementation note:** the relationship-owned `merge_entity_pair()` service implements role
+union. `memory_entity_merge` is a compatibility dispatch to that single authority.
 
 #### Scenario: Merge source with roles into target
 
@@ -209,6 +210,56 @@ When two entities are merged via `entity_merge()`, the target entity MUST inheri
 
 - **WHEN** both source and target have `roles = []`
 - **THEN** after merge, target MUST have `roles = []`
+
+#### Scenario: Owner source becomes a tombstone without duplicating the owner
+
+- **WHEN** the source is the singleton owner and an authorized merge keeps a different live target
+- **THEN** the target MUST receive the ordered, deduplicated role union including owner
+- **AND** the source tombstone MUST retain its other roles and MUST no longer hold owner
+- **AND** the owner singleton constraint MUST remain enabled without a committed ownerless state
+
+#### Scenario: Downstream merge failure restores the original owner
+
+- **WHEN** a merge fails after owner roles and references have moved inside its transaction
+- **THEN** the original source and target roles, metadata, aliases and references MUST be restored
+- **AND** no successful merge audit, rebind receipt cohort or post-commit fleet event MUST be emitted
+
+### Requirement: Entity merge rebinds fleet references with durable receipts
+
+Entity merge SHALL have one relationship-owned implementation. It SHALL rebind
+`public.memory_catalog.entity_id` and `object_entity_id`, open one durable
+receipt per memory-bearing schema in `public.entity_rebind_log`, and publish an
+`entity.rebound.v1` fleet event after the merge transaction commits. Each
+memory-bearing daemon SHALL rebind only its own schema and settle its own
+receipt. A running daemon SHALL react to the fleet event immediately. Pending
+receipts SHALL be replayed on daemon startup; fleet-event delivery is a
+freshness path, not the recovery authority. The daemon SHALL establish its
+fleet-event listener before startup replay and SHALL re-establish the listener
+and replay pending receipts after a retained-listener connection failure.
+PostgreSQL SHALL restrict cohort creation to Relationship and receipt
+settlement to the runtime role bound to the receipt's target schema.
+
+#### Scenario: A merge opens an honest receipt cohort
+
+- **WHEN** entity A is merged into entity B
+- **THEN** catalog references to A MUST point to B
+- **AND** each memory-bearing schema MUST have an active, pending, failed, or skipped receipt
+- **AND** a failure MUST name its schema and error class instead of contributing a zero success count
+
+#### Scenario: An offline daemon catches up
+
+- **WHEN** a schema's receipt remains pending because its daemon was unavailable
+- **THEN** that daemon MUST process the receipt during startup
+- **AND** it MUST mutate only tables owned by its own schema
+- **AND** it MUST settle the receipt with the number of references actually rebound
+
+#### Scenario: A running daemon reacts without restart
+
+- **WHEN** a running memory-bearing daemon receives `entity.rebound.v1`
+- **THEN** it MUST process its schema-bound pending receipt
+- **AND** concurrent live and startup replay MUST NOT overwrite a truthful count with zero
+- **AND** an event committed during startup replay MUST NOT be lost
+- **AND** a listener connection failure MUST trigger listener re-establishment and pending replay
 
 ---
 
@@ -243,7 +294,8 @@ Both foreign keys use `ON DELETE CASCADE` — deleting an event removes all its 
 - **THEN** `calendar_event_entities` rows with `entity_id = A` SHALL be re-pointed to `entity_id = B`
 - **AND** duplicate `(event_id, entity_id)` pairs SHALL be deduplicated (if event was already linked to both A and B, keep one row)
 
-**Implementation note:** `_repoint_calendar_event_entities()` in `src/butlers/modules/memory/tools/entities.py` performs the re-point inside the merge transaction, using `ON CONFLICT (event_id, entity_id) DO NOTHING` for deduplication.
+**Implementation note:** the subscriber-local entity-rebind handler performs this re-point from the
+durable fleet receipt, deduplicating an association already held by the survivor.
 
 #### Scenario: Dashboard entity detail shows associated events
 
@@ -804,3 +856,17 @@ body or grant the unknown sender any role or approval authority.
   unresolved sender
 - **AND** the system MUST NOT claim to the owner that an entity is available
   for review
+
+### Requirement: Candidate channel reports are not resolved identity
+
+Single/bulk/normalized inbound lookup, recipient selection and owner-channel corroboration SHALL consume eligible active handles only. Third-party known-person candidates SHALL never become sender/recipient identity before actual owner adoption. Legacy NULL active handles and deterministic transitory dedup SHALL retain existing resolution; active ambiguity, canonicalization, entity liveness and temporal reader semantics SHALL remain unchanged.
+
+ID: REQ-entity-identity-003
+Source: bu-s11n0s.2 original Outcome/S1–S4; heart-and-soul/security.md; adopted owner-auth request admission; existing relationship/entity contracts
+Scope: v1-mandatory
+
+#### Scenario: Candidate exclusion has a reachable positive
+
+- **WHEN** actual resolver SQL sees a candidate plus a distinct planted active/legacy-NULL handle
+- **THEN** candidate SHALL not resolve and the active companion SHALL resolve under its real role
+- **AND** genuine owner adoption SHALL make only its intended compatible survivor eligible

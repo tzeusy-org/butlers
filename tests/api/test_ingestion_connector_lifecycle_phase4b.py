@@ -34,14 +34,24 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.routers.ingestion_connectors import (
     _SWITCHBOARD_BUTLER,
     _build_dashboard_approval_push_runtime,
-    _get_db_manager,
 )
 from butlers.modules.approvals.notifications import ApprovalPushRuntime
+from butlers.testing.approval_parking_fake import record_pending_action
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _use_mock_pool_park_recorder(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        "butlers.api.routers.ingestion_connectors.park_pending_action",
+        record_pending_action,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -107,7 +117,7 @@ def _wire_db(app, pool=None, *, pool_available=True):
         mock_db.pool.return_value = pool
     else:
         mock_db.pool.side_effect = KeyError("switchboard pool not available")
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return mock_db, pool
 
 

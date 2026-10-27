@@ -22,9 +22,10 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.testing.schema_standins import CONTACT_ENTITY_MAP
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark_integration = [
     pytest.mark.integration,
@@ -72,6 +73,7 @@ async def tier_pool(provisioned_postgres_pool):
         """)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS facts (
+                content_authority TEXT, authority_entity_id UUID,
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 subject TEXT NOT NULL,
                 predicate TEXT NOT NULL,
@@ -128,9 +130,9 @@ def _wire_app_with_real_pool(real_pool) -> FastAPI:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = real_pool
     app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
     return app
 

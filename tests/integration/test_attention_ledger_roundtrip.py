@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
@@ -27,8 +28,10 @@ import pytest
 from butlers.api.routers.attention_ledger import _query_ledger, _query_ledger_summary
 from butlers.core.attention_ledger import record_attention_event
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.tools.switchboard.insight.broker import expire_candidates
 
 docker_available = shutil.which("docker") is not None
+_TEST_NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.asyncio(loop_scope="session"),
@@ -214,6 +217,149 @@ async def test_record_attention_event_round_trips(pool: asyncpg.Pool) -> None:
     if isinstance(stored_metadata, str):
         stored_metadata = json.loads(stored_metadata)
     assert stored_metadata == {"insight_count": 3}
+
+
+async def test_expired_outcome_round_trips_and_is_summarized_per_origin(
+    pool: asyncpg.Pool,
+) -> None:
+    test_now = _TEST_NOW
+    row_id = await record_attention_event(
+        pool,
+        origin_butler="health",
+        source="insight",
+        outcome="expired",
+        intent="insight",
+        dedup_key="health:signal:today",
+        reason="blocked_by:budget",
+        notification_ref="candidate-expired",
+        metadata={"blocked_by": "budget"},
+    )
+    assert row_id is not None
+
+    row = await pool.fetchrow(
+        "SELECT outcome, reason FROM public.attention_ledger WHERE id=$1::uuid", row_id
+    )
+    assert dict(row) == {"outcome": "expired", "reason": "blocked_by:budget"}
+
+    summary = await _query_ledger_summary(
+        pool,
+        since=test_now - timedelta(minutes=1),
+        until=None,
+        intent="insight",
+        source="insight",
+        origin_butler="health",
+    )
+    assert summary.by_source[0].expired_unseen >= 1
+
+
+async def test_expire_candidates_writes_one_blocked_by_row_per_expiry(
+    pool: asyncpg.Pool,
+) -> None:
+    test_now = _TEST_NOW
+    candidate_ids = await pool.fetch(
+        """
+        INSERT INTO public.insight_candidates
+            (origin_butler, priority, category, dedup_key, expires_at, message, metadata)
+        VALUES
+            ('finance', 60, 'Bills', 'finance:bill:expired-a', $1,
+             'a', '{"blocked_by":"held_by"}'::jsonb),
+            ('finance', 60, 'Bills', 'finance:bill:expired-b', $2,
+             'b', '{"blocked_by":"dedup"}'::jsonb)
+        RETURNING id
+        """,
+        test_now - timedelta(hours=1),
+        test_now - timedelta(hours=2),
+    )
+
+    assert await expire_candidates(pool, now=test_now) == 2
+    rows = await pool.fetch(
+        """
+        SELECT notification_ref, outcome, reason, dedup_key
+        FROM public.attention_ledger
+        WHERE notification_ref = ANY($1::text[])
+        ORDER BY notification_ref
+        """,
+        [str(row["id"]) for row in candidate_ids],
+    )
+    assert {(row["outcome"], row["reason"]) for row in rows} == {
+        ("expired", "blocked_by:held_by"),
+        ("expired", "blocked_by:dedup"),
+    }
+    assert {row["dedup_key"] for row in rows} == {None}
+
+    listed = await _query_ledger(
+        pool,
+        offset=0,
+        limit=50,
+        since=test_now - timedelta(days=1),
+        until=None,
+        intent="insight",
+        source="insight",
+        outcome="expired",
+        origin_butler="finance",
+    )
+    expected_refs = {str(row["id"]) for row in candidate_ids}
+    expired_entries = [entry for entry in listed.data if entry.notification_ref in expected_refs]
+    assert len(expired_entries) == 2
+    assert all(entry.dedup_key is None for entry in expired_entries)
+
+
+async def test_expire_candidates_keeps_candidate_pending_when_ledger_write_fails(
+    pool: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from butlers.tools.switchboard.insight import broker as insight_broker
+
+    test_now = _TEST_NOW
+    candidate_id = await pool.fetchval(
+        """
+        INSERT INTO public.insight_candidates
+            (origin_butler, priority, category, dedup_key, expires_at, message)
+        VALUES ('finance', 60, 'Bills', 'finance:bill:ledger-retry', $1, 'retry me')
+        RETURNING id
+        """,
+        test_now - timedelta(hours=1),
+    )
+
+    production_writer = insight_broker.record_attention_event
+
+    async def unavailable_ledger(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(insight_broker, "record_attention_event", unavailable_ledger)
+
+    with pytest.raises(RuntimeError, match="expiry ledger"):
+        await expire_candidates(pool, now=test_now)
+
+    assert (
+        await pool.fetchval(
+            "SELECT status FROM public.insight_candidates WHERE id = $1", candidate_id
+        )
+        == "pending"
+    )
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.attention_ledger WHERE notification_ref = $1",
+            str(candidate_id),
+        )
+        == 0
+    )
+
+    monkeypatch.setattr(insight_broker, "record_attention_event", production_writer)
+    assert await expire_candidates(pool, now=test_now) == 1
+    assert (
+        await pool.fetchval(
+            "SELECT status FROM public.insight_candidates WHERE id = $1", candidate_id
+        )
+        == "expired"
+    )
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.attention_ledger WHERE notification_ref = $1",
+            str(candidate_id),
+        )
+        == 1
+    )
 
 
 async def test_record_attention_event_notify_coalesced_round_trips(pool: asyncpg.Pool) -> None:

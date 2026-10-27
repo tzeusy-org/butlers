@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,29 @@ def test_base_image_installs_uv_git_and_gh_for_qa_runtime() -> None:
     assert "uv --version" in text
     assert "gh" in text
 
+    # REQ-testing-048: project/lock packaging choice; these structural and
+    # installed witnesses do not claim either application image was built.
+    project = tomllib.loads(Path("pyproject.toml").read_text())
+    assert project["tool"]["uv"].get("sources", {}).get("torch") == {"index": "pytorch-cpu"}
+    index = next(
+        index for index in project["tool"]["uv"]["index"] if index["name"] == "pytorch-cpu"
+    )
+    assert index["explicit"] is True
+    assert index["url"] == "https://download.pytorch.org/whl/cpu"
+    packages = tomllib.loads(Path("uv.lock").read_text())["package"]
+    assert not any(package["name"].startswith("nvidia-") for package in packages)
+    assert not any(package["name"] in {"pgvector", "qrcode"} for package in packages)
+    app = Path("Dockerfile").read_text()
+    assert "--frozen" in app and "--extra whatsapp" not in app
+    assert "UV_TORCH_BACKEND" not in app
+    assert "COPY --from=go-builder /out/whatsapp-bridge" in app
+    assert "github.com/skip2/go-qrcode" in Path("whatsapp-bridge/cmd/bridge/main.go").read_text()
+    import torch
+
+    assert torch.version.cuda is None
+    assert not torch.cuda.is_available()
+    assert int(torch.tensor([2, 3], device="cpu").sum()) == 5
+
 
 def test_compose_base_freshness_uses_pinned_dockerfile_not_live_npm_latest() -> None:
     dockerfile_text = _dockerfile_base_text()
@@ -81,13 +105,13 @@ def test_compose_base_freshness_uses_pinned_dockerfile_not_live_npm_latest() -> 
     assert "CLI_PKGS=" not in compose_text
 
 
-def test_codex_cli_pin_supports_gpt_5_6_luna() -> None:
+def test_codex_cli_pin_supports_gpt_6_sol_and_luna() -> None:
     text = _dockerfile_base_text()
     match = re.search(r"@openai/codex@(\d+)\.(\d+)\.(\d+)\s+\\", text)
 
     assert match is not None
-    assert tuple(map(int, match.groups())) >= (0, 144, 1), (
-        "gpt-5.6-luna requires Codex CLI 0.144.1 or newer"
+    assert tuple(map(int, match.groups())) >= (0, 159, 2), (
+        "gpt-6-sol and gpt-6-luna require Codex CLI 0.159.2 or newer"
     )
 
 
@@ -95,7 +119,7 @@ def test_base_image_ships_the_pinned_dashboard_cli_sandbox_toolchain() -> None:
     """REQ-core-credentials-002: the image, not the host, owns the sandbox contract."""
     text = _dockerfile_base_text()
 
-    assert re.search(r"\bbubblewrap=0\.11\.0-2\+deb13u1\b", text)
+    assert re.search(r"\bbubblewrap=0\.12\.0-1~deb13u1\b", text)
     assert "dpkg-query" in text
     assert "bubblewrap" in text
     assert "runtime_cli_sandbox_init.c" in text
@@ -120,6 +144,20 @@ def test_base_image_generates_the_exact_runtime_input_manifest() -> None:
     assert "runtime-cli-sandbox-inputs.json" in text
     assert "--output /usr/local/share/butlers/runtime-cli-sandbox-inputs.json" in text
     assert "chmod 0444 /usr/local/share/butlers/runtime-cli-sandbox-inputs.json" in text
+    shim_copy = (
+        "COPY --from=runtime-cli-sandbox-init-builder /out/runtime-cli-sandbox-init "
+        "/usr/local/libexec/butlers/runtime-cli-sandbox-init"
+    )
+    generator_copy = (
+        "COPY scripts/generate_runtime_cli_sandbox_manifest.py "
+        "/tmp/generate_runtime_cli_sandbox_manifest.py"
+    )
+    assert text.count(shim_copy) == 1
+    assert (
+        text.index(shim_copy)
+        < text.index("chmod 0755 /usr/local/libexec/butlers/runtime-cli-sandbox-init")
+        < text.index(generator_copy)
+    )
 
 
 def test_base_image_freshness_fingerprints_each_local_copy_input_without_dotenv(

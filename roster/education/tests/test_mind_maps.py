@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import uuid
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -77,6 +77,11 @@ def _make_pool(
     Each ``*_returns`` parameter is a list consumed sequentially (FIFO).
     """
     pool = AsyncMock()
+    acquisition = MagicMock()
+    acquisition.__aenter__ = AsyncMock(return_value=pool)
+    acquisition.__aexit__ = AsyncMock(return_value=False)
+    pool.acquire = MagicMock(return_value=acquisition)
+    pool.transaction = MagicMock(return_value=acquisition)
 
     if fetchrow_returns is not None:
         pool.fetchrow = AsyncMock(side_effect=list(fetchrow_returns))
@@ -161,7 +166,7 @@ class TestMindMapCreate:
         result = await mind_map_create(pool, title="Python")
         assert result == new_id
 
-    async def test_sql_inserts_active_status(self) -> None:
+    async def test_sql_inserts_draft_status(self) -> None:
         from butlers.tools.education import mind_map_create
 
         new_id = str(uuid.uuid4())
@@ -170,6 +175,8 @@ class TestMindMapCreate:
         # Verify the SQL was called with the title
         call_args = pool.fetchrow.call_args
         assert "Calculus" in call_args.args or "Calculus" in str(call_args)
+        assert "'draft'" in call_args.args[0]
+        assert "'active'" not in call_args.args[0]
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +280,9 @@ class TestMindMapUpdateStatus:
     async def test_succeeds_when_map_exists(self) -> None:
         from butlers.tools.education import mind_map_update_status
 
-        pool = _make_pool(execute_returns=["UPDATE 1"])
+        pool = _make_pool(
+            fetchrow_returns=[_make_row({"status": "active"})], execute_returns=["UPDATE 1"]
+        )
         await mind_map_update_status(pool, str(uuid.uuid4()), "completed")
         assert pool.execute.called
 
@@ -545,7 +554,7 @@ class TestMasteryStateMachine:
         # fetchrow for current_row (mastery_status + mind_map_id)
         current_row = _make_row({"mastery_status": current_status, "mind_map_id": mid})
         pool = _make_pool(
-            fetchrow_returns=[current_row],
+            fetchrow_returns=[current_row, _make_row({"status": "active"})],
             execute_returns=["UPDATE 1"],
             fetchval_returns=[1, 1],  # unmastered_count, node_count
         )
@@ -583,7 +592,7 @@ class TestMasteryStateMachine:
         pool, nid, mid = await self._make_update_pool("diagnosed")
         # fetchval: unmastered_count=0 (all mastered) → triggers auto-complete
         # fetchval: node_count=1
-        pool.fetchval = AsyncMock(side_effect=[0, 1])
+        pool.fetchval = AsyncMock(side_effect=[0, 1, "active"])
         # auto-complete calls mind_map_update_status which calls pool.execute again
         pool.execute = AsyncMock(return_value="UPDATE 1")
         await mind_map_node_update(pool, nid, mastery_status="mastered")
@@ -601,7 +610,7 @@ class TestMasteryStateMachine:
         from butlers.tools.education import mind_map_node_update
 
         pool, nid, _ = await self._make_update_pool("learning")
-        pool.fetchval = AsyncMock(side_effect=[0, 1])
+        pool.fetchval = AsyncMock(side_effect=[0, 1, "active"])
         pool.execute = AsyncMock(return_value="UPDATE 1")
         await mind_map_node_update(pool, nid, mastery_status="mastered")
         assert pool.execute.called
@@ -610,7 +619,7 @@ class TestMasteryStateMachine:
         from butlers.tools.education import mind_map_node_update
 
         pool, nid, _ = await self._make_update_pool("reviewing")
-        pool.fetchval = AsyncMock(side_effect=[0, 1])
+        pool.fetchval = AsyncMock(side_effect=[0, 1, "active"])
         pool.execute = AsyncMock(return_value="UPDATE 1")
         await mind_map_node_update(pool, nid, mastery_status="mastered")
         assert pool.execute.called
@@ -689,7 +698,7 @@ class TestMasteryStateMachine:
         mid = str(uuid.uuid4())
         current_row = _make_row({"mastery_status": "unseen", "mind_map_id": mid})
         pool = _make_pool(
-            fetchrow_returns=[current_row],
+            fetchrow_returns=[current_row, _make_row({"status": "active"})],
             execute_returns=["UPDATE 1"],
             fetchval_returns=[1],
         )
@@ -709,7 +718,7 @@ class TestMasteryStateMachine:
         mid = str(uuid.uuid4())
         current_row = _make_row({"mastery_status": "learning", "mind_map_id": mid})
         pool = _make_pool(
-            fetchrow_returns=[current_row],
+            fetchrow_returns=[current_row, _make_row({"status": "active"})],
             execute_returns=["UPDATE 1"],
             fetchval_returns=[1],
         )
@@ -1077,11 +1086,11 @@ class TestAutoCompletion:
         mid = str(uuid.uuid4())
         current_row = _make_row({"mastery_status": "reviewing", "mind_map_id": mid})
 
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value=current_row)
+        pool = _make_pool()
+        pool.fetchrow = AsyncMock(side_effect=[current_row, _make_row({"status": "active"})])
         pool.execute = AsyncMock(return_value="UPDATE 1")
         # fetchval calls: unmastered_count=0 (all mastered), node_count=3
-        pool.fetchval = AsyncMock(side_effect=[0, 3])
+        pool.fetchval = AsyncMock(side_effect=[0, 3, "active"])
 
         await mind_map_node_update(pool, nid, mastery_status="mastered")
 
@@ -1091,6 +1100,13 @@ class TestAutoCompletion:
         all_calls = [str(c) for c in pool.execute.call_args_list]
         assert any("completed" in c for c in all_calls)
 
+        # Diagnostic drafts and already terminal maps keep their lifecycle status.
+        for status in ("draft", "completed", "abandoned"):
+            pool = _make_pool(fetchrow_returns=[current_row], fetchval_returns=[0, 3, status])
+            await mind_map_node_update(pool, nid, mastery_status="mastered")
+            assert pool.execute.await_count == 1
+            assert "mind_map_nodes" in pool.execute.call_args.args[0]
+
     async def test_no_auto_complete_when_some_unmastered(self) -> None:
         """Map is NOT auto-completed if other nodes remain unmastered."""
         from butlers.tools.education import mind_map_node_update
@@ -1099,8 +1115,8 @@ class TestAutoCompletion:
         mid = str(uuid.uuid4())
         current_row = _make_row({"mastery_status": "reviewing", "mind_map_id": mid})
 
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value=current_row)
+        pool = _make_pool()
+        pool.fetchrow = AsyncMock(side_effect=[current_row, _make_row({"status": "active"})])
         pool.execute = AsyncMock(return_value="UPDATE 1")
         # unmastered_count=2 → not all mastered
         pool.fetchval = AsyncMock(return_value=2)
@@ -1118,8 +1134,8 @@ class TestAutoCompletion:
         mid = str(uuid.uuid4())
         current_row = _make_row({"mastery_status": "unseen", "mind_map_id": mid})
 
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value=current_row)
+        pool = _make_pool()
+        pool.fetchrow = AsyncMock(side_effect=[current_row, _make_row({"status": "active"})])
         pool.execute = AsyncMock(return_value="UPDATE 1")
         pool.fetchval = AsyncMock(return_value=0)  # Would trigger if checked
 
@@ -1137,8 +1153,8 @@ class TestAutoCompletion:
         mid = str(uuid.uuid4())
         current_row = _make_row({"mastery_status": "reviewing", "mind_map_id": mid})
 
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value=current_row)
+        pool = _make_pool()
+        pool.fetchrow = AsyncMock(side_effect=[current_row, _make_row({"status": "active"})])
         pool.execute = AsyncMock(return_value="UPDATE 1")
         # unmastered_count=0 but node_count=0 (edge case: empty map)
         pool.fetchval = AsyncMock(side_effect=[0, 0])
@@ -1197,3 +1213,31 @@ class TestRowToDict:
         row = _make_row({"id": "abc", "description": None})
         result = _row_to_dict(row)
         assert result["description"] is None
+
+
+async def test_lifecycle_transition_matrix_preserves_refused_rows():
+    from butlers.tools.education.mind_maps import MindMapLifecycleError, mind_map_update_status
+
+    allowed = {
+        ("draft", "active"),
+        ("draft", "abandoned"),
+        ("active", "completed"),
+        ("active", "abandoned"),
+        ("completed", "active"),
+        ("abandoned", "active"),
+    }
+    for before in ("draft", "active", "completed", "abandoned"):
+        for after in ("draft", "active", "completed", "abandoned", "paused"):
+            for has_nodes in (False, True):
+                pool = _make_pool(
+                    fetchrow_returns=[_make_row({"status": before})], fetchval_returns=[has_nodes]
+                )
+                accepted = (before, after) in allowed and (after != "active" or has_nodes)
+                if accepted:
+                    await mind_map_update_status(pool, "map", after)
+                    assert pool.execute.await_count == 1
+                    assert "FOR UPDATE" in pool.fetchrow.call_args.args[0]
+                else:
+                    with pytest.raises(MindMapLifecycleError):
+                        await mind_map_update_status(pool, "map", after)
+                    pool.execute.assert_not_awaited()

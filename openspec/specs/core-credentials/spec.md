@@ -319,7 +319,7 @@ The table SHALL be in the `public` schema (cross-butler reads required by the `/
 
 The table SHALL have one index: `ix_secret_probe_log_lookup` on `(credential_scope, credential_key, recorded_at DESC)` to support fast "last N probes for this key" queries.
 
-Retention: rows are kept for at least 90 days. An archive path is permitted (e.g. periodic move to a cold-storage table) but is not specified by this change.
+Retention: rows are kept for at least 90 days. An archive path is permitted (e.g. periodic move to a cold-storage table) but is not specified here.
 
 #### Scenario: Probe writes one row
 - **WHEN** any probe mutation endpoint runs
@@ -360,7 +360,7 @@ The catalogue SHALL be bootstrapped by an Alembic seed during the initial migrat
 - **THEN** the module UPSERTs rows for each `(provider=google, butler=health, feature=<label>, severity=<lvl>, required_scopes=<set>)` it depends on
 - **AND** UPSERTs are idempotent: running the boot sequence twice produces zero net row changes after the first run
 
-### Requirement: Audit Action Vocabulary for Credential Lifecycle (formerly Audit Action Enum Extension)
+### Requirement: Audit Action Vocabulary for Credential Lifecycle
 The `public.audit_log.action` column is unconstrained `TEXT`; this requirement defines the credential-lifecycle action vocabulary that writers SHALL use:
 
 | Action | Used by |

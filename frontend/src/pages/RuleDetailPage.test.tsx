@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Component tests for RuleDetailPage — the rule's editorial detail page
  * (bu-2ix8d.7).
@@ -9,15 +10,18 @@
  *   - The `harmful` fragment is --red ONLY when > 0 (zero harm → zero red).
  *   - Provenance `derived from episode` renders when source_episode_id set,
  *     and the section is omitted otherwise.
- *   - No commit footer (mutations live only on the fact page).
+ *   - Commit footer: Retire is the only rule mutation (bu-6t8ix.3), one-step
+ *     confirm like Retract; becomes a disabled "Retired" label once retired.
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 
 import RuleDetailPage from "@/pages/RuleDetailPage";
-import { useRule } from "@/hooks/use-memory";
+import { useRetireRule, useRule } from "@/hooks/use-memory";
 import type { MemoryRule } from "@/api/types";
 
 vi.mock("react-router", async (importOriginal) => {
@@ -27,6 +31,7 @@ vi.mock("react-router", async (importOriginal) => {
 
 vi.mock("@/hooks/use-memory", () => ({
   useRule: vi.fn(),
+  useRetireRule: vi.fn(),
 }));
 
 type UseRuleResult = ReturnType<typeof useRule>;
@@ -50,7 +55,10 @@ const BASE_RULE: MemoryRule = {
   last_evaluated_at: "2025-04-15T10:00:00Z",
   tags: ["safety", "ux"],
   metadata: {},
+  retired_at: null,
 };
+
+const retireMutate = vi.fn();
 
 function setRule(rule: MemoryRule | null, opts: Partial<UseRuleResult> = {}) {
   vi.mocked(useRule).mockReturnValue({
@@ -59,6 +67,10 @@ function setRule(rule: MemoryRule | null, opts: Partial<UseRuleResult> = {}) {
     error: null,
     ...opts,
   } as UseRuleResult);
+  vi.mocked(useRetireRule).mockReturnValue({
+    mutate: retireMutate,
+    isPending: false,
+  } as unknown as ReturnType<typeof useRetireRule>);
 }
 
 function html(): string {
@@ -69,9 +81,36 @@ function html(): string {
   );
 }
 
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
+  true;
+
+function render() {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  act(() => {
+    root.render(
+      <MemoryRouter>
+        <RuleDetailPage />
+      </MemoryRouter>,
+    );
+  });
+  return { container, root };
+}
+
 describe("RuleDetailPage", () => {
+  let mounted: { container: HTMLDivElement; root: Root } | null = null;
+
   beforeEach(() => {
     vi.resetAllMocks();
+  });
+
+  afterEach(() => {
+    if (mounted) {
+      act(() => mounted!.root.unmount());
+      mounted.container.remove();
+      mounted = null;
+    }
   });
 
   it("renders the editorial skeleton with a single H1 = directive text", () => {
@@ -139,9 +178,10 @@ describe("RuleDetailPage", () => {
     expect(out).not.toContain("PROVENANCE");
   });
 
-  it("renders no commit footer (no Confirm/Retract buttons)", () => {
+  it("renders the Retire commit footer, not Confirm/Retract (bu-6t8ix.3)", () => {
     setRule(BASE_RULE);
     const out = html();
+    expect(out).toContain("Retire");
     expect(out).not.toContain("Confirm");
     expect(out).not.toContain("Retract");
   });
@@ -162,5 +202,57 @@ describe("RuleDetailPage", () => {
     setRule({ ...BASE_RULE, metadata: { forgotten: true } });
     const out = html();
     expect(out).toContain("forgotten");
+  });
+
+  it("does not render a retired badge for a live rule", () => {
+    setRule(BASE_RULE);
+    const out = html();
+    expect(out).not.toContain("retired");
+  });
+
+  it("labels a retired rule with a badge (bu-6t8ix.3)", () => {
+    setRule({ ...BASE_RULE, retired_at: "2026-06-01T00:00:00Z" });
+    const out = html();
+    expect(out).toContain("retired");
+  });
+
+  it("Retire is one-step: first click arms, second click commits", () => {
+    setRule(BASE_RULE);
+    mounted = render();
+
+    const getRetireBtn = () =>
+      Array.from(mounted!.container.querySelectorAll("button")).find((b) =>
+        (b.textContent ?? "").startsWith("Retire"),
+      )!;
+
+    act(() => {
+      getRetireBtn().dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(retireMutate).not.toHaveBeenCalled();
+    expect(getRetireBtn().textContent).toContain("confirm?");
+
+    act(() => {
+      getRetireBtn().dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(retireMutate).toHaveBeenCalledWith(
+      BASE_RULE.id,
+      expect.objectContaining({ onError: expect.any(Function) }),
+    );
+  });
+
+  it("renders a disabled 'Retired' label once retired, and clicking it is a no-op", () => {
+    setRule({ ...BASE_RULE, retired_at: "2026-06-01T00:00:00Z" });
+    mounted = render();
+
+    const retiredBtn = Array.from(mounted!.container.querySelectorAll("button")).find(
+      (b) => b.textContent === "Retired",
+    )!;
+    expect(retiredBtn).toBeDefined();
+    expect(retiredBtn.disabled).toBe(true);
+
+    act(() => {
+      retiredBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(retireMutate).not.toHaveBeenCalled();
   });
 });

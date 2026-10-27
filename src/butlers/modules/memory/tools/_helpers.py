@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-import importlib.util
 import threading
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import Any
+
+from butlers.modules.memory import search as _search  # noqa: F401 - consumed by tool modules
+from butlers.modules.memory import storage as _storage  # noqa: F401 - canonical shared alias
+from butlers.modules.memory.embedding import EmbeddingEngine
 
 # ---------------------------------------------------------------------------
 # Valid tenant IDs — "shared" + butler roster names
@@ -43,32 +45,6 @@ def validate_tenant_id(tenant_id: str) -> str:
         )
     return tenant_id
 
-
-# ---------------------------------------------------------------------------
-# Load sibling modules from disk (roster/ is not a Python package).
-# ---------------------------------------------------------------------------
-
-_MODULE_DIR = Path(__file__).resolve().parent.parent
-
-
-def _load_module(name: str):
-    path = _MODULE_DIR / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_storage = _load_module("storage")
-_search = _load_module("search")
-
-# ---------------------------------------------------------------------------
-# Embedding engine (loaded once per model name, shared across all tool invocations)
-# ---------------------------------------------------------------------------
-
-_embedding_mod = _load_module("embedding")
-EmbeddingEngine = _embedding_mod.EmbeddingEngine
 
 _DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 

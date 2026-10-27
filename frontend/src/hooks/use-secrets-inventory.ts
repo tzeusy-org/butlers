@@ -18,6 +18,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { getSecretsInventory } from "@/api/client.ts";
+import { categoryFromKey } from "@/lib/secret-templates.ts";
 import type {
   SecretsCliRaw,
   SecretsCredentialAuditOutcome,
@@ -128,6 +129,27 @@ function rowStateFromSystemRaw(raw: SecretsSystemRaw): SystemCredential["rowStat
   return raw.butler && !["shared", "switchboard", "shared-public"].includes(raw.butler) ? "local" : "shared";
 }
 
+const SPOTIFY_MANAGED_SYSTEM_KEYS = new Set([
+  "SPOTIFY_CLIENT_ID",
+  "SPOTIFY_ACCESS_TOKEN",
+  "SPOTIFY_REFRESH_TOKEN",
+  "SPOTIFY_TOKEN_EXPIRES_AT",
+]);
+
+/**
+ * Recover only the local routing category the passport needs from a system
+ * key. The inventory wire projection intentionally omits the persisted
+ * category, so this value must never be treated as a server-authored label or
+ * forwarded back to the API as read data.
+ */
+function systemCategoryFromInventoryKey(key: string): string {
+  const upper = key.toUpperCase();
+  if (upper.startsWith("CLI-AUTH/")) return "cli-auth";
+  if (upper === "OWNTRACKS_WEBHOOK_TOKEN") return "owntracks";
+  if (SPOTIFY_MANAGED_SYSTEM_KEYS.has(upper)) return "spotify";
+  return categoryFromKey(key);
+}
+
 /**
  * Map a content-blind probe outcome (bu-iph56) to the FE TestResult shape.
  *
@@ -233,11 +255,11 @@ function adaptSystemCredential(raw: SecretsSystemRaw): SystemCredential {
     : "shared";
   return {
     key:          raw.key,
-    category:     raw.category,
+    category:     systemCategoryFromInventoryKey(raw.key),
     state:        normalizeCredentialState(raw.state),
     rowState,
     fingerprint:  raw.fingerprint ?? null,
-    description:  raw.description ?? null,
+    description:  null,
     source:       rowState === "shared" ? raw.butler : "",
     target:       mutationTarget,
     lastVerified: raw.last_verified ?? null,
@@ -255,7 +277,9 @@ function adaptSystemCredential(raw: SecretsSystemRaw): SystemCredential {
 function adaptCliCredential(raw: SecretsCliRaw): CliCredential {
   return {
     id:             raw.key,
-    label:          raw.description ?? raw.key,
+    // The inventory intentionally withholds the persisted description. The
+    // raw key is the only stable identifier available to this list view.
+    label:          raw.key,
     fingerprint:    raw.fingerprint ?? null,
     state:          normalizeCredentialState(raw.state),
     // Real (bu-6v1hx): butler_secrets.created_at / expires_at.

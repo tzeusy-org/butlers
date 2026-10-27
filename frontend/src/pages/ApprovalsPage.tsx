@@ -22,6 +22,7 @@
  *     (read-only) dossier via /approvals/:id.
  *   - Attention Ledger section: delivery-vs-suppression per source, with any
  *     suppressed-but-never-delivered source flagged loudly (bu-tdd4k.4).
+ *   - Unroutable messages: typed routing failures with an idempotent Retry.
  *
  * Every approval has a URL (/approvals/:id) so a notification, a history
  * row, or a bookmark can land the owner directly on the decision.
@@ -32,7 +33,7 @@
  * bu-86c4c.12 — One Trust Console: Autonomy panel, /approvals/:id, ranking
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -46,10 +47,16 @@ import {
   retryApproval,
   updateApprovalsPolicy,
 } from "@/api/index.ts";
+import type { DisplayedApprovalCall } from "@/api/types";
 import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
 import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
-import type { ApprovalDetail, ApprovalSummary, ApprovalsPolicy } from "@/api/index.ts";
+import type {
+  ApprovalDeliveryTruth,
+  ApprovalDetail,
+  ApprovalSummary,
+  ApprovalsPolicy,
+} from "@/api/index.ts";
 import {
   approvalRuleMetricSourcesDegraded,
   pendingApprovalMetricSourcesDegraded,
@@ -62,6 +69,7 @@ import {
   useApprovalDecisionMutations,
   UNDO_WINDOW_MS,
   type DecisionVerb,
+  type ViewedApproval,
 } from "@/hooks/use-approval-decisions.ts";
 import { AutonomySuggestionsBanner } from "@/components/approvals/autonomy-suggestions-banner.tsx";
 import { RulePromotionBanner } from "@/components/approvals/rule-promotion-banner.tsx";
@@ -76,6 +84,7 @@ import {
 import { AutonomyPanel } from "@/components/approvals/autonomy-panel.tsx";
 import { ApprovalTeachingDigest } from "@/components/approvals/approval-teaching-digest.tsx";
 import { AttentionLedgerPanel } from "@/components/approvals/attention-ledger-panel.tsx";
+import { UnroutableAttentionPanel } from "@/components/approvals/unroutable-attention-panel.tsx";
 import { ApprovalsVerdictOpener } from "@/components/approvals/approvals-verdict-opener.tsx";
 import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary.tsx";
 import { TONE_COLORS } from "@/components/ui/StateDot";
@@ -125,8 +134,8 @@ const Q = {
 
 const APPROVAL_LANE_PILL_BASE = [
   "inline-flex items-center justify-center rounded-[3px] border px-2.5 py-1",
-  "font-mono text-[11px] leading-none transition-colors",
-  "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground",
+  "font-mono text-[11px] leading-none transition-colors max-md:min-h-11 max-md:min-w-11",
+  "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
 ].join(" ");
 
 function approvalLaneHref(lane: ApprovalLane, actionId?: string): string {
@@ -356,6 +365,106 @@ function pendingVerbLabel(verb: DecisionVerb): string {
   }
 }
 
+function deliverySummary(delivery: ApprovalDeliveryTruth): string {
+  if (delivery.source === "unknown") return "Legacy delivery evidence unavailable";
+  if (delivery.source === "legacy") {
+    return delivery.legacy_outcome
+      ? `Legacy push evidence: ${delivery.legacy_outcome}`
+      : "Legacy delivery evidence unavailable";
+  }
+  if (delivery.ambiguous) return "Delivery uncertain; automatic resend is blocked";
+  if (delivery.stuck) return `Delivery ${delivery.state ?? "work"} needs attention`;
+  switch (delivery.state) {
+    case "delivered":
+      return "Notification handoff confirmed";
+    case "ready":
+      return "Notification waiting for its eligible time";
+    case "retry_wait":
+      return "Notification retry scheduled";
+    case "claimed":
+    case "handoff_started":
+      return "Notification handoff in progress";
+    case "collapsed":
+      return "Direct notification folded into the shared digest";
+    case "cancelled":
+      return "Notification recovery cancelled";
+    case "superseded":
+      return "Notification generation superseded";
+    default:
+      return "Durable delivery evidence recorded";
+  }
+}
+
+function DeliveryTruth({ delivery }: { delivery: ApprovalDeliveryTruth }) {
+  const attention = delivery.ambiguous || delivery.stuck;
+  return (
+    <section
+      data-testid="approval-delivery-truth"
+      aria-labelledby="approval-delivery-truth-heading"
+      role={attention ? "alert" : undefined}
+      className={[
+        "border-t border-border pt-4",
+        attention ? "text-[var(--red-text)]" : "text-muted-foreground",
+      ].join(" ")}
+    >
+      <h3
+        id="approval-delivery-truth-heading"
+        className="text-[10px] font-mono uppercase tracking-widest mb-2"
+      >
+        Delivery evidence
+      </h3>
+      <p className="text-sm text-foreground">{deliverySummary(delivery)}</p>
+      {delivery.source === "durable" && (
+        <dl className="mt-2 grid grid-cols-1 gap-1 text-[11px] font-mono sm:grid-cols-2">
+          <div>
+            <dt className="inline">Generation </dt>
+            <dd className="inline">
+              {delivery.generation ?? "unknown"} · {delivery.mode ?? "unknown"}
+            </dd>
+          </div>
+          <div>
+            <dt className="inline">Attempts </dt>
+            <dd className="inline">{delivery.attempt_count}</dd>
+          </div>
+          {delivery.next_eligible_at && (
+            <div>
+              <dt className="inline">Next eligible </dt>
+              <dd className="inline">{fmtTs(delivery.next_eligible_at, true)}</dd>
+            </div>
+          )}
+          {delivery.last_reason_code && (
+            <div>
+              <dt className="inline">Reason </dt>
+              <dd className="inline">{delivery.last_reason_code.replace(/_/g, " ")}</dd>
+            </div>
+          )}
+          {delivery.cohort && (
+            <div>
+              <dt className="inline">Shared digest </dt>
+              <dd className="inline">
+                {delivery.cohort.eligible ? "eligible" : "not eligible"} ·{" "}
+                {delivery.cohort.state ?? "unavailable"}
+              </dd>
+            </div>
+          )}
+        </dl>
+      )}
+    </section>
+  );
+}
+
+function ApprovalOrigin({ origin }: { origin?: "prepared" | null }) {
+  const label = origin === "prepared" ? "Prepared" : "Origin unknown";
+  return (
+    <span
+      aria-label={`Approval origin: ${label}`}
+      className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground"
+    >
+      {label}
+    </span>
+  );
+}
+
 function RailItem({
   summary,
   selected,
@@ -400,7 +509,7 @@ function RailItem({
       className={[
         "w-full text-left px-3 py-3 border-b border-border last:border-b-0",
         "transition-colors focus-visible:outline focus-visible:outline-2",
-        "focus-visible:outline-offset-[-2px] focus-visible:outline-foreground/40",
+        "focus-visible:outline-offset-[-2px] focus-visible:outline-focus",
         pushFailed && !isPending ? "border-l-2 border-l-[var(--red)] bg-[var(--red)]/[0.04]" : "",
         isPending
           ? "opacity-50 hover:opacity-70"
@@ -423,6 +532,9 @@ function RailItem({
       <div className="mt-0.5 text-sm font-medium truncate">
         {summary.tool_name.replace(/_/g, " ")}
       </div>
+      <div className="mt-0.5">
+        <ApprovalOrigin origin={summary.origin} />
+      </div>
       {pushFailed && (
         <div
           data-testid="rail-item-push-failed"
@@ -432,12 +544,17 @@ function RailItem({
             className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--red)]"
             aria-hidden="true"
           />
-          Owner not notified · push failed
+          Legacy push failed
         </div>
       )}
       {summary.why && (
         <div className="mt-0.5 text-xs text-muted-foreground line-clamp-1 italic">
           {summary.why}
+        </div>
+      )}
+      {summary.delivery && (summary.delivery.ambiguous || summary.delivery.stuck) && (
+        <div className="mt-1 text-[10px] font-mono text-[var(--red-text)]">
+          {deliverySummary(summary.delivery)}
         </div>
       )}
       {isPending ? (
@@ -472,9 +589,11 @@ function RailItem({
 function Dossier({
   actionId,
   verifiedDetail,
+  reviewSource,
   allowAbandon,
   allowPendingDecisionControls,
   onApprove,
+  onCallShown,
   onDeny,
   onDefer,
   approvePending,
@@ -482,19 +601,29 @@ function Dossier({
   deferPending,
   pendingVerb,
   onCancelPending,
+  phoneFirst,
+  focusHeadingOnLoad,
+  onHeadingFocused,
 }: {
   actionId: string;
+  /** Deep link: below the md band the dossier leads the stacked workspace, above the rail. */
+  phoneFirst: boolean;
+  /** Deep link entry: move focus to the dossier heading once the detail has rendered. */
+  focusHeadingOnLoad: boolean;
+  onHeadingFocused: () => void;
   /**
    * A freshly verified unlisted Stalled deep link. It must take precedence
    * over the ordinary dossier cache so stale prefetch data cannot expose an
    * action after the verifier has established the current eligibility.
    */
   verifiedDetail?: ApprovalDetail;
+  reviewSource?: string;
   /** Stalled is a Retry-only lane; waiting/history keeps the existing abandon flow. */
   allowAbandon: boolean;
   /** A Stalled flat row must never reopen ordinary pending decision controls. */
   allowPendingDecisionControls: boolean;
-  onApprove: () => void;
+  onApprove: (displayedCall: DisplayedApprovalCall) => void;
+  onCallShown: (view: ViewedApproval | null) => void;
   onDeny: (reason?: string) => void;
   onDefer: (hours: number) => void;
   approvePending: boolean;
@@ -514,11 +643,28 @@ function Dossier({
   const [showDefer, setShowDefer] = useState(false);
   const [denyReason, setDenyReason] = useState("");
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: Q.detail(actionId),
-    queryFn: () => getApprovalDetail(actionId),
+  const { data, isLoading, isFetching, error } = useQuery({
+    queryKey: reviewSource === undefined ? Q.detail(actionId) : [...Q.detail(actionId), "review-source", reviewSource],
+    queryFn: () => reviewSource === undefined ? getApprovalDetail(actionId) : getApprovalDetail(actionId, reviewSource),
     enabled: !!actionId && !verifiedDetail,
+    refetchOnMount: reviewSource !== undefined ? "always" : true,
+    retry: reviewSource !== undefined ? false : undefined,
   });
+
+  const shownDetail = verifiedDetail ?? data?.data;
+  const dossierLoading = !verifiedDetail && (isLoading || (reviewSource !== undefined && isFetching));
+  const dossierUnavailable = (!verifiedDetail && !!error) || !shownDetail;
+  const canApproveShownCall = !dossierLoading && !dossierUnavailable &&
+    shownDetail?.id === actionId && shownDetail.status === "pending" && allowPendingDecisionControls;
+  useLayoutEffect(() => {
+    // Query data can survive a hidden loading/error pane. Only hand the
+    // keyboard a call whose safe preview is actually rendered in this pane,
+    // clearing it before a newly hidden pane can receive another keypress.
+    onCallShown(canApproveShownCall && shownDetail?.call_preview
+      ? { id: actionId, displayed_call: { ...shownDetail.call_preview.displayed_call } }
+      : null);
+    return () => onCallShown(null);
+  }, [actionId, shownDetail, canApproveShownCall, onCallShown]);
 
   function handleDefer() {
     const h = parseInt(deferHours, 10);
@@ -529,9 +675,14 @@ function Dossier({
     onDefer(h);
   }
 
-  if (!verifiedDetail && isLoading) {
+  const paneOrder = phoneFirst ? " max-md:-order-1" : "";
+
+  if (dossierLoading) {
     return (
-      <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm font-mono">
+      <div
+        className={`flex-1 flex items-center justify-center text-muted-foreground text-sm font-mono${paneOrder}`}
+        data-testid="approval-dossier-pane"
+      >
         loading…
       </div>
     );
@@ -540,7 +691,10 @@ function Dossier({
   const detail = verifiedDetail ?? data?.data;
   if ((!verifiedDetail && error) || !detail) {
     return (
-      <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm font-mono">
+      <div
+        className={`flex-1 flex items-center justify-center text-muted-foreground text-sm font-mono${paneOrder}`}
+        data-testid="approval-dossier-pane"
+      >
         failed to load dossier
       </div>
     );
@@ -560,7 +714,18 @@ function Dossier({
   const expiryChip = expiryCountdown(detail.expires_at);
 
   return (
-    <div className="flex-1 min-w-0 min-h-[20rem] md:min-h-0 overflow-y-auto p-6 relative">
+    <div
+      className={`flex-1 min-w-0 min-h-[20rem] md:min-h-0 overflow-y-auto p-6 relative${paneOrder}`}
+      data-testid="approval-dossier-pane"
+    >
+      <section aria-label="Stored call preview" className="mb-6 whitespace-pre-wrap break-words">
+        {detail.call_preview ? <>
+          <h3 className="font-medium">{detail.call_preview.title}</h3>
+          {detail.call_preview.facts.map((fact, index) => <div key={index}>
+            <strong>{fact.label}</strong><p>{fact.value}</p>
+          </div>)}
+        </> : <p>Open only: an exact safe preview is unavailable. Approval is disabled.</p>}
+      </section>
       {/* Floating decision cluster — a zero-height sticky overlay so it floats
           over the top-right corner without reserving flow space (the body is
           not pushed down). Stays pinned on scroll; the wrapper is click-through
@@ -577,7 +742,7 @@ function Dossier({
                 </span>
                 <button
                   onClick={onCancelPending}
-                  className="py-1 px-3 rounded text-sm border border-border hover:border-foreground/40 transition-colors"
+                  className="py-1 px-3 rounded text-sm border border-border hover:border-foreground/40 transition-colors max-md:min-h-11 max-md:min-w-11"
                 >
                   Undo
                 </button>
@@ -586,10 +751,10 @@ function Dossier({
               <>
                 <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-background/85 backdrop-blur-sm px-2 py-2 shadow-sm">
                   <button
-                    onClick={onApprove}
-                    disabled={approvePending}
+                    onClick={() => { if (detail.id === actionId && detail.call_preview) onApprove({ ...detail.call_preview.displayed_call }); }}
+                    disabled={approvePending || detail.id !== actionId || !detail.call_preview}
                     className={[
-                      "py-1.5 px-4 rounded font-medium text-sm",
+                      "py-1.5 px-4 rounded font-medium text-sm max-md:min-h-11 max-md:min-w-11",
                       "bg-foreground text-background",
                       "hover:opacity-90 disabled:opacity-50 transition-opacity",
                     ].join(" ")}
@@ -600,7 +765,7 @@ function Dossier({
                     onClick={() => onDeny(denyReason.trim() || undefined)}
                     disabled={denyPending}
                     className={[
-                      "py-1.5 px-3 rounded text-sm border transition-colors",
+                      "py-1.5 px-3 rounded text-sm border transition-colors max-md:min-h-11 max-md:min-w-11",
                       "border-border text-foreground",
                       "hover:border-destructive/60 hover:text-destructive",
                       "disabled:opacity-50",
@@ -611,7 +776,7 @@ function Dossier({
                   <button
                     onClick={() => setShowDefer(!showDefer)}
                     className={[
-                      "py-1.5 px-3 rounded text-sm border transition-colors",
+                      "py-1.5 px-3 rounded text-sm border transition-colors max-md:min-h-11 max-md:min-w-11",
                       "border-border text-foreground hover:border-foreground/40",
                       showDefer ? "border-foreground/40 bg-foreground/5" : "",
                     ].join(" ")}
@@ -635,7 +800,7 @@ function Dossier({
                   className={[
                     "pointer-events-auto w-72 max-w-[80vw] px-2 py-1 text-xs rounded",
                     "border border-border bg-background/85 backdrop-blur-sm shadow-sm",
-                    "focus:outline-none focus:border-destructive/50",
+                    "focus:outline-none focus:ring-focus focus:border-destructive/50",
                   ].join(" ")}
                 />
               </>
@@ -699,7 +864,7 @@ function Dossier({
                   onChange={(e) => setDeferHours(e.target.value)}
                   className={[
                     "w-full px-2 py-1.5 text-sm border border-border rounded",
-                    "bg-background focus:outline-none focus:border-foreground/40",
+                    "bg-background focus:outline-none focus:ring-focus focus:border-focus",
                   ].join(" ")}
                 />
                 <button
@@ -746,7 +911,16 @@ function Dossier({
               </span>
             )}
           </div>
-          <h2 className="text-[22px] font-medium leading-tight">
+          <h2
+            ref={(node) => {
+              if (node && focusHeadingOnLoad) {
+                node.focus();
+                onHeadingFocused();
+              }
+            }}
+            tabIndex={-1}
+            className="text-[22px] font-medium leading-tight outline-none focus-visible:ring-[3px] focus-visible:ring-focus"
+          >
             {detail.title}
           </h2>
           <span
@@ -755,6 +929,9 @@ function Dossier({
           >
             {statusLabel(detail.status)}
           </span>
+          <div className="mt-1">
+            <ApprovalOrigin origin={detail.origin} />
+          </div>
           {detail.push_failed && (
             <div
               role="alert"
@@ -766,13 +943,14 @@ function Dossier({
                 aria-hidden="true"
               />
               <span className="font-medium">
-                Owner was never notified: the approval push
-                {detail.push_outcome ? ` ${detail.push_outcome}` : " was never attempted"}.
-                This is not an ordinary pending action.
+                Legacy approval push reported {detail.push_outcome ?? "failed"}. Durable
+                attempt evidence is unavailable.
               </span>
             </div>
           )}
         </div>
+
+        {detail.delivery && <DeliveryTruth delivery={detail.delivery} />}
 
         {(detail.decided_by || detail.decided_at) && (
           <section
@@ -1013,7 +1191,7 @@ function Dossier({
           </div>
         </div>
 
-        {/* Target contact — resolved from contact_id */}
+        {/* Target contact — resolved from contact_id; the id is a person entity id */}
         {detail.target_contact && (
           <div className="border-t border-border pt-4">
             <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-2">
@@ -1021,7 +1199,7 @@ function Dossier({
             </div>
             <div className="flex items-center gap-2 flex-wrap text-sm">
               <Link
-                to={`/contacts/${encodeURIComponent(detail.target_contact.id)}`}
+                to={`/entities/${encodeURIComponent(detail.target_contact.id)}`}
                 className="font-medium text-foreground hover:underline"
               >
                 {detail.target_contact.name || detail.target_contact.id}
@@ -1138,7 +1316,7 @@ function PolicySection() {
         {!editing && (
           <button
             onClick={startEdit}
-            className="text-xs font-mono px-2 py-1 border border-border rounded hover:border-foreground/40 transition-colors"
+            className="text-xs font-mono px-2 py-1 border border-border rounded hover:border-foreground/40 transition-colors max-md:min-h-11 max-md:min-w-11"
           >
             Edit
           </button>
@@ -1208,7 +1386,7 @@ function PolicySection() {
                   }))
                 }
                 placeholder="None"
-                className="w-full px-2 py-1.5 text-sm border border-border rounded bg-background focus:outline-none focus:border-foreground/40"
+                className="w-full px-2 py-1.5 text-sm border border-border rounded bg-background focus:outline-none focus:ring-focus focus:border-focus"
               />
             </div>
             <div>
@@ -1231,7 +1409,7 @@ function PolicySection() {
                   }))
                 }
                 placeholder="None"
-                className="w-full px-2 py-1.5 text-sm border border-border rounded bg-background focus:outline-none focus:border-foreground/40"
+                className="w-full px-2 py-1.5 text-sm border border-border rounded bg-background focus:outline-none focus:ring-focus focus:border-focus"
               />
             </div>
           </div>
@@ -1246,7 +1424,7 @@ function PolicySection() {
                 setDraft((d) => ({ ...d, timezone: e.target.value }))
               }
               placeholder="UTC"
-              className="w-full px-2 py-1.5 text-sm border border-border rounded bg-background focus:outline-none focus:border-foreground/40"
+              className="w-full px-2 py-1.5 text-sm border border-border rounded bg-background focus:outline-none focus:ring-focus focus:border-focus"
             />
           </div>
           <div className="flex gap-2">
@@ -1622,8 +1800,12 @@ export default function ApprovalsPage() {
   const { id: routeId } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const reviewSource = searchParams.get("review_source") ?? undefined;
   const activeLane: ApprovalLane = searchParams.get("state") === "stalled" ? "stalled" : "waiting";
   const [pendingLimit, setPendingLimit] = useState<number>(PENDING_PAGE_SIZE);
+  // A deep link (notification, bookmark) lands focus on the targeted dossier once; later j/k
+  // selection must not pull focus off the rail.
+  const [entryFocusPending, setEntryFocusPending] = useState(routeId !== undefined);
   const [teachingActionId, setTeachingActionId] = useState<string | null>(null);
 
   // Live updates come from the shared fleet event bus (bu-86c4c.8, wired
@@ -1730,8 +1912,8 @@ export default function ApprovalsPage() {
     isFetching: isStalledRouteVerificationFetching,
     isError: isStalledRouteVerificationError,
   } = useQuery({
-    queryKey: Q.stalledRouteVerification(routeId ?? "", dataUpdatedAt),
-    queryFn: () => getApprovalDetail(routeId ?? ""),
+    queryKey: [...Q.stalledRouteVerification(routeId ?? "", dataUpdatedAt), reviewSource],
+    queryFn: () => reviewSource === undefined ? getApprovalDetail(routeId ?? "") : getApprovalDetail(routeId ?? "", reviewSource),
     enabled: shouldVerifyStalledRoute,
     // A direct stalled URL is an authorization boundary, not a prefetch hint:
     // never inherit data from the ordinary dossier key and always make a new
@@ -1811,9 +1993,11 @@ export default function ApprovalsPage() {
     onDecided: advanceSelectionPast,
     undoWindow: true,
   });
+  const [shownCall, setShownCall] = useState<ViewedApproval | null>(null);
   const approve = useCallback(
-    (actionId: string) => {
-      approveMut.mutate(actionId, {
+    (view: ViewedApproval) => {
+      const actionId = view.id;
+      approveMut.mutate(view, {
         onSuccess: () => setTeachingActionId(actionId),
       });
     },
@@ -1940,7 +2124,14 @@ export default function ApprovalsPage() {
       {
         key: "a",
         description: "Approve selected",
-        handler: () => scheduleDecision(id, "approve", () => approve(id)),
+        handler: () => {
+          if (shownCall?.id !== id) {
+            toast.error("Review the stored call before approving.");
+            return;
+          }
+          const view = { id, displayed_call: { ...shownCall.displayed_call } };
+          scheduleDecision(id, "approve", () => approve(view));
+        },
         command: {
           id: "approve-next",
           label: "Approve selected approval",
@@ -1969,7 +2160,7 @@ export default function ApprovalsPage() {
         },
       },
     ];
-  }, [activeLane, approve, cancelDecision, defer, deny, effectiveSelected, scheduleDecision, scheduledDecisions]);
+  }, [activeLane, approve, cancelDecision, defer, deny, effectiveSelected, scheduleDecision, scheduledDecisions, shownCall]);
 
   const { hints: triageHints } = useListTriage({
     ids: pendingIds,
@@ -2028,6 +2219,8 @@ export default function ApprovalsPage() {
           historySourcesDegraded={historySourcesDegraded}
         />
       </div>
+
+      <UnroutableAttentionPanel />
 
       {(metricsIsError ||
         pendingMetricSourcesDegraded.length > 0 ||
@@ -2199,21 +2392,26 @@ export default function ApprovalsPage() {
           <Dossier
             key={dossierSelected}
             actionId={dossierSelected}
-            verifiedDetail={verifiedStalledRouteDetail}
+            verifiedDetail={reviewSource === undefined ? verifiedStalledRouteDetail : undefined}
+            reviewSource={reviewSource}
             allowAbandon={activeLane !== "stalled"}
             allowPendingDecisionControls={activeLane !== "stalled"}
-            onApprove={() => approve(dossierSelected)}
+            onApprove={(displayed_call) => approve({ id: dossierSelected, displayed_call })}
+            onCallShown={setShownCall}
             onDeny={(reason) => denyMut.mutate({ id: dossierSelected, reason })}
             onDefer={(hours) => deferMut.mutate({ id: dossierSelected, hours })}
             // Scoped to THIS approval's id, not just "some mutation of this
             // kind is in flight" -- approving item A no longer mislabels the
             // very next dossier (item B) as already approving (JARVIS audit
             // move 9's page-global-pending finding).
-            approvePending={approveMut.isPending && approveMut.variables === dossierSelected}
+            approvePending={approveMut.isPending && approveMut.variables?.id === dossierSelected}
             denyPending={denyMut.isPending && denyMut.variables?.id === dossierSelected}
             deferPending={deferMut.isPending && deferMut.variables?.id === dossierSelected}
             pendingVerb={scheduledDecisions.get(dossierSelected)?.verb ?? null}
             onCancelPending={() => cancelDecision(dossierSelected)}
+            phoneFirst={routeId !== undefined}
+            focusHeadingOnLoad={entryFocusPending && routeId === dossierSelected}
+            onHeadingFocused={() => setEntryFocusPending(false)}
           />
         ) : (
           <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground font-mono">

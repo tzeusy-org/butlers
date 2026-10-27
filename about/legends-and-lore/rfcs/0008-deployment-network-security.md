@@ -2,10 +2,11 @@
 
 **Status:** Accepted
 **Date:** 2026-03-25
+**Superseded in part at cutover by:** [RFC 0038](0038-goal-runtime-and-capability-authorization.md) (session spawn and sandbox rules, and the container layout, which gains `butlers-control` and the session host; network, port and firewall contracts remain).
 
 ## Summary
 
-Butlers runs in Docker Compose with four named networks (`db`, `backend`, `frontend`, `egress`) that enforce least-privilege connectivity. Three internal networks isolate services that have no business reaching the internet. One egress network provides outbound access for services that call external APIs. An iptables-based firewall on the egress network blocks access to private subnets (LAN, Tailscale) except for explicitly allowed tailnet hosts. All host port bindings use `127.0.0.1` to prevent LAN exposure.
+Butlers runs in Docker Compose with four named bridge networks (`db`, `backend`, `frontend`, `egress`). None of them is declared `internal: true`: Docker's isolation rules for multiple internal networks interfere with normal inter-container communication, so the application stack deliberately omits it (see the note above `networks:` in `docker-compose.yml`). Least-privilege connectivity is therefore a convention plus one firewall, not a topological guarantee: services join the `egress` network only when they call external APIs, and an iptables-based firewall scoped to the egress bridge blocks access to private subnets (LAN, Tailscale) except for explicitly allowed tailnet hosts. All host port bindings use `127.0.0.1` to prevent LAN exposure.
 
 ## Motivation
 
@@ -15,7 +16,7 @@ Butlers manages personal data (contacts, health records, email content, OAuth to
 
 ### Network Topology
 
-Four Docker Compose networks with explicit isolation boundaries:
+Four Docker Compose networks. Only the `egress` bridge is firewalled; the other three are separation-by-membership, not internet-isolated:
 
 ```
                      ┌──────────────────────────────────────┐
@@ -42,10 +43,12 @@ Four Docker Compose networks with explicit isolation boundaries:
                     ╚════════════════════════════════╝
 
   ┌─────────────────────────────────────────────────────────┐
-  │            INTERNAL ONLY (no internet)                   │
+  │   NON-EGRESS NETWORKS (not `internal`, not firewalled)   │
   │  db:       postgres, minio, migrations, oauth-gate      │
   │  backend:  (shared with egress services for inter-svc)  │
   │  frontend: frontend-dev ↔ dashboard-api only            │
+  │  Services here that are not also on egress have no      │
+  │  intended internet role; nothing enforces that.         │
   └─────────────────────────────────────────────────────────┘
 ```
 
@@ -53,12 +56,19 @@ Four Docker Compose networks with explicit isolation boundaries:
 
 | Network | Driver | `internal` | Services |
 |---------|--------|-----------|----------|
-| `db` | bridge | `true` | postgres, minio, migrations, oauth-gate, all butlers, all connectors, dashboard-api |
-| `backend` | bridge | `true` | switchboard, butlers, connectors, dashboard-api, butlers-up |
-| `frontend` | bridge | `true` | frontend-dev, dashboard-api |
-| `egress` | bridge | `false` | butlers-up, all connectors, dashboard-api, switchboard, general, relationship, health |
+| `db` | bridge | not set | postgres, minio, migrations, oauth-gate, all butlers, all connectors, dashboard-api |
+| `backend` | bridge | not set | switchboard, butlers, connectors, dashboard-api, butlers-up |
+| `frontend` | bridge | not set | frontend-dev, dashboard-api |
+| `egress` | bridge | not set | butlers-up, all connectors, dashboard-api, switchboard, general, relationship, health |
 
-A service on an `internal: true` network cannot reach any address outside Docker's bridge networks. A service MUST also join the `egress` network to reach the internet.
+No network is `internal: true`, so Docker does not itself block outbound traffic from any of them. Deployed posture:
+
+- **Enforced by the firewall:** traffic entering the `egress` bridge is filtered by the `DOCKER-USER` rules below (private, Tailscale and link-local ranges dropped except the allowlist).
+- **Convention only:** a service should join `egress` only if it calls external APIs (see `security.md`, principle 2). Compose membership documents intent; it is not an enforcement mechanism.
+- **Not covered by the firewall (inferred, not verified against live iptables or Docker state):** the firewall rules match only `-i <egress bridge>`. Services that are not on `egress` (for example postgres, minio, migrations, oauth-gate, frontend-dev) are attached to plain NAT bridges with no `internal` flag and no matching DROP rule, so they are plausibly able to reach the public internet and private or tailnet ranges. This RFC does not claim otherwise.
+- **Compose comments:** labels reading "(internal)" on the networks in `docker-compose.yml` are stale and do not describe enforced behavior.
+
+Network isolation of non-egress services is not a guarantee of this RFC. The earlier target (three `internal: true` networks) is dropped, not deferred.
 
 ### Per-Service Network Assignment
 
@@ -163,7 +173,7 @@ persistent auth tokens used by the container-level `codex` binary.
 
 ## Invariants
 
-1. Services on internal-only networks (`db`, `backend`, `frontend`) MUST NOT have outbound internet access.
+1. A service SHOULD join the `egress` network only if it calls external APIs. This is a compose convention; it is not enforced by `internal: true` and the firewall does not cover services outside `egress`.
 2. The `egress` network MUST have iptables rules blocking all RFC1918 and Tailscale CGNAT subnets except explicitly allowed hosts.
 3. All `ports:` mappings MUST bind to `127.0.0.1`.
 4. No compose service MUST use `privileged: true`, mount the Docker socket, or use `cap_add`.
@@ -186,3 +196,82 @@ sudo iptables -L DOCKER-USER -n --line-numbers | grep butlers
 docker compose -f docker-compose.yml -f docker-compose.dev.yml config \
   | python3 -c "import sys,yaml; d=yaml.safe_load(sys.stdin); [print(f'{k}: {list(v.get(\"networks\",{}).keys())}') for k,v in sorted(d['services'].items())]"
 ```
+
+## Dashboard owner-authentication composition
+
+The owner adopted the exact successor
+`3686954b8477b150e617b555727830a1602b2b17` on 2026-09-15; see
+[adoption](../../../openspec/changes/specify-host-authorized-dashboard-enrollment/adoption.md).
+Its fixed-origin passkey/session contract composes with this RFC's loopback and
+Tailscale boundary. Tailnet membership is network access, not dashboard-owner
+authentication. The server pins one canonical HTTPS origin/RP hostname and
+accepts proxy authority metadata only through the explicitly trusted path.
+No arbitrary forwarded header or localhost HTTP exception widens that identity.
+
+Host commands authorize initial registration and lost-credential recovery in
+dedicated authentication state; no public request, daemon/model tool or first
+visitor can create that authority. Sessions, independent CSRF and domain checks
+remain separate controls. Ordinary passkey login does not require a host command.
+Same-host deployment path prefixes are not browser-origin isolation.
+
+The successor's [design D2-D7](../../../openspec/changes/specify-host-authorized-dashboard-enrollment/design.md)
+owns the exact wire/lifecycle contract; the
+[operator runbook](../../../docs/identity_and_secrets/dashboard-owner-auth.md)
+owns procedures. Its adoption is not a live proxy, credential, migration or
+deployment action. Existing network isolation and egress rules remain binding.
+
+## Amendment (2026-09-23): Internal Observer and Deployment Readiness Boundary
+
+**Status:** Approved target contract in
+`openspec/changes/restore-butler-control-plane-liveness`; deployment and
+external-monitor activation remain separate operations.
+
+The dashboard/control-plane observer reaches only exact same-host,
+backend-network daemon endpoints from the Git roster. Each daemon exposes
+`GET /internal/control-plane/identity` on its existing port with a bounded
+`butler.control.v1` response: `butler_name`, UUIDv7 `boot_instance_id`,
+the server-allocated durable `boot_epoch`, `route_contract` minimum/maximum,
+and `accepting_routes`. It is not a public
+discovery service. The observer verifies the expected host, port, path, name,
+generation, and contract before writing liveness with DB-server time. Both the
+periodic Dashboard observer and Switchboard's bounded stale-route recheck use
+the same verifier and DB-reserved per-daemon probe sequence; the conditional
+write fences old boot epochs and overlapping probes without granting either
+receiver broad registry or administrative-policy write authority. It does
+not follow a caller-supplied URL. A later split-host topology needs a new
+trust-design amendment before these same-host observations become authority.
+
+L2's shared receiver constructs only the configured `BUTLERS_HOST` plus each
+Git-roster port and the fixed identity path. It does not use environment proxy
+settings or follow redirects, caps the response at 2 KiB, and separately
+bounds reserve-plus-network and record phases at three seconds each. The
+entire response shape is closed:
+timestamps, endpoint claims, extra fields, an unregistered UUID, a mismatched
+epoch, and unsupported route contracts cannot advance healthy observation.
+Dashboard's supervised periodic pass and Switchboard's later on-demand caller
+share this verifier and the L1 reserve/record database CAS; neither receives
+an owner cookie or general registry/policy write permission.
+
+The daemon does not receive a dashboard owner cookie, API key, approval token,
+or runtime-probe signing key for liveness. `POST /api/switchboard/heartbeat`
+is retired after cutover; owner-auth middleware must not exempt it as an
+anonymous mutation. Connector MCP heartbeats keep their separate protocol.
+
+Dashboard `/health` remains process liveness. The canonical public
+`GET /ready` returns a boolean `ready` response shape with content-blind checks for PostgreSQL,
+roster, observer freshness, fleet identity and routability, QA patrol age,
+supervised loops, and L3's effect-free internal Switchboard route preflight.
+Q4 alone owns public `/ready` and its exact owner-auth exception; the Compose
+launcher consumes that route. The preflight checks fixed-target
+selection and reachability without target MCP calls or durable evidence
+writes, not transactional target acceptance. Compose and production deployment
+completion require two distinct complete observer cycles, two distinct
+qualifying scheduled QA patrol completions, and true sampled readiness over
+more than the longest fleet TTL. The finite default timeout covers two
+configured patrol cadences, that TTL, and a ten-minute margin (35 minutes at
+current defaults); shorter overrides fail configuration validation. A single
+successful process probe is insufficient. Public readiness
+exposes categories only and grants no control authority. The separate-host
+minimal `/api/health` pull monitor retains its already adopted scope; a new
+external functional monitor or public readiness consumption needs its own
+owner authorization.

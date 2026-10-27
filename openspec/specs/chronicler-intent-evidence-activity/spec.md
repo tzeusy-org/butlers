@@ -172,13 +172,13 @@ counted intent.
 
 #### Scenario: Freshly-projected calendar block is intent
 
-- **WHEN** the calendar adapter projects a new event after this change ships
+- **WHEN** the calendar adapter projects a new event
 - **THEN** the stored episode has `layer = intent`
 - **AND** it is excluded from lived-time totals
 
 #### Scenario: Freshly-projected activity is counted
 
-- **WHEN** an activity-source adapter projects a new episode after this change
+- **WHEN** an activity-source adapter projects a new episode
 - **THEN** the stored episode has `layer = activity`
 - **AND** it is included in lived-time totals
 

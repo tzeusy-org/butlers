@@ -4,6 +4,7 @@ import { useParams, useSearchParams } from "react-router";
 
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import { ButlerDetailActions } from "@/components/butler-detail/ButlerDetailActions";
+import { ButlerCommandBarPrefillProvider } from "@/components/butler-detail/command-bar-prefill";
 import { ButlerDetailHeader } from "@/components/butler-detail/ButlerDetailHeader";
 import ButlerOverviewTab from "@/components/butler-detail/ButlerOverviewTab";
 import ButlerActivitySection from "@/components/butler-detail/ButlerActivitySection";
@@ -27,7 +28,7 @@ const ButlerMemoryTab = lazy(
 
 // Travel butler tabs (lazy)
 const ButlerTravelTripsTab = lazy(
-  () => import("@/components/butler-detail/ButlerTravelTripsTab.tsx"),
+  () => import("@/components/travel/ButlerTravelTripsTab.tsx"),
 );
 
 // Education butler tabs (lazy)
@@ -37,7 +38,7 @@ const ButlerEducationReviewsTab = lazy(
 
 // Finance butler tabs (lazy)
 const ButlerFinanceFinancesTab = lazy(
-  () => import("@/components/butler-detail/ButlerFinanceFinancesTab.tsx"),
+  () => import("@/components/finance/ButlerFinanceFinancesTab.tsx"),
 );
 
 const ButlerRoutingLogTab = lazy(
@@ -59,12 +60,12 @@ const ButlerRelationshipContactsTab = lazy(
 
 // Home butler tabs (lazy)
 const ButlerHomeDevicesTab = lazy(
-  () => import("@/components/butler-detail/ButlerHomeDevicesTab.tsx"),
+  () => import("@/components/home/ButlerHomeDevicesTab.tsx"),
 );
 
 // Lifestyle butler tabs (lazy)
 const ButlerLifestyleTasteTab = lazy(
-  () => import("@/components/butler-detail/ButlerLifestyleTasteTab.tsx"),
+  () => import("@/components/lifestyle/ButlerLifestyleTasteTab.tsx"),
 );
 
 // Approvals tab (lazy)
@@ -84,10 +85,10 @@ const ButlerQaInvestigationsTab = lazy(
 
 // General butler tabs (lazy)
 const ButlerGeneralCollectionsTab = lazy(
-  () => import("@/components/butler-detail/ButlerGeneralCollectionsTab.tsx"),
+  () => import("@/components/general/ButlerGeneralCollectionsTab.tsx"),
 );
 const ButlerGeneralEntitiesTab = lazy(
-  () => import("@/components/butler-detail/ButlerGeneralEntitiesTab.tsx"),
+  () => import("@/components/general/ButlerGeneralEntitiesTab.tsx"),
 );
 
 // Spend tab (lazy) — bu-iuol4.19
@@ -229,6 +230,7 @@ export default function ButlerDetailPage() {
   const description = butlerResponse?.data?.description ?? undefined;
 
   return (
+    <ButlerCommandBarPrefillProvider>
     <Page
       archetype="status-board"
       title={titleize(name)}
@@ -288,7 +290,7 @@ export default function ButlerDetailPage() {
           </TabsContent>
 
           <TabsContent value="approvals">
-            <Suspense fallback={<Skeleton className="h-[calc(100vh-18rem)] w-full" />}>
+            <Suspense fallback={<Skeleton className="h-[calc(100dvh-18rem)] w-full" />}>
               <ButlerApprovalsTab butlerName={name} />
             </Suspense>
           </TabsContent>
@@ -414,5 +416,6 @@ export default function ButlerDetailPage() {
           </TabsContent>
         </Tabs>
     </Page>
+    </ButlerCommandBarPrefillProvider>
   );
 }

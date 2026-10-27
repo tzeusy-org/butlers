@@ -2,7 +2,7 @@
 
 > **Purpose:** Defines how email thread affinity routes follow-up messages to the same butler without LLM classification, reducing cost and improving routing consistency.
 > **Audience:** Developers working on Switchboard routing, operators tuning thread affinity behavior, architects evaluating routing efficiency.
-> **Prerequisites:** [Routing Architecture](routing.md), [Pre-Classification Triage](pre-classification-triage.md).
+> **Prerequisites:** [Switchboard Routing](../concepts/switchboard-routing.md), [Pre-Classification Triage](pre-classification-triage.md).
 
 ## Overview
 
@@ -167,7 +167,7 @@ psql -h localhost -U butlers -d butlers -c \
 
 ## Related Pages
 
-- [Routing Architecture](routing.md) --- how thread affinity fits into the overall routing pipeline
+- [Switchboard Routing](../concepts/switchboard-routing.md) --- how thread affinity fits into the overall routing pipeline
 - [Pre-Classification Triage](pre-classification-triage.md) --- the rule-based triage layer that runs alongside thread affinity
 - [Email Priority Queuing](email-priority-queuing.md) --- tier-based queue ordering
 - [Observability](observability.md) --- metrics infrastructure

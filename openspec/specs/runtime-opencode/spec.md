@@ -8,7 +8,7 @@ Runtime adapter for invoking OpenCode CLI as a butler's AI runtime, supporting m
 ### Requirement: OpenCode CLI Invocation
 The `OpenCodeAdapter` SHALL invoke the OpenCode CLI via `opencode run --format json` as an async subprocess. The adapter SHALL locate the `opencode` binary on PATH via `shutil.which()` and raise `FileNotFoundError` if not found. When the configured timeout fires, the adapter SHALL terminate the subprocess (`proc.kill()`, i.e. SIGKILL), await its exit, and raise `TimeoutError`. The configured timeout value is sourced from the spawner's per-spawn timeout resolution (default 300 s when no per-butler override is present).
 
-> Note: the motivating incident (session `46f18840-4f74-4e0a-a3bf-cafa2b579f3a`, 2026-04-15) observed an opencode session running 436 s under a nominal 300 s budget. The as-built adapter issues an immediate SIGKILL on timeout (no SIGTERM grace period). A graduated SIGTERM→grace→SIGKILL escalation and a SIGTERM-trapping verification test are NOT implemented; if that hardening is desired it should be tracked as a separate behavioral change rather than asserted by this spec.
+> Note: the adapter issues an immediate SIGKILL on timeout (no SIGTERM grace period). A graduated SIGTERM, grace, SIGKILL escalation is not part of this contract.
 
 #### Scenario: Successful invocation
 - **WHEN** the adapter invokes OpenCode with a valid prompt and config

@@ -165,8 +165,7 @@ _CATALOGUE_SEED: tuple[tuple[str, str, str, str, list[str]], ...] = (
     ),
     # general × * (BLOB_S3_* system creds, category 'general'). The S3-compatible
     # blob store is core cross-butler infra wired at daemon startup (lifecycle.py);
-    # without it, blob operations fail fleet-wide — message-attachment persistence
-    # and document rendering (modules/document_renderer) among them.
+    # without it, blob operations fail fleet-wide, including message-attachment persistence.
     (
         "general",
         "*",

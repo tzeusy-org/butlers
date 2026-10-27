@@ -3,7 +3,7 @@
 bu-27dxl.6.2 — implements the representation and transition semantics defined
 by the merged ``define-infrastructure-reliability-lifecycle`` OpenSpec change
 (bu-27dxl.6.1, PR #3522). See
-``openspec/changes/define-infrastructure-reliability-lifecycle/design.md``
+``openspec/changes/archive/2026-09-27-define-infrastructure-reliability-lifecycle/design.md``
 and its ``specs/infrastructure-reliability/spec.md`` for the full normative
 contract this module implements: canonical condition identity (Decision #1),
 append-per-episode snapshot-authoritative recovery (Decision #2), and bounded
@@ -89,6 +89,7 @@ from butlers.core.condition_ledger import compute_fingerprint as compute_fingerp
 from butlers.core.condition_ledger import get_active_condition as _get_active_condition
 from butlers.core.condition_ledger import list_conditions as _list_conditions
 from butlers.core.condition_ledger import reconcile_snapshot as _reconcile_snapshot
+from butlers.core.condition_ledger import resolve_condition as _resolve_condition
 from butlers.core.condition_ledger import row_to_dict as row_to_dict
 
 __all__ = [
@@ -102,6 +103,7 @@ __all__ = [
     "get_active_condition",
     "list_conditions",
     "reconcile_snapshot",
+    "resolve_condition",
     "row_to_dict",
 ]
 
@@ -131,6 +133,28 @@ async def reconcile_snapshot(
         observations=observations,
         snapshot_complete=snapshot_complete,
         initial_grace_seconds=initial_grace_seconds,
+    )
+
+
+async def resolve_condition(
+    pool: asyncpg.Pool,
+    *,
+    source: str,
+    fingerprint: str,
+    resolution_metadata: dict[str, Any] | None = None,
+) -> ConditionTransition | None:
+    """Explicitly resolve one active infra episode after its own recovery proof.
+
+    See ``butlers.core.condition_ledger.resolve_condition``. The fleet
+    controller uses this for a legacy per-butler liveness episode, which only
+    a complete healthy observation of that daemon may close.
+    """
+    return await _resolve_condition(
+        pool,
+        table=_TABLE,
+        source=source,
+        fingerprint=fingerprint,
+        resolution_metadata=resolution_metadata,
     )
 
 

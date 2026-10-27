@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-#: Default cooldown window in minutes — matches HealingConfig default.
+#: Default cooldown window in minutes — owned by QA investigation policy.
 DEFAULT_COOLDOWN_MINUTES = 60
 
 
@@ -213,7 +213,10 @@ async def triage_findings(
         if dedup_reason is None:
             recent = await get_recent_attempt(pool, fp, cooldown_minutes)
             if recent is not None:
-                dedup_reason = "cooldown"
+                # A lineage held by an ambiguous publication outlives the window.
+                dedup_reason = (
+                    "publication_held" if recent.get("publication_held") is True else "cooldown"
+                )
                 logger.debug(
                     "Triage: dedup fingerprint=%s reason=cooldown closed_at=%s",
                     fp[:12],

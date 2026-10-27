@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from butlers.testing.schema_standins import CONTACT_ENTITY_MAP
+from butlers.testing.schema_standins import CONTACT_ENTITY_MAP, ENTITY_GRAPH_EDGES
 
 # ---------------------------------------------------------------------------
 # Pure-function tests (no DB required)
@@ -409,6 +409,7 @@ async def dunbar_pool(provisioned_postgres_pool):
                 metadata JSONB DEFAULT '{}'::jsonb,
                 roles TEXT[] NOT NULL DEFAULT '{}',
                 listed BOOLEAN NOT NULL DEFAULT true,
+                posture TEXT NOT NULL DEFAULT 'active',
                 stay_in_touch_days INT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -446,6 +447,7 @@ async def dunbar_pool(provisioned_postgres_pool):
         # facts table
         await p.execute("""
             CREATE TABLE IF NOT EXISTS facts (
+                content_authority TEXT, authority_entity_id UUID,
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 subject TEXT NOT NULL,
                 predicate TEXT NOT NULL,
@@ -1753,6 +1755,7 @@ async def simple_pool(provisioned_postgres_pool):
                 metadata JSONB DEFAULT '{}'::jsonb,
                 roles TEXT[] NOT NULL DEFAULT '{}',
                 listed BOOLEAN NOT NULL DEFAULT true,
+                posture TEXT NOT NULL DEFAULT 'active',
                 stay_in_touch_days INT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -1781,6 +1784,7 @@ async def simple_pool(provisioned_postgres_pool):
         await p.execute(CONTACT_ENTITY_MAP.ddl())
         await p.execute("""
             CREATE TABLE IF NOT EXISTS facts (
+                content_authority TEXT, authority_entity_id UUID,
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 subject TEXT NOT NULL,
                 predicate TEXT NOT NULL,
@@ -1818,6 +1822,25 @@ async def simple_pool(provisioned_postgres_pool):
         await p.execute(
             "CREATE INDEX IF NOT EXISTS idx_facts_subj_pred_new ON facts (subject, predicate)"
         )
+        # public.memory_catalog + public.entity_graph_edges (bu-9ltqm) — the
+        # cascade targets dunbar_tier_set's bulk override retraction disowns/deletes.
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS public.memory_catalog (
+                id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                source_schema TEXT NOT NULL,
+                source_table  TEXT NOT NULL,
+                source_id     UUID NOT NULL,
+                tenant_id     TEXT NOT NULL DEFAULT 'owner',
+                entity_id     UUID,
+                summary       TEXT NOT NULL DEFAULT '',
+                memory_type   TEXT NOT NULL DEFAULT 'fact',
+                confidence    DOUBLE PRECISION,
+                invalid_at    TIMESTAMPTZ,
+                updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (source_schema, source_table, source_id)
+            )
+        """)
+        await p.execute(ENTITY_GRAPH_EDGES.ddl())
         yield p
 
 
@@ -1873,6 +1896,49 @@ async def _log_simple_interaction(pool, contact_id: uuid.UUID, days_ago: float) 
         entity_id,
         valid_at,
     )
+
+
+async def _catalog_fact(pool, fact_id: uuid.UUID) -> None:
+    """Insert a live public.memory_catalog row cataloging *fact_id* (bu-9ltqm)."""
+    await pool.execute(
+        """
+        INSERT INTO public.memory_catalog (source_schema, source_table, source_id, memory_type)
+        VALUES ('public', 'facts', $1, 'fact')
+        """,
+        fact_id,
+    )
+
+
+async def _project_fact_edge(pool, fact_id: uuid.UUID, entity_id: uuid.UUID) -> None:
+    """Insert a live public.entity_graph_edges row projecting *fact_id* (bu-9ltqm)."""
+    await pool.execute(
+        """
+        INSERT INTO public.entity_graph_edges
+            (source_schema, source_table, source_id, subject_entity_id, predicate, object_entity_id)
+        VALUES ('public', 'facts', $1, $2, 'test-predicate', $2)
+        """,
+        fact_id,
+        entity_id,
+    )
+
+
+async def _catalog_is_stale(pool, fact_id: uuid.UUID) -> bool:
+    row = await pool.fetchrow(
+        "SELECT confidence, invalid_at FROM public.memory_catalog"
+        " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+        fact_id,
+    )
+    assert row is not None, f"expected a catalog row for fact {fact_id}"
+    return row["confidence"] == 0 and row["invalid_at"] is not None
+
+
+async def _graph_edge_exists(pool, fact_id: uuid.UUID) -> bool:
+    row = await pool.fetchrow(
+        "SELECT 1 FROM public.entity_graph_edges"
+        " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+        fact_id,
+    )
+    return row is not None
 
 
 # ===========================================================================
@@ -1955,7 +2021,9 @@ async def test_dunbar_tier_set_updates_override(simple_pool):
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_dunbar_tier_set_clear(simple_pool):
-    """Passing tier=None retracts the override and returns action='cleared'."""
+    """Passing tier=None retracts the override, cascading the memory_catalog
+    disownment + entity_graph_edges deletion forget_memory() performs (bu-9ltqm),
+    and returns action='cleared'."""
     from butlers.tools.relationship.dunbar import dunbar_tier_set
 
     contact = await _make_simple_contact(simple_pool, "Carol")
@@ -1963,6 +2031,18 @@ async def test_dunbar_tier_set_clear(simple_pool):
     entity_id_str = str(contact["entity_id"])
 
     await dunbar_tier_set(simple_pool, cid, 150)
+    override_fact_id = await simple_pool.fetchval(
+        """
+        SELECT id FROM facts
+        WHERE predicate = 'dunbar_tier_override'
+          AND entity_id = $1::uuid
+          AND validity = 'active'
+        """,
+        entity_id_str,
+    )
+    await _catalog_fact(simple_pool, override_fact_id)
+    await _project_fact_edge(simple_pool, override_fact_id, contact["entity_id"])
+
     result = await dunbar_tier_set(simple_pool, cid, None)
     assert result["action"] == "cleared"
 
@@ -1976,6 +2056,64 @@ async def test_dunbar_tier_set_clear(simple_pool):
         entity_id_str,
     )
     assert len(active_rows) == 0
+    assert await _catalog_is_stale(simple_pool, override_fact_id) is True
+    assert await _graph_edge_exists(simple_pool, override_fact_id) is False
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_dunbar_tier_set_bulk_retraction_cascades_every_affected_fact(simple_pool):
+    """Multiple active override rows (a corrupted/pre-migration state) are all
+    retracted and cascaded in the single bulk UPDATE, not just the first one
+    (bu-9ltqm acceptance criterion #2: zero-to-many rows, one transaction)."""
+    from butlers.tools.relationship.dunbar import dunbar_tier_set
+
+    contact = await _make_simple_contact(simple_pool, "Dana")
+    cid = uuid.UUID(str(contact["id"]))
+    entity_id = contact["entity_id"]
+
+    # Simulate two active overrides for the same entity by inserting the
+    # second directly, bypassing dunbar_tier_set's own retract-then-insert.
+    fact_id_1 = await simple_pool.fetchval(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, permanence)
+        VALUES ($1, 'dunbar_tier_override', '50', 'relationship', $2::uuid, 'active', 'permanent')
+        RETURNING id
+        """,
+        f"contact:{cid}",
+        str(entity_id),
+    )
+    fact_id_2 = await simple_pool.fetchval(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, permanence)
+        VALUES ($1, 'dunbar_tier_override', '150', 'relationship', $2::uuid, 'active', 'permanent')
+        RETURNING id
+        """,
+        f"contact:{cid}",
+        str(entity_id),
+    )
+    await _catalog_fact(simple_pool, fact_id_1)
+    await _catalog_fact(simple_pool, fact_id_2)
+    await _project_fact_edge(simple_pool, fact_id_1, entity_id)
+    await _project_fact_edge(simple_pool, fact_id_2, entity_id)
+
+    result = await dunbar_tier_set(simple_pool, cid, 5)
+    assert result["action"] == "set"
+
+    retracted_count = await simple_pool.fetchval(
+        """
+        SELECT COUNT(*) FROM facts
+        WHERE predicate = 'dunbar_tier_override'
+          AND entity_id = $1::uuid
+          AND validity = 'retracted'
+        """,
+        str(entity_id),
+    )
+    assert retracted_count == 2
+    for fact_id in (fact_id_1, fact_id_2):
+        assert await _catalog_is_stale(simple_pool, fact_id) is True
+        assert await _graph_edge_exists(simple_pool, fact_id) is False
 
 
 @pytest.mark.integration
@@ -2386,3 +2524,127 @@ async def test_override_via_dunbar_tier_set_honored_by_compute_tier_ranking(simp
         "dunbar_tier_set write and _fetch_overrides read are split across stores"
     )
     assert row["dunbar_tier_override"] is True
+
+
+# ===========================================================================
+# relationship-maintenance job composition (bu-idc5mx.4, rev-4907)
+# ===========================================================================
+
+
+@pytest.fixture
+async def maintenance_pool(dunbar_pool):
+    """dunbar_pool plus the expected-signal and identity tables stale-contact evaluation reads."""
+    await dunbar_pool.execute("""
+        CREATE TABLE IF NOT EXISTS public.expected_signals (
+            signal_key                 TEXT PRIMARY KEY,
+            producer                   TEXT NOT NULL,
+            producer_endpoint_identity TEXT,
+            expected_cadence_seconds   BIGINT NOT NULL,
+            last_observed_at           TIMESTAMPTZ,
+            measurability              TEXT NOT NULL,
+            unmeasurable_reason        TEXT,
+            evaluated_at               TIMESTAMPTZ NOT NULL,
+            updated_at                 TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    """)
+    await dunbar_pool.execute("CREATE SCHEMA IF NOT EXISTS relationship")
+    await dunbar_pool.execute("""
+        CREATE TABLE IF NOT EXISTS relationship.entity_facts (
+            id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            subject     UUID NOT NULL,
+            predicate   TEXT NOT NULL,
+            object      TEXT NOT NULL,
+            object_kind TEXT NOT NULL DEFAULT 'literal',
+            validity    TEXT NOT NULL DEFAULT 'active'
+        )
+    """)
+    yield dunbar_pool
+
+
+async def _make_tiered_contact(pool, name: str, tier: int) -> dict:
+    """A named contact whose Dunbar tier is pinned by an active override fact."""
+    contact = await _make_contact(pool, name)
+    await pool.execute(
+        "UPDATE public.entities SET canonical_name = $1 WHERE id = $2", name, contact["entity_id"]
+    )
+    await pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity)
+        VALUES ($1, 'dunbar_tier_override', $2, 'relationship', $3, 'active')
+        """,
+        f"contact:{contact['id']}",
+        str(tier),
+        contact["entity_id"],
+    )
+    return contact
+
+
+async def _log_owner_interaction(pool, entity_id: uuid.UUID, days_ago: float, *, attested: bool):
+    """An outgoing interaction; ``attested`` adds the server owner attestation."""
+    from butlers.tools.relationship.stale_contacts import owner_attestation
+
+    metadata: dict = {"direction": "outgoing"}
+    if attested:
+        metadata["expected_signal_source"] = owner_attestation(principal="owner")
+    await pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at,
+                           metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
+        """,
+        f"entity:{entity_id}",
+        entity_id,
+        datetime.now(UTC) - timedelta(days=days_ago),
+        metadata,
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_relationship_maintenance_default_wiring_on_real_tier_ranking(maintenance_pool):
+    """The weekly job's production path: evaluation -> compute_tier_ranking -> filter ->
+    compute_urgency(tier_ranking=..., top_n=3) -> render, with only notify captured.
+
+    No all-clear (or anything) is sent while one cadence is unmeasurable. Once its producer is
+    attested, the suggestions follow urgency on the real tier ranking: tier weight lets a
+    tier-5 contact 28 days out outrank a tier-50 contact 90 days out.
+    """
+    from unittest.mock import AsyncMock
+
+    from butlers.tools.relationship.reminders import run_relationship_maintenance
+
+    pool = maintenance_pool
+    ada = await _make_tiered_contact(pool, "Ada", 50)  # 45d cadence: (90-45)/45 * 2.0 = 2.0
+    ben = await _make_tiered_contact(pool, "Ben", 5)  # 14d cadence: (28-14)/14 * 5.0 = 5.0
+    cleo = await _make_tiered_contact(pool, "Cleo", 15)  # 21d cadence: (60-21)/21 * 3.0 = 5.57
+    await _log_owner_interaction(pool, ada["entity_id"], 90, attested=True)
+    await _log_owner_interaction(pool, ben["entity_id"], 28, attested=True)
+    await _log_owner_interaction(pool, cleo["entity_id"], 60, attested=False)
+
+    notify = AsyncMock(return_value="sent")
+    held = await run_relationship_maintenance(pool, notify_fn=notify)
+
+    assert held["status"] == "unmeasurable"
+    assert held["unmeasurable_count"] == 1
+    notify.assert_not_awaited()
+
+    from butlers.tools.relationship.stale_contacts import owner_attestation
+
+    await pool.execute(
+        """
+        UPDATE facts SET metadata = metadata || jsonb_build_object('expected_signal_source', $2::jsonb)
+        WHERE entity_id = $1 AND predicate = 'interaction_other'
+        """,
+        cleo["entity_id"],
+        owner_attestation(principal="owner"),
+    )
+
+    result = await run_relationship_maintenance(pool, notify_fn=notify)
+
+    assert result["status"] == "suggested"
+    assert (result["suggested"], result["overdue"], result["unranked"]) == (3, 3, 0)
+    notify.assert_awaited_once()
+    lines = notify.await_args.args[0].splitlines()
+    assert lines[0] == "Reconnect this week:"
+    assert [line.split(":")[0] for line in lines[1:]] == ["1. Cleo", "2. Ben", "3. Ada"]

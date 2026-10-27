@@ -1,20 +1,23 @@
-"""Tests for the SelfHealingModule QA relay behavior (task 5.3).
+"""Tests for the daemon-owned core QA relay behavior.
 
 Covers:
 - QA available: Switchboard route() with correct args, fingerprint, context handling
 - QA unavailable: fallback scenarios (no client, not in registry, errors)
 - Cached list_butlers TTL prevents per-error roundtrip
-- wire_runtime accepts switchboard_client
+- current client replacement invalidates availability cache
 """
 
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastmcp import Client, FastMCP
 
-from butlers.modules.self_healing import SelfHealingModule
+from butlers.core.qa.relay import QaRelay
+from butlers.core.spawn_hooks import clear_spawner, register_spawner
 
 pytestmark = pytest.mark.unit
 
@@ -24,11 +27,8 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-def _make_module(switchboard_client: object | None = None) -> SelfHealingModule:
-    mod = SelfHealingModule()
-    mod._butler_name = "general"
-    mod._switchboard_client = switchboard_client
-    return mod
+def _make_module(switchboard_client: object | None = None) -> QaRelay:
+    return QaRelay("general", None, lambda: switchboard_client)
 
 
 def _make_call_tool_mock(list_result=None, route_result=None, route_raises=None, list_raises=None):
@@ -72,12 +72,38 @@ def _report_error_args(**overrides):
 
 
 class TestSwitchboardNotConnected:
-    async def test_no_client_fallback_and_no_calls(self):
+    async def test_no_client_fallback_and_no_calls(self, monkeypatch):
+        """Operational state must not turn failed QA admission into local dispatch."""
         mod = _make_module(switchboard_client=None)
-        mod._pool = None
-        mod._spawner = None
-        result = await mod._handle_report_error(**_report_error_args())
-        assert result["accepted"] is False and result["reason"] == "not_configured"
+        pool = AsyncMock()
+        pool.fetchrow.return_value = None
+        dispatch = AsyncMock(
+            return_value=SimpleNamespace(accepted=True, fingerprint="f" * 64, reason="dispatched")
+        )
+        monkeypatch.setattr("butlers.core.qa.dispatch.dispatch_qa_investigation", dispatch)
+        # Establish the counter positive; removal must not cause an AttributeError red.
+        assert (await dispatch()).accepted
+        dispatch.reset_mock()
+        spawner = MagicMock()
+        register_spawner(spawner)
+        mcp = FastMCP("operational-relay")
+        try:
+            mod._pool = pool
+            mod.register_tools(mcp)
+            async with Client(mcp) as client:
+                result = (
+                    await client.call_tool(
+                        "report_error",
+                        {"error_type": "ValueError", "error_message": "synthetic report"},
+                    )
+                ).data
+            assert result["accepted"] is False
+            assert result["reason"] == "qa_unavailable"
+            dispatch.assert_not_awaited()
+            pool.fetchrow.assert_not_awaited()
+            spawner.trigger.assert_not_called()
+        finally:
+            clear_spawner()
 
 
 # ---------------------------------------------------------------------------
@@ -115,9 +141,15 @@ class TestQaRelayPrimaryPath:
     async def test_context_none_omitted(self):
         client, route_calls = _make_call_tool_mock()
         mod = _make_module(switchboard_client=client)
-        mod._pool = None
         await mod._handle_report_error(**_report_error_args())
         assert "context" not in route_calls[0]["args"]
+        # A successful route envelope must not hide actual target rejection.
+        client, route_calls = _make_call_tool_mock(route_result={"result": {"accepted": False}})
+        mod = _make_module(switchboard_client=client)
+        rejected = await mod._handle_report_error(**_report_error_args())
+        assert rejected["accepted"] is False
+        assert rejected["reason"] == "relay_failed"
+        assert len(route_calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -136,13 +168,51 @@ class TestQaUnavailableFallback:
         ],
         ids=["not-in-registry", "list-raises", "route-error", "route-raises"],
     )
-    async def test_fallback_cases(self, setup):
+    async def test_fallback_cases(self, setup, monkeypatch):
         client, _ = _make_call_tool_mock(**setup)
         mod = _make_module(switchboard_client=client)
-        mod._pool = None
-        mod._spawner = None
-        result = await mod._handle_report_error(**_report_error_args())
-        assert result["accepted"] is False and result["reason"] == "not_configured"
+        pool = AsyncMock()
+        pool.fetchrow.return_value = None
+        mod._pool = pool
+        dispatch = AsyncMock(
+            return_value=SimpleNamespace(accepted=True, fingerprint="f" * 64, reason="dispatched")
+        )
+        monkeypatch.setattr("butlers.core.qa.dispatch.dispatch_qa_investigation", dispatch)
+        spawner = MagicMock()
+        register_spawner(spawner)
+        try:
+            result = await mod._handle_report_error(**_report_error_args())
+        finally:
+            clear_spawner()
+        dispatch.assert_not_awaited()
+        pool.fetchrow.assert_not_awaited()
+        spawner.trigger.assert_not_called()
+        assert result["accepted"] is False
+        expected = (
+            "qa_unavailable"
+            if "list_result" in setup or "list_raises" in setup
+            else "relay_timeout"
+            if "route_raises" in setup
+            else "relay_failed"
+        )
+        assert result["reason"] == expected
+        # Keep the existing four collected cases while positioning all malformed target controls.
+        if "route_result" in setup:
+            from mcp.types import CallToolResult, TextContent
+
+            for raw in (
+                {"result": {"accepted": False}},
+                {},
+                {"accepted": "true"},
+                {"result": None},
+                [],
+                CallToolResult(isError=True, content=[]),
+                CallToolResult(content=[TextContent(type="text", text="invalid JSON")]),
+            ):
+                client, calls = _make_call_tool_mock(route_result=raw)
+                refused = await _make_module(client)._handle_report_error(**_report_error_args())
+                assert refused["accepted"] is False and refused["reason"] == "relay_failed"
+                assert len(calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -206,13 +276,43 @@ class TestQaAvailabilityCache:
 
 
 class TestWireRuntime:
-    def test_wire_runtime_accepts_switchboard_client(self):
-        mod = SelfHealingModule()
-        client = MagicMock()
-        mod.wire_runtime(MagicMock(), "/repo", switchboard_client=client)
-        assert mod._switchboard_client is client
+    async def test_wire_runtime_accepts_switchboard_client(self):
+        """A replacement transport invalidates the old registry cache immediately."""
+        from pathlib import Path
+
+        from butlers.config import ButlerConfig, RuntimeSeedConfig
+        from butlers.daemon import ButlerDaemon
+
+        absent, old_calls = _make_call_tool_mock(list_result=[])
+        daemon = ButlerDaemon(Path("/synthetic"))
+        daemon.config = ButlerConfig(
+            name="general", port=18999, runtime_seed=RuntimeSeedConfig(core_groups=())
+        )
+        daemon.db = MagicMock(pool=None)
+        daemon.mcp = FastMCP("late-core-qa-client")
+        daemon.switchboard_client = absent
+        daemon._modules = []
+        daemon._register_core_tools()
+        arguments = {"error_type": "ValueError", "error_message": "synthetic report"}
+        async with Client(daemon.mcp) as client:
+            assert (await client.call_tool("report_error", arguments)).data["accepted"] is False
+            replacement, calls = _make_call_tool_mock()
+            daemon.switchboard_client = replacement
+            assert (await client.call_tool("report_error", arguments)).data["accepted"] is True
+        assert len(calls) == 1 and old_calls == []
 
     def test_wire_runtime_without_switchboard_client(self):
-        mod = SelfHealingModule()
-        mod.wire_runtime(MagicMock(), "/repo")
-        assert mod._switchboard_client is None
+        mod = _make_module()
+        assert mod._switchboard_client_getter() is None
+
+
+async def test_concierge_declared_qa_scope_preserves_error_relay():
+    client, route_calls = _make_call_tool_mock()
+    mod = _make_module(switchboard_client=client)
+    mod._butler_name = "concierge"
+    result = await mod._handle_report_error(**_report_error_args())
+    assert result["accepted"] is True
+    assert len(route_calls) == 1
+    assert route_calls[0]["target_butler"] == "qa"
+    assert route_calls[0]["tool_name"] == "report_finding"
+    assert route_calls[0]["args"]["source_butler"] == "concierge"

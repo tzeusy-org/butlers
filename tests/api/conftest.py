@@ -17,17 +17,18 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
     MCPClientManager,
     get_butler_configs,
+    get_db,
     get_mcp_manager,
 )
+from butlers.api.routers import oauth as oauth_router
 from butlers.api.routers.butlers import _get_roster_dir
-from butlers.api.routers.notifications import _get_db_manager
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 # ---------------------------------------------------------------------------
 # Notification row factory
@@ -106,7 +107,7 @@ def build_notifications_app(
 
     if app is None:
         app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     return app, mock_pool, mock_db
 
@@ -165,7 +166,7 @@ def build_stats_app(
 
     if app is None:
         app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     return app, mock_pool, mock_db
 
@@ -181,8 +182,35 @@ def build_app_missing_switchboard(app: FastAPI | None = None) -> object:
 
     if app is None:
         app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app
+
+
+@pytest.fixture
+def synthetic_oauth_provider(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Register a synthetic generic OAuth provider for one test only.
+
+    Production generic OAuth remains Google-only.  Tests that exercise the
+    generalized provider contract use this fixture so a real connector name
+    cannot accidentally become a second production authority.
+    """
+    provider = "test-provider"
+    config = oauth_router._ProviderConfig(
+        auth_url="https://oauth.test.invalid/authorize",
+        token_url="https://oauth.test.invalid/token",
+        scope_sets={
+            "base": ["identity.read"],
+            "activity": ["activity.read"],
+        },
+        default_scope_sets=("base", "activity"),
+        default_redirect_uri="http://localhost:41200/api/oauth/test-provider/callback",
+        redirect_uri_env_var="TEST_PROVIDER_OAUTH_REDIRECT_URI",
+        client_id_key="TEST_PROVIDER_OAUTH_CLIENT_ID",
+        client_secret_key="TEST_PROVIDER_OAUTH_CLIENT_SECRET",
+        profile_url=None,
+    )
+    monkeypatch.setitem(oauth_router._PROVIDER_REGISTRY, provider, config)
+    return provider
 
 
 # ---------------------------------------------------------------------------
@@ -198,9 +226,6 @@ description = "{description}"
 [butler.db]
 name = "butlers"
 schema = "{name}"
-
-[runtime]
-type = "claude"
 """
 
 _BUTLER_TOML_WITH_MODULES = """\
@@ -212,9 +237,6 @@ description = "{description}"
 [butler.db]
 name = "butlers"
 schema = "{name}"
-
-[runtime]
-type = "claude"
 
 {modules_section}
 """
@@ -228,9 +250,6 @@ description = "{description}"
 [butler.db]
 name = "butlers"
 schema = "{name}"
-
-[runtime]
-type = "claude"
 
 [[butler.schedule]]
 name = "morning-check"

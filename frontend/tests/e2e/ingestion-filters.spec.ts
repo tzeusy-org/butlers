@@ -1,3 +1,4 @@
+import { mockJson } from "./fixtures/api-responses";
 /**
  * Playwright smoke test — Filters Pipeline at /ingestion/filters.
  *
@@ -21,6 +22,7 @@ test.describe("ingestion filters pipeline", () => {
   }) => {
     // --- Catch-all API mock (register FIRST per LIFO rule) ---
     await page.route("**/api/**", async (route) => {
+    if (new URL(route.request().url()).pathname.startsWith("/api/auth/owner/")) return route.fallback();
       const url = route.request().url();
 
       // Pipeline stats
@@ -28,9 +30,9 @@ test.describe("ingestion filters pipeline", () => {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({
+          body: mockJson("getPipelineStats", {
             window: "24h",
-            aggregates_available: true,
+            aggregates_available: true, failed_total: 0, replay_pending_total: 0, written_off_total: 0, backlog_available: true,
             ingested: 1000,
             filtered: 200,
             errored: 10,
@@ -49,7 +51,7 @@ test.describe("ingestion filters pipeline", () => {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({
+          body: mockJson("getIngestionRules", {
             data: [
               {
                 id: "rule-001",
@@ -97,13 +99,14 @@ test.describe("ingestion filters pipeline", () => {
   test("filters pipeline shows gate sections", async ({ page }) => {
     // Catch-all mock (FIRST)
     await page.route("**/api/**", async (route) => {
+    if (new URL(route.request().url()).pathname.startsWith("/api/auth/owner/")) return route.fallback();
       if (route.request().url().includes("/ingestion/pipeline")) {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({
+          body: mockJson("getPipelineStats", {
             window: "24h",
-            aggregates_available: false,
+            aggregates_available: false, failed_total: 0, replay_pending_total: 0, written_off_total: 0, backlog_available: false,
             ingested: 0,
             filtered: 0,
             errored: 0,
@@ -120,7 +123,7 @@ test.describe("ingestion filters pipeline", () => {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({ data: [], meta: { total: 0 } }),
+          body: mockJson("getIngestionRules", { data: [], meta: { total: 0 } }),
         });
         return;
       }

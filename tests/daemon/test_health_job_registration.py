@@ -95,3 +95,22 @@ async def test_health_insight_scan_handler_dispatches_roster_job(monkeypatch) ->
     assert calls["pool"] is pool
     assert calls["ha_environment_reader"] is None
     assert result == {"candidates_proposed": 0}
+
+
+def test_health_baseline_watch_is_a_daily_registered_job() -> None:
+    """The personal-baselines watch runs daily and resolves to a handler (bu-q7vx1q.15)."""
+    from butlers.scheduled_jobs import (
+        _DETERMINISTIC_SCHEDULE_JOB_REGISTRY,
+        _resolve_deterministic_schedule_job_name,
+    )
+
+    entry = next(e for e in _load_health_schedules() if e["name"] == "baseline_watch")
+
+    assert entry["dispatch_mode"] == "job"
+    assert entry["cron"].split()[2:] == ["*", "*", "*"], "baseline_watch must run daily"
+    resolved = _resolve_deterministic_schedule_job_name(
+        butler_name="health",
+        trigger_source="schedule:baseline_watch",
+        job_name=entry["job_name"],
+    )
+    assert callable(_DETERMINISTIC_SCHEDULE_JOB_REGISTRY["health"].get(resolved))

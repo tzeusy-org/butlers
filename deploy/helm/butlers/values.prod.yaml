@@ -1,0 +1,28 @@
+# Namespace butlers. Targets postgresql-cloudnativepg (butlers-db).
+# Mirrors `./scripts/compose.sh --prod`.
+database:
+  host: postgresql-cloudnativepg-rw.postgres.svc.cluster.local
+
+externalSecrets:
+  storeRef: bitwarden-secretsmanager-prod
+  # Prod keeps its pre-prefix key names until BUTLERS_RUNTIME_* copies exist in
+  # the prod project.
+  data:
+    POSTGRES_USER: BUTLERS_DB_USER
+    POSTGRES_PASSWORD: BUTLERS_DB_PASSWORD
+    DASHBOARD_AUTH_DB_PASSWORD: DASHBOARD_AUTH_DB_PASSWORD
+
+publicUrl:
+  dashboardPrefix: butlers
+  apiPrefix: butlers-api
+  owntracksPrefix: owntracks
+
+nodePorts:
+  frontend: 31173
+  dashboard: 31200
+  owntracks: 31086
+
+dashboardAuth:
+  enabled: false
+  deployment: prod
+  trustedProxyPeers: 10.42.0.1

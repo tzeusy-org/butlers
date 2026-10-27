@@ -16,7 +16,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from butlers.api.middleware import ApiKeyMiddleware
+from butlers.api.deps import get_db
+from butlers.api.owner_auth.config import OwnerAuthConfig
+from butlers.api.owner_auth.http import OwnerAuthMiddleware
 from butlers.api.routers import approvals as approvals_router
 from butlers.config import ApprovalRiskTier
 from butlers.connectors import telegram_bot as telegram_bot_module
@@ -30,6 +32,8 @@ from butlers.modules.approvals import gate as approvals_gate_module
 from butlers.modules.approvals.gate import _make_gate_wrapper
 from butlers.modules.approvals.module import ApprovalsModule
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from tests.api.auth_helpers import _DomainOwnerState
+from tests.audit_helpers import clear_audit_log_for_test
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -151,9 +155,11 @@ def _protected_approvals_app(pool: Any, *, mcp_mgr: Any | None = None) -> FastAP
     """Build the real API-key gate with only the callback service credential."""
     app = FastAPI()
     app.state.approval_callback_connector_token = _CALLBACK_CONNECTOR_TOKEN
-    app.add_middleware(ApiKeyMiddleware, api_key=_DASHBOARD_API_KEY)
+    # Domain lifecycle/connector proof is real; owner-store crypto has its own lane.
+    app.state.owner_auth_service = _DomainOwnerState(_DASHBOARD_API_KEY)
+    app.add_middleware(OwnerAuthMiddleware, config=OwnerAuthConfig.from_env(_DASHBOARD_API_KEY))
     app.include_router(approvals_router.router)
-    app.dependency_overrides[approvals_router._get_db_manager] = lambda: _DbManager(pool)
+    app.dependency_overrides[get_db] = lambda: _DbManager(pool)
     app.dependency_overrides[approvals_router.get_mcp_manager] = lambda: (
         mcp_mgr if mcp_mgr is not None else MagicMock()
     )
@@ -179,9 +185,13 @@ async def approval_pool(migrated_db_url: str):
         max_size=3,
         init=register_jsonb_codec,
     )
+    await clear_audit_log_for_test(pool)
     await pool.execute(
-        "TRUNCATE TABLE public.audit_log, autonomy_suggestions, autonomy_approval_history, "
+        "TRUNCATE TABLE autonomy_suggestions, autonomy_approval_history, "
         "approval_events, pending_actions, approval_rules CASCADE"
+    )
+    await pool.execute(
+        "UPDATE approval_delivery_rollout SET admission_enabled = true WHERE singleton"
     )
     await pool.execute(
         """
@@ -326,6 +336,7 @@ async def test_gate_park_owner_approve_executes_edits_and_preserves_provenance(
     assert {(row["event_type"], row["actor"]) for row in event_rows} == {
         ("action_queued", "system:approval_gate"),
         ("action_approved", "human:owner@telegram"),
+        ("approval_delivery_terminal", "human:owner@telegram"),
         ("action_execution_succeeded", "system:executor"),
     }
     assert [url.rsplit("/", 1)[-1] for url, _ in http_client.telegram_calls] == [
@@ -791,3 +802,167 @@ async def test_callback_without_a_valid_connector_credential_never_transitions_o
         "answerCallbackQuery"
     ]
     assert http_client.telegram_calls[0][1]["text"] == ""
+
+
+async def _park_presented_email(approval_pool, monkeypatch: pytest.MonkeyPatch) -> tuple[UUID, str]:
+    """Park an email send through the real gate and present its card (RFC 0023)."""
+    from butlers.modules.approvals.delivery_recovery import (
+        ApprovalDeliveryRenderer,
+        ApprovalDeliveryRepository,
+    )
+
+    async def original_tool(**_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("The original tool must not run before the owner approves it")
+
+    monkeypatch.setattr(
+        approvals_gate_module, "resolve_action_target_contact", AsyncMock(return_value=None)
+    )
+    park = _make_gate_wrapper(
+        tool_name="email_send_message",
+        original_fn=original_tool,
+        pool=approval_pool,
+        expiry_hours=72,
+        risk_tier=ApprovalRiskTier.MEDIUM,
+        rule_precedence=(),
+        butler_name="relationship",
+    )
+    parked = await park(
+        to="dana@x.com",
+        subject="Re: Thursday",
+        body="Thursday at 3pm works.",
+        _why="She asked for the slot.",
+        _evidence=[],
+        _blast_radius="contact",
+        _reversibility="irreversible",
+    )
+    assert parked["status"] == "pending_approval"
+    action_id = UUID(parked["action_id"])
+
+    # Admission schedules the presentation from the owner's quiet-hours policy, so
+    # whether it is claimable depends on the wall clock; make it due now.
+    scheduled = await approval_pool.execute(
+        """
+        UPDATE approval_delivery_presentations AS p
+           SET not_before = clock_timestamp(), next_attempt_at = clock_timestamp()
+          FROM approval_delivery_intents AS i
+         WHERE i.id = p.intent_id AND i.action_id = $1 AND p.state = 'ready'
+        """,
+        action_id,
+    )
+    assert scheduled == "UPDATE 1", "admission must leave one ready direct presentation"
+
+    repository = ApprovalDeliveryRepository(approval_pool)
+    claim = await repository.claim_next()
+    assert claim is not None
+    subject = await repository.load_render_subject(claim)
+    envelope = ApprovalDeliveryRenderer(
+        dashboard_base_url="https://dash.example.test"
+    ).render_single(subject, owner_recipient="9001", callback_secret=_SECRET)
+    assert await repository.mark_handoff_started(claim)
+    return action_id, envelope["delivery"]["message"]
+
+
+async def _tap_approve(
+    approval_pool, monkeypatch: pytest.MonkeyPatch, action_id: UUID
+) -> tuple[_CallbackHttpClient, list[tuple[str, dict[str, Any]]]]:
+    requested_at = await approval_pool.fetchval(
+        "SELECT requested_at FROM pending_actions WHERE id = $1", action_id
+    )
+    module = ApprovalsModule()
+    await module.on_startup(config=None, db=approval_pool)
+    executed_calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def execute_original_tool(tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
+        executed_calls.append((tool_name, tool_args))
+        return {"status": "sent"}
+
+    module.set_tool_executor(execute_original_tool)
+    app = _protected_approvals_app(
+        approval_pool, mcp_mgr=_ExecutingMcpManager(_ExecutingButlerClient(module))
+    )
+    connector = TelegramBotConnector(
+        TelegramBotConnectorConfig(
+            switchboard_mcp_url="http://localhost:41100/sse",
+            endpoint_identity="telegram:bot:1",
+            telegram_token="test-token",
+            internal_api_url="http://dashboard-api:41200",
+            approval_callback_secret=_SECRET,
+            approval_callback_connector_token=_CALLBACK_CONNECTOR_TOKEN,
+        ),
+        db_pool=MagicMock(),
+        cursor_pool=MagicMock(),
+    )
+    http_client = _CallbackHttpClient(app)
+    connector._http_client = http_client
+    monkeypatch.setattr(
+        telegram_bot_module,
+        "resolve_owner_channel_via_definer",
+        AsyncMock(return_value=(SimpleNamespace(roles=["owner"]), True)),
+    )
+    token = mint_approval_callback_token(
+        action_id=action_id, verb="a", requested_at=requested_at, secret=_SECRET
+    )
+    try:
+        await connector._maybe_handle_approval_callback(
+            {
+                "callback_query": {
+                    "id": "cbq-approve",
+                    "data": token,
+                    "from": {"id": 9001},
+                    "message": {"chat": {"id": 9001}, "message_id": 44},
+                }
+            }
+        )
+    finally:
+        await http_client.close()
+    return http_client, executed_calls
+
+
+async def test_card_shows_stored_call_and_unchanged_tap_executes_once(
+    approval_pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The presented card carries the stored recipients/body and its digest."""
+    from butlers.modules.approvals.previews import args_digest
+
+    action_id, message = await _park_presented_email(approval_pool, monkeypatch)
+    stored = await approval_pool.fetchrow(
+        "SELECT tool_args FROM pending_actions WHERE id = $1", action_id
+    )
+    assert "dana@x.com" in message and "Thursday at 3pm works." in message
+    digest = await approval_pool.fetchval(
+        "SELECT p.args_digest FROM approval_delivery_presentations p "
+        "JOIN approval_delivery_intents i ON i.id = p.intent_id WHERE i.action_id = $1",
+        action_id,
+    )
+    assert digest == args_digest(stored["tool_args"])
+
+    _, executed_calls = await _tap_approve(approval_pool, monkeypatch, action_id)
+
+    assert [name for name, _ in executed_calls] == ["email_send_message"]
+    status = await approval_pool.fetchval(
+        "SELECT status FROM pending_actions WHERE id = $1", action_id
+    )
+    assert status == "executed"
+
+
+async def test_tap_after_the_call_changed_executes_nothing(
+    approval_pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stored call that no longer matches the presented digest is never executed."""
+    action_id, _ = await _park_presented_email(approval_pool, monkeypatch)
+    await approval_pool.execute(
+        "UPDATE pending_actions SET tool_args = $2 WHERE id = $1",
+        action_id,
+        {"to": "mallory@evil.test", "subject": "Re: Thursday", "body": "Wire the money."},
+    )
+
+    http_client, executed_calls = await _tap_approve(approval_pool, monkeypatch, action_id)
+
+    assert executed_calls == []
+    status = await approval_pool.fetchval(
+        "SELECT status FROM pending_actions WHERE id = $1", action_id
+    )
+    assert status == "pending"
+    edits = [body for url, body in http_client.telegram_calls if url.endswith("editMessageText")]
+    assert len(edits) == 1
+    assert "changed since shown" in edits[0]["text"].lower()

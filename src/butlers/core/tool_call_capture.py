@@ -19,6 +19,12 @@ MANUAL_DAY_CLOSE_TRIGGER_PREFIX = "api:day_close_refresh:"
 _runtime_session_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_runtime_session_id_var", default=None
 )
+# True while the current MCP request named a runtime session only by a URL/session locator
+# and presented no valid invocation binding.  The locator stays a diagnostic correlation id;
+# it must not select an authority-bearing routing context (bu-m2zcah).
+_runtime_session_locator_unbound_var: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_runtime_session_locator_unbound_var", default=False
+)
 _runtime_trigger_source_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_runtime_trigger_source_var", default=None
 )
@@ -53,9 +59,29 @@ _runtime_approval_push_runtime_var: contextvars.ContextVar[Any | None] = context
 _runtime_codex_auth_authority_var: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
     "_runtime_codex_auth_authority_var", default=None
 )
+# Borrowed daemon-selected credential store, only for one deterministic job task.
+# This is independent of Codex system-global authority and never serialized.
+_runtime_credential_store_var: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "_runtime_credential_store_var", default=None
+)
 _captured_tool_calls: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _runtime_routing_context: dict[str, dict[str, Any]] = {}
 _capture_lock = threading.Lock()
+
+
+def set_current_credential_store(store: Any | None) -> contextvars.Token[Any | None]:
+    """Bind the daemon-selected store for the current deterministic dispatch."""
+    return _runtime_credential_store_var.set(store)
+
+
+def reset_current_credential_store(token: contextvars.Token[Any | None]) -> None:
+    """Restore the prior task's binding without closing the borrowed store."""
+    _runtime_credential_store_var.reset(token)
+
+
+def get_current_credential_store() -> Any | None:
+    """Return this task's selected store, never a caller-supplied credential value."""
+    return _runtime_credential_store_var.get()
 
 
 def set_current_runtime_session_id(session_id: str | None) -> contextvars.Token[str | None]:
@@ -66,6 +92,21 @@ def set_current_runtime_session_id(session_id: str | None) -> contextvars.Token[
 def reset_current_runtime_session_id(token: contextvars.Token[str | None]) -> None:
     """Restore runtime session id for the current request/task context."""
     _runtime_session_id_var.reset(token)
+
+
+def set_current_runtime_session_locator_unbound(unbound: bool) -> contextvars.Token[bool]:
+    """Mark the current request's session id as an unbound (diagnostic-only) locator."""
+    return _runtime_session_locator_unbound_var.set(unbound)
+
+
+def reset_current_runtime_session_locator_unbound(token: contextvars.Token[bool]) -> None:
+    """Restore the unbound-locator marker for the current request/task context."""
+    _runtime_session_locator_unbound_var.reset(token)
+
+
+def current_runtime_session_locator_is_unbound() -> bool:
+    """Return True when the session id came from a locator with no valid invocation binding."""
+    return _runtime_session_locator_unbound_var.get()
 
 
 def get_current_runtime_session_id() -> str | None:
@@ -274,9 +315,13 @@ def get_runtime_session_routing_context(session_id: str) -> dict[str, Any] | Non
 
 
 def get_current_runtime_session_routing_context() -> dict[str, Any] | None:
-    """Return routing context payload for current request/task session id."""
+    """Return routing context payload for current request/task session id.
+
+    A session id that arrived only as a query/transport locator, without a valid
+    invocation binding, is diagnostic: it never selects a routing context.
+    """
     session_id = get_current_runtime_session_id()
-    if not session_id:
+    if not session_id or current_runtime_session_locator_is_unbound():
         return None
     return get_runtime_session_routing_context(session_id)
 

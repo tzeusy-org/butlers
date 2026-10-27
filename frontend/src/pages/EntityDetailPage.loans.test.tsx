@@ -18,6 +18,8 @@ import { useEntity } from "@/hooks/use-memory";
 import { useEntityLoans } from "@/hooks/use-entities";
 import type { EntityDetail, EntityLoan } from "@/api/types";
 
+const RealNumberFormat = Intl.NumberFormat;
+
 vi.mock("react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react-router")>();
   return {
@@ -36,11 +38,11 @@ vi.mock("@/hooks/use-memory", () => ({
   useUpdateEntityInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useDeleteEntityInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useRevealEntitySecret: vi.fn(() => ({ mutate: vi.fn() })),
-  useSetLinkedContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useUnlinkContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
 vi.mock("@/hooks/use-entities", () => ({
+  ENTITY_CADENCE_REFRESH_MS: 30_000,
+  ENTITY_CADENCE_MAX_AGE_MS: 90_000,
   // EntityDetailPage renders EntityVerbRail (bu-6t8ix.4); its four write verbs each
   // call a mutation hook from this module. Inert here: these suites submit nothing,
   // the hooks only need to exist and report an idle state. Declared inline because a
@@ -76,6 +78,8 @@ vi.mock("@/hooks/use-entities", () => ({
     error: null,
   })),
   useEntityTimeline: vi.fn(() => ({ data: [], isLoading: false })),
+  useEntityActivity: vi.fn(() => ({ data: { pages: [{ items: [], total: 0, limit: 50, offset: 0, degraded: false, degraded_reason: null }], pageParams: [0] }, isLoading: false, isError: false, isRefetching: false, refetch: vi.fn(), fetchNextPage: vi.fn(), hasNextPage: false, isFetchingNextPage: false })),
+  useEntityCadence: vi.fn(() => ({ data: { window_days: 30, interaction_count: 0, completeness: "complete", has_more: false }, isLoading: false, isError: false })),
   useEntityGifts: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityLoans: vi.fn(),
   useEntityMessageThreads: vi.fn(() => ({ data: [], isLoading: false })),
@@ -97,13 +101,6 @@ vi.mock("@/hooks/use-entities", () => ({
   useMergeRelationshipEntities: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
 }));
 
-vi.mock("@/hooks/use-contacts", () => ({
-  useContacts: vi.fn(() => ({ data: { contacts: [] } })),
-  useCreateContactInfo: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
-  useDeleteContactInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  usePatchContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  usePatchContactInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-}));
 
 vi.mock("@/components/relationship/OwnerSetupBanner", () => ({
   OwnerSetupBanner: () => null,
@@ -118,8 +115,6 @@ const ENTITY: EntityDetail = {
   aliases: [],
   roles: ["owner"],
   fact_count: 0,
-  linked_contact_id: null,
-  linked_contact_name: null,
   unidentified: false,
   source_butler: null,
   source_scope: null,
@@ -163,6 +158,11 @@ function renderPage() {
 }
 
 beforeEach(() => {
+  // Resolve only the unspecified browser locale. Keep real ICU currency
+  // formatting and the component's options so cents conversion stays exercised.
+  vi.spyOn(Intl, "NumberFormat").mockImplementation((locales, options) =>
+    new RealNumberFormat(locales ?? "en-US", options),
+  );
   vi.mocked(useSearchParams).mockReturnValue([
     new URLSearchParams("mode=editorial"),
     vi.fn(),
@@ -176,20 +176,26 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.clearAllMocks();
 });
 
 describe("LoansPanel — amount formatting", () => {
   it("renders amount_cents as real currency, not raw cents", () => {
     vi.mocked(useEntityLoans).mockReturnValue({
-      data: [makeLoan({ amount_cents: "15000", currency: "USD" })],
+      data: [
+        makeLoan({ amount_cents: "15000", currency: "USD" }),
+        makeLoan({ id: "loan-2", amount_cents: "15023", currency: "USD" }),
+      ],
       isLoading: false,
     } as unknown as ReturnType<typeof useEntityLoans>);
 
     renderPage();
 
     expect(screen.getByText("$150.00")).toBeTruthy();
+    expect(screen.getByText("$150.23")).toBeTruthy();
     expect(screen.queryByText("15000")).toBeNull();
+    expect(screen.queryByText("15023")).toBeNull();
     expect(screen.queryByText(/USD 15000/)).toBeNull();
   });
 
@@ -202,5 +208,6 @@ describe("LoansPanel — amount formatting", () => {
     renderPage();
 
     expect(screen.getByText("IOU, amount TBD")).toBeTruthy();
+    expect(screen.queryByText(/\$/)).toBeNull();
   });
 });

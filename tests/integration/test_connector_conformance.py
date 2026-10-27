@@ -116,7 +116,7 @@ class TestTelegramConnectorConformance:
             new_callable=AsyncMock,
             return_value=mock_result,
         ):
-            envelope = telegram_connector._normalize_to_ingest_v1(telegram_update)
+            envelope = await telegram_connector._normalize_to_ingest_v1(telegram_update)
             await telegram_connector._submit_to_ingest(envelope)
 
             # Verify envelope conforms to ingest.v1 contract
@@ -125,7 +125,8 @@ class TestTelegramConnectorConformance:
             assert envelope["source"]["provider"] == "telegram"
             assert envelope["source"]["endpoint_identity"] == "test_bot"
             assert envelope["event"]["external_event_id"] == "12345"
-            assert envelope["event"]["external_thread_id"] == "987654321:1"
+            assert envelope["event"]["external_conversation_id"] == "telegram:987654321"
+            assert envelope["event"]["reply_target_ref"] == "987654321:1"
             assert envelope["sender"]["identity"] == "987654321"
             assert envelope["payload"]["normalized_text"] == "Test message"
             assert envelope["control"]["idempotency_key"] == "tg:987654321:1"
@@ -157,7 +158,7 @@ class TestTelegramConnectorConformance:
             new_callable=AsyncMock,
             side_effect=[first_result, second_result],
         ):
-            envelope = telegram_connector._normalize_to_ingest_v1(telegram_update)
+            envelope = await telegram_connector._normalize_to_ingest_v1(telegram_update)
 
             # First submission
             await telegram_connector._submit_to_ingest(envelope)
@@ -180,7 +181,7 @@ class TestTelegramConnectorConformance:
             },
         }
 
-        envelope = telegram_connector._normalize_to_ingest_v1(telegram_update)
+        envelope = await telegram_connector._normalize_to_ingest_v1(telegram_update)
 
         # Verify envelope has all required routing handoff fields
         assert "source" in envelope
@@ -190,7 +191,8 @@ class TestTelegramConnectorConformance:
 
         assert "event" in envelope
         assert "external_event_id" in envelope["event"]
-        assert "external_thread_id" in envelope["event"]
+        assert envelope["event"]["external_conversation_id"] == "telegram:222222"
+        assert envelope["event"]["reply_target_ref"] == "222222:1"
         assert "observed_at" in envelope["event"]
 
         assert "sender" in envelope
@@ -285,7 +287,8 @@ class TestGmailConnectorConformance:
             assert envelope["source"]["provider"] == "gmail"
             assert envelope["source"]["endpoint_identity"] == "gmail:user:test@example.com"
             assert envelope["event"]["external_event_id"] == "<unique@example.com>"
-            assert envelope["event"]["external_thread_id"] == "thread456"
+            assert envelope["event"]["external_conversation_id"] == "thread456"
+            assert envelope["event"]["reply_target_ref"] == "thread456"
             assert envelope["sender"]["identity"] == "sender@example.com"
 
     async def test_gmail_dedupe_replay_behavior(
@@ -356,7 +359,8 @@ class TestGmailConnectorConformance:
 
         assert "event" in envelope
         assert "external_event_id" in envelope["event"]
-        assert "external_thread_id" in envelope["event"]
+        assert envelope["event"]["external_conversation_id"] == "thread777"
+        assert envelope["event"]["reply_target_ref"] == "thread777"
         assert "observed_at" in envelope["event"]
 
         assert "sender" in envelope
@@ -440,7 +444,7 @@ class TestCrossConnectorConformance:
             new_callable=AsyncMock,
             side_effect=RuntimeError("Ingest tool error: Internal error"),
         ):
-            envelope = telegram_connector._normalize_to_ingest_v1(telegram_update)
+            envelope = await telegram_connector._normalize_to_ingest_v1(telegram_update)
 
             # Should raise the error (caller is responsible for retry logic)
             with pytest.raises(RuntimeError, match="Ingest tool error"):

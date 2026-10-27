@@ -28,6 +28,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from butlers.account_security import classify_account_security
 from butlers.ingestion_policy_metrics import IngestionPolicyMetrics
 
 if TYPE_CHECKING:
@@ -40,6 +41,17 @@ DEFAULT_SPOT_CHECK_K = 20
 (``created_by='promotion'``) rule. See design.md section 4 / spec
 "Requirement: Demotion via Spot-Check Sampling" (bu-x55k3, rule-promotion
 bead 5 of 7)."""
+
+
+def _is_account_security(envelope: IngestionEnvelope) -> bool:
+    """True when the envelope is a classified first-party account-security alert."""
+    if envelope.source_channel != "email":
+        return False
+    subject = next((v for k, v in envelope.headers.items() if k.lower() == "subject"), "")
+    return (
+        classify_account_security(envelope.sender_address, subject, headers=envelope.headers)
+        is not None
+    )
 
 
 class SpotCheckSampler(Protocol):
@@ -124,6 +136,14 @@ class IngestionEnvelope:
 
     Appended after the original fields so positional ``IngestionEnvelope``
     callers keep their established argument binding.
+    """
+
+    known_contact: bool | None = None
+    """Whether the sender is a known contact; ``None`` means not classified.
+
+    Only a loaded classification may set this. A block or skip rule whose condition carries
+    ``except_known_contacts`` is passed over when this is ``True``; ``False`` and ``None`` leave
+    the rule in force (bu-q7vx1q.88.3).
     """
 
 
@@ -546,6 +566,15 @@ _MATCHERS: dict[str, Any] = {
 }
 
 
+#: Actions that may carry the per-rule "except people I know" option (bu-q7vx1q.88.3).
+_EXCEPT_KNOWN_CONTACTS_ACTIONS = frozenset({"block", "skip"})
+
+
+def _rule_excepts_known_contacts(rule: dict[str, Any]) -> bool:
+    condition = rule.get("condition")
+    return isinstance(condition, dict) and condition.get("except_known_contacts") is True
+
+
 def _parse_action(action: str) -> tuple[str, str | None]:
     """Parse action string into (action_name, target_butler | None).
 
@@ -788,6 +817,16 @@ class IngestionPolicyEvaluator:
 
             action_str = str(rule.get("action", "pass_through"))
             action_name, target_butler = _parse_action(action_str)
+            if (
+                envelope.known_contact is True
+                and action_name in _EXCEPT_KNOWN_CONTACTS_ACTIONS
+                and _rule_excepts_known_contacts(rule)
+            ):
+                # Owner opted this rule out for people they know; later rules still apply.
+                logger.debug(
+                    "ingestion_policy: rule id=%s passed over for a known contact", rule.get("id")
+                )
+                continue
             rule_id = str(rule.get("id", "")) or None
             rule_type = str(rule.get("rule_type", "")) or None
 
@@ -810,6 +849,18 @@ class IngestionPolicyEvaluator:
             spot_check = False
             if str(rule.get("created_by", "")) == "promotion" and self._spot_check_k > 0:
                 spot_check = self._spot_check_rng.randrange(self._spot_check_k) == 0
+
+            if action_name == "skip" and self._scope == "global" and _is_account_security(envelope):
+                # Account-security carve-out (bu-q7vx1q.10): a (possibly promoted)
+                # skip rule must not blind the sensor. Demote to metadata_only so
+                # the connector still submits the subject-only record.
+                return PolicyDecision(
+                    action="metadata_only",
+                    matched_rule_id=rule_id,
+                    matched_rule_type=rule_type,
+                    reason=f"{rule_type} match -> skip demoted: account-security sender",
+                    spot_check=False,
+                )
 
             return PolicyDecision(
                 action=action_name,

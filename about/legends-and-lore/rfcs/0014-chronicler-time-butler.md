@@ -250,11 +250,12 @@ connector events, call the Google Health API, or own the connector.
 
 The source declarations in D2 are updated accordingly. Sleep facts project to
 `sleep_episode`; step and heart-rate facts project to their documented point
-events. The scheduled workout adapter can project a conformant
-`workout_session` fact when one is separately present, but the current Google
-Health connector does not poll a workout resource, emit a workout envelope, or
-write that predicate. Adapter capability is not a claim of connector workout
-ingestion.
+events. The scheduled workout adapter projects a conformant
+`workout_session` fact. The Google Health connector produces that fact from
+its `workout` resource (Google Health `exercise` data points, within the
+already-granted `activity_and_fitness` read scope); a device-detected workout
+(`detection=auto`) carries lower episode confidence than an owner-logged one.
+Upstream edit/delete reconciliation of a stored workout is not yet claimed.
 
 When a Health fact is later absent, inactive, or purged, the adapter does not
 delete, tombstone, or reduce the precision of an already-projected record solely

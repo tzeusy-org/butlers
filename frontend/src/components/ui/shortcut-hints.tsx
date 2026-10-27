@@ -21,6 +21,7 @@ const STATIC_SHORTCUTS: ShortcutRow[] = [
   { keys: ["Ctrl", "K"], description: "Open command menu" },
   { keys: ["/"], description: "Open command menu" },
   { keys: ["?"], description: "Open this help sheet" },
+  { keys: ["c"], description: "Open chat" },
 ];
 
 /**

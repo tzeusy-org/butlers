@@ -22,8 +22,16 @@ import asyncpg
 import httpx
 import pytest
 
+from butlers.api.app import create_app as create_production_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.model_settings import _get_db_manager
+from butlers.api.deps import get_db
+from tests.api.auth_helpers import _DomainOwnerState, create_authenticated_domain_app
+
+
+@pytest.fixture(scope="module")
+def app():
+    return create_authenticated_domain_app(api_key="owner-key")
+
 
 pytestmark = pytest.mark.unit
 
@@ -39,6 +47,7 @@ def _make_catalog_row(
     priority=0,
     session_timeout_s=1800,
     extra_args=None,
+    allowance_account=None,
 ):
     return {
         "id": entry_id or uuid.uuid4(),
@@ -46,6 +55,7 @@ def _make_catalog_row(
         "runtime_type": runtime_type,
         "model_id": model_id,
         "extra_args": json.dumps(extra_args or []),
+        "allowance_account": allowance_account,
         "complexity_tier": complexity_tier,
         # effective_tier mirrors complexity_tier in mock rows (SQL alias for
         # COALESCE(bmo.complexity_tier, mc.complexity_tier) in _RESOLVE_SQL).
@@ -95,6 +105,11 @@ def _app_with_pool(
         )
     )
     mock_conn.fetchrow = mock_pool.fetchrow
+    mock_conn.fetchval = AsyncMock(
+        side_effect=lambda sql, *args: (
+            1 if sql.startswith("INSERT INTO public.audit_log ") else None
+        )
+    )
     mock_pool.acquire = MagicMock(
         return_value=AsyncMock(
             __aenter__=AsyncMock(return_value=mock_conn), __aexit__=AsyncMock(return_value=None)
@@ -105,7 +120,7 @@ def _app_with_pool(
         mock_db.credential_shared_pool.side_effect = pool_raises
     else:
         mock_db.credential_shared_pool.return_value = mock_pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app, mock_pool
 
 
@@ -117,7 +132,9 @@ def _app_with_pool(
 async def test_catalog_list_and_503(app):
     rows = [
         _make_catalog_row(alias="claude-haiku", complexity_tier="cheap"),
-        _make_catalog_row(alias="claude-sonnet", complexity_tier="workhorse"),
+        _make_catalog_row(
+            alias="claude-sonnet", complexity_tier="workhorse", allowance_account="plan-b"
+        ),
     ]
     # Happy path. Breaker state (bu-hmdqz.2) and routing score (bu-ep4ks.13)
     # are each fetched via a second, differently-shaped query
@@ -142,6 +159,7 @@ async def test_catalog_list_and_503(app):
             resp = await client.get("/api/settings/models")
     assert resp.status_code == 200
     assert len(resp.json()["data"]) == 2
+    assert [r["allowance_account"] for r in resp.json()["data"]] == [None, "plan-b"]
     assert resp.json()["data"][0]["breaker_open"] is False
     assert resp.json()["data"][0]["routing_score_insufficient_data"] is True
     breaker_batch.assert_awaited_once()
@@ -220,6 +238,19 @@ async def test_catalog_create_error_paths(
     ) as client:
         resp = await client.post("/api/settings/models", json=payload)
     assert resp.status_code == expected
+    if expected == 201:
+        assert resp.json()["data"]["allowance_account"] is None
+        invalid = [True, False, 12, 1.5, [], {}, "", " ", "a\n", "a\nb", "Upper", "a.b", "a" * 65]
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for account in invalid:
+                _, pool = _app_with_pool(app, fetchrow_result=created_row)
+                bad = await client.post(
+                    "/api/settings/models", json={**payload, "allowance_account": account}
+                )
+                assert bad.status_code == 422, repr(account)
+                pool.fetchrow.assert_not_awaited()
 
 
 async def test_catalog_create_writes_audit_on_success(app, audit_append_spy, monkeypatch):
@@ -229,7 +260,9 @@ async def test_catalog_create_writes_audit_on_success(app, audit_append_spy, mon
         lambda: "server-owner",
     )
     entry_id = uuid.uuid4()
-    created_row = _make_catalog_row(entry_id=entry_id, alias="new-model")
+    created_row = _make_catalog_row(
+        entry_id=entry_id, alias="new-model", allowance_account="plan-a"
+    )
     _, mock_pool = _app_with_pool(app, fetchrow_result=created_row)
 
     async with httpx.AsyncClient(
@@ -242,10 +275,13 @@ async def test_catalog_create_writes_audit_on_success(app, audit_append_spy, mon
                 "runtime_type": "codex",
                 "model_id": "gpt-5",
                 "complexity_tier": "workhorse",
+                "allowance_account": "plan-a",
             },
         )
 
     assert resp.status_code == 201
+    assert resp.json()["data"]["allowance_account"] == "plan-a"
+    assert mock_pool.fetchrow.await_args.args[-1] == "plan-a"
     route_calls = [
         call
         for call in audit_append_spy.call_args_list
@@ -403,7 +439,7 @@ async def test_resolve_model_preview_200_and_422_for_invalid(app):
 async def test_priority_stepper_200_and_clamp_at_zero(app, audit_append_spy):
     """PUT /api/settings/models/{id}/priority adjusts priority and calls audit.append."""
     entry_id = uuid.uuid4()
-    updated_row = _make_catalog_row(entry_id=entry_id, priority=5)
+    updated_row = _make_catalog_row(entry_id=entry_id, priority=5, allowance_account="plan-a")
     _, mock_pool = _app_with_pool(app, fetchrow_result=updated_row)
 
     async with httpx.AsyncClient(
@@ -415,6 +451,7 @@ async def test_priority_stepper_200_and_clamp_at_zero(app, audit_append_spy):
         )
     assert resp.status_code == 200
     assert resp.json()["data"]["priority"] == 5
+    assert resp.json()["data"]["allowance_account"] == "plan-a"
     # The route emits an explicit audit entry with action "model.priority"; the
     # dashboard_audit_middleware ALSO routes through the same canonical
     # audit.append() spy as a fire-and-forget task, so the total count races
@@ -451,19 +488,59 @@ async def test_priority_stepper_404_on_missing(app, audit_append_spy):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "configured,header,expected", [(False, None, 503), (True, None, 401), (True, "wrong", 401)]
+)
+async def test_verify_all_owner_gate_precedes_run(
+    app, monkeypatch: pytest.MonkeyPatch, configured: bool, header: str | None, expected: int
+) -> None:
+    """REQ-dashboard-model-settings-001: no verification run starts before owner auth."""
+    import butlers.api.routers.model_settings as _ms
+
+    monkeypatch.setattr(_ms, "_verify_all_last_run", 0.0)
+    if configured:
+        monkeypatch.setenv("DASHBOARD_API_KEY", "owner-key")
+    else:
+        monkeypatch.delenv("DASHBOARD_API_KEY", raising=False)
+    _, mock_pool = _app_with_pool(app)
+    mock_pool.fetch = AsyncMock(return_value=[])
+    monkeypatch.setenv("DASHBOARD_AUTH_ORIGIN", "https://butlers.example.test")
+    monkeypatch.setenv("DASHBOARD_AUTH_RP_ID", "butlers.example.test")
+    guarded = create_production_app(api_key="owner-key" if configured else "")
+    guarded.dependency_overrides.update(app.dependency_overrides)
+    if configured:
+        guarded.state.owner_auth_service = _DomainOwnerState("owner-key")
+    headers = {"Origin": "https://butlers.example.test"}
+    if header is not None:
+        headers["X-API-Key"] = header
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=guarded),
+        base_url="https://butlers.example.test",
+        headers=headers,
+    ) as client:
+        response = await client.post("/api/settings/models/verify-all")
+
+    assert response.status_code == expected
+    mock_pool.fetch.assert_not_awaited()
+
+
 async def test_verify_all_rate_limit(app, audit_append_spy, monkeypatch):
     """POST /api/settings/models/verify-all returns 429 on second call within 60s."""
     import butlers.api.routers.model_settings as _ms
 
     # Reset the sentinel to allow the first call
     monkeypatch.setattr(_ms, "_verify_all_last_run", 0.0)
+    monkeypatch.setenv("DASHBOARD_API_KEY", "owner-key")
 
     _, mock_pool = _app_with_pool(app)
     # Return an empty enabled-models list so no actual verification is attempted
     mock_pool.fetch = AsyncMock(return_value=[])
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": "owner-key"},
     ) as client:
         r1 = await client.post("/api/settings/models/verify-all")
         r429 = await client.post("/api/settings/models/verify-all")
@@ -494,14 +571,17 @@ async def test_verify_all_pool_failure_does_not_consume_rate_limit(
     import butlers.api.routers.model_settings as _ms
 
     monkeypatch.setattr(_ms, "_verify_all_last_run", 0.0)
+    monkeypatch.setenv("DASHBOARD_API_KEY", "owner-key")
 
     app, mock_pool = _app_with_pool(app)
     mock_pool.fetch = AsyncMock(return_value=[])
-    mock_db = app.dependency_overrides[_get_db_manager]()
+    mock_db = app.dependency_overrides[get_db]()
     mock_db.credential_shared_pool.side_effect = [KeyError("No shared pool"), mock_pool]
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": "owner-key"},
     ) as client:
         rejected = await client.post("/api/settings/models/verify-all")
         accepted = await client.post("/api/settings/models/verify-all")
@@ -523,6 +603,7 @@ async def test_verify_all_rejects_concurrent_arrival_while_run_is_in_flight(app,
 
     monkeypatch.setattr(_ms, "_verify_all_last_run", 0.0)
     monkeypatch.setattr(_ms, "_verify_all_in_flight", False)
+    monkeypatch.setenv("DASHBOARD_API_KEY", "owner-key")
     _, mock_pool = _app_with_pool(app)
     started = asyncio.Event()
     release = asyncio.Event()
@@ -543,7 +624,9 @@ async def test_verify_all_rejects_concurrent_arrival_while_run_is_in_flight(app,
     monkeypatch.setattr(_ms, "run_verify_all_models", blocked_verify_all)
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": "owner-key"},
     ) as client:
         first_task = asyncio.create_task(client.post("/api/settings/models/verify-all"))
         try:
@@ -565,12 +648,15 @@ async def test_verify_all_accepted_after_interval_returns_current_result_shape(
 
     # Simulate last run well in the past
     monkeypatch.setattr(_ms, "_verify_all_last_run", time.monotonic() - 120.0)
+    monkeypatch.setenv("DASHBOARD_API_KEY", "owner-key")
 
     _, mock_pool = _app_with_pool(app)
     mock_pool.fetch = AsyncMock(return_value=[])
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": "owner-key"},
     ) as client:
         resp = await client.post("/api/settings/models/verify-all")
 
@@ -598,7 +684,11 @@ async def test_update_catalog_entry_200_writes_audit(app, audit_append_spy):
     """PUT /api/settings/models/{id} returns 200 and calls audit.append('model.update')."""
     entry_id = uuid.uuid4()
     updated_row = _make_catalog_row(
-        entry_id=entry_id, alias="renamed", complexity_tier="cheap", priority=3
+        entry_id=entry_id,
+        alias="renamed",
+        complexity_tier="cheap",
+        priority=3,
+        allowance_account="plan-b",
     )
     _, mock_pool = _app_with_pool(app, fetchrow_result=updated_row)
 
@@ -632,6 +722,45 @@ async def test_update_catalog_entry_200_writes_audit(app, audit_append_spy):
     )
     assert route_calls[0].kwargs["target"] == str(entry_id)
     assert route_calls[0].kwargs["result"] == "success"
+
+    # Omission preserves the stored label; a null-only edit explicitly clears it.
+    assert data["allowance_account"] == "plan-b"
+    assert "allowance_account =" not in mock_pool.fetchrow.await_args.args[0]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        for account in ("plan-c", "0_plan-x", "a" * 64, None):
+            _, pool = _app_with_pool(
+                app, fetchrow_result={**updated_row, "allowance_account": account}
+            )
+            changed = await client.put(
+                f"/api/settings/models/{entry_id}", json={"allowance_account": account}
+            )
+            assert changed.status_code == 200
+            assert changed.json()["data"]["allowance_account"] == account
+            sql, *params = pool.fetchrow.await_args.args
+            assert "allowance_account = $1" in sql and params == [account, entry_id]
+        for account in (
+            True,
+            False,
+            12,
+            1.5,
+            [],
+            {},
+            "",
+            " ",
+            "a\n",
+            "a\nb",
+            "Upper",
+            "a.b",
+            "a" * 65,
+        ):
+            _, pool = _app_with_pool(app, fetchrow_result=updated_row)
+            bad = await client.put(
+                f"/api/settings/models/{entry_id}", json={"allowance_account": account}
+            )
+            assert bad.status_code == 422, repr(account)
+            pool.fetchrow.assert_not_awaited()
 
 
 async def test_update_catalog_entry_422_invalid_tier(app, audit_append_spy):
@@ -674,6 +803,44 @@ async def test_update_catalog_entry_422_no_fields(app, audit_append_spy):
     ) as client:
         resp = await client.put(f"/api/settings/models/{entry_id}", json={})
     assert resp.status_code == 422
+    audit_append_spy.assert_not_awaited()
+
+
+async def test_update_catalog_entry_writes_and_returns_capabilities(app, audit_append_spy):
+    """PUT capabilities replaces the envelope; the entry echoes it back."""
+    entry_id = uuid.uuid4()
+    updated_row = {**_make_catalog_row(entry_id=entry_id), "capabilities": {"vision": True}}
+    _, mock_pool = _app_with_pool(app, fetchrow_result=updated_row)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.put(
+            f"/api/settings/models/{entry_id}", json={"capabilities": {"vision": True}}
+        )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["capabilities"] == {"vision": True}
+    sql, *params = mock_pool.fetchrow.await_args.args
+    assert "capabilities = $1::jsonb" in sql
+    assert params[0] == {"vision": True}
+
+
+@pytest.mark.parametrize("method", ["post", "put"])
+async def test_catalog_capabilities_outside_vocabulary_422(app, audit_append_spy, method):
+    """A typo'd feature key is rejected before any write, never stored as 'no opinion'."""
+    _, mock_pool = _app_with_pool(app)
+    body: dict[str, Any] = {"capabilities": {"visoin": True}}
+    if method == "post":
+        body.update(alias="m", runtime_type="codex", model_id="gpt-6-sol")
+        url = "/api/settings/models"
+    else:
+        url = f"/api/settings/models/{uuid.uuid4()}"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await getattr(client, method)(url, json=body)
+    assert resp.status_code == 422
+    assert "visoin" in resp.json()["detail"]
+    mock_pool.fetchrow.assert_not_awaited()
     audit_append_spy.assert_not_awaited()
 
 
@@ -805,23 +972,86 @@ async def test_model_attempts_422_on_bad_since(app):
 
 
 async def test_model_attempts_returns_real_rows(app):
-    """GET /api/settings/models/{id}/attempts returns provenance rows."""
+    """Private runtime failures stay content-blind through dispatch evidence and its API."""
     from datetime import UTC, datetime
+
+    from butlers.connectors.discretion_dispatcher import (
+        PURPOSE_LANE_PRIVATE_CONTENT,
+        DiscretionDispatcher,
+    )
+    from butlers.core.model_routing import QuotaStatus, SpendRoutingResult
 
     entry_id = uuid.uuid4()
     attempt_ts = datetime(2026, 5, 24, 10, 0, 0, tzinfo=UTC)
 
+    local_candidate = ("opencode", "ollama/qwen3.5:9b", [], entry_id, 30)
+    resolved = (*local_candidate, "specialty")
+    sentinel = (
+        "Connection error: SENSITIVE_PROVIDER response_body=private prompt_fragment=do-not-publish"
+    )
+    adapter = MagicMock()
+    adapter.invoke = AsyncMock(side_effect=RuntimeError(sentinel))
+    adapter.last_process_info = None
+    dispatcher = DiscretionDispatcher(
+        pool=MagicMock(),
+        purpose_lane=PURPOSE_LANE_PRIVATE_CONTENT,
+    )
+
+    with (
+        patch(
+            "butlers.core.model_call.resolve_model_with_effective_tier",
+            AsyncMock(return_value=resolved),
+        ),
+        patch(
+            "butlers.core.model_call.apply_spend_routing_rules",
+            AsyncMock(return_value=SpendRoutingResult(resolved=local_candidate)),
+        ),
+        patch(
+            "butlers.core.model_call.check_token_quota",
+            AsyncMock(
+                return_value=QuotaStatus(
+                    allowed=True,
+                    usage_24h=0,
+                    limit_24h=None,
+                    usage_30d=0,
+                    limit_30d=None,
+                )
+            ),
+        ),
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
+        patch(
+            "butlers.core.model_call.next_same_tier_candidate",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "butlers.core.model_call.record_dispatch_attempt",
+            AsyncMock(),
+        ) as record_attempt,
+    ):
+        with pytest.raises(RuntimeError, match="same_tier_failover_exhausted"):
+            await dispatcher.call("synthetic private input")
+
+    evidence = record_attempt.await_args.kwargs
+    assert evidence["outcome"] == "runtime_failure"
+    assert evidence["purpose_lane"] == PURPOSE_LANE_PRIVATE_CONTENT
+    assert evidence["failure_reason"] == "private_content_runtime_failure"
+    assert evidence["error_code"] is None
+    assert evidence["error_message"] is None
+    assert sentinel not in repr(evidence)
+
     attempt_row = {
         "ts": attempt_ts,
-        "butler": "general",
-        "outcome": "quota_skip",
-        "attempt_index": 0,
-        "failure_reason": "Token quota exhausted for catalog entry 'claude-sonnet': 24h",
-        "error_code": None,
-        "error_message": None,
+        "butler": evidence["butler"],
+        "outcome": evidence["outcome"],
+        "attempt_index": evidence["attempt_index"],
+        "failure_reason": evidence["failure_reason"],
+        "error_code": evidence["error_code"],
+        "error_message": evidence["error_message"],
         "tool_call_count": 0,
         "session_id": None,
         "logical_session_id": "req-abc-123",
+        "duration_ms": evidence["duration_ms"],
+        "purpose_lane": evidence["purpose_lane"],
     }
 
     _, mock_pool = _app_with_pool(app)
@@ -838,12 +1068,17 @@ async def test_model_attempts_returns_real_rows(app):
     assert body["meta"]["total"] == 1
     rows = body["data"]
     assert len(rows) == 1
-    assert rows[0]["outcome"] == "quota_skip"
+    assert rows[0]["outcome"] == "runtime_failure"
     assert rows[0]["attempt_index"] == 0
-    assert rows[0]["butler"] == "general"
+    assert rows[0]["butler"] == "__discretion__"
     assert rows[0]["logical_session_id"] == "req-abc-123"
     assert rows[0]["tool_call_count"] == 0
     assert rows[0]["session_id"] is None
+    assert rows[0]["purpose_lane"] == "private_content"
+    assert rows[0]["failure_reason"] == "private_content_runtime_failure"
+    assert rows[0]["error_code"] is None
+    assert rows[0]["error_message"] is None
+    assert sentinel not in resp.text
     assert "ORDER BY ts DESC, id DESC" in mock_pool.fetch.call_args.args[0]
 
 
@@ -1198,3 +1433,232 @@ async def test_dispatch_attempts_invalid_order_returns_422(app):
     ) as client:
         resp = await client.get("/api/dispatch/attempts?outcome=quota_skip&order=sideways")
     assert resp.status_code == 422
+
+
+# Transactional model override receipts: the HTTP boundary, production audit.append
+# and owning SQL calls execute; this store models commit/rollback, not PostgreSQL.
+class _OverrideStore:
+    def __init__(self):
+        self.rows = {}
+        self.audits = []
+        self.in_transaction = False
+        self.fail = None
+        self.audit_entered = asyncio.Event()
+        self.audit_release = asyncio.Event()
+        self.audit_release.set()
+
+    def acquire(self):
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def acquired():
+            from types import SimpleNamespace
+
+            yield SimpleNamespace(
+                transaction=self.transaction,
+                fetchrow=self.fetchrow,
+                execute=self.execute,
+                fetchval=self._append_audit,
+            )
+
+        return acquired()
+
+    def transaction(self):
+        from contextlib import asynccontextmanager
+        from copy import deepcopy
+
+        @asynccontextmanager
+        async def transaction():
+            before = deepcopy((self.rows, self.audits))
+            assert not self.in_transaction
+            self.in_transaction = True
+            try:
+                yield
+            except BaseException:
+                self.rows, self.audits = before
+                raise
+            finally:
+                self.in_transaction = False
+
+        return transaction()
+
+    async def fetchrow(self, sql, *args):
+        assert self.in_transaction and "INSERT INTO public.butler_model_overrides" in sql
+        if self.fail == "mutation":
+            raise RuntimeError("synthetic mutation failure")
+        name, catalog_id, enabled, priority, tier = args
+        key = (name, catalog_id)
+        row = self.rows.setdefault(key, {"id": uuid.uuid4()})
+        row.update(
+            butler_name=name,
+            catalog_entry_id=catalog_id,
+            alias="control-model",
+            enabled=enabled,
+            priority=priority,
+            complexity_tier=tier,
+        )
+        return {"id": row["id"]}
+
+    async def fetch(self, sql, *args):
+        assert "public.butler_model_overrides" in sql
+        return [dict(row) for row in self.rows.values() if row["id"] in args[0]]
+
+    async def execute(self, sql, *args):
+        assert self.in_transaction and "DELETE FROM public.butler_model_overrides" in sql
+        if self.fail == "mutation":
+            raise RuntimeError("synthetic mutation failure")
+        for key, row in list(self.rows.items()):
+            if row["id"] == args[0] and row["butler_name"] == args[1]:
+                del self.rows[key]
+                return "DELETE 1"
+        return "DELETE 0"
+
+    async def fetchval(self, sql, *args):
+        raise AssertionError("Owning audit must use the acquired mutation connection")
+
+    async def _append_audit(self, sql, *args):
+        assert "INSERT INTO public.audit_log" in sql
+        assert self.in_transaction  # A pool-level post-commit emit is not atomic.
+        self.audit_entered.set()
+        await self.audit_release.wait()
+        if self.fail == "audit_missing":
+            raise asyncpg.UndefinedTableError("synthetic missing audit table")
+        if self.fail == "audit":
+            raise RuntimeError("synthetic audit failure")
+        self.audits.append(
+            {
+                "actor": args[0],
+                "action": args[1],
+                "target": args[2],
+                "reason": args[3],
+                "metadata": args[6],
+            }
+        )
+        return len(self.audits)
+
+
+def _override_http(store):
+    application = create_authenticated_domain_app(api_key="owner-key")
+    db = MagicMock(spec=DatabaseManager)
+    db.credential_shared_pool.return_value = store
+    db.pool.return_value = store
+    application.dependency_overrides[get_db] = lambda: db
+    return application, db
+
+
+async def test_override_batch_and_delete_append_one_server_attributed_receipt_per_request():
+    store = _OverrideStore()
+    application, db = _override_http(store)
+    first, second = uuid.uuid4(), uuid.uuid4()
+    with patch("butlers.api.dashboard_audit_middleware.get_db_manager", return_value=db):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application), base_url="http://test"
+        ) as client:
+            payload = {
+                "reason": "  use the approved workhorse  ",
+                "actor": "forged",
+                "price_preview_unavailable": True,
+                "overrides": [
+                    {"catalog_entry_id": str(first), "priority": 3},
+                    {"catalog_entry_id": str(second), "enabled": False},
+                ],
+            }
+            response = await client.put("/api/butlers/qa/model-overrides", json=payload)
+            assert response.status_code == 200
+            assert len(response.json()["data"]) == 2
+            assert len(store.rows) == 2 and len(store.audits) == 1
+            assert store.audits[0]["actor"] == "owner"
+            assert store.audits[0]["reason"] == "use the approved workhorse"
+            assert store.audits[0]["metadata"]["client_price_preview_unavailable"] is True
+            override_id = store.rows[("qa", first)]["id"]
+            repeated = await client.put("/api/butlers/qa/model-overrides", json=payload)
+            assert repeated.status_code == 200
+            assert store.rows[("qa", first)]["id"] == override_id
+            assert len(store.rows) == 2 and len(store.audits) == 2
+            removed = await client.request(
+                "DELETE",
+                f"/api/butlers/qa/model-overrides/{override_id}",
+                json={"reason": "restore defaults", "actor": "forged"},
+            )
+            assert removed.status_code == 200
+            assert ("qa", first) not in store.rows
+            assert len(store.audits) == 3
+            assert store.audits[-1]["actor"] == "owner"
+            assert store.audits[-1]["reason"] == "restore defaults"
+            remaining = dict(store.rows)
+            empty = await client.put(
+                "/api/butlers/qa/model-overrides",
+                json={"reason": "no remaining changes", "overrides": []},
+            )
+            assert empty.status_code == 200 and empty.json()["data"] == []
+            assert store.rows == remaining and len(store.audits) == 4
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE"])
+async def test_override_reason_validation_and_atomic_failure(method):
+    from copy import deepcopy
+
+    store = _OverrideStore()
+    model_id, override_id = uuid.uuid4(), uuid.uuid4()
+    seed = {
+        "id": override_id,
+        "butler_name": "qa",
+        "catalog_entry_id": model_id,
+        "alias": "control-model",
+        "enabled": True,
+        "priority": None,
+        "complexity_tier": None,
+    }
+    store.rows[("qa", model_id)] = seed
+    application, _ = _override_http(store)
+    path = "/api/butlers/qa/model-overrides" + (f"/{override_id}" if method == "DELETE" else "")
+    valid = {"reason": "documented change"}
+    if method == "PUT":
+        valid["overrides"] = [{"catalog_entry_id": str(model_id), "priority": 9}]
+    before = deepcopy(store.rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        for reason in [None, "", " \n\t", 42, "x" * 2001]:
+            body = {**valid, "reason": reason}
+            response = await client.request(method, path, json=body)
+            assert response.status_code == 422
+            assert store.rows == before and store.audits == []
+        missing = {k: v for k, v in valid.items() if k != "reason"}
+        assert (await client.request(method, path, json=missing)).status_code == 422
+        assert store.rows == before and store.audits == []
+        for failure, status in [("audit_missing", 503), ("audit", 500), ("mutation", 500)]:
+            store.fail = failure
+            response = await client.request(method, path, json=valid)
+            assert response.status_code == status
+            assert store.rows == before and store.audits == []
+
+
+async def test_override_cancellation_before_audit_commit_rolls_back():
+    store = _OverrideStore()
+    store.audit_release.clear()
+    application, _ = _override_http(store)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        task = asyncio.create_task(
+            client.put(
+                "/api/butlers/qa/model-overrides",
+                json={
+                    "reason": "bounded cancellation control",
+                    "overrides": [{"catalog_entry_id": str(uuid.uuid4())}],
+                },
+            )
+        )
+        try:
+            await asyncio.wait_for(store.audit_entered.wait(), 3)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 3)
+            assert store.rows == {} and store.audits == []
+        finally:
+            store.audit_release.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)

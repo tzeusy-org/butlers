@@ -86,15 +86,15 @@ def test_req_module_memory_006_preserves_pr_3669_action_isolation_contract() -> 
     assert "- **AND** subsequent valid actions MUST still be attempted" in action_isolation
 
 
-def test_b5_b6_have_narrow_observed_authority_without_accepting_carrier_work() -> None:
-    """#3728 is canonicalized alone; B1-B4 and Tracks C-E stay open."""
+def test_b5_b6_have_narrow_observed_authority_and_carrier_is_archived() -> None:
+    """#3728 is canonicalized alone; the carrier archived once Tracks A-E were verified."""
     module_memory = _read(_SPECS / "module-memory" / "spec.md")
     normalized_module_memory = " ".join(module_memory.split())
-    transfer = _read(_CHANGES / "relational-edges-single-home" / "landed-b5-b6-transfer.md")
-    carrier_tasks = _read(_CHANGES / "relational-edges-single-home" / "tasks.md")
-    carrier_delta = _read(
-        _CHANGES / "relational-edges-single-home" / "specs" / "module-memory" / "spec.md"
-    )
+    assert not (_CHANGES / "relational-edges-single-home").exists()
+    (carrier,) = _ARCHIVE.glob("*-relational-edges-single-home")
+    transfer = _read(carrier / "landed-b5-b6-transfer.md")
+    carrier_tasks = _read(carrier / "tasks.md")
+    carrier_delta = _read(carrier / "specs" / "module-memory" / "spec.md")
 
     assert (
         "### Requirement: Consolidation narrative edges use an exact local allowlist"
@@ -122,27 +122,5 @@ def test_b5_b6_have_narrow_observed_authority_without_accepting_carrier_work() -
         assert boundary in normalized_module_memory
 
     assert "PR #3728" in transfer
-    assert "not acceptance of B1-B4 or Tracks C-E" in transfer
     assert "Consolidation narrative edges use an exact local allowlist" not in carrier_delta
-    unchecked_task_ids = set(
-        re.findall(r"^- \[ \] ([A-Z]\d+)\s+—", carrier_tasks, flags=re.MULTILINE)
-    )
-    assert unchecked_task_ids == {
-        "A1",
-        "A2",
-        "A3",
-        "B1",
-        "B2",
-        "B3",
-        "B4",
-        "C1",
-        "C2",
-        "C3",
-        "D1",
-        "D2",
-        "D3",
-        "D4",
-        "E1",
-        "E2",
-        "E3",
-    }
+    assert re.search(r"^- \[ \]", carrier_tasks, flags=re.MULTILINE) is None

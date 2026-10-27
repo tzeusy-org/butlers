@@ -7,8 +7,7 @@ import { MemoryRouter } from "react-router";
 import { fireEvent } from "@testing-library/react";
 
 import Sidebar from "@/components/layout/Sidebar";
-import { usePrefetchOnIntent } from "@/hooks/use-prefetch-on-intent";
-import { useRouteChunkPrefetchOnIntent } from "@/hooks/use-route-chunk-prefetch-on-intent";
+import { useNavIntent } from "@/hooks/use-nav-intent";
 import { useSpendSummary } from "@/hooks/use-spend";
 import { useBadgeCounts } from "@/hooks/use-qa-badge";
 import { resetUseButlersMock, setUseButlersState } from "@/test-utils/use-butlers";
@@ -25,12 +24,8 @@ vi.mock("@/hooks/use-qa-badge", () => ({
   useBadgeCounts: vi.fn(() => ({})),
 }));
 
-vi.mock("@/hooks/use-prefetch-on-intent", () => ({
-  usePrefetchOnIntent: vi.fn(),
-}));
-
-vi.mock("@/hooks/use-route-chunk-prefetch-on-intent", () => ({
-  useRouteChunkPrefetchOnIntent: vi.fn(),
+vi.mock("@/hooks/use-nav-intent", () => ({
+  useNavIntent: vi.fn(),
 }));
 
 // Radix Tooltip renders content in a portal — skip portal assertions in JSDOM
@@ -47,22 +42,12 @@ vi.mock("radix-ui", async (importOriginal) => {
 
 const setButlersState = setUseButlersState;
 
-const dataPrefetchHandlers = {
-  schedule: vi.fn(),
-  cancel: vi.fn(),
+const navIntentHandlers = {
   onPointerEnter: vi.fn(),
   onPointerLeave: vi.fn(),
   onFocus: vi.fn(),
   onBlur: vi.fn(),
-};
-
-const chunkPrefetchHandlers = {
-  schedule: vi.fn(),
-  cancel: vi.fn(),
-  onPointerEnter: vi.fn(),
-  onPointerLeave: vi.fn(),
-  onFocus: vi.fn(),
-  onBlur: vi.fn(),
+  onActivate: vi.fn(),
 };
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -80,8 +65,7 @@ describe("Sidebar", () => {
       data: { data: { total_cost_usd: 26.27 } },
       isLoading: false,
     } as ReturnType<typeof useSpendSummary>);
-    vi.mocked(usePrefetchOnIntent).mockReturnValue(dataPrefetchHandlers);
-    vi.mocked(useRouteChunkPrefetchOnIntent).mockReturnValue(chunkPrefetchHandlers);
+    vi.mocked(useNavIntent).mockReturnValue(navIntentHandlers);
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -141,13 +125,12 @@ describe("Sidebar", () => {
       ["desktop group child", () => render("/health"), "/health"],
       ["mobile flat link", () => renderMobile(), "/spend"],
       ["mobile group child", () => renderMobile("/health"), "/health"],
-    ])("composes route-chunk and data prefetch handlers for each %s", (_surface, renderSurface, path) => {
+    ])("attaches the navigation-intent handlers for each %s", (_surface, renderSurface, path) => {
       renderSurface();
 
       const link = container.querySelector(`a[href="${path}"]`);
       expect(link).toBeInstanceOf(HTMLAnchorElement);
-      expect(useRouteChunkPrefetchOnIntent).toHaveBeenCalledWith(path);
-      expect(usePrefetchOnIntent).toHaveBeenCalledWith(path);
+      expect(useNavIntent).toHaveBeenCalledWith(path);
 
       fireEvent.pointerEnter(link!);
       fireEvent.pointerLeave(link!);
@@ -155,8 +138,7 @@ describe("Sidebar", () => {
       fireEvent.blur(link!);
 
       for (const handler of ["onPointerEnter", "onPointerLeave", "onFocus", "onBlur"] as const) {
-        expect(chunkPrefetchHandlers[handler]).toHaveBeenCalledOnce();
-        expect(dataPrefetchHandlers[handler]).toHaveBeenCalledOnce();
+        expect(navIntentHandlers[handler]).toHaveBeenCalledOnce();
       }
     });
   });
@@ -406,6 +388,46 @@ describe("Sidebar", () => {
   // Mobile expanded mode renders labels alongside links
   // -------------------------------------------------------------------------
 
+  it("toggles group sections without motion and rotates the chevron 120ms linear (Motion Vocabulary)", () => {
+    setButlersState({
+      data: {
+        data: [{ name: "health", status: "ok", port: 40109, type: "butler" as const, sessions_24h: 0 }],
+        meta: {},
+      },
+    });
+    for (const renderVariant of [render, renderMobile]) {
+      renderVariant("/");
+      const group = Array.from(container.querySelectorAll("button[aria-expanded]")).find(
+        (button) =>
+          button.getAttribute("aria-label") === "Health" || button.textContent?.includes("Health"),
+      ) as HTMLButtonElement;
+      expect(group).toBeInstanceOf(HTMLButtonElement);
+      const children = container
+        .querySelector('a[href="/health/measurements"]')
+        ?.closest("[aria-hidden]") as HTMLElement;
+      const chevrons = group.querySelectorAll("svg");
+      const chevron = chevrons[chevrons.length - 1];
+
+      expect(children.className).not.toMatch(/transition/);
+      expect(chevron.getAttribute("class")).toContain("transition-transform");
+      expect(chevron.getAttribute("class")).toContain("duration-[" + "120ms]");
+      expect(chevron.getAttribute("class")).toContain("ease-linear");
+
+      expect(group.getAttribute("aria-expanded")).toBe("false");
+      expect(children.getAttribute("aria-hidden")).toBe("true");
+      expect(children.hasAttribute("inert")).toBe(true);
+
+      act(() => {
+        fireEvent.click(group);
+      });
+      expect(group.getAttribute("aria-expanded")).toBe("true");
+      expect(children.getAttribute("aria-hidden")).toBe("false");
+      expect(children.hasAttribute("inert")).toBe(false);
+      expect(children.className).not.toMatch(/transition/);
+      expect(chevron.getAttribute("class")).toContain("rotate-90");
+    }
+  });
+
   describe("mobile expanded mode", () => {
     beforeEach(() => {
       setButlersState({
@@ -507,6 +529,36 @@ describe("Sidebar", () => {
 
       const overviewLink = container.querySelector('a[href="/"]');
       expect(overviewLink?.getAttribute("aria-label")).toBe("Overview");
+    });
+
+    it("renders the destination chord in the rail tooltip after keyboard focus", async () => {
+      render();
+
+      const calendarLink = container.querySelector('a[href="/calendar"]');
+      expect(calendarLink).toBeInstanceOf(HTMLAnchorElement);
+      expect(
+        document.body.querySelector("[data-slot='tooltip-content'] [data-testid='sidebar-chord']"),
+      ).toBeNull();
+
+      await act(async () => {
+        calendarLink?.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+      });
+
+      expect(
+        document.body.querySelector("[data-slot='tooltip-content'] [data-testid='sidebar-chord']")
+          ?.textContent,
+      ).toBe("g v");
+    });
+
+    it.each([
+      ["expanded", () => renderExpanded()],
+      ["mobile", () => renderMobile()],
+    ])("renders the destination chord chip in the %s sidebar", (_variant, renderSurface) => {
+      renderSurface();
+
+      const calendarLink = container.querySelector('a[href="/calendar"]');
+      expect(calendarLink).toBeInstanceOf(HTMLAnchorElement);
+      expect(calendarLink?.querySelector('[data-testid="sidebar-chord"]')?.textContent).toBe("g v");
     });
   });
 
@@ -827,71 +879,20 @@ describe("Sidebar", () => {
       expect(redBadge).toBeTruthy();
     });
 
+    it("renders an accessible unavailable marker, not a calm zero, when QA escalations are unavailable", () => {
+      vi.mocked(useBadgeCounts).mockReturnValue({ "qa-escalations": { kind: "unavailable" } });
+      render();
+
+      expect(container.querySelector('[aria-label="QA escalations unavailable"]')).toBeTruthy();
+      expect(container.querySelector('[class*="bg-[var(--red)]"]')).toBeNull();
+    });
+
     it("does not render a badge when qa-escalations count is zero", () => {
       vi.mocked(useBadgeCounts).mockReturnValue({ "qa-escalations": 0 });
       render();
 
       const redBadge = container.querySelector('[class*="bg-[var(--red)]"]');
       expect(redBadge).toBeNull();
-    });
-  });
-
-  describe("Decisions badge availability", () => {
-    beforeEach(() => {
-      setButlersState({
-        data: { data: [], meta: {} },
-      });
-    });
-
-    it.each([
-      ["rail", () => render()],
-      ["expanded desktop", () => renderExpanded()],
-      ["mobile", () => renderMobile()],
-    ])("keeps an available empty Decisions digest quiet in %s", (_variant, renderSidebar) => {
-      vi.mocked(useBadgeCounts).mockReturnValue({
-        "decisions-open": { kind: "count", count: 0 },
-      });
-
-      renderSidebar();
-
-      const decisionsLink = container.querySelector('a[href="/decisions"]');
-      expect(decisionsLink).toBeTruthy();
-      expect(decisionsLink?.querySelector('[aria-label="Decisions digest unavailable"]')).toBeNull();
-      expect(decisionsLink?.textContent).not.toContain("0");
-    });
-
-    it.each([
-      ["rail", () => render()],
-      ["expanded desktop", () => renderExpanded()],
-      ["mobile", () => renderMobile()],
-    ])("renders a numeric Decisions count when available in %s", (_variant, renderSidebar) => {
-      vi.mocked(useBadgeCounts).mockReturnValue({
-        "decisions-open": { kind: "count", count: 2 },
-      });
-
-      renderSidebar();
-
-      const decisionsLink = container.querySelector('a[href="/decisions"]');
-      expect(decisionsLink).toBeTruthy();
-      expect(decisionsLink?.textContent).toContain("2");
-      expect(decisionsLink?.querySelector('[aria-label="Decisions digest unavailable"]')).toBeNull();
-    });
-
-    it.each([
-      ["rail", () => render()],
-      ["expanded desktop", () => renderExpanded()],
-      ["mobile", () => renderMobile()],
-    ])("renders an accessible unavailable Decisions marker in %s", (_variant, renderSidebar) => {
-      vi.mocked(useBadgeCounts).mockReturnValue({
-        "decisions-open": { kind: "unavailable" },
-      });
-
-      renderSidebar();
-
-      const decisionsLink = container.querySelector('a[href="/decisions"]');
-      expect(decisionsLink).toBeTruthy();
-      expect(decisionsLink?.querySelector('[aria-label="Decisions digest unavailable"]')).toBeTruthy();
-      expect(decisionsLink?.textContent).not.toContain("0");
     });
   });
 
@@ -913,6 +914,7 @@ describe("Sidebar", () => {
 
       renderSidebar();
 
+      expect(container.querySelector('a[href="/decisions"]')).toBeNull();
       const approvalsLink = container.querySelector('a[href="/approvals"]');
       expect(approvalsLink).toBeTruthy();
       const marker = approvalsLink?.querySelector(

@@ -51,7 +51,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from butlers.api.routers.priority_contacts import _get_db_manager
+from butlers.api.deps import get_db
 from butlers.api.routers.priority_contacts import router as priority_contacts_router
 
 pytestmark = pytest.mark.integration
@@ -131,6 +131,7 @@ async def _provision_tables(pool: asyncpg.Pool) -> None:
         "core_092_audit_log",
         "core_122_audit_log_metadata_result_error",
         "core_202_audit_log_failure_category",
+        "core_279_audit_writer_integrity",
     ):
         await _run_upgrade_sqls(pool, _load_migration(name))
 
@@ -171,7 +172,7 @@ async def priority_contacts_client(cascade_pool: asyncpg.Pool) -> AsyncIterator[
     """The real priority-contacts router bound to the live migrated database."""
     app = FastAPI()
     app.include_router(priority_contacts_router)
-    app.dependency_overrides[_get_db_manager] = lambda: _StubDatabaseManager(cascade_pool)
+    app.dependency_overrides[get_db] = lambda: _StubDatabaseManager(cascade_pool)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
@@ -203,6 +204,45 @@ async def test_no_cascade_audit_trigger_remains(cascade_pool: asyncpg.Pool) -> N
     assert [t["tgname"] for t in triggers] == [], (
         "public.priority_contacts must carry no user trigger: the cascade path the "
         "cascade-audit trigger represented was removed by core_131/core_134"
+    )
+
+    # Plant historical evidence using the actual retired trigger, then replay
+    # the retirement. Empty audit history cannot prove immutable row survival.
+    retirement = _load_migration(_RETIRE_MIGRATION)
+    legacy_sqls: list[str] = []
+    mock_op = MagicMock()
+    mock_op.execute.side_effect = lambda sql: legacy_sqls.append(sql)
+    with patch.object(retirement, "op", mock_op):
+        retirement.downgrade()
+    for sql in legacy_sqls:
+        await cascade_pool.execute(sql)
+    contact_id = await _seed_priority_contact(cascade_pool, "Historical sentinel")
+    await cascade_pool.execute(
+        "DELETE FROM public.priority_contacts WHERE contact_id = $1", contact_id
+    )
+    before = await cascade_pool.fetch(
+        "SELECT * FROM public.audit_log WHERE action = $1 AND target = $2 ORDER BY id",
+        _CASCADE_ACTION,
+        str(contact_id),
+    )
+    assert len(before) == 1
+    assert before[0]["actor"] == "system:contact_cascade"
+    assert before[0]["note"] == "contact removed from public.contacts"
+
+    await _run_upgrade_sqls(cascade_pool, retirement)
+
+    after = await cascade_pool.fetch(
+        "SELECT * FROM public.audit_log WHERE action = $1 AND target = $2 ORDER BY id",
+        _CASCADE_ACTION,
+        str(contact_id),
+    )
+    assert [dict(row) for row in after] == [dict(row) for row in before]
+    assert (
+        await cascade_pool.fetchval(
+            "SELECT count(*) FROM pg_trigger "
+            "WHERE tgrelid = 'public.priority_contacts'::regclass AND NOT tgisinternal"
+        )
+        == 0
     )
 
 

@@ -58,6 +58,7 @@ describe("BalanceRings — states", () => {
     const html = renderToStaticMarkup(<BalanceRings data={makeResponse()} />)
     expect(html).toContain("balance-ring-work")
     expect(html).toContain("+1h")
+    expect(html).toContain('style="color:var(--green)">+1h</span>')
   })
 
   it("renders 'no usual yet' when the baseline is null (never a fake 0 delta)", () => {

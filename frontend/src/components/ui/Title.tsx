@@ -40,7 +40,7 @@ export function Title({ as: Tag = "h2", children, className, ...props }: TitlePr
         // Tracking — tight per spec (-0.015em)
         "tracking-[-0.015em]",
         // Color — primary foreground
-        "text-[var(--fg,oklch(0.985_0_0))]",
+        "text-fg",
         className,
       )}
       {...props}

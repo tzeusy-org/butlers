@@ -9,7 +9,7 @@ import userEvent from "@testing-library/user-event";
 import ButlerDetailPage from "@/pages/ButlerDetailPage";
 import SystemPage from "@/pages/SystemPage";
 import { getAllTabs, isValidTab } from "@/pages/butler-detail-tabs";
-import { useButler, useButlers, useRuntimeConfig } from "@/hooks/use-butlers";
+import { useButler, useButlerSkills, useButlers, useRuntimeConfig } from "@/hooks/use-butlers";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import { useButlerHeartbeats } from "@/hooks/use-system";
 import type { ButlerSummary } from "@/api/types";
@@ -70,6 +70,7 @@ vi.mock("@/hooks/use-system", () => ({
   useHealthPosture: vi.fn(() => ({ data: undefined, isPending: false, isError: false, error: null })),
   useInsightDeliveryState: vi.fn(() => ({ data: undefined, isPending: true, isError: false, error: null })),
   useDriftFacts: vi.fn(() => ({ data: undefined, isPending: true, isError: false, error: null })),
+  useStoredFunctionFacts: vi.fn(() => ({ data: undefined, isPending: true, isError: false, error: null })),
   useDeploymentFacts: vi.fn(() => ({ data: undefined, isPending: true, isError: false, error: null })),
   useSystemConditions: vi.fn(() => ({
     data: { data: { conditions: [], total: 0, conditions_available: true } },
@@ -93,6 +94,7 @@ vi.mock("@/hooks/use-delegation", () => ({
 vi.mock("@/hooks/use-domain-events", () => ({
   useDomainEventSubscriptions: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
   useDomainEventDeliveries: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
+  useDomainEventContracts: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
 }));
 
 vi.mock("@/hooks/use-ingestion", () => ({
@@ -772,7 +774,9 @@ describe("Spec scenario -- detail body remains token-only", () => {
   });
 
   it("no hex or oklch color literals appear in the rendered page body", () => {
-    const html = renderPage();
+    // ButlerMark owns the butler identity palette and applies it inline as a
+    // light-dark() pair; that is the one sanctioned colour literal.
+    const html = renderPage().replace(/light-dark\(oklch\([^)]*\), oklch\([^)]*\)\)/g, "");
     expect(html).not.toMatch(/#[0-9a-fA-F]{3,6}[^;]/);
     expect(html).not.toContain("oklch(");
   });
@@ -973,4 +977,35 @@ describe("Spec scenario -- responsive tab rail", () => {
       expect(document.activeElement).toBe(triggers[i]);
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// Skills "Use skill" prefill (bu-9ppi0z)
+// ---------------------------------------------------------------------------
+
+describe("ButlerDetailPage — Use skill prefills the command bar", () => {
+  it("stays on System/Skills and prefills the command input (no Overview fallback)", async () => {
+    const setSearchParams = vi.fn();
+    vi.mocked(useSearchParams).mockReturnValue([
+      new URLSearchParams("tab=system&section=skills"),
+      setSearchParams,
+    ]);
+    vi.mocked(useButlerSkills).mockReturnValue({
+      data: { data: [{ name: "foo", content: "Does foo things." }], meta: {} },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useButlerSkills>);
+    renderPageLive();
+
+    // The Skills section is lazy-loaded; allow for a slow import under full-suite load.
+    // The per-test timeout below must exceed this wait, or vitest's 5s default wins.
+    const useSkill = await screen.findByRole("button", { name: "Use skill" }, { timeout: 10_000 });
+    fireEvent.click(useSkill);
+
+    const input = screen.getByTestId("butler-command-input") as HTMLInputElement;
+    expect(input.value).toBe("Use the foo skill to ");
+    expect(setSearchParams).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Use skill" })).toBeDefined();
+  }, 15_000);
 });

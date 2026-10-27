@@ -78,7 +78,6 @@ endpoints exist.
 
 ID: REQ-expected-signals-001
 Source: RFC 0029 §Decision; finance-recurrence-producer-mapping design §2
-Scope: v1-mandatory
 
 #### Scenario: Exact endpoint heartbeat authorizes measurability
 

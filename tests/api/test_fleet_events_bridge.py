@@ -50,6 +50,7 @@ def _reset_bus():
 # ---------------------------------------------------------------------------
 
 
+# Spec: REQ-core-fleet-events-004
 def test_on_notify_bridges_valid_envelope_to_event_bus():
     from butlers.api.routers.events import _events_ring
 
@@ -63,16 +64,25 @@ def test_on_notify_bridges_valid_envelope_to_event_bus():
     assert event["data"] == {"phase": "started", "session_id": "s1"}
 
 
-def test_on_notify_ignores_other_channels():
+# Spec: REQ-core-fleet-events-005
+def test_on_notify_ignores_other_channels(caplog):
     from butlers.api.routers.events import _events_ring
 
-    payload = json.dumps({"type": "session", "data": {}})
+    payload = json.dumps({"type": "session", "data": {"private": "payload-sentinel"}})
 
-    _on_notify(None, 1, "some_other_channel", payload)
+    with caplog.at_level("WARNING"):
+        _on_notify(None, 1, "foreign-channel-sentinel", payload)
 
     assert len(_events_ring) == 0
+    assert len(caplog.records) == 1
+    assert "payload-sentinel" not in caplog.text
+    assert "foreign-channel-sentinel" not in caplog.text
+    _on_notify(None, 1, FLEET_EVENTS_CHANNEL, json.dumps({"type": "session", "data": {}}))
+    assert len(_events_ring) == 1
+    assert _events_ring[-1]["type"] == "session"
 
 
+# Spec: REQ-core-fleet-events-005
 def test_on_notify_drops_malformed_json():
     from butlers.api.routers.events import _events_ring
 
@@ -81,6 +91,7 @@ def test_on_notify_drops_malformed_json():
     assert len(_events_ring) == 0
 
 
+# Spec: REQ-core-fleet-events-005
 def test_on_notify_drops_non_object_payload():
     from butlers.api.routers.events import _events_ring
 
@@ -89,14 +100,23 @@ def test_on_notify_drops_non_object_payload():
     assert len(_events_ring) == 0
 
 
-def test_on_notify_drops_payload_missing_type():
+# Spec: REQ-core-fleet-events-005
+@pytest.mark.parametrize(
+    "envelope",
+    [
+        {"data": {"a": 1}},
+        *({"type": value, "data": {"a": 1}} for value in (None, 1, True, [], {})),
+    ],
+)
+def test_on_notify_drops_payload_missing_type(envelope):
     from butlers.api.routers.events import _events_ring
 
-    _on_notify(None, 1, FLEET_EVENTS_CHANNEL, json.dumps({"data": {"a": 1}}))
+    _on_notify(None, 1, FLEET_EVENTS_CHANNEL, json.dumps(envelope))
 
     assert len(_events_ring) == 0
 
 
+# Spec: REQ-core-fleet-events-005
 def test_on_notify_defaults_non_dict_data_to_empty():
     from butlers.api.routers.events import _events_ring
 
@@ -144,6 +164,7 @@ def test_on_notify_defaults_non_dict_data_to_empty():
         ),
     ],
 )
+# Spec: REQ-core-fleet-events-003
 async def test_listener_daemon_publisher_and_api_pools_resolve_the_same_database_target(
     monkeypatch: pytest.MonkeyPatch,
     database_url: str | None,
@@ -377,6 +398,7 @@ async def test_connect_listener_uses_postgres_db_without_database_url(
     assert captured_kwargs["database"] == "configured_fleet_events_database"
 
 
+# Spec: REQ-core-fleet-events-003
 async def test_connect_listener_rejects_database_url_without_database_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -419,6 +441,7 @@ class _FakeConnection:
         self._closed = True
 
 
+# Spec: REQ-core-fleet-events-006
 async def test_run_fleet_events_listener_registers_listener_on_connect():
     conn = _FakeConnection()
 
@@ -438,6 +461,7 @@ async def test_run_fleet_events_listener_registers_listener_on_connect():
             await task
 
 
+# Spec: REQ-core-fleet-events-006
 async def test_run_fleet_events_listener_reconnects_after_connection_closes():
     connections: list[_FakeConnection] = []
 
@@ -471,6 +495,7 @@ async def test_run_fleet_events_listener_reconnects_after_connection_closes():
             await task
 
 
+# Spec: REQ-core-fleet-events-006
 async def test_run_fleet_events_listener_reconnects_after_connect_failure():
     attempts = {"count": 0}
 

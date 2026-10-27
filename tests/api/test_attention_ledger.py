@@ -20,7 +20,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.attention_ledger import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -50,6 +50,7 @@ def _row(**overrides: object) -> dict:
         "deferred": 3,
         "suppressed": 120,
         "failed": 0,
+        "expired_unseen": 0,
         "total": 123,
     }
     base.update(overrides)
@@ -62,7 +63,7 @@ def _row(**overrides: object) -> dict:
 
 
 async def test_list_ledger_flags_source_unavailable_when_pool_unreachable(app):
-    app.dependency_overrides[_get_db_manager] = _make_unavailable_db
+    app.dependency_overrides[get_db] = _make_unavailable_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -77,7 +78,7 @@ async def test_list_ledger_flags_source_unavailable_when_pool_unreachable(app):
 
 async def test_list_ledger_reports_source_available_on_success(app):
     mock_db, _pool = _make_available_db()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -101,7 +102,7 @@ async def test_list_ledger_missing_table_degrades_to_empty_not_unavailable(app):
     pool.fetchval = AsyncMock(side_effect=_UndefinedTableError("relation does not exist"))
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -121,7 +122,7 @@ async def test_list_ledger_missing_table_degrades_to_empty_not_unavailable(app):
 
 async def test_list_ledger_applies_since_until_and_filters(app):
     mock_db, pool = _make_available_db()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -147,7 +148,7 @@ async def test_list_ledger_applies_since_until_and_filters(app):
 
 async def test_list_ledger_no_filters_omits_every_predicate(app):
     mock_db, pool = _make_available_db()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -165,7 +166,7 @@ async def test_list_ledger_no_filters_omits_every_predicate(app):
 
 
 async def test_summary_flags_source_unavailable_when_pool_unreachable(app):
-    app.dependency_overrides[_get_db_manager] = _make_unavailable_db
+    app.dependency_overrides[get_db] = _make_unavailable_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -181,7 +182,7 @@ async def test_summary_flags_source_unavailable_when_pool_unreachable(app):
 
 async def test_summary_defaults_to_a_seven_day_window_when_since_omitted(app):
     mock_db, pool = _make_available_db()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -200,7 +201,7 @@ async def test_summary_defaults_to_a_seven_day_window_when_since_omitted(app):
 
 async def test_summary_explicit_since_is_respected(app):
     mock_db, pool = _make_available_db()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -299,6 +300,28 @@ async def test_summary_counts_failed_outcome_separately_from_deferred(app):
     assert "outcome = 'failed'" in fetch_sql
 
 
+async def test_summary_counts_expired_unseen_per_origin():
+    from datetime import datetime
+
+    from butlers.api.routers.attention_ledger import _query_ledger_summary
+
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[_row(origin_butler="health", expired_unseen=3, total=3)])
+
+    result = await _query_ledger_summary(
+        pool,
+        since=datetime(2026, 7, 1, tzinfo=UTC),
+        until=None,
+        intent=None,
+        source="insight",
+        origin_butler=None,
+    )
+
+    assert result.by_source[0].origin_butler == "health"
+    assert result.by_source[0].expired_unseen == 3
+    assert "outcome = 'expired'" in pool.fetch.call_args.args[0]
+
+
 async def test_summary_endpoint_end_to_end_surfaces_flagged_source(app):
     """The full HTTP round trip surfaces the flag, not just the pure helper."""
     mock_db, pool = _make_available_db()
@@ -307,7 +330,7 @@ async def test_summary_endpoint_end_to_end_surfaces_flagged_source(app):
             _row(origin_butler="secrets_lifecycle", delivered=0, suppressed=120, total=123)
         ]
     )
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

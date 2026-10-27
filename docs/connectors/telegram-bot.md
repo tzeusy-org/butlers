@@ -21,6 +21,13 @@ the Dashboard Secrets page; neither credential is read from connector environmen
 variables. A failed callback authentication leaves the action pending and never
 claims the decision succeeded.
 
+## Retired engineering decision buttons
+
+Engineering decision routing and its callback API are retired. Old decision
+buttons receive only the generic unsupported-callback acknowledgement; they
+cannot choose an option, send a new prompt or enter ingestion. Approval buttons
+retain their existing verified-owner, HMAC, credential and route boundaries.
+
 ## Request Context Mapping
 
 Telegram updates are mapped to the `ingest.v1` envelope as follows:
@@ -31,7 +38,8 @@ Telegram updates are mapped to the `ingest.v1` envelope as follows:
 | `source.provider` | `telegram` |
 | `source.endpoint_identity` | Auto-resolved via `getMe()` (e.g., `telegram:bot:@mybot`) |
 | `event.external_event_id` | `update_id` |
-| `event.external_thread_id` | `chat.id` |
+| `event.external_conversation_id` | `telegram:<chat.id>`, plus `:topic:<message_thread_id>` when Telegram marks the message `is_topic_message` |
+| `event.reply_target_ref` | `<chat.id>:<message_id>` |
 | `event.observed_at` | Connector-observed timestamp (RFC 3339) |
 | `sender.identity` | `message.from.id` |
 | `payload.raw` | Full Telegram update JSON |
@@ -93,21 +101,13 @@ Policy rules are DB-backed with TTL refresh. On DB error, evaluation fails open 
 
 ## Interactivity Surface
 
-The connector supports these interactive tools:
+The connector only ingests. Replies and reactions are MCP tools of the
+[Telegram module](../modules/telegram.md) (`TelegramModule.register_tools` in
+`src/butlers/modules/telegram.py`), which send, reply to, and react to messages.
 
-- `telegram_send_message` -- Send a message to a chat.
-- `telegram_reply_to_message` -- Reply to a specific message.
-- `telegram_get_updates` -- Read recent updates.
-
-Lifecycle reactions on inbound messages (best-effort):
-
-| Stage | Emoji |
-|---|---|
-| In-progress | Eyes |
-| Success | Checkmark |
-| Failure | Alien |
-
-If Telegram rejects a reaction with a 400 error, processing continues with a logged warning.
+Lifecycle reactions on inbound messages (in progress, success, failure) are set best-effort by the
+Switchboard through the module's `react_for_ingest()`; the emoji constants live in
+`src/butlers/core/channel_reactions.py`. A rejected reaction is logged and never blocks processing.
 
 ## Environment Variables
 
@@ -174,6 +174,24 @@ psql -h localhost -U butlers -d butlers -c \
 grep "endpoint_identity\|getMe" /var/log/butlers/telegram-bot-connector.log 2>/dev/null | head -5
 # Expected: log shows getMe() call on startup; endpoint_identity set to telegram:bot:@<username>
 ```
+
+## Implementation Notes
+
+- `TelegramBotConnector._get_updates` (`src/butlers/connectors/telegram_bot.py`) treats
+  `HTTP 409 Conflict` (another poller or a webhook) as recoverable: it
+  records source status `conflict`, logs the parsed Telegram description at warning level, and
+  returns `[]`.
+- `event.reply_target_ref` (and its request-context alias `source_thread_identity`) is the
+  per-message `<chat_id>:<message_id>` used for replies and reactions only. Conversation anchors,
+  provider-session resume, and `_load_realtime_history` key on `external_conversation_id`, so
+  consecutive messages in one chat share one anchor and one history. The shared derivation lives in
+  `src/butlers/conversation_identity.py`.
+- The bot and user-client connectors start from DB credentials when credential env vars are
+  missing; only `SWITCHBOARD_MCP_URL` is a required non-credential env var, and endpoint identity is
+  resolved from the Telegram API at startup.
+- `TelegramBotConnector._get_updates` treats `HTTP 429` as recoverable: it records `rate_limited`
+  metrics, honours
+  `Retry-After` (header, then `result.parameters.retry_after`) and returns `[]` instead of raising.
 
 ## Related Pages
 

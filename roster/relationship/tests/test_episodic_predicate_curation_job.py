@@ -74,6 +74,7 @@ _CREATE_PENDING_ACTIONS_SQL = PENDING_ACTIONS.ddl()
 
 _CREATE_FACTS_SQL = """
 CREATE TABLE IF NOT EXISTS facts (
+    content_authority TEXT, authority_entity_id UUID,
     id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     subject          TEXT        NOT NULL DEFAULT '',
     predicate        TEXT        NOT NULL,
@@ -668,7 +669,8 @@ async def test_insight_candidate_proposed_with_correct_params(pool):
     call_args = mock_propose.call_args.args if mock_propose.call_args.args else ()
 
     # Either way, verify key params
-    all_args = {**dict(zip(["db_pool", "origin_butler"], call_args)), **call_kwargs}
+    # Only supplied positional args are mapped; remaining names come from kwargs.
+    all_args = {**dict(zip(["db_pool", "origin_butler"], call_args, strict=False)), **call_kwargs}
     assert all_args.get("origin_butler") == "relationship"
     assert all_args.get("category") == "episodic-predicate-in-durable"
     dedup_key = all_args.get("dedup_key", "")

@@ -8,7 +8,7 @@
 
 ![Schema Topology](./schema-topology.svg)
 
-Butlers uses a **single PostgreSQL database** with **per-butler schemas** plus a `public` schema for cross-butler identity data. This topology replaced an earlier design where each butler had its own database. The migration target is one database named `butlers` with schema-based isolation.
+Butlers uses a **single PostgreSQL database** with **per-butler schemas** plus a `public` schema for cross-butler identity data. The database is named `butlers`.
 
 ## Database Layout
 
@@ -29,9 +29,15 @@ The `public` schema contains tables that multiple butlers need to read. It is th
 - **`public.entities`** -- Entity graph nodes. Each entity has a `canonical_name`, `entity_type`, `roles` array, and `metadata` JSONB.
 - **`public.entity_info`** -- Key-value pairs attached to entities. Used for credential storage (e.g., `google_oauth_refresh` tokens). UNIQUE on `(entity_id, type)`.
 - **`public.google_accounts`** -- Connected Google account registry with companion entities.
-- **`public.memory_catalog`** -- Shared predicate/schema definitions for the memory module.
-
-> **Note:** `public.contacts` and `public.contact_info` were dropped in migrations `core_115` / `core_134` and replaced by the entity graph above.
+- **`public.memory_catalog`** -- Cross-butler discovery index over memory items: a searchable
+  summary plus provenance pointers back to the owning butler's schema. It is not a canonical store;
+  full recall routes back to the owning schema.
+- **`public.qa_publication_operations`** -- Durable QA publication operation ledger (core_266; core_267 adds forward-only stage, immutable binding and exact reconciliation; core_268 adds set-once `new_object_id` and set-once `result` (checked after the stage-forward rule), a result/stage CHECK and a held-row delete guard):
+  one row per attempt and closed operation kind, with binding/payload digests, stage and result.
+  Only `butler_qa_rw` writes (forced RLS); every runtime role reads. An unresolved row holds its
+  fingerprint lineage. See [QA Publication Boundary](../operations/qa-publication-boundary.md).
+- **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the
+  [Credential Store](credential-store.md)), created at daemon boot by `ensure_secrets_schema`.
 
 ### Per-Butler Schemas
 
@@ -45,20 +51,11 @@ Each butler gets its own schema containing tables for:
 
 ## Schema Search Path
 
-When a butler connects to the database, the `Database` class in `src/butlers/db.py` sets the PostgreSQL `search_path` to provide transparent name resolution:
-
-```python
-def schema_search_path(schema: str | None) -> str:
-    # Returns: "<butler_schema>,shared,public"
-```
-
-For a butler named `general`, the search path is `general,public`. This means:
-
-1. Unqualified table references resolve first to the butler's own schema.
-2. If not found there, they resolve to `public` (identity tables).
-3. Finally, `public` is checked (where PostgreSQL extensions like `vector` and `uuid-ossp` are installed).
-
-This allows modules to reference `entities` without schema-qualifying it -- the search path resolves to `public.entities` automatically.
+When a butler connects, the `Database` class in `src/butlers/db.py` sets `search_path` from
+`schema_search_path()`: the butler's own schema, then `public`. For `general` that is
+`general,public`. Unqualified names resolve to the butler's own tables first, then to the
+cross-butler tables and extensions in `public`. That is how a module can reference `entities`
+without qualifying it.
 
 ## Database Provisioning
 
@@ -77,8 +74,8 @@ This script:
 
 1. Installs required PostgreSQL extensions (`pgcrypto`, `uuid-ossp`, `vector`,
    `pg_trgm`).
-2. Grants each butler runtime role (`butler_{schema}_rw` for all 10 schemas)
-   and `connector_writer` to the connecting user (`POSTGRES_USER`, typically
+2. Grants each butler runtime role (`butler_{schema}_rw`, one per butler schema as listed in
+   `init-db.sql`) and `connector_writer` to the connecting user (`POSTGRES_USER`, typically
    `butlers`).
 
 **Why role membership matters:** Butler runtime code calls `SET ROLE
@@ -99,7 +96,8 @@ The `Database` class handles provisioning at startup:
 2. Creates the target database if it does not exist (using `CREATE DATABASE ... TEMPLATE template0`).
 3. Creates an asyncpg connection pool with `server_settings` that set the `search_path`.
 
-The pool is configured with min/max size (default 2/10) and optional SSL mode support. SSL fallback logic handles environments where the server doesn't support STARTTLS gracefully.
+The pool size comes from `BUTLERS_DB_POOL_MIN_SIZE` / `BUTLERS_DB_POOL_MAX_SIZE` (default 1/10; see
+`pool_sizes_from_env` in `db.py`), with optional SSL mode support. SSL fallback logic handles environments where the server doesn't support STARTTLS gracefully.
 
 ## Connection Parameters
 
@@ -144,7 +142,6 @@ psql -h localhost -U butlers -d butlers -c \
    WHERE table_schema = 'public' ORDER BY table_name;"
 # Expected: entities, entity_info, google_accounts, model_catalog,
 #           token_usage_ledger, model_dispatch_attempts, etc.
-# Note: contacts and contact_info should NOT appear (dropped in core_115 / core_134)
 
 # 4. Search path resolves butler-schema tables first, then public
 # From a butler's connection context, unqualified references resolve correctly:
@@ -158,8 +155,77 @@ psql -h localhost -U butlers -d butlers -c \
 # Expected: pgcrypto, uuid-ossp, vector, pg_trgm
 ```
 
+## Implementation Notes
+
+- With `name = "butlers"`, `[butler.db]` requires an explicit `schema` (no implicit fallback). The
+  API's `init_db_manager` uses the shared-credentials path (schema `public`), and daemon migration
+  URLs carry libpq `options=-csearch_path=...` so Alembic runs in the intended schema.
+- `scripts/init-db.sql` is the single privileged bootstrap step. It deliberately grants broad DML
+  defaults on migration-user-created `public` objects to every runtime role; rerun it when the
+  schema or role surface changes. On PostgreSQL 16+ `SET ROLE` also needs `set_option` on the
+  membership, so it re-grants with `WITH SET TRUE` / `WITH INHERIT TRUE`.
+- If `scripts/compose.sh` clears its gates but `butlers-up` logs `permission denied for schema
+  <butler>` or `permission denied to set role "butler_<name>_rw"`, the dev DB user is missing those
+  grants: rerun `init-db.sql` as a privileged role.
+- Fencing a `public` table to one role needs RLS (a policy keyed on `current_user`), because
+  init-db re-widens grants on every rerun. Do not add `FORCE ROW LEVEL SECURITY` without checking
+  the backup path: `pg_dump` runs with `row_security = off` and raises on forced tables for the
+  migration user, so `deploy/backup/pg_dump.sh` must exclude them.
+- A forced-RLS table with no policy for a command denies that command to every role, including the
+  owner (used deliberately to make `core_217` fleet cases undeletable). Constraint and shape tests
+  against such tables connect with `butlers.testing.migration.migration_bootstrap_db_url()`
+  (superuser; replace `postgresql+psycopg2://` with `postgresql://` for asyncpg); keep `SET ROLE`
+  for tests of the policy itself.
+- DND mutation authority is bootstrap-only: `scripts/init-db.sql` owns the superuser
+  installer/finalizer, and `core_197` may only validate that interface or call its no-argument
+  installer. `public.user_context` and its guard, audit and policies belong to
+  `dnd_generation_owner` (NOLOGIN, NOINHERIT, NOBYPASSRLS) under forced RLS, reached through a
+  SECURITY INVOKER gateway plus a private SECURITY DEFINER `SET ROLE` recheck. Never restore generic
+  DND upserts or migration-role authority.
+- `dnd_generation_private.mutate` runs with `search_path = pg_catalog, pg_temp`. The migration login
+  can `CREATE` in `public`, where a `convert_to(text, text)` decoy would otherwise beat the catalog
+  function and run as `dnd_generation_owner`. Its hashes use the built-in `sha256()`, not pgcrypto's
+  `digest()` (installed in `public`); the hex output is byte-identical, so existing replay receipts
+  stay valid. `dnd_generation_admin.install_private_mutation()` is the single body source, and the
+  finalizer re-adopts it on every privileged rerun. An Alembic deploy does not: a database
+  bootstrapped before this change keeps the `digest()` body until `scripts/init-db.sql` runs again as
+  a cluster superuser. Until then `GET /api/system/stored-functions` reports `mutate` and
+  `install_interface` as `drifted` and `install_private_mutation` as `not_deployed`.
+- One `permission denied` in `pg_dump`'s lock sweep aborts the whole dump, so derive the exclusion
+  list from all three fences as the dump role (no schema `USAGE`, no table `SELECT`, forced RLS or
+  RLS on a table it does not own), not from the last error. Never use `--enable-row-security`: it
+  dumps only visible rows and yields a backup that looks complete.
+
 ## Related Pages
 
 - [Migration Patterns](migration-patterns.md) -- How schema-scoped migrations work
 - [State Store](state-store.md) -- The KV JSONB store within each butler schema
 - [Credential Store](credential-store.md) -- Secret storage across schemas
+
+## Relationship report attribution topology
+
+`rel_037` is additive after immutable `rel_036`: it owns fact report/confirmation columns,
+candidate occurrence uniqueness, private approval lineage and exact identity-decision receipts.
+It does not alter the effective-time transition indexes, reserve the held cutover successor,
+add a global grant, or change cross-butler schema isolation. Downgrade refuses classified data
+instead of erasing provenance. The canonical Relationship resolver/writer remain on the
+Relationship runtime role; Switchboard uses their registered MCP interface.
+
+`core_261` separately owns the nullable private `public.dashboard_messages.fact_owner_admission`
+field, because dashboard conversations work without Relationship startup. The actual admitted
+API producer stamps a new user message and binds its normalized accepted content. Old messages
+and core-only installations below this additive revision stay unstamped; retries preserve that
+unknown state. A caller's dashboard label, actor, status or boolean is not this producer witness.
+The shared public-table grants and trusted-host premise remain unchanged; the stamp is not a
+credential or protection against a compromised trusted database actor.
+
+## Dark Switchboard goal ledger
+
+`sw_047` adds `switchboard.{goals,invocations,effects,budgets,admission_decisions,goal_inbox}`
+for RFC0038's unwired admission slice. `core_273` adds a nullable explicit
+`runtime_config.goal_admission_config` snapshot in each migrated core schema;
+only Switchboard's snapshot is consumed. These ordinary owner-held tables enable
+non-FORCE RLS for the exact Switchboard runtime, preserving migration-owner full
+backup while denying other runtimes after bootstrap regrants. See
+[goal ledger and admission](../architecture/goal-ledger-and-admission.md) for
+source keys, lock order, policy snapshots and actual verification obligations.

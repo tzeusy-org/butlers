@@ -9,15 +9,20 @@ instead of evaporating into closed dossiers that nobody re-reads.
 
 ## Provenance
 
-Every entry below is sourced from the **JARVIS relentless pursuit** dossiers
+The first sections cover dossiers through 2026-07-10 as per-idea entries. The
+"Folded from the 2026-07-12 to 2026-10-16 pursuit runs" section carries every
+later run through 2026-10-16 as themed clusters; per-run lists live in git
+history, and run metadata in `docs/redesigns/pursuit-ledger.md`. The 07-22 run's
+15 cut moves are read with
+`git show b23d5b76afab:docs/redesigns/2026-07-22-jarvis-pursuit-data.json | jq .synthesis.dropped`.
+The 09-22 run has no Dropped section; its cuts are dedup records in its data
+file.
+
+Except for the RFC 0019 egress entries, every entry is sourced from the **JARVIS relentless pursuit** dossiers
 under `docs/redesigns/` (skill: `.claude/skills/butlers-development/subskills/butler-relentless-jarvis-pursuit/`),
 a recurring generative audit of the Butlers ecosystem against
 `about/heart-and-soul/vision.md`:
 
-- **2026-07-03** (`2026-07-03-jarvis-audit.md`) — the first run. It predates
-  the dropped-ledger convention: it has no explicit "Dropped" section because
-  its 14 ranked moves were nearly all pursued via epic `bu-86c4c`
-  (17/19 children landed). Nothing from this run needed parking.
 - **2026-07-04** (`2026-07-04-jarvis-pursuit.md`) — second run, first to carry
   an explicit "Dropped (dedup ledger)" section (27 items).
 - **2026-07-10** (`2026-07-10-jarvis-pursuit.md`) — third run, broadened to a
@@ -43,46 +48,29 @@ Each entry has:
 
 ## Ecosystem: cross-butler collaboration
 
-### Cross-butler delegation ask/answer ledger
-**Idea:** Let one butler ask another a structured question and get a
-tracked answer back, instead of only the one-way hub-and-spoke fan-out that
-exists today.
-**Why parked:** 07-04 deferred it behind the `memory_catalog` flip (so
-butlers could at least *read* each other's facts before they could *ask*
-each other questions). By 07-10 the catalog flip had shipped, but the
-delegation ledger itself (`bu-gxmfx`) turned out to be zero-row machinery
-with no producers or readers — built, but nothing calls it.
-**Unpark condition:** the Owner Decision Desk (07-10 move 8) resolves
-adopt-or-descope for `bu-gxmfx`. If adopted, treat "first producer wired"
-(some real cross-butler question flow) as the actual unpark signal, not
-the ledger's mere existence.
-**Source:** 07-04 Dropped #1; 07-10 Dropped #24 (Decision Desk seed queue), QC verdict on `bu-gxmfx`.
-
-### Domain-event subscriptions + cross-domain case files
-**Idea:** Let butlers subscribe to each other's domain events and build
-shared "case files" spanning multiple butlers' data (e.g. a finance event
-that a chronicler episode should know about).
-**Why parked:** premature — both the knowledge catalog and the delegation
-ledger above need to land and prove out first; this is L-cost with a
-dependency chain on both.
-**Unpark condition:** delegation ask/answer (above) has a live producer/consumer
-pair in production; only then does a subscription layer have anything to
-subscribe to.
-**Source:** 07-04 Dropped #2.
+(The delegation ask/answer ledger and domain-event subscriptions / fleet case
+files from 07-04 have since been built; see RFC 0032.)
 
 ---
 
 ## Ecosystem: connectors and perception
 
-### New connectors (SimpleFIN, flight status, ActivityWatch, weather, parcels)
-**Idea:** Expand perception with five sound, manifesto-grounded connector
+### Discord connector (deferred 2026-10-04)
+
+Deferred from v1 by owner decision: only a non-production draft existed and no butler depended on it. **Unpark condition:** the owner names a Discord community or DM flow a butler should perceive; re-enter through a new proposal using the bot-token path (RFC 0018).
+
+### New connectors (flight status, weather, parcels)
+**Resolved in part:** SimpleFIN (Finance bank feed, `simplefin-sync` job in the
+`butler-finance` spec) and ActivityWatch are admitted to v1 per
+`about/heart-and-soul/v1.md`. Three of the original five remain parked.
+**Idea:** Expand perception with sound, manifesto-grounded connector
 integrations.
 **Why parked:** correctly-scoped ecosystem expansion, but deliberately kept
 out of the top-15 ranked slots against trust-defect fixes each cycle.
 **Unpark condition:** owner opens a dedicated connector epic (per
-`adding-connectors-and-modules`), or explicitly requests one of the five by
-name. Note the 07-10 dossier's `eco:reliability` finding that existing
-connectors already go dark 7+ weeks unnoticed on pull-only health — fix that
+`adding-connectors-and-modules`), or explicitly requests one of the three by
+name (flight status, weather or parcels). Note the 07-10 dossier's `eco:reliability`
+finding that existing connectors already go dark 7+ weeks unnoticed on pull-only health — fix that
 monitoring gap before *adding* more unmonitored sources.
 **Source:** 07-04 Dropped #5.
 
@@ -117,16 +105,16 @@ measure against.
 
 ## Ecosystem: proactivity
 
-### Speculative reply drafting, wake-anchored delivery, per-category insight feedback
-**Idea:** Three refinements to how insights reach the owner: pre-drafting
-likely replies, timing delivery to when the owner is actually awake, and
-letting the owner give per-category feedback that tunes future insight
-volume.
-**Why parked:** all three assume the attention ledger and decision-loop
+### Speculative reply drafting, wake-anchored delivery
+**Idea:** Two refinements to how insights reach the owner: pre-drafting
+likely replies, and timing delivery to when the owner is actually awake.
+(Per-category insight feedback, the third 07-04 idea, shipped as RFC 0011
+Amendment 7.)
+**Why parked:** both assume the attention ledger and decision-loop
 primitives exist first.
-**Unpark condition:** RFC 0021's decision loop ships (tracked via
-`bu-24lu6`) and the attention ledger (07-10 move 1) is live with a real
-reader — then these become the natural next slice of proactivity polish.
+**Unpark condition:** RFC 0021's decision loop and the attention ledger
+reader have both shipped, so these are the natural next slice of
+proactivity polish; open a bead when prioritized.
 **Source:** 07-04 Dropped #6.
 
 ### Telegram reaction/reply capture, per-origin scoring modulation, weekly relevance digest, LLM insight-quality audit
@@ -311,17 +299,6 @@ keyboard-triage adoption batch (below) rather than as a standalone QA
 fix — same primitive, same rollout mechanism.
 **Source:** 07-04 Dropped #19.
 
-### Approvals: decision record (`decided_by`/`decided_at`/deny reason/execution result) + real expiry sweep
-**Idea:** Make a decided approval's dossier show who decided it, when, why
-(if denied), and what the execution actually returned — today the decided
-dossier omits the whole decision record. Add a scheduled sweep that expires
-approvals per their stated expiry instead of leaving it advisory.
-**Why parked:** cut at the 15-move ranking cap in 07-10 — explicitly called
-out as "the strongest next-cycle UX candidate."
-**Unpark condition:** promote to the top of the next cycle's ranked moves;
-no further gating condition — this is queued, not blocked.
-**Source:** 07-10 Dropped #1.
-
 ### Entities-Plex: server-side attention verdict, optimistic retier undo, find fall-through, canvas keyboard parity
 **Idea:** Move the plex's cluster verdict computation server-side (it is
 currently a frontend heuristic), make retiering an entity's tier an
@@ -482,30 +459,261 @@ reaches a triage pass and mints these as its children.
 gauge for consecutive days the fleet ran without owner intervention, funnel
 telemetry for the proactivity pipeline, and a live scoreboard for routing
 accuracy.
-**Why parked:** deferred behind moves 1 (proactivity spine), 7 (deploy
-spine), and 8 (decision desk) — each of those has to exist and be reliable
-before its own telemetry is worth building.
-**Unpark condition:** moves 1/7/8 (07-10 numbering) are all shipped and
-stable in production — then instrument them, in that order, starting with
+**Why parked:** deferred behind moves 1 (proactivity spine) and 7 (deploy
+spine). The former move8 product prerequisite was retired by owner decision
+bu-g2zuv2 = A.
+**Unpark condition:** moves 1/7 (07-10 numbering) are shipped and stable
+in production, then instrument them, starting with
 the intervention/days-autonomous gauge since it's the vision's most-cited
 unmeasurable marker (SC-6/SC-8 per `proj:direction`).
 **Source:** 07-10 Dropped #16.
 
 ---
 
-## Owner Decision Desk seed queue
+## Folded from the 2026-07-12 to 2026-10-16 pursuit runs
 
-These are not "ideas" so much as **decisions the owner has not yet made** —
-routed here rather than ranked because no amount of engineering work can
-unpark them; only an owner choice can. 07-10 move 8 proposes a first-class
-"Decisions" lane for exactly this reason.
-**Unpark condition (all four):** the Owner Decision Desk (07-10 move 8)
-ships and the owner clears its seed queue — until then these sit as genuine
-open questions, not backlog.
+Themed clusters, not per-item rows. Each cluster merges the Dropped,
+deferred and "vetted, not ranked" sections of the runs listed in its Source
+line; the full per-run lists stay in git history (`git log -- docs/redesigns/`
+for the dossier bodies and their data files). Where a cluster extends an
+entry above, it says so rather than restating it.
 
-- **Delegation-ledger adopt-or-descope** (`bu-gxmfx`) — see the
-  cross-butler collaboration entry above; duplicate cross-reference kept
-  here because it is simultaneously a parked idea and a pending decision.
+### Surface truth drive-bys, one list per dashboard page
+**Idea:** The small per-page honesty repairs every audit run found and cut for
+slots: degraded voices on attention lists, one number for one fact (the
+sessions-24h trio), owner-timezone buckets and filters (the fourth instance of
+the timezone class), optimistic-update reverts, `isError` legs on stat bars,
+dead doors and dead tabs, one failed definition per page, mutation-failure
+pixels, virtual-clock and ticking countdowns. Pages covered: notifications,
+sessions, timeline, issues and audit, approvals and decisions, calendar,
+health, spend, memory, education, chronicles, entities, QA, ingestion,
+settings and secrets, butler detail and the roster board. Also from 07-22:
+sessions model and complexity filters with corrections surfacing, the audit-log
+keyset migration with a privileged-predicate index (real, live-measured), and
+a calendar staleness severity ladder.
+**Why parked:** S-cost polish below the trust line while ranked moves
+repaired the underlying contracts; many are one-line drive-bys.
+**Unpark condition:** a PR already touching that page, or an owner-opened
+roster-truth mini-epic; take the item as a drive-by with its own test. Items
+that named a real history-rewrite or fabricated-day defect (immutable `acked_at`,
+1904 archive clamp, fleet-honest re-embed) deserve their own bead the next
+time that page is edited.
+Three 07-22 cuts were folded into filed moves (categorical-token fixes, the
+permissions-matrix un-seeding, the roster board's bus-aware refresh caption).
+**Source:** 07-12, 07-17, 07-22, 08-09, 09-05 runs. Extends the page-local UX
+section above. Audit-log keyset and index unpark when audit-log latency hurts;
+the index slice is a good S for a quiet week.
+
+### Keyboard, accessibility and visual-language adoption debt (extension)
+**Idea:** Global focus-visible floor with an `outline-none` lint, one
+announcement primitive (so chat is audible), icon-button label lint,
+skip-to-content link, accessible-chart generalization, focusable hint
+primitive replacing `title=`, `useListTriage` adoption on remaining registers,
+scope-ranked command registry, `@theme` Dispatch retokening (the 170-site AA
+contrast fix alone is a candidate S), status registry and attention primitive,
+Badge-to-KindTag collapse, single rem type scale, one pending vocabulary,
+mobile/coarse-pointer lane and phone Playwright gate.
+**Why parked:** repeatedly cut for trust-weighted ranking; adoption debt
+rather than a defect.
+**Unpark condition:** the accessibility and keyboard batches above are
+opened; fold these in as their next slices. File the global focus-visible
+floor and the announcement primitive first.
+**Source:** 07-12, 07-17, 09-01, 09-03, 09-05, 09-12 runs.
+
+### Cross-butler collaboration: cases, loops, joint work
+**Idea:** Fleet case consumers and archetypes, answerable-question registry,
+typed answer contracts, owner-hold register and disposition verbs, delegation
+loop closure (answer return path, multi-target, roster adoption), joint
+objectives, `delegate_act`, co-signed conditions, fan-out join, negotiated
+handoff, single-voice reply for multi-domain messages, cross-butler burst
+coalescing, owner experiments, care circle, standing context subscriptions
+and life-event ripple, cross-referential briefing, delegated-QA memory
+catalog.
+**Why parked:** each depends on the case-file and delegation substrate landing
+and proving use; several would collide with the in-flight cross-butler bet of
+the run that dropped them.
+**Unpark condition:** fleet case consumers are live with real rows, and a run's
+evidence shows delegation traffic that the existing ask/answer ledger cannot
+express. Anything that moves the schema-isolation boundary (RFC 0010
+cross-schema fact-read federation) is held for an explicit owner decision and
+must not be fleet-dispatched.
+**Source:** 07-12, 07-17, 07-22, 07-25, 09-03, 09-05, 09-12, 10-03 runs.
+Extends the cross-butler collaboration section above. Standing subscriptions
+and ripple are the explicit next candidate once delegation has rows.
+
+### Knowledge graph, memory and provenance
+**Idea:** Belief-revision ledger and contradiction docket, evidence digest
+that outlives the episode, cited per-artifact provenance, entity-anchored
+fleet dossier and graph traversal, expected knowledge and entity-grounded
+recall, chronicler correction verb for owner testimony, reinforcement-aware
+decay, rule-application loop and rule maturity (226 of 226 rules candidate
+with zero applications), earned-autonomy bridge from scope-template
+fingerprints, challenged-not-overwritten facts, measured shelf life.
+**Why parked:** need a design pass on what "helped" and "believed" mean, or
+wait on the graph substrate's first consumer.
+**Unpark condition:** the entity graph has a first live consumer and a
+rule-maturity definition has an owner-approved spec; open the design bead
+before any slice.
+**Source:** 07-12, 07-17, 09-03, 09-05, 09-12, 10-03, 10-06 runs. Extends the
+knowledge-graph section above.
+
+### Proactivity, owner state and attention
+**Idea:** Earned-voice ratchet, weekly unasked receipt, waiting-on-them
+producer, watch registry, rhythm-deviation and week-ahead forecast, expiry
+harvest, owner-absent autonomy envelopes and compensating-action registry,
+outcome-evidenced attention shaping, "the fleet keeps its word", presence-gated
+briefing cadence, owner-question and sensory-outage lanes, free-moment
+delivery, briefing-to-insight bridge.
+**Why parked:** each assumes delivery is trustworthy and an absence or
+ownership primitive exists first.
+**Unpark condition:** the insight-delivery path is stable for a full cycle and
+the absence primitive from the last ranked proactivity move is live; then
+take the cheapest producer as the first consumer.
+**Source:** 07-12, 07-17, 07-25, 09-03, 09-05, 09-12, 10-03, 10-06 runs.
+Extends the proactivity section above.
+
+### Inference economics and spawn scheduling
+**Idea:** Two-lane spawn scheduler so interactive work never queues behind
+maintenance, warm-worker session continuity (RFC-shaped), cache-affinity and
+volatility-ordered prefixes, shift-session coalescing, local-inference
+adapter, tier-fit calibration and session effects manifest, dispatch SLOs and
+consequence-gated verification, exploration and regret budgets, guarded
+self-escalation, per-butler spend ceiling, telemetry coalescing at the route
+boundary, roster-wide schedule tiering and budgets, policy-conformant fallback
+constant, queue-depth metrics for the three-slot consolidation semaphore, and a
+manual stop primitive for running sessions (needs a new spawner kill
+capability).
+**Why parked:** efficiency-only or measurement-gated; two dropped runs
+measured the win as small. The spawn-phase latency spine is the enabler.
+**Unpark condition:** the latency spine and receipt vocabulary exist and a
+day of composition data shows a queueing or cache-miss cost worth the
+change; warm-worker continuity needs an owner decision first.
+**Source:** 07-12, 07-17, 07-22, 08-09, 09-03, 09-05, 09-12, 10-03 runs.
+Extends the inference-economics section above. The stop primitive unparks with
+the spawner kill capability; the semaphore metrics are observability only.
+
+### Connectors and perception (extension)
+**Idea:** Bank e-statement capture, GitHub owner-events digest, flight status,
+multi-device ActivityWatch spec, lifestyle media capture (Immich, scrobble,
+read-later), Singapore civic and LTA commute feeds, voice-call metadata,
+owner-documents registry, HIBP breach perception, Oura wearable, Google
+Photos, shipment lifecycle, clinical FHIR, authenticated web-action module,
+IMAP, Todoist, Paperless-ngx, HA companion-app phone perception, sovereign
+gazetteer, jurisdiction-true civic calendar, FX reference-rate feed.
+**Why parked:** roadmap-lane work gated on actual owner use, manifesto
+ownership or a privacy review; connectors are expensive to keep monitored.
+**Unpark condition:** the owner names the source, or the connector-roadmap lane
+opens it, after the existing connector fleet shows seven days of reliable
+heartbeat. Manifesto-gated items (shipments, travel promises without a
+substrate) need an owner-decision bead first.
+**Source:** 07-12, 07-17, 07-25, 08-09, 09-01, 09-03, 09-05, 09-12, 10-03,
+10-06, 10-15 runs. Extends the connectors section above.
+
+### Domain follow-ons: finance, travel, health, education, home, relationship
+**Idea:** Finance: statement-ledger parsing (a Finance manifesto scope question, so an
+owner decision first), statement ingestion, income streams and safe-to-spend,
+return, refund and warranty desk, cancel-and-verify pack, pay-versus-use,
+subscription shadow price. Travel: destination admissibility, trip money,
+trip pack, destination brief, timezone spine, fare economics. Health: baseline
+deviation follow-ons, regimen and dose loop, appointment loop closure,
+overnight strain composite, load versus recovery, symptom "what preceded this".
+Education: answer door in chat, concepts as entities, curriculum readiness date,
+misconception ledger. Home: tariff-aware energy, usage-metered maintenance,
+home safety and presence sentinels beyond the first slice, house attended
+versus owner away. Relationship: rule practice ledger, disclosure boundary,
+introductions, counterparty-aware scheduling.
+**Why parked:** each waits on the ranked move that lands its substrate (cost
+claims, absence primitive, mastery honesty, owner places).
+**Unpark condition:** the named substrate move is merged; then the first
+slice is the one the substrate's own dossier called the natural successor.
+**Source:** 07-12, 07-22, 09-03, 09-05, 09-12, 10-03, 10-06, 10-15, 10-16 runs.
+
+### Owner surfaces: Telegram, phone and chat
+**Idea:** Telegram media ingress (voice to transcript, photo to artifact),
+pocket command lane, doors in outbound messages, "what I held back" recap,
+live pinned "Now" card, offline trip pack, Telegram Mini App console
+(conflicts with the `web_app` refusal and needs its own auth design),
+long-audio transcription, real chat token streaming, mobile PWA and offline
+shell, witnessed citations, answer drift, a unified cross-channel conversation
+ledger (the structural successor named by the parity slices), page-context
+enrichment beyond detail pages.
+**Why parked:** the delivery path had to be honest first, and token streaming
+is blocked by the SDK's `communicate()` call.
+**Unpark condition:** outbound doors and delivery receipts are stable; take
+the recap and doors first. Streaming waits for an SDK change.
+**Source:** 07-12, 07-22, 09-02, 09-03, 09-12, 10-06, 10-15 runs. The
+conversation ledger unparks when the S and M parity slices have landed;
+page-context enrichment follows the grounding loop proving out.
+
+### Sovereignty, security posture and owner decisions
+**Idea:** Last-copy ledger, sealed envelope, incident ledger and dependency
+map, sovereignty page, digital-estate registry, domain and certificate expiry
+probes, distrust-a-source containment, mail disposition ledger with undo
+receipt, capability-gap ledger and governed growth proposal, network-less
+analysis sandbox, region data lifecycle registry, measured recovery point,
+content-blind estate registry.
+**Why parked:** need an owner decision on the data boundary or wait for
+recovery proof from the last ranked sovereignty move.
+**Unpark condition:** the owner opens a sovereignty or digital-stewardship
+epic, or a recovery drill proves the substrate; start with the expiry probes
+(S).
+**Source:** 09-12, 10-03, 10-15, 10-16 runs.
+
+### Deliberation, household, place and life-event ideas
+**Idea:** Decision-premise tripwires, option sheets, personal trials, care
+circle and need-to-know grants, handover brief, leg ledger, venue binding,
+vehicle as sensed asset, safety check-in, emergency card, food-nutrition
+loops (eaten-out sense, itemized baskets, recall watch), employer custody,
+vocation butler, employment record, commute briefing podcast.
+**Why parked:** vetted real but outside every ranked lens; most need a new
+domain owner or a manifesto amendment.
+**Unpark condition:** the owner states the life domain matters, or a butler
+manifesto is amended to own it.
+**Source:** 10-03, 10-06 runs.
+
+### Platform and SDLC remainder
+**Idea:** Import-graph test selector, selective merge-group for docs-only and
+frontend-only PRs, affected-Vitest on PRs, retire `frontend/src/api/index.ts`,
+`renderWithProviders` harness home, migration chain rebaseline behind a
+catalog-equivalence proof, retire the never-run release pipeline, compose-era
+retirement, flake ledger, one durable owner outbox, one model-attempt loop,
+one roster namespace, strict `butler.toml` schema, constants for never-set
+env knobs, `meta.sources_degraded`, one `KeysetPage` and cursor codec, one
+empty/error/loading kit, grep-grade replacement for the visual-role ESLint
+rule, shared Home Assistant websocket client, calendar monolith decomposition (7,199
+lines, hygiene without owner-visible payoff; see the hot-path decompositions
+entry).
+**Why parked:** later slices behind the ranked CI and simplification moves,
+or owner decisions that narrow a gate.
+**Unpark condition:** the ranked move each item names has merged; owner
+decisions (selective merge-group, compose retirement, release pipeline) need a
+decision bead.
+**Source:** 07-22, 10-06 (SDLC velocity) and 10-13 (simplification) runs.
+
+### Dots-superset and architecture remainder
+**Idea:** Returns desk, find-a-time with internal holds, weekly time
+intentions, protected work block per promise, grounding receipts, research
+library, public context in meeting prep, decision projects, paperwork ledger,
+rule rehearsal, drafting-voice learner, obligation preconditions and cost
+cards, cache-stable lead prefix, analysis runs, pixels never reaching the
+lead, declared sources and gap-to-declaration growth loop, routine-anchored
+obligations, typed-slot research templates for exposed goals. The homecoming
+routine is excluded on doctrine: it would actuate from tainted trip rows.
+**Why parked:** held behind the 15 ranked moves of their runs.
+**Unpark condition:** the move each item rides (per the pursuit ledger) has
+landed and its gate is closed.
+**Source:** 10-15 and 10-16 runs. Run indexes: `docs/redesigns/pursuit-ledger.md`.
+
+---
+
+## Engineering owner-decision seed queue
+
+These are **decisions the owner has not yet made**; only an owner choice can
+unpark them. Review these through local `bd` or an owner session; the former
+product destination is retired by owner decision bu-g2zuv2 = A. (Delegation-ledger adopt-or-descope and `PRODUCT.md`
+adopt-or-delete are resolved: the ledger is built and wired, and `PRODUCT.md`
+no longer exists.)
+
 - **Dashboard memory-catalog search wiring** — the fleet-knowledge search
   consumer for `public.memory_catalog` (07-04 move 15's third slice) never
   landed; needs an owner call on priority against other dashboard search
@@ -513,11 +721,51 @@ open questions, not backlog.
 - **`api`-runtime-adapter (API-direct inference lane) re-enable** — sits
   disabled in the live model catalog with no recorded provenance for why;
   needs an owner decision on whether to re-enable, keep disabled, or remove.
-- **`PRODUCT.md` adopt-or-delete** — an artifact whose relationship to the
-  live `openspec/` and `about/` doctrine tree was never resolved.
 
-**Source:** 07-10 Dropped #24; 07-10 move 8 (seed queue list); QC verdicts on
-`bu-gxmfx` and the API-direct lane.
+**Source:** 07-10 Dropped #24; 07-10 move 8 (seed queue list).
+
+---
+
+## Egress: owner-delegated actions (RFC 0019)
+
+Each of these needs its owning butler's manifesto amended to permit the action,
+plus the doctrine decision on the parked automation rule engine in
+[RFC 0019](rfcs/0019-proactive-egress-and-automation-parked.md).
+
+### Payment / transfer initiation (Finance)
+
+- **Idea:** Initiate bank or payment-API transfers.
+- **Why parked:** `critical` risk; irreversible, money leaves the account.
+- **Unpark condition:** Finance manifesto amended to permit transfers, with mandatory per-transaction confirmation and no standing rules.
+- **Source:** RFC 0019 (2026-06-14).
+
+### Booking confirmations / modifications (Travel)
+
+- **Idea:** Change or cancel flights, hotels, and reservations via provider APIs or email workflows.
+- **Why parked:** `high` risk; fees and irreversible cancellations.
+- **Unpark condition:** Travel manifesto amended to permit provider-side changes, and the per-event approval path covers them.
+- **Source:** RFC 0019 (2026-06-14).
+
+### Grocery / delivery ordering (General + `shopping` module)
+
+- **Idea:** Submit orders to delivery services.
+- **Why parked:** `high` risk; a financial transaction plus logistics, with no owning butler today.
+- **Unpark condition:** An owning butler's manifesto claims ordering, and a delivery-service integration exists.
+- **Source:** RFC 0019 (2026-06-14).
+
+### External contact enrichment (Relationship)
+
+- **Idea:** Look up contacts against external social-profile APIs (LinkedIn, etc.).
+- **Why parked:** Privacy- and rate-limit-sensitive; `high` risk for any external lookup.
+- **Unpark condition:** Relationship manifesto amended to permit external lookups, with a privacy review of what leaves the system.
+- **Source:** RFC 0019 (2026-06-14).
+
+### Photo / media organization with face recognition (General + `media` module)
+
+- **Idea:** Tag media by the people in it via face recognition.
+- **Why parked:** Significant new infrastructure; privacy-sensitive even though filing is reversible.
+- **Unpark condition:** A media store exists and the owner accepts on-device face recognition.
+- **Source:** RFC 0019 (2026-06-14).
 
 ---
 

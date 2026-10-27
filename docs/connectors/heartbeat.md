@@ -6,149 +6,81 @@
 
 ## Overview
 
-Connectors are independent processes that run outside the Switchboard daemon lifecycle. The heartbeat protocol provides the mechanism for the system to know which connectors are alive, healthy, and actively ingesting data. All connectors MUST implement this protocol.
+Connectors are independent processes that run outside the Switchboard daemon lifecycle; the
+heartbeat is how the system knows which ones are alive and ingesting. All connectors MUST
+implement it. Where the heartbeat sits in the overall topology is described in
+[Integration Points §8](../../about/lay-and-land/integration.md) and
+[Data Flow §6](../../about/lay-and-land/data-flow.md); this page covers the protocol rules.
 
 Connectors self-register on their first heartbeat -- no manual pre-configuration is required.
 
 ## Heartbeat Envelope
 
-Connectors submit `connector.heartbeat.v1` payloads via MCP tool call (`connector.heartbeat`) using the same SSE-based MCP connection configured via `SWITCHBOARD_MCP_URL`.
+Connectors submit `connector.heartbeat.v1` payloads through the `connector.heartbeat` MCP tool on
+the same Switchboard connection they ingest over (`SWITCHBOARD_MCP_URL`). The wire contract is the
+Pydantic model `ConnectorHeartbeatV1` in `roster/switchboard/tools/connector/heartbeat.py`, which
+also lists the accepted `connector_type` values (`VALID_CONNECTOR_TYPES`). Every section is
+`extra="forbid"`, so an unknown field rejects the heartbeat. The rules the model cannot express:
 
-```json
-{
-  "schema_version": "connector.heartbeat.v1",
-  "connector": {
-    "connector_type": "telegram_bot|gmail|telegram_user_client|live_listener|...",
-    "endpoint_identity": "bot-123|user@gmail.com|...",
-    "instance_id": "uuid-of-this-process-instance",
-    "version": "optional semver or git sha"
-  },
-  "status": {
-    "state": "healthy|degraded|error",
-    "error_message": null,
-    "uptime_s": 3600
-  },
-  "counters": {
-    "messages_ingested": 42,
-    "messages_failed": 1,
-    "source_api_calls": 150,
-    "checkpoint_saves": 10,
-    "dedupe_accepted": 0
-  },
-  "checkpoint": {
-    "cursor": "provider-specific-cursor-value",
-    "updated_at": "RFC3339 timestamp"
-  },
-  "capabilities": {
-    "backfill": true
-  },
-  "sent_at": "RFC3339 timestamp"
-}
-```
-
-### Field Reference
-
-**connector** (required):
-
-| Field | Description |
-|---|---|
-| `connector_type` | Canonical type name; matches `CONNECTOR_PROVIDER` env var |
-| `endpoint_identity` | Receiving identity, auto-resolved at startup |
-| `instance_id` | Stable UUID for this process instance, generated at startup |
-| `version` | Optional software version for operational visibility |
-
-**status** (required):
-
-| Field | Description |
-|---|---|
-| `state` | `healthy` (normal), `degraded` (operational with issues), `error` (unable to ingest) |
-| `error_message` | Human-readable context when `degraded` or `error`; null when `healthy` |
-| `uptime_s` | Seconds since this connector instance started |
-
-**counters** (required): All counters are monotonically increasing since process start.
-
-| Counter | Description |
-|---|---|
-| `messages_ingested` | Successfully submitted to Switchboard ingest API |
-| `messages_failed` | Failed ingest submission after retries exhausted |
-| `source_api_calls` | Total calls to source provider API |
-| `checkpoint_saves` | Total checkpoint persistence operations |
-| `dedupe_accepted` | Messages accepted by Switchboard as duplicates |
-
-**checkpoint** (optional): Opaque provider-specific cursor value and last advance timestamp.
-
-**capabilities** (optional): Feature flags like `backfill: true` for dashboard control rendering.
-
-**sent_at** (required): Generation timestamp for clock-drift detection and latency measurement.
+- `instance_id` is a UUID generated once per process start; a new value on a known connector
+  means a restart or replacement and is logged as such.
+- `status.state` is `healthy`, `degraded` (operational with issues) or `error` (unable to
+  ingest); `error_message` carries context for the latter two.
+- Counters are monotonically increasing since process start. The Switchboard computes deltas
+  against the previous snapshot, so a connector must never reset them mid-process.
+- `checkpoint` is an opaque provider cursor; `capabilities` (for example `backfill: true`) drives
+  which dashboard controls render. `capabilities.channel_kind = "feed"` registers a device or
+  telemetry feed (`REQ-connector-base-spec-003`). Only literal `feed` or `message` is retained;
+  absent, unknown or non-string values mean message after a successful registry lookup. Admission
+  lookup failure refuses rather than defaulting. The endpoint advisory lock precedes the registry
+  row lock for every heartbeat, preserving Gmail classification ordering. Previous/incoming
+  effective-kind comparison and upsert commit atomically; changes (including omitted/invalid
+  metadata erasing feed) emit only `Connector channel kind changed outcome=drift` after commit.
+  The diagnostic contains no endpoint, sender, content or database error. Ordinary capabilities,
+  counters, checkpoints and liveness continue to update. This alert-on-change policy does not pin
+  a channel permanently or activate admission. The consumer remains a trusted closed harness;
+  see [Untrusted Spans and Channel Kind](overview.md#untrusted-spans-and-channel-kind).
+- `sent_at` plus the `server_time` in the acknowledgment allow clock-drift detection.
 
 ## Frequency and Staleness
 
-Connectors MUST send a heartbeat every **2 minutes** (120 seconds).
+Connectors send a heartbeat every **2 minutes** by default. The heartbeat runs as a background task
+independent of the ingestion loop; heartbeat failures MUST NOT block or crash ingestion.
 
-The heartbeat runs as a background async task independent of the ingestion loop. Heartbeat failures MUST NOT block or crash ingestion.
-
-### Staleness Thresholds
-
-The Switchboard derives connector liveness from heartbeat recency:
+Liveness is derived at read time from heartbeat recency by `derive_liveness()`
+(`src/butlers/core/liveness.py`):
 
 | Condition | Derived state |
 |---|---|
-| Last heartbeat < 2 min ago | `online` |
-| Last heartbeat 2-4 min ago | `stale` |
-| Last heartbeat > 4 min ago | `offline` |
-| No heartbeat ever received | `unknown` |
+| Last heartbeat < 5 min ago | `online` |
+| Last heartbeat 5-15 min ago | `stale` |
+| Last heartbeat > 15 min ago, or never | `offline` |
+| Heartbeat more than 5 min in the future (clock skew) | `offline` |
 
 Rules:
 - `stale` connectors remain eligible for display but are flagged in the dashboard.
 - `offline` connectors are flagged as down. No automatic deregistration.
 - The Switchboard MUST NOT automatically remove connector records. Cleanup is an operator action.
+- `unclassified` is not a liveness state: it applies only to a registry row whose
+  operational role has not yet been claimed as a runtime instance.
 
-## Self-Registration
+## Switchboard Processing
 
-When the Switchboard receives a heartbeat from an unknown `(connector_type, endpoint_identity)` pair:
+The `connector.heartbeat` tool (`roster/switchboard/tools/connector/heartbeat.py`) validates the
+envelope, self-registers an unknown `(connector_type, endpoint_identity)` pair (recording
+`first_seen_at` and `registered_via`), upserts `switchboard.connector_registry` with the latest
+state, counters and checkpoint, appends to the partitioned `switchboard.connector_heartbeat_log`
+(7-day retention), computes counter deltas for rollups, and returns
+`{status: "accepted", server_time}`.
 
-1. Create a new `connector_registry` record.
-2. Set `first_seen_at` to current timestamp.
-3. Set `registered_via` to `"self"`.
-4. Accept the heartbeat normally.
+## Connector-Side Implementation
 
-When a known connector sends a heartbeat with a new `instance_id`, the record is updated and the instance change is logged (indicates restart or replacement).
-
-## Implementation
-
-The shared heartbeat implementation lives in `butlers.connectors.heartbeat`:
-
-- `HeartbeatConfig` -- Configuration dataclass with `from_env()` factory that reads `CONNECTOR_HEARTBEAT_INTERVAL_S` and `CONNECTOR_HEARTBEAT_ENABLED`.
-- `ConnectorHeartbeat` -- Background task manager that generates a stable `instance_id`, runs a loop at the configured interval, collects counter values from Prometheus metrics, determines health state via a caller-provided callback, and submits the envelope via `CachedMCPClient`.
-
-The implementation reads counter values directly from the Prometheus registry (`connector_ingest_submissions_total`, `connector_source_api_calls_total`, `connector_checkpoint_saves_total`) with label filtering by `connector_type` and `endpoint_identity`.
-
-## Switchboard Persistence
-
-### connector_registry
-
-Stores current state of each known connector. Primary key: `(connector_type, endpoint_identity)`. Includes latest counter snapshot, checkpoint state, health state, and instance metadata.
-
-### connector_heartbeat_log
-
-Append-only log of heartbeat events, partitioned by `received_at`. Used for historical analysis and rollup input. Retention: 7 days.
-
-## Processing Rules
-
-On receiving a heartbeat, the Switchboard:
-
-1. Validates the envelope against the schema.
-2. Upserts `connector_registry` with latest state, counters, and checkpoint.
-3. Appends to `connector_heartbeat_log`.
-4. Computes delta counters for rollup input.
-5. Returns acknowledgment with `server_time` for clock-drift detection.
-
-## Environment Variables
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `CONNECTOR_HEARTBEAT_INTERVAL_S` | No | 120 | Heartbeat interval (min: 30, max: 300) |
-| `CONNECTOR_HEARTBEAT_ENABLED` | No | true | Set to `false` for dev/testing only |
+The shared client lives in `src/butlers/connectors/heartbeat.py`: `HeartbeatConfig.from_env()`
+reads `CONNECTOR_HEARTBEAT_INTERVAL_S` (clamped to 30-300 s) and `CONNECTOR_HEARTBEAT_ENABLED`
+(disable only for dev/testing), and `ConnectorHeartbeat` runs the loop. It reads counter values
+straight from the connector's Prometheus registry, filtered by `connector_type` and
+`endpoint_identity`, so a connector gets correct counters by emitting the standard connector
+metrics rather than by tracking them separately.
 
 ## Verification
 
@@ -160,11 +92,12 @@ psql -h localhost -U butlers -d butlers -c \
   "SELECT connector_type, endpoint_identity, state,
           NOW() - last_heartbeat_at AS heartbeat_age
    FROM switchboard.connector_registry ORDER BY connector_type;"
-# Expected: all running connectors present; heartbeat_age < 2 minutes (online threshold)
+# Expected: all running connectors present; heartbeat_age < 5 minutes (online threshold)
 
 # 2. Liveness state transitions correctly (online/stale/offline)
-# Stop a connector and wait 3 minutes, then query liveness
-# Expected: state transitions from 'online' → 'stale' at 2 min → 'offline' at 4 min
+# Stop a connector and wait past each threshold, then query liveness
+# Expected: state transitions from 'online' → 'stale' at 5 min → 'offline' after more than 15 min;
+# a runtime connector with no heartbeat is also offline
 
 # 3. connector_heartbeat_log accumulates entries at ~2-minute intervals
 psql -h localhost -U butlers -d butlers -c \
@@ -179,9 +112,26 @@ grep "heartbeat.*server_time\|clock_drift" /var/log/butlers/gmail-connector.log 
 # Expected: server_time field present in acknowledgment; drift logged if > threshold
 
 # 5. Dashboard shows connector liveness derived from heartbeat recency
-curl -s http://localhost:41200/api/connectors | python3 -m json.tool | grep -E "state|last_heartbeat"
-# Expected: each connector shows state=online and a recent last_heartbeat_at timestamp
+curl -s http://localhost:41200/api/ingestion/connectors/summaries | python3 -m json.tool | grep -E "liveness|last_heartbeat"
+# Expected: each runtime connector shows online/stale/offline liveness from its
+# heartbeat; storage-only checkpoints are nested under their parent
 ```
+
+## Implementation Notes
+
+- `status.state` is a closed vocabulary (`healthy`, `degraded`, `error`). A connector that has not
+  finished its first transport attempt reports `degraded` with detail such as `transport=starting`,
+  never a fourth state.
+
+### Gmail classification admission
+
+The optional fixed `capabilities.known_contact_check` object carries version=1, state/reason, strict nonnegative query generation, UTC last-success, process instance UUID and a nullable admission epoch UUID. Gmail startup sends unloaded/not_loaded, generation0, no success and no epoch; the server stores unknown and issues a fresh ordering epoch. Normal evidence must match the admitted instance/epoch and monotonically advance generation. Same-generation mutation and old instance/epoch/generation are refused before registry/counter/liveness mutation; identical duplicates cannot renew successful-query freshness. Legacy or malformed metadata is classification unknown. Capabilities bind as Python objects through the production JSONB codec; unrelated flags retain their contract. Existing historical JSON strings are not reinterpreted as authority.
+
+The optional `classification_ack` contains admitted, instance_id, generation, request_admission_epoch, admission_epoch and a closed reason. Instance/generation/request epoch echo the exact request, including refusals. Startup echoes null and returns a new epoch; normal admitted replies return the sent epoch; refusals return no adoptable epoch. These public epochs order observations under existing heartbeat registration; they are not authentication credentials or new caller authority.
+
+For opted-in Gmail, one publisher slot covers latest request assembly, send and exact ACK adoption. The two-second bound includes queue wait. Cancellation/timeout retires the attempt before releasing the slot; late replies cannot adopt or clear newer admission. Transport tails receive cancellation and bounded cleanup. A late no-epoch startup can still make the SERVER conservatively unknown; client retirement does not undo that observation. Subsequent refusal/handshake/loaded publication restores current admission without changing local query history. Generic periodic/default-disabled heartbeat behavior and provider health remain unchanged.
+
+The Gmail primary writer takes an endpoint transaction advisory lock, then the registry row, and commits before existing best-effort partition/log work. The seven-day heartbeat log is not classification authority. New classification metadata is removed from capability diagnostics before logging, and malformed fields are normalized before generic validation errors. New diagnostics contain closed outcomes, no contact/error/token/epoch payloads.
 
 ## Related Pages
 

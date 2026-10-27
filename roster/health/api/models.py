@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictInt
 
 
 class Measurement(BaseModel):
@@ -72,6 +72,12 @@ class Medication(BaseModel):
     schedule: list = []  # JSONB
     active: bool = True
     notes: str | None = None
+    # Real supply count and when it was last set (initial fill or logged
+    # refill). Both are None until a caller records a genuine quantity; the
+    # insight-scan refill job (bu-dtmbn) will not estimate depletion without
+    # them rather than assume a fabricated standard supply size.
+    quantity: int | None = None
+    quantity_updated_at: str | None = None
     created_at: str
     updated_at: str
 
@@ -90,6 +96,10 @@ class MedicationCreateRequest(BaseModel):
     frequency: str = Field(..., min_length=1)
     schedule: list[str] = []
     notes: str | None = None
+    # StrictInt keeps JSON strings, floats, and booleans from becoming a
+    # persisted supply count through Pydantic coercion.  A quantity is an
+    # owner-recorded count, so only a positive whole number is meaningful.
+    quantity: StrictInt | None = Field(default=None, gt=0)
 
 
 class MedicationUpdateRequest(BaseModel):
@@ -97,7 +107,8 @@ class MedicationUpdateRequest(BaseModel):
 
     All fields are optional; only the supplied (non-null) fields are merged into
     the existing medication fact via the superseding ``medication_update`` path.
-    At least one field must be provided.
+    At least one field must be provided. Supplying ``quantity`` doubles as
+    logging a refill: it stamps ``quantity_updated_at`` to now.
     """
 
     name: str | None = Field(default=None, min_length=1)
@@ -106,6 +117,7 @@ class MedicationUpdateRequest(BaseModel):
     schedule: list[str] | None = None
     active: bool | None = None
     notes: str | None = None
+    quantity: StrictInt | None = Field(default=None, gt=0)
 
 
 class Dose(BaseModel):
@@ -458,6 +470,41 @@ class ExpectedSignalsResponse(BaseModel):
     """Honest expected-signal surface; unavailable evidence is not an empty list."""
 
     signals: list[ExpectedSignalResponse] | None
+    available: bool
+    degraded_reason: str | None = None
+
+
+class BaselineBand(BaseModel):
+    """The owner's usual range for a metric: the values not called a deviation."""
+
+    low: float
+    high: float
+
+
+class BaselineResponse(BaseModel):
+    """One metric's stored personal baseline, or the named reason there is no band.
+
+    ``band`` is set only when ``state`` is ``ready``; ``insufficient_history``,
+    ``unmeasurable``, ``stale`` and ``no_baseline`` are words, never a range.
+    """
+
+    metric_key: str
+    state: Literal["ready", "insufficient_history", "unmeasurable", "stale", "no_baseline"]
+    band: BaselineBand | None
+    center: float | None
+    unit: str | None
+    n_observed: int
+    n_expected: int
+    coverage: float
+    computed_at: str | None
+    stale: bool
+    method_version: str | None
+
+
+class BaselinesResponse(BaseModel):
+    """Honest baseline surface; an unreadable table is not an absent baseline."""
+
+    baselines: list[BaselineResponse] | None
     available: bool
     degraded_reason: str | None = None
 

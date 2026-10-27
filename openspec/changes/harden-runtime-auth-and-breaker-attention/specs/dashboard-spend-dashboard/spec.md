@@ -68,7 +68,8 @@ Scope: v1-mandatory
 - **WHEN** the Spend page requests `GET /api/spend/runtime-attention`
 - **THEN** the API SHALL require the fail-closed dashboard owner-control
   dependency before reading durable attention state
-- **AND** missing owner-control configuration returns `503`, while a missing or
-  incorrect `X-API-Key` returns `401`
+- **AND** unavailable authoritative auth state returns `503`, while absent or
+  invalid central configured-key-or-owner-session authority returns `401`
+- **AND** a healthy keyless owner session is sufficient without `X-API-Key`
 - **AND** a source read failure returns `available: false` rather than an
   available empty observation

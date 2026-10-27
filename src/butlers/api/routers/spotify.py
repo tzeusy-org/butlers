@@ -59,9 +59,10 @@ from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
+from butlers.api.deps import OptionalDb
 from butlers.api.models.spotify import (
     SpotifyConfigRequest,
     SpotifyConfigResponse,
@@ -199,6 +200,14 @@ def _store_state(state: str, *, code_verifier: str, redirect_uri: str) -> None:
     )
 
 
+def has_valid_callback_state(state: str) -> bool:
+    """Check only this connector's existing PKCE authority before domain access."""
+    if len(state) > 256:
+        return False
+    entry = _state_store.get(state)
+    return bool(entry and time.monotonic() < entry.expiry)
+
+
 def _validate_and_consume_state(state: str) -> _SpotifyStateEntry | None:
     """Validate a state token and consume it (one-time-use).
 
@@ -229,15 +238,6 @@ def _clear_state_store() -> None:
 # ---------------------------------------------------------------------------
 # Optional DB manager dependency for credential persistence
 # ---------------------------------------------------------------------------
-
-
-def _get_db_manager() -> Any:
-    """Stub replaced at startup by wire_db_dependencies().
-
-    When not wired (e.g. in tests that don't boot the full app), returns None
-    so endpoints degrade gracefully.
-    """
-    return None
 
 
 def _make_credential_store(db_manager: Any) -> CredentialStore | None:
@@ -469,7 +469,8 @@ async def _load_granted_scopes(pool: Any) -> set[str] | None:
 @router.post("/config", response_model=SpotifyConfigResponse)
 async def update_spotify_config(
     body: SpotifyConfigRequest,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> SpotifyConfigResponse:
     """Store the Spotify app client_id in CredentialStore.
 
@@ -504,7 +505,8 @@ async def update_spotify_config(
 
 @router.post("/oauth/start", response_model=SpotifyOAuthStartResponse)
 async def start_spotify_oauth(
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> SpotifyOAuthStartResponse:
     """Initiate the Spotify OAuth PKCE authorization flow.
 
@@ -572,7 +574,8 @@ async def spotify_oauth_callback(
     code: str | None = Query(default=None),
     state: str | None = Query(default=None),
     error: str | None = Query(default=None),
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> Response:
     """Handle Spotify's OAuth callback.
 
@@ -746,7 +749,8 @@ async def spotify_oauth_callback(
 
 @router.get("/status", response_model=SpotifyStatusResponse)
 async def get_spotify_status(
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> SpotifyStatusResponse:
     """Return a fixed, non-sensitive projection of connector-owned state."""
     cred_store = _make_credential_store(db_manager)
@@ -815,7 +819,8 @@ async def get_spotify_status(
 
 @router.post("/disconnect", response_model=SpotifyDisconnectResponse)
 async def disconnect_spotify(
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> SpotifyDisconnectResponse:
     """Clear connector-owned Spotify OAuth state from owner entity_info.
 

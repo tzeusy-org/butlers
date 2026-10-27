@@ -1,3 +1,4 @@
+import { mockJson, type ResponseOf } from "./fixtures/api-responses";
 /**
  * Secrets Passport E2E tests — /secrets [bu-kx954]
  *
@@ -26,7 +27,7 @@
  *   npm run build && npm run preview  (or Playwright starts preview automatically)
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 // ---------------------------------------------------------------------------
 // Mock inventory data in the raw API response format (SecretsInventoryResponse).
@@ -44,11 +45,11 @@ import { test, expect } from "@playwright/test";
 //   - identities[].name (not .label)
 //   - system[].butler (not .source) — owning butler name
 //   - cli[].key (not .id) — credential key
-//   - cli[].description (not .label)
+//   - system[] / cli[] omit category and description (bu-y5uq4)
 //   - The full response is { data: {...}, meta: {...} }
 // ---------------------------------------------------------------------------
 
-const MOCK_INVENTORY_RESPONSE = {
+const MOCK_INVENTORY_RESPONSE: ResponseOf<"getSecretsInventory"> = {
   data: {
     user: [
       {
@@ -73,8 +74,6 @@ const MOCK_INVENTORY_RESPONSE = {
     system: [
       {
         key: "BUTLER_TELEGRAM_TOKEN",
-        category: "messaging",
-        description: "Bot token for Telegram.",
         state: "ok",
         fingerprint: "sha256:ab12cd34",
         last_verified: "14:01 today",
@@ -85,8 +84,6 @@ const MOCK_INVENTORY_RESPONSE = {
     cli: [
       {
         key: "claude-cli",
-        category: "runtime",
-        description: "Claude Code",
         state: "ok",
         fingerprint: "sha256:11a47cd2",
         last_verified: "14:15 today",
@@ -114,14 +111,14 @@ const MOCK_INVENTORY_RESPONSE = {
 // Route mock helpers
 // ---------------------------------------------------------------------------
 
-async function mockSecretsRoutes(page: ReturnType<typeof test.info> extends never ? never : Parameters<Parameters<typeof test>[1]>[0]["page"]) {
+async function mockSecretsRoutes(page: Page) {
   // Use "**" suffix to match both /api/secrets/inventory and
   // /api/secrets/inventory?identity=<uuid> (the identity-scoped query).
   await page.route("**/api/secrets/inventory**", (route) => {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(MOCK_INVENTORY_RESPONSE),
+      body: mockJson("getSecretsInventory", MOCK_INVENTORY_RESPONSE),
     });
   });
 
@@ -129,7 +126,7 @@ async function mockSecretsRoutes(page: ReturnType<typeof test.info> extends neve
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ breaks: [] }),
+      body: mockJson("getBreaksCatalogue", { data: [], meta: { catalogue_available: true } }),
     });
   });
 }

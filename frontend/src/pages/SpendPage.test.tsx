@@ -312,6 +312,7 @@ function setHooks({
           output_tokens: 2500,
           model: "claude-sonnet",
           started_at: "2026-05-17T10:00:00Z",
+          purpose_lane: "private_content",
         },
       ],
       meta: {},
@@ -378,6 +379,7 @@ describe("SpendPage — posture", () => {
     const mtdCell = await screen.findByTestId("kpi-mtd");
     expect(mtdCell.textContent).toContain("MTD Spend");
     expect(mtdCell.textContent).toContain("$2.20");
+    expect(mtdCell.textContent).not.toContain("attempts unpriced");
 
     const projCell = screen.getByTestId("kpi-projected-eom");
     expect(projCell.textContent).toContain("$5.42");
@@ -396,6 +398,7 @@ describe("SpendPage — posture", () => {
           data: {
             ...MOCK_FORECAST.data,
             ceiling_usd: 10,
+            unmeasurable_attempts: 3,
             unpriced_models: [
               {
                 model: "unpriced-codex",
@@ -416,6 +419,7 @@ describe("SpendPage — posture", () => {
                 difference_ratio: 0.2,
               },
             ],
+            divergence_source_error: true,
             historical_attribution_note: "Legacy labels use requested models.",
           },
           meta: {},
@@ -431,6 +435,7 @@ describe("SpendPage — posture", () => {
     expect((await screen.findByTestId("kpi-mtd")).textContent).toContain(
       "excludes 1,988 unpriced calls",
     );
+    expect(screen.getByTestId("kpi-mtd").textContent).toContain("3 attempts unpriced");
     expect(screen.getByTestId("kpi-ceiling").textContent).toContain(
       "blind to 1 unpriced model",
     );
@@ -440,6 +445,10 @@ describe("SpendPage — posture", () => {
     expect(screen.getByTestId("forecast-divergence").textContent).toContain(
       "ledger/session token drift",
     );
+    expect(
+      screen.getByTestId("forecast-divergence-source-error").textContent,
+    ).toContain("session-to-ledger comparison unavailable");
+    expect(document.body.textContent).not.toContain("wa:");
     expect(
       screen.getByTestId("forecast-historical-attribution").textContent,
     ).toContain("Legacy labels");
@@ -1552,6 +1561,7 @@ describe("SpendPage — why (evidence layer)", () => {
     expect(section.textContent).toContain("Most Expensive Sessions");
     expect(section.textContent).toContain("general");
     expect(section.textContent).toContain("$1.23");
+    expect(section.textContent).toContain("Private content");
   });
 
   it("footnotes dropped butlers alongside a populated Top Sessions table (bu-jad4j.3)", async () => {
@@ -2430,6 +2440,47 @@ describe("SpendPage — degraded states (bu-mkd5r)", () => {
       expect(alerts.some((t) => t.includes("Routing rules"))).toBe(true);
     });
     expect(screen.queryByText(/No routing rules are configured/)).toBeNull();
+  });
+
+  it("deep-links ?rule=<id> to the matching row and flashes it (bu-lygbct)", async () => {
+    // Real timers throughout (matches every other test in this file):
+    // the highlight's own removal timeout aside, `findByTestId` below polls
+    // via a real setTimeout while the rules query resolves, which would
+    // deadlock under fake timers -- nothing left to advance them.
+    const store = makeRulesStore([
+      {
+        id: "rule-a",
+        position: 1,
+        condition: {},
+        action: { model: "claude-haiku" },
+        saved_7d: null,
+        created_at: "",
+        updated_at: "",
+      },
+      {
+        id: "rule-b",
+        position: 2,
+        condition: {},
+        action: { model: "claude-sonnet" },
+        saved_7d: null,
+        created_at: "",
+        updated_at: "",
+      },
+    ]);
+    mockRulesApi(store);
+
+    await act(async () => {
+      renderPage(["/?rule=rule-b"]);
+    });
+
+    const row = await screen.findByTestId("spend-rule-row-rule-b");
+    expect(row.classList.contains("spend-rule-highlight")).toBe(true);
+    // The rule the audit row did NOT reference stays unflashed.
+    expect(
+      screen
+        .getByTestId("spend-rule-row-rule-a")
+        .classList.contains("spend-rule-highlight"),
+    ).toBe(false);
   });
 });
 

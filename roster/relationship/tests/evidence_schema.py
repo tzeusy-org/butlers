@@ -1,4 +1,4 @@
-"""Shared test DDL for the rel_034 evidence ledger and coverage receipts.
+"""Shared test DDL for the rel_034 evidence stores and the rel_035 temporal expand.
 
 DB-backed relationship tests hand-roll their own schema rather than running
 migrations, so every fixture whose test path reaches
@@ -9,7 +9,9 @@ all, it just errors.
 
 Keeping the DDL here (rather than copy-pasted per fixture) means the test schema
 and ``roster/relationship/migrations/034_fact_evidence_and_coverage.py`` drift in
-exactly one place if they drift at all.
+exactly one place if they drift at all. The rel_035 effective-time objects are
+not copied at all: they are executed from the migration's own
+``upgrade_statements()``, so the hand-rolled schema cannot drift from it.
 
 Not a conftest fixture on purpose: the fixtures that need it are spread across
 files with unrelated pool fixtures, and an autouse hook would silently create
@@ -18,17 +20,49 @@ tables for tests that never asked for them.
 
 from __future__ import annotations
 
+import importlib.util
+from functools import cache
+from pathlib import Path
+from types import ModuleType
+
 import asyncpg
+
+_THIS_FILE = Path(__file__).resolve()
+
+_REL_035_PATH = _THIS_FILE.parents[1] / "migrations" / "035_entity_fact_effective_time_expand.py"
 
 #: Mirrors ``fact_evidence.py::_MAX_TEXT_CHARS`` / the migration's CHECK bound.
 MAX_TEXT_CHARS = 512
 
 
+@cache
+def rel_035() -> ModuleType:
+    """The rel_035 migration module (its file name is not an importable name)."""
+    spec = importlib.util.spec_from_file_location("_migration_rel_035", _REL_035_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+async def simulate_temporal_cutover(pool: asyncpg.Pool | asyncpg.Connection) -> None:
+    """Drop the legacy active-SPO index in a DISPOSABLE test schema.
+
+    This is the post-cutover layout the transition writer must already handle.
+    The real cutover migration deliberately does not exist yet (it needs proof
+    that no old writer is live); tests use this only to exercise the future
+    code path, never as a model for a repository migration.
+    """
+    await pool.execute(f"DROP INDEX IF EXISTS relationship.{rel_035().LEGACY_SPO_INDEX}")
+
+
 async def apply_evidence_schema(pool: asyncpg.Pool | asyncpg.Connection) -> None:
-    """Apply the rel_034 objects to a hand-rolled test schema.
+    """Apply the rel_034 and rel_035 objects to a hand-rolled test schema.
 
     Idempotent, and safe to call after ``relationship.entity_facts`` already
-    exists — the provenance columns are added with ``IF NOT EXISTS``.
+    exists — the provenance columns are added with ``IF NOT EXISTS``. The
+    fixture's own ``uq_ef_spo_active`` (when it creates one) is left in place,
+    so by default the writer sees the pre-cutover transition layout.
     """
     await pool.execute(
         """
@@ -124,3 +158,18 @@ async def apply_evidence_schema(pool: asyncpg.Pool | asyncpg.Connection) -> None
         )
         """
     )
+    for statement in rel_035().upgrade_statements():
+        await pool.execute(statement)
+
+    # Execute the real owned authority installer, not a local DDL imitation.
+    if not await pool.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE "
+        "table_schema='relationship' AND table_name='entity_facts' "
+        "AND column_name='content_authority')"
+    ):
+        path = _THIS_FILE.parents[1] / "migrations" / "037_fact_content_authority.py"
+        spec = importlib.util.spec_from_file_location("_migration_rel_037", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for statement in module.upgrade_statements():
+            await pool.execute(statement)

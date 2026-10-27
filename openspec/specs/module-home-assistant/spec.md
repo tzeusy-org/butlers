@@ -8,8 +8,7 @@ The Home Assistant module provides MCP tools for bidirectional smart-home contro
 
 ### Requirement: HomeAssistantConfig Schema
 
-The implementation SHALL provide the behavior described by this requirement.
-Configuration controls the HA connection URL, SSL verification, WebSocket keepalive, polling fallback interval, and snapshot persistence frequency.
+Configuration SHALL control the HA connection URL, SSL verification, WebSocket keepalive, polling fallback interval, and snapshot persistence frequency.
 
 #### Scenario: Config structure
 
@@ -33,8 +32,7 @@ Configuration controls the HA connection URL, SSL verification, WebSocket keepal
 
 ### Requirement: Credential Resolution via Owner Contact Info
 
-The implementation SHALL provide the behavior described by this requirement.
-The HA long-lived access token is resolved from the owner contact's `contact_info` entry at startup.
+The HA long-lived access token SHALL be resolved from the owner contact's `contact_info` entry at startup.
 
 #### Scenario: Token resolved from contact_info
 
@@ -55,8 +53,7 @@ The HA long-lived access token is resolved from the owner contact's `contact_inf
 
 ### Requirement: HTTP Client Lifecycle
 
-The implementation SHALL provide the behavior described by this requirement.
-The module uses `httpx.AsyncClient` for REST API calls, created at startup and closed at shutdown.
+The module SHALL use `httpx.AsyncClient` for REST API calls, created at startup and closed at shutdown.
 
 #### Scenario: Client initialization
 
@@ -74,8 +71,7 @@ The module uses `httpx.AsyncClient` for REST API calls, created at startup and c
 
 ### Requirement: WebSocket Connection Lifecycle
 
-The implementation SHALL provide the behavior described by this requirement.
-The module maintains a persistent WebSocket connection for real-time state updates and registry queries.
+The module SHALL maintain a persistent WebSocket connection for real-time state updates and registry queries.
 
 #### Scenario: WebSocket connection and authentication
 
@@ -113,8 +109,7 @@ The module maintains a persistent WebSocket connection for real-time state updat
 
 ### Requirement: In-Memory Entity State Cache
 
-The implementation SHALL provide the behavior described by this requirement.
-The module maintains a `dict[str, CachedEntity]` populated at startup and updated via WebSocket events.
+The module SHALL maintain a `dict[str, CachedEntity]` populated at startup and updated via WebSocket events.
 
 #### Scenario: Initial cache population
 
@@ -142,8 +137,7 @@ The module maintains a `dict[str, CachedEntity]` populated at startup and update
 
 ### Requirement: Area and Entity Registry Cache
 
-The implementation SHALL provide the behavior described by this requirement.
-The module caches HA registry data for area and entity metadata resolution.
+The module SHALL cache HA registry data for area and entity metadata resolution.
 
 #### Scenario: Registry population at startup
 
@@ -158,8 +152,7 @@ The module caches HA registry data for area and entity metadata resolution.
 
 ### Requirement: Query Tool — ha_get_entity_state
 
-The implementation SHALL provide the behavior described by this requirement.
-Returns the full state object for a single entity by ID.
+The tool SHALL return the full state object for a single entity by ID.
 
 #### Scenario: Entity found in cache
 
@@ -174,8 +167,7 @@ Returns the full state object for a single entity by ID.
 
 ### Requirement: Query Tool — ha_list_entities
 
-The implementation SHALL provide the behavior described by this requirement.
-Returns compact summaries of entities, filtered by domain and/or area.
+The tool SHALL return compact summaries of entities, filtered by domain and/or area.
 
 #### Scenario: List all entities
 
@@ -200,8 +192,7 @@ Returns compact summaries of entities, filtered by domain and/or area.
 
 ### Requirement: Query Tool — ha_list_areas
 
-The implementation SHALL provide the behavior described by this requirement.
-Returns all defined areas/rooms from the HA area registry.
+The tool SHALL return all defined areas/rooms from the HA area registry.
 
 #### Scenario: List areas
 
@@ -211,8 +202,7 @@ Returns all defined areas/rooms from the HA area registry.
 
 ### Requirement: Query Tool — ha_list_services
 
-The implementation SHALL provide the behavior described by this requirement.
-Returns available HA services, optionally filtered by domain.
+The tool SHALL return available HA services, optionally filtered by domain.
 
 #### Scenario: List all services
 
@@ -227,8 +217,7 @@ Returns available HA services, optionally filtered by domain.
 
 ### Requirement: Query Tool — ha_get_history
 
-The implementation SHALL provide the behavior described by this requirement.
-Returns state history for entities over a time window from HA's recorder.
+The tool SHALL return state history for entities over a time window from HA's recorder.
 
 #### Scenario: Fetch history with entity filter
 
@@ -243,8 +232,7 @@ Returns state history for entities over a time window from HA's recorder.
 
 ### Requirement: Query Tool — ha_get_statistics
 
-The implementation SHALL provide the behavior described by this requirement.
-Returns aggregated hourly/daily statistics for sensor entities from HA's recorder.
+The tool SHALL return aggregated hourly/daily statistics for sensor entities from HA's recorder.
 
 #### Scenario: Fetch statistics
 
@@ -259,8 +247,7 @@ Returns aggregated hourly/daily statistics for sensor entities from HA's recorde
 
 ### Requirement: Query Tool — ha_render_template
 
-The implementation SHALL provide the behavior described by this requirement.
-Evaluates a Jinja2 template server-side on the HA instance.
+The tool SHALL evaluate a Jinja2 template server-side on the HA instance.
 
 #### Scenario: Render template
 
@@ -270,8 +257,7 @@ Evaluates a Jinja2 template server-side on the HA instance.
 
 ### Requirement: Control Tool — ha_call_service
 
-The implementation SHALL provide the behavior described by this requirement.
-Generic service call supporting any HA domain, service, target, and data.
+The tool SHALL provide a generic service call supporting any HA domain, service, target, and data.
 
 #### Scenario: Successful service call
 
@@ -283,6 +269,7 @@ Generic service call supporting any HA domain, service, target, and data.
 #### Scenario: Service call with area target
 
 - **WHEN** `target` includes `area_id`
+- **AND** the authenticated owner has approved that exact stored command and the original handler is executing with matching server-derived approval lineage
 - **THEN** the service call SHALL be issued with the area_id in the target (HA resolves to entities)
 
 #### Scenario: Service call error
@@ -310,6 +297,51 @@ MUST execute only through the approvals executor's server-derived lineage.
 - **WHEN** an authenticated owner approves the parked action
 - **THEN** the approvals executor SHALL bind the action id, originating session id, and decided-by actor while invoking the original Home Assistant handler
 - **AND** the handler SHALL perform one new, independently receipted actuation attempt
+
+#### Scenario: Argument-aware execution uses the complete target and data contract
+
+- **WHEN** Home evaluates a service invocation for physical execution
+- **THEN** the following automatic-risk and exact-command conditions SHALL apply before that request can leave the process
+
+Automatic execution of a base `reversible` call additionally MUST require a nonempty explicit `entity_id` string or list, no other target key, and complete canonical same-domain entity tokens. Area, device, label, all, malformed, mixed-domain, absent and empty targets MUST instead be treated as `consequential`. The base service map MUST remain unchanged; no protected or unknown pair may be downgraded. Explicit read-back extraction MUST accept only entity-only targets whose entire nonempty string/list consists of canonical entity tokens; bulk, extra-selector, empty or malformed forms MUST yield no inferred or partial entity set, including the pseudo-id all.
+
+Data for automatic reversible execution MUST satisfy the repository-owned per-service key/type/bounds subset: `light.turn_on` permits brightness(integer0..255), brightness_pct(finite number0..100), color_temp_kelvin(integer1000..10000), rgb_color(list of3 integers0..255), and transition(finite number0..60seconds); `light.turn_off` permits transition only; switch/fan/humidifier turn_on/turn_off permit no data keys. Booleans SHALL NOT count as numbers. Simultaneous brightness+brightness_pct or rgb_color+color_temp_kelvin SHALL require approval. Unknown keys, typed/range violations and selector keys entity_id/area_id/device_id/label_id/target in data MUST promote to consequential rather than be dropped or normalized.
+
+`climate.set_temperature` automatic execution MUST contain temperature only, a finite non-boolean number within inclusive16..28C or equivalent60.8..82.4F. Every target MUST have a consistent recognized existing module-cache attributes.temperature_unit of C/°C or F/°F. Missing, mixed or unknown unit context, missing temperature, out-of-range values and range/mode keys require approval. The handler MUST NOT guess Celsius, convert the request or contact HA to discover units before this gate. These constants define the conservative automatic subset, not a claim about HA's complete schema or an owner preference profile.
+
+One detached strict JSON argument snapshot MUST bind classification, approval digest, parked arguments, outgoing payload and receipt. Non-object target/data, non-string JSON object keys, nonfinite/cyclic/non-JSON values and string leaves or object keys containing NUL or surrogate code points MUST be refused before persistence or physical dispatch without string/NULL coercion. Representable strings MUST remain exact, including Unicode scalar values and ordinary JSON control characters. Valid-JSON unsafe calls MUST park with exact original arguments and bounded owner-visible categorical reasons, including canonical unknown key names without values. No new target/data value may appear in generic logs or shared events. At physical dispatch, simultaneous explicit target and any data-carried selector MUST be refused as ambiguous rather than silently merged or dropped, even under approval; the owner may create a new unambiguous action. Exact approved data-only selector calls remain supported when target is absent and preserve honest unverified semantics.
+
+#### Scenario: Broad reversible target is parked
+
+- **WHEN** a base reversible call names an area, device, label, all, empty, malformed, mixed-domain or non-explicit target
+- **THEN** effective risk SHALL be consequential and a pending approval SHALL retain its exact original arguments and categorical reason
+- **AND** no HA request SHALL be sent before exact owner-approved execution
+
+#### Scenario: Data cannot bypass explicit target and data-key conditions
+
+- **WHEN** a base reversible call carries a selector, unlisted data key, wrong typed/ranged value or conflicting automatic parameters
+- **THEN** it SHALL park before any HA request without dropping or coercing the data
+- **AND** approved execution with both explicit target and data selector SHALL refuse an ambiguous payload without issuing a physical attempt
+
+#### Scenario: Allowed explicit reversible call remains automatic
+
+- **WHEN** light.turn_on names light.kitchen with brightness_pct80 and no extra selector or invalid parameter
+- **THEN** it SHALL retain reversible risk and the existing independently receipted live-verification path without approval
+- **AND** all other automatic reversible calls SHALL satisfy the same complete target and their service-specific data constraints
+
+#### Scenario: Climate comfort checks retain unit meaning
+
+- **WHEN** a climate temperature is outside the inclusive known-unit comfort range, has boolean/string type, or its target unit is missing, inconsistent or unknown
+- **THEN** it SHALL park with the categorical reason without assuming Celsius or converting the payload
+- **AND** exact known-unit inclusive-boundary temperature-only requests MAY remain reversible subject to the existing receipt verifier
+
+#### Scenario: Promoted approved bulk replay remains exact and once-only
+
+- **WHEN** the authenticated owner approves an unambiguous parked area/device/all call
+- **THEN** the original handler SHALL send its exact stored command once through the existing executor task/tool/argument binding and receipt fence
+- **AND** repeat/concurrent dispatch under the same approval SHALL NOT resend after a possible effect
+- **AND** lack of explicit observable targets SHALL settle unverified and require reconciliation rather than claim success
+- **AND** receipt/approval unavailability or failure SHALL never authorize a physical request
 
 ### Requirement: Honest Actuation Receipts
 
@@ -361,8 +393,7 @@ receipt or turn a failed/unverified physical outcome into success.
 
 ### Requirement: Control Tool — ha_activate_scene
 
-The implementation SHALL provide the behavior described by this requirement.
-Convenience wrapper for activating a scene by entity_id.
+The tool SHALL provide a convenience wrapper for activating a scene by entity_id.
 
 #### Scenario: Activate scene
 
@@ -376,8 +407,7 @@ Convenience wrapper for activating a scene by entity_id.
 
 ### Requirement: Command Audit Logging
 
-The implementation SHALL provide the behavior described by this requirement.
-Every service call issued through the module is persisted to the `ha_command_log` table.
+Every service call issued through the module SHALL be persisted to the `ha_command_log` table.
 
 #### Scenario: Successful command logged
 
@@ -412,8 +442,7 @@ upserts one row per entity key instead of accumulating temporal fact history.
 
 ### Requirement: Home Assistant Database Schema
 
-The implementation SHALL provide the behavior described by this requirement.
-The module provides Alembic migrations for its home-domain tables.
+The module SHALL provide Alembic migrations for its home-domain tables.
 
 #### Scenario: Migration creates tables
 
@@ -433,8 +462,7 @@ The module provides Alembic migrations for its home-domain tables.
 
 ### Requirement: Tool Metadata for Approval Sensitivity
 
-The implementation SHALL provide the behavior described by this requirement.
-The module declares approval sensitivity for control tools via `tool_metadata()`.
+The module SHALL declare approval sensitivity for control tools via `tool_metadata()`.
 
 #### Scenario: Sensitive args declared
 
@@ -448,8 +476,7 @@ The module declares approval sensitivity for control tools via `tool_metadata()`
 
 ### Requirement: Module Identity and Dependencies
 
-The implementation SHALL provide the behavior described by this requirement.
-The module registers under the name `home_assistant` with a dependency on `contacts` (for owner resolution) and `approvals` (for gating).
+The module SHALL register under the name `home_assistant` with a dependency on `contacts` (for owner resolution) and `approvals` (for gating).
 
 #### Scenario: Module identity
 
@@ -460,8 +487,7 @@ The module registers under the name `home_assistant` with a dependency on `conta
 
 ### Requirement: Tool Registration
 
-The implementation SHALL provide the behavior described by this requirement.
-The module registers up to 13 MCP tools during `register_tools()`: 9 Home Assistant control/query tools plus 4 maintenance tools. Mutation tools are skipped when `read_only = true`.
+The module SHALL register up to 13 MCP tools during `register_tools()`: 9 Home Assistant control/query tools plus 4 maintenance tools. Mutation tools are skipped when `read_only = true`.
 
 #### Scenario: Tool inventory
 
@@ -476,8 +502,7 @@ The module registers up to 13 MCP tools during `register_tools()`: 9 Home Assist
 
 ### Requirement: Maintenance Tool Suite
 
-The implementation SHALL provide the behavior described by this requirement.
-The module provides recurring home-maintenance tracking backed by the `maintenance_items` table.
+The module SHALL provide recurring home-maintenance tracking backed by the `maintenance_items` table.
 
 #### Scenario: Create a maintenance item
 
@@ -502,10 +527,7 @@ The module provides recurring home-maintenance tracking backed by the `maintenan
 
 ### Requirement: HA Source Health Recording
 
-The implementation SHALL provide the behavior described by this requirement.
-`ha_entity_snapshot`'s `captured_at` is re-stamped every snapshot cycle
-regardless of whether HA was actually contacted, so it cannot by itself tell
-a reader whether the connection is currently healthy. The module SHALL
+`ha_entity_snapshot`'s `captured_at` SHALL be re-stamped every snapshot cycle regardless of whether HA was actually contacted, so it cannot by itself tell a reader whether the connection is currently healthy. The module SHALL
 maintain a single keyed row per source in `ha_source_health` (`source` TEXT
 PRIMARY KEY, `status` TEXT CHECK IN `'healthy'`/`'error'`,
 `last_success_at`, `last_error_at`, `last_error`, `updated_at`), upserted on

@@ -21,7 +21,7 @@ from __future__ import annotations
 import uuid
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -56,6 +56,7 @@ class _MockAdapter(RuntimeAdapter):
     def binary_name(self) -> str:
         return "mock"
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -164,7 +165,6 @@ def _enter_session_patches(stack: ExitStack) -> AsyncMock:
         patch("butlers.core.spawner.session_create", new_callable=AsyncMock)
     )
     stack.enter_context(patch("butlers.core.spawner.session_complete", new_callable=AsyncMock))
-    stack.enter_context(patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock))
     mock_create.return_value = _SESSION_ID
     return mock_create
 
@@ -281,13 +281,15 @@ def _routing_breaker_open() -> SpendRoutingResult:
 
 
 def _override_execute_calls(mock_pool: AsyncMock) -> list:
-    """Return _write_dispatch_attempt execute() calls that recorded the override row.
+    """Return recorder calls that persisted the informational override row.
 
-    _write_dispatch_attempt calls pool.execute(SQL, session_id, catalog_entry_id,
-    butler, outcome, failure_reason, ...) — so args[4] is the outcome.
+    The non-breaker recorder now uses ``fetchval(... RETURNING id)`` so the
+    paired usage row can reference the attempt. Older mocked seams may still
+    expose ``execute``; both have the same positional fields and outcome index.
     """
     out = []
-    for call in mock_pool.execute.await_args_list:
+    calls = [*mock_pool.execute.await_args_list, *mock_pool.fetchval.await_args_list]
+    for call in calls:
         args = call.args
         if len(args) >= 6 and args[4] == BREAKER_OPEN_RULE_OVERRIDE_OUTCOME:
             out.append(args)

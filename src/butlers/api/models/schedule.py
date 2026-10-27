@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, model_validator
+from pydantic import AwareDatetime, BaseModel, StrictBool, model_validator
 
 _DISPATCH_MODE_PROMPT: Literal["prompt"] = "prompt"
 _DISPATCH_MODE_JOB: Literal["job"] = "job"
@@ -72,6 +72,7 @@ class ScheduleCreate(BaseModel):
     """Request body for creating a new scheduled task."""
 
     name: str
+    interrupt_owner: StrictBool = False
     cron: str
     dispatch_mode: DispatchMode = _DISPATCH_MODE_PROMPT
     prompt: str | None = None
@@ -157,3 +158,32 @@ class ScheduleUpdate(BaseModel):
             context="schedule_update",
         )
         return self
+
+
+class ScheduleToggleRequest(BaseModel):
+    """Requested enabled state for the idempotent schedule-toggle action."""
+
+    enabled: StrictBool
+
+
+class ScheduleToggleAudit(BaseModel):
+    """Safe, server-derived audit evidence for a successful toggle."""
+
+    action: Literal["schedule.toggle"]
+    result: Literal["success"]
+    target: str
+
+
+class ScheduleToggleResult(BaseModel):
+    """Observed result returned after the butler persists a requested state."""
+
+    id: UUID
+    name: str
+    source: str
+    status: Literal["updated", "unchanged"]
+    outcome: Literal["applied", "already_requested"]
+    requested_enabled: bool
+    observed_enabled: bool
+    changed: bool
+    next_run_at: datetime | None = None
+    audit: ScheduleToggleAudit

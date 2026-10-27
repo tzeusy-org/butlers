@@ -16,12 +16,10 @@ import {
   patchRuntimeConfig,
 } from "@/api/index.ts";
 import type { RuntimeConfigPatch } from "@/api/index.ts";
-import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
-// Not bus-covered (bu-qvnce.14 slice 3): no fleet-bus event maps to the bare
-// butlers list or a single butler's per-module health -- unlike
-// ["butlers","board"] below, these stay a primary-path poll rather than a
-// reconciliation sweep.
+// The bare butlers list and board both need this primary-path cadence. Board
+// session events can invalidate the cache sooner, but receiver health changes
+// have no matching bus event.
 const BUTLERS_POLL_MS = 30_000;
 
 /** Fetch all butlers with live status. */
@@ -48,15 +46,14 @@ export function useButlers() {
  * live-refreshes both consumers together.
  */
 export function useButlersBoard() {
-  // Bus-covered (bu-qvnce.14 slice 3): event-cache-registry.ts's
-  // sessionPatch invalidates this exact key on every session started/ended
-  // event -- this interval is a bus-aware reconciliation sweep (bu-01r64.3),
-  // not the primary update path.
-  const refetchInterval = useBusAwarePollInterval();
+  // Poll regardless of cached eligibility: a healthy row can turn stale
+  // without a bus event, just as a stale row can recover. The board endpoint
+  // costs one fleet-wide request every 30s while observed, in exchange for a
+  // 30s bound on either transition instead of a five-minute false verdict.
   return useQuery({
     queryKey: ["butlers", "board"],
     queryFn: () => getButlersBoard(),
-    refetchInterval,
+    refetchInterval: BUTLERS_POLL_MS,
   });
 }
 

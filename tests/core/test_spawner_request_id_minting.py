@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -20,7 +20,8 @@ from butlers.config import ButlerConfig
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
 
-pytestmark = pytest.mark.unit
+pytest_plugins = ("tests.core.spawner_fixtures",)
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("spawner_catalog_candidate")]
 
 # UUID pattern for sanity-checking the minted IDs are valid UUIDs
 _UUID_RE = re.compile(
@@ -36,6 +37,7 @@ class _OkAdapter(RuntimeAdapter):
     def binary_name(self) -> str:
         return "mock"
 
+    @override
     async def invoke(
         self,
         prompt: str,

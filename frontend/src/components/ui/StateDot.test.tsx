@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 
 import { StateDot, STATE_COLORS, STATE_LABELS, TONE_COLORS } from "./StateDot"
+import { stateColorVar } from "@/lib/visual-token-roles"
 
 // ---------------------------------------------------------------------------
 // Color tokens per state
@@ -158,6 +159,7 @@ describe("StateDot: Dispatch system states", () => {
     it(`state="${state}" uses color token containing ${token}`, () => {
       const html = renderToStaticMarkup(<StateDot state={state} />)
       expect(html).toContain(token)
+      expect(STATE_COLORS[state]).toBe(stateColorVar(state))
     })
   }
 

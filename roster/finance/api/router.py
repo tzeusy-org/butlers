@@ -7,59 +7,49 @@ from the finance butler's PostgreSQL database via asyncpg.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
-import sys
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import PaginatedResponse, PaginationMeta
+from butlers.roster_imports import roster_module
 from butlers.tools.finance.expected_signals import sanitized_metadata
 
 # Dynamically load models module from the same directory
-_models_path = Path(__file__).parent / "models.py"
-_spec = importlib.util.spec_from_file_location("finance_api_models", _models_path)
-if _spec is not None and _spec.loader is not None:
-    _models = importlib.util.module_from_spec(_spec)
-    sys.modules["finance_api_models"] = _models
-    _spec.loader.exec_module(_models)
+_models = roster_module("finance", "api/models", api_source=__file__)
 
-    AccountModel = _models.AccountModel
-    BillModel = _models.BillModel
-    BulkTransactionErrorDetail = _models.BulkTransactionErrorDetail
-    BulkTransactionItem = _models.BulkTransactionItem
-    BulkTransactionRequest = _models.BulkTransactionRequest
-    BulkTransactionResponse = _models.BulkTransactionResponse
-    BulkUpdateOpResultModel = _models.BulkUpdateOpResultModel
-    BulkUpdateRequestModel = _models.BulkUpdateRequestModel
-    BulkUpdateResponseModel = _models.BulkUpdateResponseModel
-    DistinctMerchantModel = _models.DistinctMerchantModel
-    FinanceExpectedSignalModel = _models.FinanceExpectedSignalModel
-    FinanceExpectedSignalsResponse = _models.FinanceExpectedSignalsResponse
-    ObligationModel = _models.ObligationModel
-    ObligationsResponse = _models.ObligationsResponse
-    SpendingGroupModel = _models.SpendingGroupModel
-    SpendingSummaryModel = _models.SpendingSummaryModel
-    SubscriptionModel = _models.SubscriptionModel
-    TransactionModel = _models.TransactionModel
-    UpcomingBillItemModel = _models.UpcomingBillItemModel
+AccountModel = _models.AccountModel
+CostClaimModel = _models.CostClaimModel
+BillModel = _models.BillModel
+BulkTransactionErrorDetail = _models.BulkTransactionErrorDetail
+BulkTransactionItem = _models.BulkTransactionItem
+BulkTransactionRequest = _models.BulkTransactionRequest
+BulkTransactionResponse = _models.BulkTransactionResponse
+BulkUpdateOpResultModel = _models.BulkUpdateOpResultModel
+BulkUpdateRequestModel = _models.BulkUpdateRequestModel
+BulkUpdateResponseModel = _models.BulkUpdateResponseModel
+DistinctMerchantModel = _models.DistinctMerchantModel
+FinanceExpectedSignalModel = _models.FinanceExpectedSignalModel
+FinanceExpectedSignalsResponse = _models.FinanceExpectedSignalsResponse
+ObligationModel = _models.ObligationModel
+ObligationsResponse = _models.ObligationsResponse
+SpendingGroupModel = _models.SpendingGroupModel
+SpendingSummaryModel = _models.SpendingSummaryModel
+SubscriptionModel = _models.SubscriptionModel
+TransactionModel = _models.TransactionModel
+UpcomingBillItemModel = _models.UpcomingBillItemModel
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/finance", tags=["finance"])
 
 BUTLER_DB = "finance"
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _pool(db: DatabaseManager):
@@ -69,11 +59,11 @@ def _pool(db: DatabaseManager):
     """
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Finance butler database is not available",
-        )
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +177,8 @@ def _overlay_transaction_model(r) -> TransactionModel:
 
 @router.get("/expected-signals", response_model=FinanceExpectedSignalsResponse)
 async def get_finance_expected_signals(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> FinanceExpectedSignalsResponse:
     """Return state-only recurrence truth without implying payment behavior."""
     pool = _pool(db)
@@ -246,7 +237,8 @@ async def list_transactions(
     max_amount: float | None = Query(None, description="Filter by maximum amount"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[TransactionModel]:
     """List transactions with optional filters."""
     pool = _pool(db)
@@ -338,7 +330,8 @@ async def list_subscriptions(
     status: str | None = Query(None, description="Filter by status (active, cancelled, paused)"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[SubscriptionModel]:
     """List subscriptions with optional status filter."""
     pool = _pool(db)
@@ -360,6 +353,8 @@ async def list_subscriptions(
         f"SELECT id, service, amount, currency, frequency, next_renewal, status,"
         f" auto_renew, payment_method, account_id, source_message_id,"
         f" cancellation_url, notice_period_days, cancel_by, metadata,"
+        f" renewal_source, price_source, service_source, date_epoch, price_epoch,"
+        f" value_revision, field_claims,"
         f" created_at, updated_at"
         f" FROM finance.subscriptions{where}"
         f" ORDER BY next_renewal ASC"
@@ -377,6 +372,13 @@ async def list_subscriptions(
             currency=r["currency"],
             frequency=r["frequency"],
             next_renewal=str(r["next_renewal"]),
+            renewal_source=r.get("renewal_source", "extracted"),
+            price_source=r.get("price_source", "extracted"),
+            service_source=r.get("service_source", "extracted"),
+            date_epoch=r.get("date_epoch", 0),
+            price_epoch=r.get("price_epoch", 0),
+            value_revision=r.get("value_revision", 0),
+            field_claims=r.get("field_claims", []),
             status=r["status"],
             auto_renew=r["auto_renew"],
             payment_method=r["payment_method"],
@@ -405,7 +407,8 @@ async def list_subscriptions(
 
 @router.get("/obligations", response_model=ObligationsResponse)
 async def list_obligations(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ObligationsResponse:
     """List the forward obligation ledger, denormalized with each active
     subscription's service/amount and cancellation-door status.
@@ -477,7 +480,8 @@ async def list_bills(
     payee: str | None = Query(None, description="Filter by payee (case-insensitive substring)"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[BillModel]:
     """List bills with optional status and payee filters."""
     pool = _pool(db)
@@ -549,12 +553,85 @@ async def list_bills(
 # ---------------------------------------------------------------------------
 
 
+@router.get("/cost-claims", response_model=PaginatedResponse[CostClaimModel])
+async def list_cost_claims(
+    state: str | None = Query(None, description="Filter by reconciliation state"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    *,
+    db: Db,
+) -> PaginatedResponse[CostClaimModel]:
+    """List shared claims without granting Finance access to a sibling schema."""
+    pool = _pool(db)
+    condition = "WHERE r.state = $1" if state else ""
+    args: list[object] = [state] if state else []
+    total = (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.cost_claims c "
+            "LEFT JOIN public.cost_claim_resolutions r ON r.claim_id = c.id " + condition,
+            *args,
+        )
+        or 0
+    )
+    offset_pos = len(args) + 1
+    rows = await pool.fetch(
+        """
+        SELECT c.id, c.claim_key, c.asserted_by, c.kind, c.direction, c.amount,
+               c.currency, c.counterparty_entity_id, c.counterparty_label,
+               c.expected_on, c.description, c.asserted_at, c.superseded_at,
+               c.retracted_at, c.retraction_reason, r.state, r.matched_amount,
+               r.matched_currency, r.match_refs, r.unmatched_reason,
+               r.unverifiable_reason, r.evidence_horizon_at, r.decided_at
+        FROM public.cost_claims c
+        LEFT JOIN public.cost_claim_resolutions r ON r.claim_id = c.id
+        """
+        + condition
+        + f" ORDER BY c.asserted_at DESC, c.id DESC OFFSET ${offset_pos} LIMIT ${offset_pos + 1}",
+        *args,
+        offset,
+        limit,
+    )
+    data = [
+        CostClaimModel(
+            **{
+                **dict(row),
+                "id": str(row["id"]),
+                "amount": str(row["amount"]),
+                "matched_amount": (
+                    str(row["matched_amount"]) if row["matched_amount"] is not None else None
+                ),
+                "match_refs": row["match_refs"] or [],
+                "counterparty_entity_id": (
+                    str(row["counterparty_entity_id"])
+                    if row["counterparty_entity_id"] is not None
+                    else None
+                ),
+                "expected_on": str(row["expected_on"]) if row["expected_on"] else None,
+                "asserted_at": row["asserted_at"].isoformat(),
+                "superseded_at": (
+                    row["superseded_at"].isoformat() if row["superseded_at"] else None
+                ),
+                "retracted_at": (row["retracted_at"].isoformat() if row["retracted_at"] else None),
+                "evidence_horizon_at": (
+                    row["evidence_horizon_at"].isoformat() if row["evidence_horizon_at"] else None
+                ),
+                "decided_at": row["decided_at"].isoformat() if row["decided_at"] else None,
+            }
+        )
+        for row in rows
+    ]
+    return PaginatedResponse[CostClaimModel](
+        data=data, meta=PaginationMeta(total=total, offset=offset, limit=limit)
+    )
+
+
 @router.get("/accounts", response_model=PaginatedResponse[AccountModel])
 async def list_accounts(
     type: str | None = Query(None, description="Filter by account type"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[AccountModel]:
     """List accounts with optional type filter."""
     pool = _pool(db)
@@ -629,7 +706,8 @@ async def get_spending_summary(
     end_date: str | None = Query(None, description="End date (YYYY-MM-DD, inclusive)"),
     group_by: str = Query("category", description="Group by: category, merchant, week, month"),
     account_id: str | None = Query(None, description="Filter by account ID"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> SpendingSummaryModel:
     """Aggregate debit spending over a date range, grouped by the specified dimension."""
     pool = _pool(db)
@@ -759,7 +837,8 @@ async def get_spending_summary(
 async def get_upcoming_bills(
     days_ahead: int = Query(14, ge=1, le=365, description="Look-ahead window in days"),
     include_overdue: bool = Query(True, description="Include overdue bills"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict:
     """List bills due within the look-ahead window, with urgency classification."""
     pool = _pool(db)
@@ -869,7 +948,8 @@ async def get_upcoming_bills(
 async def bulk_ingest_transactions(
     http_request: Request,
     request: BulkTransactionRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> BulkTransactionResponse:
     """Bulk-ingest normalized transaction objects.
 
@@ -937,24 +1017,12 @@ async def bulk_ingest_transactions(
 # GET /merchants/distinct — distinct merchants with aggregate stats
 # ---------------------------------------------------------------------------
 
-_FACTS_TOOLS_PATH = Path(__file__).parents[1] / "tools" / "facts.py"
-
 
 def _load_facts_tools():
-    """Dynamically load the finance facts tools module."""
-    import importlib.util
-    import sys
+    """Return the canonical finance facts module, retaining the call-time patch seam."""
+    import importlib
 
-    module_name = "finance_facts_tools"
-    if module_name in sys.modules:
-        return sys.modules[module_name]
-
-    spec = importlib.util.spec_from_file_location(module_name, _FACTS_TOOLS_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    return importlib.import_module("butlers.tools.finance.facts")
 
 
 @router.get("/merchants/distinct", response_model=PaginatedResponse[DistinctMerchantModel])
@@ -965,7 +1033,8 @@ async def list_distinct_merchants(
     unnormalized_only: bool = Query(False, description="Only merchants without normalization"),
     offset: int = Query(0, ge=0),
     limit: int = Query(500, ge=1, le=1000),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[DistinctMerchantModel]:
     """Return distinct merchants from active transaction facts with aggregate stats."""
     pool = _pool(db)
@@ -1006,7 +1075,8 @@ async def list_distinct_merchants(
 async def bulk_update_transactions(
     http_request: Request,
     request: BulkUpdateRequestModel = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> BulkUpdateResponseModel:
     """Apply bulk metadata overlay to matching transaction facts.
 

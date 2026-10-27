@@ -1,84 +1,85 @@
-import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-} from "recharts";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useMemo } from "react";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { useMindMapAnalytics } from "@/hooks/use-education";
+import { TimeSeriesChart } from "@/components/ui/TimeSeriesChart";
+import { useTickingNow } from "@/hooks/use-ticking-now";
 import { chartColor } from "@/lib/chart-colors";
+import { DAY_MS, buildTimeSeries } from "@/lib/time-series";
 
+const TREND_DAYS = 30;
 interface MasteryTrendChartProps {
   mindMapId: string | null;
 }
 
 export default function MasteryTrendChart({ mindMapId }: MasteryTrendChartProps) {
-  const { data: analytics, isError, refetch } = useMindMapAnalytics(mindMapId, 30);
+  const { data: analytics, isError, refetch } = useMindMapAnalytics(mindMapId, TREND_DAYS);
 
-  const trendData = (analytics?.trend ?? []).map((entry) => ({
-    date: entry.snapshot_date,
-    mastery: Math.round(((entry.metrics?.mastery_pct as number) ?? 0) * 100),
-  }));
+  const windowEnd = useTickingNow(60_000);
+  const series = useMemo(() => {
+    return buildTimeSeries(
+      (analytics?.trend ?? []).map((entry) => ({
+        at: entry.snapshot_date,
+        values: {
+          mastery:
+            typeof entry.metrics?.mastery_pct === "number"
+              ? Math.round(entry.metrics.mastery_pct * 100)
+              : null,
+        },
+      })),
+      ["mastery"],
+      { windowStart: windowEnd - TREND_DAYS * DAY_MS, windowEnd, maxGapMs: 3 * DAY_MS },
+    );
+  }, [analytics, windowEnd]);
 
   if (!mindMapId) return null;
 
   if (isError) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Mastery Trend</CardTitle>
-        </CardHeader>
-        <CardContent className="flex h-72 items-center justify-center">
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Mastery Trend</SectionTitle>
+        </SectionHeader>
+        <SectionContent className="flex h-72 items-center justify-center">
           <SourceDegradedNote
             label="Mastery trend"
             detail="could not be reached"
             onRetry={() => void refetch()}
             testId="mastery-trend-chart-degraded"
           />
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
-  if (trendData.length === 0) {
+  if (series.observationCount === 0) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Mastery Trend</CardTitle>
-        </CardHeader>
-        <CardContent className="flex h-72 items-center justify-center text-muted-foreground">
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Mastery Trend</SectionTitle>
+        </SectionHeader>
+        <SectionContent className="flex h-72 items-center justify-center text-muted-foreground">
           Analytics will appear after the butler computes its first daily snapshot
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Mastery Trend (30 days)</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <ResponsiveContainer width="100%" height={288}>
-          <AreaChart data={trendData}>
-            <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-            <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} unit="%" />
-            <Tooltip
-              formatter={(value: number | undefined) => [`${value ?? 0}%`, "Mastery"]}
-            />
-            <Area
-              type="monotone"
-              dataKey="mastery"
-              stroke={chartColor()}
-              fill={chartColor()}
-              fillOpacity={0.2}
-            />
-          </AreaChart>
-        </ResponsiveContainer>
-      </CardContent>
-    </Card>
+    <Section>
+      <SectionHeader>
+        <SectionTitle>Mastery Trend (30 days)</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
+        <TimeSeriesChart
+          variant="area"
+          series={series}
+          lines={[{ key: "mastery", name: "Mastery", stroke: chartColor() }]}
+          height={288}
+          yDomain={[0, 100]}
+          yUnit="%"
+        />
+      </SectionContent>
+    </Section>
   );
 }

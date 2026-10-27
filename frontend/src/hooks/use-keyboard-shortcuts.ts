@@ -8,7 +8,8 @@ import { useEffect } from "react";
 import { useNavigate } from "react-router";
 import { dispatchOpenEntityFinder } from "@/lib/entity-finder";
 import { isEditableKeyboardTarget } from "@/lib/keyboard-target";
-import { dispatchOpenShortcutHelp } from "@/lib/shortcut-help";
+import { dispatchOpenChatWidget, dispatchOpenShortcutHelp } from "@/lib/shortcut-help";
+import { isBareKeyClaimedByPage } from "./use-register-shortcut";
 import { G_CHORD_ROUTES } from "@/lib/route-registry";
 
 export function useKeyboardShortcuts() {
@@ -45,6 +46,22 @@ export function useKeyboardShortcuts() {
       if (e.key === "?" && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         dispatchOpenShortcutHelp();
+        return;
+      }
+
+      // c → open/focus the floating chat widget's composer (bu-0ynlk.13).
+      // Deferred when: a g-chord is pending (g c → /entities/index?has=contact
+      // stays a chord destination, not this) or the current page already
+      // claims bare "c" itself (e.g. Calendar's "Create event").
+      if (
+        e.key === "c" &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !window.__pendingGNav &&
+        !isBareKeyClaimedByPage("c")
+      ) {
+        e.preventDefault();
+        dispatchOpenChatWidget();
         return;
       }
 

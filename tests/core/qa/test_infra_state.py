@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import asyncpg
 import pytest
@@ -31,6 +31,7 @@ from butlers.core.qa.sources.infra_state import (
     InfraStateSource,
 )
 from butlers.core.qa.sources.protocol import DiscoverySource
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -52,13 +53,6 @@ def test_backup_fact_reader_is_not_imported_from_the_api_router() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _row(fields: dict) -> MagicMock:
-    """Build a mock asyncpg Record from a plain dict."""
-    record = MagicMock()
-    record.__getitem__ = lambda self, key: fields[key]
-    return record
-
-
 class _FakePool:
     """Fake asyncpg pool: dispatches .fetch()/.fetchrow() by view/table name."""
 
@@ -67,15 +61,19 @@ class _FakePool:
         *,
         connector_rows: list | None = None,
         heartbeat_rows: list | None = None,
+        receiver_rows: list | None = None,
         deadman_ts: datetime | None = None,
         health_check_error: Exception | None = None,
     ) -> None:
         self._connector_rows = connector_rows or []
         self._heartbeat_rows = heartbeat_rows or []
+        self._receiver_rows = receiver_rows or []
         self._deadman_ts = deadman_ts
         self._health_check_error = health_check_error
+        self.executed: list[str] = []
 
     async def execute(self, sql: str, *args):
+        self.executed.append(sql)
         if self._health_check_error is not None:
             raise self._health_check_error
         return None
@@ -85,6 +83,8 @@ class _FakePool:
             return self._connector_rows
         if "v_qa_butler_heartbeat" in sql:
             return self._heartbeat_rows
+        if "v_qa_butler_receiver_state" in sql:
+            return self._receiver_rows
         raise AssertionError(f"Unexpected fetch: {sql}")
 
     async def fetchrow(self, sql: str, *args):
@@ -101,8 +101,8 @@ def _connector_row(
     error_message: str | None = None,
     last_heartbeat_at: datetime | None = None,
     first_seen_at: datetime | None = None,
-) -> MagicMock:
-    return _row(
+) -> Record:
+    return Record(
         {
             "connector_type": connector_type,
             "endpoint_identity": endpoint_identity,
@@ -121,14 +121,35 @@ def _heartbeat_row(
     registered_at: datetime | None = None,
     liveness_ttl_seconds: int = 300,
     quarantined_at: datetime | None = None,
-) -> MagicMock:
-    return _row(
+) -> Record:
+    return Record(
         {
             "name": name,
             "last_seen_at": last_seen_at,
             "registered_at": registered_at or (datetime.now(UTC) - timedelta(days=30)),
             "liveness_ttl_seconds": liveness_ttl_seconds,
             "quarantined_at": quarantined_at,
+        }
+    )
+
+
+def _receiver_row(
+    *,
+    name: str = "finance",
+    observed_state: str = "healthy",
+    healthy_observed_at: datetime | None = None,
+    current_boot_observed: bool = True,
+    registered_at: datetime | None = None,
+    liveness_ttl_seconds: int = 300,
+) -> Record:
+    return Record(
+        {
+            "name": name,
+            "observed_state": observed_state,
+            "healthy_observed_at": healthy_observed_at,
+            "current_boot_observed": current_boot_observed,
+            "registered_at": registered_at or (datetime.now(UTC) - timedelta(days=30)),
+            "liveness_ttl_seconds": liveness_ttl_seconds,
         }
     )
 
@@ -245,6 +266,72 @@ async def test_never_heartbeated_connector_past_grace_trips_a_finding(monkeypatc
 # ---------------------------------------------------------------------------
 # heartbeat-stale
 # ---------------------------------------------------------------------------
+
+
+async def test_receiver_health_ignores_expired_legacy_heartbeat(monkeypatch):
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+    monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
+    monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
+    pool = _FakePool(
+        heartbeat_rows=[_heartbeat_row(last_seen_at=datetime.now(UTC) - timedelta(hours=2))],
+        receiver_rows=[
+            _receiver_row(healthy_observed_at=datetime.now(UTC) - timedelta(seconds=10))
+        ],
+    )
+
+    assert await InfraStateSource(pool=pool).discover(lookback_minutes=15) == []
+
+
+@pytest.mark.parametrize(
+    ("observed_state", "current_boot_observed", "healthy_age_seconds"),
+    [
+        ("unavailable", True, 10),
+        ("healthy", False, 10),
+        ("healthy", True, 301),
+    ],
+)
+async def test_receiver_failed_or_stale_observation_trips_finding(
+    monkeypatch, observed_state, current_boot_observed, healthy_age_seconds
+):
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+    monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
+    monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
+    row = _receiver_row(
+        observed_state=observed_state,
+        current_boot_observed=current_boot_observed,
+        healthy_observed_at=datetime.now(UTC) - timedelta(seconds=healthy_age_seconds),
+    )
+
+    findings = await InfraStateSource(pool=_FakePool(receiver_rows=[row])).discover(
+        lookback_minutes=15
+    )
+
+    assert len(findings) == 1
+    assert findings[0].exception_type == "ButlerHeartbeatStale"
+    assert findings[0].source_butler == "finance"
+
+
+@pytest.mark.parametrize(
+    ("observed_state", "expected_findings"),
+    [("observer_unknown", 0), ("unavailable", 1)],
+)
+async def test_receiver_never_seen_grace_does_not_hide_a_failed_first_probe(
+    monkeypatch, observed_state, expected_findings
+):
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+    monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
+    monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
+    row = _receiver_row(
+        observed_state=observed_state,
+        healthy_observed_at=None,
+        registered_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+
+    findings = await InfraStateSource(pool=_FakePool(receiver_rows=[row])).discover(
+        lookback_minutes=15
+    )
+
+    assert len(findings) == expected_findings
 
 
 async def test_stale_butler_heartbeat_trips_a_finding(monkeypatch):
@@ -716,10 +803,16 @@ async def test_reconciliation_failure_never_breaks_findings_return(monkeypatch, 
     assert "condition-ledger reconciliation failed" in caplog.text
 
 
-async def test_health_check_failure_skips_reconciliation_entirely(monkeypatch):
-    """A total health-check failure must never reach reconcile_snapshot (skip, never resolve)."""
+@pytest.mark.parametrize("handoff", ["0", "1"])
+async def test_health_check_failure_skips_reconciliation_entirely(monkeypatch, handoff):
+    """A total health-check failure must never reach reconcile_snapshot (skip, never resolve).
+
+    After fleet-condition handoff the check targets the condition ledger the
+    fleet-control stage reads, not a per-butler liveness view.
+    """
     monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
+    monkeypatch.setenv("BUTLERS_FLEET_CONDITION_HANDOFF", handoff)
 
     pool = _FakePool(health_check_error=asyncpg.PostgresError("permission denied"))
     with (
@@ -731,3 +824,6 @@ async def test_health_check_failure_skips_reconciliation_entirely(monkeypatch):
         await InfraStateSource(pool=pool).discover(lookback_minutes=15)
 
     mock_reconcile.assert_not_awaited()
+    [health_check] = pool.executed
+    assert ("public.infra_conditions" in health_check) is (handoff == "1")
+    assert ("v_qa_butler" in health_check) is (handoff == "0")
