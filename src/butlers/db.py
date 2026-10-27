@@ -373,6 +373,19 @@ class Database:
         """Separate schema-less administrative utilities from runtime pools."""
         return self.schema is not None or self.role is not None
 
+    @staticmethod
+    def _owner_may_delegate(owner_schema: str | None, target: str | None) -> bool:
+        """Own schema, Chronicler's private memory, or the shared ``public`` schema.
+
+        ``public`` is already on every runtime search path, so a ``public``-only
+        child under the owner's verified role confers no additional authority.
+        """
+        return (
+            target == owner_schema
+            or target == "public"
+            or (owner_schema, target) == ("chronicler", "chronicler_mem")
+        )
+
     def for_owned_schema(self, schema: str) -> Database:
         """Bind a module pool to this established primary owner, not a target role.
 
@@ -390,11 +403,16 @@ class Database:
         ):
             raise RuntimeError("Runtime database primary owner is not established")
         target = _normalize_schema_name(schema)
-        if target != self.schema and (self.schema, target) != ("chronicler", "chronicler_mem"):
+        if not self._owner_may_delegate(self.schema, target):
             raise RuntimeError("Runtime database cannot access an unowned schema")
         profile = self._runtime_profile
+        # ``public`` is a fixed member of every runtime search path. Narrowing
+        # to it changes neither the authenticated owner nor object privileges;
+        # every acquisition still verifies the held profile and native USAGE.
         if profile is None or (
-            target != profile.primary_schema and target not in profile.private_schemas
+            target != "public"
+            and target != profile.primary_schema
+            and target not in profile.private_schemas
         ):
             raise RuntimeError("Runtime database private schema is not declared")
         child = Database(
@@ -435,10 +453,7 @@ class Database:
                 or owner._verified_role != owner.role
                 or self.role != owner.role
                 or self._runtime_profile is not owner._runtime_profile
-                or (
-                    self.schema != owner.schema
-                    and (owner.schema, self.schema) != ("chronicler", "chronicler_mem")
-                )
+                or not self._owner_may_delegate(owner.schema, self.schema)
             ):
                 raise RuntimeError("Runtime database owned schema identity is unavailable")
         elif self.schema is not None and self.role != f"butler_{self.schema}_rw":

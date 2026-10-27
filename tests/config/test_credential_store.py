@@ -322,7 +322,10 @@ async def test_daemon_flat_topology_marks_its_pool_as_explicit_codex_authority()
                 await ButlerDaemon.__new__(ButlerDaemon)._build_credential_store(local_pool)
 
 
-async def test_daemon_credential_cleanup_retains_release_and_dependent_close() -> None:
+@pytest.mark.parametrize("diagnostic_target", ["credential", "shared_reader"])
+async def test_daemon_credential_cleanup_retains_release_and_dependent_close(
+    diagnostic_target: str,
+) -> None:
     """Cancellation leaves one physical owner and fences the dependent main DB."""
     from butlers.db_authority.catalog import observe_catalog_owned
     from butlers.lifecycle import _shutdown_chronicler_dependents
@@ -339,10 +342,15 @@ async def test_daemon_credential_cleanup_retains_release_and_dependent_close() -
     async def close_credential():
         order.append("credential_closed")
 
+    async def close_shared():
+        order.append("shared_closed")
+
     async def close_main():
         order.append("main_closed")
 
     pool = SimpleNamespace(close=AsyncMock(side_effect=close_credential))
+    shared_pool = SimpleNamespace(close=AsyncMock(side_effect=close_shared))
+    shared_db = SimpleNamespace(pool=shared_pool)
     daemon = SimpleNamespace(
         _active_modules=[],
         _modules=[],
@@ -350,9 +358,11 @@ async def test_daemon_credential_cleanup_retains_release_and_dependent_close() -
         _db_log_handler=None,
         _audit_db=None,
         _credential_purpose_pool=pool,
+        _shared_credentials_db=shared_db,
         db=SimpleNamespace(close=AsyncMock(side_effect=close_main)),
     )
-    diagnostic = asyncio.create_task(observe_catalog_owned(pool, operation))
+    diagnostic_pool = pool if diagnostic_target == "credential" else shared_pool
+    diagnostic = asyncio.create_task(observe_catalog_owned(diagnostic_pool, operation))
     await entered.wait()
     diagnostic.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -366,13 +376,27 @@ async def test_daemon_credential_cleanup_retains_release_and_dependent_close() -
             caller.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await caller
-            assert daemon._credential_purpose_pool is pool
-            pool.close.assert_not_awaited()
+            if diagnostic_target == "credential":
+                assert daemon._credential_purpose_pool is pool
+                pool.close.assert_not_awaited()
+            else:
+                assert daemon._credential_purpose_pool is None
+                pool.close.assert_awaited_once()
+            assert daemon._shared_credentials_db is shared_db
+            shared_pool.close.assert_not_awaited()
             daemon.db.close.assert_not_awaited()
         release.set()
         await asyncio.wait_for(asyncio.shield(daemon._credential_dependents_close_task), 1)
-        assert order == ["released", "credential_closed", "main_closed"]
+        expected = (
+            ["released", "credential_closed", "shared_closed", "main_closed"]
+            if diagnostic_target == "credential"
+            else ["credential_closed", "released", "shared_closed", "main_closed"]
+        )
+        assert order == expected
         assert daemon._credential_purpose_pool is None
+        assert daemon._shared_credentials_db is None
+        assert shared_db.pool is None
+        shared_pool.close.assert_awaited_once()
         pool.close.assert_awaited_once()
         daemon.db.close.assert_awaited_once()
         await _shutdown_chronicler_dependents(daemon)
@@ -381,6 +405,136 @@ async def test_daemon_credential_cleanup_retains_release_and_dependent_close() -
         release.set()
         if hasattr(daemon, "_credential_dependents_close_task"):
             await daemon._credential_dependents_close_task
+
+    failure = RuntimeError("synthetic shared reader close failure")
+    failed_pool = SimpleNamespace(close=AsyncMock(side_effect=failure))
+    failed_reader = SimpleNamespace(pool=failed_pool)
+    failed_daemon = SimpleNamespace(
+        _active_modules=[],
+        _modules=[],
+        blob_store=None,
+        _db_log_handler=None,
+        _audit_db=None,
+        _credential_purpose_pool=None,
+        _shared_credentials_db=failed_reader,
+        db=SimpleNamespace(close=AsyncMock()),
+    )
+    with pytest.raises(RuntimeError) as failed:
+        await _shutdown_chronicler_dependents(failed_daemon)
+    assert failed.value is failure
+    assert failed_daemon._shared_credentials_db is failed_reader
+    assert failed_reader.pool is failed_pool
+    failed_daemon.db.close.assert_not_awaited()
+
+
+def _established_owner(schema: str = "chronicler"):
+    from butlers.db import Database
+
+    owner = Database(db_name="butlers", schema=schema, role=f"butler_{schema}_rw")
+    owner.pool = _make_pool()
+    owner._role_verified = True
+    owner._verified_role = owner.role
+    from butlers.db_authority.roles import load_runtime_profile
+
+    owner._runtime_profile = load_runtime_profile(owner.db_name, owner.schema, owner.role)
+    return owner
+
+
+def test_owner_delegates_public_but_not_sibling_schema() -> None:
+    """REQ-database-security-012: shared ``public`` reads keep the owner's role."""
+    owner = _established_owner()
+
+    shared = owner.for_owned_schema("public")
+    shared._validate_runtime_role()
+    assert (shared.schema, shared.role) == ("public", "butler_chronicler_rw")
+    assert shared._runtime_profile is owner._runtime_profile
+    assert shared._owner_pool is owner.pool
+
+    with pytest.raises(RuntimeError, match="unowned schema"):
+        owner.for_owned_schema("switchboard")
+
+
+@pytest.mark.parametrize("configured_writer", [False, True])
+async def test_daemon_schema_topology_reads_shared_credentials_under_its_role(
+    configured_writer: bool,
+) -> None:
+    """Public read fallback keeps its role; only the explicit purpose writes globally."""
+    from butlers.daemon import ButlerDaemon
+    from butlers.db import Database
+    from butlers.db_authority.roles import AuthorityError
+
+    local_pool = _make_pool()
+    shared_pool = _make_pool()
+    shared_pool.close = AsyncMock()
+    writer_pool = _make_pool()
+    daemon = ButlerDaemon.__new__(ButlerDaemon)
+    daemon.config = SimpleNamespace(db_schema="chronicler", db_name="butlers")
+    daemon.db = _established_owner()
+    daemon._shared_credentials_db = None
+
+    async def connect(db: Database):
+        db._validate_runtime_role()  # the real connect's first refusal
+        db.pool = shared_pool
+        return shared_pool
+
+    selected = (
+        {
+            "BUTLERS_CREDENTIAL_DATABASE_URL": "postgresql://credential_login:synthetic@localhost/butlers",
+            "BUTLER_SHARED_DB_NAME": "  butlers  ",
+        }
+        if configured_writer
+        else {}
+    )
+    with (
+        patch.dict(
+            os.environ, {**selected, "BUTLER_SHARED_DB_NAME": "other-reader-target"}, clear=True
+        ),
+        patch.object(
+            Database, "for_owned_schema", side_effect=AssertionError("reader allocated")
+        ) as delegated,
+        patch(
+            "butlers.daemon.create_system_global_credential_store_from_env", new=AsyncMock()
+        ) as rejected_writer,
+    ):
+        with pytest.raises(AuthorityError, match="reader target"):
+            await daemon._build_credential_store(local_pool)
+        delegated.assert_not_called()
+        rejected_writer.assert_not_awaited()
+        assert daemon._shared_credentials_db is None
+    try:
+        with (
+            patch.dict(os.environ, selected, clear=True),
+            patch.object(Database, "connect", new=connect),
+            patch.object(Database, "provision", new=AsyncMock()) as provision,
+            patch(
+                "butlers.credential_store.ensure_secrets_schema", new=AsyncMock()
+            ) as ensure_schema,
+            patch(
+                "butlers.daemon.create_system_global_credential_store_from_env",
+                new=AsyncMock(
+                    return_value=CredentialStore(writer_pool, system_global_pool=writer_pool)
+                ),
+            ) as writer_factory,
+        ):
+            store = await daemon._build_credential_store(local_pool)
+        assert store.shared_pool is shared_pool
+        shared_db = daemon._shared_credentials_db
+        assert (shared_db.schema, shared_db.role) == ("public", "butler_chronicler_rw")
+        assert shared_db._runtime_profile is daemon.db._runtime_profile
+        provision.assert_not_awaited()
+        ensure_schema.assert_not_awaited()
+        if configured_writer:
+            assert store.require_system_global_pool() is writer_pool
+            assert daemon._credential_purpose_pool is writer_pool
+            writer_factory.assert_awaited_once_with()
+        else:
+            assert not store.has_system_global_authority
+            with pytest.raises(RuntimeError, match="system-global.*authority"):
+                store.require_system_global_pool()
+            writer_factory.assert_not_awaited()
+    finally:
+        if daemon._shared_credentials_db is not None:
+            await daemon._shared_credentials_db.close()
 
 
 async def test_connector_global_codex_authority_uses_its_own_writable_pool(

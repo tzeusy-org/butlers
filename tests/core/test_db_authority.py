@@ -716,11 +716,12 @@ async def test_unreadable_and_cancelled_catalog_preserve_cause_and_cleanup(drive
     connection.terminate.assert_called_once()
 
 
-async def test_private_child_holds_primary_profile_and_lifetime(driver, monkeypatch):
+@pytest.mark.parametrize("target_schema", ["chronicler_mem", "public"])
+async def test_private_child_holds_primary_profile_and_lifetime(driver, monkeypatch, target_schema):
     connection, _, _ = driver
     primary = _runtime("chronicler")
     await primary.connect()
-    child = primary.for_owned_schema("chronicler_mem")
+    child = primary.for_owned_schema(target_schema)
     assert child._runtime_profile is primary._runtime_profile
     monkeypatch.setattr(
         "butlers.db.load_runtime_profile", Mock(side_effect=AssertionError("reload"))

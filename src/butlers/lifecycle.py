@@ -989,6 +989,25 @@ async def _shutdown_chronicler_dependents(daemon: Any) -> None:
                 await close_after_catalog_diagnostics(
                     credential_pool, on_closed=credential_closed, wait_timeout=None
                 )
+            shared_db = getattr(daemon, "_shared_credentials_db", None)
+            if shared_db is not None:
+                shared_pool = shared_db.pool
+                if shared_pool is not None:
+                    from butlers.db_authority.catalog import close_after_catalog_diagnostics
+
+                    def shared_closed() -> None:
+                        if shared_db.pool is shared_pool:
+                            shared_db.pool = None
+                            if daemon._shared_credentials_db is shared_db:
+                                daemon._shared_credentials_db = None
+
+                    await close_after_catalog_diagnostics(
+                        shared_pool, on_closed=shared_closed, wait_timeout=None
+                    )
+                    if shared_db.pool is not None or daemon._shared_credentials_db is not None:
+                        raise RuntimeError("Shared credential reader close identity changed")
+                else:
+                    daemon._shared_credentials_db = None
             if daemon.db:
                 await daemon.db.close()
 

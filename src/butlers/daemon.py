@@ -86,6 +86,7 @@ from butlers.credential_store import (
     CredentialStore,
     create_system_global_credential_store_from_env,
     resolve_owner_entity_info,
+    shared_db_name_from_env,
 )
 from butlers.daemon_utils import (
     _extract_identity_scope_credentials,
@@ -271,6 +272,7 @@ class ButlerDaemon:
         # gate scheduled dispatch on eligibility_state. Set during startup.
         self._audit_pool: asyncpg.Pool | None = None
         self._credential_purpose_pool: asyncpg.Pool | None = None
+        self._shared_credentials_db: Database | None = None
         self._credential_store: CredentialStore | None = None
         # Cached park -> Switchboard delivery boundary (bu-mda0r). Built once
         # in _apply_approval_gates() (after the credential store and DB pool
@@ -2198,24 +2200,42 @@ class ButlerDaemon:
         await run_shutdown(self)
 
     async def _build_credential_store(self, local_pool: asyncpg.Pool) -> CredentialStore:
-        """Keep local resolution separate from explicit global writer authority.
+        """Separate local/shared reads from the explicit global writer purpose.
 
-        An unconfigured global purpose is absent, never inferred from topology
-        or the primary database name. A configured purpose must pass its actual
-        native admission; failures propagate. Serving never provisions a DB.
+        A public-only child keeps the primary's admitted role and profile; it
+        supplies read fallback, never Codex authority. Only the configured
+        credential purpose supplies system-global authority. Neither path
+        provisions a database or repairs its schema during serving startup.
         """
         from butlers.db_authority.roles import AuthorityError
 
         if getattr(self, "_credential_purpose_pool", None) is not None:
             raise AuthorityError("Daemon credential purpose is already owned")
+        if getattr(self, "_shared_credentials_db", None) is not None:
+            raise AuthorityError("Daemon shared credential reader is already owned")
+        fallback_pools: list[asyncpg.Pool] = []
+        primary = getattr(self, "db", None)
+        if isinstance(primary, Database) and getattr(
+            getattr(self, "config", None), "db_schema", None
+        ):
+            if (
+                "BUTLER_SHARED_DB_NAME" in os.environ
+                and shared_db_name_from_env() != primary.db_name
+            ):
+                raise AuthorityError("Shared credential reader target is not the primary database")
+            shared_db = primary.for_owned_schema("public")
+            # Retain ownership before an awaited connection can fail/cancel.
+            self._shared_credentials_db = shared_db
+            fallback_pools.append(await shared_db.connect())
         if "BUTLERS_CREDENTIAL_DATABASE_URL" not in os.environ:
-            return CredentialStore(local_pool)
+            return CredentialStore(local_pool, fallback_pools=fallback_pools)
         authority = await create_system_global_credential_store_from_env()
         pool = authority.require_system_global_pool()
         # Retain physical ownership before publishing the layered store. Failed
         # startup and shutdown use the same diagnostic-aware close fence.
         self._credential_purpose_pool = pool
-        return CredentialStore(local_pool, fallback_pools=[pool], system_global_pool=pool)
+        fallback_pools.append(pool)
+        return CredentialStore(local_pool, fallback_pools=fallback_pools, system_global_pool=pool)
 
     @staticmethod
     def _validate_dashboard_read_arguments(tool_name: str, arguments: dict[str, Any]) -> None:
