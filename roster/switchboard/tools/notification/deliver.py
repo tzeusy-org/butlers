@@ -911,6 +911,7 @@ async def deliver(
                     if terminal.get("partial_delivery")
                     else "telegram_delivery_uncertain"
                 )
+                span.set_status(trace.StatusCode.ERROR, terminal_reason)
                 # Preserve the route's existing error ABI; typed fields fence replay.
                 failure = (
                     str(candidate_result["error"])

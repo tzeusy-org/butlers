@@ -1722,15 +1722,19 @@ async def _insert_event(
     all_day: bool = False,
     metadata: dict | None = None,
     booked: bool = False,
+    source_butler: str | None = None,
 ) -> str:
     """A calendar event; ``booked`` adds Health's applied ``workspace_user_create`` log row."""
     event_id = str(uuid.uuid4())
+    source_column = ", source_butler" if source_butler is not None else ""
+    source_parameter = ", $10" if source_butler is not None else ""
+    source_args = (source_butler,) if source_butler is not None else ()
     await pool.execute(
-        """
+        f"""
         INSERT INTO calendar_events
             (id, source_id, origin_ref, title, timezone, starts_at, ends_at, all_day,
-             status, metadata)
-        VALUES ($1::uuid, $2::uuid, $3, $4, 'UTC', $5, $6, $7, $8, $9)
+             status, metadata{source_column})
+        VALUES ($1::uuid, $2::uuid, $3, $4, 'UTC', $5, $6, $7, $8, $9{source_parameter})
         """,
         event_id,
         source_id,
@@ -1741,6 +1745,7 @@ async def _insert_event(
         all_day,
         status,
         metadata or {},
+        *source_args,
     )
     if booked:
         await pool.execute(
@@ -2263,7 +2268,11 @@ async def test_migrated_visit_brief_terminal_digest_survives_independent_readbac
     try:
         source = await _insert_source(pool, health=True)
         event_id = await _insert_event(
-            pool, source, title="Controlled appointment", starts_at=now + timedelta(hours=1)
+            pool,
+            source,
+            title="Controlled appointment",
+            starts_at=now + timedelta(hours=1),
+            source_butler="health",
         )
         first = await brief.run_visit_brief(pool, notify_fn=send, now=now)
         second = await brief.run_visit_brief(pool, notify_fn=send, now=now)

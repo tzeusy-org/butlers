@@ -246,11 +246,10 @@ async def record_attention_event(
 
     priority_label, priority_score = normalize_priority(priority)
 
-    # Pre-serialize + explicit ::jsonb cast (not a raw dict bind): portable
-    # across both a pool with a registered dict->jsonb codec (production, via
-    # Database.connect()) and a bare asyncpg pool with no custom codec (tests
-    # that connect directly). Mirrors the existing pattern in
-    # propose_insight_candidate() — never bind a raw dict without this cast.
+    # Bind serialized JSON as text, then convert it to JSONB in PostgreSQL.
+    # A direct JSONB parameter would run the production codec's encoder again,
+    # storing a JSON string instead of an object. Text also works on bare
+    # asyncpg pools without that codec, and None remains SQL NULL.
     if session_id:
         metadata = {**(metadata or {}), ATTENTION_LEDGER_SESSION_KEY: session_id}
     metadata_json = json.dumps(metadata) if metadata is not None else None
@@ -261,7 +260,7 @@ async def record_attention_event(
             INSERT INTO public.attention_ledger
                 (origin_butler, source, channel, intent, priority_label,
                  priority_score, dedup_key, outcome, reason, notification_ref, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text::jsonb)
             RETURNING id
             """,
             origin_butler,
