@@ -681,7 +681,9 @@ def test_bootstrap_checker_is_read_only_fail_closed_and_distinguishes_connection
         dict(
             role=permission.role,
             schema=row.schema,
-            kind={"table": "r", "view": "v", "sequence": "S"}[row.kind.value],
+            kind={"table": "r", "view": "v", "materialized_view": "m", "sequence": "S"}[
+                row.kind.value
+            ],
             privilege=verb,
         )
         for row in manifest.relations
