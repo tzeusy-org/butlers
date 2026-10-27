@@ -105,7 +105,11 @@ async def _candidate(conn: Any, day: date, timezone: str, *, lock: bool = False)
              FROM sessions
             WHERE success IS TRUE AND trigger_source = $1
               AND EXISTS (
-                  SELECT 1 FROM jsonb_array_elements(tool_calls) AS b
+                  -- CASE, not an AND guard: SQL does not order predicate evaluation,
+                  -- and legacy rows hold a double-encoded string here.
+                  SELECT 1 FROM jsonb_array_elements(
+                      CASE WHEN jsonb_typeof(tool_calls) = 'array'
+                           THEN tool_calls ELSE '[]'::jsonb END) AS b
                    WHERE b->>'name' = 'chronicler_day_close_bundle'
                      AND b->'input'->>'date_label' = $2
                      AND b->'input'->>'timezone' = $3)

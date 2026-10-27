@@ -29,11 +29,13 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp import FastMCP
 from pydantic import BaseModel, ValidationError
 
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.modules.base import Module, ToolMeta
 from butlers.modules.qa import QaConfig, QaModule, _qa_finding_from_row
+from butlers.testing.mcp import registered_tools as snapshot_registered_tools
 
 pytestmark = pytest.mark.unit
 
@@ -117,17 +119,9 @@ class TestModuleABCAndConfig:
 
     async def test_registers_all_tools(self):
         mod = _make_module()
-        registered_tools: list[str] = []
-
-        class FakeMCP:
-            def tool(self):
-                def decorator(fn):
-                    registered_tools.append(fn.__name__)
-                    return fn
-
-                return decorator
-
-        await mod.register_tools(FakeMCP(), QaConfig(), _make_db(), "test-butler")
+        mcp = FastMCP("qa-registration-test-tools")
+        await mod.register_tools(mcp, QaConfig(), _make_db(), "test-butler")
+        registered_tools = await snapshot_registered_tools(mcp)
         for name in ["report_finding", "force_patrol", "get_qa_status"]:
             assert name in registered_tools
 

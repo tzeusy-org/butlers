@@ -55,11 +55,11 @@ Send and reply share one safe renderer and lossless source splitter. Each reques
 
 A per-chat lock keeps a logical send's chunks together. The first chunk carries reply threading; the final chunk carries its keyboard. Each chunk must have `ok=true` and a positive integer `message_id`. A multi-chunk response returns the last chunk's response with every accepted ID in `result.message_ids`; audits retain all IDs. Splitting happens after the existing exact-text approval and once-per-send permission check.
 
-An explicit HTTP 400 parse-entities rejection permits one resend of that chunk as its original raw source without parse mode. Other 400s are not retried. Actual rejected 429s allow at most two provider-declared retries inside a shared 30-second retry budget. Timeouts and unknown receipts do not authorize effect replay. If a later chunk fails, `TelegramPartialDeliveryError` carries only confirmed prefix IDs, with audit category `telegram_partial_delivery`. Messenger exposes `partial_delivery=true, retryable=false`. A first unknown effect is distinct `telegram_effect_uncertain=true`, without invented prefix IDs.
+An explicit HTTP 400 parse-entities rejection permits one ordered fallback sequence containing that chunk's exact original raw source without parse mode. Each request holds at most 4000 UTF-16 units; source that fits uses one request. Other 400s are not retried. Actual rejected 429s allow at most two provider-declared retries inside a shared 30-second retry budget. Timeouts and unknown receipts do not authorize effect replay. If a later chunk fails, `TelegramPartialDeliveryError` carries only confirmed prefix IDs, with audit category `telegram_partial_delivery`. Messenger exposes `partial_delivery=true, retryable=false`. A first unknown effect is distinct `telegram_effect_uncertain=true`, without invented prefix IDs.
 
 Automatic deferred/Secrets/Insight/Health consumers record the failed tail in their existing terminal stores and do not resend the original text. A failed bookkeeping operation leaves a process-local exact-work fence; subsequent admissions settle that old work before fresh selection. After settlement, the existing stored terminal state prevents restart replay. The unresolved latch does not survive process death: there is no new durable chunk outbox or crash-atomic provider/database guarantee. Ordinary legacy failures and proven-not-attempted/read-only retries retain their existing behavior. Approval recovery retains its existing durable ambiguous-handoff fence.
 
-Edits cannot add messages. They clamp source conservatively to 4000 UTF-16 units including `… (truncated)`, use the same renderer and parse fallback, and retain the existing structured refusal for other 400s. Inert sends bypass rendering, split raw text with a per-chunk UTF-16 `pre` entity and keep previews disabled. Ordinary sends gain no `link_preview_options` override.
+Edits cannot add messages. They clamp source conservatively to 4000 UTF-16 units including `… (truncated)`, use the same renderer and at most one bounded plain edit after explicit parse rejection, and retain the existing structured refusal for other 400s. Inert sends bypass rendering, split raw text with a per-chunk UTF-16 `pre` entity and keep previews disabled. Ordinary sends gain no `link_preview_options` override.
 
 ## Lifecycle Reactions
 
@@ -95,19 +95,19 @@ None.
 - [Contacts Module](contacts.md) -- Telegram contact sync
 
 
-### Proposed fallback representation (pending criterion reconciliation)
+### Approved raw-source fallback sequence
 
-The reviewed 3999-unit fenced-code boundary exposes incompatible literal limits:
-its rendered line fits 4000 visible UTF-16 units, while its exact original source
-including fences exceeds 4000 raw units. The current correction candidate retains
-the whole rendered line and lossless source span, then, only on explicit parse
-rejection, sends that span as bounded plain-text requests in order. Every request
-requires its own exact positive receipt; failure retains only the accepted prefix.
+The authenticated Choice A decision for `bu-olvyv5` permits a long chunk's
+fallback to use one ordered sequence of its exact original raw source. A
+3999-unit fenced-code line can fit the visible bound while its opening and
+closing fences push the raw span past that bound. Only a proven parse-entities
+rejection permits splitting that raw span into requests of at most 4000 UTF-16
+units; a fitting span uses one request. Every request requires its own exact
+positive receipt, and failure retains only the accepted prefix without replay.
 The chat lock, original deadline, shared rate-retry allowance, first accepted
 reply reference and final keyboard cover the complete sequence. Plain requests
-cannot fall back again. This is a proposed replacement for the literal **single
-plain-text resend** criterion, not a claim that multiple requests satisfy it.
-No canonical acceptance criterion has been changed or waived.
+cannot fall back again, and another HTTP 400 cannot enter this path. Edits keep
+their single bounded plain edit fallback and cannot append messages.
 
 Credential-transition admission now requires a successful existing audit lookup.
 An unavailable read is unknown and prevents sending; a genuinely absent marker,

@@ -34,6 +34,7 @@ from butlers.modules.email import EmailConfig, EmailModule
 from butlers.modules.telegram import TelegramModule
 from butlers.modules.whatsapp import WhatsAppModule
 from butlers.testing.approval_parking_fake import record_pending_action
+from butlers.testing.mcp import tool_fn
 
 pytestmark = pytest.mark.unit
 
@@ -963,36 +964,6 @@ class TestNotifyTelegramRecipientValidation:
 # ---------------------------------------------------------------------------
 
 
-def _make_mock_mcp() -> MagicMock:
-    """Create a mock FastMCP server with tool registration."""
-    mock_mcp = MagicMock()
-    _tools: dict[str, Any] = {}
-
-    class FakeTool:
-        def __init__(self, name: str, fn: Any):
-            self.name = name
-            self.fn = fn
-
-    async def get_tool(name: str) -> Any:
-        return _tools.get(name)
-
-    async def list_tools() -> list[Any]:
-        return list(_tools.values())
-
-    mock_mcp.get_tool = get_tool
-    mock_mcp.list_tools = list_tools
-
-    def tool_decorator(*_a, **_kw):
-        def dec(fn):
-            _tools[fn.__name__] = FakeTool(fn.__name__, fn)
-            return fn
-
-        return dec
-
-    mock_mcp.tool = tool_decorator
-    return mock_mcp
-
-
 @pytest.mark.asyncio
 class TestMessengerApprovalGate:
     """Messenger approval gates MUST block non-owner email targets."""
@@ -1003,7 +974,7 @@ class TestMessengerApprovalGate:
         pool.register_contact("email", OWNER_EMAIL, _owner_contact())
         # UNKNOWN_EMAIL is NOT registered
 
-        mcp = _make_mock_mcp()
+        mcp = FastMCP("email-approval-gate")
 
         # Register the tool on the mock MCP
         @mcp.tool()
@@ -1020,8 +991,8 @@ class TestMessengerApprovalGate:
         await apply_approval_gates(mcp, config, pool)
 
         # Now call the gated tool with an unknown email
-        tool = await mcp.get_tool("email_send_message")
-        result = await tool.fn(
+        tool = await tool_fn(mcp, "email_send_message")
+        result = await tool(
             to=UNKNOWN_EMAIL,
             subject="Test",
             body="Hello",
@@ -1038,7 +1009,7 @@ class TestMessengerApprovalGate:
         pool = _MockPool()
         pool.register_contact("email", OWNER_EMAIL, _owner_contact())
 
-        mcp = _make_mock_mcp()
+        mcp = FastMCP("email-approval-gate")
 
         @mcp.tool()
         async def email_send_message(to: str, subject: str, body: str) -> dict:
@@ -1053,12 +1024,12 @@ class TestMessengerApprovalGate:
 
         await apply_approval_gates(mcp, config, pool)
 
-        tool = await mcp.get_tool("email_send_message")
+        tool = await tool_fn(mcp, "email_send_message")
         with patch(
             "butlers.identity.resolve_owner_channel_via_definer",
             new=AsyncMock(return_value=(_owner_contact(), True)),
         ):
-            result = await tool.fn(to=OWNER_EMAIL, subject="Report", body="Weekly summary")
+            result = await tool(to=OWNER_EMAIL, subject="Report", body="Weekly summary")
 
         assert result.get("status") == "sent", (
             f"email_send_message to owner MUST be auto-approved, got: {result}"
@@ -1070,7 +1041,7 @@ class TestMessengerApprovalGate:
         pool = _MockPool()
         # Register only owner, leave unknown addresses unregistered
 
-        mcp = _make_mock_mcp()
+        mcp = FastMCP("email-approval-gate")
 
         @mcp.tool()
         async def email_reply_to_thread(
@@ -1087,8 +1058,8 @@ class TestMessengerApprovalGate:
 
         await apply_approval_gates(mcp, config, pool)
 
-        tool = await mcp.get_tool("email_reply_to_thread")
-        result = await tool.fn(
+        tool = await tool_fn(mcp, "email_reply_to_thread")
+        result = await tool(
             to="notification-thealbatrossfile@nlb.gov.sg",
             thread_id="thread-abc",
             body="I've recorded your booking",
@@ -1107,7 +1078,7 @@ class TestMessengerApprovalGate:
         pool.register_contact("email", OWNER_EMAIL, _owner_contact())
         pool.register_contact("email", KNOWN_NON_OWNER_EMAIL, _non_owner_contact())
 
-        mcp = _make_mock_mcp()
+        mcp = FastMCP("email-approval-gate")
 
         @mcp.tool()
         async def email_send_message(to: str, subject: str, body: str) -> dict:
@@ -1122,8 +1093,8 @@ class TestMessengerApprovalGate:
 
         await apply_approval_gates(mcp, config, pool)
 
-        tool = await mcp.get_tool("email_send_message")
-        result = await tool.fn(
+        tool = await tool_fn(mcp, "email_send_message")
+        result = await tool(
             to=KNOWN_NON_OWNER_EMAIL,
             subject="Hi",
             body="Hello friend",
@@ -1216,7 +1187,7 @@ class TestIncidentReplay:
         pool = _MockPool()
         pool.register_contact("email", OWNER_EMAIL, _owner_contact())
 
-        mcp = _make_mock_mcp()
+        mcp = FastMCP("email-approval-gate")
 
         @mcp.tool()
         async def email_reply_to_thread(
@@ -1233,8 +1204,8 @@ class TestIncidentReplay:
 
         await apply_approval_gates(mcp, config, pool)
 
-        tool = await mcp.get_tool("email_reply_to_thread")
-        result = await tool.fn(
+        tool = await tool_fn(mcp, "email_reply_to_thread")
+        result = await tool(
             to="notification-thealbatrossfile@nlb.gov.sg",
             thread_id="thread-albatross",
             body=(

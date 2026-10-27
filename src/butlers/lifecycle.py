@@ -749,6 +749,7 @@ async def run_shutdown(daemon: Any) -> None:
         if (
             getattr(daemon, "_catalog_publication", None) is None
             and vars(daemon).get("_chronicler_refresh_service") is None
+            and vars(daemon).get("_finance_warning_control_owner") is None
         ):
             await _run_shutdown(daemon)
             return
@@ -789,6 +790,9 @@ async def _run_shutdown(daemon: Any) -> None:
         daemon.config.name if daemon.config else "unknown",
     )
 
+    finance_owner = vars(daemon).get("_finance_warning_control_owner")
+    if finance_owner is not None:
+        finance_owner.stop_admission()
     daemon._shutting_down = True
     daemon._accepting_connections = False
     if daemon._boot_registration_task is not None:
@@ -819,6 +823,7 @@ async def _shutdown_resources(daemon: Any) -> None:
     """Existing resource teardown, also reached after catalog close refusal."""
 
     refresh_owner = vars(daemon).get("_chronicler_refresh_service")
+    finance_owner = vars(daemon).get("_finance_warning_control_owner")
     deadline = asyncio.get_running_loop().time() + (
         daemon.config.shutdown_timeout_s if daemon.config else 30.0
     )
@@ -906,19 +911,26 @@ async def _shutdown_resources(daemon: Any) -> None:
             pass
         daemon._liveness_reporter_task = None
 
-    if refresh_owner is not None:
-        settled = await refresh_owner.close(max(0, deadline - asyncio.get_running_loop().time()))
-        if not settled:
-            # Preserve every remaining resource while the exact physical pool
-            # still owns work or a shielded native holder reset. No second close.
-            async def finish():
-                await refresh_owner.settle()
-                await _shutdown_chronicler_dependents(daemon)
+    owners = [owner for owner in (refresh_owner, finance_owner) if owner is not None]
 
-            task = asyncio.create_task(finish(), name="chronicler-retained-resource-release")
+    async def close_owned(owner):
+        return await owner.close(max(0, deadline - asyncio.get_running_loop().time()))
+
+    settled = await asyncio.gather(
+        *(close_owned(owner) for owner in owners), return_exceptions=True
+    )
+    if any(result is not True for result in settled):
+        # One retained tail fences ALL physical-pool owners, not two independent closers.
+        async def finish():
+            await asyncio.gather(*(owner.settle() for owner in owners))
+            await _shutdown_chronicler_dependents(daemon)
+
+        existing = vars(daemon).get("_chronicler_cleanup_task")
+        if existing is None:
+            task = asyncio.create_task(finish(), name="retained-owned-resource-release")
             daemon._chronicler_cleanup_task = task
             task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
-            raise TimeoutError("Chronicler refresh cleanup incomplete; resources retained")
+        raise TimeoutError("Owned request cleanup incomplete; resources retained")
     await _shutdown_chronicler_dependents(daemon)
 
 
@@ -953,17 +965,12 @@ async def _shutdown_chronicler_dependents(daemon: Any) -> None:
             logger.exception("Error while detaching DB log handler")
         daemon._db_log_handler = None
 
-    # 7. Close audit DB pool (if separate from main DB)
-    if daemon._audit_db is not None:
-        await daemon._audit_db.close()
-        daemon._audit_db = None
-
-    # 8. Close credential-layer DB pools
+    # 7. Close credential-layer DB pools
     if daemon._shared_credentials_db is not None:
         await daemon._shared_credentials_db.close()
         daemon._shared_credentials_db = None
 
-    # 9. Close DB pool
+    # 8. Close DB pool
     if daemon.db:
         await daemon.db.close()
 

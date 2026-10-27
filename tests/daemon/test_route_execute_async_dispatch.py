@@ -1406,3 +1406,171 @@ def test_accept_path_complexity_coercion_contract(value: str | None, expected: C
     result = coerce_complexity_tier(value, strict=False)
     assert result == expected
     assert isinstance(result, Complexity)
+
+
+@pytest.mark.parametrize(
+    "source_channel,envelope_complexity",
+    [("telegram_bot", "reasoning"), ("dashboard", "reasoning"), ("telegram_bot", None)],
+)
+async def test_recovered_route_preserves_live_trigger_inputs(
+    tmp_path: Path, source_channel: str, envelope_complexity: str | None
+) -> None:
+    """Frozen-path parity: accepted recovery retains the original live route inputs."""
+    from butlers.core.routing_context import _routing_ctx_var
+    from butlers.switchboard_wiring import recover_route_inbox
+
+    patches = _patch_infra("health")
+    with (
+        patch("butlers.lifecycle._warmup_mcp_endpoints_best_effort", AsyncMock()),
+        patch.object(ButlerDaemon, "_liveness_reporter_loop", AsyncMock()),
+    ):
+        daemon, route_execute = await _start_daemon_with_route_execute(
+            _make_butler_toml(tmp_path), patches
+        )
+    assert route_execute is not None
+    lease_connection = patches["mock_pool"].acquire.return_value.__aenter__.return_value
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock()
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    lease_connection.transaction = MagicMock(return_value=transaction)
+    lease_connection.fetchrow.return_value = None
+    lease_connection.fetchval.return_value = None
+    conversation_id, message_id, row_id, claim_id = (uuid.uuid4() for _ in range(4))
+    sender_id = str(uuid.uuid4())
+    request_context = _route_request_context(source_channel=source_channel)
+    request_context.update(
+        source_sender_entity_id=sender_id,
+        external_conversation_id="synthetic-external-thread",
+        source_thread_identity=(
+            str(conversation_id) if source_channel == "dashboard" else "synthetic-thread"
+        ),
+    )
+    attachments = [{"media_type": "image/png", "uri": "attachment:synthetic-image"}]
+    input_payload = {
+        "prompt": "Inspect the attached synthetic diagram.",
+        "attachments": attachments,
+    }
+    if envelope_complexity is not None:
+        input_payload["complexity"] = envelope_complexity
+    envelope = {
+        "schema_version": "route.v1",
+        "request_context": request_context,
+        "input": input_payload,
+        "source_metadata": {
+            "channel": source_channel,
+            "identity": "synthetic-source",
+            "tool_name": "ingest",
+            "dashboard_message_id": str(message_id),
+        },
+    }
+    calls = []
+    result = _make_trigger_mock().return_value
+
+    async def trigger(**kwargs):
+        calls.append((kwargs, dict(_routing_ctx_var.get() or {})))
+        return result
+
+    daemon.spawner.trigger = AsyncMock(side_effect=trigger)
+
+    async def recover_once(*_args, dispatch_fn, **_kwargs):
+        await dispatch_fn(
+            row_id=row_id,
+            route_envelope=envelope,
+            processing_claim_id=claim_id,
+            recovery_from_processing=False,
+        )
+        return 1
+
+    control = _dashboard_turn_result(
+        "active", message_id=message_id, request_id=uuid.UUID(request_context["request_id"])
+    )
+    try:
+        with (
+            patch("butlers.core_tools._routing.route_inbox_insert", AsyncMock(return_value=row_id)),
+            patch(
+                "butlers.core_tools._routing.route_inbox_insert_on_connection",
+                AsyncMock(return_value=row_id),
+            ),
+            patch("butlers.core_tools._routing.claim_target", AsyncMock(return_value=control)),
+            patch(
+                "butlers.core_tools._routing.mark_route_enqueued", AsyncMock(return_value=control)
+            ),
+            patch(
+                "butlers.core_tools._routing.route_inbox_claim_processing",
+                AsyncMock(return_value=claim_id),
+            ),
+            patch(
+                "butlers.core.route_inbox.route_inbox_renew_processing_claim",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "butlers.core_tools._routing.route_inbox_mark_processed",
+                AsyncMock(return_value=True),
+            ) as live_processed,
+            patch("butlers.switchboard_wiring.route_inbox_recovery_sweep", recover_once),
+            patch(
+                "butlers.switchboard_wiring.route_inbox_mark_processed",
+                AsyncMock(return_value=True),
+            ) as recovered_processed,
+            patch("butlers.switchboard_wiring.route_inbox_mark_errored", AsyncMock()) as errored,
+            patch(
+                "butlers.api.conversations.conversation_get_or_create_by_thread",
+                AsyncMock(return_value=({"id": conversation_id}, False)),
+            ) as by_thread,
+            patch(
+                "butlers.api.conversations.conversation_get_by_id_any_butler",
+                AsyncMock(return_value={"id": conversation_id}),
+            ) as by_id,
+        ):
+            accepted = await route_execute(**envelope)
+            assert accepted["status"] == "accepted"
+            async with asyncio.timeout(5):
+                while daemon._route_inbox_tasks:
+                    await asyncio.gather(*tuple(daemon._route_inbox_tasks))
+            await recover_route_inbox(daemon, patches["mock_pool"])
+            assert len(calls) == 2
+            live, recovered = (call[0] for call in calls)
+            expected = {
+                "complexity": coerce_complexity_tier(envelope_complexity, strict=False),
+                "conversation_id": conversation_id,
+                "attachments": attachments,
+                "dashboard_turn_id": message_id if source_channel == "dashboard" else None,
+                "request_id": request_context["request_id"],
+                "ingestion_event_id": request_context["request_id"],
+                "trigger_source": "route",
+            }
+            for key, value in expected.items():
+                assert live[key] == value
+                assert recovered[key] == value
+            assert live["prompt"] == recovered["prompt"]
+            assert live["context"] == recovered["context"]
+            assert all(not call["route_lease_lost"].is_set() for call in (live, recovered))
+            assert all(context["source_entity_id"] == sender_id for _, context in calls)
+            assert all(
+                context["request_context"]["source_channel"] == source_channel
+                for _, context in calls
+            )
+            if source_channel == "dashboard":
+                assert by_id.await_count == 2
+                by_id.assert_awaited_with(patches["mock_pool"], conversation_id)
+                by_thread.assert_not_awaited()
+            else:
+                assert by_thread.await_count == 2
+                by_thread.assert_awaited_with(
+                    patches["mock_pool"],
+                    butler_name="health",
+                    source_channel=source_channel,
+                    external_conversation_id="synthetic-external-thread",
+                    first_message=input_payload["prompt"],
+                )
+                by_id.assert_not_awaited()
+            live_processed.assert_awaited_once_with(
+                patches["mock_pool"], row_id, result.session_id, processing_claim_id=claim_id
+            )
+            recovered_processed.assert_awaited_once_with(
+                patches["mock_pool"], row_id, result.session_id, processing_claim_id=claim_id
+            )
+            errored.assert_not_awaited()
+    finally:
+        async with asyncio.timeout(10):
+            await daemon.shutdown()

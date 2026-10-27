@@ -40,9 +40,10 @@
 
 ## 3. Exact owner adoption gate
 
-- [ ] 3.1 Obtain owner adoption of the exact independently reviewed RFC 0035
-  and OpenSpec artifact. Direction B, RFC 0023 adoption, draft merge, review,
-  and prior implementation release do not satisfy this gate.
+- [x] 3.1 Record 2026-10-27 owner adoption of the exact independently reviewed
+  Choice A conformance successor (`bu-4zqomm`) in the specification, RFC 0035,
+  and design. Direction B, RFC 0023 adoption, draft merge, review, and prior
+  implementation release alone did not satisfy this gate.
 
 ## 4. Future implementation after adoption
 

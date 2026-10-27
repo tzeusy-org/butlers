@@ -246,6 +246,7 @@ class ButlerDaemon:
         self._tool_module_map: dict[str, str] = {}
         self._resolved_tool_metadata: dict[str, ToolMeta] = {}
         self._tool_catalog: ToolCatalog | None = None
+        self._finance_warning_control_owner = None
         self._declared_tool_names: set[str] = set()
         self._effective_tool_names: set[str] = set()
         self._registered_tool_names: set[str] = set()
@@ -266,9 +267,7 @@ class ButlerDaemon:
         self.switchboard_client: MCPClient | None = None
         self._pipeline: MessagePipeline | None = None
         self._buffer: Any = None  # DurableBuffer instance (switchboard only)
-        self._audit_db: Database | None = None  # Switchboard DB for daemon audit logging
-        # Switchboard-schema pool (butler_registry) used by the scheduler loop to
-        # gate scheduled dispatch on eligibility_state. Set during startup.
+        # Pool for daemon audit writes to public.audit_log. Set during startup.
         self._audit_pool: asyncpg.Pool | None = None
         self._shared_credentials_db: Database | None = None
         self._credential_store: CredentialStore | None = None
@@ -575,6 +574,31 @@ class ButlerDaemon:
         from butlers.core.fact_authority import FactReceiverContextRegistry
 
         self._fact_receiver_registry = FactReceiverContextRegistry(self.db.pool, self.config.name)
+        if self.config.name in {"finance", "switchboard"}:
+            from butlers.config import list_butlers
+            from butlers.core.control_plane_identity import IDENTITY_PATH, expected_from_roster
+            from butlers.core.finance_warning_control import VERIFY_PATH, FinanceWarningControlOwner
+
+            expected = next(
+                (
+                    target
+                    for target in expected_from_roster(list_butlers(self.config_dir.parent))
+                    if target.name == "switchboard"
+                ),
+                None,
+            )
+            verifier_url = (
+                expected.url.removesuffix(IDENTITY_PATH) + VERIFY_PATH if expected else None
+            )
+            route_call = None
+            if self.config.name == "switchboard":
+                from butlers.tools.switchboard.routing.route import route
+
+                route_call = route
+            self._finance_warning_control_owner = FinanceWarningControlOwner(
+                self, route_call=route_call, verifier_url=verifier_url
+            )
+
         app = self._build_mcp_http_app(
             self.mcp,
             butler_name=self.config.name,
@@ -584,6 +608,7 @@ class ButlerDaemon:
             route_preflight=self._build_route_preflight(),
             fact_source_registry=getattr(self, "_fact_source_registry", None),
             fact_receiver_registry=self._fact_receiver_registry,
+            finance_warning_control_owner=self._finance_warning_control_owner,
         )
         config = uvicorn.Config(
             app,
@@ -715,6 +740,7 @@ class ButlerDaemon:
         route_preflight: Any | None = None,
         fact_source_registry: Any | None = None,
         fact_receiver_registry: Any | None = None,
+        finance_warning_control_owner: Any | None = None,
     ) -> Any:
         """Build a unified ASGI app exposing streamable HTTP and legacy SSE MCP routes."""
         apply_streamable_http_disconnect_patch()
@@ -806,6 +832,11 @@ class ButlerDaemon:
             if not cls._attach_route_via_public_api(streamable_app, receiver_route):
                 streamable_app.routes.append(receiver_route)
 
+        if butler_name == "switchboard" and finance_warning_control_owner is not None:
+            control_route = finance_warning_control_owner.route()
+            if not cls._attach_route_via_public_api(streamable_app, control_route):
+                streamable_app.routes.append(control_route)
+
         guarded_app = _McpRuntimeSessionGuard(
             streamable_app,
             butler_name=butler_name,
@@ -814,44 +845,13 @@ class ButlerDaemon:
         return _McpSseDisconnectGuard(guarded_app, butler_name=butler_name)
 
     async def _create_audit_pool(self, own_pool: asyncpg.Pool) -> asyncpg.Pool | None:
-        """Create or reuse a connection pool for daemon-side audit logging.
+        """Return the pool for daemon-side audit logging.
 
-        The switchboard butler reuses its own pool. Other butlers open a small
-        dedicated pool to the switchboard schema in the shared ``butlers`` DB.
-
-        Returns ``None`` (with a warning) if the pool cannot be created.
+        Audit entries land in ``public.audit_log``, which every butler runtime
+        role may INSERT, so each butler writes them through its own pool and
+        verified role. A separate role-less pool is refused since #5016.
         """
-        # Intentional name check: the switchboard IS the audit schema owner. Reusing its own
-        # pool avoids a redundant connection. This is switchboard-specific, not staffer-generic.
-        if self.config.name == "switchboard":
-            return own_pool
-
-        try:
-            audit_db_name = self.config.db_name or "butlers"
-            audit_db_schema = "switchboard"
-            audit_db = Database.from_env(audit_db_name)
-            if audit_db is self.db:
-                # Same DB object — reuse the existing pool directly (avoids double-close
-                # on shutdown when the audit DB and main DB share the same connection).
-                return own_pool
-            audit_db.set_schema(audit_db_schema)
-            audit_db.min_pool_size = 1
-            audit_db.max_pool_size = 2
-            await audit_db.connect()
-            self._audit_db = audit_db
-            logger.info(
-                "Audit pool connected (db=%s, schema=%s)",
-                audit_db_name,
-                audit_db_schema or "<default>",
-            )
-            return audit_db.pool
-        except Exception:
-            logger.warning(
-                "Failed to create audit pool for %s; daemon audit logging disabled",
-                self.config.name,
-                exc_info=True,
-            )
-            return None
+        return own_pool
 
     async def _connect_switchboard(self) -> None:
         """Open an MCP client connection to the Switchboard butler.
@@ -1204,6 +1204,9 @@ class ButlerDaemon:
         runtime_context = await self._build_scheduler_runtime_context()
 
         daemon = self
+        # Eligibility reads switchboard.butler_registry_*, which only the
+        # switchboard's runtime role may SELECT; other butlers skip the gate.
+        is_switchboard = self.config.name == "switchboard"
         await _background.scheduler_loop(
             pool=self.db.pool,
             dispatch_fn=self._dispatch_scheduled_task,
@@ -1214,7 +1217,7 @@ class ButlerDaemon:
             get_db=lambda: daemon.db,
             prompt_hooks=runtime_context.prompt_hooks,
             completion_hooks=runtime_context.completion_hooks,
-            get_eligibility_pool=lambda: daemon._audit_pool,
+            get_eligibility_pool=lambda: daemon.db.pool if is_switchboard else None,
             default_timezone=runtime_context.default_timezone,
             chronicler_continuation=vars(self).get("_chronicler_continuation"),
         )
@@ -2196,15 +2199,22 @@ class ButlerDaemon:
         shared_pool: asyncpg.Pool | None = None
 
         if schema_topology:
-            shared_db = Database.from_env(shared_db_name)
-            shared_db.set_schema(shared_db_schema)
+            # Runtime pools must hold a verified role, so a same-database shared
+            # pool reads ``public`` credentials under this butler's own role.
+            owner_delegates = isinstance(self.db, Database) and self.db.db_name == shared_db_name
+            if owner_delegates:
+                shared_db = self.db.for_owned_schema(shared_db_schema)
+            else:
+                shared_db = Database.from_env(shared_db_name)
+                shared_db.set_schema(shared_db_schema)
             if shared_db is self.db:
                 # Test harnesses may patch Database.from_env to always return the
                 # main DB object. Treat that as local-only mode.
                 shared_pool = local_pool
             else:
                 try:
-                    await shared_db.provision()
+                    if not owner_delegates:
+                        await shared_db.provision()
                     shared_pool = await shared_db.connect()
                     await ensure_secrets_schema(shared_pool)
                     self._shared_credentials_db = shared_db

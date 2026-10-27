@@ -15,8 +15,10 @@ import json
 from datetime import UTC, datetime
 
 import pytest
+from fastmcp import FastMCP
 
 from butlers.chronicler.reconciliation import DroppedIntent
+from butlers.testing.mcp import registered_tools
 from roster.chronicler.modules import _serialise_dropped_intents
 
 pytestmark = pytest.mark.unit
@@ -112,15 +114,7 @@ async def _registered_bundle(monkeypatch, episodes, events):
     from butlers.chronicler import storage
     from roster.chronicler.modules import ChroniclerModule
 
-    tools = {}
-
-    class ToolRegistry:
-        def tool(self):
-            def register(function):
-                tools[function.__name__] = function
-                return function
-
-            return register
+    mcp = FastMCP("chronicler-bundle-test")
 
     episode_reader = AsyncMock(return_value=episodes)
     event_reader = AsyncMock(return_value=events)
@@ -128,7 +122,8 @@ async def _registered_bundle(monkeypatch, episodes, events):
     monkeypatch.setattr(storage, "list_point_events", event_reader)
     module = ChroniclerModule()
     pool = object()
-    await module.register_tools(ToolRegistry(), None, SimpleNamespace(pool=pool), "chronicler")
+    await module.register_tools(mcp, None, SimpleNamespace(pool=pool), "chronicler")
+    tools = await registered_tools(mcp)
     result = await tools["chronicler_day_close_bundle"]("2026-06-01", "Asia/Singapore")
     episode_reader.assert_awaited_once_with(
         pool,

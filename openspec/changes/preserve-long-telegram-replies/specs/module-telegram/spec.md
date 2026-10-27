@@ -10,7 +10,7 @@ Telegram sends and replies SHALL split source losslessly into ordered chunks of 
 
 Permission SHALL be checked once before the logical send and splitting SHALL occur after approval without changing the pinned text or argument digest. Each chunk SHALL require exact true ok and a positive exact-integer message_id. Reply threading SHALL appear only on the first chunk and reply markup only on the last. The returned last receipt and audit SHALL retain all accepted chunk IDs for a multi-chunk send. Per-chat locking SHALL prevent interleaving and release on exit.
 
-An explicit parse-entities HTTP 400 SHALL permit exactly one raw-source fallback; other 400s SHALL NOT. A rejected 429 SHALL permit at most two retries from finite numeric retry_after within a shared thirty-second logical retry budget. Timeout or uncertain receipt SHALL NOT authorize replay. A confirmed prefix SHALL raise a typed partial error containing only accepted IDs. Edits SHALL conservatively clamp to at most 4000 UTF-16 units including the truncation marker and use the same parse fallback.
+An explicit parse-entities HTTP 400 SHALL permit one ordered plain-text fallback sequence of the chunk's exact original raw source, with every request bounded to at most 4000 UTF-16 units; source that fits SHALL use one request. The sequence SHALL retain the same chat lock, original deadline, shared rate-retry budget, first accepted reply reference, final keyboard and strict positive receipts. Plain requests SHALL NOT fall back again, accepted prefixes SHALL NOT be replayed, and other 400s SHALL NOT permit fallback. A rejected 429 SHALL permit at most two retries from finite numeric retry_after within a shared thirty-second logical retry budget. Timeout or uncertain receipt SHALL NOT authorize replay. A confirmed prefix SHALL raise a typed partial error containing only accepted IDs. Edits SHALL conservatively clamp to at most 4000 UTF-16 units including the truncation marker, SHALL NOT append messages, and explicit parse rejection SHALL permit only one bounded plain edit fallback.
 
 #### Scenario: Long approved reply
 
@@ -20,7 +20,7 @@ An explicit parse-entities HTTP 400 SHALL permit exactly one raw-source fallback
 #### Scenario: Malformed markup and edit
 
 - **WHEN** markup overlaps or an edit exceeds the single-message bound
-- **THEN** HTML stays balanced or literal, edits retain the truncation marker, and only explicit parse rejection permits one raw fallback
+- **THEN** HTML stays balanced or literal, only explicit parse rejection permits the ordered exact-source bounded send fallback, and edits retain the truncation marker with at most one bounded plain edit fallback
 
 #### Scenario: Known prefix versus unknown receipt
 

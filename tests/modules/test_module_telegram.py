@@ -19,10 +19,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from fastmcp import FastMCP
 from pydantic import ValidationError
 
 from butlers.modules.base import Module
 from butlers.modules.telegram import TelegramConfig, TelegramModule, _markdown_to_telegram_html
+from butlers.testing.mcp import registered_tools
 
 # The retained historical permission-test narratives describe the original enforcement.
 # Effects now refuse unavailable state; the real-lookup availability test below covers
@@ -111,22 +113,8 @@ def telegram_module() -> TelegramModule:
 
 
 @pytest.fixture
-def mock_mcp() -> MagicMock:
-    mcp = MagicMock()
-    tools: dict[str, Any] = {}
-
-    def tool_decorator(*_args, **kwargs):
-        name = kwargs.get("name")
-
-        def decorator(fn):
-            tools[name or fn.__name__] = fn
-            return fn
-
-        return decorator
-
-    mcp.tool = tool_decorator
-    mcp._registered_tools = tools
-    return mcp
+def mock_mcp() -> FastMCP:
+    return FastMCP("providers8-telegram-tools")
 
 
 class TestModuleABCCompliance:
@@ -161,7 +149,7 @@ class TestToolRegistration:
             db=None,
             butler_name="test-butler",
         )
-        assert set(mock_mcp._registered_tools.keys()) == EXPECTED_TELEGRAM_TOOLS
+        assert set((await registered_tools(mock_mcp)).keys()) == EXPECTED_TELEGRAM_TOOLS
 
 
 class TestInlineKeyboardSupport:
@@ -233,7 +221,7 @@ class TestInlineKeyboardSupport:
         markup = {"inline_keyboard": [[{"text": "Too long", "callback_data": "é" * 33}]]}
 
         with patch.object(telegram_module, "_get_client") as mock_get_client:
-            result = await mock_mcp._registered_tools["telegram_send_message"](
+            result = await (await registered_tools(mock_mcp))["telegram_send_message"](
                 "123456", "Review this action", reply_markup=markup
             )
 
@@ -694,7 +682,7 @@ async def test_registered_long_reply_keeps_order_receipts_and_keyboard(mock_mcp)
         patch.object(module, "_base_url", return_value="https://telegram.test"),
         patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock) as audit,
     ):
-        result = await mock_mcp._registered_tools["telegram_reply_to_message"](
+        result = await (await registered_tools(mock_mcp))["telegram_reply_to_message"](
             "123", 7, source, reply_markup=markup
         )
     assert len(payloads) == 3
@@ -789,7 +777,9 @@ async def test_registered_partial_reply_is_terminal_and_audits_only_accepted_pre
         assert error.value.message_ids == (42,)
         assert error.value.retryable is False
         calls.clear()
-        result = await mock_mcp._registered_tools["telegram_send_message"]("123", "y" * 9000)
+        result = await (await registered_tools(mock_mcp))["telegram_send_message"](
+            "123", "y" * 9000
+        )
     assert result["partial_delivery"] is True
     assert result["retryable"] is False
     assert result["message_ids"] == [42]

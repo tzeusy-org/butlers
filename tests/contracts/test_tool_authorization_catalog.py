@@ -664,3 +664,13 @@ def test_inventory_marks_every_resource_param_selection_bound_or_not() -> None:
         if flag
     }
     assert bound == set()
+
+
+async def test_finance_fixed_warning_read_is_registered_sensitive_and_never_owner_authority():
+    catalog = await _roster_catalog("finance")
+    descriptor = catalog["subscription_warning_still_relevant"]
+    assert descriptor.owner_domain == "finance"
+    assert descriptor.effect_class == "read" and descriptor.owner_authority is False
+    assert descriptor.output_sensitivity == "sensitive"
+    assert descriptor.read_stores == ("subscriptions",) and descriptor.write_stores == ()
+    assert descriptor.llm_presentable is False

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
@@ -26,6 +25,7 @@ from butlers.modules.memory.catalog_measurement import (
     measure_catalog_ivfflat,
     resolve_measurement_sensitivities,
 )
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -127,9 +127,8 @@ class _Pool:
     def __init__(self, connection: _Connection) -> None:
         self.connection = connection
 
-    @asynccontextmanager
-    async def acquire(self):
-        yield self.connection
+    def acquire(self):
+        return AsyncCtx(self.connection)
 
 
 class _ObservabilityConnection:

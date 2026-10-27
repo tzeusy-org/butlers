@@ -7,7 +7,7 @@ overwrite each other. This ledger records how each one is settled.
 ## Census
 
 A change intersects when its `specs/` directory has a delta for one of the 79 existing capabilities
-this change modifies or removes. On main at 2026-10-22, 51 active changes intersect.
+this change modifies or removes. On main at 2026-10-22, 52 active changes intersect.
 `define-dashboard-fast-answer-runtime` is also listed: it touches none of those capabilities, but
 it adds a model path outside goals, which owner decision `bu-u5euwb.21` = C names as the D18
 dashboard fast-answer kind. `education-mind-map-lifecycle-integrity` is listed because
@@ -48,6 +48,7 @@ the change, the owner is the M6 epic `bu-u5euwb`.
 | `chronicler-telemetry-distillation` | butler-chronicler | re-scope | Projection adapters stay deterministic. Day-close narration becomes a Chronicler obligation goal. | `bu-u5euwb` |
 | `compose-general-capture-with-private-custody` | butler-general | fold-in | The whole General Butler Tool Surface block is folded here and removed from the source delta: collection/item/calendar inventory and complete ordinary-capture/privacy/source/group scenario retained; control-plane registration supersedes runtime spawning. Capture reasoning becomes deterministic ingress-deduplicated goal admission, while the ledger, receipts, search and collections stay domain-owned. The source remains active for all six general-capture requirements; historical packet/task evidence is retained and successor implementation remains pending. No archive or runtime completion is claimed. | `bu-u5euwb.18`; outstanding delivery `bu-2jtfw.9.4.2`, `bu-2jtfw.9.4.4` |
 | `confine-qa-publication-authority` | qa-investigation-dispatch, staffer-qa | archive-first | Publication fences hold. Engineering executors stay the named D18 exception. | `bu-mc01y5` |
+| `dashboard-one-mind-goal-surface` | fleet-case-file | archive-first | Adds REQ-fleet-case-file-015, a dark, read-only contributor filter on the case list for D19 region Situations. It edits no block this change modifies, so there is no same-name block. | `bu-85bqeq` |
 | `decide-consolidation-throughput-policy` | module-memory | archive-first | Records four policy declines and no runtime change. The rebuilt consolidation block keeps them. | `bu-u5euwb` |
 | `decision-loop-one-tap-approvals` | autonomy-tracker, core-notify, module-approvals, module-telegram | re-scope | Archive first, then amend the synced specs. Approvals carry goal, invocation and exposure, and park-only effects always wait for the owner tap. | `bu-24lu6.8` |
 | `durable-dashboard-terminal-action-recovery` | butler-switchboard, staffer-qa | re-scope | Chat-classifier terminal lanes become admission and one goal. The QA report handoff becomes an authenticated service relay to the durable QA inbox. | `bu-u5euwb`; linked from `bu-ratgnb` |

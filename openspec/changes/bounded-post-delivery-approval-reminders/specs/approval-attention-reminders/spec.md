@@ -165,9 +165,16 @@ stored action argument, or any non-owner identity. Egress SHALL re-verify
 eligibility and fail with a no-effect result, never fall back to another
 channel, when the channel or fact is no longer eligible; a supplied non-owner
 destination is a hard no-effect refusal and is never retried. The first four
-predicates SHALL form the reachability observation inventory; the episode-
-unused predicate SHALL apply only to reminder/homecoming channel selection and
-SHALL NOT filter observational reachability evidence.
+predicates SHALL form the reachability observation inventory. For a direct
+reminder or reminder digest member, the unused-channel predicate SHALL be
+bound to that action's current attention episode. For a homecoming summary,
+the unused-channel predicate SHALL instead be bound to the singleton owner-
+presence epoch that owns the summary, not to any member action's attention
+episode. Prior original or reminder channel use by a member SHALL NOT exclude
+that member from the homecoming summary. These episode-local predicates SHALL
+NOT filter observational reachability evidence. All four inventory predicates,
+egress re-verification, ambiguity exclusions, and the fixed channel order SHALL
+still apply to the summary.
 
 ID: REQ-approval-attention-reminders-003
 Source: RFC-0035
@@ -219,6 +226,18 @@ Scope: v1-mandatory
 - **WHEN** concurrent schedulers select a channel for the same reminder ordinal
 - **THEN** one ordered eligibility snapshot and one selected channel commit
 - **AND** the loser replays that result without creating a second presentation
+
+#### Scenario: Exhausted action channels do not reopen reminder authority
+
+- **WHEN** an action's original Telegram presentation and Email reminder were
+  confirmed, the action is safely held, and a qualifying owner return creates
+  a new presence epoch
+- **THEN** a homecoming summary may include that action using a channel that
+  satisfies all four inventory predicates and is unused by that presence epoch
+- **AND** the action's attention episode, used-channel evidence, and spent
+  reminder ordinals remain unchanged
+- **AND** repeated activity or an uncertain summary outcome cannot create a
+  second summary key or select another channel for the same epoch
 
 ### Requirement: Bounded reminder admission separate from recovery
 
@@ -463,7 +482,11 @@ under one singleton record. It SHALL admit at most one homecoming summary per
 epoch. The summary SHALL contain no more than 20 pending safe-held actions and
 safe-held actions expired within 7 days, plus an overflow count; ambiguous
 actions SHALL be excluded from outbound content. Expired entries SHALL be
-non-actionable.
+non-actionable. The summary's channel-use identity SHALL be its owner-presence
+epoch as defined in REQ-approval-attention-reminders-003. It SHALL NOT be a new
+action attention episode or a restored reminder ordinal. A provider-started
+summary SHALL retain its selected channel and key through recovery; ambiguous
+effects SHALL permit only same-key reconciliation.
 
 ID: REQ-approval-attention-reminders-007
 Source: RFC-0035

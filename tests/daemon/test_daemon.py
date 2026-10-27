@@ -583,7 +583,8 @@ async def test_all_core_tools_registered(butler_dir: Path) -> None:
     # A domain butler receives its actual group-gated surface, not a parallel
     # hand-maintained catalog.  The dispatcher inventory test owns exhaustive
     # coverage; this startup test protects the daemon integration seam.
-    assert len(set(registered_tools)) == 74
+    assert len(set(registered_tools)) == 75
+    assert "metric_baseline_get" in registered_tools
     assert {"report_error", "get_healing_status"} <= set(registered_tools)
     assert "retry_healing" not in registered_tools
     assert {
@@ -2494,3 +2495,57 @@ async def test_registered_messenger_preserves_native_telegram_partial_outcome(
         assert "message_ids" not in result["error"]
         assert "message_ids" not in result["result"]["notify_response"]["error"]
     assert len(requests) == (2 if known_prefix else 1)
+
+
+@pytest.mark.asyncio
+async def test_actual_http_app_keeps_finance_bearer_pending_through_mcp_handshake(monkeypatch):
+    """Real daemon HTTP assembly + fresh streamable Client, not a fake guard."""
+    from types import SimpleNamespace
+
+    import httpx
+    from fastmcp import Client
+    from fastmcp.client.transports import StreamableHttpTransport
+
+    from butlers.core import finance_warning_control as control
+    from butlers.modules.registry import default_registry
+
+    pool = object()
+    module = default_registry()._modules["finance"]()
+    mcp = RuntimeFastMCP("finance-http-proof")
+    await module.register_tools(mcp, module.config_schema(), SimpleNamespace(pool=pool), "finance")
+    daemon = SimpleNamespace(db=SimpleNamespace(pool=pool), config=SimpleNamespace(name="finance"))
+    owner = control.FinanceWarningControlOwner(daemon)
+    daemon._finance_warning_control_owner = owner
+    observed = []
+
+    async def consume(args, reader):
+        observed.append((control._pending.get(), args, reader.__name__))
+        return None
+
+    monkeypatch.setattr(owner, "consume_and_read", consume)
+    app = ButlerDaemon._build_mcp_http_app(
+        mcp, butler_name="finance", finance_warning_control_owner=owner
+    )
+
+    def factory(**kw):
+        return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), **kw)
+
+    args = {"subject": str(uuid.UUID(int=1)), "selected_date": "2026-10-27", "epoch": 0}
+    try:
+        async with app._app._app.router.lifespan_context(app._app._app):
+            async with asyncio.timeout(10):
+                async with Client(
+                    StreamableHttpTransport(
+                        "http://fixed/mcp",
+                        headers={control.HEADER: "synthetic-pending"},
+                        httpx_client_factory=factory,
+                    )
+                ) as client:
+                    await client.list_tools()
+                    assert observed == []
+                    result = await client.call_tool(control.TOOL, args)
+                    assert result.data is None
+                    assert observed == [("synthetic-pending", args, control.TOOL)]
+        assert control._pending.get() is None
+    finally:
+        await owner.close(1)
