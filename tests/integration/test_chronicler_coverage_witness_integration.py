@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 import asyncpg
 import pytest
+from fastmcp import FastMCP
 
 from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, write_day_close_cache
 from butlers.chronicler.editorial import (
@@ -28,6 +29,7 @@ from butlers.chronicler.editorial import (
     record_coverage_witness,
 )
 from butlers.db import register_jsonb_codec
+from butlers.testing.mcp import registered_tools
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -471,18 +473,11 @@ async def test_continuation_real_registered_empty_capture_commit_restart_and_rat
         "VALUES($1,'UTC','work',0,0) ON CONFLICT(local_date,lane) DO NOTHING",
         target,
     )
-    registered = {}
-
-    class Tools:
-        def tool(self):
-            def capture(fn):
-                registered[fn.__name__] = fn
-                return fn
-
-            return capture
+    mcp = FastMCP("chronicler-continuation")
 
     module = ChroniclerModule()
-    await module.register_tools(Tools(), None, SimpleNamespace(pool=runtime), "chronicler")
+    await module.register_tools(mcp, None, SimpleNamespace(pool=runtime), "chronicler")
+    registered = await registered_tools(mcp)
     calls = []
 
     async def dispatch(**kwargs):
