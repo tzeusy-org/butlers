@@ -4,20 +4,11 @@ from __future__ import annotations
 
 import importlib
 from types import SimpleNamespace
-from typing import Any
 from unittest.mock import AsyncMock
 
+from fastmcp import FastMCP as RegisteredFastMCP
 
-class _StubMCP:
-    def __init__(self) -> None:
-        self.tools: dict[str, Any] = {}
-
-    def tool(self):
-        def _decorator(fn):
-            self.tools[fn.__name__] = fn
-            return fn
-
-        return _decorator
+from butlers.testing.mcp import registered_tools
 
 
 async def test_registered_deliver_authenticates_only_material_recovery(monkeypatch, caplog):
@@ -36,7 +27,7 @@ async def test_registered_deliver_authenticates_only_material_recovery(monkeypat
     authenticate = AsyncMock(wraps=tools.verify_switchboard_recovery)
     monkeypatch.setattr(delivery_module, "deliver", deliver)
     monkeypatch.setattr(tools, "verify_switchboard_recovery", authenticate)
-    mcp = _StubMCP()
+    mcp = RegisteredFastMCP("remaining4-switchboard-tools")
 
     tools.register_tools(
         mcp,
@@ -55,13 +46,15 @@ async def test_registered_deliver_authenticates_only_material_recovery(monkeypat
         },
         "recovery": None,
     }
-    await mcp.tools["deliver"](source_butler="health", notify_request=ordinary)
+    await (await registered_tools(mcp))["deliver"](source_butler="health", notify_request=ordinary)
 
     authenticate.assert_not_called()
     assert deliver.await_args.kwargs["verified_context"] is None
 
     material = {**ordinary, "recovery": {"operation": "handoff"}}
-    result = await mcp.tools["deliver"](source_butler="relationship", notify_request=material)
+    result = await (await registered_tools(mcp))["deliver"](
+        source_butler="relationship", notify_request=material
+    )
 
     authenticate.assert_awaited_once()
     assert deliver.await_args.kwargs["verified_context"] is None
@@ -136,21 +129,29 @@ async def _assert_internal_delivery_rendering_mark_is_monotonic(monkeypatch):
 
     monkeypatch.setattr(delivery_module, "_deliver_via_notify_request", dispatch)
     module = SimpleNamespace(_get_pool=lambda: object())
-    mcp = _StubMCP()
+    mcp = RegisteredFastMCP("remaining4-switchboard-tools")
     tools.register_tools(mcp, module, SimpleNamespace(groups=["routing"]))
-    assert "render_links_inert" not in inspect.signature(mcp.tools["deliver"]).parameters
-    assert "content_requires_inert_links" not in inspect.signature(mcp.tools["deliver"]).parameters
+    assert (
+        "render_links_inert"
+        not in inspect.signature((await registered_tools(mcp))["deliver"]).parameters
+    )
+    assert (
+        "content_requires_inert_links"
+        not in inspect.signature((await registered_tools(mcp))["deliver"]).parameters
+    )
     request = {
         "schema_version": "notify.v1",
         "origin_butler": "health",
         "delivery": {"intent": "send", "channel": "telegram", "message": "hello", "recipient": "1"},
         "render_links_inert": True,
     }
-    await mcp.tools["deliver"](source_butler="health", notify_request=request)
+    await (await registered_tools(mcp))["deliver"](source_butler="health", notify_request=request)
     assert captured[-1].render_links_inert is False
     with inert_delivery_content():
         request["render_links_inert"] = False
-        await mcp.tools["deliver"](source_butler="health", notify_request=request)
+        await (await registered_tools(mcp))["deliver"](
+            source_butler="health", notify_request=request
+        )
         assert captured[-1].render_links_inert is True
         await delivery_module.deliver(
             object(),
