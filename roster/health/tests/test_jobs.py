@@ -2273,6 +2273,7 @@ async def test_migrated_visit_brief_terminal_digest_survives_independent_readbac
             title="Controlled appointment",
             starts_at=now + timedelta(hours=1),
             source_butler="health",
+            booked=True,
         )
         first = await brief.run_visit_brief(pool, notify_fn=send, now=now)
         second = await brief.run_visit_brief(pool, notify_fn=send, now=now)
