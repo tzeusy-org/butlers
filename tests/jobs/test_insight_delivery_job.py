@@ -627,6 +627,164 @@ class TestBrokerChannelSelectionInNotifyMetadata:
         )
 
 
+async def test_actual_insight_notifier_preserves_terminal_partial_flag():
+    from butlers.scheduled_jobs import _build_switchboard_insight_notify_fn
+
+    notify = _build_switchboard_insight_notify_fn(_make_mock_pool())
+    with (
+        patch("butlers.credential_store.resolve_owner_entity_info", AsyncMock(return_value="123")),
+        patch(
+            "butlers.tools.switchboard.notification.deliver.deliver",
+            AsyncMock(
+                return_value={
+                    "status": "failed",
+                    "error": "telegram_partial_delivery",
+                    "partial_delivery": True,
+                    "retryable": False,
+                }
+            ),
+        ),
+    ):
+        result = await notify("x" * 5000, {"channel": "telegram"})
+    assert result["status"] == "error"
+    assert result["partial_delivery"] is True
+    assert result["retryable"] is False
+
+
+@pytest.mark.parametrize("terminal_field", ["partial_delivery", "telegram_effect_uncertain"])
+async def test_actual_insight_cycle_quarantines_partial_through_failed_terminal_write(
+    terminal_field,
+):
+    import uuid
+    from contextlib import ExitStack
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from butlers.tools.switchboard.insight import broker
+
+    candidate_id = str(uuid.uuid4())
+    candidate = {
+        "id": candidate_id,
+        "origin_butler": "health",
+        "priority": 20,
+        "category": "controlled",
+        "dedup_key": "controlled:partial",
+        "cooldown_days": None,
+        "message": "x" * 5000,
+        "channel": "telegram",
+        "metadata": {},
+        "expires_at": _PINNED_NOW + timedelta(days=2),
+        "created_at": _PINNED_NOW,
+    }
+    state, attempts, fail_once = "pending", 0, True
+
+    async def fetch(sql, *_):
+        if "delivery_attempt_count" in sql:
+            return [{**candidate, "status": state, "delivery_attempt_count": attempts}]
+        return [candidate] if state == "pending" else []
+
+    async def execute(sql, *args):
+        nonlocal state, attempts, fail_once
+        if "metadata = COALESCE(metadata" in sql and args[1].get("delivery_failure"):
+            if fail_once:
+                fail_once = False
+                raise RuntimeError("controlled terminal write failure")
+            state = "filtered"
+        elif "delivery_attempt_count = delivery_attempt_count + 1" in sql:
+            attempts += 1
+
+    pool = MagicMock(fetch=fetch, execute=execute)
+    notify = AsyncMock(return_value={"status": "error", terminal_field: True, "retryable": False})
+    ledger = AsyncMock()
+    with ExitStack() as stack:
+        values = {
+            "get_insight_settings": {"verbosity": "normal", "custom_budget": None},
+            "get_approvals_policy_quiet_hours": {},
+            "get_suppressing_context_signal": None,
+            "expire_candidates": 0,
+            "_revalidate_premises": ({}, 0),
+            "filter_by_cooldown": [candidate_id],
+            "deduplicate_candidates": [candidate_id],
+            "compute_effective_budget": 1,
+            "compute_category_budget_weights": {},
+            "_pending_fold_lines": [],
+            "cleanup_old_rows": None,
+            "check_total_disengagement_auto_off": False,
+        }
+        for name, value in values.items():
+            stack.enter_context(patch.object(broker, name, AsyncMock(return_value=value)))
+        stack.enter_context(patch.object(broker, "is_policy_quiet_now", return_value=False))
+        stack.enter_context(patch.object(broker, "record_attention_event", ledger))
+        stack.enter_context(
+            patch(
+                "butlers.core.attention_urgency.candidate_interruption",
+                AsyncMock(return_value=SimpleNamespace(interrupts=False)),
+            )
+        )
+        with pytest.raises(RuntimeError, match="controlled terminal"):
+            await broker.delivery_cycle(pool, notify_fn=notify, now=_PINNED_NOW)
+        assert broker._PARTIAL_INSIGHTS.contains(pool, candidate_id)
+        second = await broker.delivery_cycle(pool, notify_fn=notify, now=_PINNED_NOW)
+        third = await broker.delivery_cycle(pool, notify_fn=notify, now=_PINNED_NOW)
+    assert notify.await_count == 1
+    assert second["delivered"] == third["delivered"] == []
+    assert state == "filtered" and attempts == 0
+    assert ledger.await_count == 1
+    assert ledger.await_args.kwargs["outcome"] == "failed"
+    assert ledger.await_args.kwargs["metadata"]["retryable"] is False
+    assert ledger.await_args.kwargs["metadata"][terminal_field] is True
+    assert not broker._PARTIAL_INSIGHTS.contains(pool, candidate_id)
+
+    # A settled old send must not turn into a pool-wide permanent mute.
+    old_id = candidate_id
+    fresh_id = str(uuid.uuid4())
+    fresh = {**candidate, "id": fresh_id, "dedup_key": "controlled:fresh", "message": "fresh"}
+    fresh_state = "pending"
+    conn = _FakeConn()
+
+    async def fresh_fetch(sql, *_):
+        return [fresh] if fresh_state == "pending" else []
+
+    async def fresh_write(sql, *args):
+        nonlocal fresh_state
+        if "SET status = 'delivered'" in sql:
+            assert args[1] == [fresh_id]
+            fresh_state = "delivered"
+        return "UPDATE 1"
+
+    conn.execute.side_effect = fresh_write
+    pool.fetch = AsyncMock(side_effect=fresh_fetch)
+    pool.acquire.return_value = _FakeAcquireCtx(conn)
+    notify.return_value = {"status": "sent"}
+    values.update(
+        {
+            "filter_by_cooldown": [fresh_id],
+            "deduplicate_candidates": [fresh_id],
+            "record_cooldowns": None,
+            "record_engagement_rows": None,
+        }
+    )
+    with ExitStack() as stack:
+        for name, value in values.items():
+            stack.enter_context(patch.object(broker, name, AsyncMock(return_value=value)))
+        stack.enter_context(patch.object(broker, "is_policy_quiet_now", return_value=False))
+        stack.enter_context(patch.object(broker, "record_attention_event", ledger))
+        stack.enter_context(
+            patch(
+                "butlers.core.attention_urgency.candidate_interruption",
+                AsyncMock(return_value=SimpleNamespace(interrupts=False)),
+            )
+        )
+        fourth = await broker.delivery_cycle(pool, notify_fn=notify, now=_PINNED_NOW)
+        fifth = await broker.delivery_cycle(pool, notify_fn=notify, now=_PINNED_NOW)
+    assert fourth["delivered"] == [fresh_id] and fifth["delivered"] == []
+    assert notify.await_count == 2 and fresh_state == "delivered"
+    assert state == "filtered" and attempts == 0
+    assert [c.kwargs["notification_ref"] for c in ledger.await_args_list] == [old_id, fresh_id]
+    assert [c.kwargs["outcome"] for c in ledger.await_args_list] == ["failed", "delivered"]
+    assert not broker._PARTIAL_INSIGHTS.keys(pool)
+
+
 @pytest.mark.parametrize(
     "job_name",
     ["_run_switchboard_insight_delivery_cycle_job", "_run_switchboard_insight_urgent_subcycle_job"],

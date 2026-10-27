@@ -1722,15 +1722,19 @@ async def _insert_event(
     all_day: bool = False,
     metadata: dict | None = None,
     booked: bool = False,
+    source_butler: str | None = None,
 ) -> str:
     """A calendar event; ``booked`` adds Health's applied ``workspace_user_create`` log row."""
     event_id = str(uuid.uuid4())
+    source_column = ", source_butler" if source_butler is not None else ""
+    source_parameter = ", $10" if source_butler is not None else ""
+    source_args = (source_butler,) if source_butler is not None else ()
     await pool.execute(
-        """
+        f"""
         INSERT INTO calendar_events
             (id, source_id, origin_ref, title, timezone, starts_at, ends_at, all_day,
-             status, metadata)
-        VALUES ($1::uuid, $2::uuid, $3, $4, 'UTC', $5, $6, $7, $8, $9)
+             status, metadata{source_column})
+        VALUES ($1::uuid, $2::uuid, $3, $4, 'UTC', $5, $6, $7, $8, $9{source_parameter})
         """,
         event_id,
         source_id,
@@ -1741,6 +1745,7 @@ async def _insert_event(
         all_day,
         status,
         metadata or {},
+        *source_args,
     )
     if booked:
         await pool.execute(
@@ -2131,3 +2136,155 @@ async def test_visit_brief(provisioned_postgres_pool, case):
                 delivery = arguments["notify_request"]["delivery"]
                 assert name == "deliver"
                 assert delivery["recipient"] == "owner-1" and delivery["intent"] == "send"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("terminal_field", ["partial_delivery", "telegram_effect_uncertain"])
+async def test_visit_brief_partial_is_terminal_even_when_digest_write_initially_fails(
+    monkeypatch, terminal_field
+):
+    from types import SimpleNamespace
+
+    from butlers.jobs import health_visit_brief as brief
+
+    now = _utcnow()
+    existing = None
+    fail_once = True
+    writes = []
+
+    async def fetchrow(sql, *_):
+        return existing if "SELECT delivered_at" in sql else None
+
+    async def execute(sql, *args):
+        nonlocal existing, fail_once
+        writes.append(sql)
+        if "INSERT INTO visit_briefs" in sql:
+            existing = {"delivered_at": None, "digest": dict(args[3])}
+        if "digest = digest ||" in sql:
+            if fail_once:
+                fail_once = False
+                raise RuntimeError("controlled digest write failure")
+            existing["digest"].update(args[1])
+
+    pool = SimpleNamespace(
+        fetch=AsyncMock(
+            return_value=[
+                {
+                    "event_id": "controlled",
+                    "title": "Appointment",
+                    "starts_at": now + timedelta(hours=1),
+                }
+            ]
+        ),
+        fetchrow=fetchrow,
+        execute=execute,
+    )
+    send = AsyncMock(
+        return_value=brief.PARTIAL if terminal_field == "partial_delivery" else brief.UNCERTAIN
+    )
+    monkeypatch.setattr(brief, "owner_briefing_zone", AsyncMock(return_value=UTC))
+    monkeypatch.setattr(
+        brief, "compose_brief", AsyncMock(return_value=("x" * 5000, {"source": []}))
+    )
+    with pytest.raises(RuntimeError, match="controlled digest"):
+        await brief._run_locked(pool, notify_fn=send, now=now)
+    assert brief._PARTIAL_BRIEFS.contains(pool, "controlled")
+    second = await brief._run_locked(pool, notify_fn=send, now=now)
+    third = await brief._run_locked(pool, notify_fn=send, now=now)
+    assert second["sent"] == third["sent"] == second["retry"] == third["retry"] == 0
+    assert send.await_count == 1
+    assert existing["delivered_at"] is None
+    assert existing["digest"] == {"source": [], terminal_field: True, "retryable": False}
+    assert all("SET delivered_at" not in sql for sql in writes)
+    assert not brief._PARTIAL_BRIEFS.contains(pool, "controlled")
+
+    # Fresh appointments remain eligible after the exact old digest settles.
+    old = {"delivered_at": existing["delivered_at"], "digest": dict(existing["digest"])}
+    rows = {"controlled": existing}
+
+    async def fresh_fetchrow(sql, *args):
+        return rows.get(args[0]) if "SELECT delivered_at" in sql else None
+
+    async def fresh_execute(sql, *args):
+        if "INSERT INTO visit_briefs" in sql:
+            rows[args[0]] = {"delivered_at": None, "digest": dict(args[3])}
+        elif "digest = digest ||" in sql:
+            rows[args[0]]["digest"].update(args[1])
+        elif "SET delivered_at" in sql:
+            rows[args[0]]["delivered_at"] = now
+
+    pool.fetch.return_value = [
+        {"event_id": "controlled", "title": "Appointment", "starts_at": now + timedelta(hours=1)},
+        {"event_id": "fresh", "title": "New appointment", "starts_at": now + timedelta(hours=2)},
+    ]
+    pool.fetchrow, pool.execute = fresh_fetchrow, fresh_execute
+    send.return_value = brief.DELIVERED
+    fourth = await brief._run_locked(pool, notify_fn=send, now=now)
+    fifth = await brief._run_locked(pool, notify_fn=send, now=now)
+    assert fourth["sent"] == 1 and fifth["sent"] == 0
+    assert send.await_count == 2
+    assert rows["controlled"] == old
+    assert rows["fresh"] == {"delivered_at": now, "digest": {"source": []}}
+    assert not brief._PARTIAL_BRIEFS.keys(pool)
+
+
+@pytest.fixture(scope="module")
+def terminal_visit_db_url(postgres_container):
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
+
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "health"],
+        schemas={"core": "health", "health": "health"},
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("outcome", ["partial_delivery", "delivery_uncertain"])
+async def test_migrated_visit_brief_terminal_digest_survives_independent_readback(
+    terminal_visit_db_url, outcome, monkeypatch
+):
+    import asyncpg
+
+    from butlers.db import register_jsonb_codec
+    from butlers.jobs import health_visit_brief as brief
+
+    pool = await asyncpg.create_pool(
+        terminal_visit_db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "health,public"},
+    )
+    now = _utcnow()
+    send = AsyncMock(return_value=outcome)
+    # Real full migrations/appointment admission/terminal SQL. Clinical content
+    # synthesis is outside this controlled delivery test and never sent externally.
+    monkeypatch.setattr(
+        brief, "compose_brief", AsyncMock(return_value=("x" * 5000, {"source": []}))
+    )
+    try:
+        source = await _insert_source(pool, health=True)
+        event_id = await _insert_event(
+            pool,
+            source,
+            title="Controlled appointment",
+            starts_at=now + timedelta(hours=1),
+            source_butler="health",
+            booked=True,
+        )
+        first = await brief.run_visit_brief(pool, notify_fn=send, now=now)
+        second = await brief.run_visit_brief(pool, notify_fn=send, now=now)
+        assert first["sent"] == second["sent"] == second["retry"] == 0
+        send.assert_awaited_once()
+        async with pool.acquire() as independent:
+            row = await independent.fetchrow(
+                "SELECT delivered_at,digest FROM visit_briefs WHERE event_id=$1", event_id
+            )
+        assert row["delivered_at"] is None and row["digest"]["source"] == []
+        flag = "partial_delivery" if outcome == brief.PARTIAL else "telegram_effect_uncertain"
+        assert row["digest"][flag] is True and row["digest"]["retryable"] is False
+    finally:
+        await pool.close()

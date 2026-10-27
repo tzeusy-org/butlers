@@ -1196,6 +1196,7 @@ class TestRouteExecuteAuthz:
             "class": "timeout",
             "message": "Telegram delivery failed.",
             "retryable": False,
+            "telegram_effect_uncertain": True,
         }
         assert result["transport"]["outcome"] == "uncertain"
         assert result["transport"]["error_detail"] == "transport_timeout"
@@ -1332,6 +1333,7 @@ class TestRouteExecuteAuthz:
             "class": "delivery_error",
             "message": message,
             "retryable": False,
+            **({"telegram_effect_uncertain": True} if outcome == "uncertain" else {}),
         }
         assert result["transport"]["outcome"] == outcome
         assert result["transport"]["error_detail"] == detail

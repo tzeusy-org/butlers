@@ -2429,6 +2429,74 @@ async def test_staffer_briefing_exclusion_and_type_field(tmp_path: Path) -> None
         await daemon2.shutdown()
 
 
+@pytest.mark.parametrize("known_prefix", [True, False])
+async def test_registered_messenger_preserves_native_telegram_partial_outcome(
+    tmp_path, monkeypatch, known_prefix
+):
+    """The actual route closure consumes the real adapter, not a caller partial label."""
+    from types import SimpleNamespace
+
+    import httpx
+
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration",
+        AsyncMock(return_value=SimpleNamespace(roles=["owner"])),
+    )
+    monkeypatch.setattr("butlers.modules.telegram.require_permission", AsyncMock())
+    monkeypatch.setattr("butlers.modules.telegram.write_audit_entry", AsyncMock())
+    butler_dir = _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}})
+    daemon, execute = await _start_daemon_with_route_execute(butler_dir, _patch_infra())
+    telegram = next(m for m in daemon._modules if m.name == "telegram")
+    requests = []
+
+    async def post(url, *, json):
+        requests.append(json)
+        if not known_prefix:
+            raise httpx.ReadTimeout("controlled unknown receipt")
+        return httpx.Response(
+            200 if len(requests) == 1 else 500,
+            request=httpx.Request("POST", url),
+            json={"ok": True, "result": {"message_id": 1}},
+        )
+
+    monkeypatch.setattr(telegram, "_get_client", lambda: SimpleNamespace(post=post))
+    monkeypatch.setattr(telegram, "_base_url", lambda: "https://telegram.test")
+    result = await execute(
+        schema_version="route.v1",
+        request_context=_route_request_context(),
+        input={
+            "prompt": "Deliver.",
+            "context": {
+                "notify_request": {
+                    "schema_version": "notify.v1",
+                    "origin_butler": "health",
+                    "delivery": {
+                        "intent": "send",
+                        "channel": "telegram",
+                        "message": "x" * 9000,
+                        "recipient": "12345",
+                    },
+                }
+            },
+        },
+    )
+    assert result["status"] == "error"
+    assert result["error"]["class"] == ("delivery_error" if known_prefix else "timeout")
+    field = "partial_delivery" if known_prefix else "telegram_effect_uncertain"
+    assert result["error"][field] is True
+    assert ("partial_delivery" in result["error"]) is known_prefix
+    assert result["error"]["retryable"] is False
+    assert result["result"]["notify_response"]["error"][field] is True
+    assert result["transport"]["outcome"] == "uncertain"
+    if known_prefix:
+        assert result["error"]["message_ids"] == [1]
+        assert result["result"]["notify_response"]["error"]["message_ids"] == [1]
+    else:
+        assert "message_ids" not in result["error"]
+        assert "message_ids" not in result["result"]["notify_response"]["error"]
+    assert len(requests) == (2 if known_prefix else 1)
+
+
 @pytest.mark.asyncio
 async def test_actual_http_app_keeps_finance_bearer_pending_through_mcp_handshake(monkeypatch):
     """Real daemon HTTP assembly + fresh streamable Client, not a fake guard."""

@@ -307,7 +307,7 @@ async def scheduler_loop(
         owner's local time.  Defaults to ``"UTC"``.
     """
 
-    async def _scheduler_notify_fn(envelope: dict) -> None:
+    async def _scheduler_notify_fn(envelope: dict) -> dict | None:
         """Deliver a deferred notify.v1 envelope via the standard notify pipeline."""
         # Stored envelopes must re-read current attention state before release.
         # A failed/active read raises, so the existing flush keeps the original
@@ -344,12 +344,20 @@ async def scheduler_loop(
                 notify_request=envelope,
             )
             if result.get("status") == "failed":
+                from butlers.telegram_api import terminal_telegram_metadata
+
+                if terminal_telegram_metadata(result):
+                    return result
                 raise RuntimeError(f"Deferred notification delivery failed: {result.get('error')}")
         else:
             result = await asyncio.wait_for(
                 _client.call_tool("deliver", deliver_args),
                 timeout=_DEFERRED_NOTIFY_TIMEOUT_S,
             )
+            from butlers.telegram_api import terminal_telegram_metadata
+
+            if terminal_telegram_metadata(result.data):
+                return result.data
             if result.is_error:
                 error_text = str(result.content[0].text) if result.content else "Unknown error"
                 raise RuntimeError(f"Deferred notification delivery failed: {error_text}")

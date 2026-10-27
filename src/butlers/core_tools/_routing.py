@@ -60,6 +60,7 @@ from butlers.core.telemetry import extract_trace_context, tag_butler_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
 from butlers.identity import resolve_owner_channel_via_definer
+from butlers.telegram_api import TelegramPartialDeliveryError
 from butlers.tools.switchboard.contracts import (
     OWNER_CONTROL_INTENTS,
 )
@@ -896,6 +897,8 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             notify_response: dict[str, Any] | None = None,
             retryable: bool | None = None,
             transport: TransportResult | None = None,
+            partial_delivery: bool = False,
+            message_ids: tuple[int, ...] = (),
         ) -> dict[str, Any]:
             resolved_retryable = (
                 _ROUTE_ERROR_RETRYABLE.get(error_class, False) if retryable is None else retryable
@@ -910,6 +913,21 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 },
                 "timing": {"duration_ms": _elapsed_ms()},
             }
+            if partial_delivery:
+                response["error"]["partial_delivery"] = True
+                response["error"]["message_ids"] = list(message_ids)
+            elif (
+                transport is not None
+                and transport.as_dict()["outcome"] == "uncertain"
+                and notify_response is not None
+                and notify_response.get("delivery", {}).get("channel") == "telegram"
+            ):
+                # This marker comes from the actual selected adapter/transport,
+                # not a caller-provided channel label or requested retry flag.
+                response["error"]["telegram_effect_uncertain"] = True
+                notify_response["error"]["telegram_effect_uncertain"] = True
+                response["error"]["retryable"] = False
+                notify_response["error"]["retryable"] = False
             if context_payload is not None:
                 response["request_context"] = context_payload
             if notify_response is not None:
@@ -939,6 +957,8 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             message: str,
             retryable: bool | None = None,
             approval_review: dict[str, str] | None = None,
+            partial_delivery: bool = False,
+            message_ids: tuple[int, ...] = (),
         ) -> dict[str, Any]:
             resolved_retryable = (
                 _ROUTE_ERROR_RETRYABLE.get(error_class, False) if retryable is None else retryable
@@ -952,6 +972,9 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     "retryable": resolved_retryable,
                 },
             }
+            if partial_delivery:
+                notify_payload["error"]["partial_delivery"] = True
+                notify_payload["error"]["message_ids"] = list(message_ids)
             if request_id is not None:
                 notify_payload["request_context"] = {"request_id": request_id}
             if channel is not None:
@@ -1993,6 +2016,28 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             else:
                 raise ValueError(f"Unsupported notify channel: {channel}")
 
+        except TelegramPartialDeliveryError as exc:
+            # A known accepted prefix is terminal; never describe it as an
+            # unavailable target or authorize a retry of the original text.
+            error_message = "Telegram accepted a message prefix; automatic replay is forbidden."
+            return _route_error_response(
+                context_payload=route_context,
+                error_class="delivery_error",
+                message=error_message,
+                retryable=False,
+                partial_delivery=True,
+                message_ids=exc.message_ids,
+                transport=classify_transport_exception(exc),
+                notify_response=_notify_error_response(
+                    request_id=notify_request_id,
+                    channel=channel,
+                    error_class="delivery_error",
+                    message=error_message,
+                    retryable=False,
+                    partial_delivery=True,
+                    message_ids=exc.message_ids,
+                ),
+            )
         except PermissionUnavailable:
             # The module refused before provider traffic; retry is safe after recovery.
             error_message = "Permission store unavailable; delivery was not attempted."
