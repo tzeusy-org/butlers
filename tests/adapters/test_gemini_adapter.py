@@ -98,6 +98,7 @@ async def test_invoke():
             env={"GOOGLE_API_KEY": "gk-test"},
         )
     assert result_text == "Task done."
+    assert mock_sub.call_args.kwargs["env"]["GOOGLE_API_KEY"] == "gk-test"
     cmd = mock_sub.call_args[0]
     assert cmd[0] == "/usr/bin/gemini" and "--sandbox=false" in cmd and "--system-prompt" in cmd
 
@@ -115,10 +116,11 @@ async def test_invoke():
         ]
     )
     mock_proc.communicate = AsyncMock(return_value=(output_lines.encode(), b""))
-    with patch(_EXEC, return_value=mock_proc):
+    with patch(_EXEC, return_value=mock_proc) as empty_sub:
         result_text2, tool_calls, _ = await adapter.invoke(
             prompt="use tools", system_prompt="", mcp_servers={}, env={}
         )
+    assert empty_sub.call_args.kwargs["env"] == {}
     assert (
         result_text2 == "Complete" and len(tool_calls) == 1 and tool_calls[0]["name"] == "state_get"
     )

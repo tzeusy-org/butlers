@@ -54,6 +54,7 @@ from butlers.tools.health.research import (
     research_summarize,
     research_update,
 )
+from butlers.tools.health.workouts import workout_last
 
 __all__ = [
     "VALID_CONDITION_STATUSES",
@@ -94,4 +95,5 @@ __all__ = [
     "symptom_search",
     "symptom_update",
     "trend_report",
+    "workout_last",
 ]

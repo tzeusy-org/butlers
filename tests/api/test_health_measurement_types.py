@@ -6,7 +6,6 @@ separate from the fixed five-type manual measurement writer allowlist.
 
 from __future__ import annotations
 
-import sys
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -15,6 +14,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -23,7 +23,7 @@ pytestmark = pytest.mark.unit
 # Trigger router discovery once. FastAPI dependency overrides are keyed by the
 # exact dependency function object registered by the auto-discovered router.
 _APP_SEED = create_app(api_key="")
-_health_get_db_manager = sys.modules["health_api_router"]._get_db_manager
+_health_get_db_manager = get_db
 
 
 class _Row(dict):

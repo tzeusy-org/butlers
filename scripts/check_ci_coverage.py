@@ -17,8 +17,7 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from check_ci_test_shards import LANES, REPO_ROOT
-from ci_partition import assigned_files, read_json, validate_assignment
+from ci_lanes import LANES, REPO_ROOT
 from coverage import CoverageData
 from coverage.exceptions import CoverageException
 
@@ -42,14 +41,12 @@ def _checkout_head(repo_root: Path) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def write_shard_metadata(
+def write_group_metadata(
     *,
     coverage_file: Path,
     repo_root: Path,
     lane: str,
-    shard: int,
-    test_files: list[str],
-    assignment_digest: str | None = None,
+    group: int,
 ) -> None:
     """Stamp existing data after pytest exits; never fabricate a missing artifact."""
     if not coverage_file.is_file():
@@ -59,16 +56,14 @@ def write_shard_metadata(
     if workflow_head is not None and workflow_head != checkout:
         raise ValueError("coverage producer checkout does not match the workflow head")
     metadata = {
-        "schema": "ci-coverage.v1",
-        "assignment_digest": assignment_digest,
+        "schema": "ci-coverage.v2",
         "head": checkout,
         "run_id": os.environ.get("GITHUB_RUN_ID"),
         "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
         "event": os.environ.get("GITHUB_EVENT_NAME"),
         "lane": lane,
-        "shard": shard,
+        "group": group,
         "config": asdict(LANES[lane]),
-        "test_files": test_files,
         "source_files": _source_files(repo_root),
         "sha256": hashlib.sha256(coverage_file.read_bytes()).hexdigest(),
     }
@@ -84,7 +79,6 @@ def validate_inputs(
     head: str,
     run_id: str,
     run_attempt: str,
-    inventory_dir: Path | None = None,
     event: str | None = None,
 ) -> list[Path]:
     """Reject partial, stale, mixed or incompatible eleven-input reports."""
@@ -96,24 +90,15 @@ def validate_inputs(
         raise ValueError("coverage reporter requires the exact checkout and workflow attempt")
     if input_root.is_symlink():
         raise ValueError("coverage input root must be an ordinary directory")
-    if inventory_dir is None:
-        raise ValueError("coverage requires generated same-run assignment")
-    inventory = read_json(inventory_dir / "inventory.json")
-    assignment = read_json(inventory_dir / "assignment.json")
-    validate_assignment(inventory, assignment, root=repo_root)
-    if inventory["identity"]["event"] != event:
-        raise ValueError("coverage inventory does not match the actual workflow event")
     specs = [
-        (lane, index)
-        for lane, config in LANES.items()
-        for index in range(1, config.shard_count + 1)
+        (lane, index) for lane, config in LANES.items() for index in range(1, config.groups + 1)
     ]
     expected_directories = {f"{lane}-{index}" for lane, index in specs}
     actual_directories = {
         path.name for path in input_root.iterdir() if path.is_dir() and not path.is_symlink()
     }
     if actual_directories != expected_directories:
-        raise ValueError("coverage input directory population does not match the declared shards")
+        raise ValueError("coverage input directory population does not match the lane groups")
     if {path.name for path in input_root.iterdir()} != expected_directories:
         raise ValueError("coverage input root contains unexpected files")
     source_files = _source_files(repo_root)
@@ -133,23 +118,20 @@ def validate_inputs(
             raise ValueError(f"{label}: coverage inputs must be ordinary files")
         try:
             metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
-            files = assigned_files(inventory, assignment, lane=lane, index=index, root=repo_root)
             expected = {
-                "schema": "ci-coverage.v1",
-                "assignment_digest": assignment["digest"],
+                "schema": "ci-coverage.v2",
                 "head": head,
                 "run_id": run_id,
                 "run_attempt": run_attempt,
                 "event": event,
                 "lane": lane,
-                "shard": index,
+                "group": index,
                 "config": asdict(LANES[lane]),
-                "test_files": files,
                 "source_files": source_files,
                 "sha256": hashlib.sha256(data_file.read_bytes()).hexdigest(),
             }
             if json.dumps(metadata, sort_keys=True) != json.dumps(expected, sort_keys=True):
-                raise ValueError(f"{label}: coverage identity, manifest or digest mismatch")
+                raise ValueError(f"{label}: coverage identity or digest mismatch")
             data = CoverageData(basename=str(data_file))
             data.read()
             measured = data.measured_files()
@@ -176,7 +158,6 @@ def main() -> int:
     parser.add_argument("--head", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-attempt", required=True)
-    parser.add_argument("--inventory-dir", type=Path, required=True)
     parser.add_argument("--event", choices=sorted(REPORT_EVENTS))
     args = parser.parse_args()
     try:
@@ -186,7 +167,6 @@ def main() -> int:
             head=args.head,
             run_id=args.run_id,
             run_attempt=args.run_attempt,
-            inventory_dir=args.inventory_dir,
             event=args.event,
         )
     except (OSError, ValueError) as exc:

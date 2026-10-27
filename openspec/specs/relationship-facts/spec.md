@@ -161,6 +161,10 @@ facts without a human approval hop.
 
 This single-ingress contract preserves RFC 0006 schema isolation and RDF integrity.
 
+ID: REQ-relationship-facts-002
+Source: bu-s11n0s.2 original Outcome/S1–S4; heart-and-soul/security.md; Relationship MANIFESTO.md; adopted dashboard-owner-auth and existing capability contract
+Scope: v1-mandatory
+
 #### Scenario: Direct SQL writes are blocked
 - **WHEN** any butler other than relationship attempts `INSERT INTO relationship.entity_facts`
 - **THEN** PostgreSQL MUST reject the statement on role permissions

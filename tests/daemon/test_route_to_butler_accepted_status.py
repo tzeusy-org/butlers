@@ -72,12 +72,18 @@ def _make_fetchrow_side_effect(butler_name: str = "switchboard"):
 
 def _patch_infra():
     mock_conn = AsyncMock()
+    # asyncpg uses synchronous factories for both asynchronous contexts.
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=None)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    mock_conn.transaction = MagicMock(return_value=transaction)
     mock_conn.execute = AsyncMock(return_value=None)
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
 
     mock_pool = AsyncMock()
+    mock_pool.acquire = MagicMock()
     # Support `async with pool.acquire() as conn:` for _ensure_owner_entity
     mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -103,7 +109,7 @@ def _patch_infra():
 
     mock_adapter = MagicMock()
     mock_adapter.binary_name = "claude"
-    mock_adapter_cls = MagicMock(return_value=mock_adapter)
+    mock_adapter_builder = MagicMock(return_value=mock_adapter)
 
     return {
         "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
@@ -122,7 +128,9 @@ def _patch_infra():
         "connect_switchboard": patch.object(
             ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
         ),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
+        ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "mock_pool": mock_pool,
         "mock_spawner": mock_spawner,
@@ -166,7 +174,7 @@ async def _start_switchboard_and_capture_route_to_butler(
         patches["sync_schedules"],
         patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
         patches["Spawner"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["connect_switchboard"],

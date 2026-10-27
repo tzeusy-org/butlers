@@ -131,7 +131,7 @@ Attention Policy data SHALL retain the existing fail-open immediate path.
 ### Requirement: Attention Ledger Recording at the notify() Boundary
 Every terminal decision the `notify()` owner-default quiet-hours gate makes SHALL be recorded to `public.attention_ledger` with a closed outcome vocabulary (`delivered`, `coalesced`, `deferred`, `suppressed`, `failed`) and a machine-readable `reason`. A ledger-write failure MUST NOT block or fail the notification it describes (best-effort, fail-open).
 
-`deferred` and `failed` are distinct and MUST NOT be conflated: `deferred` is a benign, chosen hold that resolves on its own (a quiet-hours window ending, a coalescing flush tick) with no caller action required. `failed` is a genuine terminal failure at this attempt — no recipient configured, a transport/delivery error, an unexpected exception — that nothing automatically retries unless the caller explicitly enqueues a retry envelope (e.g. via `insert_deferred_notification`) and records the resulting row id as `notification_ref`. This distinction applies identically to every caller that composes the same gating/dispatch primitives `notify()` uses from outside a butler daemon's own MCP closure (e.g. `butlers.jobs.secrets_lifecycle`, `butlers.jobs.home._send_notify`, `butlers.jobs.decision_review._deliver`) — see those modules' docstrings for why each is a process-boundary-forced consumer rather than a direct `notify()` caller.
+`deferred` and `failed` are distinct and MUST NOT be conflated: `deferred` is a benign, chosen hold that resolves on its own (a quiet-hours window ending, a coalescing flush tick) with no caller action required. `failed` is a genuine terminal failure at this attempt — no recipient configured, a transport/delivery error, an unexpected exception — that nothing automatically retries unless the caller explicitly enqueues a retry envelope (e.g. via `insert_deferred_notification`) and records the resulting row id as `notification_ref`. This distinction applies identically to every caller that composes the same gating/dispatch primitives `notify()` uses from outside a butler daemon's own MCP closure (e.g. `butlers.jobs.secrets_lifecycle`, `butlers.jobs.home._send_notify`) — see those modules' docstrings for why each is a process-boundary-forced consumer rather than a direct `notify()` caller.
 
 #### Scenario: A genuine delivery failure is recorded as failed, not deferred
 - **WHEN** any notify-boundary caller (the `notify()` tool itself, or a process-boundary-forced consumer composing the same primitives) cannot resolve a recipient, or the underlying `deliver()` dispatch returns `status="failed"`, or an unexpected exception occurs mid-dispatch
@@ -863,3 +863,60 @@ Scope: v1-mandatory
 - **WHEN** the notification is owner-allowed, rule-allowed, an ordinary failed delivery, a local pending_action_id park or an approval-control/recovery envelope
 - **THEN** its existing delivery, tool response, ledger, privacy and recovery-isolation contracts remain intact
 - **AND** this routed review correlation adds no action permission, recursive park, synthesized local ledger row or recovery capability
+
+
+### Requirement: Fixed dashboard self references in owner controls
+Approval notification producers SHALL emit an `open_dashboard` action with
+`reference: {kind: "self", route_key, params}` instead of a raw `dashboard_url`.
+The fixed Python route registry SHALL contain `approval_detail` with exactly one
+canonical UUID `action_id` parameter and `approvals_queue` with no parameters.
+Self references SHALL NOT expire. Callback actions SHALL retain their signed
+callback tokens and SHALL NOT carry link URLs or self references.
+
+Switchboard delivery SHALL resolve admitted references using only the server's
+configured HTTPS `DASHBOARD_URL` origin and the fixed route registry. A valid
+reference SHALL produce server-only `open_link {label, url, host, provenance}`
+output, retaining its reference for independent receiver resolution. The label
+SHALL display the resolved host and `dashboard` provenance. These presentation
+fields SHALL NOT authenticate the caller or grant delivery authority.
+
+Public `notify.v1` tool input SHALL reject `open_link`, raw `dashboard_url`, and
+caller claims of URL, host, provenance or server construction. The internal
+Messenger receiver SHALL reconstruct the reference and independently resolve it
+against its current server configuration. It SHALL NOT trust the output URL or
+label supplied on the wire. Existing owner lookup, recipient admission, signed
+callbacks, exact stored replay and authenticated recovery checks SHALL remain
+required on both normal and recovery delivery paths.
+
+Live URLs SHALL be at most 300 characters, use HTTPS without user information,
+IP literals, internationalized or punycode hosts, or a non-default port. The
+configured origin SHALL NOT contain a path, query or fragment. This requirement
+does not authorize general model-supplied URLs, research links or login actions.
+
+#### Scenario: Approval detail becomes a fixed dashboard button
+- **WHEN** an admitted owner approval notification carries `approval_detail`
+  with its canonical UUID `action_id` and a valid configured HTTPS origin
+- **THEN** delivery constructs `/approvals/<action_id>` at that origin
+- **AND** Messenger independently reconstructs that URL before rendering the
+  host-labelled dashboard button, retaining signed Approve and Reject controls
+
+#### Scenario: An unverifiable self reference preserves the notification
+- **WHEN** the route key is unknown, parameters are invalid, the configured
+  origin is absent or unsafe, or the resulting URL exceeds 300 characters
+- **THEN** the message is still delivered through the existing admission path
+- **AND** it contains `[link not verified]` and no URL button for that reference
+- **AND** unresolved links do not disable otherwise valid signed callbacks
+
+#### Scenario: Caller link claims cannot create a live control
+- **WHEN** a caller submits a raw URL or `open_link` through the notify tool
+- **THEN** the public contract refuses that request
+- **AND WHEN** the internal delivery output's URL or label is altered
+- **THEN** Messenger uses only the independently resolved reference, never the
+  altered URL, and existing recovery and owner authority remain required
+
+#### Scenario: Registry paths remain actual phone entry routes
+- **WHEN** the server self route registry changes
+- **THEN** an automated source guard verifies every template against
+  `frontend/tests/e2e/phone-entry-routes.ts`, normalizing only its typed UUID
+  placeholder notation
+- **AND** a missing phone entry path fails that guard

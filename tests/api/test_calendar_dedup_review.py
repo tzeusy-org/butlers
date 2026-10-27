@@ -1,11 +1,9 @@
-"""Tests for the calendar cross-source duplicate review surface (bu-tjo2m1).
+"""Tests for the calendar read-model cross-source dedup (bu-tjo2m1).
 
-Covers three things the bead requires:
-- the ``GET /duplicates`` endpoint exposes the clusters the read-model collapses,
-- ``PATCH /dedup-rules`` persists the match-strategy / noisy-threshold,
-- a keep-separate override prevents the dedup from collapsing a chosen cluster,
-
-plus the pure-function dedup/cluster logic and fail-open behaviour.
+The dashboard's duplicate-review routes are gone (bu-q11586.7); the workspace read
+still collapses cross-source copies, so this covers the pure-function dedup/cluster
+logic (including keep-separate pins already stored) and the fail-open rule/override
+loaders.
 """
 
 from __future__ import annotations
@@ -14,20 +12,17 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import MCPClientManager, get_mcp_manager
-from butlers.api.read_models import calendar_workspace_v1 as rm
-from butlers.api.read_models.calendar_workspace_v1 import _cluster_key, _dedup_workspace_rows
-from butlers.api.routers.calendar_workspace import _get_db_manager
+from butlers.api.read_models import calendar_workspace as rm
+from butlers.api.read_models.calendar_workspace import _cluster_key, _dedup_workspace_rows
 
 pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
-# Row + fake-pool helpers
+# Row helpers
 # ---------------------------------------------------------------------------
 
 
@@ -72,76 +67,6 @@ def _row(*, origin_ref: str, title: str, start: datetime, instance_id=None) -> d
         "last_error": None,
         "full_sync_required": False,
     }
-
-
-class _FakePool:
-    """In-memory stand-in for an asyncpg pool over the two dedup tables."""
-
-    def __init__(self) -> None:
-        self.rules: dict | None = None
-        self.overrides: dict[str, tuple[str, str | None]] = {}
-
-    async def fetchrow(self, query: str, *args):
-        q = " ".join(query.split())
-        if "calendar_dedup_rules" in q and q.upper().startswith("SELECT"):
-            return dict(self.rules) if self.rules else None
-        if "INSERT INTO public.calendar_dedup_rules" in q:
-            cols = [c.strip() for c in q.split("(", 1)[1].split(")", 1)[0].split(",")]
-            values = dict(zip(cols, args, strict=True))
-            if self.rules is None:
-                self.rules = {"match_strategy": "balanced", "noisy_threshold": 2}
-            for col in cols:
-                if col != "id":
-                    self.rules[col] = values[col]
-            return dict(self.rules)
-        raise AssertionError(f"unexpected fetchrow: {q}")
-
-    async def fetch(self, query: str, *args):
-        q = " ".join(query.split())
-        if "calendar_dedup_overrides" in q and q.upper().startswith("SELECT"):
-            return [{"cluster_key": k} for k in self.overrides]
-        raise AssertionError(f"unexpected fetch: {q}")
-
-    async def execute(self, query: str, *args):
-        q = " ".join(query.split())
-        if "INSERT INTO public.calendar_dedup_overrides" in q:
-            self.overrides[args[0]] = (args[1], args[2])
-        elif "DELETE FROM public.calendar_dedup_overrides" in q:
-            self.overrides.pop(args[0], None)
-        else:
-            raise AssertionError(f"unexpected execute: {q}")
-
-
-def _build_app(app, *, workspace_rows: dict[str, list[dict]], pool: _FakePool):
-    mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.butler_names = ["general", "relationship"]
-    mock_db.butlers_with_module = MagicMock(return_value=["general", "relationship"])
-    mock_db.pool = MagicMock(return_value=pool)
-
-    async def _fan_out(query: str, args=(), butler_names=None):
-        if "FROM calendar_event_instances AS i" in query:
-            rows = workspace_rows or {}
-            if butler_names is not None:
-                rows = {k: v for k, v in rows.items() if k in butler_names}
-            return rows
-        return {}
-
-    async def _fan_out_with_status(query: str, args=(), butler_names=None):
-        return await _fan_out(query, args, butler_names), []
-
-    mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
-    mock_mgr = AsyncMock(spec=MCPClientManager)
-
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
-    app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
-    return app, mock_db
-
-
-_DUP_PARAMS = {
-    "view": "user",
-    "start": "2026-02-22T00:00:00Z",
-    "end": "2026-02-23T00:00:00Z",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -241,126 +166,6 @@ def test_origin_ref_pass_does_not_over_collapse_refless_rows():
 
     assert len(deduped) == 2
     assert clusters == []
-
-
-# ---------------------------------------------------------------------------
-# GET /duplicates
-# ---------------------------------------------------------------------------
-
-
-async def test_duplicates_endpoint_exposes_collapsed_clusters(app):
-    start = datetime(2026, 2, 22, 14, 0, tzinfo=UTC)
-    # Same Google event synced into two butler schemas: identical origin_ref+start.
-    shared_ref = "google-evt-1"
-    g = _row(origin_ref=shared_ref, title="Sync", start=start)
-    r = _row(origin_ref=shared_ref, title="Sync", start=start)
-    app, _ = _build_app(app, workspace_rows={"general": [g], "relationship": [r]}, pool=_FakePool())
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/calendar/workspace/duplicates", params=_DUP_PARAMS)
-
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["available"] is True
-    assert len(data["clusters"]) == 1
-    cluster = data["clusters"][0]
-    assert cluster["match_pass"] == "origin_ref"
-    assert cluster["member_count"] == 2
-    assert len(cluster["duplicate_entries"]) == 1
-    assert data["rules"]["match_strategy"] == "balanced"
-
-
-async def test_duplicates_endpoint_fails_open_on_pool_error(app, monkeypatch):
-    # Force the flattened-rows fetch to raise → degraded envelope, never a 500.
-    async def _boom(*a, **k):
-        raise RuntimeError("pool down")
-
-    monkeypatch.setattr(
-        "butlers.api.routers.calendar_workspace._fetch_flattened_workspace_rows", _boom
-    )
-    app, _ = _build_app(app, workspace_rows={}, pool=_FakePool())
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/calendar/workspace/duplicates", params=_DUP_PARAMS)
-
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["available"] is False
-    assert data["clusters"] == []
-
-
-# ---------------------------------------------------------------------------
-# PATCH /dedup-rules
-# ---------------------------------------------------------------------------
-
-
-async def test_patch_dedup_rules_persists(app, monkeypatch):
-    monkeypatch.setattr("butlers.api.routers.calendar_workspace.log_audit_entry", AsyncMock())
-    pool = _FakePool()
-    app, _ = _build_app(app, workspace_rows={}, pool=pool)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.patch(
-            "/api/calendar/workspace/dedup-rules",
-            json={"match_strategy": "aggressive", "noisy_threshold": 3},
-        )
-
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["match_strategy"] == "aggressive"
-    assert data["noisy_threshold"] == 3
-    # Persisted to the singleton row.
-    assert pool.rules == {"match_strategy": "aggressive", "noisy_threshold": 3}
-
-
-async def test_patch_dedup_rules_rejects_bad_strategy(app):
-    app, _ = _build_app(app, workspace_rows={}, pool=_FakePool())
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.patch(
-            "/api/calendar/workspace/dedup-rules",
-            json={"match_strategy": "nonsense"},
-        )
-    assert resp.status_code == 422  # rejected by the Literal request model
-
-
-# ---------------------------------------------------------------------------
-# POST /duplicates/keep-separate
-# ---------------------------------------------------------------------------
-
-
-async def test_keep_separate_toggle_persists_and_unpins(app, monkeypatch):
-    monkeypatch.setattr("butlers.api.routers.calendar_workspace.log_audit_entry", AsyncMock())
-    pool = _FakePool()
-    app, _ = _build_app(app, workspace_rows={}, pool=pool)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        # Pin
-        resp = await client.post(
-            "/api/calendar/workspace/duplicates/keep-separate",
-            json={"cluster_key": "title\x01standup\x011000", "keep_separate": True},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["data"]["keep_separate"] is True
-        assert "title\x01standup\x011000" in pool.overrides
-
-        # Unpin
-        resp = await client.post(
-            "/api/calendar/workspace/duplicates/keep-separate",
-            json={"cluster_key": "title\x01standup\x011000", "keep_separate": False},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["data"]["keep_separate"] is False
-        assert pool.overrides == {}
 
 
 # ---------------------------------------------------------------------------

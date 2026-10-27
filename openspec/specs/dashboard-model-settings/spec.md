@@ -4,8 +4,6 @@
 
 Provides dashboard REST API endpoints and UI surfaces for managing the global model catalog and per-butler model overrides. Enables operators to configure which models are used at each complexity tier, create model aliases with extra runtime arguments, and override global defaults for specific butlers.
 
-Dependency note (non-normative): the attention episode reissue endpoint and its 409 (not eligible), 404 (episode not found), and 503 (reissue unavailable) responses (`src/butlers/api/routers/model_settings.py`) are specified by the unarchived change `openspec/changes/harden-runtime-auth-and-breaker-attention` (dashboard-model-settings delta, REQ-dashboard-model-settings-002). That delta does not yet specify the 404 or the reissue 503; both must be added to that change before it is archived.
-
 ## Requirements
 
 ### Requirement: Model Catalog Settings API
@@ -65,12 +63,29 @@ The API SHALL accept and round-trip the existing catalog's nullable allowance_ac
 ### Requirement: Butler Model Override API
 The dashboard SHALL expose REST endpoints for managing per-butler model overrides.
 
+ID: REQ-dashboard-model-settings-006
+Source: owner-approved bu-2jtfw.19 split(a); audit-ledger atomic privileged-write contract
+Scope: v1-mandatory
+
+Each PUT or DELETE SHALL require one nonblank strict-string reason (at most 2000 characters), trimmed before persistence. PUT SHALL accept `{reason, overrides: [...]}` and preserve batch upsert/idempotence semantics; DELETE SHALL accept a `{reason}` body. Both MAY carry `price_preview_unavailable`, a presentation-only client report, never authority or a price claim. Invalid/missing reasons SHALL return 422 before mutation. Every successful request SHALL commit exactly one audit row with server-derived authenticated actor and reason in the same transaction as every mutation. An audit error or cancellation SHALL roll back the mutation; middleware SHALL not duplicate that committed receipt.
+
+#### Scenario: Reason and audit are request-level for batch upserts
+- **WHEN** an authenticated operator submits a valid batch with a reason
+- **THEN** all items are upserted under the existing conflict key, and one request-level audit row commits with the server-derived actor and trimmed reason
+- **AND** a repeated batch retains row identities and writes one new audit row for that request
+
+#### Scenario: Removal requires a reason and an atomic receipt
+- **WHEN** an authenticated operator removes an existing override with a reason
+- **THEN** deletion and its one audit receipt commit together
+- **AND** invalid/missing reasons, audit failure or cancellation cannot leave an unaudited mutation
+
+
 #### Scenario: List overrides for a butler
 - **WHEN** `GET /api/butlers/{name}/model-overrides` is called
 - **THEN** all overrides for the specified butler are returned, each joined with the referenced catalog entry's alias for display
 
 #### Scenario: Upsert overrides batch
-- **WHEN** `PUT /api/butlers/{name}/model-overrides` is called with an array of override objects
+- **WHEN** `PUT /api/butlers/{name}/model-overrides` is called with a reason and an `overrides` array of override objects
 - **THEN** each override is upserted (insert or update on conflict of `butler_name + catalog_entry_id`)
 - **AND** the full set of overrides for the butler is returned after the operation
 
@@ -145,6 +160,21 @@ The existing add/edit catalog form SHALL expose the optional nonsecret allowance
 ### Requirement: Per-Butler Model Override UI
 Each butler's detail page SHALL include model override configuration in a section accessible from the config or a dedicated tab.
 
+ID: REQ-dashboard-model-settings-007
+Source: owner-approved bu-2jtfw.19 split(a); dashboard-design-language
+Scope: v1-mandatory
+
+Add, edit and remove forms SHALL require a nonblank reason and display before/after catalog-model input/output USD per million token rates from the existing shared pricing map. The preview SHALL identify the compared models, label base-tier rates and distinguish catalog prices from routing/spend predictions: tier/priority changes do not change provider rates, and choosing a different catalog entry adds its override rather than removing the original. Missing, malformed or failed pricing SHALL show “Cost preview unavailable”, never invented zero, and SHALL not block a reason-bearing write; the request SHALL label that preview as unavailable. Loading SHALL be acknowledged. Pending writes SHALL disable resubmission and errors SHALL preserve the reason for correction/retry.
+
+#### Scenario: Reason gates every override form
+- **WHEN** add, edit or removal is opened without a nonblank reason
+- **THEN** submission stays disabled until a reason is supplied and the request carries it
+
+#### Scenario: Price preview unavailable is honest and nonblocking
+- **WHEN** pricing fails or either model has no valid known price
+- **THEN** the form shows the unavailable banner without a fabricated price and permits an otherwise valid reason-bearing write flagged as preview-unavailable
+
+
 #### Scenario: Override table on butler page
 - **WHEN** the operator views a butler's model configuration
 - **THEN** a table shows the effective model for each complexity tier: Tier, Effective Model (alias), Source (Global / Override badge), Priority, and an Override action button
@@ -189,6 +219,7 @@ The dashboard SHALL expose `POST /api/settings/models/verify-all` to re-verify e
 #### Scenario: Verify-all parallel execution
 - **WHEN** `POST /api/settings/models/verify-all` is called
 - **THEN** the system issues a 1-token completion against each enabled model concurrently with a bounded concurrency of 8
+- **AND** rows that share an allowance account (`COALESCE(allowance_account, runtime_type)`, across runtimes) are probed one after another within the overall bound of 8, so one account never sees concurrent probes
 - **AND** for each model, `last_verified_at`, `last_verified_latency_ms`, `last_verified_ok`, and `last_verified_error` are persisted
 - **AND** `last_verified_error` is set to the truncated exception text on failure (or `"verification returned an empty response"` when the probe completed with no usable output) and cleared to `NULL` on success
 - **AND** the call is rate-limited to once per minute system-wide; subsequent calls within the minute return `429 Too Many Requests`

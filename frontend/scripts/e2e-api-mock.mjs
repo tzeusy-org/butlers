@@ -7,7 +7,22 @@ if (!Number.isInteger(port) || port < 1 || port > 65_535) {
   throw new Error(`E2E_API_MOCK_PORT must be a valid TCP port; received ${configuredPort}.`);
 }
 
-function writeJson(response, statusCode, body) {
+/**
+ * @typedef {{health: import("../src/api/types").HealthResponse,
+ * status: {data: import("../src/api/owner-auth").OwnerStatus},
+ * csrf: {data: import("../src/api/owner-auth").SessionTuple},
+ * error: import("../src/api/types").ErrorResponse}} BootstrapResponses
+ */
+
+/**
+ * @template {keyof BootstrapResponses} K
+ * @param {http.ServerResponse} response
+ * @param {number} statusCode
+ * @param {K} endpoint
+ * @param {NoInfer<BootstrapResponses[K]>} body
+ */
+function writeJson(response, statusCode, endpoint, body) {
+  void endpoint;
   response.writeHead(statusCode, {
     "cache-control": "no-store",
     "content-type": "application/json; charset=utf-8",
@@ -20,7 +35,7 @@ const server = http.createServer((request, response) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
 
   if (method === "GET" && url.pathname === "/api/health") {
-    writeJson(response, 200, { status: "ok" });
+    writeJson(response, 200, "health", { status: "ok" });
     return;
   }
 
@@ -28,16 +43,16 @@ const server = http.createServer((request, response) => {
   // The isolated owner-auth suite uses the real backend instead of this mock.
   const expiry = new Date(Date.now() + 1_800_000).toISOString();
   if (method === "GET" && url.pathname === "/api/auth/owner/status") {
-    writeJson(response, 200, { data: { state: "keyless_enrolled", authenticated: true, session_expires_at: expiry } });
+    writeJson(response, 200, "status", { data: { state: "keyless_enrolled", authenticated: true, session_expires_at: expiry } });
     return;
   }
   if (method === "GET" && url.pathname === "/api/auth/owner/csrf") {
-    writeJson(response, 200, { data: { csrf_token: "synthetic-domain-e2e-csrf", csrf_expires_at: expiry } });
+    writeJson(response, 200, "csrf", { data: { csrf_token: "synthetic-domain-e2e-csrf", csrf_expires_at: expiry, session_expires_at: expiry } });
     return;
   }
 
   if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
-    writeJson(response, 404, {
+    writeJson(response, 404, "error", {
       error: {
         code: "E2E_UNMOCKED_API_ROUTE",
         message: `No Playwright API mock is registered for ${method} ${url.pathname}.`,
@@ -48,7 +63,7 @@ const server = http.createServer((request, response) => {
     return;
   }
 
-  writeJson(response, 404, {
+  writeJson(response, 404, "error", {
     error: {
       code: "NOT_FOUND",
       message: `No route is available for ${method} ${url.pathname}.`,

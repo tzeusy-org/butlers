@@ -22,7 +22,7 @@ Each message passes through the following stages, instrumented with OpenTelemetr
 
 ## Deduplication Strategies
 
-The dedupe key varies by channel: Telegram uses update IDs, email uses message IDs, API/MCP uses caller idempotency keys, and other channels fall back to a SHA-256 content hash within a 5-minute time bucket. All keys are scoped to the source endpoint identity. Advisory locks (`pg_advisory_xact_lock`) serialize concurrent inserts for the same dedupe key.
+The dedupe key varies by channel: Telegram uses update IDs, email uses message IDs, API/MCP uses caller idempotency keys, and other channels fall back to a SHA-256 content hash within a 5-minute time bucket. The hash is taken over the bearer-scrubbed text, so a stored key never lets a reader recover a withheld one-time code. All keys are scoped to the source endpoint identity. Advisory locks (`pg_advisory_xact_lock`) serialize concurrent inserts for the same dedupe key.
 
 ## Conversation History Loading
 

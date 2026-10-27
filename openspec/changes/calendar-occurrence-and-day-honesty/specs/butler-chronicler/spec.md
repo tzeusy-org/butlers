@@ -6,7 +6,7 @@ The Chronicler SHALL own an additive, scheduled, idempotent reconciliation run f
 
 The run SHALL NOT label any block as attended, SHALL NOT count a calendar block as lived time (the "Calendar Scheduled Blocks Are Not Attendance Assertions" requirement is unchanged), SHALL NOT overwrite or hide an owner correction in the correction overlay, and SHALL NOT mutate any non-Chronicler schema: Calendar gains no cross-schema write authority, the grant surface is the existing restricted calendar read surface (no cursors, no arbitrary schemas, no provider access), and no provider or runtime action is introduced. The run SHALL execute as a deterministic job-mode schedule (`dispatch_mode = "job"`). It SHALL NOT spawn an LLM session, use a prompt-mode schedule, or send an owner-facing message. The day-close prompt is unchanged and does not depend on the run. A rerun SHALL replace only its own run record for the same key, never an owner correction, and a replay SHALL be idempotent. A day whose calendar source was stale or failed when evaluated SHALL record `coverage = "partial"` or `"unavailable"` and SHALL be re-evaluated on a later run; it SHALL NOT be recorded as a clean run. Block references SHALL use the stable `calendar:{origin_instance_ref}` source reference so a moved or cancelled occurrence maps to the same block.
 
-ID: REQ-butler-chronicler-008
+ID: REQ-butler-chronicler-009
 Source: bu-h40h2b.6 acceptance 2 and 6; bu-vpn5ij; decision A1 (bu-2o1dn8); Calendar Scheduled Blocks Are Not Attendance Assertions
 Scope: v1-mandatory
 
@@ -51,7 +51,7 @@ Scope: v1-mandatory
 
 The Chronicler API SHALL expose a read-only, additive endpoint for a settled day's reconciliation run, returning `local_day`, `contradicted_count`, `unknown_count`, `computed_at`, `coverage`, and `algorithm_version`, or an explicit not-found for a day with no run. It SHALL return a not-found, never a zero-count run, for a current, future or never-evaluated day. The response SHALL NOT include an attended count or any field that states attendance. The dashboard consumes this contract; it SHALL NOT compute the result itself. Freshness semantics: a run is `stale` to its consumer when `computed_at` is older than the latest change to the calendar source or the evidence layers for that day, and the consumer SHALL render that state rather than the older result as current.
 
-ID: REQ-butler-chronicler-009
+ID: REQ-butler-chronicler-010
 Source: bu-h40h2b.6 acceptance 5 and 6; bu-vpn5ij; decision A1 (bu-2o1dn8)
 Scope: v1-mandatory
 

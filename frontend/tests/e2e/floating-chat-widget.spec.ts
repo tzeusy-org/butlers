@@ -1,3 +1,4 @@
+import { mockJson } from "./fixtures/api-responses";
 /**
  * Floating chat widget e2e happy path [bu-p6ey8.3].
  *
@@ -51,7 +52,7 @@ test("floating chat widget: open, send, see persisted reply", async ({ page }) =
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({ data: [], meta: { total: 0, limit: 20, offset: 0 } }),
+          body: mockJson("listConversations", { data: [], meta: { total: 0, limit: 20, offset: 0 } }),
         });
         return;
       }
@@ -94,7 +95,7 @@ test("floating chat widget: open, send, see persisted reply", async ({ page }) =
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({
+        body: mockJson("getConversationMessages", {
           data: [
             {
               id: "msg-1",
@@ -184,7 +185,7 @@ test("floating chat widget: badges the trigger for a reply that arrived while cl
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({
+        body: mockJson("listConversations", {
           data: [
             {
               id: EXISTING_CONVERSATION_ID,
@@ -212,7 +213,7 @@ test("floating chat widget: badges the trigger for a reply that arrived while cl
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ data: [], meta: { total: 0, limit: 50, offset: 0 } }),
+        body: mockJson("getConversationMessages", { data: [], meta: { total: 0, limit: 50, offset: 0 } }),
       });
     },
   );

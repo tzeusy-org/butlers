@@ -12,7 +12,9 @@ from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastmcp import FastMCP
 
+from butlers.testing.mcp import registered_tools
 from butlers.testing.schema_standins import CONTACT_ENTITY_MAP, ENTITY_GRAPH_EDGES
 
 pytestmark = [
@@ -1085,26 +1087,16 @@ async def test_feed_get_registered_tool_resolves_contact(pool):
     )
     await note_create(pool, cid, content="Allergic to peanuts")
 
-    class _CapturingMcp:
-        def __init__(self) -> None:
-            self.tools: dict = {}
-
-        def tool(self):
-            def deco(fn):
-                self.tools[fn.__name__] = fn
-                return fn
-
-            return deco
-
     class _StubModule:
         def _get_pool(self):
             return pool
 
-    mcp = _CapturingMcp()
+    mcp = FastMCP("relationship-feed-test")
     register_tools(mcp, _StubModule(), config=None)
-    assert "feed_get" in mcp.tools
+    tools = await registered_tools(mcp)
+    assert "feed_get" in tools
 
-    feed = await mcp.tools["feed_get"](contact_id=cid)
+    feed = await tools["feed_get"](contact_id=cid)
     kinds = {item["kind"] for item in feed}
     assert kinds == {"interaction", "contact_note"}
     assert len(feed) == 2

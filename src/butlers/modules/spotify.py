@@ -31,7 +31,7 @@ from butlers.connectors.spotify_client import (
     SpotifyTokenRefreshUnavailableError,
 )
 from butlers.credential_store import resolve_owner_entity_info
-from butlers.modules.base import Module, ToolMeta
+from butlers.modules.base import Module, ToolMeta, guarded_tool
 from butlers.spotify_credentials import SPOTIFY_OAUTH_ACCESS, SPOTIFY_OAUTH_REFRESH
 
 logger = logging.getLogger(__name__)
@@ -108,20 +108,11 @@ class SpotifyModule(Module):
         self._user_profile: dict[str, Any] | None = None
         self._credentials_ok: bool = False
 
-    @property
-    def name(self) -> str:
-        return "spotify"
+    name = "spotify"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return SpotifyModuleConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        return None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -305,10 +296,17 @@ class SpotifyModule(Module):
         )
         module = self  # capture for closures
 
+        guarded = guarded_tool(
+            credential=lambda: module._credentials_ok and module._client is not None,
+            missing=module._no_credentials,
+            errors=module._handle_spotify_error,
+        )
+
         # ----------------------------------------------------------------
         # Group 1: Search
         # ----------------------------------------------------------------
 
+        @guarded
         async def spotify_search(
             query: str,
             type: str = "track",  # noqa: A002
@@ -322,12 +320,7 @@ class SpotifyModule(Module):
                       Defaults to 'track'.
                 limit: Maximum number of results (1-50, default 10).
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                return await module._client.search(query, types=[type], limit=min(limit, 50))
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            return await module._client.search(query, types=[type], limit=min(limit, 50))
 
         mcp.tool()(spotify_search)
 
@@ -335,6 +328,7 @@ class SpotifyModule(Module):
         # Group 2: Discovery
         # ----------------------------------------------------------------
 
+        @guarded
         async def spotify_get_recommendations(
             seed_artists: list[str] | None = None,
             seed_tracks: list[str] | None = None,
@@ -349,38 +343,29 @@ class SpotifyModule(Module):
                 seed_genres: List of genre name strings.
                 limit: Number of tracks to return (1-100, default 20).
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                result = await module._client.get_recommendations(
-                    seed_artists=seed_artists,
-                    seed_tracks=seed_tracks,
-                    seed_genres=seed_genres,
-                    limit=min(limit, 100),
-                )
-                # A valid recommendation response always includes a "seeds" key.
-                # If absent, the API is unavailable for this app (e.g., 403/404 sentinel).
-                if "seeds" not in result:
-                    return {"error": _RECOMMENDATIONS_UNAVAILABLE_ERROR}
-                return result
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            result = await module._client.get_recommendations(
+                seed_artists=seed_artists,
+                seed_tracks=seed_tracks,
+                seed_genres=seed_genres,
+                limit=min(limit, 100),
+            )
+            # A valid recommendation response always includes a "seeds" key.
+            # If absent, the API is unavailable for this app (e.g., 403/404 sentinel).
+            if "seeds" not in result:
+                return {"error": _RECOMMENDATIONS_UNAVAILABLE_ERROR}
+            return result
 
+        @guarded
         async def spotify_get_related_artists(artist_id: str) -> dict[str, Any]:
             """Get artists related to a given Spotify artist.
 
             Args:
                 artist_id: Spotify artist ID.
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                result = await module._client._get(f"/artists/{artist_id}/related-artists")
-                if result is None:
-                    return {"artists": []}
-                return result
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            result = await module._client._get(f"/artists/{artist_id}/related-artists")
+            if result is None:
+                return {"artists": []}
+            return result
 
         mcp.tool()(spotify_get_recommendations)
         mcp.tool()(spotify_get_related_artists)
@@ -389,28 +374,21 @@ class SpotifyModule(Module):
         # Group 3: Playback state
         # ----------------------------------------------------------------
 
+        @guarded
         async def spotify_get_playback_state() -> dict[str, Any]:
             """Get the current Spotify playback state (device, track, shuffle, repeat).
 
             Returns null if no active playback device.
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                result = await module._client.get_playback_state()
-                return result if result is not None else {"playback": None}
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            result = await module._client.get_playback_state()
+            return result if result is not None else {"playback": None}
 
+        @guarded
         async def spotify_get_queue() -> dict[str, Any]:
             """Get the user's Spotify playback queue (current track + upcoming)."""
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                return await module._client.get_queue()
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            return await module._client.get_queue()
 
+        @guarded
         async def spotify_get_top_items(
             type: str = "tracks",  # noqa: A002
             time_range: str = "medium_term",
@@ -424,14 +402,9 @@ class SpotifyModule(Module):
                             or 'long_term' (all time). Defaults to 'medium_term'.
                 limit: Maximum number of items (1-50, default 10).
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                return await module._client.get_top_items(
-                    type, time_range=time_range, limit=min(limit, 50)
-                )
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            return await module._client.get_top_items(
+                type, time_range=time_range, limit=min(limit, 50)
+            )
 
         mcp.tool()(spotify_get_playback_state)
         mcp.tool()(spotify_get_queue)
@@ -441,6 +414,7 @@ class SpotifyModule(Module):
         # Group 4: Playback control (Premium required)
         # ----------------------------------------------------------------
 
+        @guarded
         async def spotify_play(
             context_uri: str | None = None,
             uris: list[str] | None = None,
@@ -453,56 +427,40 @@ class SpotifyModule(Module):
                 uris: List of track URIs to play (optional).
                 device_id: Target device ID (optional, uses active device).
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                await module._client.play(context_uri=context_uri, uris=uris, device_id=device_id)
-                return {"status": "playing"}
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            await module._client.play(context_uri=context_uri, uris=uris, device_id=device_id)
+            return {"status": "playing"}
 
+        @guarded
         async def spotify_pause(device_id: str | None = None) -> dict[str, Any]:
             """Pause Spotify playback. Requires Spotify Premium.
 
             Args:
                 device_id: Target device ID (optional, uses active device).
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                await module._client.pause(device_id=device_id)
-                return {"status": "paused"}
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            await module._client.pause(device_id=device_id)
+            return {"status": "paused"}
 
+        @guarded
         async def spotify_skip_next(device_id: str | None = None) -> dict[str, Any]:
             """Skip to the next track. Requires Spotify Premium.
 
             Args:
                 device_id: Target device ID (optional, uses active device).
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                await module._client.skip_to_next(device_id=device_id)
-                return {"status": "skipped_next"}
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            await module._client.skip_to_next(device_id=device_id)
+            return {"status": "skipped_next"}
 
+        @guarded
         async def spotify_skip_previous(device_id: str | None = None) -> dict[str, Any]:
             """Skip to the previous track. Requires Spotify Premium.
 
             Args:
                 device_id: Target device ID (optional, uses active device).
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                await module._client.skip_to_previous(device_id=device_id)
-                return {"status": "skipped_previous"}
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            await module._client.skip_to_previous(device_id=device_id)
+            return {"status": "skipped_previous"}
 
+        @guarded
         async def spotify_seek(position_ms: int, device_id: str | None = None) -> dict[str, Any]:
             """Seek to a position in the current track. Requires Spotify Premium.
 
@@ -510,14 +468,10 @@ class SpotifyModule(Module):
                 position_ms: Position in milliseconds to seek to.
                 device_id: Target device ID (optional, uses active device).
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                await module._client.seek_to_position(position_ms, device_id=device_id)
-                return {"status": "seeked", "position_ms": position_ms}
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            await module._client.seek_to_position(position_ms, device_id=device_id)
+            return {"status": "seeked", "position_ms": position_ms}
 
+        @guarded
         async def spotify_set_volume(
             volume_percent: int, device_id: str | None = None
         ) -> dict[str, Any]:
@@ -527,14 +481,10 @@ class SpotifyModule(Module):
                 volume_percent: Volume level (0-100).
                 device_id: Target device ID (optional, uses active device).
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                await module._client.set_volume(volume_percent, device_id=device_id)
-                return {"status": "volume_set", "volume_percent": volume_percent}
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            await module._client.set_volume(volume_percent, device_id=device_id)
+            return {"status": "volume_set", "volume_percent": volume_percent}
 
+        @guarded
         async def spotify_add_to_queue(uri: str, device_id: str | None = None) -> dict[str, Any]:
             """Add a track or episode to the playback queue. Requires Spotify Premium.
 
@@ -542,14 +492,10 @@ class SpotifyModule(Module):
                 uri: Spotify URI of the track or episode to add.
                 device_id: Target device ID (optional, uses active device).
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                await module._client.add_to_queue(uri, device_id=device_id)
-                return {"status": "added_to_queue", "uri": uri}
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            await module._client.add_to_queue(uri, device_id=device_id)
+            return {"status": "added_to_queue", "uri": uri}
 
+        @guarded
         async def spotify_transfer_playback(device_id: str, play: bool = True) -> dict[str, Any]:
             """Transfer Spotify playback to a different device. Requires Spotify Premium.
 
@@ -557,16 +503,11 @@ class SpotifyModule(Module):
                 device_id: Target device ID to transfer playback to.
                 play: Whether to start playing on the new device (default true).
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                await module._client._put(
-                    "/me/player",
-                    json={"device_ids": [device_id], "play": play},
-                )
-                return {"status": "transferred", "device_id": device_id}
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            await module._client._put(
+                "/me/player",
+                json={"device_ids": [device_id], "play": play},
+            )
+            return {"status": "transferred", "device_id": device_id}
 
         mcp.tool()(spotify_play)
         mcp.tool()(spotify_pause)
@@ -581,6 +522,7 @@ class SpotifyModule(Module):
         # Group 5: Playlist management
         # ----------------------------------------------------------------
 
+        @guarded
         async def spotify_get_playlists(limit: int = 20, offset: int = 0) -> dict[str, Any]:
             """Get the current user's Spotify playlists.
 
@@ -588,13 +530,9 @@ class SpotifyModule(Module):
                 limit: Maximum number of playlists (1-50, default 20).
                 offset: Pagination offset (default 0).
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                return await module._client.get_user_playlists(limit=min(limit, 50), offset=offset)
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            return await module._client.get_user_playlists(limit=min(limit, 50), offset=offset)
 
+        @guarded
         async def spotify_create_playlist(
             name: str,
             description: str = "",
@@ -607,8 +545,6 @@ class SpotifyModule(Module):
                 description: Playlist description (optional).
                 public: Whether the playlist is public (default false).
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
             profile = await module._get_user_profile()
             if profile is None:
                 return {
@@ -617,13 +553,11 @@ class SpotifyModule(Module):
             user_id = profile.get("id")
             if not user_id:
                 return {"error": "Could not determine Spotify user ID."}
-            try:
-                return await module._client.create_playlist(
-                    user_id, name, public=public, description=description
-                )
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            return await module._client.create_playlist(
+                user_id, name, public=public, description=description
+            )
 
+        @guarded
         async def spotify_add_tracks_to_playlist(
             playlist_id: str, uris: list[str]
         ) -> dict[str, Any]:
@@ -633,13 +567,9 @@ class SpotifyModule(Module):
                 playlist_id: Spotify playlist ID.
                 uris: List of Spotify track URIs to add.
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                return await module._client.add_tracks_to_playlist(playlist_id, uris)
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            return await module._client.add_tracks_to_playlist(playlist_id, uris)
 
+        @guarded
         async def spotify_remove_tracks_from_playlist(
             playlist_id: str, uris: list[str]
         ) -> dict[str, Any]:
@@ -649,13 +579,9 @@ class SpotifyModule(Module):
                 playlist_id: Spotify playlist ID.
                 uris: List of Spotify track URIs to remove.
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                return await module._client.remove_tracks_from_playlist(playlist_id, uris)
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            return await module._client.remove_tracks_from_playlist(playlist_id, uris)
 
+        @guarded
         async def spotify_get_playlist_tracks(
             playlist_id: str, limit: int = 50, offset: int = 0
         ) -> dict[str, Any]:
@@ -666,18 +592,13 @@ class SpotifyModule(Module):
                 limit: Maximum number of tracks (1-100, default 50).
                 offset: Pagination offset (default 0).
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                result = await module._client._get(
-                    f"/playlists/{playlist_id}/tracks",
-                    params={"limit": min(limit, 100), "offset": offset},
-                )
-                if result is None:
-                    return {"items": []}
-                return result
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            result = await module._client._get(
+                f"/playlists/{playlist_id}/tracks",
+                params={"limit": min(limit, 100), "offset": offset},
+            )
+            if result is None:
+                return {"items": []}
+            return result
 
         mcp.tool()(spotify_get_playlists)
         mcp.tool()(spotify_create_playlist)
@@ -689,6 +610,7 @@ class SpotifyModule(Module):
         # Group 6: Library management
         # ----------------------------------------------------------------
 
+        @guarded
         async def spotify_get_saved_tracks(limit: int = 20, offset: int = 0) -> dict[str, Any]:
             """Get the user's saved (liked) Spotify tracks.
 
@@ -696,40 +618,27 @@ class SpotifyModule(Module):
                 limit: Maximum number of tracks (1-50, default 20).
                 offset: Pagination offset (default 0).
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                return await module._client.get_saved_tracks(limit=min(limit, 50), offset=offset)
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            return await module._client.get_saved_tracks(limit=min(limit, 50), offset=offset)
 
+        @guarded
         async def spotify_save_tracks(ids: list[str]) -> dict[str, Any]:
             """Save tracks to the user's Spotify library.
 
             Args:
                 ids: List of Spotify track IDs to save.
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                await module._client.save_tracks(ids)
-                return {"status": "saved", "count": len(ids)}
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            await module._client.save_tracks(ids)
+            return {"status": "saved", "count": len(ids)}
 
+        @guarded
         async def spotify_remove_saved_tracks(ids: list[str]) -> dict[str, Any]:
             """Remove tracks from the user's Spotify library.
 
             Args:
                 ids: List of Spotify track IDs to remove.
             """
-            if not module._credentials_ok or module._client is None:
-                return module._no_credentials()
-            try:
-                await module._client.remove_saved_tracks(ids)
-                return {"status": "removed", "count": len(ids)}
-            except Exception as exc:  # noqa: BLE001
-                return module._handle_spotify_error(exc)
+            await module._client.remove_saved_tracks(ids)
+            return {"status": "removed", "count": len(ids)}
 
         mcp.tool()(spotify_get_saved_tracks)
         mcp.tool()(spotify_save_tracks)

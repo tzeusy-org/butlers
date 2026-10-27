@@ -60,6 +60,45 @@ own egress admission. Messenger never reads an origin deferred queue.
 
 ## Decisions
 
+### D0 — Keep cancellation on the deterministic service plane
+
+Under adopted [RFC 0038](../../../about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md)
+D1/D2/D7, cancellation is deterministic coordination over the existing local
+policy decisions and durable run/receipt evidence. It never admits a reasoning
+goal, invokes an LLM, starts a session or delegates reasoning. The term
+"admission" below means Messenger's guarded cancellation transaction, not goal
+admission. Existing authenticated Scheduler/Health decisions remain local
+policy evidence validated by the current-fence Switchboard coordinator.
+
+Any cancellation mediation that would use the generic `route` proxy instead
+uses named endpoints on the control plane's service listener. Each endpoint
+fixes its payload schema, one recipient service-plane operation and a
+per-endpoint allowlist of calling daemons. Every request authenticates the
+caller's service identity; a payload's source or origin field is not identity
+proof. Unknown endpoints, unauthenticated or unlisted callers, invalid schemas
+and requests for a different target are refused before contacting a recipient.
+Neither the relay nor its recipient operation is LLM-presentable or reachable
+through the session listener. This creates no goal, subscription or grant.
+
+The versioned admission/finalization/publication packets below keep their exact
+fields, action identities and recipients. `cancel_admit.v1` remains bound to
+Messenger; each snapshotted origin has a separate declared, recipient-bound
+endpoint for each `cancel_finalize.v1`, `cancel_publish.v1` and parent
+`abort.v1(reason=blocked_dnd)` operation. A packet's `origin_butler` must match
+the endpoint's fixed recipient; it cannot select an arbitrary target/tool. Only the
+authenticated current-fence Switchboard coordinator invokes these recipient
+operations. Health, an origin Scheduler, Messenger or a provider gains no
+direct peer call. A missing recipient endpoint is an unavailable participant:
+retain the complete frozen cohort and exact retry identities rather than
+shrinking membership, substituting a recipient or publishing a subset.
+
+Endpoint authentication and allowlisting supplement every existing run/fence,
+cohort, local-subset, replay, DND and private-gate check; they replace none.
+Exact table, Python and endpoint registration names and the daemon
+authentication mechanism remain future implementation details within RFC 0038 D7. This
+spec-only amendment completes none of the future implementation or rollout
+tasks and changes neither the protocol's ownership nor its safety predicates.
+
 ### D1 — Use a single Switchboard-mediated cancellation admission packet
 
 The future wire request is `wake_recovery.cancel_admit.v1`. It is an

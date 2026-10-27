@@ -9,3 +9,4 @@
 - [Dashboard API](dashboard-api.md) — REST API overview, router discovery, SSE events
 - [Response Conventions](response-conventions.md) — mount boundary, cursor pagination, degraded-mode envelopes
 - [Inter-Butler Communication](inter-butler-communication.md) — Switchboard-mediated MCP communication
+- [Implementation Notes](implementation-notes.md) — actor attribution, route enumeration, token validation, secret-file reads

@@ -90,3 +90,63 @@ Scope: v1-mandatory
 - **WHEN** Gmail provider connectivity is healthy but contact classification is unavailable
 - **THEN** the known-contact check remains unavailable
 - **AND** provider health and rule admission retain their existing meaning
+
+### Requirement: Known-contact drop episodes open one standing owner condition
+
+A scheduled Switchboard job SHALL read the unanswered marked drops from known contacts in the trailing seven days (statuses `filtered` and `replay_failed`) and group them by `(filter_reason, sender_identity)`. It SHALL reconcile that complete set into the owner condition ledger under source `switchboard:dropped-known`, with a fingerprint hashed from the pair, so one episode is one condition however many messages it dropped. The condition snapshot and any candidate SHALL carry only the count and window bounds: no sender address, subject, body or filter reason. On an `opened` or `reopened` transition only, the job SHALL propose exactly one insight candidate of category `dropped-known` whose premise is that condition; a later scan that only updates the count SHALL propose nothing. A condition SHALL resolve when its rows are replayed or leave the window, and a later drop from the same pair SHALL reopen it with one new candidate. While current or historical classification is unknown, or the read fails, the job SHALL change no condition and propose nothing, because an unknown read SHALL NOT resolve an episode. The job SHALL NOT use `runtime_attention_outbox` and SHALL NOT replay, narrow or alter what is dropped.
+
+ID: REQ-ingestion-policy-003
+Source: bu-q7vx1q.88.2; bu-q7vx1q.4 move #4 slice S2; src/butlers/core/owner_conditions.py state-ledger contract
+Scope: v1-mandatory
+
+#### Scenario: A drop episode opens once and notifies once
+
+- **WHEN** two marked drops from one sender by one rule are read and later a third arrives
+- **THEN** exactly one condition exists for that pair and exactly one candidate was proposed
+- **AND** the third drop updates the count without proposing again
+
+#### Scenario: Replay or aging resolves and a new drop reopens
+
+- **WHEN** the episode's rows are replayed or leave the seven day window
+- **THEN** the condition resolves
+- **AND** a later drop from the same pair reopens it with one new candidate
+
+#### Scenario: Unknown classification changes nothing
+
+- **WHEN** current classification is unavailable or a drop in the window has unknown historical classification
+- **THEN** the job opens, resolves and proposes nothing and reports a degraded run
+
+#### Scenario: Nothing private is stored
+
+- **WHEN** a condition or candidate is written for an episode
+- **THEN** neither contains the sender address, subject, body or filter reason
+
+### Requirement: Block and skip rules may except people the owner knows
+
+A `block` or `skip` ingestion rule SHALL accept an optional per-rule boolean `except_known_contacts`, stored in the rule's condition and absent unless true. The Switchboard rule API SHALL persist and return it and SHALL refuse it with 422 on any other action, including when an action change would strand it. The policy evaluator SHALL pass over a matching rule that carries it only when the envelope's `known_contact` is `true`, and SHALL continue evaluating later rules. `known_contact` SHALL be `true` or `false` only from a loaded known-contact snapshot and `None` otherwise: a stranger, an unclassified sender and an unflagged rule SHALL keep today's behavior, so unknown classification leaves the rule in force and the drop keeps its unknown classification. The option SHALL default off, SHALL change no existing rule, and SHALL add no known-contact source and no global floor. The Gmail connector SHALL set `known_contact` from the snapshot it already uses for the known-contact marker; other connectors apply the rule as written until they supply the signal. The connector SHALL also send the classification as the boolean `control.known_contact` on the `ingest.v1` envelope, only when the snapshot is loaded, and the Switchboard SHALL read it into the envelope it evaluates against global rules, so a flagged global `skip` rule is passed over too; an absent or non-boolean value SHALL leave the rule in force. `known_contact` is taken from the raw `From` header with no SPF, DKIM or DMARC check, and Gmail filters upstream: a forged known-contact `From` on a domain without DMARC enforcement can bypass an `except_known_contacts` rule, whether it matches on content, header or label. The impact is ingestion only and grants no action authority.
+
+ID: REQ-ingestion-policy-004
+Source: bu-q7vx1q.88.3; bu-q7vx1q.4 move #4 slice S3; surface-known-contact-drops proposal deferred slices
+Scope: v1-mandatory
+
+#### Scenario: A known contact passes a flagged rule
+
+- **WHEN** a Gmail message from a sender in the loaded snapshot matches a block or skip rule with `except_known_contacts`
+- **THEN** that rule does not apply and the message is ingested unless a later rule drops it
+
+#### Scenario: Unflagged, stranger and unknown keep the rule in force
+
+- **WHEN** the rule is unflagged, the sender is not a known contact, or the snapshot is not loaded
+- **THEN** the rule applies as written
+- **AND** a drop with an unloaded snapshot keeps its unknown classification
+
+#### Scenario: The classification reaches the Switchboard's global rules
+
+- **WHEN** a known contact's message matches a flagged global `skip` rule and the envelope carries `control.known_contact: true`
+- **THEN** the Switchboard SHALL pass the rule over
+- **AND** an envelope without the field, or with `false`, SHALL still be skipped
+
+#### Scenario: The option is only valid on block and skip
+
+- **WHEN** a rule is created or changed so `except_known_contacts` sits on any other action
+- **THEN** the API refuses it with 422

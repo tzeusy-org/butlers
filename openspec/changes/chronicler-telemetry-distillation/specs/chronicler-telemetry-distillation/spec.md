@@ -9,8 +9,10 @@ GPS) into activity-shaped episodes, and materialize daily per-lane rollups
 with deterministic anomaly flags — so high-volume telemetry that is
 correctly `skip`-routed at ingestion is no longer also unread downstream.
 No per-event LLM invocation anywhere in this capability (RFC 0014 §D5); the
-one optional LLM call is bounded to once per local day over already-reduced
-output.
+one optional model call is bounded to once per local day over already-reduced
+output, within a declared Chronicler obligation goal (RFC 0038 D2/D5/D18).
+Deterministic projection and rollup jobs remain jobs; an obligation origin or
+reduced input does not upgrade source trust or grant authority.
 
 ## ADDED Requirements
 
@@ -182,6 +184,28 @@ behavioral anomaly before emitting any flag.
 
 The system SHALL bound any LLM labeling of a day's rollup to at most one call per local day, and this capability MAY be entirely disabled: disabling it SHALL NOT change the correctness or completeness of the deterministic rollup or flags.
 
+When enabled, day-close narration SHALL run as a declared Chronicler
+obligation goal admitted under RFC 0038 D5, not as a direct domain model call,
+domain-spawned session or D18 model function. Its capability set SHALL be
+declared in git; server-held origin/cause, source exposure and authority
+ceiling SHALL govern admission, with occurrence dedupe and caused-admission
+lineage/ceiling rules unchanged. All capability calls SHALL use broker grant
+custody and verified domain execution under D4/D7, never authority inferred
+from narrative text or source labels.
+
+The input and narrative writes SHALL preserve approved read surfaces,
+provenance, privacy/retention, tenant boundaries, source stamps and taint.
+Under D6, missing/unreadable stamps SHALL count as exposed; third-party
+editable feed fields SHALL remain untrusted, exposure SHALL only increase,
+and exposed writes SHALL remain tainted. D10's finite goal/invocation budgets
+and fail-closed accounting SHALL apply without resetting across retries or
+recovery. These controls neither add capabilities nor introduce a new
+subscription or owner-facing message.
+
+ID: REQ-chronicler-telemetry-distillation-005
+Source: RFC 0014 D5; RFC 0038 D2, D5, D6, D7, D10 and D18
+Scope: v1-mandatory
+
 #### Scenario: At most one LLM call per local day
 
 - **WHEN** the labeling pass runs for a local day
@@ -189,6 +213,11 @@ The system SHALL bound any LLM labeling of a day's rollup to at most one call pe
 - **AND** its input SHALL be limited to that day's `daily_rollups`/
   `daily_rollup_flags` rows and top episode titles, never raw sensor/point
   event rows
+- **AND** the call SHALL be the admitted Chronicler obligation goal's bounded
+  narration call, with the same per-local-day limit covering every model
+  turn, retry, replacement and recovery across invocations or goals
+- **AND** a failed call SHALL consume that day's call opportunity; neither
+  prose repair nor a tool loop SHALL cause a second model call
 
 #### Scenario: Disabling the labeling pass preserves correctness
 
@@ -196,6 +225,10 @@ The system SHALL bound any LLM labeling of a day's rollup to at most one call pe
 - **THEN** `daily_rollups` and `daily_rollup_flags` SHALL remain fully
   populated and correct
 - **AND** only the narrative/label fields SHALL be absent
+- **AND** admission refusal, budget exhaustion, Stop or a skipped/failed model
+  call SHALL NOT weaken deterministic correctness or reset any consumed
+  model-call allowance; absent narration SHALL retain the normal-null read
+  behavior
 
 #### Scenario: Narration is exposed on the read API surface when present
 

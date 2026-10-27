@@ -1,3 +1,5 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
 // ---------------------------------------------------------------------------
 // MeasurementForm — reusable add/edit form for logged measurements [bu-mqhas]
 //
@@ -116,9 +118,11 @@ export function MeasurementForm({ measurement, onDone, onCancel }: MeasurementFo
   const [measuredAt, setMeasuredAt] = useState(isoToDateInput(measurement?.measured_at));
   const [notes, setNotes] = useState(measurement?.notes ?? "");
 
+  const draft = useDraft("health.measurement", [isEdit ? "edit" : "create", measurement?.id ?? "new"], { type, scalar, systolic, diastolic, valueObject, measuredAt, notes }, (next) => { setType(next.type as typeof type); setScalar(next.scalar as typeof scalar); setSystolic(next.systolic as typeof systolic); setDiastolic(next.diastolic as typeof diastolic); setValueObject(next.valueObject as typeof valueObject); setMeasuredAt(next.measuredAt as typeof measuredAt); setNotes(next.notes as typeof notes); });
+
   const createMutation = useCreateMeasurement();
   const updateMutation = useUpdateMeasurement();
-  const isPending = createMutation.isPending || updateMutation.isPending;
+  const isPending = createMutation.isPending || updateMutation.isPending || !!draft.session?.presentation.cleanup || !!draft.session?.presentation.submitting;
 
   const isCoreType = isCoreMeasurementType(type);
   const usesGenericValueEditor = isEdit && !isCoreType;
@@ -164,6 +168,9 @@ export function MeasurementForm({ measurement, onDone, onCancel }: MeasurementFo
     const trimmedNotes = notes.trim();
     const measuredIso = measuredAtToIso(measuredAt);
 
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
     try {
       if (isEdit) {
         const body: MeasurementUpdateRequest = {
@@ -179,7 +186,7 @@ export function MeasurementForm({ measurement, onDone, onCancel }: MeasurementFo
           id: measurement.id,
           body,
         });
-        toast.success("Measurement updated.");
+        if (draft.current(submission)) toast.success("Measurement updated.");
       } else {
         if (!isCoreMeasurementType(type)) {
           toast.error("Choose a supported measurement type.");
@@ -191,12 +198,12 @@ export function MeasurementForm({ measurement, onDone, onCancel }: MeasurementFo
           measured_at: measuredIso,
           notes: trimmedNotes === "" ? null : trimmedNotes,
         });
-        toast.success("Measurement logged.");
+        if (draft.current(submission)) toast.success("Measurement logged.");
       }
-      onDone();
+      await draft.submitted(submission, onDone);
     } catch (err) {
-      handleError(err);
-    }
+      if (draft.current(submission)) handleError(err);
+    } finally { draft.finish(); }
   }
 
   const typeMeta = isCoreMeasurementType(type) ? TYPE_META[type] : null;
@@ -204,6 +211,7 @@ export function MeasurementForm({ measurement, onDone, onCancel }: MeasurementFo
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4" data-testid="measurement-form">
+      <DraftNotice session={draft.session} />
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-2">
           <Label htmlFor="meas-type">Type</Label>
@@ -312,7 +320,7 @@ export function MeasurementForm({ measurement, onDone, onCancel }: MeasurementFo
       </div>
 
       <div className="flex justify-end gap-2 pt-2">
-        <Button type="button" variant="ghost" onClick={onCancel} disabled={isPending}>
+        <Button type="button" variant="ghost" onClick={() => draft.dismiss(onCancel)} disabled={isPending}>
           Cancel
         </Button>
         <Button type="submit" disabled={isPending}>

@@ -3,10 +3,8 @@
 Regression guard for bu-5n509. The extractor originally collected only JSX text
 nodes and a fixed attribute allowlist, so copy assembled in JS expressions --
 `toast.error("...")`, template literals, ternary branches -- was invisible to it.
-That was tolerable while the inventory was advisory, but CI job
-`frontend-copy-inventory-guard` (bu-erfdj) now regenerates the file and fails the
-build on any diff, which makes the inventory read as authoritative while being
-structurally blind to a whole category of visible copy.
+The on-demand inventory must include that visible copy without claiming that
+its bounded extraction surface is an exhaustive inventory of the UI.
 
 These tests pin the widened collection surface, the `{}` rendering of
 interpolated expressions, the depth-0 rule that keeps nested non-copy strings
@@ -17,6 +15,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -235,11 +234,51 @@ def test_report_skips_story_and_test_files(tmp_path: Path) -> None:
 
 
 def test_report_is_a_pure_function_of_the_sources(tmp_path: Path) -> None:
-    """The CI guard diffs the regenerated file; any nondeterminism would flap it."""
+    """Repeated on-demand extraction of the same sources stays deterministic."""
     module = _extractor()
     fixture = tmp_path / "FixturePage.tsx"
     fixture.write_text('toast.success("Butler restored");', encoding="utf-8")
     assert module.generate_report([fixture]) == module.generate_report([fixture])
+
+
+def test_adding_one_string_changes_exactly_one_report_line(tmp_path: Path) -> None:
+    """A local copy change stays local in the report, without a global count trailer."""
+    module = _extractor()
+    first = tmp_path / "FirstPage.tsx"
+    second = tmp_path / "SecondPage.tsx"
+    first.write_text("<span>Hello there</span>", encoding="utf-8")
+    second.write_text("<span>Goodbye now</span>", encoding="utf-8")
+    before, _ = module.generate_report([first, second])
+
+    second.write_text("<span>Goodbye now</span><span>See you soon</span>", encoding="utf-8")
+    after, _ = module.generate_report([first, second])
+
+    removed = [line for line in before.splitlines() if line not in after.splitlines()]
+    added = [line for line in after.splitlines() if line not in before.splitlines()]
+    assert removed == []
+    assert added == ["- See you soon"]
+
+
+def test_on_demand_cli_writes_only_stdout_and_diagnostics(tmp_path: Path) -> None:
+    """Execute the actual CLI in a source checkout without a committed inventory."""
+    script = tmp_path / "scripts" / _SCRIPT.name
+    script.parent.mkdir()
+    script.write_bytes(_SCRIPT.read_bytes())
+    pages = tmp_path / "frontend" / "src" / "pages"
+    pages.mkdir(parents=True)
+    (pages / "FixturePage.tsx").write_text("<span>Fresh visible copy</span>")
+
+    def extract():
+        return subprocess.run(
+            [sys.executable, str(script)], check=True, capture_output=True, text=True, timeout=10
+        )
+
+    first = extract()
+    assert first.stdout.startswith("# Frontend Copy Inventory\n")
+    assert "- Fresh visible copy" in first.stdout
+    assert "Total strings : 1" in first.stderr
+    assert not (tmp_path / "frontend" / "COPY_INVENTORY.md").exists()
+    assert extract().stdout == first.stdout
 
 
 # ---------------------------------------------------------------------------

@@ -158,6 +158,7 @@ Continuity lookup SHALL be fail-open, not fail-closed: any exception during look
 
 Tasks that do not opt in (`continuity=false`, the default) SHALL see no behavior change: `tick()` SHALL NOT query `task_continuity` for them and SHALL NOT alter their admission's goal input.
 
+ID: REQ-core-scheduler-002
 Source: RFC 0038 D5, D6 and D7
 Scope: v1-mandatory
 
@@ -200,13 +201,34 @@ Scope: v1-mandatory
 - **THEN** `carry_forward` is NOT among them
 - **AND** this does not affect any other butler's tool registration
 
-#### Scenario: Legacy schema without the continuity column
-- **WHEN** `tick()` runs against a `scheduled_tasks` table that predates migration `core_229`
-- **THEN** the column probe treats `continuity` as absent
-- **AND** every task is treated as `continuity_enabled=False`, with no behavior change from before the ledger existed
+#### Scenario: Missing migrated continuity column is a storage fault
+- **WHEN** `tick()` runs against a `scheduled_tasks` table missing `continuity`
+- **THEN** the database error remains visible without a column probe or implicit opt-out
+- **AND** migrated rows with `continuity=false` still dispatch without a continuity block
 
 #### Scenario: The ledger is excluded from the nightly backup, by design
 - **WHEN** the nightly `pg_dump` backup runs
 - **THEN** `public.task_continuity` is excluded (its RLS is FORCEd, like `public.expected_signals`, and pg_dump cannot read a FORCE-RLS table as the table owner without `--enable-row-security`, which this backup deliberately never sets)
 - **AND** a restored database has no live carry-forward rows
 - **AND** the next run of any opted-in task reports "the last run recorded no carry-forward" rather than failing or fabricating a conclusion
+
+## ADDED Requirements
+
+### Requirement: Time occurrences feed the shared minimal evaluator
+The scheduler SHALL publish trusted finite time occurrences to the one S4 evaluator and retain its existing obligation/continuity contracts. It SHALL NOT install a second condition language, implicit subscription, automatic model session or advanced automation engine.
+
+ID: REQ-core-scheduler-001
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S4; bu-dhloi1.19
+Scope: v1-mandatory
+
+#### Scenario: A clock jumps over a bounded instant
+- **WHEN** a registered at leaf is crossed before expiry
+- **THEN** one late fire intent is emitted under the shared event/cursor fence, not one per missed tick
+
+#### Scenario: A transition is too old for a real-time wake
+- **WHEN** a replayed transition is more than10 minutes old
+- **THEN** historical evidence remains but it cannot fire a real-time transition leaf
+
+#### Scenario: Evaluator service is unavailable
+- **WHEN** the scheduler cannot hand off a due trusted event
+- **THEN** work/cursor is retained with an unavailable receipt and no guessed wake, empty success or direct Spawner call

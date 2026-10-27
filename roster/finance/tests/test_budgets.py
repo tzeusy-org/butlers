@@ -15,6 +15,7 @@ import pytest
 
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.records import row as record_row
 
 pytestmark = [
     pytest.mark.unit,
@@ -24,13 +25,6 @@ pytestmark = [
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_row(data: dict) -> MagicMock:
-    """Build a MagicMock that behaves like an asyncpg Record."""
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda key: data[key])
-    return m
 
 
 def _make_pool(
@@ -47,7 +41,7 @@ def _make_pool(
     elif fetchrow_return is not None:
         pool.fetchrow = AsyncMock(return_value=fetchrow_return)
     else:
-        pool.fetchrow = AsyncMock(return_value=_make_row({"total": Decimal("0")}))
+        pool.fetchrow = AsyncMock(return_value=record_row(**{"total": Decimal("0")}))
 
     if fetch_side_effect is not None:
         pool.fetch = AsyncMock(side_effect=fetch_side_effect)
@@ -69,7 +63,7 @@ TODAY_FIRST = date(2026, 3, 1)
 def _mom_pool(monthly_spends: list[Decimal]) -> AsyncMock:
     """Build pool whose fetchrow returns monthly totals in sequence."""
     pool = AsyncMock()
-    responses = [_make_row({"total": amt}) for amt in monthly_spends]
+    responses = [record_row(**{"total": amt}) for amt in monthly_spends]
     pool.fetchrow = AsyncMock(side_effect=responses)
     pool.fetch = AsyncMock(return_value=[])
     # ``state`` lookup behind ``resolve_budget_zone``: no stored general
@@ -236,8 +230,8 @@ class TestSpendingTrendsYoY:
         """Build pool returning current then prior month spend via fetchrow."""
         pool = AsyncMock()
         responses = [
-            _make_row({"total": current_spend}),
-            _make_row({"total": prior_spend}),
+            record_row(**{"total": current_spend}),
+            record_row(**{"total": prior_spend}),
         ]
         pool.fetchrow = AsyncMock(side_effect=responses)
         pool.fetch = AsyncMock(return_value=[])
@@ -354,15 +348,15 @@ def _forecast_pool(
     pool = AsyncMock()
 
     # fetchrow sequence: total current month, maybe total prior month
-    fetchrow_responses = [_make_row({"total": current_spend})]
+    fetchrow_responses = [record_row(**{"total": current_spend})]
     if prior_spend is not None:
-        fetchrow_responses.append(_make_row({"total": prior_spend}))
+        fetchrow_responses.append(record_row(**{"total": prior_spend}))
     pool.fetchrow = AsyncMock(side_effect=fetchrow_responses)
 
     # fetch sequence: current cat rows, then hist rows
     _hist_rows = hist_rows or []
-    _cat_rows = [_make_row(r) for r in cat_rows]
-    _hist_rows_mocked = [_make_row(r) for r in _hist_rows]
+    _cat_rows = [record_row(**r) for r in cat_rows]
+    _hist_rows_mocked = [record_row(**r) for r in _hist_rows]
 
     fetch_responses: list = [_cat_rows, _hist_rows_mocked]
 
@@ -381,7 +375,7 @@ def _forecast_pool(
 
         pool.fetch = AsyncMock(side_effect=_fetch_side_effect)
     else:
-        _budget_rows = [_make_row(r) for r in (budget_rows or [])]
+        _budget_rows = [record_row(**r) for r in (budget_rows or [])]
         fetch_responses.append(_budget_rows)
         pool.fetch = AsyncMock(side_effect=fetch_responses)
 
@@ -564,8 +558,8 @@ class TestSpendingForecastFirstOfMonth:
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(
             side_effect=[
-                _make_row({"total": Decimal("0")}),  # current month
-                _make_row({"total": Decimal("500")}),  # prior month
+                record_row(**{"total": Decimal("0")}),  # current month
+                record_row(**{"total": Decimal("500")}),  # prior month
             ]
         )
         pool.fetch = AsyncMock(side_effect=[[], [], []])
@@ -923,21 +917,14 @@ class TestBudgetSet:
         """Registered budget tools round trip every period on real migrations."""
         from types import SimpleNamespace
 
+        from fastmcp import FastMCP
+
         from butlers.modules._roster_finance.tools import register_tools
+        from butlers.testing.mcp import registered_tools
 
-        class MCP:
-            def __init__(self):
-                self.tools = {}
-
-            def tool(self):
-                def register(fn):
-                    self.tools[fn.__name__] = fn
-                    return fn
-
-                return register
-
-        mcp = MCP()
+        mcp = FastMCP()
         register_tools(mcp, SimpleNamespace(_get_pool=lambda: migrated_budget_pool), config=None)
+        tools = await registered_tools(mcp)
         # Neutralize only this repair in the disposable migrated DB: the same
         # registered call must reach the historical CHECK, not a category FK.
         repaired_check = await migrated_budget_pool.fetchval(
@@ -951,9 +938,7 @@ class TestBudgetSet:
         )
         try:
             with pytest.raises(asyncpg.CheckViolationError) as rejected:
-                await mcp.tools["budget_set"](
-                    category="groceries", amount=100.0, period="quarterly"
-                )
+                await tools["budget_set"](category="groceries", amount=100.0, period="quarterly")
             assert rejected.value.constraint_name == "budgets_period_check"
         finally:
             await migrated_budget_pool.execute(
@@ -961,16 +946,14 @@ class TestBudgetSet:
                 f"ALTER TABLE budgets ADD CONSTRAINT budgets_period_check {repaired_check}"
             )
         for period in ("daily", "weekly", "monthly", "quarterly", "yearly"):
-            result = await mcp.tools["budget_set"](
-                category="groceries", amount=100.0, period=period
-            )
+            result = await tools["budget_set"](category="groceries", amount=100.0, period=period)
             async with migrated_budget_pool.acquire() as conn:
                 stored = await conn.fetchrow(
                     "SELECT * FROM budgets WHERE id=$1::uuid", result["id"]
                 )
             assert stored["period"] == period
             assert stored["amount"] == Decimal("100.00")
-            replacement = await mcp.tools["budget_set"](
+            replacement = await tools["budget_set"](
                 category="groceries", amount=120.0, period=period
             )
             async with migrated_budget_pool.acquire() as conn:
@@ -984,13 +967,11 @@ class TestBudgetSet:
                     "SELECT amount FROM budgets WHERE id=$1::uuid", replacement["id"]
                 ) == Decimal("120.00")
         periods = {"daily", "weekly", "monthly", "quarterly", "yearly"}
-        assert {r["period"] for r in (await mcp.tools["budget_list"]())["budgets"]} == periods
-        assert {r["period"] for r in (await mcp.tools["budget_status"]())["items"]} == periods
+        assert {r["period"] for r in (await tools["budget_list"]())["budgets"]} == periods
+        assert {r["period"] for r in (await tools["budget_status"]())["items"]} == periods
         for period in periods:
-            assert (await mcp.tools["budget_remove"](category="groceries", period=period))[
-                "removed"
-            ]
-        assert (await mcp.tools["budget_list"]())["count"] == 0
+            assert (await tools["budget_remove"](category="groceries", period=period))["removed"]
+        assert (await tools["budget_list"]())["count"] == 0
 
 
 # ---------------------------------------------------------------------------

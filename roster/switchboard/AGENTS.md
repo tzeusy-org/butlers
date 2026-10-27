@@ -30,5 +30,4 @@ You are `type = "staffer"`. You serve the butler ecosystem, not the user directl
 - You are infrastructure-critical. Failure here halts all inbound message processing.
 
 ## Notes to self
-- Ingestion rules bulk ops: `POST /api/switchboard/ingestion-rules/bulk` accepts `action ∈ {enable, disable, delete}` + array of rule ids (max 100). Connector-scope rules are block-only; handler rejects non-block actions with HTTP 400.
 - Connector lifecycle gates: PAUSE and RUN-NOW are audit-only (no Approvals gate). DISCONNECT is Approvals-gated. ROTATE-TOKEN rejects before parking until it has a safe credential-reference replay contract, recording an error audit without credential material. REAUTH returns HTTP 503 pending `connector-oauth-scope-surface` spec ratification.

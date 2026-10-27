@@ -1,6 +1,6 @@
 ## Why
 
-The Relationship module's `entity` group currently mixes six reads with two
+The Relationship module's `entity` group currently mixes six reads with three
 writes. The roster therefore keeps the whole group pruned, which also hides the
 evidence and coverage reads that let a Relationship session distinguish known
 facts, proven absence, and unchecked data.
@@ -11,9 +11,10 @@ configured memory module and its canonical MCP name is `memory_entity_create`.
 Keeping both names in the contract makes registration inventories ambiguous.
 
 Owner decision `bu-uedyz` selected a read-only Relationship group containing
-exactly six named reads. That decision authorizes this specification only;
-configuration activation and implementation require separate approval of the
-exact artifact.
+exactly six named reads. That initial decision authorized the specification only. Closed owner decision
+`bu-t89d9m`, option A (2026-10-20 14:36 UTC), subsequently authorized the
+implementation, six-read roster selection, posture/write-group amendments and
+the Relationship AGENTS Your Tools update through normal PR review.
 
 ## What Changes
 
@@ -21,8 +22,8 @@ exact artifact.
   `entity_resolve`, `entity_get`, `entity_neighbors`,
   `relationship_fact_evidence`, `relationship_predicate_coverage`, and
   `relationship_lookup`.
-- Keep the grouped writes `entity_update` and
-  `relationship_record_coverage` outside that read group and outside the
+- Keep the grouped writes `entity_update`,
+  `relationship_record_coverage`, and `entity_set_posture` outside that read group and outside the
   Relationship roster's activated groups.
 - Preserve the ungrouped `relationship_assert_fact` registration required by
   approved fact-write replay.
@@ -41,15 +42,15 @@ exact artifact.
 
 ## Impact
 
-After the owner approves this exact artifact, a separate implementation may
-change:
+Under that closed implementation authority, the implementation changes:
 
-- `roster/relationship/modules/tools.py` to separate the two grouped writes
+- `roster/relationship/modules/tools.py` to separate the three grouped writes
   from the six reads.
 - `roster/relationship/butler.toml` to activate only the Relationship `entity`
   read group.
 - Focused Relationship module tests using a real FastMCP registry.
 - The maintained tool-group inventory after registration behavior changes.
 
-This change does not authorize or perform tool activation, entity or coverage
-mutation, provider/data reads, daemon restart, deployment, or merge.
+The source configuration selects only the six-read group. It does not perform
+entity or coverage mutation, provider/data reads, daemon restart, deployment,
+production activation, or merge.

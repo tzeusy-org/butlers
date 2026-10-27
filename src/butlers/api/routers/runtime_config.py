@@ -17,35 +17,24 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from butlers.api.audit_emit import emit_dashboard_audit
-from butlers.api.db import DatabaseManager
-from butlers.api.deps import MCPClientManager, get_db_manager, get_mcp_manager
+from butlers.api.deps import Db, MCPClientManager, get_mcp_manager
 from butlers.config import ConfigError, load_config
 from butlers.core.runtime_config import resolve_effective_core_groups
+from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/butlers", tags=["runtime-config"])
 _DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[4] / "roster"
 
-# Known core tool groups — PATCH rejects unknown group names to prevent typos.
+# Known core tool groups — PATCH rejects unknown group names to prevent typos. Derived from the
+# checked-in tool presentation inventory, which a contract test pins to the groups the core tool
+# modules register ("direct" marks ungated registrations, not a group), so this set cannot drift
+# from what a daemon can actually gate.
 KNOWN_CORE_GROUPS: frozenset[str] = frozenset(
-    {
-        "infra",
-        "state",
-        "scheduling",
-        "sessions",
-        "notifications",
-        "media",
-        "temporal",
-        "module_mgmt",
-        "switchboard_routing",
-        "switchboard_backfill",
-        "delegation",
-        "domain_events",
-        "fleet_cases",
-        "cost_claims",
-        "graph",
-    }
+    item.group_name
+    for item in TOOL_PRESENTATION_INVENTORY
+    if item.module_name == "core" and item.group_name not in (None, "direct")
 )
 
 # Fields that require a daemon restart to take effect.
@@ -155,10 +144,6 @@ class RuntimeConfigPatch(BaseModel):
         if v is not None and v <= 0:
             raise ValueError("max_queued must be a positive integer")
         return v
-
-
-def _get_db_manager() -> DatabaseManager:
-    return get_db_manager()
 
 
 def _get_roster_dir() -> Path:
@@ -278,15 +263,16 @@ def _row_to_response(
 @router.get("/{name}/runtime-config")
 async def get_runtime_config(
     name: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     roster_dir: Path = Depends(_get_roster_dir),
     mcp_manager: MCPClientManager = Depends(_get_mcp_client_manager),
 ) -> RuntimeConfigResponse:
     """Read the effective runtime config for a butler from the DB."""
     try:
         pool = db.pool(name)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Butler '{name}' not found")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Butler '{name}' not found") from exc
 
     row = await pool.fetchrow("SELECT * FROM runtime_config LIMIT 1")
     if row is None:
@@ -314,14 +300,15 @@ async def patch_runtime_config(
     name: str,
     request: Request,
     patch: RuntimeConfigPatch,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     roster_dir: Path = Depends(_get_roster_dir),
 ) -> PatchResponse:
     """Partially update the runtime config for a butler."""
     try:
         pool = db.pool(name)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Butler '{name}' not found")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Butler '{name}' not found") from exc
 
     updates: dict[str, Any] = {}
     async with pool.acquire() as connection, connection.transaction():

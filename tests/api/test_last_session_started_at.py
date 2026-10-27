@@ -21,9 +21,10 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
     get_butler_configs,
+    get_db,
     get_mcp_manager,
 )
-from butlers.api.routers.butlers import _get_db_manager, _get_roster_dir
+from butlers.api.routers.butlers import _get_roster_dir
 
 from .conftest import make_mock_mcp_manager
 
@@ -93,7 +94,7 @@ class TestLastSessionStartedAt:
         app.dependency_overrides[get_butler_configs] = lambda: configs
         app.dependency_overrides[get_mcp_manager] = lambda: make_mock_mcp_manager(online=True)
         app.dependency_overrides[_get_roster_dir] = lambda: roster_dir
-        app.dependency_overrides[_get_db_manager] = lambda: db
+        app.dependency_overrides[get_db] = lambda: db
 
         data = await _get_detail(app, "general")
         assert "last_session_started_at" in data
@@ -121,7 +122,7 @@ class TestLastSessionStartedAt:
         app.dependency_overrides[get_butler_configs] = lambda: configs
         app.dependency_overrides[get_mcp_manager] = lambda: make_mock_mcp_manager(online=True)
         app.dependency_overrides[_get_roster_dir] = lambda: roster_dir
-        app.dependency_overrides[_get_db_manager] = lambda: db
+        app.dependency_overrides[get_db] = lambda: db
 
         data = await _get_detail(app, "general")
         assert data["last_session_started_at"] is not None

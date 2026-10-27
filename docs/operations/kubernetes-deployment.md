@@ -7,8 +7,9 @@
 
 ## Overview
 
-`deploy/helm/butlers` is the Kubernetes counterpart of `docker-compose.yml`. The chart installs one
-release named `butlers` into one of two namespaces:
+Helm on k3s is the production deployment path. `deploy/helm/butlers` installs one
+release named `butlers` into one of two namespaces. The table describes repository
+configuration; it does not attest that a production release is running:
 
 | | `butlers-dev` (`values.dev.yaml`) | `butlers` (`values.prod.yaml`) |
 | --- | --- | --- |
@@ -35,7 +36,6 @@ The "dev" naming matches compose and is just as counter-intuitive: see the namin
 | `log-init`, `log-cleanup` | Shared PVC `butlers-logs` + CronJob `butlers-log-cleanup` |
 | `wa_bridge_socket` volume | PVC `butlers-wa-bridge` (Unix socket shared by three pods on one node) |
 | `runtime_*` CLI volumes | PVC `butlers-runtime-home`, one subPath per CLI |
-| host `.beads/issues.export.jsonl` | Optional (`beadsExport.enabled`, on in dev, off in prod): CronJob `butlers-beads-export` writing PVC `butlers-beads-export`, mounted read-only at `/app/.beads` (see [Beads export](#beads-export)) |
 
 Service names match the compose service names, so in-cluster URLs (`http://butlers-up:41100/sse`,
 `http://dashboard-api:41200`) are unchanged.
@@ -47,80 +47,32 @@ Not ported (compose remains the only path for these):
 - `connector-live-listener` (needs `/dev/snd`);
 - the observability profile (the cluster's `lgtm` stack and `otel.example.ts.net` replace it);
 
-## Beads export
+## Engineering tracker isolation
 
-The export also carries the Decision Desk write bridge (`bu-ckkpz.3`).
+Owner decision bu-g2zuv2 = A (2026-10-21) retires the Decision Desk and beads
+projection from the product. The Helm retirement removes the exporter,
+applier CronJob, export PVC declaration, tracker ExternalSecret declaration,
+runtime mounts and bridge image build. Legacy `beadsExport` values cannot
+re-enable them. No live resource or credential operation is performed by a
+source change; operators review the rendered upgrade and its resource pruning.
+Existing export data and secrets are not manually deleted by this change.
 
-`/api/decisions`, the beads tiles, `GET /api/beads/{id}` and `jobs/decision_review` read
-`/app/.beads/issues.export.jsonl`. With `beadsExport.enabled=false` (the default, and prod) nothing
-is mounted and they report unavailable. Dev enables it (owner ruling 2026-10-08, `bu-sng0tu`).
+The independent `tracker-egress` NetworkPolicy stays enabled in dev and now
+selects **every pod**, with no bridge exception. `trackerEgress.enabled` retains
+the existing environment posture (dev true, production false).
+`trackerEgress.deniedCidrs` contains every tracker IPv4 address as `/32`;
+`scripts/k8s/site-helm-args.sh` resolves the existing site host input
+`BEADS_DOLT_SERVER_HOST`. Missing CIDRs fail closed when the deny is enabled.
+The existing IPv4-only and complete-address preconditions still apply; this
+configuration is not evidence of a live network probe or a production rollout.
 
-Each run of CronJob `butlers-beads-export` (`files/beads_cycle.sh` in the `butlers-beads` image):
-
-1. writes a scratch `bd` workspace (`.beads/metadata.json` naming the database);
-2. applies recorded Decision Desk intents (`scripts/beads_decision_applier.py`, contract in
-   `REQ-owner-decision-desk-002`): each owner choice in `switchboard.decision_intents` closes its
-   decision bead at most once, with `decision-intent <id>` in the close reason;
-3. runs `bd export` into a temp file on the PVC and renames it into place.
-
-The export always runs, and the Job fails if either step failed. `dashboard-api` and `butlers-up`
-mount the PVC read-only as a directory (not a `subPath`, which would pin the replaced inode). A
-failed export leaves the previous file; once it is older than `STALE_BEADS_EXPORT_AGE` readers
-report unavailable, never empty.
-
-Trust boundary (`REQ-beads-projection-007`):
-
-- Only the CronJob pod receives the Dolt host and credential. The credential is the dedicated
-  Secret `butlers-beads-dolt`, synced by its own ExternalSecret from BWS keys
-  `BUTLERS_RUNTIME_BEADS_DOLT_USER` / `BUTLERS_RUNTIME_BEADS_DOLT_PASSWORD`, never through the shared
-  `butlers-bws` Secret.
-- NetworkPolicy `butlers-tracker-egress` gives every other pod in the namespace egress to
-  everything except the tracker's IPv4 addresses (`beadsExport.doltEgressCidrs`). It renders from
-  `beadsExport.denyTrackerEgress` (on in dev), not from `enabled`, so disabling the bridge keeps
-  the tracker closed. It assumes IPv4-only pods (k3s single-stack); a dual-stack cluster needs an
-  IPv6 rule too.
-- The runtime never reaches the tracker. It records intents in Postgres; the CronJob applies them.
-
-Facts verified on `butlers-dev`, 2026-10-08:
-
-| Question | Answer |
-| --- | --- |
-| Reachability | Pods resolve `BEADS_DOLT_SERVER_HOST` (a dedicated tailnet address) and reach TCP 3307. |
-| Auth | The tracker's `root@%` has no password, so the NetworkPolicy, not the credential, is what confines the tracker to one pod. Setting a root password is an owner follow-up. |
-| Bridge user | A Dolt user granted `SELECT, INSERT, UPDATE, DELETE, EXECUTE, CREATE TEMPORARY TABLES, LOCK TABLES` on `butlers.*` exports, shows and closes beads. Its credential is in BWS (dev project). |
-| `bd` version | 1.3.1, pinned by release-tarball SHA-256 in `Dockerfile.beads`. The tracker is stamped 1.0.4 (66 schema migrations); 1.3.1 reads and writes it without migrating. |
-| Workspace | `bd export` needs `.beads/metadata.json` (`backend: dolt`, `dolt_mode: server`, `dolt_database`) pointed at by `BEADS_DIR`. The cycle script writes it. |
-| Env names | `BEADS_DOLT_SERVER_HOST`, `BEADS_DOLT_SERVER_PORT`, `BEADS_DOLT_SERVER_USER`, `BEADS_DOLT_PASSWORD`; `BD_ACTOR` sets the audit actor. |
-| Egress policy | Allowing `0.0.0.0/0` except the tracker's `/32` (it has one IPv4 address) plus all pods blocks 3307 to the tracker and keeps Postgres, Telegram, OTLP, the registry and in-cluster services reachable. |
-
-Configuration: `values.dev.yaml` sets `enabled`, `denyTrackerEgress`, the 5-minute schedule and
-the BWS key names. `scripts/k8s/site-helm-args.sh` supplies the site-specific values from
-`BEADS_DOLT_SERVER_HOST` and `BUTLERS_IMAGE_REGISTRY`: `beadsExport.doltHost`,
-`beadsExport.doltEgressCidrs` (every IPv4 address from `getent ahostsv4`, each as a `/32`) and
-`beadsExport.imageRepository`. An unresolvable host prints no CIDR, so the render fails rather
-than shipping without the egress boundary. `scripts/k8s/build-push.sh` builds
-`butlers-beads:<sha>` beside the app image.
-
-Owner-facing Telegram jobs stay off on dev until the owner consents. The export, `/api/decisions`
-and the beads tiles do not depend on either flag.
-
-| Flag (`commonEnv`) | Jobs | Unset | Dev |
-| --- | --- | --- | --- |
-| `BUTLERS_DECISION_ROUTING_ENABLED` | `decision_routing` one-tap prompts | off (needs `"1"`) | `"0"` |
-| `BUTLERS_DECISION_REVIEW_ENABLED` | `decision_review_digest`, `decision_escalation_check` | on (`"0"` opts out) | `"0"` |
-
-`beadsExport.imageRepository` may be left empty when `image.repository` is
-`<registry>/butlers-app`; the chart derives `<registry>/butlers-beads`. An upgrade with
-`--reset-then-reuse-values` replays the release's previous user values, so pass
-`-f values.dev.yaml` again to pick up changed dev values, and supply `beadsExport.doltHost` and
-`beadsExport.doltEgressCidrs` (from `scripts/k8s/site-helm-args.sh`) on the first upgrade that
-enables the bridge.
-
-Storage: the export PVC is `ReadWriteOnce`, written by the CronJob and read by two runtime pods.
-That only works with single-node k3s scheduling. Before going multi-node, require co-scheduling of
-those pods or switch `storage.storageClassName` to an RWX class.
-
-Roll back with `beadsExport.enabled=false`; recorded intents stay in Postgres, unapplied.
+The frontend pages, backend endpoints, Switchboard jobs/TOML, Telegram decision
+transport and Compose/deploy export plumbing are retired in source. Stored
+intent and prompt history remains. No table drop is included: code removal
+must be deployed and every old reader and writer actually stopped before a
+later separately reviewed destructive migration. Rolling back source does not
+promise to restore historical data removed by that later migration. No live
+resource or credential action is part of source retirement.
 
 ## Ingress
 
@@ -140,6 +92,14 @@ namespace. Host-originated connections reach pods from the `cni0` address `10.42
 address is both the policy's allowed source and `dashboardAuth.trustedProxyPeers`; it plays the
 role the Docker bridge gateway played under compose. The NodePort Services use
 `externalTrafficPolicy: Local`, so remote clients keep their own source IP and are refused.
+
+## Notification metadata repair evidence
+
+Before any historical notification metadata repair, follow the read-only
+[serving-writer evidence procedure](notification-metadata-repair.md). It accounts for actual
+Switchboard and in-process dashboard writers, source/image/mount provenance, the required #3458
+ancestry, applied migration frontier and bounded aggregate-only observations. This link grants no
+live execution, deployment/restart, production access or historical-migration authority.
 
 ## Deploy
 
@@ -299,13 +259,21 @@ hotreload. The original Compose-to-k3s cutover is complete. Its earlier
 `make secrets-dev` staging recipe predates dev's BWS-owned ExternalSecrets and
 is not the current deployment or rollback procedure.
 
-Compose remains a supported production/off-cluster deployment path and a local
-path for a non-live database. `scripts/compose.sh --prod` retains the production
+Compose is the retained pre-cutover off-cluster path, pending deletion in
+bu-dss7he.14, and a local path for a non-live database. Production deployment
+uses Helm on k3s (`make -C deploy/helm/butlers ship-prod`, or `deploy-prod` for
+an already-pushed tag). `scripts/compose.sh --prod` retains the pre-cutover
 Compose configuration; it does not authorize starting a fleet against a database
-already owned by Kubernetes. The launcher checks `butlers-up` replicas in the
-matching namespace (`butlers-dev` for dev, `butlers` for prod) and refuses a
-competing fleet. Its `BUTLERS_ALLOW_COMPOSE_WITH_K8S=1` override is only for a
+already owned by Kubernetes. In dev the launcher checks both `butlers-up` and
+`butlers-control`, including observed replicas while scaled-down pods remain;
+either active role refuses a competing fleet. Production retains the unsplit
+`butlers-up` replica check in `butlers`. Its `BUTLERS_ALLOW_COMPOSE_WITH_K8S=1` override is only for a
 non-live database, never a live-fleet cutover shortcut.
+With a selected local Kubernetes context, a failed or malformed ownership query
+refuses all Compose lifecycle actions. Only successful absent/zero responses
+permit startup. Standalone hosts without kubectl or a selected context remain
+supported; local configuration is inspected without contacting a cluster, and
+invalid configuration refuses rather than being treated as standalone.
 
 The protected restore-drill executor remains Docker-only: it attests Docker
 cgroups and host iptables. Production Compose includes the protected fragment;
@@ -319,7 +287,11 @@ the cluster LGTM stack instead.
 Normal dev image rollback redeploys an already-pushed tag through
 `scripts/k8s/deploy-dev.sh <sha>`. Returning database ownership to Compose is a
 separate, coordinated cutover: never run two sets of schedulers and connector
-sessions against the same database.
+sessions against the same database. Stop both dev runtime Deployments and
+confirm their pods terminate before returning ownership to Compose or an
+unsplit release. For the reverse cutover, stop the complete Compose project
+before either Kubernetes role starts. A source preflight is not an atomic lock;
+the live aggregate cap and exclusive transition still need operational proof.
 
 ## Security posture differences from compose
 

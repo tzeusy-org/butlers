@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,6 +16,7 @@ from butlers.core.tool_call_capture import (
 )
 from butlers.modules.memory import storage
 from butlers.modules.memory.tools import context
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -24,9 +25,8 @@ class _PoolStub:
     def __init__(self, conn) -> None:
         self._conn = conn
 
-    @asynccontextmanager
-    async def acquire(self):
-        yield self._conn
+    def acquire(self):
+        return AsyncCtx(self._conn)
 
 
 @contextmanager

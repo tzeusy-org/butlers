@@ -69,7 +69,7 @@ Decrypt with Python::
                memory module, each read through that butler's own pool and
                effective memory schema
 - ``audit``  — ``public.audit_log``
-- ``config`` — ``public.runtime_config``, ``public.model_catalog``,
+- ``config`` — each butler’s own ``runtime_config``, ``public.model_catalog``,
                ``public.permissions``
 - ``all``    — union of every scope above (``full`` is accepted as an alias)
 """
@@ -89,10 +89,10 @@ import zipfile
 from datetime import UTC, datetime
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
-from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
 from butlers.api.routers import audit
 from butlers.api.routers.webhooks import dispatch_event
@@ -122,15 +122,16 @@ _SCOPE_MAP: dict[str, list[tuple[str, str]]] = {
     # scope per butler through ``_memory_export_entries`` (schema-qualified, run on that
     # butler's own pool).
     "memory": [
-        (f"memory.{rel}", f"SELECT * FROM {rel} ORDER BY created_at") for rel in _MEMORY_RELATIONS
+        (f"{{butler}}.memory.{rel}", f"SELECT * FROM {rel} ORDER BY created_at")
+        for rel in _MEMORY_RELATIONS
     ],
     "audit": [
         ("public.audit_log", "SELECT * FROM public.audit_log ORDER BY id"),
     ],
     "config": [
-        ("public.runtime_config", "SELECT * FROM public.runtime_config ORDER BY id"),
+        ("{butler}.runtime_config", "SELECT * FROM runtime_config ORDER BY butler_name"),
         ("public.model_catalog", "SELECT * FROM public.model_catalog ORDER BY id"),
-        ("public.permissions", "SELECT * FROM public.permissions ORDER BY id"),
+        ("public.permissions", "SELECT * FROM public.permissions ORDER BY butler, permission"),
     ],
 }
 
@@ -153,11 +154,6 @@ _WIPE_PUBLIC_TABLES = [
     "public.webhooks",
     "public.approvals_policy",
 ]
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -372,7 +368,8 @@ class WipeResponse(BaseModel):
 async def export_data(
     body: ExportRequest,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ExportResponse]:
     """Trigger a data export and return a signed URL with a 60-minute TTL.
 
@@ -488,6 +485,38 @@ def _memory_export_entries(db: object) -> list[tuple[str, str, str]]:
     return entries
 
 
+def _runtime_config_export_entries(db: object) -> list[tuple[str, str, str | None]]:
+    """Resolve each configured source without hiding an unavailable own pool.
+
+    The legacy archive member is a logical name, not a public-schema source.
+    A census-free caller retains unqualified lookup on its supplied pool only.
+    """
+    configured = set(getattr(db, "configured_butler_names", ()))
+    pooled = set(getattr(db, "butler_names", ()))
+    unavailable = sorted(configured - pooled)
+    if unavailable:
+        raise HTTPException(
+            status_code=503,
+            detail="Export unavailable: config butler database not available for "
+            + ", ".join(unavailable),
+        )
+    butlers = sorted(configured | pooled)
+    if not butlers:
+        return [
+            ("public.runtime_config", "SELECT * FROM runtime_config ORDER BY butler_name", None)
+        ]
+    entries: list[tuple[str, str, str | None]] = []
+    for butler in butlers:
+        schema = db.schema_for_butler(butler)  # type: ignore[attr-defined]
+        if schema is not None and not _SQL_IDENTIFIER_PATTERN.fullmatch(schema):
+            raise HTTPException(status_code=500, detail="Export failed: unsafe config schema")
+        source = f'"{schema}"."runtime_config"' if schema is not None else "runtime_config"
+        entries.append(
+            ("public.runtime_config", f"SELECT * FROM {source} ORDER BY butler_name", butler)
+        )
+    return entries
+
+
 async def _build_export_zip(pool: object, scope: str, db: object) -> bytes:
     """Build a deflate-compressed ZIP of NDJSON exports for *scope*.
 
@@ -520,20 +549,29 @@ async def _build_export_zip(pool: object, scope: str, db: object) -> bytes:
     for scope_name in scope_names:
         if scope_name == "memory":
             table_entries.extend(_memory_export_entries(db))
+        elif scope_name == "config":
+            table_entries.extend(_runtime_config_export_entries(db))
+            table_entries.extend((n, q, None) for n, q in _SCOPE_MAP["config"][1:])
         else:
             table_entries.extend((n, q, None) for n, q in _SCOPE_MAP[scope_name])
 
+    # Multiple own-pool config sources share one stable logical archive member.
+    members: dict[str, list[tuple[str, str | None]]] = {}
+    for name, query, butler in table_entries:
+        members.setdefault(name, []).append((query, butler))
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for table_name, query, butler in table_entries:
+        for table_name, sources in members.items():
             safe_name = table_name.replace(".", "_").replace("/", "_")
             try:
-                source = pool if butler is None else db.pool(butler)  # type: ignore[attr-defined]
-                rows = await source.fetch(query)  # type: ignore[attr-defined]
                 with zf.open(f"{safe_name}.ndjson", "w") as member_file:
-                    for row in rows:
-                        cleaned = {k: v for k, v in dict(row).items() if k not in _SKIP_COLUMNS}
-                        member_file.write((json.dumps(cleaned, default=str) + "\n").encode())
+                    for query, butler in sources:
+                        source = pool if butler is None else db.pool(butler)  # type: ignore[attr-defined]
+                        rows = await source.fetch(query)  # type: ignore[attr-defined]
+                        for row in rows:
+                            cleaned = {k: v for k, v in dict(row).items() if k not in _SKIP_COLUMNS}
+                            member_file.write((json.dumps(cleaned, default=str) + "\n").encode())
             except HTTPException:
                 raise
             except Exception as exc:
@@ -552,7 +590,8 @@ async def download_export(
     scope: str = Query(...),
     issued_at: int = Query(...),
     token: str = Query(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> Response:
     """Download a previously requested export via its signed URL.
 
@@ -571,8 +610,10 @@ async def download_export(
 
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     zip_bytes = await _build_export_zip(pool, scope, db=db)
     encrypted = _encrypt_export(zip_bytes)
@@ -593,7 +634,8 @@ async def download_export(
 @router.delete("/wipe", response_model=ApiResponse[WipeResponse])
 async def wipe_data(
     body: WipeRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[WipeResponse]:
     """Destructively wipe all butler data.
 
@@ -629,8 +671,10 @@ async def wipe_data(
 
     try:
         pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
 
     # --- Phase 2: record the wipe in audit_log BEFORE destruction ---
     await audit.append(pool, "owner", "data.wipe", note="Wipe initiated")

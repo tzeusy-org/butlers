@@ -92,7 +92,7 @@ logger = logging.getLogger(__name__)
 CONNECTOR_TYPE = "home_assistant"
 # NOTE: When the HA connector wires up replay via drain_replay_pending → submit_fn →
 # Switchboard ingest, "home_assistant" must be added to SourceChannel and SourceProvider
-# in roster/switchboard/tools/routing/contracts.py, and _ALLOWED_PROVIDERS_BY_CHANNEL
+# in roster/switchboard/tools/contracts.py, and _ALLOWED_PROVIDERS_BY_CHANNEL
 # updated accordingly, otherwise ingest.v1 Pydantic validation will reject replayed rows.
 CONNECTOR_CHANNEL = "home_assistant"
 CONNECTOR_PROVIDER = "home_assistant"

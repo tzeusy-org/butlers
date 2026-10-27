@@ -3,6 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-07-12
 **Amended:** 2026-07-18 (Switchboard ingestion, connector filtered-event batches, Calendar, and Chronicler producers)
+Governing doctrine: [v1.md, Success Criteria](../../heart-and-soul/v1.md#success-criteria) item 6 (dashboard data in real time) and [architecture.md, Why Single PostgreSQL with Schema Isolation](../../heart-and-soul/architecture.md#why-single-postgresql-with-schema-isolation) (shared coordination crosses schemas only through explicit `public` surfaces).
 
 ## Decision
 

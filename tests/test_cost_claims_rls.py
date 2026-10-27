@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import inspect
+import json
 import shutil
 import uuid
 from decimal import Decimal
@@ -17,7 +19,9 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ProgrammingError
 
 from alembic import command
-from butlers.core.cost_claims import assert_claim
+from butlers.core import cost_claims
+from butlers.core.cost_claims import assert_claim, resolve_claim
+from butlers.db import register_jsonb_codec
 from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import (
     create_migrated_test_db,
@@ -432,6 +436,166 @@ async def test_real_roles_split_assertion_and_resolution_authority(db_url: str) 
         await relationship.close()
         await finance.close()
         await general.close()
+
+
+async def test_resolve_match_refs_round_trips_with_production_jsonb_codec(db_url: str) -> None:
+    """The real resolver binds arrays through the same codec as daemon pools."""
+    relationship = await _role_conn(db_url, "butler_relationship_rw")
+    finance = None
+    observer = None
+
+    async def select_finance(conn: asyncpg.Connection) -> None:
+        await conn.execute("SET ROLE butler_finance_rw")
+        await conn.execute("SET search_path TO finance, public")
+
+    try:
+        claim_id = await _insert_relationship_claim(relationship, f"test:refs:{uuid.uuid4()}")
+        finance = await asyncpg.create_pool(
+            db_url,
+            min_size=1,
+            max_size=1,
+            timeout=10,
+            command_timeout=5,
+            init=register_jsonb_codec,
+            setup=select_finance,
+        )
+        observer = await asyncpg.connect(db_url, timeout=10, command_timeout=5)
+        await register_jsonb_codec(observer)
+        await select_finance(observer)
+
+        refs = ["transaction:synthetic-one", "transaction:synthetic-two"]
+        resolved = await resolve_claim(finance, claim_id, state="matched", match_refs=refs)
+        assert resolved["match_refs"] == refs
+        stored = await observer.fetchrow(
+            "SELECT jsonb_typeof(match_refs) AS kind, match_refs, decided_by "
+            "FROM public.cost_claim_resolutions WHERE claim_id = $1",
+            claim_id,
+        )
+        assert stored["kind"] == "array"
+        assert stored["match_refs"] == refs
+        assert stored["decided_by"] == "butler_finance_rw"
+
+        # None uses the array default on the existing ON CONFLICT update path.
+        cleared = await resolve_claim(finance, claim_id, state="unreconciled", match_refs=None)
+        assert cleared["match_refs"] == []
+        stored = await observer.fetchrow(
+            "SELECT jsonb_typeof(match_refs) AS kind, match_refs "
+            "FROM public.cost_claim_resolutions WHERE claim_id = $1",
+            claim_id,
+        )
+        assert stored["kind"] == "array"
+        assert stored["match_refs"] == []
+
+        updated_refs = list(reversed(refs))
+        updated = await resolve_claim(finance, claim_id, state="matched", match_refs=updated_refs)
+        assert updated["match_refs"] == updated_refs
+        assert (
+            await observer.fetchval(
+                "SELECT match_refs FROM public.cost_claim_resolutions WHERE claim_id = $1",
+                claim_id,
+            )
+            == updated_refs
+        )
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM public.cost_claim_resolutions WHERE claim_id = $1",
+                claim_id,
+            )
+            == 1
+        )
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM public.cost_claim_events "
+                "WHERE claim_id = $1 AND action = 'resolved'",
+                claim_id,
+            )
+            == 3
+        )
+
+        # A successful baseline alone cannot prove sensitivity to the old SQL defect.
+        checks = await observer.fetch(
+            "SELECT conname, convalidated FROM pg_constraint "
+            "WHERE conrelid = 'public.cost_claim_resolutions'::regclass "
+            "AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%jsonb_typeof(match_refs)%'"
+        )
+        assert len(checks) == 1
+        assert checks[0]["convalidated"] is True
+
+        async def committed_snapshot() -> tuple:
+            resolution = await observer.fetchrow(
+                "SELECT * FROM public.cost_claim_resolutions WHERE claim_id = $1", claim_id
+            )
+            events = await observer.fetch(
+                "SELECT * FROM public.cost_claim_events WHERE claim_id = $1 ORDER BY id", claim_id
+            )
+            return dict(resolution), [dict(event) for event in events]
+
+        before_mutation = await committed_snapshot()
+        original_resolver = cost_claims.resolve_claim
+        assert original_resolver is resolve_claim
+        source = inspect.getsource(original_resolver)
+        native_bind = "        match_refs or [],"
+        assert source.count(native_bind) == 1
+        namespace = dict(vars(cost_claims), json=json)
+        exec(
+            compile(
+                source.replace(native_bind, "        json.dumps(match_refs or []),"),
+                "<cost-claim-serialization-mutant>",
+                "exec",
+            ),
+            namespace,
+        )
+        # Only the original serialization expression changes, not SQL, roles or codec.
+        with patch.object(cost_claims, "resolve_claim", namespace["resolve_claim"]):
+            with pytest.raises(asyncpg.CheckViolationError) as failure:
+                await cost_claims.resolve_claim(finance, claim_id, state="matched", match_refs=refs)
+        assert failure.value.sqlstate == "23514"
+        assert failure.value.constraint_name == checks[0]["conname"]
+        assert cost_claims.resolve_claim is original_resolver
+        # Actual implicit statement/trigger rollback is observed on another connection.
+        assert await committed_snapshot() == before_mutation
+
+        restored = await cost_claims.resolve_claim(
+            finance, claim_id, state="matched", match_refs=refs
+        )
+        assert restored["match_refs"] == refs
+        restored_row = await observer.fetchrow(
+            "SELECT jsonb_typeof(match_refs) AS kind, match_refs, decided_by "
+            "FROM public.cost_claim_resolutions WHERE claim_id = $1",
+            claim_id,
+        )
+        assert restored_row["kind"] == "array"
+        assert restored_row["match_refs"] == refs
+        assert restored_row["decided_by"] == "butler_finance_rw"
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM public.cost_claim_resolutions WHERE claim_id = $1", claim_id
+            )
+            == 1
+        )
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM public.cost_claim_events "
+                "WHERE claim_id = $1 AND action = 'resolved'",
+                claim_id,
+            )
+            == 4
+        )
+    finally:
+        try:
+            if observer is not None:
+                await observer.close(timeout=5)
+        finally:
+            try:
+                if finance is not None:
+                    try:
+                        async with asyncio.timeout(5):
+                            await finance.close()
+                    except BaseException:
+                        finance.terminate()
+                        raise
+            finally:
+                await relationship.close(timeout=5)
 
 
 async def test_concurrent_identical_assert_has_one_live_row(db_url: str) -> None:

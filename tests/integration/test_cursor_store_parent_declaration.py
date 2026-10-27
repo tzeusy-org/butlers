@@ -271,6 +271,14 @@ async def test_drive_per_account_heartbeat_claims_the_runtime_role(pool: asyncpg
         parent_endpoint_identity=NO_PARENT,
     )
 
+    await pool.execute(
+        "UPDATE switchboard.connector_registry SET capabilities = $1::jsonb "
+        "WHERE connector_type = $2 AND endpoint_identity = $3",
+        {"backfill": True},
+        "google_drive",
+        endpoint,
+    )
+
     manager = GDriveConnectorManager(
         db_pool=None,  # type: ignore[arg-type]
         cursor_pool=pool,
@@ -306,6 +314,13 @@ async def test_drive_per_account_heartbeat_claims_the_runtime_role(pool: asyncpg
     roster, unparented = await _dashboard_buckets(pool)
     assert unparented == []
     assert endpoint in roster
+    capabilities = await pool.fetchval(
+        "SELECT capabilities FROM switchboard.connector_registry "
+        "WHERE connector_type = $1 AND endpoint_identity = $2",
+        "google_drive",
+        endpoint,
+    )
+    assert capabilities == {"backfill": True, "channel_kind": "feed"}
 
 
 async def _wait_for_role(

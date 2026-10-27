@@ -3,8 +3,8 @@
 - [ ] 0.1 Land this change only after owner adoption of the two decisions (A1, B1) and the open owner questions in proposal.md.
 - [ ] 0.2 PR #4187 / bu-h40h2b.5.2.2 merged on 2026-09-23; start implementation from a tree that contains it (same calendar.py, workspace API/UI tests and the same two OpenSpec domains) and do not combine its find-time error work with this feature.
 - [ ] 0.3 After #4488 merges, merge origin/main into this change's branch and re-run `make check-spec-overwrites`; this change MODIFIES no canonical block, so only archive ordering of module-calendar/spec.md is at stake.
-- [ ] 0.4 Overlap with #4394 (`calendar-context-truth`) follows a second-to-land-rebuilds rule: if #4394 lands first, REQ-module-calendar-034 reads its `event_type` column and cites REQ-module-calendar-001/002; otherwise #4394 rebuilds on REQ-034's retained metadata. Resolve the `focusTime` conflict (hold here, meeting hours there) with the owner before either archives.
-- [ ] 0.5 Before archive, re-check the IDs REQ-module-calendar-031..034, REQ-calendar-conflict-overcommitment-radar-010..012, REQ-dashboard-domain-pages-050..052 and REQ-butler-chronicler-008..009 against canonical specs and pending changes (generalist-lead-focused-delegation holds REQ-module-calendar-030).
+- [ ] 0.4 Overlap with #4394 (`calendar-context-truth`) follows a second-to-land-rebuilds rule: if #4394 lands first, REQ-module-calendar-038 reads its `event_type` column and cites REQ-module-calendar-001/002; otherwise #4394 rebuilds on REQ-038's retained metadata. Resolve the `focusTime` conflict (hold here, meeting hours there) with the owner before either archives.
+- [ ] 0.5 Before archive, re-check the IDs REQ-module-calendar-035..038, REQ-calendar-conflict-overcommitment-radar-010..012, REQ-dashboard-domain-pages-050..052 and REQ-butler-chronicler-009..010 against canonical specs and pending changes (generalist-lead-focused-delegation holds REQ-module-calendar-030).
 - [ ] 0.6 Gate before S2: the owner's answer to open question 3 (how the owner sets a category) becomes a spec requirement before S2 starts.
 
 ## 1. S1 provider occurrence projection (module-calendar)
@@ -20,7 +20,7 @@
 ## 2. S2 honest day load (radar, module-calendar category, dashboard)
 
 - [ ] 2.1 Failing tests first (tests/core/temporal/test_conflicts.py): four-day hold clipped per local day; DST 23/25-hour days; excluded rows stay excluded; sum of clipped parts equals duration.
-- [ ] 2.2 Category derivation as a pure function of stored event (REQ-module-calendar-034); add the category field to the conflict candidate; no title heuristic (tests/core/test_calendar_provenance.py).
+- [ ] 2.2 Category derivation as a pure function of stored event (REQ-module-calendar-038); add the category field to the conflict candidate; no title heuristic (tests/core/test_calendar_provenance.py).
 - [ ] 2.3 Meeting-only density with separate uncategorized bucket; warning vs info overload (REQ-radar-011).
 - [ ] 2.4 Additive `day_load` on `ConflictScanResponse` with `coverage` states; fail-open contract unchanged (tests/api/test_calendar_conflict_radar.py, tests/api/test_read_models_calendar_workspace_v1.py).
 - [ ] 2.5 Frontend: occurrence marker, day-load line with unavailable/stale states (frontend/src/components/calendar tests, CalendarWorkspacePage.test.tsx).
@@ -29,7 +29,7 @@
 
 - [ ] 3.1 Sequence after S1 (needs stable occurrence provenance) and after S2 where both change the Calendar header.
 - [ ] 3.2 Chronicler-owned run table and scheduled job; deterministic contradiction/unknown only; no attended label; owner corrections win; idempotent per `(local_day, algorithm_version)`.
-- [ ] 3.3 Read endpoint (REQ-butler-chronicler-009); not-found for current, future and never-evaluated days.
+- [ ] 3.3 Read endpoint (REQ-butler-chronicler-010); not-found for current, future and never-evaluated days.
 - [ ] 3.4 Dashboard header line (REQ-dashboard-domain-pages-052), absent for current/future days; coverage and freshness shown.
 - [ ] 3.5 Prove no Calendar write path: grants unchanged, tests/migrations/test_chronicler_calendar_read_surface_migration.py still passes.
 

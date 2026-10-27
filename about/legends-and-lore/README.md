@@ -43,7 +43,7 @@ For a new reader, the recommended order follows data flow from startup through r
 | [0022](rfcs/0022-cross-process-event-transport.md) | Cross-Process Event Transport (NOTIFY/LISTEN Fleet Event Bridge) | Accepted | PostgreSQL bridge decision and trade-offs; behavioral contract in [core-fleet-events](../../openspec/specs/core-fleet-events/spec.md). |
 | [0023](rfcs/0023-durable-approval-delivery-intent-recovery.md) | Durable Approval Delivery Intent Recovery | Accepted | Schema-local intent and fenced Messenger recovery decision; behavioral contract in [approval-delivery-intent-recovery](../../openspec/specs/approval-delivery-intent-recovery/spec.md), operational activation separately gated. |
 | [0024](rfcs/0024-messenger-private-email-correspondence-ledger.md) | Messenger-Private Email Correspondence Ledger | Proposed | Privacy-minimized Messenger outbound evidence ledger with bounded, aggregate-only Relationship enrichment. |
-| [0025](rfcs/0025-tracker-host-beads-projection-exporter.md) | Tracker-Host Beads Projection Exporter | Draft | Tracker-host exporter publishes a minimal active Beads projection to PostgreSQL for bounded runtime readers. |
+| [0025](rfcs/0025-tracker-host-beads-projection-exporter.md) | Tracker-Host Beads Projection Exporter | Withdrawn | Owner decision bu-g2zuv2 = A retires the product bridge; effective tracker isolation remains. |
 | [0026](rfcs/0026-commitment-lifecycle.md) | Evidence-Backed Commitment Lifecycle | Draft | Owner-condition ledger gains resolution, commitment metadata, closure receipts, escalation, and lifecycle evidence. |
 | [0027](rfcs/0027-runtime-tool-surface-discovery.md) | Runtime Tool Surface Discovery and Exposure | Accepted | Runtime-native Tool Search and deferred schema loading over an adapter-bounded corpus; canonical MCP listing stays complete. |
 | [0028](rfcs/0028-home-physical-actuation-contract.md) | Home Physical Actuation Contract | Accepted | Fail-closed HA risk map, approval boundary, per-attempt receipt, post-condition proof, rollback hints. |
@@ -77,3 +77,4 @@ column is a one-word summary of it.
 - **Normative language:** "MUST", "SHOULD", "MAY" follow their usual meaning.
 - **Cross-references:** By RFC number (e.g., "see RFC 0003").
 - **Date:** ISO 8601 format.
+- **Governing doctrine:** New and amended RFCs carry one `Governing doctrine:` line linking the specific vision.md non-negotiable rule or the architecture.md, security.md, development.md or v1.md section they implement, or a `Doctrine exception:` line stating scope and guardrails. Older RFCs that cite doctrine only in body text are carried as they are until `bu-bda935` rewrites them.

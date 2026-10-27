@@ -210,7 +210,7 @@ Scope: v1-mandatory
 - **THEN** no healing dispatch occurs for that exception
 
 ### Requirement: Trigger Source Tracking
-Valid trigger sources are: `tick`, `external`, `trigger`, `route`, `healing`, and `schedule:<task-name>`. The trigger source SHALL be passed through to session creation for audit.
+Valid trigger sources include `tick`, `external`, `trigger`, `route`, `qa`, and `schedule:<task-name>`. Historical `healing` provenance SHALL remain readable and its existing isolation/recursion safeguards SHALL remain intact; it SHALL NOT enable the retired local dispatcher. The trigger source SHALL be passed through to session creation for audit.
 
 ID: REQ-core-spawner-006
 Source: core-spawner trigger audit; RFC 0015 centralized QA; bu-lsxqb0.6 and bu-1fe7xv rounds 3-4
@@ -221,9 +221,10 @@ Scope: v1-mandatory
 - **THEN** the session's `trigger_source` is `"schedule:daily_digest"`
 
 #### Scenario: Healing trigger source
-- **WHEN** an existing shared legacy healing dispatcher explicitly spawns an investigation session
-- **THEN** the session's `trigger_source` is `"healing"`
-- **AND** this does not enable direct investigation dispatch by the relay module or Spawner crash handler
+- **WHEN** an existing session carries historical `trigger_source="healing"` provenance
+- **THEN** its original trigger source remains unchanged
+- **AND** neither the core QA relay nor the Spawner crash handler starts a local investigation
+- **AND** new centralized QA investigations retain `trigger_source="qa"`
 
 #### Scenario: Healing sessions skip fallback dispatcher
 - **WHEN** a session with `trigger_source = "healing"` fails
@@ -231,14 +232,30 @@ Scope: v1-mandatory
 - **AND** the centralized QA self-recursion barrier remains authoritative for QA-origin findings
 
 ### Requirement: Credential Isolation
-The spawner SHALL build an explicit environment dict for the runtime process containing only: `PATH` (for shebang resolution), declared `[butler.env]` vars, module credential vars, and CLI auth provider credentials (e.g. `ANTHROPIC_API_KEY` for the Claude runtime). Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or API keys entered via the dashboard Settings → CLI Runtime Authentication card, depending on the provider's `auth_mode`. Credentials SHALL be resolved DB-first via `CredentialStore.resolve()` with env-var fallback. Undeclared env vars SHALL NOT leak through.
+The spawner SHALL build an explicit environment dict containing only `PATH` (for shebang resolution), declared `[butler.env]` required/optional variables, distributed-tracing variables, and the selected runtime's authentication material. Runtime authentication uses CLI-level OAuth tokens (device-code flow) or the selected provider's configured API key, depending on its `auth_mode`. Declared variables SHALL be resolved through `CredentialStore.resolve()` when a store is present, without implicit environment fallback; the no-store path MAY resolve them from the process environment. Owner-auth and administrative database variables SHALL always be withheld, even if declared.
+
+Module channel credentials SHALL NOT be added merely because a module declares or resolves them. Module credential validation and daemon-side resolution SHALL remain available to the modules. An operator MAY explicitly declare a channel variable in `[butler.env]`; that declaration remains subject to the owner-auth and administrative-variable exclusions. Undeclared host variables SHALL NOT leak through, and an explicit empty environment SHALL NOT become ambient environment inheritance at the runtime adapter.
+
+Source: RFC 0038 D3 and D18; bu-13itjw legacy credential isolation
+Scope: v1-mandatory
 
 ID: REQ-core-spawner-010
 
 #### Scenario: Only declared credentials are passed
-- **WHEN** the spawner builds the runtime environment
-- **THEN** only `PATH`, declared `[butler.env]` vars, and declared module credential vars are included
-- **AND** other host environment variables are excluded
+- **WHEN** the spawner builds a normal runtime environment
+- **THEN** only `PATH`, declared `[butler.env]` variables, tracing, and selected runtime authentication are included
+- **AND** undeclared module channel credentials and other host environment variables are excluded
+- **AND** daemon-side module validation and credential resolution remain unchanged
+
+#### Scenario: Explicitly declared channel variable
+- **WHEN** an operator declares a module channel variable in `[butler.env]`
+- **THEN** the variable is resolved by the normal declared-variable path
+- **AND** owner-auth and administrative database variables remain withheld
+
+#### Scenario: Empty runtime environment
+- **WHEN** the spawner supplies an empty environment mapping
+- **THEN** the runtime adapter preserves that explicit mapping rather than inheriting the daemon environment
+- **AND** invocation-local MCP configuration variables MAY be added without inheriting unrelated host variables
 
 ### Requirement: Pre-Launch and Prewarm Codex Auth Synchronization
 The Codex adapter SHALL perform live Codex device-auth reconciliation before
@@ -542,7 +559,7 @@ The spawner SHALL support `stop_accepting()` to reject new triggers and `drain(t
 - **THEN** remaining in-flight tasks are cancelled
 
 ### Requirement: Healing Session Semaphore Bypass
-When the spawner's `trigger()` is called with `trigger_source = "healing"`, the per-butler session semaphore SHALL be bypassed. The global semaphore SHALL still be acquired. This is essential for the module path where the calling session is still holding the per-butler semaphore.
+When the spawner's `trigger()` is called with `trigger_source = "healing"`, the per-butler session semaphore SHALL be bypassed. The global semaphore SHALL still be acquired. This retained isolation behavior does not register or enable the retired local dispatcher.
 
 #### Scenario: Healing bypasses per-butler semaphore
 - **WHEN** `trigger(prompt, trigger_source="healing")` is called and the per-butler semaphore has 0 available slots
@@ -565,28 +582,32 @@ When spawning a healing agent session (`trigger_source = "healing"`), the spawne
 - **AND** includes `PATH` for tool discovery
 - **AND** no other butler-specific credentials or env vars are passed
 
-### Requirement: Healing Configuration in butler.toml
-The daemon SHALL admit self_healing startup only when `[modules.self_healing]` is declared. Its relay config SHALL accept the existing six keys without permitting the reporting butler to override QA investigation policy. The Spawner SHALL have no separately enabled healing fallback.
+### Requirement: Core QA Relay Availability
+The daemon SHALL register `report_error` and `get_healing_status` as logged core tools on every roster, independently of module declarations and `core_groups`. The retired `self_healing` module, its configuration and its skill SHALL NOT be required or registered. The Spawner SHALL have no local healing fallback.
 
 ID: REQ-core-spawner-007
-Source: RFC 0015 centralized QA; bu-1fe7xv rounds 2-4; core-modules explicit startup selection
+Source: RFC 0015 centralized QA; approved-A QA retirement bu-dss7he.1; REQ-core-spawner-006
 Scope: v1-mandatory
 
-#### Scenario: Default healing config
-- **WHEN** `butler.toml` has no `[modules.self_healing]` section
-- **THEN** self_healing remains available to registry discovery but is not admitted to startup or tool registration
-- **AND** no Spawner fallback is enabled
+#### Scenario: Core relay without module configuration
+- **WHEN** a daemon starts without `[modules.self_healing]`, including a staffer or a daemon with no enabled core groups
+- **THEN** both core QA tools are registered with trusted daemon identity and read-only history pool
+- **AND** `error_message`, `traceback`, and `context` retain sensitive argument metadata and normal tool-call logging/session/trace binding
+- **AND** no local investigation, startup recovery, reaper or publisher is installed
 
-#### Scenario: Healing config fields
-- **WHEN** `[modules.self_healing]` is present
-- **THEN** its schema accepts `enabled` (bool, default true), `severity_threshold` (int, default 2), `max_concurrent` (int, default 2), `cooldown_minutes` (int, default 60), `circuit_breaker_threshold` (int, default 5), and `timeout_minutes` (int, default 30)
-- **AND** `enabled=false` prevents report admission while the five legacy dispatch thresholds remain inert compatibility inputs
-- **AND** unknown extra fields are rejected
+#### Scenario: Late transport and cache ownership
+- **WHEN** a report is submitted after Switchboard client creation or replacement
+- **THEN** the relay resolves the daemon's current client and binds its sixty-second QA availability cache to that exact client
+- **AND** Switchboard may use its own registered local MCP transport
+- **AND** no reporting argument selects source identity or publication authority
 
-#### Scenario: Spawner fallback uses module config
-- **WHEN** a reporting butler sets legacy self_healing threshold values and submits a valid report while relay admission is enabled
-- **THEN** the report uses the same QA relay boundary without local dispatch gates or a local investigation
-- **AND** QA retains its own authoritative triage, concurrency, cooldown, breaker and timeout policy
+#### Scenario: Confirmed reception and bounded refusal
+- **WHEN** a core report is submitted
+- **THEN** fingerprinting, severity, summary truncation and relay response shapes remain compatible
+- **AND** QA availability and routing share one two-second absolute deadline
+- **AND** only confirmed QA reception returns `accepted=true`; missing QA, malformed/error envelopes or unconfirmed transport return an honest refusal without local fallback
+- **AND** a timeout does not promise cancellation of already-buffered reception or license a blind replay
+- **AND** QA alone retains triage, concurrency, cooldown, breaker, timeout and publication policy
 
 ### Requirement: Spawner resolves hot config fields per-spawn from the model catalog
 The Spawner SHALL resolve the hot fields (model, runtime_type, args, session_timeout_s) on every `trigger()` call rather than reading them from the static `ButlerConfig`. These fields live on `public.model_catalog` (resolved per complexity tier), not on the `runtime_config` table. The Spawner calls `resolve_model_with_effective_tier()` (`src/butlers/core/model_routing.py`) to obtain the catalog entry id, runtime_type, args, and session_timeout_s for the chosen tier. The `RuntimeConfigAccessor` is still consulted, but only for cold fields (core_groups, max_concurrent, max_queued).

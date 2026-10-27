@@ -192,3 +192,22 @@ days. Normal owning native adoption is source preparation; exact-head normal CI,
 independent review, full protected merge_group, author-approved live actions,
 actual body rerun and both elapsed windows are separately mandatory before whole
 closure. No slice is selected for deferral and no gain is claimed.
+
+## Agent working rules
+
+Moved verbatim from `AGENTS.md`.
+
+- Work through dry-run, independently verified object recovery and concrete owner-approved retirement.
+  Closed PR names, backdated commits, missing workers and an under-100 target are
+  not deletion permission. Cache eviction is irreversible and rebuildable.
+- Trusted coordinator claims/worktree setup and native QA/healing creation and
+  cleanup share `<common-git-dir>/ci-branch-custody.lock`; do not nest an external
+  acquisition around a native operation that already acquires it. Remote deletion
+  still uses an expected-SHA lease. Retain dirty/live/foreign workers and receipts.
+- A source merge does not complete live branch/cache/setting application, an
+  actual body-edit rerun, or both seven AND fourteen-day push observation windows.
+  Preserve separate receipts and claim no wall-clock gain without its evidence.
+- PR guards fetch validated current title/body at execution, so a manual body-fix
+  rerun sees live metadata. The commit range remains the triggering source head.
+  API failure refuses; public diagnostics omit matched session text. No token
+  widening, `pull_request_target`, public forbidden canary or mass old-head push.

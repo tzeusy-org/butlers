@@ -29,6 +29,7 @@ import pytest
 
 from butlers.modules.memory import search as catalog_search
 from butlers.modules.memory import storage
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -80,31 +81,16 @@ class TestIsCatalogWriteExcluded:
 class TestUpsertCatalogSkipsExcludedSensitivity:
     """_upsert_catalog must short-circuit before touching the DB for excluded rows."""
 
-    class _Transaction:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc_info) -> bool:
-            return False
+    _Transaction = AsyncCtx
 
     class _Connection:
         def __init__(self) -> None:
             self.execute = AsyncMock()
 
         def transaction(self) -> TestUpsertCatalogSkipsExcludedSensitivity._Transaction:
-            return TestUpsertCatalogSkipsExcludedSensitivity._Transaction()
+            return TestUpsertCatalogSkipsExcludedSensitivity._Transaction(None)
 
-    class _Acquire:
-        def __init__(
-            self, connection: TestUpsertCatalogSkipsExcludedSensitivity._Connection
-        ) -> None:
-            self._connection = connection
-
-        async def __aenter__(self) -> TestUpsertCatalogSkipsExcludedSensitivity._Connection:
-            return self._connection
-
-        async def __aexit__(self, *exc_info) -> bool:
-            return False
+    _Acquire = AsyncCtx
 
     class _Pool:
         def __init__(self) -> None:

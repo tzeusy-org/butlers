@@ -23,6 +23,8 @@ import {
 import { useTickingNow } from "@/hooks/use-ticking-now";
 import { chartSeriesColor } from "@/lib/chart-colors";
 import { DAY_MS, buildTimeSeries } from "@/lib/time-series";
+import { isMeasurementUnreachable, type MeasurementSignalRead } from "@/lib/measurement-acquisition";
+import { MeasurementSignalHealthNote } from "./MeasurementSignalHealthNote";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -101,7 +103,7 @@ function EmptyLine({ children }: { children: React.ReactNode }) {
 // MeasurementChart
 // ---------------------------------------------------------------------------
 
-export default function MeasurementChart() {
+export default function MeasurementChart({ expectedSignals }: { expectedSignals?: MeasurementSignalRead }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedType = searchParams.get("type") ?? "";
   const since = searchParams.get("since") ?? "";
@@ -398,6 +400,7 @@ export default function MeasurementChart() {
       </div>
 
       {/* Chart */}
+      <MeasurementSignalHealthNote read={expectedSignals} />
       {invalidChartUrl ? null : isLoading ? (
         <Skeleton className="h-64 w-full" />
       ) : isError ? (
@@ -407,6 +410,9 @@ export default function MeasurementChart() {
           onRetry={() => void refetch()}
           testId="measurement-readings-degraded"
         />
+      ) : measurements.length === 0 && buckets.length === 0 &&
+        isMeasurementUnreachable(expectedSignals, activeType) ? (
+        <EmptyLine>{typeLabel} instrument unreachable. No readings for this range.</EmptyLine>
       ) : !supportsTrend && !isBP ? (
         <EmptyLine>
           No unambiguous {typeLabel} series is available for this range.

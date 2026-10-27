@@ -42,7 +42,7 @@ from pathlib import Path
 
 import pytest
 
-from butlers.api.models.audit import PROBE_FAILURE_VOCABULARY
+from butlers.core.audit import PROBE_FAILURE_VOCABULARY
 
 _SRC = Path(__file__).resolve().parents[2] / "src" / "butlers"
 

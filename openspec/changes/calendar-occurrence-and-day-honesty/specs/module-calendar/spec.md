@@ -10,7 +10,7 @@ Each provider instance SHALL project to its own `calendar_events` row keyed by i
 
 A moved instance (its displayed start or end changed while `originalStartTime` did not) SHALL keep its `origin_instance_ref`, update `starts_at`/`ends_at` in place, and remain one row. A cancelled exception (a provider instance with `status=cancelled`, possibly minimally populated with only its id, `recurringEventId` and `originalStartTime`) SHALL remove or suppress only that occurrence and SHALL NOT delete its siblings or the series. The provider-to-projection mapping SHALL NOT infer series membership from title, time or attendees.
 
-ID: REQ-module-calendar-031
+ID: REQ-module-calendar-035
 Source: bu-h40h2b.6 acceptance 2-3; bu-vpn5ij; decision A1/B1 (bu-2o1dn8); Google Calendar events.list singleEvents semantics
 Scope: v1-mandatory
 
@@ -54,7 +54,7 @@ A resync SHALL stage its full result and commit it only after the provider has r
 
 Rollback SHALL be defined: reverting the sync to the collapsed-master mode SHALL bump the cursor version again and run the same bounded, commit-at-end full resync, never reuse an occurrence-mode token, and never leave a mixed projection that renders both a master and its instances for one source.
 
-ID: REQ-module-calendar-032
+ID: REQ-module-calendar-036
 Source: bu-h40h2b.6 acceptance 3 and 7; bu-vpn5ij; decision A1/B1 (bu-2o1dn8); Google incremental-sync token query-parameter rule
 Scope: v1-mandatory
 
@@ -96,7 +96,7 @@ Because provider expansion of an open-ended series is unbounded, occurrence proj
 
 Occurrences first entering the forward horizon as time passes are not delivered by an incremental token. When remaining forward coverage falls below a configured fraction of the horizon, the module SHALL run a bounded full resync to advance `coverage_through`. Until then, and whenever the source is failed or stale, any reader asking about a period beyond `coverage_through`, or about a source whose last successful sync is older than the stale threshold, SHALL receive an explicit partial or stale coverage indication and SHALL NOT be answered as though the period were empty. Coverage SHALL be exposed through the existing source freshness surface as additive fields (`coverage_through` and a `coverage` state of `complete`, `partial` or `stale`).
 
-ID: REQ-module-calendar-033
+ID: REQ-module-calendar-037
 Source: bu-h40h2b.6 acceptance 3 and 5; bu-vpn5ij; Google events.list syncToken restrictions
 Scope: v1-mandatory
 
@@ -130,7 +130,7 @@ The provider parser SHALL retain, as projected event metadata, the provider `eve
 
 The category SHALL NOT be derived from the title, description, location text, calendar name, organizer string, source name or any free-text heuristic, including for flights and trips; an event the evidence does not classify is `uncategorized`, never silently `meeting` and never silently `travel`. The derivation SHALL be a pure function of the stored event so a reader can recompute it, and it SHALL be exposed to the shared analysis boundary as a category field on the conflict candidate. Provider fields used as evidence SHALL be read-side metadata only; no provider write authority is added.
 
-ID: REQ-module-calendar-034
+ID: REQ-module-calendar-038
 Source: bu-h40h2b.6 acceptance 2 and 4; bu-vpn5ij; decision B1 (bu-2o1dn8); RFC 0009 no-fabrication doctrine
 Scope: v1-mandatory
 

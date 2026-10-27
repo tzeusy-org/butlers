@@ -33,7 +33,7 @@ import {
   useMindMapAnalyticsTrend,
 } from "@/hooks/use-education";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
-import { toneClass } from "@/components/butler-detail/atoms-utils";
+import { toneClass } from "@/components/ui/atoms-utils";
 import { chartColor } from "@/lib/chart-colors";
 import { useTickingNow } from "@/hooks/use-ticking-now";
 import { DAY_MS, buildTimeSeries } from "@/lib/time-series";

@@ -1,6 +1,6 @@
 import type { MeasurementTypeInfo } from "@/api/types";
 
-const CORE_KPI_SLOTS = [
+export const CORE_KPI_SLOTS = [
   { type: "weight", label: "Weight" },
   { type: "blood_pressure", label: "Blood pressure" },
   { type: "heart_rate", label: "Heart rate" },
