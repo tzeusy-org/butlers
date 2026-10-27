@@ -3794,9 +3794,11 @@ def test_ordinary_purpose_policy_reverse_preserves_full_shape_and_savepoint_clea
     assert rejected.events[-1] == "ROLLBACK SAVEPOINT"
 
 
+@pytest.mark.parametrize("finance_revision", [None, "finance_018"])
 @pytest.mark.parametrize("include_connector", [False, True])
 def test_disposable_serving_deployment_keeps_control_and_native_identities_separate(
     include_connector,
+    finance_revision,
 ):
     """Execute producer orchestration; physical SQL is doubled, never PG credit."""
     from contextlib import contextmanager
@@ -3818,6 +3820,7 @@ def test_disposable_serving_deployment_keeps_control_and_native_identities_separ
         def execute(self, statement, params=None):
             calls.append((str(statement), params))
             if str(statement).startswith("CREATE ROLE"):
+                assert finalize.called
                 create_count[0] += 1
                 if create_count[0] == fail_create[0]:
                     raise RuntimeError("Selected CREATE was not acknowledged")
@@ -3854,9 +3857,11 @@ def test_disposable_serving_deployment_keeps_control_and_native_identities_separ
         patch("butlers.migrations.finalize_authority") as finalize,
     ):
         with (
-            migration.serving_test_deployment(container, include_connector=True)
+            migration.serving_test_deployment(
+                container, include_connector=True, finance_revision=finance_revision
+            )
             if include_connector
-            else migration.serving_test_deployment(container)
+            else migration.serving_test_deployment(container, finance_revision=finance_revision)
         ) as deployment:
             create.assert_called_once_with(container, "butlers", _owned_creation=[])
             assert deployment.migration_url == "normal-owner-url"
@@ -3868,6 +3873,29 @@ def test_disposable_serving_deployment_keeps_control_and_native_identities_separ
             finalize.assert_called_once()
             assert finalize.call_args.args == (held,)
             assert finalize.call_args.kwargs["source_database"] == "butlers"
+            selected_finance = [
+                call for call in stage.call_args_list if call.kwargs.get("chain") == "finance"
+            ]
+            finance_heads = [
+                call for call in upgrade.await_args_list if call.kwargs.get("chain") == "finance"
+            ]
+            finance_plans = [
+                row for row in finalize.call_args.kwargs["plans"] if row[0] == "finance"
+            ]
+            if finance_revision is None:
+                assert selected_finance == []
+                assert len(finance_heads) == 1
+                assert finance_plans == [("finance", "finance", None)]
+            else:
+                assert len(selected_finance) == 1
+                assert selected_finance[0].kwargs == {
+                    "chain": "finance",
+                    "schema": "finance",
+                    "revision": "finance_018",
+                    "connection": held,
+                }
+                assert finance_heads == []
+                assert finance_plans == [("finance", "finance", "finance_018")]
             runtime = deployment.runtime_database("general")
             assert runtime.user != "selected_control"
             assert runtime.role == "butler_general_rw"
@@ -3898,9 +3926,13 @@ def test_disposable_serving_deployment_keeps_control_and_native_identities_separ
             fail_revoke[0] = failed_ordinal == 2
             with pytest.raises(RuntimeError, match="not acknowledged") as original:
                 with (
-                    migration.serving_test_deployment(container, include_connector=True)
+                    migration.serving_test_deployment(
+                        container, include_connector=True, finance_revision=finance_revision
+                    )
                     if include_connector
-                    else migration.serving_test_deployment(container)
+                    else migration.serving_test_deployment(
+                        container, finance_revision=finance_revision
+                    )
                 ):
                     pytest.fail("Partial serving identity setup was published")
             attempted = [sql for sql, _ in calls if sql.startswith("CREATE ROLE")]
@@ -3926,11 +3958,28 @@ def test_disposable_serving_deployment_keeps_control_and_native_identities_separ
                 asyncio.run(invalid_async())
             assert create.call_count == previous_creations
 
+        for invalid_window in (False, True, 0, 18, "finance_019", "finance@head", ""):
+            previous_creations = create.call_count
+            with pytest.raises(ValueError, match="Finance predecessor"):
+                with migration.serving_test_deployment(container, finance_revision=invalid_window):
+                    pytest.fail("Invalid Finance window was admitted")
 
+            async def invalid_finance(selected=invalid_window):
+                async with migration.async_serving_test_deployment(
+                    container, finance_revision=selected
+                ):
+                    pytest.fail("Invalid async Finance window was admitted")
+
+            with pytest.raises(ValueError, match="Finance predecessor"):
+                asyncio.run(invalid_finance())
+            assert create.call_count == previous_creations
+
+
+@pytest.mark.parametrize("finance_revision", [None, "finance_018"])
 @pytest.mark.parametrize("cancel_phase", ["enter", "resources", "exit"])
 @pytest.mark.parametrize("resource_fails", [False, True])
 async def test_disposable_serving_deployment_joins_cancelled_worker_and_cleanup(
-    cancel_phase, resource_fails
+    cancel_phase, resource_fails, finance_revision
 ):
     """No cancelled caller abandons a creating or closing testcontainer worker."""
     import threading
@@ -3955,7 +4004,8 @@ async def test_disposable_serving_deployment_joins_cancelled_worker_and_cleanup(
     resource_closed = AsyncMock(side_effect=close_resources)
 
     @contextmanager
-    def physical_producer(container):
+    def physical_producer(container, **options):
+        assert options == ({"finance_revision": finance_revision} if finance_revision else {})
         if cancel_phase == "enter":
             loop.call_soon_threadsafe(reached.set)
             release.wait(5)
@@ -3969,7 +4019,9 @@ async def test_disposable_serving_deployment_joins_cancelled_worker_and_cleanup(
             order.append("identities_closed")
 
     async def consumer():
-        async with migration.async_serving_test_deployment(object()):
+        async with migration.async_serving_test_deployment(
+            object(), finance_revision=finance_revision
+        ):
             order.append("body")
 
     with patch.object(migration, "serving_test_deployment", physical_producer):
@@ -6611,3 +6663,841 @@ def test_actual_finalizer_keeps_finance_materialized_view_closed_on_bounded_sour
                 )
                 == 2
             )
+
+
+def _converge_source_history(plans, observed):
+    """Exercise the real historical finalizer through a recording DBAPI boundary."""
+    import re
+
+    from butlers.db_authority import apply
+
+    namespaces = {}
+    namespace_acl = {}
+
+    def respond(statement, parameters, decoded):
+        source_sql = re.sub(r"%\((\w+)\)s", r":\1", statement)
+        if "FROM pg_catalog.pg_database d" in statement:
+            return ("database", "owner", "valid"), [("test_windows", "normal_owner", True)]
+        if decoded == "SELECT current_database(), session_user":
+            return ("database", "actor"), [("test_windows", "maintenance")]
+        for _chain, target, revision in plans:
+            if decoded == f'SELECT version_num FROM "{target or "public"}".alembic_version':
+                return ("version_num",), [(revision,)]
+        if source_sql == apply._FUNCTIONS:
+            return ("oid", "schema", "name", "arguments", "owner"), []
+        if source_sql == apply._RELATIONS:
+            return tuple(observed[0]), [tuple(row.values()) for row in observed]
+        if source_sql in (
+            apply._PARTITION_LINKS,
+            apply._SEQUENCE_LINKS,
+            apply._RELATION_ACL,
+            apply._COLUMN_ACL,
+            apply._DEFAULT_ACL,
+        ):
+            return ("unused",), []
+        if source_sql == apply._NAMESPACE_CATALOG:
+            namespaces.update(
+                {schema: index + 100 for index, schema in enumerate(parameters["schemas"])}
+            )
+            return ("oid", "name", "owner"), [
+                (oid, schema, "normal_owner") for schema, oid in namespaces.items()
+            ]
+        if source_sql == apply._NAMESPACE_ACL:
+            return ("role", "verb", "grantable"), [
+                (role, "USAGE", False) for role in namespace_acl.get(parameters["oid"], ())
+            ]
+        match = re.fullmatch(r'GRANT USAGE ON SCHEMA "([a-z_]+)" TO "([a-z_]+)"', decoded)
+        if match:
+            namespace_acl.setdefault(namespaces[match[1]], set()).add(match[2])
+            return None, []
+        if decoded.startswith("ALTER DEFAULT PRIVILEGES"):
+            assert " REVOKE ALL " in decoded
+            return None, []
+        pytest.fail("Unexpected historical producer finalizer operation")
+
+    with _recording_postgresql_connection(respond) as (connection, calls):
+        connection.info["butlers.source_database"] = "butlers"
+        apply.converge_authority(connection, source_database="butlers", plans=plans)
+        assert not any(
+            decoded.startswith(("GRANT SELECT", "GRANT INSERT", "ALTER TABLE ", "CREATE "))
+            for _, _, decoded in calls
+        )
+        assert sum("FROM pg_catalog.pg_class c" in statement for statement, _, _ in calls) >= 2
+
+
+def test_sw037_receiver_view_preserves_actual_qa_only_producer_and_revision_edge():
+    import runpy
+    from pathlib import Path
+
+    from butlers.db_authority import apply, grants
+
+    root = Path(__file__).parents[2]
+    producer = runpy.run_path(
+        str(root / "roster/switchboard/migrations/037_qa_receiver_state_view.py")
+    )
+    emitted = []
+    bind = Mock()
+    bind.exec_driver_sql.return_value.scalar_one.return_value = "switchboard"
+    with (
+        patch("alembic.op.get_bind", return_value=bind),
+        patch("alembic.op.execute", side_effect=emitted.append),
+    ):
+        producer["upgrade"]()
+    name = "v_qa_butler_receiver_state"
+    assert any(f"CREATE OR REPLACE VIEW public.{name} AS" in sql for sql in emitted)
+    assert emitted[-2:] == [
+        f"REVOKE ALL ON public.{name} FROM PUBLIC",
+        f"GRANT SELECT ON public.{name} TO butler_qa_rw",
+    ]
+    full = grants.compile_relation_manifest(
+        "test_windows", "normal_owner", "maintenance", source_database="butlers"
+    )
+    row = next(r for r in full.relations if (r.schema, r.name) == ("public", name))
+    assert row.kind == grants.ObjectKind.VIEW and row.owner == "normal_owner"
+    assert row.permissions == (grants.Permission("butler_qa_rw", ("SELECT",)),)
+    actual = dict(
+        schema="public",
+        name=name,
+        kind="v",
+        owner="normal_owner",
+        rls=False,
+        forced_rls=False,
+        oid=42,
+        partition=False,
+    )
+    assert apply.bind_partition_relations((actual,), (row,), ()) == (row,)
+    assert apply.validate_relations((actual,), (row,)) == ((actual, row),)
+    statements = []
+    with _recording_postgresql_connection(
+        lambda _s, _p, decoded: statements.append(decoded) or (None, [])
+    ) as (connection, _):
+        apply._grant_relation(connection, row)
+    assert statements == [f'GRANT SELECT ON TABLE "public"."{name}" TO "butler_qa_rw"']
+    for target in (None, "switchboard"):
+        for revision, present in (("sw_036", False), ("sw_037", True), (None, True)):
+            manifest = grants.select_migration_manifest(full, (("switchboard", target, revision),))
+            rows = [value for value in manifest.relations if value.name == name]
+            assert bool(rows) is present
+            assert all(value.required is (revision is None) for value in rows)
+            assert all(bool(value.permissions) is (revision is None) for value in rows)
+        assert not any(
+            value.name == name
+            for value in grants.select_migration_manifest(full, (("core", target, None),)).relations
+        )
+    for invalid in (None, dict(kind="r"), dict(owner="foreign"), dict(name="unknown_view")):
+        with pytest.raises(AuthorityError):
+            apply.validate_relations(() if invalid is None else (actual | invalid,), (row,))
+    with pytest.raises(AuthorityError):
+        grants.select_migration_manifest(
+            full, (("switchboard", "switchboard", "unknown_revision"),)
+        )
+    _converge_source_history((("switchboard", "switchboard", "sw_037"),), (actual,))
+
+
+def test_general_rename_manifest_follows_actual_producer_and_closed_historical_window():
+    import runpy
+    from pathlib import Path
+
+    from butlers.db_authority import apply, grants
+
+    root = Path(__file__).parents[2]
+    emitted = []
+    for filename in ("001_general_tables.py", "002_rename_entities_to_collection_items.py"):
+        producer = runpy.run_path(str(root / "roster/general/migrations" / filename))
+        with patch("alembic.op.execute", side_effect=emitted.append):
+            producer["upgrade"]()
+    assert any("CREATE TABLE IF NOT EXISTS entities" in sql for sql in emitted)
+    assert any("ALTER TABLE entities RENAME TO collection_items" in sql for sql in emitted)
+    full = grants.compile_relation_manifest(
+        "test_windows", "normal_owner", "maintenance", source_database="butlers"
+    )
+    current = grants.select_migration_manifest(full, (("general", "general", None),))
+    row = next(
+        r for r in current.relations if (r.schema, r.name) == ("general", "collection_items")
+    )
+    assert row.required and row.permissions == (
+        grants.Permission("butler_general_rw", ("SELECT", "INSERT", "UPDATE", "DELETE")),
+        grants.Permission("dashboard_api", ("SELECT", "INSERT", "UPDATE", "DELETE")),
+    )
+    assert not any(r.schema == "general" and r.name == "entities" for r in current.relations)
+    assert any(r.schema == "public" and r.name == "entities" for r in full.relations)
+    for revision, old_name in (("gen_001", "entities"), ("gen_002", "collection_items")):
+        manifest = grants.select_migration_manifest(full, (("general", "general", revision),))
+        rows = [
+            r
+            for r in manifest.relations
+            if r.schema == "general" and r.name in {"entities", "collection_items"}
+        ]
+        assert [r.name for r in rows] == [old_name]
+        assert rows[0].permissions == () and not rows[0].required
+        actual = dict(
+            schema="general",
+            name=old_name,
+            kind="r",
+            owner="normal_owner",
+            rls=False,
+            forced_rls=False,
+            oid=42,
+            partition=False,
+        )
+        _converge_source_history((("general", "general", revision),), (actual,))
+    accumulated = grants.select_migration_manifest(
+        full, (("general", "general", "gen_001"), ("general", "general", None))
+    )
+    assert not any(r.schema == "general" and r.name == "entities" for r in accumulated.relations)
+    actual = dict(
+        schema="general",
+        name="collection_items",
+        kind="r",
+        owner="normal_owner",
+        rls=False,
+        forced_rls=False,
+        oid=42,
+        partition=False,
+    )
+    assert apply.validate_relations((actual,), (row,)) == ((actual, row),)
+    for observed in ((), (actual | {"name": "entities"},), (actual | {"owner": "foreign"},)):
+        with pytest.raises(AuthorityError):
+            apply.validate_relations(observed, (row,))
+
+
+def test_general_briefing_requiredness_follows_actual_core063_not_domain_chain():
+    import runpy
+    from pathlib import Path
+
+    from butlers.db_authority import apply, grants
+
+    root = Path(__file__).parents[2]
+    foundation = runpy.run_path(str(root / "alembic/versions/core/core_001_foundation.py"))
+    emitted = []
+    with patch("alembic.op.execute", side_effect=emitted.append):
+        foundation["_create_required_schemas"]()
+    assert 'CREATE SCHEMA IF NOT EXISTS "general"' in emitted
+    producer = runpy.run_path(
+        str(root / "alembic/versions/core/core_063_v_briefing_contributions.py")
+    )
+    bind = Mock()
+    bind.execute.side_effect = lambda statement, _params: Mock(
+        scalar=lambda: 1 if "information_schema.schemata" in str(statement) else None
+    )
+    with (
+        patch("alembic.op.get_bind", return_value=bind),
+        patch("alembic.op.execute", side_effect=emitted.append),
+    ):
+        producer["upgrade"]()
+    assert any(
+        "CREATE OR REPLACE VIEW general.v_briefing_contributions AS" in sql and "WHERE FALSE" in sql
+        for sql in emitted
+    )
+    full = grants.compile_relation_manifest(
+        "test_windows", "normal_owner", "maintenance", source_database="butlers"
+    )
+    identity = ("general", "v_briefing_contributions")
+    domain = grants.select_migration_manifest(full, (("general", "general", None),))
+    optional = next(r for r in domain.relations if (r.schema, r.name) == identity)
+    assert optional.required is False
+    assert apply.validate_relations((), (optional,)) == ()
+    complete = grants.select_migration_manifest(
+        full, (("core", "general", None), ("general", "general", None))
+    )
+    required = next(r for r in complete.relations if (r.schema, r.name) == identity)
+    assert required.required and required.permissions == optional.permissions
+    with pytest.raises(AuthorityError):
+        apply.validate_relations((), (required,))
+    assert {permission.role for permission in required.permissions} == {
+        "butler_general_rw",
+        "dashboard_api",
+        "butler_switchboard_rw",
+    }
+    for revision in ("core_062", "core_063"):
+        manifest = grants.select_migration_manifest(full, (("core", "general", revision),))
+        historical = next(r for r in manifest.relations if (r.schema, r.name) == identity)
+        assert not historical.required and historical.permissions == ()
+
+
+def test_public_contacts_window_uses_real_core002_and_core134_without_current_admission():
+    import runpy
+    from pathlib import Path
+
+    from butlers.db_authority import apply, grants
+
+    root = Path(__file__).parents[2]
+    emitted = []
+    for filename in ("core_002_identity.py", "core_134_drop_public_contacts.py"):
+        producer = runpy.run_path(str(root / "alembic/versions/core" / filename))
+        with patch("alembic.op.execute", side_effect=emitted.append):
+            producer["upgrade"]()
+    assert any("CREATE TABLE IF NOT EXISTS public.contacts (" in sql for sql in emitted)
+    assert any(
+        "DROP TABLE public.contacts;" in sql
+        and "CREATE TABLE public.contacts_dropbak AS TABLE public.contacts" in sql
+        for sql in emitted
+    )
+    full = grants.compile_relation_manifest(
+        "test_windows", "normal_owner", "maintenance", source_database="butlers"
+    )
+    actual = dict(
+        schema="public",
+        name="contacts",
+        kind="r",
+        owner="normal_owner",
+        rls=False,
+        forced_rls=False,
+        oid=42,
+        partition=False,
+    )
+    for revision, present in (
+        ("core_001", False),
+        ("core_002", True),
+        ("core_133", True),
+        ("core_134", False),
+        (None, False),
+    ):
+        manifest = grants.select_migration_manifest(full, (("core", None, revision),))
+        rows = [r for r in manifest.relations if (r.schema, r.name) == ("public", "contacts")]
+        assert bool(rows) is present
+        if present:
+            (row,) = rows
+            assert not row.required and row.permissions == () and row.owner == "normal_owner"
+            assert apply.validate_relations((actual,), (row,), administrative_history=True) == (
+                (actual, row),
+            )
+            _converge_source_history((("core", None, revision),), (actual,))
+            with pytest.raises(AuthorityError):
+                apply.validate_relations(
+                    (actual | {"owner": "foreign"},), (row,), administrative_history=True
+                )
+        else:
+            with pytest.raises(AuthorityError):
+                apply.bind_partition_relations((actual,), manifest.relations, ())
+    accumulated = grants.select_migration_manifest(
+        full, (("core", None, "core_133"), ("core", "general", None))
+    )
+    assert not any((r.schema, r.name) == ("public", "contacts") for r in accumulated.relations)
+
+
+class _SelectedPolicyCatalog:
+    """Source-derived catalog protocol double, never native PostgreSQL proof.
+
+    All production compilers, validators, installers and policy producers run.
+    The physical recording DBAPI supplies fixed current catalog observations;
+    scratch shape comparisons preserve complete source declarations as opaque
+    structural values rather than claiming PostgreSQL parsing/normalization.
+    Persistent effects are tracked separately from temporary parser DDL.
+    """
+
+    def __init__(self, optional_domain_present=False, fault=None):
+        import re
+
+        from butlers.db_authority import apply, grants, interfaces
+        from butlers.migrations import get_chain_head
+
+        self.apply, self.grants, self.interfaces = apply, grants, interfaces
+        self.re = re
+        self.plans = (("core", "switchboard", None),)
+        self.head = get_chain_head("core")
+        self.manifest = grants.select_migration_manifest(
+            grants.compile_relation_manifest(
+                "test_policy_targets", "normal_owner", "maintenance", source_database="butlers"
+            ),
+            self.plans,
+        )
+        self.optional = {
+            ("switchboard", "butler_boot_registrations"),
+            ("switchboard", "butler_registry_control_plane"),
+        }
+        selected = {(r.schema, r.name): r for r in self.manifest.relations}
+        assert self.optional <= selected.keys()
+        assert all(not selected[key].required for key in self.optional)
+        self.relations = {}
+        self.authority = {}
+        for row in self.manifest.relations:
+            key = row.schema, row.name
+            if not row.required and not (optional_domain_present and key in self.optional):
+                continue
+            actual = dict(
+                oid=len(self.relations) + 1,
+                schema=row.schema,
+                name=row.name,
+                kind={"table": "r", "view": "v", "materialized_view": "m", "sequence": "S"}[
+                    row.kind.value
+                ],
+                owner=row.owner,
+                rls=apply.relation_security_flags(row)[0],
+                forced_rls=apply.relation_security_flags(row)[1],
+                partition=False,
+            )
+            self.relations[key] = actual
+            self.authority[actual["oid"]] = row
+        self.contract = grants.compiled_security_contract(self.manifest)
+        self.policies = {}
+        self.triggers = {}
+        for category, target in (("policies", self.policies), ("triggers", self.triggers)):
+            for row in self.contract[category]:
+                key = row["schema"], row["table"]
+                if key in self.relations:
+                    target.setdefault(key, {})[row["name"]] = row
+        assert self.optional <= {
+            key[:2] for key in interfaces.ordinary_security_policy_changes(self.manifest)
+        }
+        self.scratch = {}
+        self.effects = []
+        self.scratch_events = []
+        self.queried = set()
+        self.relation_acl = {
+            oid: {(p.role, verb) for p in row.permissions if not p.columns for verb in p.verbs}
+            for oid, row in self.authority.items()
+        }
+        self.column_acl = {
+            oid: {
+                (p.role, column, verb)
+                for p in row.permissions
+                for column in p.columns
+                for verb in p.verbs
+            }
+            for oid, row in self.authority.items()
+        }
+        definitions = {
+            row.identity: row
+            for row in (
+                *grants.compile_function_manifest(
+                    self.manifest.profiles, "normal_owner", self.plans
+                ),
+                *interfaces.selected_protected_functions(
+                    self.manifest.profiles, "normal_owner", self.plans
+                ),
+            )
+        }
+        self.functions = {
+            interfaces._signature(row): (10000 + index, row)
+            for index, row in enumerate(definitions.values())
+        }
+        self.namespace_oids = {
+            schema: 20000 + index
+            for index, schema in enumerate(
+                sorted(set(self.manifest.schemas) | {row.schema for row in definitions.values()})
+            )
+        }
+        self.namespace_acl = {oid: set() for oid in self.namespace_oids.values()}
+        self.shape_sources = {
+            (schema, name): (body, indexes)
+            for _group, schema, name, body, indexes in interfaces._PROTECTED_TABLE_SHAPES
+        }
+        if fault == "missing_required":
+            del self.relations["switchboard", "sessions"]
+        elif fault == "unknown_relation":
+            self.relations["switchboard", "unlisted_policy_target"] = dict(
+                self.relations["switchboard", "sessions"],
+                oid=9999,
+                name="unlisted_policy_target",
+            )
+        elif fault == "wrong_owner":
+            self.relations["switchboard", "sessions"]["owner"] = "unlisted_owner"
+        elif fault == "wrong_rls":
+            self.relations["switchboard", "sessions"]["rls"] = True
+        elif fault == "unknown_policy":
+            self.policies.setdefault(("switchboard", "sessions"), {})["unlisted_policy"] = {
+                "name": "unlisted_policy",
+                "command": "*",
+                "roles": ["PUBLIC"],
+            }
+        else:
+            assert fault is None
+
+    @staticmethod
+    def rows(rows, columns=("unused",)):
+        rows = list(rows)
+        if rows and isinstance(rows[0], dict):
+            columns = tuple(rows[0])
+            rows = [tuple(row[column] for column in columns) for row in rows]
+        return columns, rows
+
+    def target(self, value):
+        parts = tuple(self.re.findall(r'"([a-zA-Z0-9_]+)"|\b(pg_temp)\b', value))
+        names = tuple(a or b for a, b in parts)
+        assert len(names) == 2
+        return names
+
+    def shape(self, query, key):
+        interfaces = self.interfaces
+        original = self.scratch[key]["source"] if key[0] == "pg_temp" else key
+        if query == interfaces._SHAPE_SECURITY:
+            actual = self.relations[original]
+            return self.rows(
+                [dict(owner=actual["owner"], enabled=actual["rls"], forced=actual["forced_rls"])]
+            )
+        if query in (interfaces._SHAPE_POLICIES, interfaces._SHAPE_TRIGGERS):
+            category = "policies" if query == interfaces._SHAPE_POLICIES else "triggers"
+            if key[0] == "pg_temp":
+                values = self.scratch[key][category]
+            else:
+                values = (self.policies if category == "policies" else self.triggers).get(key, {})
+            return self.rows(values[name] for name in sorted(values))
+        body, indexes = self.shape_sources[original]
+        # These are explicit source-structural transport values, not native
+        # pg_attribute/pg_constraint/parser observations. Full source text is
+        # compared; an arbitrary empty shape cannot satisfy this recorder.
+        if query == interfaces._SHAPE_COLUMNS:
+            serials = interfaces._SERIAL_COLUMNS.get(original, ())
+            return self.rows(
+                [
+                    *[
+                        dict(attname=name, type="bigint", attnotnull=True, default="source_serial")
+                        for name in serials
+                    ],
+                    dict(attname="source_columns", type=body, attnotnull=True, default=None),
+                ]
+            )
+        if query == interfaces._SHAPE_CONSTRAINTS:
+            return self.rows(
+                [dict(contype="source_constraints", definition=body, convalidated=True)]
+            )
+        assert query == interfaces._SHAPE_INDEXES
+        return self.rows(
+            dict(amname="source_index", indisunique=unique, definition=suffix)
+            for unique, suffix in indexes
+        )
+
+    def respond(self, statement, parameters, decoded):
+        import hashlib
+
+        apply, interfaces = self.apply, self.interfaces
+        source = self.re.sub(r"%\((\w+)\)s", r":\1", statement).replace("%%", "%")
+        source = source.replace(r"\:", ":")
+        self.queried.add(hashlib.sha256(source.encode()).hexdigest())
+        if "FROM pg_catalog.pg_database d" in source:
+            return self.rows(
+                [("test_policy_targets", "normal_owner", True)], ("db", "owner", "valid")
+            )
+        if decoded == "SELECT current_database(), session_user":
+            return self.rows([("test_policy_targets", "maintenance")], ("database", "actor"))
+        if "current_user=session_user AND rolsuper" in decoded:
+            return self.rows([(True,)], ("valid",))
+        if decoded == "SELECT session_user":
+            return self.rows([("maintenance",)], ("actor",))
+        if decoded == 'SELECT version_num FROM "switchboard".alembic_version':
+            return self.rows([(self.head,)], ("version_num",))
+        if source == apply._FUNCTIONS:
+            return self.rows(
+                dict(
+                    oid=oid,
+                    schema=row.schema,
+                    name=row.name,
+                    arguments=row.signature,
+                    owner=row.owner,
+                )
+                for oid, row in self.functions.values()
+                if row.schema in parameters["schemas"]
+            )
+        if source == apply._RELATIONS:
+            return self.rows(self.relations.values())
+        if source == apply._PARTITION_LINKS:
+            return self.rows([])
+        if source == apply._SEQUENCE_LINKS:
+            return self.rows(
+                dict(
+                    oid=oid,
+                    parent_schema=row.sequence_parent[0],
+                    parent_name=row.sequence_parent[1],
+                    parent_column=row.sequence_parent[2],
+                    parent_owner=self.relations[row.sequence_parent[:2]]["owner"],
+                )
+                for oid, row in self.authority.items()
+                if row.sequence_parent is not None and oid in parameters["oids"]
+            )
+        if source == apply._NAMESPACE_CATALOG:
+            return self.rows(
+                dict(
+                    oid=self.namespace_oids[schema],
+                    name=schema,
+                    owner={
+                        "dnd_generation_private": "dnd_generation_owner",
+                        "restore_drill_executor": "restore_drill_executor_owner",
+                        "dashboard_attention": "maintenance",
+                        "dashboard_stepup": "maintenance",
+                    }.get(schema, "normal_owner"),
+                )
+                for schema in parameters["schemas"]
+            )
+        if source == apply._NAMESPACE_ACL:
+            return self.rows(
+                dict(role=role, verb=verb, grantable=False)
+                for role, verb in sorted(self.namespace_acl[parameters["oid"]])
+            )
+        if source == apply._RELATION_ACL:
+            return self.rows(
+                dict(role=role, verb=verb, grantable=False)
+                for role, verb in sorted(self.relation_acl[parameters["oid"]])
+            )
+        if source == apply._COLUMN_ACL:
+            return self.rows(
+                dict(role=role, name=name, verb=verb, grantable=False)
+                for role, name, verb in sorted(self.column_acl[parameters["oid"]])
+            )
+        if source == apply._DEFAULT_ACL:
+            return self.rows([])
+        if source == interfaces._FUNCTION_CATALOG:
+            oid, row = self.functions[parameters["signature"]]
+            return self.rows(
+                [
+                    dict(
+                        oid=oid,
+                        owner=row.owner,
+                        definer=row.security_definer,
+                        config=getattr(row, "settings", ("search_path=pg_catalog, pg_temp",)),
+                        body=row.body,
+                        arguments=row.signature,
+                    )
+                ]
+            )
+        if source == interfaces._FUNCTION_ACL:
+            row = next(row for oid, row in self.functions.values() if oid == parameters["oid"])
+            return self.rows(
+                dict(role=role, privilege="EXECUTE", grantable=False)
+                for role in row.executors
+                if role != row.owner
+            )
+        if "WITH owners AS" in source and "pg_auth_members" in source:
+            assert parameters["count"] == len(parameters["owners"])
+            from butlers.db_authority.roles import PURPOSE_OWNERS
+
+            assert set(parameters["owners"]) <= set(PURPOSE_OWNERS)
+            return self.rows([(True,)], ("valid",))
+        if "WHERE n.nspname=ANY(:schemas) OR (n.nspname='public'" in source:
+            assert parameters["schemas"] == list(interfaces._RETIRED_ADMIN_SCHEMAS)
+            return self.rows([])
+        if "FROM pg_catalog.pg_namespace n JOIN pg_catalog.pg_roles owner" in source:
+            assert parameters["schemas"] == list(interfaces._RETIRED_ADMIN_SCHEMAS)
+            return self.rows([])
+        if "WHERE p.proname='runtime_attention_plant_legacy_debounce_marker'" in source:
+            return self.rows([])
+        if "SELECT c.relkind" in source and "schema" in parameters:
+            row = self.relations[parameters["schema"], parameters["name"]]
+            return self.rows([dict(relkind=row["kind"], owner=row["owner"])])
+        if "SELECT count(*)=1 AND bool_and(s.relkind='S'" in source:
+            return self.rows([(True,)], ("valid",))
+        if "SELECT 'nextval(' || quote_literal(pg_catalog.pg_get_serial_sequence(" in source:
+            assert parameters["column"] == "id"
+            return self.rows([("source_serial",)], ("default",))
+        if "SELECT EXISTS(SELECT FROM pg_catalog.pg_trigger" in source:
+            return self.rows([(True,)], ("present",))
+        shape_queries = (
+            interfaces._SHAPE_SECURITY,
+            interfaces._SHAPE_COLUMNS,
+            interfaces._SHAPE_CONSTRAINTS,
+            interfaces._SHAPE_INDEXES,
+            interfaces._SHAPE_POLICIES,
+            interfaces._SHAPE_TRIGGERS.replace(r"\:", ":"),
+        )
+        if source in shape_queries:
+            query = interfaces._SHAPE_TRIGGERS if source == shape_queries[-1] else source
+            return self.shape(query, self.target(parameters["relation"]))
+        if source == "SELECT pg_catalog.to_regclass(:relation) IS NOT NULL":
+            return self.rows([(self.target(parameters["relation"]) in self.scratch,)], ("present",))
+        create = self.re.fullmatch(r'CREATE TEMPORARY TABLE "(\w+)" \((.*)\)', decoded, self.re.S)
+        if create:
+            name, body = create.groups()
+            original = (
+                self.target(body.removeprefix("LIKE "))
+                if body.startswith("LIKE ")
+                else next(key for key, value in self.shape_sources.items() if value[0] == body)
+            )
+            self.scratch["pg_temp", name] = dict(source=original, policies={}, triggers={})
+            self.scratch_events.append("create")
+            return None, []
+        like = self.re.fullmatch(r'CREATE TEMPORARY TABLE "(\w+)" \(LIKE (.+)\)', decoded)
+        if like:
+            name, target = like.groups()
+            self.scratch["pg_temp", name] = dict(
+                source=self.target(target), policies={}, triggers={}
+            )
+            self.scratch_events.append("create")
+            return None, []
+        if decoded.startswith("CREATE ") and "INDEX" in decoded:
+            assert " ON pg_temp." in decoded
+            self.scratch_events.append("index")
+            return None, []
+        policy = self.re.match(
+            r'(CREATE|DROP) POLICY (?:IF EXISTS )?"(\w+)" ON (pg_temp|"\w+")\."(\w+)"', decoded
+        )
+        if policy:
+            operation, name, schema, table = policy.groups()
+            schema = schema.strip('"')
+            key = schema, table
+            if schema == "pg_temp":
+                original = self.scratch[key]["source"]
+                target = self.scratch[key]["policies"]
+                self.scratch_events.append("policy")
+            else:
+                self.effects.append((operation + " POLICY", key, name))
+                if key not in self.relations:
+                    raise LookupError("absent optional policy target")
+                original = key
+                target = self.policies.setdefault(key, {})
+            if operation == "DROP":
+                target.pop(name, None)
+            else:
+                row = next(
+                    r
+                    for r in self.contract["policies"]
+                    if (r["schema"], r["table"], r["name"]) == (*original, name)
+                )
+                allowed = {
+                    interfaces._ordinary_policy_sql(row, target_sql, "normal_owner")
+                    for target_sql in [
+                        'pg_temp."' + table + '"'
+                        if schema == "pg_temp"
+                        else '"' + schema + '"."' + table + '"'
+                    ]
+                }
+                if schema == "pg_temp":
+                    allowed.update(
+                        f'CREATE POLICY "{name}" ON pg_temp."{table}" {suffix}'
+                        for literal in interfaces._RELATION_POLICIES.get(original[1], ())
+                        for policy_name, suffix in [literal.split(" ", 1)]
+                        if policy_name == name
+                    )
+                assert decoded in allowed
+                target[name] = row
+            return None, []
+        trigger = self.re.match(
+            r'CREATE (?:CONSTRAINT )?TRIGGER "(\w+)" .* ON (pg_temp|"\w+")\."(\w+)"', decoded
+        )
+        if trigger:
+            name, schema, table = trigger.groups()
+            assert schema == "pg_temp"
+            original = self.scratch[schema, table]["source"]
+            row = next(
+                r
+                for r in self.contract["triggers"]
+                if (r["schema"], r["table"], r["name"]) == (*original, name)
+            )
+            self.scratch[schema, table]["triggers"][name] = row
+            self.scratch_events.append("trigger")
+            return None, []
+        if decoded.startswith("ALTER TABLE pg_temp."):
+            self.scratch_events.append("enable-trigger")
+            return None, []
+        if decoded.startswith("DROP TABLE pg_temp."):
+            del self.scratch[self.target(decoded.removeprefix("DROP TABLE "))]
+            self.scratch_events.append("drop")
+            return None, []
+        namespace = self.re.fullmatch(
+            r'(GRANT (?:USAGE|CREATE)|REVOKE ALL) ON SCHEMA "(\w+)" (?:TO|FROM) "(\w+)"', decoded
+        )
+        if namespace:
+            operation, schema, role = namespace.groups()
+            self.effects.append((operation, (schema,), role))
+            entries = self.namespace_acl[self.namespace_oids[schema]]
+            if operation == "REVOKE ALL":
+                entries.difference_update({entry for entry in entries if entry[0] == role})
+            else:
+                entries.add((role, operation.split()[1]))
+            return None, []
+        if decoded.startswith("ALTER DEFAULT PRIVILEGES"):
+            assert " REVOKE ALL " in decoded
+            self.effects.append(("DEFAULT REVOKE", (), ""))
+            return None, []
+        relation = self.re.fullmatch(
+            r'(GRANT .+|REVOKE ALL(?: PRIVILEGES| \(.+\))?) ON (TABLE|SEQUENCE) ("\w+"\."\w+") (?:TO|FROM) ("\w+"|PUBLIC)',
+            decoded,
+        )
+        if relation:
+            operation, _kind, target, role = relation.groups()
+            key = self.target(target)
+            actual = self.relations[key]
+            row = self.authority[actual["oid"]]
+            role = role.strip('"')
+            self.effects.append((operation, key, role))
+            if operation.startswith("REVOKE"):
+                if operation == "REVOKE ALL PRIVILEGES":
+                    self.relation_acl[actual["oid"]].difference_update(
+                        {item for item in self.relation_acl[actual["oid"]] if item[0] == role}
+                    )
+                else:
+                    column = operation.removeprefix('REVOKE ALL ("').removesuffix('")')
+                    self.column_acl[actual["oid"]].difference_update(
+                        {
+                            item
+                            for item in self.column_acl[actual["oid"]]
+                            if item[:2] == (role, column)
+                        }
+                    )
+            else:
+                allowed = []
+                for permission in row.permissions:
+                    verbs = ", ".join(permission.verbs)
+                    if permission.columns:
+                        columns = ", ".join(
+                            apply.quote_identifier(column) for column in permission.columns
+                        )
+                        verbs = ", ".join(f"{verb} ({columns})" for verb in permission.verbs)
+                    if permission.role == role and operation == "GRANT " + verbs:
+                        allowed.append(permission)
+                assert allowed
+                for permission in allowed:
+                    if permission.columns:
+                        self.column_acl[actual["oid"]].update(
+                            (role, col, verb)
+                            for col in permission.columns
+                            for verb in permission.verbs
+                        )
+                    else:
+                        self.relation_acl[actual["oid"]].update(
+                            (role, verb) for verb in permission.verbs
+                        )
+            return None, []
+        raise AssertionError(
+            "Unmodeled catalog operation " + hashlib.sha256(source.encode()).hexdigest()
+        )
+
+
+@pytest.mark.parametrize("optional_domain_present", [False, True])
+def test_actual_selected_policy_convergence_uses_only_validated_present_tables(
+    optional_domain_present,
+):
+    from butlers.db_authority import apply, interfaces
+
+    model = _SelectedPolicyCatalog(optional_domain_present)
+    with _recording_postgresql_connection(model.respond) as (connection, calls):
+        connection.info["butlers.source_database"] = "butlers"
+        apply.converge_authority(connection, source_database="butlers", plans=model.plans)
+        changes = interfaces.ordinary_security_policy_changes(model.manifest)
+        expected = {key for key in changes if key[:2] in model.relations}
+        assert {
+            (*key, name) for operation, key, name in model.effects if operation == "DROP POLICY"
+        } == expected
+        assert {
+            (*key, name) for operation, key, name in model.effects if operation == "CREATE POLICY"
+        } == expected
+        assert (
+            bool(expected & {key for key in changes if key[:2] in model.optional})
+            is optional_domain_present
+        )
+        assert not model.scratch
+        assert model.scratch_events
+        assert __import__("hashlib").sha256(apply._RELATIONS.encode()).hexdigest() in model.queried
+        assert calls
+        assert connection.get_transaction() is None
+
+
+@pytest.mark.parametrize(
+    "fault", ["missing_required", "unknown_relation", "wrong_owner", "wrong_rls", "unknown_policy"]
+)
+def test_actual_selected_policy_convergence_keeps_preflight_refusals(fault):
+    from butlers.db_authority import apply
+
+    model = _SelectedPolicyCatalog(fault=fault)
+    expected = {
+        "missing_required": "Required database object is unavailable",
+        "unknown_relation": "Managed database object is not declared",
+        "wrong_owner": "Managed database object ownership is unavailable",
+        "wrong_rls": "Required database row security is unavailable",
+        "unknown_policy": "Database policy definition differs from source",
+    }
+    with _recording_postgresql_connection(model.respond) as (connection, _calls):
+        connection.info["butlers.source_database"] = "butlers"
+        with pytest.raises(AuthorityError, match=expected[fault]):
+            apply.converge_authority(connection, source_database="butlers", plans=model.plans)
+        assert model.effects == []
+        assert not model.scratch

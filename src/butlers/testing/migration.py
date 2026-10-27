@@ -949,7 +949,12 @@ def _close_created_test_database(postgres_container, created):
 
 
 @contextmanager
-def serving_test_deployment(postgres_container: object, *, include_connector: bool = False):
+def serving_test_deployment(
+    postgres_container: object,
+    *,
+    include_connector: bool = False,
+    finance_revision: str | None = None,
+):
     """Explicit disposable operator preparation for genuine serving tests.
 
     The caller owns an isolated server and closes every serving pool before
@@ -960,6 +965,15 @@ def serving_test_deployment(postgres_container: object, *, include_connector: bo
     ``create_migration_db`` still returns only the normal migration URL.
     ``include_connector`` opts into one additional synthetic connector-purpose
     login through this same constructor; defaults and object authority do not change.
+
+    ``finance_revision="finance_018"`` is the single supported fresh predecessor
+    window for Finance's runtime migration test. Finance019 never executes in
+    that preparation; all other source chains remain current. The historical
+    finalizer is administrative and does not certify serving readiness. Dedicated
+    logins are minted only after that preparation succeeds, but an actual
+    ``runtime_database("finance").connect()`` must still refuse until the caller
+    upgrades Finance to head and completes the real full current-source finalizer.
+    No profile, role membership, admission check or object privilege is bypassed.
     """
     from butlers.db_authority.apply import quote_identifier
     from butlers.db_authority.grants import deployment_function_plans
@@ -973,6 +987,10 @@ def serving_test_deployment(postgres_container: object, *, include_connector: bo
 
     if type(include_connector) is not bool:
         raise ValueError("Disposable connector selection must be boolean")
+    if finance_revision is not None and (
+        type(finance_revision) is not str or finance_revision != "finance_018"
+    ):
+        raise ValueError("Unsupported disposable Finance predecessor")
 
     owned: list[tuple[str, str]] = []
     created: list[tuple[str, str, int, int | None]] = []
@@ -983,6 +1001,15 @@ def serving_test_deployment(postgres_container: object, *, include_connector: bo
         profiles = runtime_profiles("butlers")
         available = frozenset(get_all_chains())
         plans = tuple(row for row in deployment_function_plans(profiles) if row[0] in available)
+        if finance_revision is not None:
+            if ("finance", "finance", None) not in plans:
+                raise ValueError("Disposable Finance source plan is unavailable")
+            plans = tuple(
+                (chain, schema, finance_revision)
+                if (chain, schema) == ("finance", "finance")
+                else (chain, schema, revision)
+                for chain, schema, revision in plans
+            )
         core = tuple(row for row in plans if row[0] == "core")
         others = tuple(row for row in plans if row[0] != "core")
         with migration_session(control_url, source_database="butlers") as connection:
@@ -994,15 +1021,24 @@ def serving_test_deployment(postgres_container: object, *, include_connector: bo
                     revision="core_114",
                     connection=connection,
                 )
-            for chain, schema, _ in (*core, *others):
-                asyncio.run(
-                    run_migrations(
+            for chain, schema, revision in (*core, *others):
+                if revision is None:
+                    asyncio.run(
+                        run_migrations(
+                            migration_url,
+                            chain=chain,
+                            schema=schema,
+                            connection=connection,
+                        )
+                    )
+                else:
+                    _upgrade_chain_to_revision(
                         migration_url,
                         chain=chain,
                         schema=schema,
+                        revision=revision,
                         connection=connection,
                     )
-                )
             finalize_authority(connection, source_database="butlers", plans=plans)
 
         engine = create_engine(
@@ -1117,7 +1153,10 @@ def serving_test_deployment(postgres_container: object, *, include_connector: bo
 
 @asynccontextmanager
 async def async_serving_test_deployment(
-    postgres_container: object, *, include_connector: bool = False
+    postgres_container: object,
+    *,
+    include_connector: bool = False,
+    finance_revision: str | None = None,
 ):
     """Own off-loop preparation and cleanup through repeated caller cancellation.
 
@@ -1127,11 +1166,16 @@ async def async_serving_test_deployment(
     """
     if type(include_connector) is not bool:
         raise ValueError("Disposable connector selection must be boolean")
-    context = (
-        serving_test_deployment(postgres_container, include_connector=True)
-        if include_connector
-        else serving_test_deployment(postgres_container)
-    )
+    if finance_revision is not None and (
+        type(finance_revision) is not str or finance_revision != "finance_018"
+    ):
+        raise ValueError("Unsupported disposable Finance predecessor")
+    options = {}
+    if include_connector:
+        options["include_connector"] = True
+    if finance_revision is not None:
+        options["finance_revision"] = finance_revision
+    context = serving_test_deployment(postgres_container, **options)
 
     async def settle(task):
         cancelled = None

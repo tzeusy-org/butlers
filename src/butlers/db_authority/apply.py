@@ -629,7 +629,15 @@ def converge_authority(
         if not historical:
             from .interfaces import converge_ordinary_security_policies
 
-            converge_ordinary_security_policies(connection, manifest)
+            converge_ordinary_security_policies(
+                connection,
+                manifest,
+                only={
+                    (actual["schema"], actual["name"])
+                    for actual, row in bound
+                    if row.kind == ObjectKind.TABLE
+                },
+            )
             for actual, row in bound:
                 if actual["owner"] != row.owner:
                     kind = _relation_ddl_kind(row)

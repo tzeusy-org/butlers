@@ -13,15 +13,19 @@ import uuid
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 
 from alembic import command
 from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import (
+    assert_at_chain_head,
     create_migrated_test_db,
     create_migration_db,
+    migration_bootstrap_db_url,
     migration_db_name,
     run_test_alembic_command,
+    serving_test_deployment,
     stage_test_migration_history,
 )
 
@@ -50,8 +54,24 @@ _ABSENT = (
 
 
 @pytest.fixture(scope="module")
-def db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+def qa_deployment(postgres_container):
+    with serving_test_deployment(postgres_container) as deployment:
+        yield deployment
+
+
+@pytest.fixture(scope="module")
+def db_url(qa_deployment) -> str:
+    selected = qa_deployment.runtime_logins["qa"]
+    return (
+        make_url(qa_deployment.migration_url)
+        .set(username=selected.user, password=selected.password)
+        .render_as_string(hide_password=False)
+    )
+
+
+@pytest.fixture(scope="module")
+def qa_control_url(postgres_container, db_url):
+    return migration_bootstrap_db_url(postgres_container, make_url(db_url).database)
 
 
 def _insert_attempt(conn) -> uuid.UUID:
@@ -68,12 +88,16 @@ def _insert_attempt(conn) -> uuid.UUID:
 
 
 @pytest.fixture
-def operation(db_url: str) -> uuid.UUID:
+def operation(db_url: str, qa_control_url: str) -> uuid.UUID:
     """A bound ``pr_create`` row that expects ``pr-7``."""
+    seed = create_engine(qa_control_url)
+    try:
+        with seed.begin() as conn:
+            attempt = _insert_attempt(conn)
+    finally:
+        seed.dispose()
     engine = create_engine(db_url)
     try:
-        with engine.begin() as conn:
-            attempt = _insert_attempt(conn)
         operation_id = uuid.uuid4()
         with engine.begin() as conn:
             conn.exec_driver_sql("SET ROLE butler_qa_rw")
@@ -113,6 +137,7 @@ def _stage_of(db_url: str, operation_id: uuid.UUID) -> str:
     engine = create_engine(db_url)
     try:
         with engine.connect() as conn:
+            conn.exec_driver_sql("SET ROLE butler_qa_rw")
             return conn.exec_driver_sql(
                 f"SELECT stage FROM {_TABLE} WHERE id = '{operation_id}'"
             ).scalar_one()
@@ -243,11 +268,17 @@ def test_inexact_reconciliation_is_refused(
     assert _stage_of(db_url, operation) == "ambiguous"
 
 
-def test_found_cannot_reconcile_a_row_that_bound_no_object(db_url: str) -> None:
+def test_found_cannot_reconcile_a_row_that_bound_no_object(
+    db_url: str, qa_control_url: str
+) -> None:
+    seed = create_engine(qa_control_url)
+    try:
+        with seed.begin() as conn:
+            attempt = _insert_attempt(conn)
+    finally:
+        seed.dispose()
     engine = create_engine(db_url)
     try:
-        with engine.begin() as conn:
-            attempt = _insert_attempt(conn)
         with engine.begin() as conn:
             conn.exec_driver_sql("SET ROLE butler_qa_rw")
             conn.exec_driver_sql(
@@ -408,6 +439,7 @@ def test_reconciled_row_keeps_the_outcome_it_was_reached_from(
     engine = create_engine(db_url)
     try:
         with engine.connect() as conn:
+            conn.exec_driver_sql("SET ROLE butler_qa_rw")
             result = conn.exec_driver_sql(
                 f"SELECT result FROM {_TABLE} WHERE id = '{operation}'"
             ).scalar_one()
@@ -420,7 +452,7 @@ def _superuser_url(postgres_container, db_url: str) -> str:
     """The container's privileged login on the same database: it bypasses row security."""
     from butlers.testing.migration import migration_bootstrap_db_url
 
-    return migration_bootstrap_db_url(postgres_container, db_url.rsplit("/", 1)[1])
+    return migration_bootstrap_db_url(postgres_container, make_url(db_url).database)
 
 
 @pytest.mark.parametrize("held", [(_EGRESS,), (_EGRESS, _AMBIGUOUS)], ids=["egress", "ambiguous"])
@@ -512,5 +544,22 @@ def test_core_268_shared_hardening_survives_all_but_the_last_schema_downgrade(
         run_test_alembic_command(postgres_container, command.upgrade, switchboard, "core_280")
         with engine.connect() as conn:
             assert _hardening_objects(conn) == (1, 1, True, 1)
+    finally:
+        engine.dispose()
+
+
+def test_core_only_qa_guard_catalog_and_normal_owner_role_refusal(postgres_container):
+    """Retain the original public core-only producer and unsupported actor boundary."""
+    url = create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+    engine = create_engine(url)
+    try:
+        with engine.connect() as connection:
+            assert_at_chain_head(connection)
+            assert _guard_objects(connection) == (1, 1, 1)
+            assert _hardening_objects(connection) == (1, 1, True, 1)
+        with engine.connect() as connection:
+            with pytest.raises(DBAPIError) as refused:
+                connection.exec_driver_sql("SET ROLE butler_qa_rw")
+            assert refused.value.orig.pgcode == "42501"
     finally:
         engine.dispose()

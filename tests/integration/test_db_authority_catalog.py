@@ -3041,11 +3041,11 @@ async def test_real_source_windows_and_finance_materialized_projection_keep_clos
     from butlers.db_authority.catalog import assert_object_catalog
     from butlers.db_authority.roles import AuthorityError
     from butlers.migrations import finalize_authority, migration_session
-    from butlers.testing.migration import migrate_test_database
+    from butlers.testing.migration import assert_at_chain_head, migrate_test_database
 
     root = tmp_path / "roster"
     sources = {}
-    for schema in ("finance", "switchboard"):
+    for schema in ("finance", "switchboard", "general", "qa"):
         entry = root / schema
         entry.mkdir(parents=True)
         sources[entry / "butler.toml"] = (
@@ -3055,6 +3055,89 @@ async def test_real_source_windows_and_finance_materialized_projection_keep_clos
     monkeypatch.setattr(roles, "_ROSTER_ROOT", root)
 
     def run():
+        # Core in Switchboard does not run sw_035's domain producers. Its
+        # absent, source-declared optional tables must receive no policy DDL.
+        core_name = migration_db_name()
+        core_url = create_migrated_test_db(
+            postgres_container,
+            core_name,
+            chains=["core"],
+            schemas={"core": "switchboard"},
+        )
+        core_admin = migration_bootstrap_db_url(postgres_container, core_name)
+        core_engine = create_engine(
+            core_admin, poolclass=NullPool, connect_args={"connect_timeout": 5}
+        )
+        core_catalog = (
+            "SELECT c.oid,n.nspname,c.relname,c.relkind,c.relowner,"
+            "c.relrowsecurity,c.relforcerowsecurity,c.relacl::text "
+            "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+            "WHERE n.nspname IN ('public','switchboard','connectors') "
+            "ORDER BY n.nspname,c.relname,c.oid"
+        )
+        try:
+            with core_engine.connect() as independent:
+                assert_at_chain_head(independent, "switchboard", chain="core")
+                assert (
+                    independent.exec_driver_sql(
+                        "SELECT to_regclass('switchboard.butler_boot_registrations') IS NULL "
+                        "AND to_regclass('switchboard.butler_registry_control_plane') IS NULL"
+                    ).scalar_one()
+                    is True
+                )
+                core_before = independent.exec_driver_sql(core_catalog).all()
+            with migration_session(core_admin, source_database="butlers") as held:
+                finalize_authority(
+                    held,
+                    source_database="butlers",
+                    plans=(("core", "switchboard", None),),
+                )
+                held.commit()
+            with core_engine.connect() as independent:
+                assert independent.exec_driver_sql(core_catalog).all() == core_before
+                assert_at_chain_head(independent, "switchboard", chain="core")
+            assert unquote(urlparse(core_url).username) != "butler_switchboard_rw"
+        finally:
+            core_engine.dispose()
+
+        # The General domain chain does not produce core_063's briefing view.
+        # Exercise that exact supported plan before the later full deployment.
+        domain_name = migration_db_name()
+        domain_url = create_migrated_test_db(
+            postgres_container,
+            domain_name,
+            chains=["general"],
+            schemas={"general": "general"},
+        )
+        domain_engine = create_engine(
+            migration_bootstrap_db_url(postgres_container, domain_name),
+            poolclass=NullPool,
+            connect_args={"connect_timeout": 5},
+        )
+        try:
+            with domain_engine.connect() as independent:
+                assert (
+                    independent.exec_driver_sql(
+                        "SELECT to_regclass('general.collection_items') IS NOT NULL "
+                        "AND to_regclass('general.entities') IS NULL "
+                        "AND to_regclass('general.v_briefing_contributions') IS NULL"
+                    ).scalar_one()
+                    is True
+                )
+                assert_at_chain_head(independent, "general", chain="general")
+                independent.exec_driver_sql("SET LOCAL ROLE butler_general_rw")
+                assert (
+                    independent.exec_driver_sql(
+                        "SELECT count(*) FROM general.collection_items"
+                    ).scalar_one()
+                    == 0
+                )
+            # Keep the returned ordinary migration identity distinct from this
+            # independently acquired administrative readback connection.
+            assert unquote(urlparse(domain_url).username) != "butler_general_rw"
+        finally:
+            domain_engine.dispose()
+
         name = migration_db_name()
         normal_url = create_migrated_test_db(
             postgres_container,
@@ -3077,6 +3160,9 @@ async def test_real_source_windows_and_finance_materialized_projection_keep_clos
             ("switchboard", "switchboard", None),
             ("core", "finance", None),
             ("finance", "finance", None),
+            ("core", "general", None),
+            ("general", "general", None),
+            ("core", "qa", None),
         )
         try:
             with engine.connect() as independent:
@@ -3087,6 +3173,16 @@ async def test_real_source_windows_and_finance_materialized_projection_keep_clos
                 assert (
                     independent.exec_driver_sql(
                         "SELECT has_table_privilege('butler_finance_rw', 'public.contact_info', 'SELECT')"
+                    ).scalar_one()
+                    is False
+                )
+                retained_contacts = independent.execute(
+                    catalog, {"schema": "public", "name": "contacts"}
+                ).one()
+                assert retained_contacts[1:3] == ("r", owner)
+                assert (
+                    independent.exec_driver_sql(
+                        "SELECT has_table_privilege('butler_finance_rw', 'public.contacts', 'SELECT')"
                     ).scalar_one()
                     is False
                 )
@@ -3127,6 +3223,32 @@ async def test_real_source_windows_and_finance_materialized_projection_keep_clos
                     ).first()
                     is None
                 )
+                assert (
+                    independent.execute(catalog, {"schema": "public", "name": "contacts"}).first()
+                    is None
+                )
+                receiver_before = tuple(
+                    independent.execute(
+                        catalog, {"schema": "public", "name": "v_qa_butler_receiver_state"}
+                    ).one()
+                )
+                assert receiver_before[1:] == ("v", owner, False, False)
+                items_before = tuple(
+                    independent.execute(
+                        catalog, {"schema": "general", "name": "collection_items"}
+                    ).one()
+                )
+                assert items_before[1:] == ("r", owner, False, False)
+                assert (
+                    independent.execute(catalog, {"schema": "general", "name": "entities"}).first()
+                    is None
+                )
+                assert (
+                    independent.execute(
+                        catalog, {"schema": "general", "name": "v_briefing_contributions"}
+                    ).one()[1]
+                    == "v"
+                )
                 before = snapshot(independent)
                 independent.exec_driver_sql("SET LOCAL ROLE butler_finance_rw")
                 assert (
@@ -3153,6 +3275,40 @@ async def test_real_source_windows_and_finance_materialized_projection_keep_clos
                     is False
                 )
                 independent.rollback()
+                independent.exec_driver_sql("SET LOCAL ROLE butler_qa_rw")
+                independent.exec_driver_sql(
+                    "SELECT * FROM public.v_qa_butler_receiver_state LIMIT 1"
+                ).all()
+                assert (
+                    independent.exec_driver_sql(
+                        "SELECT has_table_privilege(current_user, "
+                        "'public.v_qa_butler_receiver_state', 'INSERT')"
+                    ).scalar_one()
+                    is False
+                )
+                independent.rollback()
+                independent.exec_driver_sql("SET LOCAL ROLE butler_finance_rw")
+                with pytest.raises(DBAPIError) as denied_receiver:
+                    independent.exec_driver_sql(
+                        "SELECT * FROM public.v_qa_butler_receiver_state LIMIT 1"
+                    ).all()
+                assert denied_receiver.value.orig.pgcode == "42501"
+                independent.rollback()
+                independent.exec_driver_sql("SET LOCAL ROLE butler_general_rw")
+                collection = uuid.uuid4()
+                item = uuid.uuid4()
+                independent.execute(
+                    text("INSERT INTO general.collections(id,name) VALUES (:id,:name)"),
+                    {"id": collection, "name": "source-window-proof"},
+                )
+                independent.execute(
+                    text(
+                        "INSERT INTO general.collection_items(id,collection_id,data) "
+                        "VALUES (:id,:collection,CAST(:data AS jsonb))"
+                    ),
+                    {"id": item, "collection": collection, "data": '{"source_window":true}'},
+                )
+                independent.commit()
                 # REFRESH is owner-only on the supported PostgreSQL version;
                 # it is not a new runtime permission or a fabricated definer.
                 independent.exec_driver_sql(f'SET LOCAL ROLE "{owner}"')
@@ -3181,6 +3337,32 @@ async def test_real_source_windows_and_finance_materialized_projection_keep_clos
                 finalize_authority(held, source_database="butlers", plans=plans)
             with engine.connect() as independent:
                 assert snapshot(independent) == before
+                assert (
+                    tuple(
+                        independent.execute(
+                            catalog, {"schema": "public", "name": "v_qa_butler_receiver_state"}
+                        ).one()
+                    )
+                    == receiver_before
+                )
+                assert (
+                    tuple(
+                        independent.execute(
+                            catalog, {"schema": "general", "name": "collection_items"}
+                        ).one()
+                    )
+                    == items_before
+                )
+                independent.exec_driver_sql("SET LOCAL ROLE butler_general_rw")
+                assert (
+                    independent.execute(
+                        text(
+                            "SELECT data->>'source_window' FROM general.collection_items WHERE id=:id"
+                        ),
+                        {"id": item},
+                    ).scalar_one()
+                    == "true"
+                )
             asyncio.run(runtime_catalog())
         finally:
             engine.dispose()

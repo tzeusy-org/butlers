@@ -387,6 +387,7 @@ def _core_tables(schema: str) -> tuple[str, ...]:
 _RETIRED_CHAIN_TABLES = {
     "switchboard": (("sw_001", "sw_026", "dashboard_audit_log"),),
     "contacts": (("contacts_001", "contacts_002", "contacts_source_accounts"),),
+    "general": (("gen_001", "gen_002", "entities"),),
 }
 
 _DOMAIN_TABLES = {
@@ -428,7 +429,7 @@ _DOMAIN_TABLES = {
         "collection_vocabulary",
         "collection_vocabulary_keys",
         "collections",
-        "entities",
+        "collection_items",
         "source_versions",
     ),
     "education": (
@@ -563,6 +564,10 @@ _MODULE_TABLES["home_assistant"] = _DOMAIN_TABLES["home"]
 
 _DOMAIN_MATERIALIZED_VIEWS = {"finance": ("spending_summaries",)}
 _SWITCHBOARD_INFRA_VIEWS = ("v_qa_connector_state", "v_qa_butler_heartbeat")
+_SWITCHBOARD_VIEW_EDGES = {
+    **dict.fromkeys(_SWITCHBOARD_INFRA_VIEWS, "sw_024"),
+    "v_qa_butler_receiver_state": "sw_037",
+}
 
 
 _DOMAIN_VIEWS = {
@@ -1001,6 +1006,17 @@ def shared_reader_objects(
             )
             for name in _SWITCHBOARD_INFRA_VIEWS
         )
+    if switchboard:
+        rows.append(
+            ObjectAuthority(
+                "public",
+                "v_qa_butler_receiver_state",
+                ObjectKind.VIEW,
+                migration_owner,
+                (Permission("butler_qa_rw", _READ),),
+                "sw_037 receiver-observed state; QA SELECT only",
+            )
+        )
     for name in ("v_overlay_contributions", "v_prep_contributions"):
         rows.append(
             ObjectAuthority(
@@ -1354,17 +1370,21 @@ def select_migration_manifest(manifest: RelationManifest, plans: tuple | None) -
         ):
             if edge in core_revisions:
                 schemas.add(namespace)
-    infra_views = any(
-        chain == "switchboard" and "sw_024" in revisions
-        for (_, chain), revisions in selected_revisions.items()
-    )
+    infra_views = {
+        name
+        for name, edge in _SWITCHBOARD_VIEW_EDGES.items()
+        if any(
+            chain == "switchboard" and edge in revisions
+            for (_, chain), revisions in selected_revisions.items()
+        )
+    }
     if infra_views:
         schemas.add("public")
     rows = {
         row.identity: row
         for row in manifest.relations
         if row.schema in schemas
-        and (row.name not in _SWITCHBOARD_INFRA_VIEWS or infra_views)
+        and (row.name not in _SWITCHBOARD_VIEW_EDGES or row.name in infra_views)
         and (
             row.kind != ObjectKind.MATERIALIZED_VIEW
             or "finance_006" in selected_revisions.get((row.schema, "finance"), set())
@@ -1380,6 +1400,17 @@ def select_migration_manifest(manifest: RelationManifest, plans: tuple | None) -
             manifest.migration_owner,
             (),
             "core_002..pre-core_115 retained administrative identity",
+            required=False,
+        )
+        rows[row.identity] = row
+    if "core_002" in core_revisions and "core_134" not in core_revisions:
+        row = ObjectAuthority(
+            "public",
+            "contacts",
+            ObjectKind.TABLE,
+            manifest.migration_owner,
+            (),
+            "core_002..pre-core_134 retained administrative identity",
             required=False,
         )
         rows[row.identity] = row
@@ -1455,6 +1486,12 @@ def select_migration_manifest(manifest: RelationManifest, plans: tuple | None) -
     result = []
     for row in rows.values():
         chains = selected.get(row.schema, set())
+        if (
+            row.name == "collection_items"
+            and "general" in chains
+            and "gen_002" not in selected_revisions.get((row.schema, "general"), set())
+        ):
+            continue
         if row.schema in {
             "public",
             "connectors",
@@ -1485,8 +1522,12 @@ def select_migration_manifest(manifest: RelationManifest, plans: tuple | None) -
                 )
                 required_names.update(_DOMAIN_VIEWS.get(chain, ()))
             required = row.required and row.name in required_names
-        if row.name in _SWITCHBOARD_INFRA_VIEWS:
-            required = row.required and infra_views
+        if row.name in _SWITCHBOARD_VIEW_EDGES:
+            required = row.required and row.name in infra_views
+        elif (row.schema, row.name) == ("general", "v_briefing_contributions"):
+            # core_001 creates General's namespace before core_063's conditional view.
+            # A General-domain-only plan never requests that core producer.
+            required = row.required and "core_063" in core_revisions
         elif row.kind == ObjectKind.MATERIALIZED_VIEW:
             required = row.required and "finance_006" in selected_revisions.get(
                 (row.schema, "finance"), set()

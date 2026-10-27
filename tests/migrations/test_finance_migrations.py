@@ -760,14 +760,16 @@ async def legacy_budget_pool(legacy_budget_db):
         await pool.close()
 
 
-async def _budget_revision(db_url, direction, target):
-    import asyncio
+async def _budget_revision(postgres_container, db_url, direction, target):
 
     from alembic import command
     from butlers.migrations import _build_alembic_config
+    from butlers.testing.migration import async_run_test_alembic_command
 
     config = _build_alembic_config(db_url, ["finance"], target_schema="finance")
-    await asyncio.to_thread(getattr(command, direction), config, target)
+    await async_run_test_alembic_command(
+        postgres_container, getattr(command, direction), config, target
+    )
 
 
 async def _budget_schema_state(pool):
@@ -785,7 +787,9 @@ async def _budget_schema_state(pool):
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_budget_period_upgrade_preserves_legacy_rows(legacy_budget_db, legacy_budget_pool):
+async def test_budget_period_upgrade_preserves_legacy_rows(
+    postgres_container, legacy_budget_db, legacy_budget_pool
+):
     """Real old CHECK rejects quarterly; the forward repair keeps legacy history."""
     from decimal import Decimal
 
@@ -807,7 +811,7 @@ async def test_budget_period_upgrade_preserves_legacy_rows(legacy_budget_db, leg
     assert rejected.value.constraint_name == "budgets_period_check"
     assert (await _budget_schema_state(pool))[0] == before
 
-    await _budget_revision(legacy_budget_db, "upgrade", "finance@head")
+    await _budget_revision(postgres_container, legacy_budget_db, "upgrade", "finance@head")
     assert (await _budget_schema_state(pool))[0] == before
     result = await budget_set(pool, category="groceries", amount=300, period="quarterly")
     async with pool.acquire() as conn:
@@ -840,7 +844,7 @@ async def test_budget_period_upgrade_preserves_legacy_rows(legacy_budget_db, leg
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_budget_period_downgrade_refuses_history_and_roundtrips(
-    legacy_budget_db, legacy_budget_pool
+    postgres_container, legacy_budget_db, legacy_budget_pool
 ):
     """Downgrade refuses active/inactive quarterly data and otherwise preserves rows."""
     from sqlalchemy.exc import IntegrityError
@@ -851,7 +855,7 @@ async def test_budget_period_downgrade_refuses_history_and_roundtrips(
             "INSERT INTO budgets(category,period,amount) VALUES('dining',$1,100)", period
         )
     legacy_rows = (await _budget_schema_state(pool))[0]
-    await _budget_revision(legacy_budget_db, "upgrade", "finance@head")
+    await _budget_revision(postgres_container, legacy_budget_db, "upgrade", "finance@head")
     quarter_id = await pool.fetchval(
         "INSERT INTO budgets(category,period,amount) VALUES('dining','quarterly',100) RETURNING id"
     )
@@ -860,7 +864,7 @@ async def test_budget_period_downgrade_refuses_history_and_roundtrips(
         before = await _budget_schema_state(pool)
         with pytest.raises(IntegrityError, match="quarterly") as refused:
             # pinned-revision: rollback only this CHECK repair, not core boundaries.
-            await _budget_revision(legacy_budget_db, "downgrade", "finance_015")
+            await _budget_revision(postgres_container, legacy_budget_db, "downgrade", "finance_015")
         assert refused.value.orig.pgcode == "23514"
         assert await _budget_schema_state(pool) == before
         assert any(r["id"] == quarter_id for r in before[0])
@@ -868,7 +872,7 @@ async def test_budget_period_downgrade_refuses_history_and_roundtrips(
     # Removing this disposable sentinel establishes the safe rollback precondition.
     await pool.execute("DELETE FROM budgets WHERE id=$1", quarter_id)
     # pinned-revision: expected historical constraint and stamp for this repair.
-    await _budget_revision(legacy_budget_db, "downgrade", "finance_015")
+    await _budget_revision(postgres_container, legacy_budget_db, "downgrade", "finance_015")
     rows, _, stamp = await _budget_schema_state(pool)
     assert rows == legacy_rows
     assert stamp == ["finance_015"]  # pinned-revision: owned repair predecessor.
@@ -882,7 +886,7 @@ async def test_budget_period_downgrade_refuses_history_and_roundtrips(
                 "INSERT INTO budgets(category,period,amount) VALUES('groceries',$1,50)", period
             )
     safe = (await _budget_schema_state(pool))[0]
-    await _budget_revision(legacy_budget_db, "upgrade", "finance@head")
+    await _budget_revision(postgres_container, legacy_budget_db, "upgrade", "finance@head")
     assert (await _budget_schema_state(pool))[0] == safe
     assert (
         await pool.fetchval(
@@ -1003,7 +1007,7 @@ async def field_claims_pool(field_claims_db):
     ],
 )
 async def test_actual_field_claim_upgrade_constraints_and_lossless_refusal(
-    field_claims_db, field_claims_pool, case
+    postgres_container, field_claims_db, field_claims_pool, case
 ):
     from datetime import date
 
@@ -1023,7 +1027,7 @@ async def test_actual_field_claim_upgrade_constraints_and_lossless_refusal(
         from sqlalchemy.exc import DBAPIError
 
         with pytest.raises(DBAPIError, match="subscription_identity_ambiguous"):
-            await _budget_revision(field_claims_db, "upgrade", "finance@head")
+            await _budget_revision(postgres_container, field_claims_db, "upgrade", "finance@head")
         async with pool.acquire() as observer:
             assert await observer.fetchval("SELECT count(*) FROM subscriptions") == 2
             assert (
@@ -1038,7 +1042,7 @@ async def test_actual_field_claim_upgrade_constraints_and_lossless_refusal(
                 == 0
             )
         return
-    await _budget_revision(field_claims_db, "upgrade", "finance@head")
+    await _budget_revision(postgres_container, field_claims_db, "upgrade", "finance@head")
     async with pool.acquire() as observer:
         after = dict(await observer.fetchrow("SELECT * FROM subscriptions WHERE id=$1", sid))
         assert all(after[key] == value for key, value in before.items())
@@ -1068,7 +1072,7 @@ async def test_actual_field_claim_upgrade_constraints_and_lossless_refusal(
         from butlers.tools.finance.subscriptions import track_subscription
 
         await pool.execute("DELETE FROM subscriptions WHERE id=$1", sid)
-        await _budget_revision(field_claims_db, "downgrade", "finance_018")
+        await _budget_revision(postgres_container, field_claims_db, "downgrade", "finance_018")
         async with pool.acquire() as observer:
             assert await observer.fetchval("SELECT count(*) FROM subscriptions") == 0
             assert await observer.fetchval("SELECT count(*) FROM bills") == 0
@@ -1081,7 +1085,7 @@ async def test_actual_field_claim_upgrade_constraints_and_lossless_refusal(
                 pool, "Closed predecessor", 10, "USD", "yearly", date(2026, 12, 1)
             )
         assert await pool.fetchval("SELECT count(*) FROM subscriptions") == 0
-        await _budget_revision(field_claims_db, "upgrade", "finance@head")
+        await _budget_revision(postgres_container, field_claims_db, "upgrade", "finance@head")
     elif case == "concurrent-rollback":
         import asyncio
 
@@ -1099,7 +1103,9 @@ async def test_actual_field_claim_upgrade_constraints_and_lossless_refusal(
                     date(2026, 12, 1),
                 )
                 task = asyncio.create_task(
-                    _budget_revision(field_claims_db, "downgrade", "finance_018")
+                    _budget_revision(
+                        postgres_container, field_claims_db, "downgrade", "finance_018"
+                    )
                 )
                 async with asyncio.timeout(5):
                     while not await pool.fetchval(  # noqa: ASYNC110 -- actual independent pg_locks barrier
@@ -1130,7 +1136,7 @@ async def test_actual_field_claim_upgrade_constraints_and_lossless_refusal(
                 date(2026, 12, 1),
             )
         with pytest.raises(DBAPIError, match="finance_field_claims_downgrade_unsafe"):
-            await _budget_revision(field_claims_db, "downgrade", "finance_018")
+            await _budget_revision(postgres_container, field_claims_db, "downgrade", "finance_018")
         if case == "bill-refusal":
             assert await pool.fetchval("SELECT count(*) FROM bills") == 1
             assert await pool.fetchval("SELECT payee_source FROM bills") == "extracted"
@@ -1140,10 +1146,37 @@ async def test_actual_field_claim_upgrade_constraints_and_lossless_refusal(
             )
 
 
+@pytest.fixture
+async def finance_runtime_deployment(postgres_container):
+    from butlers.testing.migration import async_serving_test_deployment
+
+    async with async_serving_test_deployment(
+        postgres_container, finance_revision="finance_018"
+    ) as deployment:
+        yield deployment
+
+
+@pytest.fixture
+async def finance_runtime_observer(finance_runtime_deployment):
+    from butlers.db import register_jsonb_codec
+
+    observer = await asyncpg.create_pool(
+        finance_runtime_deployment.migration_url,
+        min_size=1,
+        max_size=4,
+        server_settings={"search_path": "finance,public"},
+        init=register_jsonb_codec,
+    )
+    try:
+        yield observer
+    finally:
+        await observer.close()
+
+
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.parametrize("order", ["owner-first", "extracted-first", "concurrent", "rollback"])
 async def test_field_claims_actual_runtime_role_two_writers_and_independent_committed_readback(
-    field_claims_db, field_claims_pool, monkeypatch, order
+    postgres_container, finance_runtime_deployment, finance_runtime_observer, monkeypatch, order
 ):
     import asyncio
     from datetime import date
@@ -1151,21 +1184,70 @@ async def test_field_claims_actual_runtime_role_two_writers_and_independent_comm
     from uuid import UUID, uuid4
 
     from butlers.core import tool_call_capture as capture
-    from butlers.db import register_jsonb_codec
+    from butlers.db import _RuntimeRoleError
+    from butlers.db_authority.grants import deployment_function_plans
+    from butlers.db_authority.roles import AuthorityError, runtime_profiles
+    from butlers.migrations import get_all_chains, get_chain_head
+    from butlers.testing.migration import async_migrate_test_database
     from butlers.tools.finance import subscriptions as subs
 
-    await _budget_revision(field_claims_db, "upgrade", "finance@head")
+    deployment = finance_runtime_deployment
+    field_claims_db = deployment.migration_url
+    field_claims_pool = finance_runtime_observer
+    assert (
+        await field_claims_pool.fetchval("SELECT version_num FROM finance.alembic_version")
+        == "finance_018"
+    )  # pinned-revision: fresh predecessor before the owned runtime upgrade.
+    assert not await field_claims_pool.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE "
+        "table_schema='finance' AND table_name='subscriptions' AND column_name='field_claims')"
+    )
+    assert await field_claims_pool.fetchval("SELECT count(*) FROM subscriptions") == 0
+    assert await field_claims_pool.fetchval("SELECT count(*) FROM bills") == 0
+    normal = await asyncpg.connect(field_claims_db)
+    try:
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await normal.execute("SET ROLE butler_finance_rw")
+    finally:
+        await normal.close()
+    unready = deployment.runtime_database("finance", min_size=1, max_size=1)
+    with pytest.raises(_RuntimeRoleError) as unadmitted:
+        await unready.connect()
+    assert isinstance(unadmitted.value.__cause__, AuthorityError)
+    assert unready.pool is None
+    await unready.close()
+
+    await _budget_revision(postgres_container, field_claims_db, "upgrade", "finance@head")
+    available = frozenset(get_all_chains())
+    complete_plans = tuple(
+        row for row in deployment_function_plans(runtime_profiles("butlers")) if row[0] in available
+    )
+    await async_migrate_test_database(
+        postgres_container,
+        field_claims_db,
+        plans=(("finance", "finance", None),),
+        final_plans=complete_plans,
+    )
+    assert await field_claims_pool.fetchval(
+        "SELECT version_num FROM finance.alembic_version"
+    ) == get_chain_head("finance")
+    assert await field_claims_pool.fetchval("SELECT count(*) FROM subscriptions") == 0
+    assert await field_claims_pool.fetchval("SELECT count(*) FROM bills") == 0
     entity = await field_claims_pool.fetchval(
         "INSERT INTO public.entities(canonical_name,entity_type,roles) "
         "VALUES('Synthetic Finance owner','person',ARRAY['owner']) RETURNING id"
     )
-    runtime = await asyncpg.create_pool(
-        field_claims_db,
-        min_size=2,
-        max_size=3,
-        server_settings={"role": "butler_finance_rw", "search_path": "finance,public"},
-        init=register_jsonb_codec,
-    )
+    runtime_database = deployment.runtime_database("finance", min_size=2, max_size=3)
+    runtime = await runtime_database.connect()
+    async with runtime.acquire() as admitted:
+        assert await admitted.fetchval("SELECT current_database()") == "butlers"
+        assert await admitted.fetchval(
+            "SELECT current_database()"
+        ) == await field_claims_pool.fetchval("SELECT current_database()")
+        assert (
+            await admitted.fetchval("SELECT session_user")
+            == deployment.runtime_logins["finance"].user
+        )
 
     async def write(owner):
         # Genuine server-held invocation context and real entities lookup;
@@ -1253,4 +1335,4 @@ async def test_field_claims_actual_runtime_role_two_writers_and_independent_comm
                     "ALTER TABLE subscriptions ADD COLUMN forbidden_test INTEGER"
                 )
     finally:
-        await runtime.close()
+        await runtime_database.close()
