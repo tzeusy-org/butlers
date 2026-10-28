@@ -543,7 +543,7 @@ async def test_evaluator_withholds_bearer_text_from_prompt_log_and_window(caplog
     for secret in ("482913", "synthetic-reset-token"):
         assert all(secret not in prompt for prompt in prompts)
         assert secret not in caplog.text
-    assert "[auth-code withheld: example.com]" in caplog.text
+    assert "prompt_sha=" in caplog.text
     # The window re-sends the placeholder, not the code, to later evaluations.
     assert "[auth-code withheld: example.com]" in prompts[2]
 
