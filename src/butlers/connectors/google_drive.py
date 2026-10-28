@@ -22,8 +22,6 @@ Key behaviors:
 
 Environment variables:
 - SWITCHBOARD_MCP_URL (required)
-- CONNECTOR_PROVIDER=google_drive (required)
-- CONNECTOR_CHANNEL=google_drive (required)
 - CONNECTOR_HEALTH_PORT (optional, default 40085)
 - GDRIVE_POLL_INTERVAL_S (optional, default 300)
 - GDRIVE_BATCH_WINDOW_S (optional, default 0 = disabled; e.g. 7200 for 2h batching)
@@ -55,6 +53,7 @@ from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
+from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
@@ -71,6 +70,8 @@ from butlers.oauth_token_payload import (
     validate_oauth_token_payload,
 )
 
+_DESCRIPTOR = connector_descriptor("google_drive")
+
 if TYPE_CHECKING:
     import asyncpg
 
@@ -80,9 +81,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_CONNECTOR_TYPE = "google_drive"
-_CONNECTOR_CHANNEL = "google_drive"
-_CONNECTOR_PROVIDER = "google_drive"
+_CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 
 # Drive scopes required for change access
 _DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
@@ -562,8 +561,8 @@ def _build_ingest_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -667,8 +666,8 @@ def _build_batch_digest_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -1716,7 +1715,7 @@ class GDriveAccountLoop:
         # raw_key = filename (enables substring rule matching against file names)
         policy_envelope = IngestionEnvelope(
             sender_address=owner_email or self.endpoint_identity,
-            source_channel=_CONNECTOR_CHANNEL,
+            source_channel=_DESCRIPTOR.channel,
             raw_key=name,
         )
 
@@ -1731,7 +1730,7 @@ class GDriveAccountLoop:
             # Record filtered event in buffer for batch flush (task 11.2)
             self._filtered_event_buffer.record(
                 external_message_id=file_id,
-                source_channel=_CONNECTOR_CHANNEL,
+                source_channel=_DESCRIPTOR.channel,
                 sender_identity=self.endpoint_identity,
                 subject_or_preview=name,
                 filter_reason=FilteredEventBuffer.reason_policy_rule(
@@ -1740,8 +1739,8 @@ class GDriveAccountLoop:
                     decision.matched_rule_type or "unknown",
                 ),
                 full_payload=FilteredEventBuffer.full_payload(
-                    channel=_CONNECTOR_CHANNEL,
-                    provider=_CONNECTOR_PROVIDER,
+                    channel=_DESCRIPTOR.channel,
+                    provider=_DESCRIPTOR.provider,
                     endpoint_identity=self.endpoint_identity,
                     external_event_id=file_id,
                     external_thread_id=None,
@@ -2356,8 +2355,6 @@ async def run_google_drive_connector() -> None:
 
     Environment variables consumed (task 13.1):
     - SWITCHBOARD_MCP_URL (required)
-    - CONNECTOR_PROVIDER=google_drive (set in Docker env; constant in code)
-    - CONNECTOR_CHANNEL=google_drive (set in Docker env; constant in code)
     - GDRIVE_POLL_INTERVAL_S (optional, default 300)
     - GDRIVE_BATCH_WINDOW_S (optional, default 0 = disabled; e.g. 7200 for 2h batching)
     - GDRIVE_ACCOUNT_RESCAN_INTERVAL_S (optional, default 300)

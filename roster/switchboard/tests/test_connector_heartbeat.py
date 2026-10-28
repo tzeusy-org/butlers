@@ -102,6 +102,11 @@ def test_parse_heartbeat_unknown_connector_type(valid_heartbeat_payload):
     with pytest.raises(ValueError, match="Unknown connector_type"):
         parse_connector_heartbeat(valid_heartbeat_payload)
 
+    for connector_type in ("telegram_user", "live-listener", "whatsapp", "discord", "discord_user"):
+        valid_heartbeat_payload["connector"]["connector_type"] = connector_type
+        with pytest.raises(ValueError, match="Unknown connector_type"):
+            parse_connector_heartbeat(valid_heartbeat_payload)
+
 
 def test_parse_heartbeat_invalid_connector_type_format(valid_heartbeat_payload):
     """Test that invalid connector_type format raises ValueError."""

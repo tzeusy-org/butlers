@@ -813,3 +813,29 @@ async def test_submit_envelope_treats_duplicate_response_as_success() -> None:
     await poller._submit_envelope(envelope)  # must not raise
 
     mcp_client.call_tool.assert_awaited_once()
+
+
+def test_steam_envelope_reads_its_owned_descriptor(
+    monkeypatch: pytest.MonkeyPatch, play_session_envelope: dict[str, Any]
+) -> None:
+    from dataclasses import replace
+
+    from butlers.connectors import steam
+
+    original = steam._DESCRIPTOR
+    changed = replace(original, channel="email", provider="gmail")
+    monkeypatch.setattr(steam, "_DESCRIPTOR", changed)
+    # Use the existing play-session producer with the original native inputs.
+    envelope = steam.build_play_session_envelope(
+        endpoint_identity="steam:user:synthetic",
+        steam_id=123,
+        app_id=123,
+        game_name="Synthetic",
+        playtime_2weeks=17,
+        playtime_delta=17,
+        poll_ts="2026-03-26T10:00:00+00:00",
+        raw={"appid": 123},
+    )
+    assert envelope["source"]["channel"] == "email"
+    assert envelope["source"]["provider"] == "gmail"
+    assert play_session_envelope["source"]["channel"] == "gaming"

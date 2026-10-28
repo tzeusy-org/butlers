@@ -25,6 +25,7 @@ from uuid import UUID, uuid4
 import asyncpg
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
+from butlers.connectors.catalog import canonical_connector_types
 from butlers.core.goal_admission import EvidenceRefused
 from butlers.core.known_contact_state import CLASSIFICATION_KEY, parse_check
 from butlers.ingestion_spans import (
@@ -41,21 +42,7 @@ NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length
 ConnectorState = Literal["healthy", "degraded", "error"]
 
 # Known valid connector types that can register via heartbeat
-VALID_CONNECTOR_TYPES = {
-    "activitywatch",
-    "gmail",
-    "google_calendar",
-    "google_drive",
-    "google_health",
-    "home_assistant",
-    "live_listener",
-    "owntracks",
-    "spotify",
-    "steam",
-    "telegram_bot",
-    "telegram_user_client",
-    "whatsapp_user_client",
-}
+VALID_CONNECTOR_TYPES = canonical_connector_types()
 
 
 class ConnectorIdentityV1(BaseModel):

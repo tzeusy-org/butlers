@@ -53,6 +53,21 @@ class TestHistoryConfig:
             assert isinstance(HISTORY_STRATEGY[ch], str)
             assert HISTORY_STRATEGY[ch] != ""
 
+        assert HISTORY_STRATEGY == {
+            "telegram_bot": "realtime",
+            "telegram_user_client": "realtime",
+            "whatsapp": "realtime",
+            "whatsapp_user_client": "realtime",
+            "slack": "realtime",
+            "discord": "realtime",
+            "email": "email",
+            "google_calendar": "realtime",
+            "spotify_user_client": "realtime",
+            "owntracks": "realtime",
+            "api": "none",
+            "mcp": "none",
+        }
+
 
 class TestFormatHistoryContext:
     def test_empty_history_returns_none_or_empty_string(self):
@@ -95,3 +110,32 @@ class TestLoadConversationHistory:
             received_at=datetime.now(UTC),
         )
         assert isinstance(result, str)
+
+
+async def test_historical_discord_uses_real_stored_reader_without_registration() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from butlers.connectors.catalog import canonical_connector_types, ingress_pairs
+
+    now = datetime.now(UTC)
+    conn = AsyncMock()
+    conn.fetch.return_value = [
+        {
+            "raw_content": "stored message",
+            "sender_id": "archived-user",
+            "received_at": now - timedelta(seconds=1),
+            "raw_metadata": {},
+            "direction": "inbound",
+        }
+    ]
+    pool = MagicMock()
+    pool.acquire.return_value.__aenter__.return_value = conn
+    result = await _load_conversation_history(pool, "discord", "old-thread", now)
+    assert "stored message" in result
+    assert conn.fetch.await_count == 2
+    assert conn.fetch.await_args_list[0].args[-1] == "discord"
+    assert "discord" not in canonical_connector_types()
+    assert ("discord", "discord") not in ingress_pairs()
+    conn.fetch.reset_mock()
+    assert await _load_conversation_history(pool, "unknown_channel", "old-thread", now) == ""
+    conn.fetch.assert_not_awaited()

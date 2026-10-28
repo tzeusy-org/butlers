@@ -367,3 +367,15 @@ async def test_persist_location_point_skips_write_when_detector_fails(caplog) ->
     pool.fetchval.assert_not_awaited()
     assert "bearer scrub failed" in caplog.text
     assert "482913" not in caplog.text
+
+
+def test_descriptor_identity_preserves_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    from butlers.connectors import owntracks as module
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    monkeypatch.setenv("CONNECTOR_HEALTH_PORT", "40123")
+    config = module.OwnTracksConnectorConfig.from_env()
+    assert (config.channel, config.provider) == ("owntracks", "owntracks")
+    assert config.health_port == 40123
