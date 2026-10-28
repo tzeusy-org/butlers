@@ -86,6 +86,13 @@ def _pool(*, entry_exists: bool = True, rows: list[dict[str, Any]] | None = None
     pool.fetch = AsyncMock(return_value=[_record(row) for row in (rows or [])])
     pool.fetchval = AsyncMock(return_value=1 if entry_exists else None)
     pool.execute = AsyncMock(return_value="UPDATE 1")
+    # The sweep holds a Postgres advisory lock on one acquired connection (bu-3rd8wy).
+    lock_connection = AsyncMock()
+    lock_connection.fetchval = AsyncMock(return_value=True)
+    acquired = MagicMock()
+    acquired.__aenter__ = AsyncMock(return_value=lock_connection)
+    acquired.__aexit__ = AsyncMock(return_value=False)
+    pool.acquire = MagicMock(return_value=acquired)
     return pool
 
 
