@@ -9,7 +9,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
-from butlers.core.confirm_service import ConfirmService
+from butlers.core.confirm_service import ConfirmCursorError, ConfirmService
 from butlers.core.owner_auth_context import verified_http_principal
 
 router = APIRouter(prefix="/api/confirms", tags=["confirms"])
@@ -66,9 +66,16 @@ async def callback(body: Callback, request: Request):
 
 
 @router.get("")
-async def cards(request: Request):
+async def cards(request: Request, before: UUID | None = None):
     _owner()
-    return {"data": [_card(row) for row in await _service(request).list_owner()]}
+    try:
+        page = await _service(request).list_owner(before=before)
+    except ConfirmCursorError:
+        raise HTTPException(400, detail="invalid_confirm_cursor") from None
+    return {
+        "data": [_card(row) for row in page["rows"]],
+        "meta": {"next_cursor": page["next_cursor"]},
+    }
 
 
 @router.post("/{confirm_id}/answer")

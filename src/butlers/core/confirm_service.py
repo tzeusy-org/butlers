@@ -16,6 +16,10 @@ from butlers.core.confirm_models import ConfirmPrompt
 from butlers.core.confirm_tokens import mint_confirm_token, verify_confirm_token
 
 
+class ConfirmCursorError(ValueError):
+    """The requested owner page cursor is unavailable."""
+
+
 @dataclass(frozen=True, slots=True)
 class SinkRegistration:
     producer: str
@@ -156,14 +160,30 @@ class ConfirmService:
             )
         return dict(row) if row else None
 
-    async def list_owner(self, *, limit: int = 50) -> list[dict]:
+    async def list_owner(self, *, limit: int = 50, before: UUID | None = None) -> dict:
+        limit = min(max(limit, 1), 100)
         async with self._connection() as conn:
+            cursor = None
+            if before is not None:
+                cursor = await conn.fetchrow(
+                    "SELECT created_at,id FROM public.pending_confirms "
+                    "WHERE id=$1 AND recipient_owner",
+                    before,
+                )
+                if cursor is None:
+                    raise ConfirmCursorError("invalid_confirm_cursor")
             rows = await conn.fetch(
                 """SELECT * FROM public.pending_confirms WHERE recipient_owner
-                ORDER BY created_at DESC LIMIT $1""",
-                min(max(limit, 1), 100),
+                AND ($2::timestamptz IS NULL OR (created_at,id)<($2,$3::uuid))
+                ORDER BY created_at DESC,id DESC LIMIT $1""",
+                limit + 1,
+                cursor["created_at"] if cursor else None,
+                before,
             )
-        return [dict(row) for row in rows]
+        return {
+            "rows": [dict(row) for row in rows[:limit]],
+            "next_cursor": str(rows[limit - 1]["id"]) if len(rows) > limit else None,
+        }
 
     def keyboard(self, row: Mapping) -> dict:
         return {

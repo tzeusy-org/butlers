@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -114,7 +114,9 @@ async def test_recipient_expiry_race_and_restart_application(confirms):
                 == "UPDATE 0"
             )
         with pytest.raises(Exception, match="immutable"):
-            await conn.execute("UPDATE public.pending_confirms SET prompt='{}'::jsonb")
+            async with conn.transaction():
+                await conn.execute("SET LOCAL ROLE butler_switchboard_rw")
+                await conn.execute("UPDATE public.pending_confirms SET prompt='{}'::jsonb")
 
 
 async def test_late_tap_and_sweep_independent_prompts(confirms):
@@ -135,16 +137,21 @@ async def test_late_tap_and_sweep_independent_prompts(confirms):
     )
     a = await service.create("chronicler", "a", prompt, sink="test", sink_ref="a")
     b = await service.create("chronicler", "b", prompt, sink="test", sink_ref="b")
-    async with admin.acquire() as conn:
+    async with admin.acquire() as conn, conn.transaction():
         # Backdate via controlled migration fixture; application cannot edit immutable expiry.
         await conn.execute(
             "ALTER TABLE public.pending_confirms DISABLE TRIGGER confirm_identity_guard"
         )
-        await conn.execute(
-            "UPDATE public.pending_confirms SET created_at=now()-interval '2 hours', "
-            "expires_at=now()-interval '1 hour' WHERE id=$1",
-            a["id"],
+        await conn.execute("SET LOCAL ROLE butler_switchboard_rw")
+        assert (
+            await conn.execute(
+                "UPDATE public.pending_confirms SET created_at=now()-interval '2 hours', "
+                "expires_at=now()-interval '1 hour' WHERE id=$1",
+                a["id"],
+            )
+            == "UPDATE 1"
         )
+        await conn.execute("RESET ROLE")
         await conn.execute(
             "ALTER TABLE public.pending_confirms ENABLE TRIGGER confirm_identity_guard"
         )
@@ -183,15 +190,21 @@ async def test_deadline_is_rechecked_after_row_lock_wait(confirms):
         await conn.execute(
             "ALTER TABLE public.pending_confirms DISABLE TRIGGER confirm_identity_guard"
         )
-        await conn.execute(
-            "UPDATE public.pending_confirms SET expires_at=clock_timestamp()+interval '1 second' WHERE id=$1",
-            row["id"],
+        await conn.execute("SET LOCAL ROLE butler_switchboard_rw")
+        assert (
+            await conn.execute(
+                "UPDATE public.pending_confirms SET expires_at=clock_timestamp()+interval '1 second' WHERE id=$1",
+                row["id"],
+            )
+            == "UPDATE 1"
         )
+        await conn.execute("RESET ROLE")
         await conn.execute(
             "ALTER TABLE public.pending_confirms ENABLE TRIGGER confirm_identity_guard"
         )
     async with admin.acquire() as conn, conn.transaction():
-        await conn.fetchrow(
+        await conn.execute("SET LOCAL ROLE butler_switchboard_rw")
+        assert await conn.fetchrow(
             "SELECT id FROM public.pending_confirms WHERE id=$1 FOR UPDATE", row["id"]
         )
         task = asyncio.create_task(service.answer_callback(token, sender_id="42", chat_id="100"))
@@ -329,6 +342,8 @@ async def test_delivery_restart_ambiguity_rendering_and_error_fairness(confirms)
         service, send=send, edit=AsyncMock(return_value=True), allowed=AsyncMock(return_value=False)
     )
     assert not await delivery.deliver(a["id"])
+    deferred = await service.get(a["id"])
+    assert deferred["delivery_status"] == "new" and deferred["updated_at"] > a["updated_at"]
     send.assert_not_awaited()
     delivery.allowed.return_value = True
     assert not await delivery.deliver(a["id"])
@@ -354,3 +369,30 @@ async def test_delivery_restart_ambiguity_rendering_and_error_fairness(confirms)
     unauthorized = ConfirmService(admin, secret="synthetic", sinks={})
     with pytest.raises(ValueError, match="restricted confirm service role"):
         await unauthorized.get(a["id"])
+
+
+async def test_owner_pages_retain_older_actionable_questions(confirms):
+    admin, runtime = confirms
+    service = ConfirmService(
+        runtime,
+        secret="synthetic",
+        sinks={"test": SinkRegistration("test", frozenset({"a", "b"}), lambda *args: None)},
+    )
+    prompt = ConfirmPrompt(
+        "Which?",
+        (ConfirmOption("a", "A"), ConfirmOption("b", "B")),
+        Recipient(uuid4(), "42", "100", True),
+    )
+    ids = []
+    for index in range(52):
+        row = await service.create("test", str(index), prompt, sink="test", sink_ref=str(index))
+        ids.append(str(row["id"]))
+    first = await service.list_owner()
+    assert len(first["rows"]) == 50 and first["next_cursor"]
+    second = await service.list_owner(before=UUID(first["next_cursor"]))
+    assert second["next_cursor"] is None
+    found = [str(row["id"]) for row in first["rows"] + second["rows"]]
+    assert found == ids[::-1] and len(set(found)) == 52
+    assert all(row["status"] == "pending" for row in second["rows"])
+    with pytest.raises(ValueError, match="invalid_confirm_cursor"):
+        await service.list_owner(before=uuid4())

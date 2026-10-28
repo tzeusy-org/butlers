@@ -53,6 +53,8 @@ def upgrade():
         );
         CREATE INDEX IF NOT EXISTS pending_confirms_work
             ON public.pending_confirms (application_status, claim_until, expires_at);
+        CREATE INDEX IF NOT EXISTS pending_confirms_owner_page
+            ON public.pending_confirms (created_at DESC,id DESC) WHERE recipient_owner;
         ALTER TABLE public.pending_confirms ENABLE ROW LEVEL SECURITY;
         ALTER TABLE public.pending_confirms FORCE ROW LEVEL SECURITY;
         REVOKE ALL ON public.pending_confirms FROM PUBLIC;
@@ -108,7 +110,7 @@ def upgrade():
             );
         END $$;
         CREATE OR REPLACE FUNCTION public.confirm_restore_row(payload JSONB) RETURNS void
-        LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$ BEGIN
+        LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog SET row_security=on AS $$ BEGIN
             IF current_user <> (
                 SELECT pg_get_userbyid(relowner) FROM pg_class
                 WHERE oid='public.pending_confirms'::regclass

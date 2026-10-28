@@ -23,6 +23,10 @@ const request = {
   created_at: "2026-01-01T00:00:00Z",
 };
 
+function page(data: unknown[]) {
+  return { data, meta: { next_cursor: null } };
+}
+
 let client: QueryClient;
 beforeEach(() => {
   vi.resetAllMocks();
@@ -38,6 +42,45 @@ function mount() {
 }
 
 describe("dashboard confirmation requests", () => {
+  it("loads older questions by server cursor and keeps their answer state through page refreshes", async () => {
+    const olderId = "72071b76-5215-423b-b4eb-06c1dd296f56";
+    const olderText = "An older question still needs your answer.";
+    const older = { ...request, id: olderId, text: olderText };
+    let answered = false;
+    let finishRefresh!: (result: unknown) => void;
+    vi.mocked(apiFetch).mockImplementation(async (path) => {
+      if (path.endsWith("/answer")) {
+        answered = true;
+        return { data: { status: "answered", application_status: "pending" } };
+      }
+      if (path === `/confirms?before=${request.id}`) {
+        if (answered) return new Promise((resolve) => { finishRefresh = resolve; });
+        return page([older]);
+      }
+      return { data: [{ ...request, status: "expired" }], meta: { next_cursor: request.id } };
+    });
+    mount();
+    await screen.findByText(request.text);
+    expect(screen.queryByText(olderText)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await screen.findByText(olderText)).toBeTruthy();
+    expect(apiFetch).toHaveBeenCalledWith(`/confirms?before=${request.id}`, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(screen.getByText(request.text)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+    const choices = screen.getAllByRole("button", { name: "Not work" });
+    fireEvent.click(choices[1]);
+    expect(await screen.findByText("Your answer: Not work")).toBeTruthy();
+    expect(await screen.findByText("Answer recorded. Waiting for it to be applied.")).toBeTruthy();
+    expect((screen.getAllByRole("button", { name: "Not work" })[1] as HTMLButtonElement).disabled).toBe(true);
+    expect(apiFetch).toHaveBeenCalledWith(`/confirms/${olderId}/answer`, {
+      method: "POST", body: JSON.stringify({ option_index: 1 }),
+    });
+    await waitFor(() => expect(finishRefresh).toBeTypeOf("function"));
+    await act(async () => { finishRefresh(page([{ ...older, status: "answered", answer_index: 1, application_status: "pending" }])); });
+    expect(screen.getByText("Your answer: Not work")).toBeTruthy();
+    expect(screen.getByText(request.text)).toBeTruthy();
+  });
+
   it("renders persisted text inertly and records the selected index before showing application progress", async () => {
     let applicationStatus = "pending";
     let answered = false;
@@ -46,7 +89,7 @@ describe("dashboard confirmation requests", () => {
       if (path.endsWith("/answer")) {
         return new Promise((resolve) => { finishAnswer = resolve; });
       }
-      return { data: [{ ...request, ...(answered ? { status: "answered", answer_index: 1, application_status: applicationStatus } : {}) }] };
+      return page([{ ...request, ...(answered ? { status: "answered", answer_index: 1, application_status: applicationStatus } : {}) }]);
     });
     const { container } = mount();
     expect(await screen.findByText(request.text)).toBeTruthy();
@@ -77,7 +120,7 @@ describe("dashboard confirmation requests", () => {
         if (failure === "refused") return { data: { status: "refused" } };
         throw new ApiError("TEMPORARY_FAILURE", "Try again later", 503);
       }
-      return { data: [request] };
+      return page([request]);
     });
     mount();
     fireEvent.click(await screen.findByRole("button", { name: "Not work" }));
@@ -94,7 +137,7 @@ describe("dashboard confirmation requests", () => {
         answered = true;
         return { data: { status: "already_handled", state: "answered", application_status: "applied" } };
       }
-      return { data: [{ ...request, ...(answered ? { status: "answered", answer_index: 0, application_status: "applied" } : {}) }] };
+      return page([{ ...request, ...(answered ? { status: "answered", answer_index: 0, application_status: "applied" } : {}) }]);
     });
     mount();
     fireEvent.click(await screen.findByRole("button", { name: "Not work" }));
@@ -110,7 +153,7 @@ describe("dashboard confirmation requests", () => {
         answered = true;
         throw new TypeError("Network response lost");
       }
-      return { data: [{ ...request, ...(answered ? { status: "answered", answer_index: 1, application_status: "pending" } : {}) }] };
+      return page([{ ...request, ...(answered ? { status: "answered", answer_index: 1, application_status: "pending" } : {}) }]);
     });
     mount();
     fireEvent.click(await screen.findByRole("button", { name: "Not work" }));
@@ -124,21 +167,21 @@ describe("dashboard confirmation requests", () => {
     { status: "expired", expires_at: request.expires_at },
     { status: "pending", expires_at: "2020-01-01T00:00:00Z" },
   ])("disables expired choices for $status server state", async (expiry) => {
-    vi.mocked(apiFetch).mockResolvedValue({ data: [{ ...request, ...expiry }] });
+    vi.mocked(apiFetch).mockResolvedValue(page([{ ...request, ...expiry }]));
     mount();
     expect(await screen.findByText("This question has expired.")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Not work" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("distinguishes a recorded answer whose application needs attention", async () => {
-    vi.mocked(apiFetch).mockResolvedValue({ data: [{ ...request, status: "answered", answer_index: 1, application_status: "error" }] });
+    vi.mocked(apiFetch).mockResolvedValue(page([{ ...request, status: "answered", answer_index: 1, application_status: "error" }]));
     mount();
     expect(await screen.findByText("Answer recorded. Applying it failed; it will be retried.")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Not work" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("omits the dark runtime and replaces cached controls if a refresh becomes unavailable", async () => {
-    vi.mocked(apiFetch).mockResolvedValue({ data: [request] });
+    vi.mocked(apiFetch).mockResolvedValue(page([request]));
     const { container } = mount();
     await screen.findByRole("button", { name: "Not work" });
     vi.mocked(apiFetch).mockRejectedValue(new ApiError("UNKNOWN_ERROR", "confirm_runtime_unavailable", 503));
@@ -151,7 +194,7 @@ describe("dashboard confirmation requests", () => {
     mount();
     expect(await screen.findByText("Questions could not be loaded.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Not work" })).toBeNull();
-    vi.mocked(apiFetch).mockResolvedValue({ data: [request] });
+    vi.mocked(apiFetch).mockResolvedValue(page([request]));
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByRole("button", { name: "Not work" })).toBeTruthy();
   });

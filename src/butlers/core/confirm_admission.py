@@ -60,7 +60,7 @@ class ConfirmEvidence:
             "message",
             "telegram-confirm",
             owner=is_owner,
-            outside_content=not is_owner,
+            outside_content=not is_owner or prepared.marked,
             reply_delivery=row["goal_delivery_ref"] if is_owner else None,
             owner_entity=row["recipient_entity"] if is_owner else None,
             owner_channel="telegram" if is_owner else None,

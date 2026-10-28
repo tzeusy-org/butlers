@@ -619,6 +619,11 @@ def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
         "SELECT prosecdef::text||'/'||has_function_privilege('public',oid,'EXECUTE')::text "
         "FROM pg_proc WHERE oid='public.confirm_restore_row(jsonb)'::regprocedure",
     ) == ["false/false"]
+    assert _query(
+        restored_url,
+        "SELECT array_to_string(proconfig,',') FROM pg_proc "
+        "WHERE oid='public.confirm_restore_row(jsonb)'::regprocedure",
+    ) == ["search_path=pg_catalog,row_security=on"]
     confirm_engine = create_engine(restored_url, isolation_level="AUTOCOMMIT")
     try:
         with confirm_engine.connect() as conn:

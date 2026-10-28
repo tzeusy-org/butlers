@@ -15,13 +15,19 @@ export interface ConfirmRequest {
   created_at: string;
 }
 
+export interface ConfirmPage {
+  data: ConfirmRequest[];
+  meta: { next_cursor: string | null };
+}
+
 type ConfirmAnswerResult =
   | { status: "answered" | "expired"; application_status: ApplicationStatus }
   | { status: "already_handled"; state: ConfirmStatus; application_status: ApplicationStatus }
   | { status: "refused" };
 
-export function getConfirms(signal?: AbortSignal) {
-  return apiFetch<ApiResponse<ConfirmRequest[]>>("/confirms", { signal });
+export function getConfirms(before: string | null, signal?: AbortSignal) {
+  const query = before === null ? "" : `?${new URLSearchParams({ before })}`;
+  return apiFetch<ConfirmPage>(`/confirms${query}`, { signal });
 }
 
 export function answerConfirm(id: string, optionIndex: number) {

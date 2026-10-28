@@ -49,13 +49,18 @@ definer. Dashboard answers require ordinary owner authentication/CSRF and use th
 resolver. Acceptance records its server-verified channel provenance in that transaction;
 queue delays or later Telegram unlinking cannot rewrite who supplied the answer.
 
-`GET /api/confirms` returns owner cards and `POST /api/confirms/{id}/answer` records an
+`GET /api/confirms` returns owner cards with a stable `before` cursor and `meta.next_cursor`
+so older pending/retrying questions remain reachable and `POST /api/confirms/{id}/answer` records an
 option index. Without installed composition these routes return an explicit 503. The
 Notifications page polls pending application state and distinguishes accepted, applied,
 failed/retrying and expired receipts. Both surfaces use the persisted card; assistant
 claims are labelled and quoted input stays literal/inert.
 
 ## Recovery and admission
+
+Messenger rechecks shared owner quiet/sleep policy at delivery. An unavailable policy
+retains pending work; a producer callback cannot override it. Deferred rows rotate behind
+other work without changing their immutable identity.
 
 A committed `sending` boundary precedes any provider call. A lost or ambiguous initial
 Telegram send never causes another send. Only explicit evidence that no attempt occurred

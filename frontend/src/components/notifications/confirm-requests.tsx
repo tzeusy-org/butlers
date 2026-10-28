@@ -77,7 +77,7 @@ export function ConfirmRequests() {
     (questions.error.code === "confirm_runtime_unavailable" || questions.error.message === "confirm_runtime_unavailable")) {
     return null;
   }
-  if (questions.status === "success" && questions.data.data.length === 0) return null;
+  if (questions.status === "success" && questions.data.pages.every((page) => page.data.length === 0)) return null;
 
   return (
     <Section eyebrow="Questions for you" className="border-b border-border/60 pb-5">
@@ -91,7 +91,18 @@ export function ConfirmRequests() {
                 onClick={() => { void questions.refetch(); }}>Retry</Button>
             </div>
           }>
-          {({ data }) => <ul>{data.map((question) => <ConfirmQuestion key={question.id} question={question} now={now} />)}</ul>}
+          {({ pages }) => (
+            <>
+              <ul>{pages.flatMap((page) => page.data).map((question) => <ConfirmQuestion key={question.id} question={question} now={now} />)}</ul>
+              {questions.hasNextPage && (
+                <Button variant="outline" size="sm" className="mt-4"
+                  disabled={questions.isFetching}
+                  onClick={() => { void questions.fetchNextPage({ cancelRefetch: false }); }}>
+                  {questions.isFetchingNextPage ? "Loading more…" : "Load more"}
+                </Button>
+              )}
+            </>
+          )}
         </Query>
       </SectionContent>
     </Section>

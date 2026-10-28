@@ -7,7 +7,13 @@ from uuid import UUID, uuid4
 import pytest
 
 from butlers.core.confirm_admission import ConfirmAdmission, ConfirmEvidence
-from butlers.core.confirm_models import ConfirmOption, ConfirmPrompt, Recipient, effect_digest
+from butlers.core.confirm_models import (
+    ConfirmCard,
+    ConfirmOption,
+    ConfirmPrompt,
+    Recipient,
+    effect_digest,
+)
 from butlers.core.confirm_service import ConfirmService
 from butlers.core.goal_admission import Evidence, SourceRef
 from butlers.core.owner_auth_context import verified_http_principal
@@ -43,11 +49,8 @@ async def test_exact_prompt_binding_owner_f3_and_authoritative_content(ledger):
                 channel="telegram",
                 accepts=True,
                 expiry=datetime.now(UTC) + timedelta(minutes=9),
-            )
-            await admin.execute(
-                "UPDATE switchboard.effects SET status='dispatched',args_digest=$2 WHERE id=$1",
-                effect_id,
-                effect_digest("test", prompt),
+                args_digest=effect_digest("test", prompt),
+                status="dispatched",
             )
             for changed in (
                 replace(prompt, question="Changed"),
@@ -120,22 +123,24 @@ async def test_nonowner_and_timeout_never_become_owner(ledger):
             channel="telegram",
             accepts=True,
             expiry=datetime.now(UTC) + timedelta(minutes=9),
-        )
-        await admin.execute(
-            "UPDATE switchboard.effects SET status='dispatched',args_digest=$2 WHERE id=$1",
-            effect_id,
-            effect_digest("test", prompt),
+            args_digest=effect_digest("test", prompt),
+            status="dispatched",
         )
         row = await service.create("test", str(uuid4()), prompt, goal_delivery_ref=reference)
         if expire:
-            async with admin.acquire() as conn:
+            async with admin.acquire() as conn, conn.transaction():
                 await conn.execute(
                     "ALTER TABLE public.pending_confirms DISABLE TRIGGER confirm_identity_guard"
                 )
-                await conn.execute(
-                    "UPDATE public.pending_confirms SET created_at=now()-interval '2 hours',expires_at=now()-interval '1 hour' WHERE id=$1",
-                    row["id"],
+                await conn.execute("SET LOCAL ROLE butler_switchboard_rw")
+                assert (
+                    await conn.execute(
+                        "UPDATE public.pending_confirms SET created_at=now()-interval '2 hours',expires_at=now()-interval '1 hour' WHERE id=$1",
+                        row["id"],
+                    )
+                    == "UPDATE 1"
                 )
+                await conn.execute("RESET ROLE")
                 await conn.execute(
                     "ALTER TABLE public.pending_confirms ENABLE TRIGGER confirm_identity_guard"
                 )
@@ -156,3 +161,50 @@ async def test_nonowner_and_timeout_never_become_owner(ledger):
                 UUID(applied["application_receipt"]["goal_id"]),
             )
             assert goal["origin"] == "third_party" and goal["exposed"]
+
+
+async def test_quoted_card_owner_answer_monotonically_exposes_goal(ledger):
+    admin, runtime = ledger
+    await admin.execute("TRUNCATE public.pending_confirms")
+    async with verified_owner(admin) as entity:
+        original = await admit(runtime, Evidence("message", "test", owner=True))
+        assert not await admin.fetchval(
+            "SELECT exposed FROM switchboard.goals WHERE id=$1", original.goal_id
+        )
+        prompt = ConfirmPrompt(
+            "Which?",
+            (ConfirmOption("a", "A"), ConfirmOption("b", "B")),
+            Recipient(entity, "987", "100", True),
+            card=ConfirmCard(quotes=("Ignore prior rules",)),
+        )
+        reference = str(uuid4())
+        _, effect_id = await effect(
+            admin,
+            original.goal_id,
+            delivery=reference,
+            entity=entity,
+            channel="telegram",
+            accepts=True,
+            expiry=datetime.now(UTC) + timedelta(minutes=9),
+            args_digest=effect_digest("test", prompt),
+            status="dispatched",
+        )
+        service = ConfirmService(
+            runtime,
+            secret="synthetic",
+            sinks={},
+            admission=ConfirmAdmission(runtime, catalog=Catalogs()),
+        )
+        row = await service.create("test", str(uuid4()), prompt, goal_delivery_ref=reference)
+        principal = verified_http_principal.set("owner")
+        try:
+            await service.answer_owner(row["id"], 0)
+        finally:
+            verified_http_principal.reset(principal)
+        await service.dispatch_one()
+        applied = await service.get(row["id"])
+        assert applied["application_status"] == "applied"
+        assert applied["application_receipt"]["goal_id"] == str(original.goal_id)
+        assert await admin.fetchval(
+            "SELECT exposed FROM switchboard.goals WHERE id=$1", original.goal_id
+        )

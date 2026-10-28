@@ -32,6 +32,11 @@ class ConfirmDelivery:
             if row is None or row["delivery_status"] != "new" or row["status"] != "pending":
                 return False
             if not await self.allowed(dict(row)):
+                # Rotate deferred rows behind other work without changing identity.
+                await conn.execute(
+                    "UPDATE public.pending_confirms SET updated_at=clock_timestamp() WHERE id=$1",
+                    confirm_id,
+                )
                 return False
             if await conn.fetchval(
                 "SELECT $1::timestamptz <= clock_timestamp()", row["expires_at"]
@@ -111,8 +116,15 @@ class ConfirmDelivery:
                 limit,
             )
         for row in rows:
-            await self.deliver(row["id"])
-            await self.render(row["id"])
+            try:
+                await self.deliver(row["id"])
+                await self.render(row["id"])
+            except Exception:
+                # One source's unavailable policy/endpoint must not strand peers.
+                # The durable state remains available for another bounded tick.
+                import logging
+
+                logging.getLogger(__name__).warning("Confirm delivery reconciliation unavailable")
 
 
 def terminal_text(row):

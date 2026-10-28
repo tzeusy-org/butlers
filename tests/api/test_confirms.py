@@ -39,7 +39,7 @@ def app_with_confirms():
 
     service = SimpleNamespace(
         answer_callback=AsyncMock(side_effect=callback),
-        list_owner=AsyncMock(return_value=[]),
+        list_owner=AsyncMock(return_value={"rows": [], "next_cursor": None}),
         answer_owner=AsyncMock(return_value={"status": "answered"}),
     )
     app.state.confirm_service = service

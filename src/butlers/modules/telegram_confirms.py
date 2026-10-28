@@ -4,6 +4,7 @@ Constructed by trusted runtime composition with Messenger's Telegram module. Sou
 butlers never receive the module, provider client, token or raw send callables.
 """
 
+from butlers.core.attention_ledger import check_owner_notify_suppression
 from butlers.core.confirm_delivery import ConfirmDelivery
 from butlers.core.permissions import NOTIFY_PERMISSION, require_permission
 from butlers.telegram_text import text_units
@@ -56,4 +57,13 @@ def messenger_confirm_delivery(service, telegram, *, allowed):
         response.raise_for_status()
         return data.get("ok") is True
 
-    return ConfirmDelivery(service, send=send, edit=edit, allowed=allowed)
+    async def may_deliver(row):
+        # A producer's callback cannot bypass shared owner quiet/sleep policy.
+        # Returning False retains the durable new prompt for a later worker tick.
+        if row["recipient_owner"] and await check_owner_notify_suppression(
+            telegram._permission_pool(), log_context="confirm"
+        ):
+            return False
+        return await allowed(row)
+
+    return ConfirmDelivery(service, send=send, edit=edit, allowed=may_deliver)

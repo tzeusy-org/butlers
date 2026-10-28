@@ -209,7 +209,8 @@ restrictive SELECT-applying policy. Policy drift fails the backup loudly.
 Restore calls only `public.confirm_restore_row(jsonb)`. This fixed
 `SECURITY INVOKER` importer checks the exact current table-owner identity before
 inserting the full row, has a fixed `pg_catalog` search path, and accepts no
-relation selector. Execution grants are revoked from public and runtime roles;
+relation selector. It sets `row_security=on` for replay because the ordinary
+dump deliberately sets it off. Execution grants are revoked from public and runtime roles;
 the identity check still refuses them after a later broad bootstrap grant. No
 role receives `BYPASSRLS` or a runtime restore capability.
 

@@ -112,3 +112,19 @@ async def test_permission_failure_prevents_the_provider_edit(provider):
     with pytest.raises(ValueError, match="permission refused"):
         await delivery.edit({"recipient_chat": "42", "message_ref": "71"}, "Recorded.")
     client.post.assert_not_awaited()
+
+
+async def test_owner_policy_retains_prompt_even_if_source_allows(provider, monkeypatch):
+    delivery, telegram, client, _ = provider
+    policy = AsyncMock(return_value="quiet_hours")
+    monkeypatch.setattr(telegram_confirms, "check_owner_notify_suppression", policy)
+    row = {"recipient_owner": True}
+    assert not await delivery.allowed(row)
+    policy.assert_awaited_once_with("restricted-permission-pool", log_context="confirm")
+    client.post.assert_not_awaited()
+    policy.return_value = None
+    assert await delivery.allowed(row)
+    policy.side_effect = RuntimeError("unavailable policy")
+    with pytest.raises(RuntimeError, match="unavailable policy"):
+        await delivery.allowed(row)
+    client.post.assert_not_awaited()
