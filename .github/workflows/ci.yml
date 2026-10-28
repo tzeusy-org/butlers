@@ -37,6 +37,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Match the actual affected/measurement interpreter before observing
+      # planner resources; stdlib-only routing still installs no dependencies.
+      - name: Set up the source-pinned planner Python
+        if: github.event_name == 'pull_request'
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.UV_PYTHON }}
+
       - name: Filter changed paths
         id: filter
         if: github.event_name == 'pull_request'
@@ -301,6 +309,10 @@ jobs:
       # indistinguishable from its pass: "archived with no task warning" reads as
       # evidence the tasks were done. This fails on any unarchived change the gate
       # cannot see, so the difference is restored before the change reaches archive.
+      - name: Check current resource-reader completeness
+        if: ${{ !cancelled() }}
+        run: python3 scripts/build_test_resource_map.py --check
+
       - name: Check every change's tasks.md is countable by the archive gate
         id: countable_tasks
         if: ${{ !cancelled() }}
@@ -716,6 +728,7 @@ jobs:
         id: selected-execution
         env:
           TEST_PATHS_JSON: ${{ needs.route.outputs.test_paths }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/affected
           # Keep the same real integration/testcontainers runner and defaults.
           TESTCONTAINERS_RYUK_DISABLED: "true"

@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "dynamic": {
+    "conftest.py": {
+      "witnesses": {
+        "conftest.py": "14bed9841dc14a3e65be3d2f51e30830ffe3e949814535e768b573642a16a531"
+      },
+      "patterns": [],
+      "reason": "Exact root conftest read-method candidate is solely os.open of the private testcontainer-start lock. Its fd is used only by flock/unlock/close, never read or yielded. This classifier false positive contributes no public-resource reader; imported helper readers remain independently discovered. Static evidence only, no native execution."
+    }
+  },
+  "no_readers": {},
+  "literal_data": {
+    "src/butlers/testing/resource_readers.py": {
+      "witness": {
+        "sha256": "378ab305c4dc44833cb21b948b14073afdf464f897a32abfe06d4ce5022b2e99"
+      },
+      "patterns": [
+        "*.md",
+        ".claude/skills/*",
+        ".md",
+        "about/*",
+        "deploy/*",
+        "docs/*",
+        "frontend/*",
+        "openspec/*"
+      ],
+      "reason": "Exact producer source: FAMILIES and markdown spellings are classifier vocabulary, not resource IO. No direct family read exists. Unresolved IO remains conservative FULL and no reader or NONE authority is discarded."
+    }
+  }
+}

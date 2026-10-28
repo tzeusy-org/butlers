@@ -69,11 +69,19 @@ past its headroom condenses tests in the same PR or raises the budget with a
 stated net test delta and reason. Tests are production code with a run-time
 cost on every merge; more of them is not free.
 
-A pull request whose diff clears the docs filter uses the stdlib-only `route` job.
-It reuses the established affected-test planner with more conservative omission admission:
-only proven unchanged collection inputs may use a fresh scoped subset.
-All test, conftest, dependency/config, CI and unknown changes widen to full collection and
-execution. Merge-group always runs all five unit and six integration groups, followed by
+A pull request uses the stdlib-only `route` job and one versioned source-owned planner
+result. Resource readers are classified before a documentation skip. Only a complete audited
+no-reader classification can omit backend tests; stale or unclassified readers stay FULL.
+Candidate paths alone cannot authorize narrowing. An eligible scope also needs independently
+admitted compatible empirical whole-job cost below min(300seconds, current heavy-shard p90),
+including complete setup, collection and finalization overhead without worker division.
+The checked profile starts UNKNOWN, so no measured timing benefit is claimed.
+Shared conftest, dependency/config, CI, helper/discovery and unknown changes still widen to full
+collection and execution. Direct added/deleted/moved test scopes have only a qualified exception:
+fresh complete configured-root references before and after execution must agree and their
+selected-file projection must equal independently collected selected items. This is collection
+evidence, never full execution credit or permission to weaken source-admission review.
+Merge-group always runs all five unit and six integration groups, followed by
 fresh lane collection for totals and budgets. Push to main skips backend groups and preflight
 after the merge queue has validated the tree. Docs-only skips remain explicit. The required `check`
 verifies exact event/mode pairings from prerequisite verdicts only, with no checkout, installation or report work.
@@ -82,12 +90,14 @@ Test support modules and package markers with unproved import ownership escalate
 configured pytest root, including both `tests/` and `roster/`; adjacent test files cannot prove
 that a helper has no consumers elsewhere. CI validates the selected scope independently of the
 changed-file list. Empty, unsupported, outside-root or root-wide selections, and any selected
-ancestor or descendant of `tests/e2e/`, fall back to the complete matrix. Known small API scopes,
-direct test edits and pytest-governed nested conftest scopes remain eligible.
+ancestor or descendant of `tests/e2e/`, fall back to the complete matrix. Known small API scopes and direct test edits retain candidate ownership, subject to complete
+reader/reference/cost admission. Root conftest and unproved helper boundaries remain FULL.
 
 The conditional affected job accepts canonical selected Python files only, excluding E2E.
-It freshly collects the actual default-selected item identities, runs the unchanged affected
-pytest flags and independently recollects after execution. Its source/run/attempt/config/nonce
+It freshly collects the complete configured-root population and actual default-selected item
+identities, runs the unchanged affected pytest flags and independently recollects both populations
+after execution. Complete references must agree and their selected-file projection must equal
+the selected reference before the original execution verifier can authorize a PASS. Its source/run/attempt/config/nonce
 bound receipt must prove exact item multiplicity, logical starts and all actual setup/call/teardown
 phases, including named skips. Count-only JUnit cannot authorize it. The job uploads minimized
 reference, execution and independently verified proof carriers; required check also demands

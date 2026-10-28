@@ -1,4 +1,4 @@
-.PHONY: check-lock check-format lint install-lint-tools secrets-scan lint-workflows lint-tools-self-test format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-test-budget check-em-dashes check-spec-overwrites check-requirement-trace check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
+.PHONY: check-resource-readers check-lock check-format lint install-lint-tools secrets-scan lint-workflows lint-tools-self-test format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-test-budget check-em-dashes check-spec-overwrites check-requirement-trace check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -239,13 +239,17 @@ check-countable-tasks:
 check-duplicate-names:
 	python3 scripts/check_duplicate_toplevel_names.py
 
+# Source-bound resource-reader completeness, before any backend skip.
+check-resource-readers:
+	python3 scripts/build_test_resource_map.py --check
+
 # Every guard the CI `guards` job runs, locally, before you push (bu-r5mnn).
 # check-openspec-strict is skipped with a message when `openspec` is not on
 # PATH; everything else is a plain python3 script or an existing frontend lint step.
 # GUARDS_BASE is the fork point the frontend guard diffs against.
 GUARDS_BASE ?= origin/main
 export GUARDS_BASE
-check-guards: check-lock lint check-format check-for-update-joins check-em-dashes check-spec-overwrites check-requirement-trace check-countable-tasks check-duplicate-names check-session-links
+check-guards: check-resource-readers check-lock lint check-format check-for-update-joins check-em-dashes check-spec-overwrites check-requirement-trace check-countable-tasks check-duplicate-names check-session-links
 	python3 scripts/check_archived_requirements_landed.py
 	python3 scripts/check_owner_emails.py
 	python3 scripts/check_cited_requirements_resolve.py

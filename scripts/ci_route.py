@@ -48,32 +48,13 @@ def route(
             "mode": "full",
             "test_paths": [],
         }
-    backend = bool(set(files) - set(docs))
+    # Docs paths are classification input, never authority to skip their readers.
     frontend = any(
         name.startswith(("frontend/", ".github/workflows/", "scripts/ci_", "scripts/check_ci_"))
         for name in files
     )
-    result = {
-        "backend": str(backend).lower(),
-        "frontend": str(frontend).lower(),
-        "mode": "docs",
-        "test_paths": [],
-    }
-    if not backend:
-        return result
-    result.update(mode="full")
-    # Admission to the scoped lane is deliberately narrower than the existing
-    # affected-path planner. Any uncertainty requires full execution.
-    unchanged = all(
-        name.startswith("src/")
-        and name.endswith(".py")
-        and not name.startswith(
-            ("src/butlers/testing/", "src/butlers/core/", "src/butlers/modules/registry")
-        )
-        for name in files
-        if name not in docs
-    )
-    if not unchanged or not base:
+    result = dict(backend="true", frontend=str(frontend).lower(), mode="full", test_paths=[])
+    if not base:
         return result
     try:
         plan = plan_scoped_tests(
@@ -82,13 +63,23 @@ def route(
             repo_dir=root,
             fallback_allowlist=FULL_SUITE_FALLBACK_ALLOWLIST + ("tests/e2e/",),
         )
+        decision = plan.as_dict()
+        if sorted(set(plan.changed_files)) != sorted(set(files)):
+            return result
+        if decision["schema"] != "pr-test-plan.v1":
+            return result
+        if decision["mode"] == "docs" and decision["backend_applicable"] is False:
+            return {**result, "backend": "false", "mode": "docs"}
+        paths = decision["test_paths"]
         if (
             decide_mode(plan, repo_root=root) == "scoped"
-            and admitted_paths(plan.test_paths)
-            and all((root / path).is_file() for path in plan.test_paths)
+            and decision["mode"] == "scoped"
+            and decision["backend_applicable"] is True
+            and admitted_paths(paths)
+            and all((root / path).is_file() for path in paths)
         ):
-            result.update(mode="scoped", test_paths=plan.test_paths)
-    except (OSError, ValueError, RuntimeError):
+            result.update(mode="scoped", test_paths=paths)
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError):
         pass
     return result
 

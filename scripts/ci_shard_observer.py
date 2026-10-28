@@ -35,7 +35,7 @@ def node_digest(node_id: str, nonce: str | None = None) -> str:
 
 
 @pytest.hookimpl(wrapper=True, tryfirst=True)
-def pytest_collection_modifyitems(items: list[pytest.Item]):
+def pytest_collection_modifyitems(items: list[pytest.Item], config: pytest.Config):
     """Apply file priority last, in each worker, without changing its selection.
 
     The outer wrapper resumes after fixture reordering and marker deselection.
@@ -44,6 +44,10 @@ def pytest_collection_modifyitems(items: list[pytest.Item]):
     collection argv remains lexical to preserve conftest collector identity.
     """
     result = yield
+    if os.environ.get("CI_SHARD_RECEIPT") and hasattr(config, "workerinput"):
+        # Every ready worker collects, including a worker assigned no file.
+        # Observe its actual initialized tracer without inventing a test phase.
+        config.workeroutput["ci_runtime"] = runtime_resources(config)
     if os.environ.get("CI_SHARD_CONTEXT"):
         files = json.loads(os.environ["CI_SHARD_CONTEXT"])["files"]
         if (
@@ -88,6 +92,15 @@ class Observer:
     @pytest.hookimpl(optionalhook=True)
     def pytest_testnodeready(self, node) -> None:
         self.workers.add(node.workerinput["workerid"])
+
+    @pytest.hookimpl(optionalhook=True)
+    def pytest_testnodedown(self, node, error) -> None:
+        runtime = node.workeroutput.get("ci_runtime")
+        if isinstance(runtime, dict):
+            worker = node.workerinput["workerid"]
+            self.resources.setdefault(worker, runtime)
+            if runtime.get("tracer") is not None:
+                self.tracers.add(runtime["tracer"])
 
     @pytest.hookimpl(optionalhook=True)
     def pytest_xdist_node_collection_finished(self, node, ids: list[str]) -> None:
@@ -193,21 +206,19 @@ def pytest_configure(config: pytest.Config) -> None:
 def pytest_runtest_makereport(item: pytest.Item, call):
     result = yield
     report = result.get_result()
+    report.user_properties.append(
+        ("ci_runtime", json.dumps(runtime_resources(item.config), sort_keys=True))
+    )
+
+
+def runtime_resources(config: pytest.Config) -> dict:
     usage = resource.getrusage(resource.RUSAGE_SELF)
-    plugin = item.config.pluginmanager.getplugin("_cov")
+    plugin = config.pluginmanager.getplugin("_cov")
     cov = getattr(getattr(plugin, "cov_controller", None), "cov", None)
     collector = getattr(cov, "_collector", None)
-    report.user_properties.append(
-        (
-            "ci_runtime",
-            json.dumps(
-                {
-                    "cpu_s": usage.ru_utime + usage.ru_stime,
-                    "max_rss": usage.ru_maxrss,
-                    "rss_units": "KiB on Linux; bytes on macOS",
-                    "tracer": collector.tracer_name() if collector is not None else None,
-                },
-                sort_keys=True,
-            ),
-        )
-    )
+    return {
+        "cpu_s": usage.ru_utime + usage.ru_stime,
+        "max_rss": usage.ru_maxrss,
+        "rss_units": "KiB on Linux; bytes on macOS",
+        "tracer": collector.tracer_name() if collector is not None else None,
+    }
