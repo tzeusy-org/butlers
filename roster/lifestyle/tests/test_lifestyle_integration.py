@@ -23,6 +23,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
+
 # ---------------------------------------------------------------------------
 # Module-level marks
 # The roster conftest auto-applies integration + docker-skip to all tests

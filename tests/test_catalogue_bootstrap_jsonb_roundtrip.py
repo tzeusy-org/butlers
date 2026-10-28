@@ -25,6 +25,7 @@ import shutil
 import pytest
 
 from butlers.catalogue_bootstrap import _CATALOGUE_SEED, upsert_provider_feature_catalogue
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 docker_available = shutil.which("docker") is not None
 # NOTE: pytest.mark.asyncio is applied per-test (not in this module-level

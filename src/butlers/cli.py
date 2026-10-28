@@ -716,7 +716,10 @@ async def _record_deployment_boot(daemons: list, *, configured_count: int) -> No
 
 async def _start_all(configs: dict[str, Path]) -> None:
     """Start all butler daemons in a single event loop."""
+    from butlers.credential_store import credential_purpose_config_from_env
     from butlers.daemon import ButlerDaemon
+
+    credential_purpose = credential_purpose_config_from_env()
 
     daemons: list[ButlerDaemon] = []
     loop = asyncio.get_event_loop()
@@ -740,7 +743,7 @@ async def _start_all(configs: dict[str, Path]) -> None:
         port_attempt = 0
         db_attempt = 0
         while not started:
-            daemon = ButlerDaemon(config_dir)
+            daemon = ButlerDaemon(config_dir, credential_purpose=credential_purpose)
             try:
                 await daemon.start()
                 daemons.append(daemon)
@@ -812,7 +815,10 @@ async def _start_all(configs: dict[str, Path]) -> None:
 
 async def _start_single(config_path: Path) -> None:
     """Start a single butler daemon."""
+    from butlers.credential_store import credential_purpose_config_from_env
     from butlers.daemon import ButlerDaemon
+
+    credential_purpose = credential_purpose_config_from_env()
 
     loop = asyncio.get_event_loop()
     shutdown_event = asyncio.Event()
@@ -824,7 +830,7 @@ async def _start_single(config_path: Path) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _signal_handler)
 
-    daemon = ButlerDaemon(config_path)
+    daemon = ButlerDaemon(config_path, credential_purpose=credential_purpose)
     await daemon.start()
     click.echo(f"Butler {daemon.config.name} running on port {daemon.config.port}")
 

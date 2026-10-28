@@ -50,6 +50,7 @@ from roster.relationship.tests.evidence_schema import (
     apply_evidence_schema,
     simulate_temporal_cutover,
 )
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = [
     pytest.mark.integration,

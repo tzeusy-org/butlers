@@ -10,6 +10,8 @@ from unittest.mock import MagicMock, patch
 import asyncpg
 import pytest
 
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
+
 pytestmark = [pytest.mark.integration, pytest.mark.db]
 
 _PATH = Path(__file__).resolve().parents[2] / "alembic/versions/core/core_243_entity_rebind_log.py"

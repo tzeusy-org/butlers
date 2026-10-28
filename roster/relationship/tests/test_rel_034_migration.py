@@ -24,6 +24,8 @@ from pathlib import Path
 import asyncpg
 import pytest
 
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
+
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[1] / "migrations" / "034_fact_evidence_and_coverage.py"
 )

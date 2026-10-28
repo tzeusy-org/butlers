@@ -8,6 +8,8 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
+
 _docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,

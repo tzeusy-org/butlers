@@ -28,6 +28,7 @@ import shutil
 import pytest
 
 from butlers.identity import resolve_contact_by_channel, resolve_contacts_by_channel_bulk
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 # Minimal schema the resolver touches: public.entities (join target) and
 # relationship.entity_facts (the triple store).  Mirrors the real migration DDL

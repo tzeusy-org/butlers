@@ -63,6 +63,7 @@ from butlers.testing.schema_standins import (
     TableStandin,
     TriggerExclusion,
 )
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PARITY_SCHEMA = "standin_parity"

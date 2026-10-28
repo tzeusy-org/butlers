@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
+
 _THIS_FILE = Path(__file__).resolve()
 
 docker_available = shutil.which("docker") is not None

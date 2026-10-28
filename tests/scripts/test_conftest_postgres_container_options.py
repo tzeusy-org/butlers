@@ -24,6 +24,8 @@ from typing import Any
 
 import pytest
 
+from tests import postgres_fixtures
+
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -139,7 +141,7 @@ async def test_provisioned_pool_is_administrative(monkeypatch, schema):
     monkeypatch.setattr(asyncpg, "create_pool", create_pool)
     admin, admin_connect = _administrative_driver(monkeypatch)
     container = _AdminContainer()
-    factory = root_conftest.provisioned_postgres_pool.__wrapped__(container)
+    factory = postgres_fixtures.provisioned_postgres_pool.__wrapped__(container)
     async with factory(schema=schema, min_pool_size=2, max_pool_size=4) as actual:
         assert actual is pool
         pool.close.assert_not_awaited()
@@ -251,7 +253,7 @@ async def test_provisioned_pool_validates_schema_before_effects(monkeypatch):
     driver = AsyncMock(side_effect=AssertionError("network forbidden"))
     monkeypatch.setattr(Database, "provision", provision)
     monkeypatch.setattr(asyncpg, "create_pool", driver)
-    factory = root_conftest.provisioned_postgres_pool.__wrapped__(_AdminContainer())
+    factory = postgres_fixtures.provisioned_postgres_pool.__wrapped__(_AdminContainer())
     with pytest.raises(ValueError, match="Invalid schema"):
         async with factory(schema="invalid;schema"):
             pytest.fail("invalid schema was accepted")
@@ -305,7 +307,7 @@ async def test_provisioned_pool_owns_failure_cleanup(monkeypatch, failure):
     pool = Pool()
     monkeypatch.setattr(asyncpg, "create_pool", lambda **kwargs: pool)
     admin, admin_connect = _administrative_driver(monkeypatch)
-    factory = root_conftest.provisioned_postgres_pool.__wrapped__(_AdminContainer())
+    factory = postgres_fixtures.provisioned_postgres_pool.__wrapped__(_AdminContainer())
 
     async def consume():
         async with factory(schema="health"):
@@ -377,7 +379,7 @@ async def test_provisioned_pool_ssl_retry_is_bounded(monkeypatch, retryable):
         return first if len(calls) == 1 else second
 
     monkeypatch.setattr(asyncpg, "create_pool", create_pool)
-    factory = root_conftest.provisioned_postgres_pool.__wrapped__(_AdminContainer())
+    factory = postgres_fixtures.provisioned_postgres_pool.__wrapped__(_AdminContainer())
     if retryable == "exhausted":
         with pytest.raises(ConnectionError):
             async with factory(schema="public"):
@@ -427,7 +429,7 @@ async def test_provisioned_pool_terminates_native_initialization(monkeypatch, ca
         return pool
 
     monkeypatch.setattr(asyncpg, "create_pool", native_pool)
-    factory = root_conftest.provisioned_postgres_pool.__wrapped__(_AdminContainer())
+    factory = postgres_fixtures.provisioned_postgres_pool.__wrapped__(_AdminContainer())
 
     async def consume():
         async with factory(schema="health", min_pool_size=1, max_pool_size=1):

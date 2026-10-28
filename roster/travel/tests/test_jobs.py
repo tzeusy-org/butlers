@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from butlers.testing.clock import FakeClock
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [

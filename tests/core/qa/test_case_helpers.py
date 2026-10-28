@@ -18,6 +18,7 @@ from butlers.api.routers.qa import (
 )
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.severity import headline_for_case, short_id_from_uuid, state_of_case
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = pytest.mark.unit
 

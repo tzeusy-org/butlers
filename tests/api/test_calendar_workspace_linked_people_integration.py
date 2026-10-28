@@ -28,6 +28,7 @@ import uuid
 import pytest
 
 from butlers.api.read_models.calendar_workspace import _ENTRY_PEOPLE_SQL
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [

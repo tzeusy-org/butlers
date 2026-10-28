@@ -39,6 +39,7 @@ from butlers.tools.relationship.entity_merge import (
     merge_entity_pair,
 )
 from roster.relationship.tests.evidence_schema import apply_evidence_schema
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 
 def _locked_row(entity_id: UUID, *, tombstoned: bool = False) -> dict:

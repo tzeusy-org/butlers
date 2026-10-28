@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 import asyncpg
 import pytest
 
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
+
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATIONS = ROOT / "roster/messenger/migrations"
 _RETIRED_TABLES = (

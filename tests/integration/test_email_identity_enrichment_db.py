@@ -42,6 +42,7 @@ from butlers.testing.schema_standins import (
     ENTITY_PREDICATE_REGISTRY,
     PENDING_ACTIONS,
 )
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 _THIS_FILE = Path(__file__).resolve()
 

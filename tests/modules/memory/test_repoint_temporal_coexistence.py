@@ -26,6 +26,7 @@ import asyncpg
 import pytest
 
 from butlers.modules.memory.tools.entities import _repoint_facts_on_pool
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = [
     pytest.mark.integration,

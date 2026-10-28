@@ -26,6 +26,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
+
 pytestmark_integration = [
     pytest.mark.integration,
     pytest.mark.asyncio(loop_scope="session"),

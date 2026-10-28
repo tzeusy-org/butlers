@@ -16,6 +16,7 @@ import pytest
 import butlers.jobs._roster.finance_jobs  # noqa: F401
 from butlers.core.owner_conditions import create_owner_conditions_table, get_active_condition
 from butlers.tools.switchboard.insight.broker import create_insight_tables
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [

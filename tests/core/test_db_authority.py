@@ -433,12 +433,48 @@ def test_actual_convergence_relation_notes_preserve_validator_and_error(monkeypa
 
     class Connection:
         info = {}
+        # Explicit ledger fixture state; this is not native PostgreSQL evidence.
+        ledgers = {row["oid"]: row for row in observed if row["name"] == "alembic_version"}
+        source_ledgers = {
+            (row.schema, row.name): row
+            for row in manifest.relations
+            if row.name == "alembic_version"
+        }
+        ledger_columns = (("version_num", "character varying(32)", True, "", ""),)
+        ledger_defaults = ()
+        ledger_constraints = (("p", False, False, True),)
+        ledger_indexes = ((True, True, True, True, 1, 1, None, None, ("version_num",)),)
+        revision_abi_query = """
+            /* owner-lookup-replay:revision-abi */
+            SELECT
+              (SELECT count(*)=1 AND bool_and(a.attname='version_num'
+                AND pg_catalog.format_type(a.atttypid,a.atttypmod)='character varying(32)'
+                AND a.attnotnull AND a.attidentity='' AND a.attgenerated='')
+               FROM pg_catalog.pg_attribute a
+               WHERE a.attrelid=:oid AND a.attnum>0 AND NOT a.attisdropped)
+              AND NOT EXISTS(SELECT FROM pg_catalog.pg_attrdef d WHERE d.adrelid=:oid)
+              AND (SELECT count(*)=1 AND bool_and(c.contype='p' AND NOT c.condeferrable
+                    AND NOT c.condeferred AND c.convalidated)
+                   FROM pg_catalog.pg_constraint c WHERE c.conrelid=:oid)
+              AND (SELECT count(*)=1 AND bool_and(i.indisprimary AND i.indisunique
+                    AND i.indisvalid AND i.indisready AND i.indnkeyatts=1
+                    AND i.indnatts=1 AND i.indexprs IS NULL AND i.indpred IS NULL
+                    AND ARRAY(SELECT a.attname::text
+                        FROM unnest(i.indkey::smallint[]) WITH ORDINALITY k(id,n)
+                        JOIN pg_catalog.pg_attribute a
+                          ON a.attrelid=i.indrelid AND a.attnum=k.id ORDER BY k.n)
+                        =ARRAY['version_num']::text[])
+                   FROM pg_catalog.pg_index i WHERE i.indrelid=:oid)
+        """
 
         def exec_driver_sql(self, sql):
             if "FROM pg_catalog.pg_database d" in sql:
                 return Result([("butlers", "normal_owner", True)])
             if sql == "SELECT current_database(), session_user":
                 return Result([("butlers", "maintenance")])
+            if sql == 'SELECT version_num FROM "chronicler"."alembic_version"':
+                assert {row["schema"] for row in self.ledgers.values()} == {"chronicler"}
+                return Result([(get_chain_head("chronicler"),)])
             assert sql == 'SELECT version_num FROM "chronicler".alembic_version'
             return Result([(get_chain_head("chronicler"),)])
 
@@ -450,6 +486,36 @@ def test_actual_convergence_relation_notes_preserve_validator_and_error(monkeypa
             if sql == retired_audit_query:
                 assert params is None
                 return Result([])
+            if sql == self.revision_abi_query:
+                assert type(params) is dict and set(params) == {"oid"}
+                assert params["oid"] in self.ledgers
+                valid = (
+                    self.ledger_columns == (("version_num", "character varying(32)", True, "", ""),)
+                    and not self.ledger_defaults
+                    and self.ledger_constraints == (("p", False, False, True),)
+                    and self.ledger_indexes
+                    == ((True, True, True, True, 1, 1, None, None, ("version_num",)),)
+                )
+                return Result([(valid,)])
+            if sql in (apply._RELATION_ACL, apply._COLUMN_ACL):
+                assert type(params) is dict and set(params) == {"oid"}
+                assert params["oid"] in self.ledgers
+                ledger = self.ledgers[params["oid"]]
+                declared = self.source_ledgers[(ledger["schema"], ledger["name"])]
+                rows = []
+                columns = sql == apply._COLUMN_ACL
+                for permission in declared.permissions:
+                    if permission.role == declared.owner or bool(permission.columns) != columns:
+                        continue
+                    for verb in permission.verbs:
+                        if columns:
+                            rows.extend(
+                                dict(name=name, role=permission.role, verb=verb, grantable=False)
+                                for name in permission.columns
+                            )
+                        else:
+                            rows.append(dict(role=permission.role, verb=verb, grantable=False))
+                return Result(rows)
             if sql == apply._FUNCTIONS:
                 return Result([])
             if sql == apply._RELATIONS:
@@ -12813,3 +12879,149 @@ def test_historical_priority_audit_held_transition_preserves_owner_and_audit_bou
             for _, _, decoded in calls[before_drift:]
         )
         assert ledger == {"public": "core_133", private: "mem_006"}
+
+
+# Explicit credential composition: driver controls below are software evidence,
+# never a claim that native role/catalog authority was executed.
+def test_credential_purpose_input_is_private_and_has_no_runtime_fallback():
+    from butlers.credential_store import (
+        CredentialPurposeConfig,
+        credential_purpose_config_from_env,
+    )
+
+    runtime = {"DATABASE_URL": "postgresql://runtime:synthetic@localhost/butlers"}
+    assert credential_purpose_config_from_env(runtime) is None
+    selected = credential_purpose_config_from_env(
+        runtime
+        | {
+            "BUTLERS_CREDENTIAL_DATABASE_URL": (
+                "postgresql://credential:unprinted-marker@localhost/butlers"
+            ),
+            "BUTLER_SHARED_DB_SCHEMA": "public",
+        }
+    )
+    assert isinstance(selected, CredentialPurposeConfig)
+    assert selected.schema == "public"
+    assert "unprinted-marker" not in repr(selected)
+    assert "postgresql" not in repr(selected)
+    with pytest.raises(FrozenInstanceError):
+        selected.schema = "general"
+    for invalid in ("", " ", None):
+        with pytest.raises(AuthorityError):
+            credential_purpose_config_from_env({"BUTLERS_CREDENTIAL_DATABASE_URL": invalid})
+
+
+async def test_daemon_credential_omission_never_consumes_ambient_writer(driver, monkeypatch):
+    from butlers.daemon import ButlerDaemon
+
+    _, pools, connect = driver
+    monkeypatch.setenv(
+        "BUTLERS_CREDENTIAL_DATABASE_URL",
+        "postgresql://credential:synthetic@localhost/butlers",
+    )
+    monkeypatch.setenv("BUTLER_SHARED_DB_SCHEMA", "public")
+    daemon = ButlerDaemon(butler_name="general")
+    local_pool = Mock()
+    store = await daemon._build_credential_store(local_pool)
+    assert store.pool is local_pool
+    assert store.has_system_global_authority is False
+    with pytest.raises(RuntimeError):
+        store.require_system_global_pool()
+    assert daemon._credential_purpose_pool is None
+    assert pools == []
+    connect.assert_not_called()
+
+
+async def test_explicit_daemon_credential_input_reuses_real_admission_and_acquire_fence(driver):
+    from butlers.credential_store import CredentialPurposeConfig
+    from butlers.daemon import ButlerDaemon
+
+    connection, pools, _ = driver
+    config = CredentialPurposeConfig("postgresql://credential:synthetic@localhost/butlers")
+    refused = ButlerDaemon(butler_name="general", credential_purpose=config)
+    connection.facts["ownership_ok"] = False
+    with pytest.raises(AuthorityError):
+        await refused._build_credential_store(Mock())
+    assert refused._credential_purpose_pool is None
+    pools[-1].close.assert_awaited_once()
+
+    connection.facts["ownership_ok"] = True
+    daemon = ButlerDaemon(butler_name="general", credential_purpose=config)
+    local_pool = Mock()
+    store = await daemon._build_credential_store(local_pool)
+    pool = store.require_system_global_pool()
+    assert pool is daemon._credential_purpose_pool
+    assert store.pool is local_pool
+    async with pool.acquire() as acquired:
+        assert acquired is connection
+    connection.facts["role_set_ok"] = False
+    with pytest.raises(AuthorityError):
+        async with pool.acquire():
+            pytest.fail("Drifted explicit purpose escaped to a credential consumer")
+    connection.facts["role_set_ok"] = True
+    await pool.close()
+    pools[-1].close.assert_awaited_once()
+
+    invalid = ButlerDaemon(
+        butler_name="general",
+        credential_purpose=CredentialPurposeConfig(
+            "postgresql://credential:synthetic@localhost/unlisted"
+        ),
+    )
+    before = len(pools)
+    with pytest.raises(AuthorityError):
+        await invalid._build_credential_store(local_pool)
+    assert len(pools) == before
+    assert invalid._credential_purpose_pool is None
+
+
+@pytest.mark.parametrize("entry", ["all", "single", "control"])
+async def test_real_process_composition_transports_explicit_credential_input(entry, monkeypatch):
+    """Execute the process composition, doubling daemon I/O rather than authority."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from butlers import cli, control
+    from butlers.credential_store import CredentialPurposeConfig
+
+    selected = CredentialPurposeConfig("postgresql://credential:synthetic@localhost/butlers")
+    monkeypatch.setattr(
+        "butlers.credential_store.credential_purpose_config_from_env", lambda: selected
+    )
+    signal_handlers = []
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "add_signal_handler", lambda signal, fn: signal_handlers.append(fn))
+    monkeypatch.setattr(loop, "remove_signal_handler", lambda signal: None)
+    instances = []
+
+    class StartedDaemon:
+        def __init__(self, path, **kwargs):
+            assert kwargs.get("credential_purpose") is selected
+            self.config = SimpleNamespace(name="general", port=41100)
+            self.shutdown = AsyncMock()
+            instances.append(self)
+
+        async def start(self):
+            if entry == "control":
+                raise RuntimeError("composition-stop")
+            signal_handlers[0]()
+
+    monkeypatch.setattr("butlers.daemon.ButlerDaemon", StartedDaemon)
+    if entry == "all":
+        monkeypatch.setattr(cli, "_record_deployment_boot", AsyncMock())
+        await cli._start_all({"general": Path("roster/general")})
+    elif entry == "single":
+        await cli._start_single(Path("roster/general"))
+    else:
+        checked = []
+        monkeypatch.setattr(control, "check_private_key_absent", checked.append)
+        listener = SimpleNamespace(close=AsyncMock())
+        monkeypatch.setattr(control, "SessionRefusalListener", lambda **kwargs: listener)
+        with pytest.raises(RuntimeError, match="composition-stop"):
+            await control.run_control(
+                Path("roster/general"), profile=control.KEY_ABSENT_STAGE, session_host="127.0.0.1"
+            )
+        assert checked == [control.KEY_ABSENT_STAGE]
+        listener.close.assert_awaited_once()
+    assert len(instances) == 1
+    instances[0].shutdown.assert_awaited_once()

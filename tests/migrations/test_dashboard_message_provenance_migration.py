@@ -19,6 +19,7 @@ from butlers.testing.migration import (
     run_test_alembic_command,
     stage_test_migration_history,
 )
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = pytest.mark.integration
 

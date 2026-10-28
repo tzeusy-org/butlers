@@ -19,6 +19,7 @@ from butlers.tools.switchboard.ingestion.ingest import (
     IngestAcceptedResponse,
     ingest_v1,
 )
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 # Skip all tests if Docker not available
 docker_available = shutil.which("docker") is not None

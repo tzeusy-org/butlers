@@ -30,6 +30,7 @@ from butlers.core.general_settings import save_general_settings
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.switchboard.insight.broker import create_insight_tables
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [

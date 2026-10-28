@@ -10,6 +10,7 @@ import pytest
 
 from butlers.tools.health import measurements as meas
 from butlers.tools.health import owner_dominance as od
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 SGT = "Asia/Singapore"  # UTC+8: UTC and owner-local dates differ for a third of every day
 

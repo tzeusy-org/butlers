@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.credential_store import (
+    CredentialPurposeConfig,
     CredentialStore,
     EntityInfoRow,
     SecretMetadata,
@@ -264,6 +265,8 @@ async def test_daemon_flat_topology_marks_its_pool_as_explicit_codex_authority()
     daemon.config = SimpleNamespace(db_schema=None, db_name="butlers")
     daemon.db = SimpleNamespace(db_name="butlers")
     daemon._credential_purpose_pool = None
+    selected = CredentialPurposeConfig("postgresql://credential_login:synthetic@localhost/butlers")
+    daemon._credential_purpose_config = selected
 
     async def native_pool(**options):
         @asynccontextmanager
@@ -305,21 +308,29 @@ async def test_daemon_flat_topology_marks_its_pool_as_explicit_codex_authority()
             },
         ):
             with pytest.raises(AuthorityError):
-                await ButlerDaemon.__new__(ButlerDaemon)._build_credential_store(local_pool)
+                wrong = ButlerDaemon.__new__(ButlerDaemon)
+                wrong._credential_purpose_config = CredentialPurposeConfig(
+                    "postgresql://dashboard_api:synthetic@localhost/butlers"
+                )
+                await wrong._build_credential_store(local_pool)
         driver.fetchrow.return_value["identity_ok"] = True
         # Missing configuration keeps ordinary local resolution, never Codex authority.
         with patch.dict(os.environ, {}, clear=True):
-            absent = await ButlerDaemon.__new__(ButlerDaemon)._build_credential_store(local_pool)
+            unconfigured = ButlerDaemon.__new__(ButlerDaemon)
+            unconfigured._credential_purpose_config = None
+            absent = await unconfigured._build_credential_store(local_pool)
             assert absent.pool is local_pool
             with pytest.raises(RuntimeError, match="system-global.*authority"):
                 await absent.load_codex_cli_auth()
             local_pool.acquire.assert_not_called()
         with patch(
-            "butlers.daemon.create_system_global_credential_store_from_env",
+            "butlers.daemon.create_system_global_credential_store",
             new=AsyncMock(side_effect=AuthorityError("Configured authority refused")),
         ):
             with pytest.raises(AuthorityError, match="Configured authority refused"):
-                await ButlerDaemon.__new__(ButlerDaemon)._build_credential_store(local_pool)
+                refused = ButlerDaemon.__new__(ButlerDaemon)
+                refused._credential_purpose_config = selected
+                await refused._build_credential_store(local_pool)
 
 
 @pytest.mark.parametrize("diagnostic_target", ["credential", "shared_reader"])
@@ -454,11 +465,9 @@ def test_owner_delegates_public_but_not_sibling_schema() -> None:
         owner.for_owned_schema("switchboard")
 
 
-@pytest.mark.parametrize("configured_writer", [False, True])
-async def test_daemon_schema_topology_reads_shared_credentials_under_its_role(
-    configured_writer: bool,
-) -> None:
+async def test_daemon_schema_topology_reads_shared_credentials_under_its_role() -> None:
     """Public read fallback keeps its role; only the explicit purpose writes globally."""
+    configured_writer = False
     from butlers.daemon import ButlerDaemon
     from butlers.db import Database
     from butlers.db_authority.roles import AuthorityError
@@ -471,6 +480,12 @@ async def test_daemon_schema_topology_reads_shared_credentials_under_its_role(
     daemon.config = SimpleNamespace(db_schema="chronicler", db_name="butlers")
     daemon.db = _established_owner()
     daemon._shared_credentials_db = None
+    purpose_config = (
+        CredentialPurposeConfig("postgresql://credential_login:synthetic@localhost/butlers")
+        if configured_writer
+        else None
+    )
+    daemon._credential_purpose_config = purpose_config
 
     async def connect(db: Database):
         db._validate_runtime_role()  # the real connect's first refusal
@@ -493,7 +508,7 @@ async def test_daemon_schema_topology_reads_shared_credentials_under_its_role(
             Database, "for_owned_schema", side_effect=AssertionError("reader allocated")
         ) as delegated,
         patch(
-            "butlers.daemon.create_system_global_credential_store_from_env", new=AsyncMock()
+            "butlers.daemon.create_system_global_credential_store", new=AsyncMock()
         ) as rejected_writer,
     ):
         with pytest.raises(AuthorityError, match="reader target"):
@@ -510,7 +525,7 @@ async def test_daemon_schema_topology_reads_shared_credentials_under_its_role(
                 "butlers.credential_store.ensure_secrets_schema", new=AsyncMock()
             ) as ensure_schema,
             patch(
-                "butlers.daemon.create_system_global_credential_store_from_env",
+                "butlers.daemon.create_system_global_credential_store",
                 new=AsyncMock(
                     return_value=CredentialStore(writer_pool, system_global_pool=writer_pool)
                 ),
@@ -526,7 +541,96 @@ async def test_daemon_schema_topology_reads_shared_credentials_under_its_role(
         if configured_writer:
             assert store.require_system_global_pool() is writer_pool
             assert daemon._credential_purpose_pool is writer_pool
-            writer_factory.assert_awaited_once_with()
+            writer_factory.assert_awaited_once_with(purpose_config)
+        else:
+            assert not store.has_system_global_authority
+            with pytest.raises(RuntimeError, match="system-global.*authority"):
+                store.require_system_global_pool()
+            writer_factory.assert_not_awaited()
+    finally:
+        if daemon._shared_credentials_db is not None:
+            await daemon._shared_credentials_db.close()
+
+
+@pytest.mark.parametrize("configured_writer", [True], ids=["explicit-writer"])
+async def test_daemon_schema_topology_uses_only_explicit_global_credential_writer(
+    configured_writer: bool,
+) -> None:
+    """Public read fallback keeps its role; only the explicit purpose writes globally."""
+    from butlers.daemon import ButlerDaemon
+    from butlers.db import Database
+    from butlers.db_authority.roles import AuthorityError
+
+    local_pool = _make_pool()
+    shared_pool = _make_pool()
+    shared_pool.close = AsyncMock()
+    writer_pool = _make_pool()
+    daemon = ButlerDaemon.__new__(ButlerDaemon)
+    daemon.config = SimpleNamespace(db_schema="chronicler", db_name="butlers")
+    daemon.db = _established_owner()
+    daemon._shared_credentials_db = None
+    purpose_config = (
+        CredentialPurposeConfig("postgresql://credential_login:synthetic@localhost/butlers")
+        if configured_writer
+        else None
+    )
+    daemon._credential_purpose_config = purpose_config
+
+    async def connect(db: Database):
+        db._validate_runtime_role()  # the real connect's first refusal
+        db.pool = shared_pool
+        return shared_pool
+
+    selected = (
+        {
+            "BUTLERS_CREDENTIAL_DATABASE_URL": "postgresql://credential_login:synthetic@localhost/butlers",
+            "BUTLER_SHARED_DB_NAME": "  butlers  ",
+        }
+        if configured_writer
+        else {}
+    )
+    with (
+        patch.dict(
+            os.environ, {**selected, "BUTLER_SHARED_DB_NAME": "other-reader-target"}, clear=True
+        ),
+        patch.object(
+            Database, "for_owned_schema", side_effect=AssertionError("reader allocated")
+        ) as delegated,
+        patch(
+            "butlers.daemon.create_system_global_credential_store", new=AsyncMock()
+        ) as rejected_writer,
+    ):
+        with pytest.raises(AuthorityError, match="reader target"):
+            await daemon._build_credential_store(local_pool)
+        delegated.assert_not_called()
+        rejected_writer.assert_not_awaited()
+        assert daemon._shared_credentials_db is None
+    try:
+        with (
+            patch.dict(os.environ, selected, clear=True),
+            patch.object(Database, "connect", new=connect),
+            patch.object(Database, "provision", new=AsyncMock()) as provision,
+            patch(
+                "butlers.credential_store.ensure_secrets_schema", new=AsyncMock()
+            ) as ensure_schema,
+            patch(
+                "butlers.daemon.create_system_global_credential_store",
+                new=AsyncMock(
+                    return_value=CredentialStore(writer_pool, system_global_pool=writer_pool)
+                ),
+            ) as writer_factory,
+        ):
+            store = await daemon._build_credential_store(local_pool)
+        assert store.shared_pool is shared_pool
+        shared_db = daemon._shared_credentials_db
+        assert (shared_db.schema, shared_db.role) == ("public", "butler_chronicler_rw")
+        assert shared_db._runtime_profile is daemon.db._runtime_profile
+        provision.assert_not_awaited()
+        ensure_schema.assert_not_awaited()
+        if configured_writer:
+            assert store.require_system_global_pool() is writer_pool
+            assert daemon._credential_purpose_pool is writer_pool
+            writer_factory.assert_awaited_once_with(purpose_config)
         else:
             assert not store.has_system_global_authority
             with pytest.raises(RuntimeError, match="system-global.*authority"):

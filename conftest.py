@@ -641,56 +641,7 @@ def provisioned_postgres_pool(
             min_pool_size=min_pool_size,
             max_pool_size=max_pool_size,
         )
-        # This is an explicitly administrative fixture for ad-hoc schemas,
-        # not a production serving/provisioning pool. Select only the owning
-        # testcontainer control login; Database.provision deliberately requires
-        # a separate normal-owner contract and must never be an implicit path.
-        from butlers.db_authority.apply import quote_identifier
-        from butlers.db_authority.roles import AuthorityError
-
-        admin_options = dict(
-            host=db.host,
-            port=db.port,
-            user=db.user,
-            password=db.password,
-            database="postgres",
-            timeout=5,
-        )
-        if db.ssl is not None:
-            admin_options["ssl"] = db.ssl
-        try:
-            admin = await asyncpg.connect(**admin_options)
-        except Exception as exc:
-            if not should_retry_with_ssl_disable(exc, db.ssl):
-                raise
-            admin = await asyncpg.connect(**admin_options, ssl="disable")
-        primary = None
-        try:
-            selected = await admin.fetchval(
-                "SELECT session_user=$1 AND current_user=$1 AND EXISTS "
-                "(SELECT FROM pg_catalog.pg_roles WHERE rolname=session_user "
-                "AND (rolsuper OR rolcreatedb))",
-                db.user,
-            )
-            if selected is not True:
-                raise AuthorityError(
-                    "Selected testcontainer administrative authority is unavailable"
-                )
-            await admin.execute(
-                f"CREATE DATABASE {quote_identifier(db.db_name)} "
-                f"OWNER {quote_identifier(db.user)} TEMPLATE template0"
-            )
-        except BaseException as exc:
-            primary = exc
-            raise
-        finally:
-            try:
-                await admin.close(timeout=5)
-            except BaseException:
-                admin.terminate()
-                if primary is None:
-                    raise
-                primary.add_note("Administrative fixture connection cleanup was incomplete")
+        await db.provision()
         pool_kwargs = {
             "host": db.host,
             "port": db.port,

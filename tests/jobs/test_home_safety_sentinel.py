@@ -34,6 +34,7 @@ from butlers.jobs.home_safety import (
     run_safety_sentinel,
     safety_fingerprint,
 )
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 _NOW = datetime(2026, 10, 18, 12, 0, 0, tzinfo=UTC)
 _LEAK = WatchEntry("binary_sensor.kitchen_leak", "leak", "Kitchen leak sensor")

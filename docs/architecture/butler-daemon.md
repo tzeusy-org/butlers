@@ -175,6 +175,22 @@ kill -TERM $(pgrep -f "butlers run --config roster/general")
 # No "active sessions dropped" error lines should appear
 ```
 
+## Credential-purpose composition
+
+The daemon constructor accepts an explicit optional `CredentialPurposeConfig`.
+It stores configuration without opening a connection. `_build_credential_store`
+keeps the separately admitted public reader and opens a writer only for that
+explicit input; omission never consults an ambient writer URL. Configuration
+selects the fixed credential purpose, while actual pool admission and subsequent
+acquisitions establish physical authority.
+
+CLI `_start_all`, CLI `_start_single`, and `control.run_control` explicitly read
+the existing Tier0 credential-purpose configuration and pass it into each daemon.
+Each daemon owns its own admitted purpose pool. Existing shutdown ordering waits
+for credential diagnostics and other retained dependents before closing it.
+Disposable E2E deployment uses its own credential-purpose URL directly, alongside
+its real `runtime_database`, without mutating process environment.
+
 ## Implementation Notes
 
 - Startup phases stay in `src/butlers/lifecycle.py`, including the owner/catalogue/event-contract

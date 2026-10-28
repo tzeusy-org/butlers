@@ -27,6 +27,7 @@ import pytest
 from butlers.config import ApprovalRiskTier
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.gate import _make_gate_wrapper
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [

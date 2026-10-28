@@ -34,6 +34,7 @@ import pytest
 from butlers.tools.relationship import fact_temporal
 from butlers.tools.relationship.fact_evidence import EvidencePacket
 from roster.relationship.tests.evidence_schema import rel_035, simulate_temporal_cutover
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 _docker = pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 _session_loop = pytest.mark.asyncio(loop_scope="session")

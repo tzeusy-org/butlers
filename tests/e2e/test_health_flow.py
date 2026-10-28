@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from butlers.tools.health import measurement_latest, measurement_log, medication_list
+from tests.e2e._serving_ecosystem import butler_ecosystem as butler_ecosystem
 
 if TYPE_CHECKING:
     from asyncpg.pool import Pool

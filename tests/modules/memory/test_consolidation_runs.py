@@ -24,6 +24,7 @@ import pytest
 
 from butlers.modules.memory import consolidation as consolidation_module
 from butlers.testing.fake_pool import AsyncCtx
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 # ---------------------------------------------------------------------------
 # Migration file path / loader

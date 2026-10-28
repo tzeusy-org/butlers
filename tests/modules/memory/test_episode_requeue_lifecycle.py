@@ -13,6 +13,7 @@ import uuid
 import pytest
 
 from butlers.modules.memory.storage import EpisodeNotDeadLetterError, retry_dead_letter_episode
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),

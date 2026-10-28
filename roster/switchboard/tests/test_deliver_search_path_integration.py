@@ -39,6 +39,7 @@ from butlers.db import (
     schema_search_path,
     should_retry_with_ssl_disable,
 )
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 docker_available = shutil.which("docker") is not None
 

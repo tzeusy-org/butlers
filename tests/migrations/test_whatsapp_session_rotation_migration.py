@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 import asyncpg
 import pytest
 
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
+
 _MIGRATIONS = (
     Path(__file__).resolve().parents[2] / "src" / "butlers" / "modules" / "whatsapp" / "migrations"
 )

@@ -26,6 +26,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
 from butlers.testing.schema_standins import CONTACT_ENTITY_MAP
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark_integration = [
     pytest.mark.integration,

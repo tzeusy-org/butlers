@@ -48,9 +48,9 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -1077,7 +1077,48 @@ def shared_db_name_from_env() -> str:
     return name or _DEFAULT_SHARED_DB_NAME
 
 
+@dataclass(frozen=True)
+class CredentialPurposeConfig:
+    """Private connection selection; physical authority is proved by the factory."""
+
+    database_url: str = field(repr=False)
+    schema: str = "public"
+
+    def __post_init__(self) -> None:
+        from butlers.db_authority.roles import AuthorityError
+
+        if not isinstance(self.database_url, str) or not self.database_url.strip():
+            raise AuthorityError("Explicit credential-writer configuration is required")
+        if not isinstance(self.schema, str):
+            raise AuthorityError("Credential-writer schema configuration is invalid")
+
+
+def credential_purpose_config_from_env(
+    environment: Mapping[str, str] | None = None,
+) -> CredentialPurposeConfig | None:
+    """Compose only the existing Tier0 credential-purpose input; no runtime fallback."""
+    environment = os.environ if environment is None else environment
+    if "BUTLERS_CREDENTIAL_DATABASE_URL" not in environment:
+        return None
+    return CredentialPurposeConfig(
+        database_url=environment["BUTLERS_CREDENTIAL_DATABASE_URL"],
+        schema=environment.get("BUTLER_SHARED_DB_SCHEMA", "public"),
+    )
+
+
 async def create_system_global_credential_store_from_env() -> CredentialStore:
+    """Preserve the connector adapter while naming its fixed-purpose input."""
+    from butlers.db_authority.roles import AuthorityError
+
+    config = credential_purpose_config_from_env()
+    if config is None:
+        raise AuthorityError("Explicit credential-writer configuration is required")
+    return await create_system_global_credential_store(config)
+
+
+async def create_system_global_credential_store(
+    config: CredentialPurposeConfig,
+) -> CredentialStore:
     """Create an explicitly selected global credential authority for a connector.
 
     Connector cursor/model pools can target a schema-local database.  They are
@@ -1101,9 +1142,9 @@ async def create_system_global_credential_store_from_env() -> CredentialStore:
     from butlers.db_authority.catalog import create_purpose_pool
     from butlers.db_authority.roles import AuthorityError, purpose_profile
 
-    configured_url = os.environ.get("BUTLERS_CREDENTIAL_DATABASE_URL")
-    if not configured_url:
+    if not isinstance(config, CredentialPurposeConfig):
         raise AuthorityError("Explicit credential-writer configuration is required")
+    configured_url = config.database_url
     try:
         selected = urlparse(configured_url)
         database = unquote(selected.path.removeprefix("/"))
@@ -1118,9 +1159,9 @@ async def create_system_global_credential_store_from_env() -> CredentialStore:
         # URL components are percent-encoded transport, never literal credentials.
         db_params["user"] = unquote(selected.username)
         db_params["password"] = unquote(selected.password or "")
-    except (TypeError, ValueError) as exc:
-        raise AuthorityError("Credential-writer configuration is invalid") from exc
-    shared_schema = os.environ.get("BUTLER_SHARED_DB_SCHEMA", "public")
+    except (TypeError, ValueError):
+        raise AuthorityError("Credential-writer configuration is invalid") from None
+    shared_schema = config.schema
     pool_kwargs: dict[str, Any] = {
         "host": str(db_params.get("host") or "localhost"),
         "port": int(db_params.get("port") or 5432),

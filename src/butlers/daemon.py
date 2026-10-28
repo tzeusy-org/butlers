@@ -83,8 +83,9 @@ from butlers.core.tool_catalog import (
 )
 from butlers.core.utils import generate_uuid7_string
 from butlers.credential_store import (
+    CredentialPurposeConfig,
     CredentialStore,
-    create_system_global_credential_store_from_env,
+    create_system_global_credential_store,
     resolve_owner_entity_info,
     shared_db_name_from_env,
 )
@@ -219,6 +220,7 @@ class ButlerDaemon:
         butler_name: str | None = None,
         db: Database | None = None,
         control_profile: str | None = None,
+        credential_purpose: CredentialPurposeConfig | None = None,
     ) -> None:
         if config_dir is None and butler_name is None:
             raise ValueError("Either config_dir or butler_name must be provided")
@@ -232,6 +234,7 @@ class ButlerDaemon:
             self.config_dir = config_dir  # type: ignore
 
         self._control_profile = control_profile
+        self._credential_purpose_config = credential_purpose
         self._registry = registry or default_registry()
         self.config: ButlerConfig | None = None
         self.db: Database | None = db  # Allow injected Database for testing
@@ -2197,9 +2200,10 @@ class ButlerDaemon:
             # Retain ownership before an awaited connection can fail/cancel.
             self._shared_credentials_db = shared_db
             fallback_pools.append(await shared_db.connect())
-        if "BUTLERS_CREDENTIAL_DATABASE_URL" not in os.environ:
+        purpose_config = getattr(self, "_credential_purpose_config", None)
+        if purpose_config is None:
             return CredentialStore(local_pool, fallback_pools=fallback_pools)
-        authority = await create_system_global_credential_store_from_env()
+        authority = await create_system_global_credential_store(purpose_config)
         pool = authority.require_system_global_pool()
         # Retain physical ownership before publishing the layered store. Failed
         # startup and shutdown use the same diagnostic-aware close fence.

@@ -25,6 +25,7 @@ from butlers.tools.travel.connections import (
     compute_connection_verdict,
     recompute_trip_connections,
 )
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 _docker_available = shutil.which("docker") is not None
 

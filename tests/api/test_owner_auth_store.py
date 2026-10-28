@@ -13,6 +13,7 @@ import pytest
 from butlers.api.owner_auth.service import AuthError, OwnerAuthService, _digest
 from butlers.api.owner_auth.verifier import encode
 from tests.api.owner_auth_fixtures import ORIGIN, RP, Passkey
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 SQL = (

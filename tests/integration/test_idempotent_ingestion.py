@@ -14,6 +14,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
+
 # Skip all tests in this module if Docker is not available
 docker_available = shutil.which("docker") is not None
 pytestmark = [

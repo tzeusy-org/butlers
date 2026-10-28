@@ -18,6 +18,8 @@ from datetime import UTC, datetime
 
 import pytest
 
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
+
 # Skip tests if Docker not available
 docker_available = shutil.which("docker") is not None
 

@@ -14,6 +14,7 @@ import pytest
 from butlers.core.queue_claim import claim_batch, fail_claimed
 from butlers.modules.memory.consolidation import _EPISODE_CLAIMS
 from butlers.tools.switchboard.runtime_attention.outbox import _OUTBOX_CLAIMS as _OUTBOX
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 

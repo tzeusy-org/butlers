@@ -16,6 +16,7 @@ from sqlalchemy.exc import DBAPIError
 from alembic import command
 from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import create_migration_db, migration_db_name
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = [pytest.mark.integration, pytest.mark.db]
 
@@ -420,8 +421,46 @@ async def test_dispatch_and_usage_evidence_store_only_closed_purpose_lanes(
             await pool.execute(statements[0])
 
 
-@pytest.mark.parametrize("absent", [False, None, 0, 1, True])
-def test_shared_preflight_delegates_complete_core_198_durable_evidence_predicate(absent) -> None:
+def test_shared_preflight_delegates_complete_core_198_durable_evidence_predicate() -> None:
+    """The actual source guard requires exact positive absence before crossing core_198."""
+    absent = False
+    module = _load_path("migration_preflight", _PREFLIGHT_PATH)
+    bind = MagicMock()
+    bind.execute.return_value.scalar_one.return_value = absent
+    operation = MagicMock()
+    operation.get_bind.return_value = bind
+    environment_context = MagicMock()
+    environment_context.get_context.return_value.get_current_revision.return_value = "core_231"
+    environment_context.get_revision_argument.return_value = "core_197"
+
+    if absent is True:
+        module.preflight_runtime_attention_downgrade(operation, environment_context)
+    else:
+        with pytest.raises(RuntimeError, match="Protected boundary remains installed"):
+            module.preflight_runtime_attention_downgrade(operation, environment_context)
+
+    bind.execute.assert_called_once()
+    statement, parameters = bind.execute.call_args.args
+    assert parameters["group"] == "attention"
+    assert parameters["schemas"] == ["runtime_attention_admin"]
+    assert parameters["tables"]
+    assert parameters["functions"]
+    assert "pg_catalog.pg_proc" in str(statement)
+    assert "runtime_attention_" in str(statement)
+
+    # A real graph path that stays above the protected revision must not query
+    # storage or alter any version/data state, even when storage is unavailable.
+    bind.reset_mock()
+    bind.execute.side_effect = AssertionError("non-crossing downgrade touched storage")
+    environment_context.get_revision_argument.return_value = "core_230"
+    module.preflight_runtime_attention_downgrade(operation, environment_context)
+    bind.execute.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "absent", [None, 0, 1, True], ids=["none", "zero-int", "one-int", "true-bool"]
+)
+def test_shared_preflight_requires_exact_absence_for_other_catalog_values(absent) -> None:
     """The actual source guard requires exact positive absence before crossing core_198."""
     module = _load_path("migration_preflight", _PREFLIGHT_PATH)
     bind = MagicMock()

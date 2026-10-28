@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from butlers.jobs.briefing import owner_briefing_zone, run_health_briefing_contribution
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 SGT = timezone(timedelta(hours=8))
 # 2026-03-25 13:55 UTC is 06:55 in Los Angeles (PDT) and 21:55 in Singapore.

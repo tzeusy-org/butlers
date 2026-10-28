@@ -39,6 +39,7 @@ from roster.relationship.tests.evidence_schema import (
     simulate_temporal_cutover,
 )
 from roster.relationship.tests.fact_authority_fixtures import synthetic_owner
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = [
     pytest.mark.integration,

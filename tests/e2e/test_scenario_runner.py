@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from tests.e2e._serving_ecosystem import butler_ecosystem as butler_ecosystem
 from tests.e2e.benchmark import orchestrate_benchmark
 from tests.e2e.conftest import ButlerEcosystem, CostTracker
 from tests.e2e.scenarios import ALL_SCENARIOS, DbAssertion, Scenario

@@ -25,6 +25,7 @@ from butlers.modules.calendar import (
     CalendarProvider,
 )
 from butlers.testing.mcp import tool_fn
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = [
     pytest.mark.integration,

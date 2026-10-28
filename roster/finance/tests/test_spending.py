@@ -7,6 +7,8 @@ from decimal import Decimal
 
 import pytest
 
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
+
 # All async tests in this file must share the session event loop so that the
 # asyncpg pool (created in the session-scoped fixture loop per
 # asyncio_default_fixture_loop_scope="session") is never used from a different

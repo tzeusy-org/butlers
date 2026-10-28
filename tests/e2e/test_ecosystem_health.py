@@ -16,6 +16,7 @@ import pytest
 from asyncpg import Pool
 from fastmcp import Client as MCPClient
 
+from tests.e2e._serving_ecosystem import butler_ecosystem as butler_ecosystem
 from tests.e2e.conftest import ButlerEcosystem
 
 pytestmark = pytest.mark.e2e

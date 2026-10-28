@@ -169,9 +169,14 @@ async def run_control(config_dir: Path, *, profile: str, session_host: str) -> N
     partial startup release both sockets and the existing daemon's resources.
     """
     check_private_key_absent(profile)
+    from butlers.credential_store import credential_purpose_config_from_env
     from butlers.daemon import ButlerDaemon
 
-    daemon = ButlerDaemon(config_dir, control_profile=profile)
+    daemon = ButlerDaemon(
+        config_dir,
+        control_profile=profile,
+        credential_purpose=credential_purpose_config_from_env(),
+    )
     listener = SessionRefusalListener(host=session_host)
     shutdown = asyncio.Event()
     loop = asyncio.get_running_loop()

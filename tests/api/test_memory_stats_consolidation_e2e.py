@@ -28,6 +28,7 @@ import pytest
 from butlers.api.deps import get_db
 from butlers.modules.memory.consolidation import _record_consolidation_run
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [

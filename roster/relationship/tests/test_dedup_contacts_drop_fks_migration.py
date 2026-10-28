@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from butlers.testing.schema_standins import CONTACT_ENTITY_MAP
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[1] / "migrations" / "030_dedup_contacts_drop_contacts_fks.py"
