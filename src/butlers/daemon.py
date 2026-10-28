@@ -1204,9 +1204,13 @@ class ButlerDaemon:
         runtime_context = await self._build_scheduler_runtime_context()
 
         daemon = self
-        # Eligibility reads switchboard.butler_registry_*, which only the
-        # switchboard's runtime role may SELECT; other butlers skip the gate.
-        is_switchboard = self.config.name == "switchboard"
+        # Under the receiver cutover every butler reads its own administrative
+        # policy through sw_053's role-derived function on its own pool. The
+        # legacy resolver reads switchboard tables, which only the switchboard's
+        # runtime role may SELECT, so other butlers skip the gate there.
+        from butlers.tools.switchboard.registry.registry import receiver_route_cutover_enabled
+
+        gate_on_own_pool = self.config.name == "switchboard" or receiver_route_cutover_enabled()
         await _background.scheduler_loop(
             pool=self.db.pool,
             dispatch_fn=self._dispatch_scheduled_task,
@@ -1217,7 +1221,7 @@ class ButlerDaemon:
             get_db=lambda: daemon.db,
             prompt_hooks=runtime_context.prompt_hooks,
             completion_hooks=runtime_context.completion_hooks,
-            get_eligibility_pool=lambda: daemon.db.pool if is_switchboard else None,
+            get_eligibility_pool=lambda: daemon.db.pool if gate_on_own_pool else None,
             default_timezone=runtime_context.default_timezone,
             chronicler_continuation=vars(self).get("_chronicler_continuation"),
         )
