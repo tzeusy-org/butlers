@@ -68,6 +68,7 @@ from butlers.credential_store import CredentialStore, shared_db_name_from_env
 from butlers.db import db_params_from_env, should_retry_with_ssl_disable
 from butlers.google_credentials import InvalidGoogleCredentialsError, load_google_credentials
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import CHANNEL_KIND_MESSAGE
 from butlers.oauth_token_payload import (
     OAuthTokenValidationError,
     validate_oauth_token_payload,
@@ -1015,6 +1016,7 @@ class CalendarConnectorRuntime:
 
             # Start heartbeat
             self._heartbeat = ConnectorHeartbeat(
+                channel_kind=CHANNEL_KIND_MESSAGE,
                 config=HeartbeatConfig.from_env(
                     connector_type=_CONNECTOR_TYPE,
                     endpoint_identity=self._config.endpoint_identity,

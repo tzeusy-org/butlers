@@ -16,18 +16,23 @@ Issue: bu-ih0f.4
 from __future__ import annotations
 
 import json
-from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from fastmcp import FastMCP
 
 from butlers.modules.spotify import (
     _NO_CREDENTIALS_ERROR,
     _RECOMMENDATIONS_UNAVAILABLE_ERROR,
     SpotifyModule,
 )
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.mcp import registered_tools, tool_fn
+
+_THIS_FILE = Path(__file__).resolve()
 
 # ---------------------------------------------------------------------------
 # Auto-override: these tests are pure unit tests — no Docker required.
@@ -135,19 +140,11 @@ def _make_credential_store(
         value = values.get(str(args[0]))
         return None if value is None else {"value": value}
 
-    @asynccontextmanager
-    async def _transaction():
-        yield
-
-    @asynccontextmanager
-    async def _acquire():
-        yield conn
-
     conn.fetchrow = AsyncMock(side_effect=_fetchrow)
     conn.execute = AsyncMock(return_value="INSERT 0 1")
-    conn.transaction = MagicMock(side_effect=_transaction)
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     pool = MagicMock()
-    pool.acquire = _acquire
+    pool.acquire = lambda: AsyncCtx(conn)
     store.pool = pool
 
     async def _resolve(key: str) -> str | None:
@@ -187,25 +184,6 @@ def _make_mock_http_client(responses: list[MagicMock]) -> AsyncMock:
     return client
 
 
-def _make_mock_mcp() -> MagicMock:
-    """Build a mock FastMCP server that captures registered tool functions."""
-    mcp = MagicMock()
-    tools: dict[str, Any] = {}
-
-    def tool_decorator(*_decorator_args, **decorator_kwargs):
-        declared_name = decorator_kwargs.get("name")
-
-        def decorator(fn):
-            tools[declared_name or fn.__name__] = fn
-            return fn
-
-        return decorator
-
-    mcp.tool = tool_decorator
-    mcp._registered_tools = tools
-    return mcp
-
-
 # ---------------------------------------------------------------------------
 # Scenario 1: Module startup with valid credentials → 22 tools registered
 # ---------------------------------------------------------------------------
@@ -214,7 +192,7 @@ def _make_mock_mcp() -> MagicMock:
 class TestScenario1ValidCredentials:
     """Scenario 1: SpotifyModule.on_startup() with valid credentials registers all 22 tools."""
 
-    async def _startup_module_with_profile(self) -> tuple[SpotifyModule, MagicMock]:
+    async def _startup_module_with_profile(self) -> tuple[SpotifyModule, FastMCP]:
         """Helper: start module with mocked HTTP returning a valid profile."""
         profile_response = _make_http_response(200, _PROFILE_RESPONSE)
         http_client = _make_mock_http_client([profile_response])
@@ -233,14 +211,14 @@ class TestScenario1ValidCredentials:
         ):
             await module.on_startup(config={}, db=None, credential_store=cred_store)
 
-        mcp = _make_mock_mcp()
+        mcp = FastMCP()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         return module, mcp
 
     async def test_22_tools_registered_after_valid_startup(self) -> None:
         """All 22 Spotify tools are registered when credentials are valid."""
         module, mcp = await self._startup_module_with_profile()
-        assert len(mcp._registered_tools) == 22
+        assert len(await registered_tools(mcp)) == 22
 
     async def test_all_expected_tool_names_present(self) -> None:
         """The registered tool names match the expected 22 tool set."""
@@ -269,7 +247,7 @@ class TestScenario1ValidCredentials:
             "spotify_remove_saved_tracks",
         }
         module, mcp = await self._startup_module_with_profile()
-        assert set(mcp._registered_tools.keys()) == expected
+        assert set((await registered_tools(mcp)).keys()) == expected
 
     async def test_credentials_ok_flag_set_true(self) -> None:
         """After valid startup, _credentials_ok is True and user profile is populated."""
@@ -334,7 +312,7 @@ class TestScenario1ValidCredentials:
         assert module._user_profile is None
         assert module._credentials_ok is True
 
-        mcp = _make_mock_mcp()
+        mcp = FastMCP()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
 
         # Recovery: stub out get_me() (token refresh is already tested elsewhere) and
@@ -354,7 +332,7 @@ class TestScenario1ValidCredentials:
                 return_value=_PLAYLIST_RESPONSE,
             ),
         ):
-            result = await mcp._registered_tools["spotify_create_playlist"](name="Lazy Fetch Test")
+            result = await (await tool_fn(mcp, "spotify_create_playlist"))(name="Lazy Fetch Test")
 
         assert "id" in result, f"Expected playlist id in result, got: {result}"
         assert result["id"] == _PLAYLIST_ID
@@ -364,11 +342,10 @@ class TestScenario1ValidCredentials:
 
     async def test_butler_toml_includes_spotify_module(self) -> None:
         """roster/lifestyle/butler.toml declares [modules.spotify]."""
-        from pathlib import Path
 
         from butlers.config import load_config
 
-        roster_dir = Path(__file__).resolve().parents[3] / "roster" / "lifestyle"
+        roster_dir = _THIS_FILE.parents[3] / "roster" / "lifestyle"
         cfg = load_config(roster_dir)
         assert "spotify" in cfg.modules, (
             "spotify module is missing from [modules] section in roster/lifestyle/butler.toml"
@@ -383,15 +360,15 @@ class TestScenario1ValidCredentials:
 class TestScenario2MissingCredentials:
     """Scenario 2: SpotifyModule returns actionable errors when credentials are absent."""
 
-    async def _startup_module_no_creds(self) -> tuple[SpotifyModule, MagicMock]:
+    async def _startup_module_no_creds(self) -> tuple[SpotifyModule, FastMCP]:
         """Helper: start module with no credential store."""
         module = SpotifyModule()
         await module.on_startup(config={}, db=None, credential_store=None)
-        mcp = _make_mock_mcp()
+        mcp = FastMCP()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         return module, mcp
 
-    async def _startup_module_empty_tokens(self) -> tuple[SpotifyModule, MagicMock]:
+    async def _startup_module_empty_tokens(self) -> tuple[SpotifyModule, FastMCP]:
         """Helper: start module with credential store that returns None for all tokens."""
         cred_store = _make_credential_store(
             access_token=None,
@@ -400,7 +377,7 @@ class TestScenario2MissingCredentials:
         )
         module = SpotifyModule()
         await module.on_startup(config={}, db=None, credential_store=cred_store)
-        mcp = _make_mock_mcp()
+        mcp = FastMCP()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         return module, mcp
 
@@ -412,40 +389,40 @@ class TestScenario2MissingCredentials:
     async def test_22_tools_still_registered_despite_missing_creds(self) -> None:
         """Tools are still registered even without credentials (they return errors)."""
         _, mcp = await self._startup_module_no_creds()
-        assert len(mcp._registered_tools) == 22
+        assert len(await registered_tools(mcp)) == 22
 
     async def test_search_returns_actionable_error_no_store(self) -> None:
         """spotify_search returns the NO_CREDENTIALS error when store is None."""
         _, mcp = await self._startup_module_no_creds()
-        result = await mcp._registered_tools["spotify_search"](query="jazz")
+        result = await (await tool_fn(mcp, "spotify_search"))(query="jazz")
         assert "error" in result
         assert result["error"] == _NO_CREDENTIALS_ERROR
 
     async def test_play_returns_actionable_error_no_store(self) -> None:
         """spotify_play returns the NO_CREDENTIALS error when store is None."""
         _, mcp = await self._startup_module_no_creds()
-        result = await mcp._registered_tools["spotify_play"]()
+        result = await (await tool_fn(mcp, "spotify_play"))()
         assert "error" in result
         assert result["error"] == _NO_CREDENTIALS_ERROR
 
     async def test_create_playlist_returns_actionable_error_empty_tokens(self) -> None:
         """spotify_create_playlist returns actionable error when tokens are missing."""
         _, mcp = await self._startup_module_empty_tokens()
-        result = await mcp._registered_tools["spotify_create_playlist"](name="My Playlist")
+        result = await (await tool_fn(mcp, "spotify_create_playlist"))(name="My Playlist")
         assert "error" in result
         assert result["error"] == _NO_CREDENTIALS_ERROR
 
     async def test_get_recommendations_returns_actionable_error_no_store(self) -> None:
         """spotify_get_recommendations returns actionable error when no store."""
         _, mcp = await self._startup_module_no_creds()
-        result = await mcp._registered_tools["spotify_get_recommendations"](seed_genres=["rock"])
+        result = await (await tool_fn(mcp, "spotify_get_recommendations"))(seed_genres=["rock"])
         assert "error" in result
         assert result["error"] == _NO_CREDENTIALS_ERROR
 
     async def test_error_message_contains_setup_hint(self) -> None:
         """The no-credentials error directs the user to dashboard settings."""
         _, mcp = await self._startup_module_no_creds()
-        result = await mcp._registered_tools["spotify_search"](query="test")
+        result = await (await tool_fn(mcp, "spotify_search"))(query="test")
         assert "dashboard" in result["error"].lower() or "connect" in result["error"].lower()
 
 
@@ -458,7 +435,7 @@ class TestScenario3PlaylistFlow:
     """Scenario 3: Full playlist lifecycle mocked at the HTTP level."""
 
     @pytest.fixture
-    async def module_with_tools(self) -> tuple[SpotifyModule, MagicMock]:
+    async def module_with_tools(self) -> tuple[SpotifyModule, FastMCP]:
         """SpotifyModule with real SpotifyClient backed by mocked HTTP."""
         add_tracks_response = {"snapshot_id": "snap_add_001"}
         remove_tracks_response = {"snapshot_id": "snap_remove_001"}
@@ -488,63 +465,61 @@ class TestScenario3PlaylistFlow:
         ):
             await module.on_startup(config={}, db=None, credential_store=cred_store)
 
-        mcp = _make_mock_mcp()
+        mcp = FastMCP()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         return module, mcp
 
     async def test_create_playlist_returns_id(
-        self, module_with_tools: tuple[SpotifyModule, MagicMock]
+        self, module_with_tools: tuple[SpotifyModule, FastMCP]
     ) -> None:
         """spotify_create_playlist returns the new playlist's ID."""
         _, mcp = module_with_tools
-        result = await mcp._registered_tools["spotify_create_playlist"](
+        result = await (await tool_fn(mcp, "spotify_create_playlist"))(
             name="My Test Playlist", description="A test playlist"
         )
         assert "id" in result
         assert result["id"] == _PLAYLIST_ID
 
     async def test_add_tracks_returns_snapshot_id(
-        self, module_with_tools: tuple[SpotifyModule, MagicMock]
+        self, module_with_tools: tuple[SpotifyModule, FastMCP]
     ) -> None:
         """spotify_add_tracks_to_playlist returns a snapshot_id."""
         _, mcp = module_with_tools
         # Must call create first to consume the mock response
-        await mcp._registered_tools["spotify_create_playlist"](name="My Test Playlist")
-        result = await mcp._registered_tools["spotify_add_tracks_to_playlist"](
+        await (await tool_fn(mcp, "spotify_create_playlist"))(name="My Test Playlist")
+        result = await (await tool_fn(mcp, "spotify_add_tracks_to_playlist"))(
             playlist_id=_PLAYLIST_ID, uris=[_TRACK_URI_1, _TRACK_URI_2]
         )
         assert "snapshot_id" in result
         assert result["snapshot_id"] == "snap_add_001"
 
     async def test_get_playlist_tracks_returns_items(
-        self, module_with_tools: tuple[SpotifyModule, MagicMock]
+        self, module_with_tools: tuple[SpotifyModule, FastMCP]
     ) -> None:
         """spotify_get_playlist_tracks returns a list of items."""
         _, mcp = module_with_tools
         # Consume create + add responses first
-        await mcp._registered_tools["spotify_create_playlist"](name="My Test Playlist")
-        await mcp._registered_tools["spotify_add_tracks_to_playlist"](
+        await (await tool_fn(mcp, "spotify_create_playlist"))(name="My Test Playlist")
+        await (await tool_fn(mcp, "spotify_add_tracks_to_playlist"))(
             playlist_id=_PLAYLIST_ID, uris=[_TRACK_URI_1]
         )
-        result = await mcp._registered_tools["spotify_get_playlist_tracks"](
-            playlist_id=_PLAYLIST_ID
-        )
+        result = await (await tool_fn(mcp, "spotify_get_playlist_tracks"))(playlist_id=_PLAYLIST_ID)
         assert "items" in result
         assert len(result["items"]) == 1
         assert result["items"][0]["track"]["uri"] == _TRACK_URI_1
 
     async def test_remove_tracks_returns_snapshot_id(
-        self, module_with_tools: tuple[SpotifyModule, MagicMock]
+        self, module_with_tools: tuple[SpotifyModule, FastMCP]
     ) -> None:
         """spotify_remove_tracks_from_playlist returns a snapshot_id."""
         _, mcp = module_with_tools
         # Consume create + add + get responses first
-        await mcp._registered_tools["spotify_create_playlist"](name="My Test Playlist")
-        await mcp._registered_tools["spotify_add_tracks_to_playlist"](
+        await (await tool_fn(mcp, "spotify_create_playlist"))(name="My Test Playlist")
+        await (await tool_fn(mcp, "spotify_add_tracks_to_playlist"))(
             playlist_id=_PLAYLIST_ID, uris=[_TRACK_URI_1]
         )
-        await mcp._registered_tools["spotify_get_playlist_tracks"](playlist_id=_PLAYLIST_ID)
-        result = await mcp._registered_tools["spotify_remove_tracks_from_playlist"](
+        await (await tool_fn(mcp, "spotify_get_playlist_tracks"))(playlist_id=_PLAYLIST_ID)
+        result = await (await tool_fn(mcp, "spotify_remove_tracks_from_playlist"))(
             playlist_id=_PLAYLIST_ID, uris=[_TRACK_URI_1]
         )
         assert "snapshot_id" in result
@@ -560,7 +535,7 @@ class TestScenario4SearchPlayFlow:
     """Scenario 4: search for a track then play it — HTTP mocked end-to-end."""
 
     @pytest.fixture
-    async def module_with_tools(self) -> tuple[SpotifyModule, MagicMock]:
+    async def module_with_tools(self) -> tuple[SpotifyModule, FastMCP]:
         """SpotifyModule with real SpotifyClient backed by mocked HTTP."""
         # HTTP responses in order:
         # 1. on_startup → GET /me (profile)
@@ -583,38 +558,38 @@ class TestScenario4SearchPlayFlow:
         ):
             await module.on_startup(config={}, db=None, credential_store=cred_store)
 
-        mcp = _make_mock_mcp()
+        mcp = FastMCP()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         return module, mcp
 
     async def test_search_returns_track_items(
-        self, module_with_tools: tuple[SpotifyModule, MagicMock]
+        self, module_with_tools: tuple[SpotifyModule, FastMCP]
     ) -> None:
         """spotify_search returns catalog results from the mocked HTTP response."""
         _, mcp = module_with_tools
-        result = await mcp._registered_tools["spotify_search"](query="Sunny Day", type="track")
+        result = await (await tool_fn(mcp, "spotify_search"))(query="Sunny Day", type="track")
         assert "tracks" in result
         assert len(result["tracks"]["items"]) == 1
         assert result["tracks"]["items"][0]["name"] == "Sunny Day"
 
     async def test_play_returns_playing_status(
-        self, module_with_tools: tuple[SpotifyModule, MagicMock]
+        self, module_with_tools: tuple[SpotifyModule, FastMCP]
     ) -> None:
         """spotify_play returns {'status': 'playing'} after a 204 No Content response."""
         _, mcp = module_with_tools
         # Consume search response first
-        await mcp._registered_tools["spotify_search"](query="Sunny Day")
-        result = await mcp._registered_tools["spotify_play"](uris=[_TRACK_URI_1])
+        await (await tool_fn(mcp, "spotify_search"))(query="Sunny Day")
+        result = await (await tool_fn(mcp, "spotify_play"))(uris=[_TRACK_URI_1])
         assert result == {"status": "playing"}
 
     async def test_search_then_play_flow(
-        self, module_with_tools: tuple[SpotifyModule, MagicMock]
+        self, module_with_tools: tuple[SpotifyModule, FastMCP]
     ) -> None:
         """Full search → play flow: find a track URI then issue play command."""
         _, mcp = module_with_tools
 
         # Step 1: Search for a track
-        search_result = await mcp._registered_tools["spotify_search"](
+        search_result = await (await tool_fn(mcp, "spotify_search"))(
             query="Sunny Day", type="track", limit=1
         )
         assert "tracks" in search_result
@@ -622,7 +597,7 @@ class TestScenario4SearchPlayFlow:
         assert track_uri == _TRACK_URI_1
 
         # Step 2: Play the found track URI
-        play_result = await mcp._registered_tools["spotify_play"](uris=[track_uri])
+        play_result = await (await tool_fn(mcp, "spotify_play"))(uris=[track_uri])
         assert play_result == {"status": "playing"}
 
 
@@ -635,7 +610,7 @@ class TestScenario5DiscoveryFallback:
     """Scenario 5: get_recommendations falls back gracefully when the API is unavailable."""
 
     @pytest.fixture
-    async def module_with_valid_creds(self) -> tuple[SpotifyModule, MagicMock]:
+    async def module_with_valid_creds(self) -> tuple[SpotifyModule, FastMCP]:
         """SpotifyModule with valid credentials but no HTTP responses pre-loaded."""
         # Only the startup GET /me profile response — individual test methods
         # will inject their own HTTP mocks for get_recommendations calls.
@@ -652,12 +627,12 @@ class TestScenario5DiscoveryFallback:
         ):
             await module.on_startup(config={}, db=None, credential_store=cred_store)
 
-        mcp = _make_mock_mcp()
+        mcp = FastMCP()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         return module, mcp
 
     async def test_recommendations_success_returns_tracks(
-        self, module_with_valid_creds: tuple[SpotifyModule, MagicMock]
+        self, module_with_valid_creds: tuple[SpotifyModule, FastMCP]
     ) -> None:
         """When the recommendations API succeeds, the tool returns track results."""
         module, mcp = module_with_valid_creds
@@ -667,7 +642,7 @@ class TestScenario5DiscoveryFallback:
         rec_response = _make_http_response(200, _RECOMMENDATIONS_RESPONSE)
         module._client._http_client = _make_mock_http_client([rec_response])
 
-        result = await mcp._registered_tools["spotify_get_recommendations"](
+        result = await (await tool_fn(mcp, "spotify_get_recommendations"))(
             seed_genres=["rock"], limit=5
         )
         assert "tracks" in result
@@ -675,7 +650,7 @@ class TestScenario5DiscoveryFallback:
         assert "seeds" in result
 
     async def test_recommendations_403_returns_unavailable_error(
-        self, module_with_valid_creds: tuple[SpotifyModule, MagicMock]
+        self, module_with_valid_creds: tuple[SpotifyModule, FastMCP]
     ) -> None:
         """A 403 from the recommendations endpoint returns the unavailability error.
 
@@ -695,7 +670,7 @@ class TestScenario5DiscoveryFallback:
         )
         module._client._http_client = _make_mock_http_client([forbidden_response])
 
-        result = await mcp._registered_tools["spotify_get_recommendations"](
+        result = await (await tool_fn(mcp, "spotify_get_recommendations"))(
             seed_genres=["rock"], limit=5
         )
 
@@ -703,7 +678,7 @@ class TestScenario5DiscoveryFallback:
         assert result["error"] == _RECOMMENDATIONS_UNAVAILABLE_ERROR
 
     async def test_recommendations_missing_seeds_key_triggers_fallback(
-        self, module_with_valid_creds: tuple[SpotifyModule, MagicMock]
+        self, module_with_valid_creds: tuple[SpotifyModule, FastMCP]
     ) -> None:
         """When the response lacks a 'seeds' key, the module returns the fallback message."""
         module, mcp = module_with_valid_creds
@@ -718,7 +693,7 @@ class TestScenario5DiscoveryFallback:
             return no_seeds_response
 
         with patch.object(module._client, "get_recommendations", side_effect=_return_no_seeds):
-            result = await mcp._registered_tools["spotify_get_recommendations"](
+            result = await (await tool_fn(mcp, "spotify_get_recommendations"))(
                 seed_genres=["rock"], limit=5
             )
 
@@ -726,7 +701,7 @@ class TestScenario5DiscoveryFallback:
         assert result["error"] == _RECOMMENDATIONS_UNAVAILABLE_ERROR
 
     async def test_related_artists_success_as_discovery_fallback(
-        self, module_with_valid_creds: tuple[SpotifyModule, MagicMock]
+        self, module_with_valid_creds: tuple[SpotifyModule, FastMCP]
     ) -> None:
         """spotify_get_related_artists works as a discovery fallback when recommendations fail."""
         module, mcp = module_with_valid_creds
@@ -740,7 +715,7 @@ class TestScenario5DiscoveryFallback:
         related_response = _make_http_response(200, related_artists_response)
         module._client._http_client = _make_mock_http_client([related_response])
 
-        result = await mcp._registered_tools["spotify_get_related_artists"](
+        result = await (await tool_fn(mcp, "spotify_get_related_artists"))(
             artist_id="artist_seed_01"
         )
         assert "artists" in result

@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastmcp import FastMCP
 
 from butlers.modules.calendar import (
     CalendarEvent,
@@ -23,6 +24,7 @@ from butlers.modules.calendar import (
     CalendarEventUpdate,
     CalendarProvider,
 )
+from butlers.testing.mcp import tool_fn
 
 pytestmark = [
     pytest.mark.integration,
@@ -182,20 +184,6 @@ async def reminder_pool(provisioned_postgres_pool):
         await pool.execute(_CREATE_CALENDAR_SYNC_CURSORS_SQL)
         await pool.execute(_CREATE_CALENDAR_ACTION_LOG_SQL)
         yield pool
-
-
-class _StubMCP:
-    """Minimal MCP stub that captures registered tools by function name."""
-
-    def __init__(self) -> None:
-        self.tools: dict[str, object] = {}
-
-    def tool(self):
-        def decorator(func):
-            self.tools[func.__name__] = func
-            return func
-
-        return decorator
 
 
 def _make_module(pool, *, butler_name: str = "relationship") -> object:
@@ -414,7 +402,7 @@ async def test_public_native_reminder_update_replaces_entity_links(reminder_pool
     """The public update tool writes entity links against the native event ID."""
     pool = reminder_pool
     mod = _make_module(pool, butler_name="finance")
-    mcp = _StubMCP()
+    mcp = FastMCP("calendar-test-tools")
     await mod.register_tools(
         mcp=mcp,
         config={"provider": "google"},
@@ -438,7 +426,7 @@ async def test_public_native_reminder_update_replaces_entity_links(reminder_pool
         entity_ids=[old_entity_id],
     )
 
-    result = await mcp.tools["calendar_update_butler_event"](
+    result = await (await tool_fn(mcp, "calendar_update_butler_event"))(
         event_id=str(event_id),
         title="Review subscription",
         entity_ids=[new_entity_id],

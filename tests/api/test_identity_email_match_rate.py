@@ -17,7 +17,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.identity import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -27,7 +27,7 @@ def _app_with_mock_db(app: FastAPI, *, pool=None, has_relationship: bool = True)
     mock_db.butler_names = ["relationship", "switchboard"] if has_relationship else ["switchboard"]
     if pool is not None:
         mock_db.pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return mock_db
 
 

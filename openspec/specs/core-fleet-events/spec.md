@@ -174,7 +174,7 @@ Scope: v1-mandatory
 Calendar SHALL publish bridge-only `calendar` signals after durable provider projection writes with a non-empty delta or a user-visible internal scheduler projection change. Provider metadata SHALL contain `kind: provider_projection` and updated/cancelled counts; internal metadata SHALL contain `kind: internal_projection`, without event or source content. Bookkeeping-only or empty sweeps SHALL publish nothing.
 
 ID: REQ-core-fleet-events-011
-Source: RFC 0022 #Decision; [Observed] src/butlers/modules/calendar.py
+Source: RFC 0022 #Decision; [Observed] src/butlers/modules/calendar/internal_projection.py
 Scope: v1-mandatory
 
 #### Scenario: A provider projection changes visible events

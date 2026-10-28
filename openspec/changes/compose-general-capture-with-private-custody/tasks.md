@@ -1,3 +1,15 @@
+# Task history and pending successor conversion
+
+The eight tasks below retain their complete original bodies and checkbox states:
+three checked historical source/ordinary-boundary outcomes and five unchecked
+implementation/reconciliation outcomes. These checks do not claim that held
+capture or the RFC 0038 goal runtime shipped. The moved `butler-general` delta now
+lives in `generalist-lead-focused-delegation`; all six `general-capture`
+requirements stay active here. RFC 0038 D1/D2/D5 supersede the old classification
+and domain-session routing mechanism. Goal-runtime conversion and behavior proof
+remain PENDING; the historical packet is not dispatch authority. This fold does
+not tick tasks, archive either change, or authorize live operations.
+
 ## 1. Canonical source
 - [x] 1.1 Preserve exact adopted artifact and integrate its durable RFC/manifesto/spec target without unrelated baseline loss.
 - [x] 1.2 Complete independent exact-head source/packet review and protected landing under bu-2jtfw.9.1.

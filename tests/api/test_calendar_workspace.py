@@ -7,7 +7,6 @@ Keeps: required-params validation (422), workspace read structure, sync trigger 
 
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
@@ -18,8 +17,7 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
-from butlers.api.routers.calendar_workspace import _get_db_manager
+from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_db, get_mcp_manager
 
 
 def _audit_row(
@@ -282,7 +280,7 @@ def _build_app(
 
     mock_mgr.get_client = AsyncMock(side_effect=_get_client)
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     return app, mock_db, mock_mgr
 
@@ -628,7 +626,7 @@ def _build_paginating_app(app, *, rows: list[dict]):
 
     mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
     mock_mgr = AsyncMock(spec=MCPClientManager)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     return app, mock_db
 
@@ -763,7 +761,7 @@ async def test_workspace_editable_facet_filters_server_side(app):
 
     mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
     mock_mgr = AsyncMock(spec=MCPClientManager)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
 
     async with httpx.AsyncClient(
@@ -1778,22 +1776,10 @@ async def test_mutate_user_event_success_response_has_empty_conflict_lists(app):
     assert data["suggested_slots"] == []
 
 
-async def test_mutate_user_event_forwards_explicit_entity_clear(app):
-    """The workspace API preserves the explicit clear signal for the MCP tool."""
-    mcp_result = {
-        "status": "updated",
-        "provider": "google",
-        "calendar_id": "primary",
-        "event": {"event_id": "evt-1"},
-    }
-    mock_client = AsyncMock()
-    mock_client.call_tool = AsyncMock(return_value=_mock_mcp_result(mcp_result))
-
-    async def _get_client(name: str):
-        return mock_client
-
+@pytest.mark.parametrize("action", ["update", "delete"])
+async def test_mutate_user_event_rejects_update_and_delete_actions(app, action):
+    """The dashboard only creates user events (quick-add); update/delete never reach MCP."""
     app, _, mock_mgr = _build_app(app)
-    mock_mgr.get_client = AsyncMock(side_effect=_get_client)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1802,31 +1788,17 @@ async def test_mutate_user_event_forwards_explicit_entity_clear(app):
             "/api/calendar/workspace/user-events",
             json={
                 "butler_name": "general",
-                "action": "update",
-                "request_id": "req-clear-people-1",
-                "payload": {
-                    "event_id": "evt-1",
-                    "calendar_id": "primary",
-                    "entity_ids": [],
-                    "clear_entity_ids": True,
-                },
+                "action": action,
+                "payload": {"event_id": "evt-1", "calendar_id": "primary"},
             },
         )
 
-    assert response.status_code == 200
-    tool_name, arguments = mock_client.call_tool.await_args_list[0].args
-    assert tool_name == "calendar_update_event"
-    assert arguments == {
-        "event_id": "evt-1",
-        "calendar_id": "primary",
-        "entity_ids": [],
-        "clear_entity_ids": True,
-        "request_id": "req-clear-people-1",
-    }
+    assert response.status_code == 422
+    mock_mgr.get_client.assert_not_awaited()
 
 
-async def test_mutate_user_event_rejects_ambiguous_entity_clear(app):
-    """A destructive clear must carry exactly the empty replacement it authorizes."""
+async def test_mutate_user_event_rejects_entity_clear_on_create(app):
+    """People-link clearing is an update-only concept, so a create must not carry it."""
     app, _, mock_mgr = _build_app(app)
 
     async with httpx.AsyncClient(
@@ -1836,12 +1808,8 @@ async def test_mutate_user_event_rejects_ambiguous_entity_clear(app):
             "/api/calendar/workspace/user-events",
             json={
                 "butler_name": "general",
-                "action": "update",
-                "payload": {
-                    "event_id": "evt-1",
-                    "entity_ids": ["e1"],
-                    "clear_entity_ids": True,
-                },
+                "action": "create",
+                "payload": {"title": "x", "entity_ids": [], "clear_entity_ids": True},
             },
         )
 
@@ -1890,7 +1858,7 @@ def _build_audit_app(
     mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
 
     mock_mgr = AsyncMock(spec=MCPClientManager)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     return app, mock_db
 
@@ -2111,452 +2079,6 @@ async def test_entry_detail_returns_503_when_lookup_degraded(app):
 
 
 # ---------------------------------------------------------------------------
-# Mutation undo — POST /api/calendar/workspace/undo/{action_id}
-# ---------------------------------------------------------------------------
-
-
-_UNDO_PRE_STATE = {
-    "event_id": "evt-1",
-    "calendar_id": "primary",
-    "title": "Original title",
-    "start_at": "2026-06-20T10:00:00+00:00",
-    "end_at": "2026-06-20T11:00:00+00:00",
-    "timezone": "UTC",
-    "all_day": False,
-    "description": "Original description",
-    "body": None,
-    "location": "Room A",
-    "attendees": ["a@example.com"],
-    "recurrence_rule": None,
-    "color_id": None,
-    "entity_ids": ["11111111-1111-1111-1111-111111111111"],
-}
-
-
-_ALL_DAY_UNDO_PRE_STATE = {
-    **_UNDO_PRE_STATE,
-    "start_at": "2026-06-20T00:00:00+00:00",
-    "end_at": "2026-06-21T00:00:00+00:00",
-    "all_day": True,
-}
-
-
-def _undo_action_row(
-    *,
-    action_type: str,
-    action_status: str = "applied",
-    action_result: dict | None = None,
-    action_payload: dict | None = None,
-    origin_ref: str | None = None,
-) -> dict:
-    return {
-        "id": uuid4(),
-        "action_type": action_type,
-        "action_status": action_status,
-        "origin_ref": origin_ref,
-        "action_payload": action_payload or {},
-        "action_result": action_result,
-    }
-
-
-def _build_undo_app(
-    app,
-    *,
-    action_rows: dict[str, list[dict]],
-    mcp_status: str = "updated",
-    calendar_butlers: list[str] | None = None,
-    lookup_failed: list[str] | None = None,
-):
-    mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.butler_names = ["general"]
-    mock_db.butlers_with_module = MagicMock(
-        return_value=calendar_butlers if calendar_butlers is not None else ["general"]
-    )
-    _lookup_failed = lookup_failed or []
-
-    async def _fan_out(query: str, args=(), butler_names=None):
-        if "FROM calendar_action_log" in query:
-            rows = action_rows
-            if butler_names is not None:
-                rows = {k: v for k, v in rows.items() if k in butler_names}
-            return rows
-        return {}
-
-    async def _fan_out_with_status(query: str, args=(), butler_names=None):
-        failed = list(_lookup_failed) if "FROM calendar_action_log" in query else []
-        return await _fan_out(query, args, butler_names), failed
-
-    mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
-    _pool = MagicMock()
-    _pool.execute = AsyncMock()
-
-    async def _fetchval(query, *args):
-        # Models the atomic undo-claim guarded UPDATE ... RETURNING id: by
-        # default the claim succeeds (returns the action_id from $1).
-        if "calendar_action_log" in query and args:
-            return args[0]
-        return None
-
-    _pool.fetchval = AsyncMock(side_effect=_fetchval)
-    mock_db.pool = MagicMock(return_value=_pool)
-
-    mock_client = AsyncMock()
-    mock_client.call_tool = AsyncMock(return_value=_mock_mcp_result({"status": mcp_status}))
-
-    mock_mgr = AsyncMock(spec=MCPClientManager)
-
-    async def _get_client(name: str):
-        return mock_client
-
-    mock_mgr.get_client = AsyncMock(side_effect=_get_client)
-
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
-    app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
-    return app, mock_db, mock_client
-
-
-async def test_undo_update_reverse_applies_pre_state(app):
-    """Undo of an applied update dispatches calendar_update_event restoring pre-state."""
-    row = _undo_action_row(
-        action_type="workspace_user_update",
-        action_result={"status": "updated", "pre_state": _UNDO_PRE_STATE},
-    )
-    app, _, mock_client = _build_undo_app(app, action_rows={"general": [row]}, mcp_status="updated")
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
-
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["action_type"] == "workspace_user_update"
-    assert data["inverse_tool"] == "calendar_update_event"
-    assert data["undone"] is True
-    assert data["request_id"].startswith("undo-")
-
-    tool_name, arguments = mock_client.call_tool.await_args.args
-    assert tool_name == "calendar_update_event"
-    assert arguments["event_id"] == "evt-1"
-    assert arguments["title"] == "Original title"
-    assert arguments["start_at"] == "2026-06-20T10:00:00+00:00"
-    assert arguments["calendar_id"] == "primary"
-    assert arguments["entity_ids"] == _UNDO_PRE_STATE["entity_ids"]
-    assert "clear_entity_ids" not in arguments
-    # Fresh request_id flows to the dispatch (idempotent + audited).
-    assert arguments["request_id"] == data["request_id"]
-
-
-async def test_undo_update_preserves_all_day_pre_state(app):
-    """Undo restores all-day truth with the original midnight boundaries."""
-    row = _undo_action_row(
-        action_type="workspace_user_update",
-        action_result={"status": "updated", "pre_state": _ALL_DAY_UNDO_PRE_STATE},
-    )
-    app, _, mock_client = _build_undo_app(app, action_rows={"general": [row]}, mcp_status="updated")
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
-
-    assert resp.status_code == 200
-    tool_name, arguments = mock_client.call_tool.await_args.args
-    assert tool_name == "calendar_update_event"
-    assert arguments["all_day"] is True
-    assert arguments["start_at"] == "2026-06-20T00:00:00+00:00"
-    assert arguments["end_at"] == "2026-06-21T00:00:00+00:00"
-
-
-async def test_undo_update_uses_explicit_clear_for_empty_people_pre_state(app):
-    """Undo must restore an empty link set rather than preserving new links."""
-    row = _undo_action_row(
-        action_type="workspace_user_update",
-        action_result={
-            "status": "updated",
-            "pre_state": {**_UNDO_PRE_STATE, "entity_ids": []},
-        },
-    )
-    app, _, mock_client = _build_undo_app(app, action_rows={"general": [row]}, mcp_status="updated")
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
-
-    assert resp.status_code == 200
-    tool_name, arguments = mock_client.call_tool.await_args.args
-    assert tool_name == "calendar_update_event"
-    assert arguments["entity_ids"] == []
-    assert arguments["clear_entity_ids"] is True
-
-
-async def test_undo_delete_recreates_event(app):
-    """Undo of an applied delete dispatches calendar_create_event from the pre-image."""
-    row = _undo_action_row(
-        action_type="workspace_user_delete",
-        action_result={"status": "deleted", "pre_state": _UNDO_PRE_STATE},
-    )
-    app, _, mock_client = _build_undo_app(app, action_rows={"general": [row]}, mcp_status="created")
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
-
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["inverse_tool"] == "calendar_create_event"
-    assert data["undone"] is True
-
-    tool_name, arguments = mock_client.call_tool.await_args.args
-    assert tool_name == "calendar_create_event"
-    assert arguments["title"] == "Original title"
-    assert arguments["calendar_id"] == "primary"
-    assert arguments["entity_ids"] == _UNDO_PRE_STATE["entity_ids"]
-    assert "event_id" not in arguments  # create does not target an id
-    assert arguments["request_id"] == data["request_id"]
-
-
-async def test_undo_delete_recreates_all_day_event(app):
-    """Undo recreates an all-day event with the original date boundaries."""
-    row = _undo_action_row(
-        action_type="workspace_user_delete",
-        action_result={"status": "deleted", "pre_state": _ALL_DAY_UNDO_PRE_STATE},
-    )
-    app, _, mock_client = _build_undo_app(app, action_rows={"general": [row]}, mcp_status="created")
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
-
-    assert resp.status_code == 200
-    tool_name, arguments = mock_client.call_tool.await_args.args
-    assert tool_name == "calendar_create_event"
-    assert arguments["all_day"] is True
-    assert arguments["start_at"] == "2026-06-20T00:00:00+00:00"
-    assert arguments["end_at"] == "2026-06-21T00:00:00+00:00"
-
-
-async def test_undo_create_deletes_event(app):
-    """Undo of an applied create dispatches calendar_delete_event against the created id."""
-    row = _undo_action_row(
-        action_type="workspace_user_create",
-        action_result={
-            "status": "created",
-            "calendar_id": "primary",
-            "event": {"event_id": "evt-created-9"},
-        },
-        origin_ref="evt-created-9",
-    )
-    app, _, mock_client = _build_undo_app(app, action_rows={"general": [row]}, mcp_status="deleted")
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
-
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["inverse_tool"] == "calendar_delete_event"
-    assert data["undone"] is True
-
-    tool_name, arguments = mock_client.call_tool.await_args.args
-    assert tool_name == "calendar_delete_event"
-    assert arguments["event_id"] == "evt-created-9"
-    assert arguments["calendar_id"] == "primary"
-    assert arguments["request_id"] == data["request_id"]
-
-
-async def test_undo_non_applied_returns_409(app):
-    """Undo of a pending/failed/noop action fails fast with 409, dispatching nothing."""
-    row = _undo_action_row(
-        action_type="workspace_user_update",
-        action_status="failed",
-        action_result={"status": "error"},
-    )
-    app, _, mock_client = _build_undo_app(app, action_rows={"general": [row]})
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
-
-    assert resp.status_code == 409
-    assert "failed" in resp.json()["detail"]
-    mock_client.call_tool.assert_not_awaited()
-
-
-async def test_undo_missing_pre_state_returns_422(app):
-    """Applied update without captured pre-state fails fast with 422 diagnostics."""
-    row = _undo_action_row(
-        action_type="workspace_user_update",
-        action_result={"status": "updated"},  # no pre_state
-    )
-    app, _, mock_client = _build_undo_app(app, action_rows={"general": [row]})
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
-
-    assert resp.status_code == 422
-    detail = resp.json()["detail"]
-    assert detail["action_id"] == str(row["id"])
-    assert detail["action_type"] == "workspace_user_update"
-    assert "reason" in detail
-    mock_client.call_tool.assert_not_awaited()
-
-
-async def test_undo_unknown_id_returns_404(app):
-    """Undo of an unknown action id returns 404 and dispatches nothing."""
-    app, _, mock_client = _build_undo_app(app, action_rows={"general": []})
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(f"/api/calendar/workspace/undo/{uuid4()}")
-
-    assert resp.status_code == 404
-    mock_client.call_tool.assert_not_awaited()
-
-
-async def test_undo_lookup_source_failure_returns_503(app):
-    """When no owner row is found BUT a calendar schema's owner-lookup fan-out
-    failed, the endpoint returns 503 (retryable) — not a fabricated 404 — because
-    the owning schema may simply have been unreachable (bu-yjfk2)."""
-    app, _, mock_client = _build_undo_app(
-        app,
-        action_rows={"general": []},
-        calendar_butlers=["general", "relationship"],
-        lookup_failed=["relationship"],
-    )
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(f"/api/calendar/workspace/undo/{uuid4()}")
-
-    assert resp.status_code == 503
-    assert "unavailable" in resp.json()["detail"].lower()
-    mock_client.call_tool.assert_not_awaited()
-
-
-async def test_undo_already_undone_returns_409(app):
-    """Repeated undo of an already-undone action fails fast with 409."""
-    row = _undo_action_row(
-        action_type="workspace_user_update",
-        action_result={
-            "status": "updated",
-            "pre_state": _UNDO_PRE_STATE,
-            "undo": {"request_id": "undo-prev", "inverse_tool": "calendar_update_event"},
-        },
-    )
-    app, _, mock_client = _build_undo_app(app, action_rows={"general": [row]})
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
-
-    assert resp.status_code == 409
-    assert "already undone" in resp.json()["detail"]
-    mock_client.call_tool.assert_not_awaited()
-
-
-async def test_undo_concurrent_dispatches_inverse_exactly_once(app):
-    """Two concurrent undos of the same action dispatch the inverse exactly once.
-
-    Regression for the TOCTOU race (bu-iphtg): the already-undone read-guard and
-    the marker write were non-transactional, so two concurrent undos could each
-    pass the guard and recreate/restore the event twice. The atomic claim
-    (guarded conditional UPDATE) must let exactly one caller win and dispatch;
-    the loser returns 409 with NO second inverse dispatch.
-    """
-    row = _undo_action_row(
-        action_type="workspace_user_delete",
-        action_result={"status": "deleted", "pre_state": _UNDO_PRE_STATE},
-    )
-    app, mock_db, mock_client = _build_undo_app(
-        app, action_rows={"general": [row]}, mcp_status="created"
-    )
-
-    # The guarded UPDATE ... RETURNING id only matches the row while no 'undo'
-    # marker exists: the first claim wins (returns the id), every later claim
-    # matches zero rows (returns None). Model that with a one-shot counter so
-    # the outcome is deterministic regardless of coroutine interleaving.
-    claim_calls = {"n": 0}
-
-    async def _claim_once(query, *args):
-        if "calendar_action_log" in query and "RETURNING id" in query:
-            claim_calls["n"] += 1
-            return args[0] if claim_calls["n"] == 1 else None
-        return None
-
-    mock_db.pool.return_value.fetchval = AsyncMock(side_effect=_claim_once)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp_a, resp_b = await asyncio.gather(
-            client.post(f"/api/calendar/workspace/undo/{row['id']}"),
-            client.post(f"/api/calendar/workspace/undo/{row['id']}"),
-        )
-
-    statuses = sorted([resp_a.status_code, resp_b.status_code])
-    assert statuses == [200, 409], statuses
-
-    winner = resp_a if resp_a.status_code == 200 else resp_b
-    loser = resp_b if resp_a.status_code == 200 else resp_a
-    assert winner.json()["data"]["undone"] is True
-    assert "already undone" in loser.json()["detail"]
-
-    # Exactly ONE inverse dispatch — the whole point of the atomic claim.
-    assert mock_client.call_tool.await_count == 1
-    tool_name, _ = mock_client.call_tool.await_args.args
-    assert tool_name == "calendar_create_event"
-
-
-async def test_undo_legacy_corrupted_array_row_still_blocks_second_undo(app):
-    """A row corrupted by the action_result double-encoding bug (bu-x92jw) --
-    action_result stored as a jsonb ARRAY instead of an OBJECT -- is
-    reconstructed on read so the already-undone guard still fires, instead of
-    silently treating the corruption as "never undone" and dispatching a
-    second inverse mutation (e.g. recreating a deleted event twice).
-    """
-    corrupted_action_result = [
-        {"status": "updated", "pre_state": _UNDO_PRE_STATE},
-        json.dumps({"undo": {"request_id": "undo-prev", "inverse_tool": "calendar_update_event"}}),
-    ]
-    row = _undo_action_row(
-        action_type="workspace_user_update",
-        action_result=corrupted_action_result,  # type: ignore[arg-type]
-    )
-    app, mock_db, mock_client = _build_undo_app(app, action_rows={"general": [row]})
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
-
-    assert resp.status_code == 409
-    assert "already undone" in resp.json()["detail"]
-    mock_client.call_tool.assert_not_awaited()
-
-    # The corrupted row is healed back to a proper jsonb object before the
-    # guard runs, guarded on jsonb_typeof so the repair stays idempotent under
-    # a concurrent repair of the same row.
-    pool = mock_db.pool.return_value
-    repair_calls = [c for c in pool.execute.await_args_list if "jsonb_typeof" in c.args[0]]
-    assert len(repair_calls) == 1
-    _, repaired_action_id, healed = repair_calls[0].args
-    assert repaired_action_id == row["id"]
-    assert healed["undo"]["request_id"] == "undo-prev"
-    assert healed["pre_state"] == _UNDO_PRE_STATE
-
-
-# ---------------------------------------------------------------------------
 # Sync-health & cursor-recovery cockpit (bu-wwftzj)
 # ---------------------------------------------------------------------------
 
@@ -2700,205 +2222,46 @@ async def test_meta_carries_per_source_error_kind(app):
     assert by_key["provider:google:work"]["error_kind"] == "none"
 
 
-# ---------------------------------------------------------------------------
-# Find time — POST /api/calendar/workspace/find-time (bu-140q93)
-# ---------------------------------------------------------------------------
+async def test_meta_flags_only_provider_sources_as_sync_applicable(app):
+    """Internal sources never get a sync cursor, so they must not carry a sync verdict.
 
-
-async def test_find_time_returns_ranked_slots(app):
-    slots_payload = [
-        {
-            "start_at": "2026-06-22T09:00:00+00:00",
-            "end_at": "2026-06-22T10:00:00+00:00",
-            "timezone": "UTC",
-        },
-        {
-            "start_at": "2026-06-22T11:00:00+00:00",
-            "end_at": "2026-06-22T12:00:00+00:00",
-            "timezone": "UTC",
-        },
-    ]
-    mcp_result = {
-        "slots": slots_payload,
-        "duration_minutes": 60,
-        "calendar_ids": ["primary"],
-    }
-    mock_client = AsyncMock()
-    mock_client.call_tool = AsyncMock(return_value=_mock_mcp_result(mcp_result))
-
-    async def _get_client(name: str):
-        return mock_client
-
-    app, _, mock_mgr = _build_app(app)
-    mock_mgr.get_client = AsyncMock(side_effect=_get_client)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(
-            "/api/calendar/workspace/find-time",
-            json={
-                "butler_name": "general",
-                "duration_minutes": 60,
-                "search_start": "2026-06-22T08:00:00Z",
-                "search_end": "2026-06-22T18:00:00Z",
-                "constraints": {"part_of_day": "morning", "avoid_weekdays": ["FR"]},
-            },
-        )
-
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["duration_minutes"] == 60
-    assert data["calendar_ids"] == ["primary"]
-    assert [s["start_at"] for s in data["slots"]] == [
-        "2026-06-22T09:00:00Z",
-        "2026-06-22T11:00:00Z",
-    ]
-
-    # The MCP tool was dispatched with the structured arguments.
-    tool_name, arguments = mock_client.call_tool.await_args.args
-    assert tool_name == "calendar_find_free_slots"
-    assert arguments["duration_minutes"] == 60
-    assert arguments["constraints"] == {"part_of_day": "morning", "avoid_weekdays": ["FR"]}
-
-
-async def test_find_time_rejects_bad_duration(app):
-    app, _, _ = _build_app(app)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(
-            "/api/calendar/workspace/find-time",
-            json={
-                "butler_name": "general",
-                "duration_minutes": 0,
-                "search_start": "2026-06-22T08:00:00Z",
-                "search_end": "2026-06-22T18:00:00Z",
-            },
-        )
-    assert resp.status_code == 422
-
-
-async def test_find_time_rejects_inverted_window(app):
-    app, _, _ = _build_app(app)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(
-            "/api/calendar/workspace/find-time",
-            json={
-                "butler_name": "general",
-                "duration_minutes": 60,
-                "search_start": "2026-06-22T18:00:00Z",
-                "search_end": "2026-06-22T08:00:00Z",
-            },
-        )
-    assert resp.status_code == 422
-
-
-async def test_find_time_degrades_open_when_butler_unreachable(app):
-    """Fault injection: an unreachable free/busy source must NOT 500 the panel.
-
-    The endpoint follows the fail-open + explicit-degraded convention — it
-    returns HTTP 200 with ``available=false``, an empty ``slots`` list, and a
-    human-readable ``reason`` so the UI renders "free/busy unavailable" rather
-    than a misleading "no open slots".
+    Live incident (bu-ak7fij): cursorless ``internal_reminders`` rows made the grid
+    plaque read "Never synced" while every provider source was fresh.
     """
-    app, _, mock_mgr = _build_app(app)
-    mock_mgr.get_client = AsyncMock(side_effect=ButlerUnreachableError("general"))
+    provider = _workspace_source_row(
+        source_key="provider:google:primary",
+        source_kind="provider_event",
+        lane="user",
+        butler_name=None,
+        provider="google",
+        calendar_id="owner@example.com",
+        writable=True,
+    )
+    reminders = _workspace_source_row(
+        source_key="internal_reminders:general",
+        source_kind="internal_reminders",
+        lane="butler",
+        butler_name="general",
+        provider="internal",
+    )
+    for key in ("cursor_name", "last_synced_at", "last_success_at"):
+        reminders[key] = None
+
+    app, _, _ = _build_app(
+        app,
+        source_rows={"general": [provider, reminders]},
+        calendar_butlers=["general"],
+    )
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.post(
-            "/api/calendar/workspace/find-time",
-            json={
-                "butler_name": "general",
-                "duration_minutes": 60,
-                "search_start": "2026-06-22T08:00:00Z",
-                "search_end": "2026-06-22T18:00:00Z",
-                "calendar_ids": ["primary"],
-            },
-        )
+        resp = await client.get("/api/calendar/workspace/meta")
 
     assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["available"] is False
-    assert data["slots"] == []
-    assert data["duration_minutes"] == 60
-    assert data["calendar_ids"] == ["primary"]
-    assert isinstance(data["reason"], str) and data["reason"]
-
-
-async def test_find_time_available_true_on_success(app):
-    """Honest success: a reachable lookup returns ``available=true``."""
-    mcp_result = {"slots": [], "duration_minutes": 30, "calendar_ids": ["primary"]}
-    mock_client = AsyncMock()
-    mock_client.call_tool = AsyncMock(return_value=_mock_mcp_result(mcp_result))
-
-    app, _, mock_mgr = _build_app(app)
-    mock_mgr.get_client = AsyncMock(return_value=mock_client)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(
-            "/api/calendar/workspace/find-time",
-            json={
-                "butler_name": "general",
-                "duration_minutes": 30,
-                "search_start": "2026-06-22T08:00:00Z",
-                "search_end": "2026-06-22T18:00:00Z",
-            },
-        )
-
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    # available=true with empty slots = genuinely no gap, not a degraded source.
-    assert data["available"] is True
-    assert data["slots"] == []
-    assert data["reason"] is None
-
-
-async def test_find_time_maps_structured_module_error_to_safe_unavailable(app):
-    """A structured Calendar-module failure is not a successful empty search."""
-    mcp_result = {
-        "status": "error",
-        "error": "access_token=provider-secret expired",
-        "error_type": "CalendarAuthError",
-        "provider": "google",
-        "calendar_id": "primary",
-        "slots": [],
-        "duration_minutes": 60,
-        "calendar_ids": ["primary"],
-    }
-    mock_client = AsyncMock()
-    mock_client.call_tool = AsyncMock(return_value=_mock_mcp_result(mcp_result))
-
-    app, _, mock_mgr = _build_app(app)
-    mock_mgr.get_client = AsyncMock(return_value=mock_client)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(
-            "/api/calendar/workspace/find-time",
-            json={
-                "butler_name": "general",
-                "duration_minutes": 60,
-                "search_start": "2026-06-22T08:00:00Z",
-                "search_end": "2026-06-22T18:00:00Z",
-            },
-        )
-
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["available"] is False
-    assert data["slots"] == []
-    assert data["duration_minutes"] == 60
-    assert data["calendar_ids"] == ["primary"]
-    assert data["reason"] == "Free/busy lookup unavailable; try again shortly."
-    assert "provider-secret" not in resp.text
+    by_key = {s["source_key"]: s for s in resp.json()["data"]["connected_sources"]}
+    assert by_key["provider:google:primary"]["sync_applicable"] is True
+    assert by_key["internal_reminders:general"]["sync_applicable"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -3246,7 +2609,7 @@ async def test_butler_event_snooze_unknown_id_returns_404(app):
 # ---------------------------------------------------------------------------
 
 import butlers.api.routers.calendar_workspace as _cw  # noqa: E402
-from butlers.api.read_models.calendar_workspace_v1 import (  # noqa: E402
+from butlers.api.read_models.calendar_workspace import (  # noqa: E402
     CalendarProposalRow,
 )
 

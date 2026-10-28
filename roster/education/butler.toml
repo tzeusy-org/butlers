@@ -108,6 +108,10 @@ groups = ["core", "entity"]
 [modules.contacts]
 provider = "google"
 
+# Relationship is the only butler that syncs contacts (it owns entities).
+[modules.contacts.sync]
+enabled = false
+
 # Google Drive module (optional — requires 'drive' scope on connected Google account).
 # Enable by uncommenting and re-authorizing via /api/oauth/google/start?force_consent=true
 # [modules.google_drive]
@@ -115,5 +119,4 @@ provider = "google"
 # max_read_size_bytes = 10485760  # 10 MB cap for drive_read_file
 # butler_folder_name = "butlers"  # root folder name at Drive root for butler outputs
 
-# RFC 0015: report errors to QA; this module never dispatches locally.
-[modules.self_healing]
+# RFC 0015: core always registers the error relay; no module opt-in is required.

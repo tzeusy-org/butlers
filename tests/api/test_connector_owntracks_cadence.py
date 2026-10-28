@@ -10,7 +10,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.ingestion_connectors import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -60,7 +60,7 @@ def _cadence_row(endpoint_identity: str, point_count: int) -> MagicMock:
 def _wire_db(app: FastAPI, pool: AsyncMock) -> None:
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
 
 async def _get_summaries(app: FastAPI, pool: AsyncMock) -> dict:

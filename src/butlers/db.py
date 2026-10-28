@@ -14,20 +14,11 @@ import asyncpg
 logger = logging.getLogger(__name__)
 
 
-def is_hardened_posture() -> bool:
-    """Return True when the deployment posture is ``hardened``.
-
-    Reads the ``BUTLERS_POSTURE`` environment variable (set via ``--hardened``
-    flag or ``BUTLERS_POSTURE=hardened`` in the environment).  Default-when-unset
-    is ``dev`` (fail-open) so the running dev stack is never broken unless the
-    operator explicitly opts in.
-
-    See ``docs/operations/deployment-posture.md`` for the full posture reference.
-    """
-    return os.environ.get("BUTLERS_POSTURE", "dev").strip().lower() == "hardened"
+class _RuntimeRoleError(RuntimeError):
+    """Content-blind runtime boundary failure retaining its causal exception."""
 
 
-# Known-default infra credentials that must be changed in hardened deployments.
+# Known-default infrastructure credentials reported independently of runtime roles.
 # Each entry is (env_var_name, known_default_value, service_label).
 _KNOWN_DEFAULT_INFRA_CREDS: tuple[tuple[str, str, str], ...] = (
     ("MINIO_ROOT_USER", "minioadmin", "MinIO"),
@@ -62,76 +53,31 @@ def has_insecure_infra_defaults() -> bool:
     return False
 
 
-def is_grafana_anon_outside_dev() -> bool:
-    """Return True when Grafana anonymous viewer is enabled outside dev posture.
+def is_grafana_anonymous_enabled() -> bool:
+    """Report configured anonymous Grafana access without a posture exemption.
 
-    In dev posture Grafana anon access is expected (convenient for local
-    iteration) so this returns ``False``.  In hardened posture anon access
-    should be disabled; if ``GF_AUTH_ANONYMOUS_ENABLED`` is not ``"false"``
-    (absent counts as enabled via Docker's ``:-false`` default, which means
-    safe for direct compose invocations — but explicit ``true`` in hardened
-    posture is the concern) this returns ``True``.
-
-    The intent is to surface a concrete operator action: disable anon access
-    before switching to hardened posture.
-
-    Returns ``False`` in dev posture unconditionally.
+    This observes this process's configuration, not a remote Grafana or the
+    Kubernetes LGTM stack. Absence follows Compose's false default.
     """
-    if not is_hardened_posture():
-        return False
-    # In hardened posture, GF_AUTH_ANONYMOUS_ENABLED must be "false".
-    # Absent = safe (docker-compose.observability.yml defaults to "false").
     value = os.environ.get("GF_AUTH_ANONYMOUS_ENABLED", "false").strip().lower()
     return value not in ("false", "0", "no", "")
 
 
 def check_infra_default_creds() -> None:
-    """Detect known-default infra credentials and warn or refuse based on posture.
+    """Warn about known-default infrastructure configuration without values.
 
-    Reads each infra credential from the environment (env-var indirection).
-    When a credential is absent, the docker-compose default (``:-minioadmin`` /
-    ``:-admin``) would be used by Docker, so absence is treated as default.
-
-    Behaviour:
-    - **dev posture** (``BUTLERS_POSTURE`` unset or ``"dev"``): logs a loud
-      WARNING for each known-default credential found.  The stack continues
-      to start so the dev workflow is never broken.
-    - **hardened posture** (``BUTLERS_POSTURE=hardened``): raises
-      ``RuntimeError`` listing all offending credentials.  Startup is refused
-      until every default is replaced.
-
-    Services whose compose profiles are not active will still expose the env
-    vars if set, but the check is conservative: it only fires when the env var
-    is explicitly set to a known default OR is absent (treated as default).
+    Retain the supported Compose default detection, independently of runtime
+    role enforcement. This diagnostic does not attest fleet-wide credentials.
     """
-    hardened = is_hardened_posture()
-    offenders: list[str] = []
-
     for env_var, known_default, service in _KNOWN_DEFAULT_INFRA_CREDS:
         value = os.environ.get(env_var)
-        # Absent → docker-compose uses the ``:-<default>`` fallback, so treat
-        # absence the same as the explicit known default.
-        is_default = value is None or value == known_default
-        if is_default:
-            offenders.append(f"{service} {env_var} (known default)")
-            if not hardened:
-                logger.warning(
-                    "INSECURE DEFAULT: %s is using the known-default value for %s. "
-                    "Set %s to a strong credential before deploying to production. "
-                    "(posture=dev — startup continues)",
-                    service,
-                    env_var,
-                    env_var,
-                )
-
-    if hardened and offenders:
-        raise RuntimeError(
-            "Hardened posture requires all infra credentials to be changed from "
-            "known defaults.  The following credentials are still at their "
-            f"known-default values: {', '.join(offenders)}.  "
-            "Set each to a strong credential via the corresponding environment "
-            "variable before starting with BUTLERS_POSTURE=hardened."
-        )
+        if value is None or value == known_default:
+            logger.warning(
+                "INSECURE DEFAULT: %s uses a known-default configuration for %s; "
+                "configure a non-default credential.",
+                service,
+                env_var,
+            )
 
 
 def encode_jsonb(value: object) -> bytes:
@@ -370,7 +316,6 @@ class Database:
         ssl: str | None = None,
         min_pool_size: int = 1,
         max_pool_size: int = 10,
-        strict_role_enforcement: bool | None = None,
     ) -> None:
         self.db_name = db_name
         self.schema = _normalize_schema_name(schema)
@@ -389,15 +334,10 @@ class Database:
         self.ssl = ssl
         self.min_pool_size = min_pool_size
         self.max_pool_size = max_pool_size
-        # strict_role_enforcement: None → auto-detect from BUTLERS_POSTURE env var.
-        # True → hardened (fail-closed on role missing/unverifiable).
-        # False → dev (fail-open: log warning and continue without SET ROLE).
-        if strict_role_enforcement is None:
-            self.strict_role_enforcement: bool = is_hardened_posture()
-        else:
-            self.strict_role_enforcement = strict_role_enforcement
         self.pool: asyncpg.Pool | None = None
         self._role_verified: bool = False
+        self._verified_role: str | None = None
+        self._owner_database: Database | None = None
 
     @property
     def role_enforcement_disabled(self) -> bool:
@@ -436,14 +376,101 @@ class Database:
             "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)",
             self.role,
         )
-        return bool(exists)
+        return exists is True
+
+    def _runtime_role_required(self) -> bool:
+        """Separate schema-less administrative utilities from runtime pools."""
+        return self.schema is not None or self.role is not None
+
+    @staticmethod
+    def _owner_may_delegate(owner_schema: str | None, target: str | None) -> bool:
+        """Own schema, Chronicler's private memory, or the shared ``public`` schema.
+
+        ``public`` is already on every runtime search path, so a ``public``-only
+        child under the owner's verified role confers no additional authority.
+        """
+        return (
+            target == owner_schema
+            or target == "public"
+            or (owner_schema, target) == ("chronicler", "chronicler_mem")
+        )
+
+    def for_owned_schema(self, schema: str) -> Database:
+        """Bind a module pool to this established primary owner, not a target role.
+
+        This is search-path delegation only. PostgreSQL still decides schema and
+        table privileges; no role, membership or grant is created here.
+        """
+        if not isinstance(self, Database) or self._owner_database is not None:
+            raise RuntimeError("Runtime database requires an established primary owner")
+        self._validate_runtime_role()
+        if (
+            self.schema is None
+            or self.pool is None
+            or self._role_verified is not True
+            or self._verified_role != self.role
+        ):
+            raise RuntimeError("Runtime database primary owner is not established")
+        target = _normalize_schema_name(schema)
+        if not self._owner_may_delegate(self.schema, target):
+            raise RuntimeError("Runtime database cannot access an unowned schema")
+        child = Database(
+            db_name=self.db_name,
+            schema=target,
+            role=self.role,
+            host=self.host,
+            port=self.port,
+            user=self.user,
+            password=self.password,
+            ssl=self.ssl,
+            min_pool_size=self.min_pool_size,
+            max_pool_size=self.max_pool_size,
+        )
+        child._owner_database = self
+        return child
+
+    def _validate_runtime_role(self) -> None:
+        if not self._runtime_role_required():
+            return
+        if not isinstance(self.role, str) or not self.role.strip():
+            raise RuntimeError("Runtime database requires a configured role")
+        owner = self._owner_database
+        if owner is not None:
+            # Recheck the held primary identity on every acquisition. A private
+            # search path never supplies authority to choose a sibling role.
+            if owner._owner_database is not None:
+                raise RuntimeError("Runtime database requires a primary owner")
+            owner._validate_runtime_role()
+            if (
+                owner.schema is None
+                or owner.pool is None
+                or owner._role_verified is not True
+                or owner._verified_role != owner.role
+                or self.role != owner.role
+                or not self._owner_may_delegate(owner.schema, self.schema)
+            ):
+                raise RuntimeError("Runtime database owned schema identity is unavailable")
+        elif self.schema is not None and self.role != f"butler_{self.schema}_rw":
+            raise RuntimeError("Runtime database role does not match its schema")
 
     async def _setup_connection(self, conn: asyncpg.Connection) -> None:
-        """asyncpg setup callback: SET ROLE on every connection acquire."""
-        if not self._role_verified or self.role is None:
+        """Establish the designated role before every runtime acquire returns."""
+        self._validate_runtime_role()
+        if not self._runtime_role_required():
             return
+        if not self._role_verified or self.role != self._verified_role:
+            raise RuntimeError("Runtime database role has not been established")
         quoted_role = '"' + self.role.replace('"', '""') + '"'
-        await conn.execute(f"SET ROLE {quoted_role}")
+        try:
+            await conn.execute(f"SET ROLE {quoted_role}")
+            if self._owner_database is not None and self.schema != self._owner_database.schema:
+                allowed = await conn.fetchval(
+                    "SELECT has_schema_privilege($1, 'USAGE')", self.schema
+                )
+                if allowed is not True:
+                    raise RuntimeError("Runtime private schema access is unavailable")
+        except Exception as exc:
+            raise _RuntimeRoleError("Runtime database role acquisition failed") from exc
 
     async def _init_connection(self, conn: asyncpg.Connection) -> None:
         """asyncpg init callback: register JSONB codec on each new connection.
@@ -525,81 +552,85 @@ class Database:
         if self.ssl is not None:
             pool_kwargs["ssl"] = self.ssl
 
-        # Verify role existence before pool creation
-        if self.role is not None:
-            _check_ssl = self.ssl
-
-            async def _open_check_conn(ssl: str | None) -> asyncpg.Connection:
-                return await asyncpg.connect(
-                    host=self.host,
-                    port=self.port,
-                    user=self.user,
-                    password=self.password,
-                    database=self.db_name,
-                    ssl=ssl,
-                )
-
+        self._role_verified = False
+        self._verified_role = None
+        self._validate_runtime_role()
+        if self._runtime_role_required():
+            check_conn = None
             try:
+                connect_kwargs = {
+                    "host": self.host,
+                    "port": self.port,
+                    "user": self.user,
+                    "password": self.password,
+                    "database": self.db_name,
+                    "ssl": self.ssl,
+                }
                 try:
-                    check_conn = await _open_check_conn(_check_ssl)
+                    check_conn = await asyncpg.connect(**connect_kwargs)
                 except Exception as exc:
-                    if not should_retry_with_ssl_disable(exc, _check_ssl):
+                    if not should_retry_with_ssl_disable(exc, self.ssl):
                         raise
-                    logger.info(
-                        "Retrying role verification connection with ssl=disable "
-                        "after SSL upgrade loss"
-                    )
-                    _check_ssl = "disable"
-                    check_conn = await _open_check_conn(_check_ssl)
-                try:
-                    self._role_verified = await self._verify_role_exists(check_conn)
-                finally:
-                    await check_conn.close()
-            except (asyncpg.PostgresError, OSError) as exc:
-                if self.strict_role_enforcement:
-                    raise RuntimeError(
-                        f"[hardened] Could not verify role {self.role!r} existence"
-                        f" for {self.db_name!r};"
-                        f" refusing to start with unverified role enforcement: {exc}"
-                    ) from exc
-                logger.warning(
-                    "Could not verify role %r existence; SET ROLE enforcement disabled for %s: %s",
-                    self.role,
-                    self.db_name,
-                    exc,
-                )
+                    connect_kwargs["ssl"] = "disable"
+                    logger.info("Retrying role verification after SSL upgrade loss")
+                    check_conn = await asyncpg.connect(**connect_kwargs)
+                if await self._verify_role_exists(check_conn) is not True:
+                    raise RuntimeError("Configured runtime role is unavailable")
+                self._role_verified = True
+                self._verified_role = self.role
+                # Existence alone is insufficient: exercise SET ROLE using the
+                # real connecting identity even for a lazy (min_size=0) pool.
+                await self._setup_connection(check_conn)
+                await check_conn.close()
+                check_conn = None
+            except BaseException as exc:
                 self._role_verified = False
-
-            if self._role_verified:
-                pool_kwargs["setup"] = self._setup_connection
-                logger.info(
-                    "SET ROLE enforcement enabled: %s (schema=%s)",
-                    self.role,
-                    self.schema,
-                )
-            else:
-                if self.strict_role_enforcement:
-                    raise RuntimeError(
-                        f"[hardened] Role {self.role!r} not found in pg_roles"
-                        f" for {self.db_name!r};"
-                        f" refusing to start with SET ROLE enforcement disabled."
-                    )
-                logger.warning(
-                    "Role %r not found; SET ROLE enforcement disabled. "
-                    "Butler %s runs with shared-user privileges.",
-                    self.role,
-                    self.db_name,
-                )
-
-        try:
-            self.pool = await asyncpg.create_pool(**pool_kwargs)
-        except Exception as exc:
-            if not should_retry_with_ssl_disable(exc, self.ssl):
+                self._verified_role = None
+                if check_conn is not None:
+                    try:
+                        check_conn.terminate()
+                    except Exception:
+                        logger.error("Runtime role verification cleanup was incomplete")
+                if isinstance(exc, _RuntimeRoleError):
+                    raise
+                if isinstance(exc, Exception):
+                    # Keep the causal object for internal diagnosis, without
+                    # interpolating private driver payload into the boundary.
+                    raise _RuntimeRoleError("Runtime database role establishment failed") from exc
                 raise
-            retry_kwargs = dict(pool_kwargs)
-            retry_kwargs["ssl"] = "disable"
-            logger.info("Retrying PostgreSQL pool creation with ssl=disable after SSL upgrade loss")
-            self.pool = await asyncpg.create_pool(**retry_kwargs)
+            pool_kwargs["setup"] = self._setup_connection
+
+        candidate = None
+        try:
+            try:
+                candidate = asyncpg.create_pool(**pool_kwargs)
+                pool = await candidate
+            except Exception as exc:
+                if isinstance(candidate, asyncpg.Pool):
+                    try:
+                        candidate.terminate()
+                    except Exception:
+                        logger.error("Runtime pool initialization cleanup was incomplete")
+                    candidate = None
+                if not should_retry_with_ssl_disable(exc, self.ssl):
+                    raise
+                retry_kwargs = dict(pool_kwargs)
+                retry_kwargs["ssl"] = "disable"
+                logger.info("Retrying PostgreSQL pool creation after SSL upgrade loss")
+                candidate = asyncpg.create_pool(**retry_kwargs)
+                pool = await candidate
+        except BaseException as exc:
+            if isinstance(candidate, asyncpg.Pool):
+                try:
+                    candidate.terminate()
+                except Exception:
+                    logger.error("Runtime pool initialization cleanup was incomplete")
+            self._role_verified = False
+            self._verified_role = None
+            if self._runtime_role_required() and isinstance(exc, Exception):
+                raise _RuntimeRoleError("Runtime database pool initialization failed") from exc
+            raise
+        self.pool = pool
         logger.info("Connection pool created for: %s", self.db_name)
         return self.pool
 
@@ -619,19 +650,19 @@ class Database:
             raise RuntimeError(f"Database '{self.db_name}' has no active connection pool")
         return self.pool
 
-    async def fetch(self, query: str, *args: Any, timeout: float | None = None) -> list[Any]:
+    async def fetch(self, query: str, *args: Any, timeout: float | None = None) -> list[Any]:  # noqa: ASYNC109 - asyncpg signature
         """Proxy to asyncpg Pool.fetch."""
         return await self._require_pool().fetch(query, *args, timeout=timeout)
 
-    async def fetchrow(self, query: str, *args: Any, timeout: float | None = None) -> Any:
+    async def fetchrow(self, query: str, *args: Any, timeout: float | None = None) -> Any:  # noqa: ASYNC109 - asyncpg signature
         """Proxy to asyncpg Pool.fetchrow."""
         return await self._require_pool().fetchrow(query, *args, timeout=timeout)
 
-    async def fetchval(self, query: str, *args: Any, timeout: float | None = None) -> Any:
+    async def fetchval(self, query: str, *args: Any, timeout: float | None = None) -> Any:  # noqa: ASYNC109 - asyncpg signature
         """Proxy to asyncpg Pool.fetchval."""
         return await self._require_pool().fetchval(query, *args, timeout=timeout)
 
-    async def execute(self, query: str, *args: Any, timeout: float | None = None) -> str:
+    async def execute(self, query: str, *args: Any, timeout: float | None = None) -> str:  # noqa: ASYNC109 - asyncpg signature
         """Proxy to asyncpg Pool.execute."""
         return await self._require_pool().execute(query, *args, timeout=timeout)
 

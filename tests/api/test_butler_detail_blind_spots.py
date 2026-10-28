@@ -20,7 +20,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerConnectionInfo
+from butlers.api.deps import ButlerConnectionInfo, get_db
 
 from .conftest import make_butler_dir, make_mock_mcp_manager, make_test_app
 
@@ -58,9 +58,8 @@ async def test_no_declared_module_returns_empty_blind_spots(app, roster_dir) -> 
     make_butler_dir(roster_dir, "general", 41201)
     configs = [ButlerConnectionInfo("general", 41201)]
     make_test_app(roster_dir, configs, make_mock_mcp_manager(online=True), app=app)
-    from butlers.api.routers.butlers import _get_db_manager
 
-    app.dependency_overrides[_get_db_manager] = lambda: _mock_db(_FakePool())
+    app.dependency_overrides[get_db] = lambda: _mock_db(_FakePool())
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -77,7 +76,6 @@ async def test_health_module_absent_signal_surfaces_in_detail_endpoint(app, rost
     make_butler_dir(roster_dir, "health", 41202, modules={"health": ""})
     configs = [ButlerConnectionInfo("health", 41202)]
     make_test_app(roster_dir, configs, make_mock_mcp_manager(online=True), app=app)
-    from butlers.api.routers.butlers import _get_db_manager
 
     now = datetime.now(UTC)
     pool = _FakePool(
@@ -91,7 +89,7 @@ async def test_health_module_absent_signal_surfaces_in_detail_endpoint(app, rost
             }
         ]
     )
-    app.dependency_overrides[_get_db_manager] = lambda: _mock_db(pool)
+    app.dependency_overrides[get_db] = lambda: _mock_db(pool)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -111,7 +109,6 @@ async def test_query_failure_is_reported_not_silently_empty(app, roster_dir) -> 
     make_butler_dir(roster_dir, "health", 41203, modules={"health": ""})
     configs = [ButlerConnectionInfo("health", 41203)]
     make_test_app(roster_dir, configs, make_mock_mcp_manager(online=True), app=app)
-    from butlers.api.routers.butlers import _get_db_manager
 
     class _ExplodingPool(_FakePool):
         async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
@@ -119,7 +116,7 @@ async def test_query_failure_is_reported_not_silently_empty(app, roster_dir) -> 
                 raise RuntimeError("connection reset")
             return []
 
-    app.dependency_overrides[_get_db_manager] = lambda: _mock_db(_ExplodingPool())
+    app.dependency_overrides[get_db] = lambda: _mock_db(_ExplodingPool())
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

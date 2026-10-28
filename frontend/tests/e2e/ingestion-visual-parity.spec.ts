@@ -1,3 +1,5 @@
+import { fulfillEmptyApi } from "./fixtures/empty-api";
+import { mockJson } from "./fixtures/api-responses";
 /**
  * Playwright visual parity spec — ingestion redesign (bu-y25mj.6).
  *
@@ -180,11 +182,7 @@ async function installCommonMocks(page: Page) {
   // 1. Catch-all — absorbs sidebar requests (/api/butlers, /api/spend, etc.)
   await page.route("**/api/**", (route) => {
     if (new URL(route.request().url()).pathname.startsWith("/api/auth/owner/")) return route.fallback();
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ data: [] }),
-    });
+    return fulfillEmptyApi(route);
   });
 
   // The globally rendered Sidebar reads this availability-bearing metric.
@@ -193,8 +191,8 @@ async function installCommonMocks(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        data: { total_pending: 0 },
+      body: mockJson("getApprovalMetrics", {
+        data: { total_pending: 0, total_approved_today: 0, total_rejected_today: 0, total_auto_approved_today: 0, total_expired_today: 0, auto_approval_rate: 0, rejection_rate: 0, failure_count_today: 0, active_rules_count: 0 },
         meta: {},
       }),
     });
@@ -205,7 +203,7 @@ async function installCommonMocks(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
+      body: mockJson("getConnectorSummaries", { meta: {},
         data: { connectors: [FIXTURE_CONNECTOR_SUMMARY] },
       }),
     });
@@ -218,7 +216,7 @@ async function installCommonMocks(page: Page) {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ data: FIXTURE_CONNECTOR_DETAIL }),
+        body: mockJson("getConnectorDetail", { meta: {}, data: FIXTURE_CONNECTOR_DETAIL }),
       });
     },
   );
@@ -231,7 +229,7 @@ async function installCommonMocks(page: Page) {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ data: [] }),
+        body: mockJson("getConnectorStats", { meta: {}, data: [] }),
       });
     },
   );
@@ -247,7 +245,7 @@ async function installCommonMocks(page: Page) {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({
+        body: mockJson("getConnectorRoutingRules", {
           rules: [],
           connector_type: "gmail",
           endpoint_identity: "alice@example.com",
@@ -264,7 +262,7 @@ async function installCommonMocks(page: Page) {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({
+        body: mockJson("getConnectorIncidents", {
           incidents: [],
           connector_type: "gmail",
           endpoint_identity: "alice@example.com",
@@ -280,7 +278,7 @@ async function installCommonMocks(page: Page) {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({
+        body: mockJson("getConnectorEvents", {
           events: [],
           connector_type: "gmail",
           endpoint_identity: "alice@example.com",
@@ -295,9 +293,9 @@ async function installCommonMocks(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
+      body: mockJson("getPipelineStats", {
         window: "24h",
-        aggregates_available: true,
+        aggregates_available: true, failed_total: 0, replay_pending_total: 0, written_off_total: 0, backlog_available: true,
         ingested: 1000,
         filtered: 200,
         errored: 10,
@@ -315,7 +313,7 @@ async function installCommonMocks(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
+      body: mockJson("getIngestionRules", {
         data: [
           {
             id: "rule-001",
@@ -343,7 +341,7 @@ async function installCommonMocks(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ data: { resolved: false, name: null, raw: null } }),
+      body: mockJson("getIngestionEventSenderContact", { meta: {}, data: { resolved: false, name: null, raw: null } }),
     });
   });
 
@@ -351,24 +349,7 @@ async function installCommonMocks(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ data: [] }),
-    });
-  });
-
-  await page.route("**/api/ingestion/events/*/rollup", (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        data: {
-          request_id: "aabbccdd-0000-0000-0000-000000000001",
-          total_sessions: 0,
-          total_input_tokens: 0,
-          total_output_tokens: 0,
-          total_cost: 0,
-          by_butler: {},
-        },
-      }),
+      body: mockJson("getIngestionEventReplays", { meta: {}, data: [] }),
     });
   });
 
@@ -376,7 +357,7 @@ async function installCommonMocks(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ data: [] }),
+      body: mockJson("getIngestionEventSessions", { meta: {}, data: [] }),
     });
   });
 
@@ -387,10 +368,7 @@ async function installCommonMocks(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        data: FIXTURE_EVENTS,
-        meta: { next_cursor: null, has_more: false },
-      }),
+      body: mockJson("listIngestionEvents", { items: FIXTURE_EVENTS, next_cursor: null, limit: 50 }),
     });
   });
 }

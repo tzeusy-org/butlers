@@ -1,7 +1,7 @@
 ## 1. Slice 1: column, write tool, spec
 
 - [x] 1.1 Migration `core_256` adds `posture`, `posture_since`, `posture_set_by` and the writer-guard trigger.
-- [x] 1.2 `entity_set_posture` in the Relationship `entity` tool group, idempotent, audited without the value.
+- [x] 1.2 `entity_set_posture` in the Relationship `entity_write` tool group, idempotent, audited without the value.
 - [x] 1.3 Spec deltas and the Relationship manifesto and prompt amended.
 
 ## 2. Slice 2: producers
@@ -16,6 +16,6 @@
 
 ## 4. Slice 4: deferred
 
-- [ ] 4.1 Finance loan-claim owner question for a memorial counterparty.
+- [x] 4.1 Finance loan-claim owner question for a memorial counterparty (REQ-butler-finance-002).
 - [ ] 4.2 Anniversary-of-passing occasion.
 - [ ] 4.3 Dashboard surface and remembrance opt-in.

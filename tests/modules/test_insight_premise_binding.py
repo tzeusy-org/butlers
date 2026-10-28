@@ -13,12 +13,11 @@ drives the real seams: ``delivery_cycle`` against a migrated-shape schema and
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import pytest
 
 from butlers.core.condition_ledger import ConditionTransition
@@ -28,6 +27,8 @@ from butlers.core.insight_premise import (
     owner_condition_premise,
     probe_premise,
 )
+from butlers.db import register_jsonb_codec
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.switchboard.insight import broker, premises
 
 _docker_available = shutil.which("docker") is not None
@@ -301,35 +302,32 @@ class TestApplyPendingAmendments:
         ledger.assert_not_awaited()
 
 
-def _migration():
-    path = (
-        Path(__file__).resolve().parents[2]
-        / "alembic/versions/core/core_255_insight_premise_binding.py"
-    )
-    spec = importlib.util.spec_from_file_location("core_255_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+@pytest.fixture
+def premise_db_url(postgres_container) -> str:
+    """Migrate a fresh database before entering this case's async fixture loop."""
+    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
 
 
 @pytest.fixture
-async def premise_pool(provisioned_postgres_pool):
-    """Insight tables + owner_conditions + the finance bill lookup, as migrated."""
+async def premise_pool(premise_db_url: str):
+    """Real core policy/context/definers plus this case's Finance bill state."""
     from butlers.core.owner_conditions import create_owner_conditions_table
 
-    migration = _migration()
-    async with provisioned_postgres_pool() as pool:
+    pool = await asyncpg.create_pool(
+        premise_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+    )
+    try:
         await broker.create_insight_tables(pool)
         await create_owner_conditions_table(pool)
         await pool.execute("CREATE SCHEMA IF NOT EXISTS finance")
         await pool.execute("CREATE TABLE finance.bills (id uuid PRIMARY KEY, status text NOT NULL)")
-        await pool.execute(migration.CREATE_BILL_STATUS_FN)
-        await pool.execute(migration.CREATE_ENQUEUE_FN)
         await pool.execute(
             "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'minimal') "
             "ON CONFLICT (id) DO UPDATE SET verbosity = 'minimal'"
         )
         yield pool
+    finally:
+        await pool.close()
 
 
 _TELEGRAM_SENT = {
@@ -528,3 +526,22 @@ class TestPremiseBoundDelivery:
         assert "Refill due" in sent
         assert "Since last digest: Resolved" in sent
         assert await premise_pool.fetchval("SELECT state FROM insight_amendments") == "folded"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", [True, False, None, "true", 1])
+async def test_fixed_finance_probe_uses_only_held_reader_and_strict_tristate(verdict):
+    args = {
+        "subject": "00000000-0000-0000-0000-000000000001",
+        "selected_date": "2026-10-27",
+        "epoch": 0,
+    }
+    premise = probe_premise("finance", "subscription_warning_still_relevant", args)
+    pool = AsyncMock()
+    assert await premises.check_premise(pool, premise) is None
+    reader = AsyncMock(return_value=verdict)
+    actual = await premises.check_premise(pool, premise, finance_warning_reader=reader)
+    assert actual is (verdict if type(verdict) is bool else None)
+    reader.assert_awaited_once_with(args)
+    pool.fetchrow.assert_not_awaited()
+    pool.fetchval.assert_not_awaited()

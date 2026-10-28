@@ -34,7 +34,7 @@ import shutil
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 
 from butlers.core.child_env import without_owner_auth
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
@@ -941,6 +941,7 @@ class OpenCodeAdapter(RuntimeAdapter):
         """
         return build_config_file(mcp_servers, tmp_dir)
 
+    @override
     async def invoke(
         self,
         prompt: str,

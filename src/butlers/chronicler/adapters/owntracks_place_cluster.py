@@ -116,11 +116,11 @@ DEFAULT_MIN_DWELL_MINUTES = 20
 # device can legitimately ping less often than a moving one.
 DEFAULT_MAX_GAP_MINUTES = 60
 
-# Points whose device timestamp deviates from server ingestion time by more
+# Points whose device timestamp runs ahead of server ingestion time by more
 # than this threshold are treated as having an implausible device clock and
-# are clamped to recorded_at — identical rationale/default to
-# owntracks.py's CLOCK_SKEW_THRESHOLD_HOURS (same evidence rows, same defect
-# class).
+# are clamped to recorded_at; late (buffered offline) points keep their ts.
+# Identical rationale/default to owntracks.py's CLOCK_SKEW_THRESHOLD_HOURS
+# (same evidence rows, same defect class).
 CLOCK_SKEW_THRESHOLD_HOURS = 4
 
 # A cluster centroid within this distance of an owner-declared reference
@@ -565,8 +565,9 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
     ) -> tuple[dict[str, Any] | None, list[str]]:
         """Sanitize one raw row; see ``owntracks.py``'s twin method for rationale.
 
-        Applies the same clock-skew clamp (ts -> recorded_at when device
-        clock is implausible) and finite-float coordinate guard as the
+        Applies the same clock-skew clamp (ts -> recorded_at when the device
+        ts is future-dated past the threshold; late buffered fixes keep their
+        ts) and finite-float coordinate guard as the
         sibling point-projection adapter, since both read identical raw
         rows and are equally exposed to the same data-quality defects.
         """
@@ -583,7 +584,7 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
         recorded_at = row["recorded_at"]
         if isinstance(recorded_at, datetime) and recorded_at.tzinfo is not None:
             delta = ts - recorded_at
-            if abs(delta) > self.clock_skew_threshold:
+            if delta > self.clock_skew_threshold:
                 warnings.append(
                     f"OwnTracks row {row_ref} has implausible device timestamp "
                     f"(ts={ts.isoformat()}, recorded_at={recorded_at.isoformat()}, "

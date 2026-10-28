@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
+from fastmcp import FastMCP
 from pydantic import BaseModel
 
-from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
+from butlers.modules.base import (
+    Module,
+    ToolGroupMixin,
+    ToolMeta,
+    group_enabled,
+    guarded_tool,
+    tool_registrar,
+)
+from butlers.testing.mcp import registered_tools as snapshot_registered_tools
 
 pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
@@ -22,9 +32,7 @@ class EmptyConfig(BaseModel):
 class MinimalModule(Module):
     """Fully concrete implementation with the bare minimum logic."""
 
-    @property
-    def name(self) -> str:
-        return "minimal"
+    name = "minimal"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -52,9 +60,7 @@ class MinimalModule(Module):
 class ModuleWithDeps(Module):
     """Module that declares dependencies."""
 
-    @property
-    def name(self) -> str:
-        return "with_deps"
+    name = "with_deps"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -113,9 +119,7 @@ class MissingNameModule(Module):
 class MissingRegisterToolsModule(Module):
     """Missing the `register_tools` method."""
 
-    @property
-    def name(self) -> str:
-        return "incomplete"
+    name = "incomplete"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -282,3 +286,148 @@ class TestGroupEnabled:
         assert group_enabled(cfg, "core")
         assert not group_enabled(cfg, "admin")
         assert cfg.foo == "bar"
+
+
+# ---------------------------------------------------------------------------
+# ABC defaults: only name, config_schema and register_tools are required
+# ---------------------------------------------------------------------------
+
+
+class BareModule(Module):
+    """Implements only the three abstract members."""
+
+    name = "bare"
+
+    @property
+    def config_schema(self) -> type[BaseModel]:
+        return EmptyConfig
+
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
+        pass
+
+
+async def test_bare_module_gets_formal_hook_defaults():
+    mod = BareModule()
+
+    assert mod.dependencies == []
+    assert mod.migration_revisions() is None
+    assert mod.credentials_env == []
+    assert await mod.on_startup(config=None, db=None) is None
+    assert await mod.on_shutdown() is None
+    assert mod.on_all_modules_ready({"bare": mod}) is None
+
+
+# ---------------------------------------------------------------------------
+# tool_registrar and guarded_tool
+# ---------------------------------------------------------------------------
+
+
+class TestToolRegistrar:
+    def test_registers_only_enabled_groups(self):
+        mcp = FastMCP("module-base-registration-test-tools")
+        tool = tool_registrar(mcp, ["core"])
+
+        @tool("core")
+        async def in_core() -> None: ...
+
+        @tool("admin")
+        async def in_admin() -> None: ...
+
+        assert list(asyncio.run(snapshot_registered_tools(mcp))) == ["in_core"]
+
+    def test_disabled_tool_function_is_still_defined(self):
+        tool = tool_registrar(FastMCP("module-base-registration-test-tools"), ["core"])
+
+        @tool("admin")
+        async def in_admin() -> str:
+            return "defined"
+
+        assert in_admin.__name__ == "in_admin"
+
+    @pytest.mark.parametrize("groups", [None, []])
+    def test_no_groups_registers_everything(self, groups):
+        mcp = FastMCP("module-base-registration-test-tools")
+        tool = tool_registrar(mcp, groups)
+
+        @tool("anything")
+        async def any_tool() -> None: ...
+
+        assert list(asyncio.run(snapshot_registered_tools(mcp))) == ["any_tool"]
+
+    def test_accepts_a_module_config_carrying_groups(self):
+        mcp = FastMCP("module-base-registration-test-tools")
+        tool = tool_registrar(mcp, ToolGroupMixin(groups=["core"]))
+
+        @tool("core")
+        async def core_tool() -> None: ...
+
+        @tool("entity")
+        async def entity_tool() -> None: ...
+
+        assert list(asyncio.run(snapshot_registered_tools(mcp))) == ["core_tool"]
+
+
+class TestGuardedTool:
+    @staticmethod
+    def _guard(ready: bool, **kwargs):
+        return guarded_tool(
+            credential=lambda: ready,
+            missing=lambda: {"error": "no credentials"},
+            **kwargs,
+        )
+
+    async def test_missing_credential_short_circuits_without_running_the_tool(self):
+        ran = []
+
+        @self._guard(False)
+        async def tool() -> dict:
+            ran.append(True)
+            return {"ok": True}
+
+        assert await tool() == {"error": "no credentials"}
+        assert ran == []
+
+    async def test_ready_credential_runs_the_tool(self):
+        @self._guard(True)
+        async def tool(x: int = 1) -> dict:
+            return {"x": x}
+
+        assert await tool(x=3) == {"x": 3}
+
+    async def test_errors_are_mapped_when_a_mapper_is_given(self):
+        @self._guard(True, errors=lambda exc: {"error": f"mapped {exc}"})
+        async def tool() -> dict:
+            raise ValueError("boom")
+
+        assert await tool() == {"error": "mapped boom"}
+
+    async def test_a_tool_needing_no_credential_still_gets_error_mapping(self):
+        @guarded_tool(errors=lambda exc: {"error": str(exc)})
+        async def tool() -> dict:
+            raise ValueError("boom")
+
+        assert await tool() == {"error": "boom"}
+
+    def test_credential_and_missing_must_be_given_together(self):
+        with pytest.raises(TypeError):
+            guarded_tool(credential=lambda: True)
+
+    async def test_errors_propagate_without_a_mapper(self):
+        @self._guard(True)
+        async def tool() -> dict:
+            raise ValueError("boom")
+
+        with pytest.raises(ValueError, match="boom"):
+            await tool()
+
+    def test_wrapper_keeps_name_doc_and_signature_for_fastmcp(self):
+        import inspect
+
+        @self._guard(True)
+        async def tool(query: str, limit: int = 10) -> dict:
+            """Search things."""
+            return {}
+
+        assert tool.__name__ == "tool"
+        assert tool.__doc__ == "Search things."
+        assert list(inspect.signature(tool).parameters) == ["query", "limit"]

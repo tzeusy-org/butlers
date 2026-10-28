@@ -29,14 +29,18 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_mcp_manager
-from butlers.api.routers.healing import _get_db_manager
-from butlers.core.healing.dispatch import _is_circuit_breaker_tripped
+from butlers.api.deps import get_db, get_mcp_manager
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.integration
 
 _BASE_URL = "http://testserver"
+
+
+async def _is_circuit_breaker_tripped(pool, threshold):
+    from butlers.api.routers.healing import _compute_breaker_state
+
+    return (await _compute_breaker_state(pool, threshold))[0]
 
 
 async def _make_schema(pool: asyncpg.Pool) -> None:
@@ -81,7 +85,7 @@ def _app_for(pool: asyncpg.Pool):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: MagicMock()
     return app
 

@@ -387,7 +387,7 @@ async def reconcile_codex_auth(
     key = _cache_key(token_path)
     async with _lock_for(token_path):
         local_snapshot = _read_valid_auth_snapshot(token_path)
-        if local_snapshot is None and not token_path.exists():
+        if local_snapshot is None and not await asyncio.to_thread(token_path.exists):
             _clear_auth_baseline(token_path)
 
         cached_authority = _AUTH_AUTHORITY_CACHE.get(key)
@@ -546,7 +546,7 @@ async def finalize_codex_auth_rotation(
 
     async with _lock_for(token_path):
         local_snapshot = _read_valid_auth_snapshot(token_path)
-        if local_snapshot is None and not token_path.exists():
+        if local_snapshot is None and not await asyncio.to_thread(token_path.exists):
             _clear_auth_baseline(token_path)
 
         if local_snapshot is None:

@@ -17,13 +17,18 @@ approval action and presentation generation. It SHALL derive the owner actor
 from the authenticated server boundary and SHALL accept only a successful
 authenticated approve, reject, defer, explicit attention acknowledgement, or a
 provider-native verified-owner read receipt whose adapter binds it to the exact
-presentation. Provider send acceptance, page reads/prefetch/polling, unrelated
-owner activity, system expiry, connector traffic, and caller-supplied actor
-fields SHALL NOT acknowledge an action.
+presentation. The evidence key SHALL be derived by the server from the durable
+operation identity (the decision, acknowledgement, or verified receipt record);
+a caller SHALL NOT supply it. Provider send acceptance, page reads/prefetch/
+polling, unrelated owner activity, system expiry, connector traffic, and
+caller-supplied actor or evidence-key fields SHALL NOT acknowledge an action.
+A rejected submission SHALL record only a reason from the closed set
+`stale_evidence`, `wrong_action_or_generation`, `non_owner`,
+`caller_asserted_actor`, `unbound_receipt`.
 
 ID: REQ-approval-attention-reminders-001
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: Explicit acknowledgement closes attention without deciding
 
@@ -55,8 +60,16 @@ Scope: proposed
 - **WHEN** evidence predates its presentation, names another action/generation,
   comes from a non-owner, or supplies an actor in caller-controlled data
 - **THEN** it has no acknowledgement or scheduling effect
-- **AND** a safe rejection reason is recorded without persisting raw provider
-  or identity data
+- **AND** a safe rejection reason from the closed set is recorded without
+  persisting raw provider or identity data
+
+#### Scenario: Evidence identity cannot be chosen by the caller
+
+- **WHEN** a submission carries its own evidence key or idempotency token
+- **THEN** the key is ignored and the server-derived operation identity decides
+  uniqueness
+- **AND** varying a caller token cannot create a second record or reopen an
+  acknowledged episode
 
 #### Scenario: Acknowledgement replay is idempotent
 
@@ -73,8 +86,9 @@ Scope: proposed
 
 ### Requirement: Fresh reachability truth
 
-The system SHALL derive owner reachability from evidence no older than 24
-hours over a complete reachability observation inventory. That inventory SHALL
+The system SHALL derive owner reachability from evidence younger than 24
+hours (age strictly below 24 hours, measured on database time; an event exactly
+24 hours old is stale, matching the homecoming gap rule) over a complete reachability observation inventory. That inventory SHALL
 contain each current `telegram` or `email` channel present in the Switchboard
 trusted-recovery notify registry with an enabled Messenger adapter and one
 unambiguous active owner reachability fact. It SHALL ignore owner preference
@@ -88,13 +102,13 @@ observational and SHALL NOT itself authorize a reminder.
 
 ID: REQ-approval-attention-reminders-002
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: Owner-authenticated activity is reachable
 
 - **WHEN** an accepted owner-resolved ingress, successful owner authentication
-  ceremony, or successful authenticated owner mutation occurred within 24
-  hours
+  ceremony, or successful authenticated owner mutation is younger than 24
+  hours on database time
 - **THEN** reachability is `reachable`
 - **AND** background reads, polling, probes, connectors, schedules, and
   unresolved/non-owner ingress do not satisfy the rule
@@ -103,7 +117,7 @@ Scope: proposed
 
 - **WHEN** no qualifying owner activity is fresh and a channel in the
   reachability observation inventory has a provider-confirmed presentation
-  within 24 hours, even if that episode already used the channel
+  younger than 24 hours, even if that episode already used the channel
 - **THEN** reachability is `degraded`, not `reachable` or `unreachable`
 - **AND** that label does not imply acknowledgement or disengagement
 
@@ -118,10 +132,17 @@ Scope: proposed
 #### Scenario: Missing, stale, or ambiguous evidence is unknown
 
 - **WHEN** the reachability observation inventory or required evidence is
-  incomplete, older than 24 hours, contradictory, or includes an unresolved
+  incomplete, 24 hours old or older, contradictory, or includes an unresolved
   ambiguous provider effect without a higher-priority fresh confirmation
 - **THEN** reachability is `unknown`
 - **AND** passage of time never converts unknown evidence into unreachable
+
+#### Scenario: The 24-hour boundary is single-valued
+
+- **WHEN** the newest qualifying owner activity is exactly 24 hours old
+- **THEN** it is not fresh for reachability and a following qualifying activity
+  starts a new presence epoch
+- **AND** the two rules never disagree about the same instant
 
 #### Scenario: Concurrent evidence derives one state
 
@@ -138,14 +159,26 @@ enabled Messenger adapter, has one unambiguous active owner reachability fact,
 and is unused by any provider-started or confirmed presentation in the current
 episode. Eligible unused channels SHALL be ordered by eligible owner
 `prefers-channel`, then `telegram`, then `email`. Private destinations SHALL be
-resolved only at egress and SHALL NOT be stored in policy state. The first four
-predicates SHALL form the reachability observation inventory; the episode-
-unused predicate SHALL apply only to reminder/homecoming channel selection and
-SHALL NOT filter observational reachability evidence.
+resolved only at egress from the owner's own active reachability fact, SHALL
+NOT be stored in policy state, and SHALL NOT be accepted from a caller, a
+stored action argument, or any non-owner identity. Egress SHALL re-verify
+eligibility and fail with a no-effect result, never fall back to another
+channel, when the channel or fact is no longer eligible; a supplied non-owner
+destination is a hard no-effect refusal and is never retried. The first four
+predicates SHALL form the reachability observation inventory. For a direct
+reminder or reminder digest member, the unused-channel predicate SHALL be
+bound to that action's current attention episode. For a homecoming summary,
+the unused-channel predicate SHALL instead be bound to the singleton owner-
+presence epoch that owns the summary, not to any member action's attention
+episode. Prior original or reminder channel use by a member SHALL NOT exclude
+that member from the homecoming summary. These episode-local predicates SHALL
+NOT filter observational reachability evidence. All four inventory predicates,
+egress re-verification, ambiguity exclusions, and the fixed channel order SHALL
+still apply to the summary.
 
 ID: REQ-approval-attention-reminders-003
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: Preferred registered channel is selected first
 
@@ -176,11 +209,35 @@ Scope: proposed
 - **THEN** the episode enters `safe_hold(channel_inventory_unavailable)`
 - **AND** no fallback destination or unapproved channel is invented
 
+#### Scenario: Egress re-verifies the destination and recipient
+
+- **WHEN** a channel or the owner's reachability fact changes between admission
+  and provider handoff, or a destination other than the owner's own fact is
+  supplied
+- **THEN** egress fails with a pre-provider no-effect result on the same
+  presentation key and selects no other channel or recipient
+- **AND** a channel or fact that is no longer eligible leaves the episode in
+  `safe_hold(no_eligible_reminder_channel)`, `channel_inventory_unavailable`
+  being reserved for an inventory that cannot be read completely
+- **AND** a supplied non-owner destination is refused outright and is not retried
+
 #### Scenario: Admission snapshot is replay-stable
 
 - **WHEN** concurrent schedulers select a channel for the same reminder ordinal
 - **THEN** one ordered eligibility snapshot and one selected channel commit
 - **AND** the loser replays that result without creating a second presentation
+
+#### Scenario: Exhausted action channels do not reopen reminder authority
+
+- **WHEN** an action's original Telegram presentation and Email reminder were
+  confirmed, the action is safely held, and a qualifying owner return creates
+  a new presence epoch
+- **THEN** a homecoming summary may include that action using a channel that
+  satisfies all four inventory predicates and is unused by that presence epoch
+- **AND** the action's attention episode, used-channel evidence, and spent
+  reminder ordinals remain unchanged
+- **AND** repeated activity or an uncertain summary outcome cannot create a
+  second summary key or select another channel for the same epoch
 
 ### Requirement: Bounded reminder admission separate from recovery
 
@@ -195,7 +252,7 @@ reminder ordinal.
 
 ID: REQ-approval-attention-reminders-004
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: First bounded reminder succeeds
 
@@ -235,6 +292,23 @@ Scope: proposed
 - **AND** no later reminder, channel switch, homecoming membership, or fresh
   presentation key may be created for the action
 
+#### Scenario: Late reconciliation does not restore reminder authority
+
+- **WHEN** an ambiguous presentation is later reconciled as confirmed or as
+  no-effect
+- **THEN** the same-key result is recorded and the episode keeps its
+  `safe_hold(ambiguous_delivery)` with no reminder re-anchored on the
+  reconciled time
+- **AND** a later authenticated defer successor starts a new episode only
+  through its own confirmed handoff
+
+#### Scenario: Admitted ordinal stays spent when cancelled before handoff
+
+- **WHEN** an admitted reminder is cancelled before provider handoff by
+  acknowledgement, decision, expiry, or goal Stop
+- **THEN** its ordinal remains spent and no replacement ordinal is created
+- **AND** a later defer episode inherits only the unspent ordinals
+
 #### Scenario: Reminder replay is idempotent
 
 - **WHEN** the same due ordinal is evaluated after restart or by concurrent
@@ -258,12 +332,16 @@ action decision field. It SHALL use RFC 0021's exact end-exclusive quiet-hours
 release and the same per-schema ten-minute first-three/one-digest/later-collapse
 burst shape. Every digest creator and joining member SHALL be compatible with
 the digest channel under that action's locked reminder-eligibility snapshot. A
-release at or after expiry SHALL create no handoff. Terminal decision or expiry
-SHALL fence every unstarted reminder.
+release at or after expiry SHALL create no handoff. Any action status other
+than `pending` (decision, expiry, abandonment, or the `cancelled` status a goal
+Stop gives a parked effect under RFC 0038) SHALL fence every unstarted
+reminder. An approval collapsed into a burst after that burst's digest was
+emitted starts its reminder clock at the digest's confirmed delivery, with the
+same two-reminder limit.
 
 ID: REQ-approval-attention-reminders-005
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: Original expiry is a hard fence
 
@@ -278,8 +356,8 @@ Scope: proposed
 - **WHEN** a reminder is admitted, delivered, retried, cancelled, or held
 - **THEN** action expiry, status, decision, arguments, and execution state are
   unchanged
-- **AND** an expired/rejected/approved/executed/abandoned action cannot become
-  pending or sendable again
+- **AND** an expired/rejected/approved/executed/abandoned/cancelled action
+  cannot become pending or sendable again
 
 #### Scenario: Quiet-hours release is exact and not re-gated
 
@@ -318,17 +396,30 @@ Scope: proposed
 - **AND** decision/expiry may still remove a member without replaying the
   digest
 
+#### Scenario: Late-collapsed approval is still reminded
+
+- **WHEN** an approval is collapsed into a burst after that burst's digest was
+  emitted
+- **THEN** its reminder clock starts at that digest's confirmed delivery
+- **AND** it receives at most two reminders
+
 ### Requirement: Safe hold does not become ActionStatus
 
-The approval attention episode SHALL support monotonic `safe_hold` with a
-closed reason vocabulary. `safe_hold` SHALL NOT be added to `ActionStatus` and
+The approval attention episode SHALL support monotonic `safe_hold` with exactly
+this closed reason vocabulary: `reminder_budget_exhausted`,
+`no_eligible_reminder_channel`, `ack_evidence_unavailable`,
+`channel_inventory_unavailable`, `burst_digest_channel_incompatible`,
+`ambiguous_delivery`, `expiry_fence`. A new reason requires an adopted
+amendment. When every allowlisted channel (REQ-003's first three predicates: `telegram` or `email`, in the registry, adapter enabled) has been used by the episode, or both
+ordinals are spent, the episode SHALL enter safe hold at that confirmation
+rather than waiting for the next due instant. `safe_hold` SHALL NOT be added to `ActionStatus` and
 SHALL NOT approve, reject, expire, execute, abandon, defer, extend, or revive
 an action. A later acknowledgement MAY improve the read projection to
 acknowledged but SHALL NOT restore automatic send authority.
 
 ID: REQ-approval-attention-reminders-006
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: Reminder budget exhaustion holds attention only
 
@@ -344,6 +435,30 @@ Scope: proposed
 - **WHEN** a due episode has no distinct eligible unused channel
 - **THEN** it enters `safe_hold(no_eligible_reminder_channel)`
 - **AND** no action field, provider, or unregistered channel is touched
+
+#### Scenario: Exhausted channels hold at once, not at the next slot
+
+- **WHEN** a reminder is confirmed and every allowlisted channel has now been
+  used by the episode
+- **THEN** the episode enters `safe_hold(no_eligible_reminder_channel)` at that
+  confirmation, so a returning owner's homecoming summary includes the action
+- **AND** a transient lack of a reachability fact, rather than a used channel,
+  does not hold early and is judged at the due instant
+
+#### Scenario: Ambiguous delivery holds attention only
+
+- **WHEN** any presentation of the action has an unresolved ambiguous effect
+- **THEN** the episode enters `safe_hold(ambiguous_delivery)` and only
+  same-key reconciliation continues
+- **AND** the action stays `pending` and decidable by the owner
+
+#### Scenario: Owner sees the hold truthfully
+
+- **WHEN** the authenticated owner opens a pending action's detail
+- **THEN** the dashboard shows the episode state, the closed hold reason as a
+  fixed human label, remaining unspent ordinals, reachability state with its
+  evidence time, and ambiguity when present
+- **AND** no raw provider data, destination, or callback material is shown
 
 #### Scenario: Safe-hold replay is monotonic
 
@@ -362,16 +477,20 @@ Scope: proposed
 ### Requirement: Bounded homecoming summary
 
 The system SHALL create an owner-presence epoch only when qualifying owner
-activity follows at least 24 hours without qualifying activity, serialized
+activity follows at least 24 hours (on database time) without qualifying activity, serialized
 under one singleton record. It SHALL admit at most one homecoming summary per
 epoch. The summary SHALL contain no more than 20 pending safe-held actions and
 safe-held actions expired within 7 days, plus an overflow count; ambiguous
 actions SHALL be excluded from outbound content. Expired entries SHALL be
-non-actionable.
+non-actionable. The summary's channel-use identity SHALL be its owner-presence
+epoch as defined in REQ-approval-attention-reminders-003. It SHALL NOT be a new
+action attention episode or a restored reminder ordinal. A provider-started
+summary SHALL retain its selected channel and key through recovery; ambiguous
+effects SHALL permit only same-key reconciliation.
 
 ID: REQ-approval-attention-reminders-007
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: Returning owner receives one bounded summary
 
@@ -390,10 +509,26 @@ Scope: proposed
 
 #### Scenario: Ambiguous action is excluded
 
-- **WHEN** an action's latest presentation has an unresolved ambiguous effect
+- **WHEN** any presentation of an action (not only its latest) has an
+  unresolved ambiguous effect
 - **THEN** it remains visible as ambiguous on the authenticated dashboard but
-  is absent from outbound homecoming content
+  is absent from outbound homecoming content, the overflow count, and any
+  outbound disclosure of how many items are held back
 - **AND** homecoming cannot mint a fresh key for it
+
+#### Scenario: No eligible rows sends nothing
+
+- **WHEN** a new presence epoch starts and no pending safe-held or recently
+  expired safe-held action qualifies
+- **THEN** no summary is admitted for that epoch
+- **AND** the epoch is not retried and later activity in it cannot create one
+
+#### Scenario: Overflow is counted and linked
+
+- **WHEN** more than 20 qualifying actions exist
+- **THEN** the summary lists 20 and states the number of further qualifying
+  rows with one dashboard link to the full list
+- **AND** the count excludes ambiguous actions
 
 #### Scenario: Concurrent activity deduplicates one epoch
 
@@ -423,7 +558,7 @@ insight-policy authority.
 
 ID: REQ-approval-attention-reminders-008
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: Approval delivery does not become an insight opportunity
 
@@ -449,6 +584,15 @@ Scope: proposed
 - **AND** only confirmed eligible membership with a complete evidence read can
   enter the denominator
 
+#### Scenario: Silence and reachability never adapt policy
+
+- **WHEN** approval acknowledgement rate, safe holds, or reachability labels
+  accumulate over time
+- **THEN** reminder count, timing, channels, and the proactive-insight
+  auto-off ratchet are unchanged by them
+- **AND** owner absence never lowers any engagement ratio through approval
+  traffic
+
 #### Scenario: Reachability changes preserve historical evidence
 
 - **WHEN** current reachability moves among reachable, degraded, unreachable,
@@ -469,7 +613,7 @@ separate gates.
 
 ID: REQ-approval-attention-reminders-009
 Source: RFC-0035
-Scope: proposed
+Scope: v1-mandatory
 
 #### Scenario: Draft merge has no runtime effect
 
@@ -491,3 +635,98 @@ Scope: proposed
 - **THEN** future implementation may be planned under its own authority
 - **AND** migration, rollout, deployment, provider use, and live sends remain
   disabled until separately authorized and verified
+
+### Requirement: Content-blind attention state and reminder content
+
+Attention episodes, acknowledgement records, reminder ordinals, presence
+epochs, hold records, logs, metrics, and audit payloads SHALL store only
+identifiers, closed enumerations, generations, ordinals, channel names,
+timestamps, and bounded counts (the homecoming overflow count and aggregate
+metric values). They SHALL NOT store tool names, arguments, lineage content,
+destinations, callback material, or raw provider payloads. A reminder or
+homecoming presentation SHALL be a fixed content-blind template that identifies
+itself as a reminder, states the pending-since and expiry times, and links to
+the authenticated dashboard detail. It SHALL NOT include tool arguments or a
+recipient, and it SHALL NOT carry approve, reject, or defer controls.
+
+ID: REQ-approval-attention-reminders-010
+Source: RFC-0035
+Scope: v1-mandatory
+
+#### Scenario: Reminder on a different channel discloses no action content
+
+- **WHEN** a reminder is presented on email after the original used Telegram
+- **THEN** it contains only the fixed template, times, and dashboard link
+- **AND** the owner must open the authenticated dashboard to see the action
+
+#### Scenario: Stored attention fields are an allowlist
+
+- **WHEN** any attention table, log line, metric label, or audit payload is
+  written
+- **THEN** it holds only allowlisted identifiers, enumerations, and timestamps
+- **AND** a contract guard rejects any other field
+
+### Requirement: Attention policy confers no authority and is not model-reachable
+
+Acknowledgement, reminder admission, safe hold, reachability derivation, and
+homecoming SHALL run only as deterministic daemon infrastructure and through
+owner-authenticated surfaces that use the approvals module's existing owner
+authentication. They SHALL NOT be registered in any goal-visible capability
+catalog, SHALL NOT be grantable to a model session, goal, or child invocation,
+and SHALL NOT be callable with a broker assertion. A model session SHALL NOT be
+able to acknowledge, read attention state, or change a reminder. No attention
+operation SHALL decide, edit, execute, or cancel an action.
+
+ID: REQ-approval-attention-reminders-011
+Source: RFC-0035
+Scope: v1-mandatory
+
+#### Scenario: Model session cannot acknowledge
+
+- **WHEN** a goal or session attempts to acknowledge attention, read episode
+  state, or alter a reminder through any tool
+- **THEN** no such tool exists in its catalog and no grant can add one
+- **AND** the owner-authenticated surface remains the only acknowledgement path
+
+#### Scenario: No scheduler invokes a model
+
+- **WHEN** the reminder scheduler or homecoming projector runs
+- **THEN** it spawns no model session and calls no model function
+- **AND** its decisions derive only from durable state and database time
+
+### Requirement: Approval-keyed identity under the goal runtime
+
+Every attention identity SHALL be keyed by the approval (`pending_actions`)
+identifier and its presentation generation, never by session, goal, invocation,
+or effect identifier. An action whose parked effect carries RFC 0038 goal
+lineage, a `legacy` goal origin, or no session lineage SHALL behave identically
+for acknowledgement, reminders, safe hold, and homecoming. A fresh owner
+approval required to replay an `unknown` effect is a new approval with its own
+episode and lifetime ordinals. Lineage MAY be joined by approval id for the
+owner surface only and SHALL NOT be copied into attention state.
+
+ID: REQ-approval-attention-reminders-012
+Source: RFC-0035
+Scope: v1-mandatory
+
+#### Scenario: Session-less and lineage-bearing approvals behave the same
+
+- **WHEN** one pending action has no session lineage and another is a parked
+  goal effect
+- **THEN** both are keyed and bounded identically by approval id
+- **AND** no policy path reads a session, goal, or invocation id
+
+#### Scenario: Stopped goal fences reminders
+
+- **WHEN** owner Stop cancels a parked effect while a reminder is admitted but
+  unstarted
+- **THEN** the reminder is cancelled before handoff and its ordinal stays spent
+- **AND** the cancelled action is never described as actionable in a reminder
+  or homecoming summary
+
+#### Scenario: Fresh approval does not inherit a spent budget silently
+
+- **WHEN** an unknown effect requires a fresh owner approval
+- **THEN** the new pending action starts its own episode and ordinals
+- **AND** the per-schema burst window still bounds how many presentations the
+  owner receives

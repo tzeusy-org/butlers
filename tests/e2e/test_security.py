@@ -14,6 +14,7 @@ accessing resources outside their defined boundaries.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -337,7 +338,7 @@ async def test_no_api_key_in_logs(
     )
 
     # Read the entire log file
-    log_content = e2e_log_path.read_text(encoding="utf-8")
+    log_content = await asyncio.to_thread(e2e_log_path.read_text, encoding="utf-8")
 
     # Scan for API key value
     assert api_key not in log_content, (

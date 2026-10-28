@@ -20,24 +20,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.testing.fake_pool import AsyncCtx
+
 pytestmark = pytest.mark.unit
 
 _ADD_PATCH_TARGET = "butlers.tools.relationship.channel.relationship_assert_fact"
 _CONTACT_ID = uuid.uuid4()
 _ENTITY_ID = uuid.uuid4()
-
-
-class _AsyncCM:
-    """Minimal async context manager helper for mocking pool.acquire()."""
-
-    def __init__(self, value):
-        self._value = value
-
-    async def __aenter__(self):
-        return self._value
-
-    async def __aexit__(self, *args):
-        return False
 
 
 # ===========================================================================
@@ -64,8 +53,8 @@ def _pool_with_entity(entity_id=_ENTITY_ID):
     conn = AsyncMock()
     conn.execute = AsyncMock(return_value=None)
     conn.fetchrow = AsyncMock(return_value=None)
-    conn.transaction = MagicMock(return_value=_AsyncCM(None))
-    pool.acquire = MagicMock(return_value=_AsyncCM(conn))
+    conn.transaction = MagicMock(return_value=AsyncCtx(None))
+    pool.acquire = MagicMock(return_value=AsyncCtx(conn))
     return pool, conn
 
 

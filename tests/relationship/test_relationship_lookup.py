@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 
+from butlers.testing.records import Record, row
 from butlers.tools.relationship.relationship_lookup import (
     _validate_args,
     relationship_lookup,
@@ -41,10 +42,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # It records every executed statement so a test can assert NO write ever ran
 # (read-only contract). Any execute/INSERT/UPDATE/DELETE fails the test.
 # ---------------------------------------------------------------------------
-
-
-class _Row(dict):
-    """A dict that also supports ``row["key"]`` like an asyncpg Record."""
 
 
 class FakePool:
@@ -84,8 +81,8 @@ def _header_row(
     aliases: list[str] | None = None,
     roles: list[str] | None = None,
     tier: int | None = None,
-) -> _Row:
-    return _Row(
+) -> Record:
+    return row(
         id=entity_id,
         canonical_name=canonical_name,
         entity_type=entity_type,
@@ -101,8 +98,8 @@ def _state_row(
     is_dup_flagged: bool = False,
     has_fresh_fact: bool = True,
     shares_contact: bool = False,
-) -> _Row:
-    return _Row(
+) -> Record:
+    return row(
         is_unidentified=is_unidentified,
         is_dup_flagged=is_dup_flagged,
         has_fresh_fact=has_fresh_fact,
@@ -123,8 +120,8 @@ def _identity_fact_row(
     observed_at: datetime | None = None,
     last_seen: datetime | None = None,
     staleness_band: str = "fresh",
-) -> _Row:
-    return _Row(
+) -> Record:
+    return row(
         # The identity SELECT returns f.id so callers can ask the evidence
         # ledger why the fact is believed; the stub must carry it too.
         id=id or uuid.uuid4(),
@@ -150,8 +147,8 @@ def _narrative_fact_row(
     conf: float = 0.8,
     observed_at: datetime | None = None,
     staleness_band: str = "aging",
-) -> _Row:
-    return _Row(
+) -> Record:
+    return row(
         predicate=predicate,
         object=object,
         object_kind=object_kind,
@@ -164,18 +161,18 @@ def _narrative_fact_row(
 
 def _recency_row(
     *, last_seen: datetime | None = None, last_interaction_at: datetime | None = None
-) -> _Row:
-    return _Row(last_seen=last_seen, last_interaction_at=last_interaction_at)
+) -> Record:
+    return row(last_seen=last_seen, last_interaction_at=last_interaction_at)
 
 
 def _pool_for_entity(
     entity_id: uuid.UUID,
     *,
-    header: _Row | None = None,
-    state: _Row | None = None,
-    identity_facts: list[_Row] | None = None,
-    narrative_facts: list[_Row] | None = None,
-    recency: _Row | None = None,
+    header: Record | None = None,
+    state: Record | None = None,
+    identity_facts: list[Record] | None = None,
+    narrative_facts: list[Record] | None = None,
+    recency: Record | None = None,
     band: str = "fresh",
 ) -> FakePool:
     """Build a fake pool wired for a successful entity_id lookup."""
@@ -192,7 +189,7 @@ def _pool_for_entity(
             # _fetch_recency main row — distinctive: interaction_% predicate.
             ("interaction_%", recency or _recency_row()),
             # _fetch_recency band derivation
-            ("THEN 'fresh'", _Row(band=band)),
+            ("THEN 'fresh'", row(band=band)),
         ]
     )
 
@@ -345,7 +342,7 @@ async def test_lookup_surfaces_staleness_bands_per_fact():
 # ---------------------------------------------------------------------------
 
 
-def _resolve_pool(rank_rows: list[_Row], *, target: uuid.UUID | None = None) -> FakePool:
+def _resolve_pool(rank_rows: list[Record], *, target: uuid.UUID | None = None) -> FakePool:
     """Fake pool for an entity_ref lookup with a ranking query then header reads."""
     handlers: list[tuple[str, Any]] = [
         ("WITH ranked AS", rank_rows),
@@ -357,13 +354,13 @@ def _resolve_pool(rank_rows: list[_Row], *, target: uuid.UUID | None = None) -> 
             ("WHERE f.subject  = $1", []),
             ("f.content     AS object", []),
             ("interaction_%", _recency_row()),
-            ("THEN 'fresh'", _Row(band="fresh")),
+            ("THEN 'fresh'", row(band="fresh")),
         ]
     return FakePool(handlers)
 
 
-def _rank_row(*, entity_id: uuid.UUID, canonical_name: str, score: int, match_kind: str) -> _Row:
-    return _Row(
+def _rank_row(*, entity_id: uuid.UUID, canonical_name: str, score: int, match_kind: str) -> Record:
+    return row(
         entity_id=entity_id,
         canonical_name=canonical_name,
         score=score,
@@ -525,8 +522,8 @@ def test_mcp_tool_docstring_states_constraints():
 # scope is BOTH:
 #   - roster/*/butler.toml          — the [[butler.schedule]] seed definitions
 #   - roster/*/.agents/skills/**/SKILL.md — the *bodies* of scheduled prompts
-#       (e.g. relationship-maintenance, upcoming-dates), which a scheduled
-#       session reads and could be told to call relationship_lookup from.
+#       (e.g. reconnect-planner), which a scheduled session reads and could
+#       be told to call relationship_lookup from.
 # A skill instructing a scheduled session to call the lookup is exactly the
 # bypass the empty allowlist must reject, so both globs are scanned.
 # ---------------------------------------------------------------------------
@@ -576,10 +573,9 @@ def test_schedule_scan_globs_cover_butler_toml_and_skill_prompts():
     assert any(p.name == "SKILL.md" for p in paths), (
         "schedule scan must cover roster scheduled-prompt SKILL.md bodies"
     )
-    # The relationship butler's scheduled-prompt skills must be in scope.
+    # The relationship butler's session-loaded skills must be in scope.
     rels = {str(p.relative_to(_REPO_ROOT)) for p in paths}
-    assert "roster/relationship/.agents/skills/relationship-maintenance/SKILL.md" in rels
-    assert "roster/relationship/.agents/skills/upcoming-dates/SKILL.md" in rels
+    assert "roster/relationship/.agents/skills/reconnect-planner/SKILL.md" in rels
 
 
 def test_schedule_scan_catches_lookup_literal_in_a_skill_prompt(tmp_path, monkeypatch):

@@ -1,3 +1,12 @@
+This existing packet is amended before archive to adopted RFC 0038 D1/D2/D7:
+cancellation stays deterministic and never becomes a reasoning goal, LLM
+invocation or session. Its relay uses named service-listener endpoints with
+fixed schemas/recipients and authenticated per-endpoint caller allowlists,
+excluded from LLM presentation and the session listener. The full frozen cohort,
+Messenger/DND admission and all durable recovery obligations below remain.
+All fourteen checkboxes are future implementation/verification/rollout work and
+remain unchecked; this prose amendment implements or enables none of them.
+
 ## 1. Durable private and origin-local state
 
 - [ ] 1.1 Add Messenger-owned prepared-release-gate and
@@ -18,6 +27,13 @@
   request/receipt schemas, caller authentication, stable cancellation,
   finalization, and publish action/request identifiers, global cohort plus
   per-origin frozen-subset bindings, and semantic replay fingerprints.
+  Replace generic route-proxy mediation with named, recipient-bound
+  service-plane endpoints on the control-plane service listener; authenticate
+  each calling daemon against the endpoint's allowlist, refuse unknown or
+  mismatched targets, and treat payload identity claims as no authority. Keep
+  the endpoints and recipient operations non-LLM-presentable and off the session
+  listener. Preserve every frozen participant when an endpoint is unavailable;
+  cancellation starts no goal or reasoning session.
 - [ ] 2.2 Serialize Messenger cancellation, commit, and release through the
   same prepared-release gate, enforcing the no-egress-intent/no-send-start
   predicate before `accepted_precommit` is recorded.

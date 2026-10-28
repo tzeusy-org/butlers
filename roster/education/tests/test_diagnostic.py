@@ -22,44 +22,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from butlers.testing.records import Record as _MockRecord
+from butlers.testing.records import Record as _make_row
+
 pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
 # Helpers — minimal mock record and pool builders
 # (mirrors the pattern in test_mastery.py)
 # ---------------------------------------------------------------------------
-
-
-class _MockRecord:
-    """Minimal asyncpg.Record-like object backed by a dict."""
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self._data = data
-
-    def __getitem__(self, key: str) -> Any:
-        return self._data[key]
-
-    def __iter__(self):
-        return iter(self._data)
-
-    def __len__(self) -> int:
-        return len(self._data)
-
-    def keys(self):
-        return self._data.keys()
-
-    def values(self):
-        return self._data.values()
-
-    def items(self):
-        return self._data.items()
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return self._data.get(key, default)
-
-
-def _make_row(data: dict[str, Any]) -> _MockRecord:
-    return _MockRecord(data)
 
 
 def _make_pool(

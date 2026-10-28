@@ -40,11 +40,15 @@ providers = [
 include_other_contacts = false
 
 [modules.contacts.sync]
-enabled = true
+enabled = true        # default false; only the Relationship butler sets true
 run_on_startup = true
 interval_minutes = 15
 full_sync_interval_days = 6
 ```
+
+Sync is off unless `sync.enabled = true`. Only the Relationship butler enables it, because it owns
+entities and sync takes no cross-process lock; every other butler's `butler.toml` sets
+`enabled = false` explicitly, and a roster test pins that exactly one butler syncs.
 
 Exactly one of `provider` (single) or `providers` (multi) must be specified. Multiple entries of the same type require distinct `account` fields.
 
@@ -83,8 +87,8 @@ Relationship butler respectively.
 
 ## Rollout
 
-Enabled butlers are those with a `[modules.contacts]` table in `roster/*/butler.toml`. The
-Switchboard (routing plane) and Messenger (delivery plane) intentionally omit it.
+Butlers with a `[modules.contacts]` table in `roster/*/butler.toml` load the module, but only
+Relationship runs the sync poller. The Switchboard (routing plane) and Messenger (delivery plane) intentionally omit it.
 
 ### Credentials
 

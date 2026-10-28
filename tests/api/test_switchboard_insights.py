@@ -19,7 +19,7 @@ Coverage:
 from __future__ import annotations
 
 import datetime
-import importlib.util
+import importlib
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -28,6 +28,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -38,13 +39,8 @@ _router_path = _roster_root / "switchboard" / "api" / "router.py"
 
 def _get_db_dep():
     if _MODULE_NAME not in sys.modules:
-        spec = importlib.util.spec_from_file_location(_MODULE_NAME, _router_path)
-        if spec is None or spec.loader is None:
-            raise ValueError(f"Could not load spec from {_router_path}")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[_MODULE_NAME] = module
-        spec.loader.exec_module(module)
-    return sys.modules[_MODULE_NAME]._get_db_manager
+        importlib.import_module("butlers.api._roster.switchboard.router")
+    return get_db
 
 
 def _make_row(data: dict):

@@ -1520,11 +1520,15 @@ def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_ac
         for target_schema, (returncode, _stdout, stderr) in downgrade_results.items()
         if returncode != 0
     }
-    assert set(failed_downgrades) == set(target_schemas)
+    downgrade_diagnostics = "\n".join(
+        f"{target_schema}: returncode={returncode}\n{stderr}"
+        for target_schema, (returncode, _stdout, stderr) in downgrade_results.items()
+    )
+    assert set(failed_downgrades) == set(target_schemas), downgrade_diagnostics
     assert all(
         "protected core_198 rollback preflight failed" in stderr
         for stderr in failed_downgrades.values()
-    )
+    ), downgrade_diagnostics
 
     engine = create_engine(bootstrap_url)
     try:

@@ -28,7 +28,12 @@ from butlers.core.commitments import (
     create_commitment,
     validate_commitment_creation,
 )
-from butlers.jobs.meeting_debrief import active_entity_ids, decode_attendees
+from butlers.jobs.meeting_debrief import (
+    # The snapshot's own resolver, so read time and snapshot time agree on who an email is.
+    _resolve_people,
+    active_entity_ids,
+    decode_attendees,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +61,11 @@ _COUNTERPARTY_UNAVAILABLE = "counterparty is not available for commitments"
 async def meeting_debrief_pending(pool: asyncpg.Pool) -> dict[str, Any]:
     """List prompted, unanswered debriefs in the order the owner was shown them.
 
-    Attendees who are no longer ``active`` are left out, so the session never names them.
+    Attendees who are no longer ``active`` are left out, so the session never names them. That
+    includes an attendee the snapshot kept by raw name/email because nothing resolved then (no
+    entity id): their email is resolved again here, and one that now belongs to an inactive
+    entity (or to the owner) is withheld. One that still resolves to nothing is shown as before.
+    The snapshot itself is never rewritten.
     """
     rows = await pool.fetch(
         """
@@ -70,9 +79,23 @@ async def meeting_debrief_pending(pool: asyncpg.Pool) -> dict[str, Any]:
     active = await active_entity_ids(
         pool, {a["entity_id"] for _, atts in decoded for a in atts if a["entity_id"]}
     )
+    unresolved_emails = {
+        str(a["email"]).strip().lower()
+        for _, atts in decoded
+        for a in atts
+        if a["entity_id"] is None and a.get("email")
+    }
+    resolved_now = await _resolve_people(pool, unresolved_emails)
+
+    def _shown(att: dict[str, Any]) -> bool:
+        if att["entity_id"] is not None:
+            return att["entity_id"] in active
+        person = resolved_now.get(str(att.get("email") or "").strip().lower())
+        return person is None or (person["posture"] == "active" and not person["is_owner"])
+
     debriefs = []
     for row, atts in decoded:
-        kept = [a for a in atts if a["entity_id"] is None or a["entity_id"] in active]
+        kept = [a for a in atts if _shown(a)]
         if not kept:
             continue
         debriefs.append(

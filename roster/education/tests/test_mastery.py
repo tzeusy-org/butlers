@@ -13,11 +13,14 @@ Coverage:
 
 from __future__ import annotations
 
+import importlib
 import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+from butlers.testing.records import Record as _make_row
 
 pytestmark = pytest.mark.unit
 
@@ -25,38 +28,6 @@ pytestmark = pytest.mark.unit
 # Helpers: mock asyncpg pool / connection builder
 # (same pattern as test_mind_maps.py)
 # ---------------------------------------------------------------------------
-
-
-class _MockRecord:
-    """Minimal asyncpg.Record-like object backed by a dict."""
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self._data = data
-
-    def __getitem__(self, key: str) -> Any:
-        return self._data[key]
-
-    def __iter__(self):
-        return iter(self._data)
-
-    def __len__(self) -> int:
-        return len(self._data)
-
-    def keys(self):
-        return self._data.keys()
-
-    def values(self):
-        return self._data.values()
-
-    def items(self):
-        return self._data.items()
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return self._data.get(key, default)
-
-
-def _make_row(data: dict[str, Any]) -> _MockRecord:
-    return _MockRecord(data)
 
 
 def _make_pool(
@@ -199,6 +170,15 @@ def _make_conn_with_transaction(conn: AsyncMock) -> AsyncMock:
 
 class TestComputeMasteryScore:
     """Unit tests for the mastery score computation helper."""
+
+    def test_missing_recency_weight_is_rejected(self, monkeypatch) -> None:
+        from butlers.tools.education.mastery import _compute_mastery_score
+
+        # A broken internal weight table must not silently drop a response.
+        mastery = importlib.import_module("butlers.tools.education.mastery")
+        monkeypatch.setattr(mastery, "_WEIGHTS_5", [1.0, 2.0, 4.0, 8.0])
+        with pytest.raises(ValueError):
+            _compute_mastery_score([0, 1, 2, 3, 4])
 
     def test_empty_qualities_returns_zero(self) -> None:
         from butlers.tools.education.mastery import _compute_mastery_score
@@ -803,7 +783,7 @@ class TestMasteryStateMachineInRecordResponse:
 class TestMasteryRecordResponseAtomicity:
     """mastery_record_response wraps all writes in a single transaction."""
 
-    async def test_uses_transaction(self) -> None:
+    async def test_uses_transaction(self, monkeypatch) -> None:
         """conn.transaction() is used for atomicity."""
         from butlers.tools.education.mastery import mastery_record_response
 
@@ -824,6 +804,26 @@ class TestMasteryRecordResponseAtomicity:
             pool, str(uuid.uuid4()), str(uuid.uuid4()), "Q", "A", quality=3
         )
         conn.transaction.assert_called_once()
+
+        # This proves exception propagation through the mocked transaction,
+        # not PostgreSQL rollback. No node update may follow broken scoring.
+        conn.fetchval = AsyncMock(return_value=response_id)
+        conn.fetch = AsyncMock(return_value=[_make_row({"quality": q}) for q in range(5)])
+        conn.fetchrow.reset_mock()
+        conn.execute.reset_mock()
+        transaction = conn.transaction.return_value
+        transaction.__aexit__.reset_mock()
+        mastery = importlib.import_module("butlers.tools.education.mastery")
+        monkeypatch.setattr(mastery, "_WEIGHTS_5", [1.0, 2.0, 4.0, 8.0])
+        with pytest.raises(ValueError):
+            await mastery_record_response(
+                pool, str(uuid.uuid4()), str(uuid.uuid4()), "Q", "A", quality=3
+            )
+        conn.fetchval.assert_awaited_once()
+        conn.fetchrow.assert_not_awaited()
+        conn.execute.assert_not_awaited()
+        transaction.__aexit__.assert_awaited_once()
+        assert transaction.__aexit__.await_args.args[0] is ValueError
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
@@ -24,10 +25,13 @@ from butlers.account_security import (
     PROVIDER_RECOVERY_DOORS,
     AccountSecurityClassification,
     classify_account_security,
+    verify_sender_domain,
 )
 from butlers.core import fleet_cases
 
 logger = logging.getLogger(__name__)
+
+_BARE_ADDRESS_RE = re.compile(r"^[^@\s,;:<>()\[\]\"\\]+@[^@\s,;:<>()\[\]\"\\]+$")
 
 SECURITY_EVENT_TYPE = "switchboard.security_event"
 SECURITY_CASE_PREFIX = "account_security:"
@@ -76,6 +80,25 @@ def classify_ingest_record(
         _subject_from_normalized_text(normalized_text),
         headers={"Authentication-Results": auth_results} if auth_results else None,
     )
+
+
+def sender_authentication_verdict(
+    *, source_channel: str, sender_address: str, raw: Any
+) -> str | None:
+    """Stored sender-authentication verdict for an accepted ingest, or ``None``.
+
+    ``None`` for non-email channels and for any identity that is not one bare address with a
+    domain (a header that failed to parse falls back to its raw text, which would otherwise be
+    judged by whatever follows its last ``@``). Email always
+    yields one of ``authenticated``, ``unverified`` or ``failed`` from the topmost
+    ``Authentication-Results`` header kept in *raw* (absent header: ``unverified``).
+    """
+    if source_channel != "email":
+        return None
+    address = sender_address.strip().lower()
+    if _BARE_ADDRESS_RE.match(address) is None:
+        return None
+    return verify_sender_domain(_auth_results_from_raw(raw), address.rsplit("@", 1)[-1])
 
 
 async def publish_security_event(

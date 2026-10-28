@@ -14,8 +14,9 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
+from fastapi import Depends
 from fastmcp import Client as MCPClient
 from fastmcp.exceptions import ToolError
 
@@ -72,12 +73,12 @@ class ButlerConnectionInfo:
     def sse_url(self) -> str:
         """SSE endpoint URL for this butler's MCP server.
 
-        In Docker, the dashboard runs in a separate container from butlers-up.
-        Set BUTLERS_HOST to the butlers-up service name (e.g. "butlers-up") so
-        the dashboard can reach butler MCP servers across the Docker network.
+        BUTLERS_HOST names the domain container. SWITCHBOARD_MCP_URL selects
+        the separate control service when that topology is enabled.
         """
-        host = os.environ.get("BUTLERS_HOST", "localhost")
-        return f"http://{host}:{self.port}/sse"
+        from butlers.core.mcp_urls import resolve_cross_container_mcp_url
+
+        return resolve_cross_container_mcp_url(f"http://localhost:{self.port}/sse")
 
 
 class ButlerNotFoundError(KeyError):
@@ -253,7 +254,8 @@ class DiscoveryDiagnostics:
 
     ``directories`` holds every roster subdirectory name, including ones skipped
     for lacking ``butler.toml``; ``failed`` holds directories whose config did not
-    parse. A retirement signal needs a found roster and zero failures.
+    parse, or whose ``butler.name`` differs from the directory name. A retirement signal
+    needs a found roster and zero failures.
     """
 
     roster_found: bool = False
@@ -325,6 +327,18 @@ def discover_butlers_with_diagnostics(
                     logger.warning(
                         "Invalid [modules.qa] patrol contract in %s: %s", entry.name, exc
                     )
+            if config.name != entry.name:
+                # The retirement signal keys on the roster directory name while legacy
+                # liveness episodes key on ``butler.name``. A mismatch could make a live
+                # butler read as retired or block a real retirement, so it fails closed:
+                # recording it as failed disables retirement fleet-wide until it is fixed.
+                failed.add(entry.name)
+                logger.warning(
+                    "Butler name %r does not match its roster directory %r; "
+                    "retirement is disabled until they match",
+                    config.name,
+                    entry.name,
+                )
             butlers.append(
                 ButlerConnectionInfo(
                     name=config.name,
@@ -601,144 +615,30 @@ def get_db_manager() -> DatabaseManager:
     return _db_manager
 
 
-def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> None:
-    """Override all router-level ``_get_db_manager`` stubs with the singleton.
+# The public dependency and legacy singleton accessor share one callable identity.
+get_db = get_db_manager
+Db = Annotated[DatabaseManager, Depends(get_db)]
 
-    Parameters
-    ----------
-    app:
-        The FastAPI application instance.
-    dynamic_modules:
-        Optional list of dynamically-loaded router modules (from roster/{butler}/api/).
-        Each module is scanned for a _get_db_manager stub function.
+
+def get_db_optional() -> DatabaseManager | None:
+    """Allow existing best-effort reads before manager initialization.
+
+    Only the manager's existing uninitialized RuntimeError is suppressed; pool,
+    query and authorization errors retain their original handling.
     """
-    from butlers.api.routers import (
-        activity_feed,
-        approvals,
-        attention_ledger,
-        audit,
-        blob_storage,
-        butler_logs,
-        butler_management,
-        butlers,
-        calendar_workspace,
-        channel_defaults,
-        cli_auth,
-        contacts,
-        conversations,
-        dashboard_briefing,
-        data_ops,
-        decisions,
-        delegation,
-        domain_events,
-        general_settings,
-        google_health,
-        healing,
-        home_assistant,
-        home_person_mappings,
-        identity,
-        ingestion_connectors,
-        ingestion_events,
-        issues,
-        memory,
-        model_settings,
-        notifications,
-        oauth,
-        owntracks,
-        permissions,
-        preferences,
-        priority_contacts,
-        provider_settings,
-        qa,
-        schedules,
-        search,
-        secrets,
-        secrets_v2,
-        sessions,
-        spotify,
-        state,
-        steam,
-        system,
-        telegram_auth,
-        timeline,
-        timeline_saved_views,
-        webhooks,
-        whatsapp,
-    )
+    try:
+        return get_db()
+    except RuntimeError:
+        return None
 
-    # Wire static routers (existing core routers)
-    for module in [
-        activity_feed,
-        approvals,
-        attention_ledger,
-        audit,
-        blob_storage,
-        butler_logs,
-        butler_management,
-        butlers,
-        calendar_workspace,
-        channel_defaults,
-        cli_auth,
-        contacts,
-        conversations,
-        dashboard_briefing,
-        data_ops,
-        decisions,
-        delegation,
-        domain_events,
-        general_settings,
-        google_health,
-        healing,
-        home_assistant,
-        home_person_mappings,
-        identity,
-        ingestion_connectors,
-        ingestion_events,
-        issues,
-        memory,
-        model_settings,
-        notifications,
-        oauth,
-        owntracks,
-        permissions,
-        preferences,
-        priority_contacts,
-        provider_settings,
-        qa,
-        schedules,
-        search,
-        secrets,
-        secrets_v2,
-        sessions,
-        spotify,
-        state,
-        steam,
-        system,
-        telegram_auth,
-        timeline,
-        timeline_saved_views,
-        webhooks,
-        whatsapp,
-    ]:
-        app.dependency_overrides[module._get_db_manager] = get_db_manager
 
-    # Wire the rollup router's separate dependency stub
-    app.dependency_overrides[ingestion_events._get_rollup_db_manager] = get_db_manager
+OptionalDb = Annotated[DatabaseManager | None, Depends(get_db_optional)]
 
-    # Wire the QA credentials-status callable from the CredentialStore so the
-    # dashboard reports REAL credential presence (gh_token / git-author) instead
-    # of null/"unknown". Without this the QA settings card degrades to unknown
-    # in production because no other path supplies credentials_status_fn.
+
+def wire_qa_credentials(app: FastAPI) -> None:
+    """Bind the separate QA credential-presence reader after pool startup."""
+    from butlers.api.routers import qa
+
     app.dependency_overrides[qa._get_credentials_status_fn] = qa.make_credentials_status_fn(
         get_db_manager
     )
-
-    # Wire dynamically-loaded butler routers
-    if dynamic_modules:
-        for module in dynamic_modules:
-            if hasattr(module, "_get_db_manager"):
-                app.dependency_overrides[module._get_db_manager] = get_db_manager
-                logger.debug(
-                    "Wired DB dependency for dynamic module: %s",
-                    module.__name__,
-                )

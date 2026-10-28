@@ -3,17 +3,19 @@
 ### Requirement: System Prompt Versioning API
 
 The dashboard SHALL expose owner-only read, compare-and-swap update, and version-history operations
-for a butler's owner-operations overlay at the existing prompt route paths. The surface SHALL
-distinguish immutable git-roster identity from mutable overlay content and SHALL never label an
-overlay or legacy full-replacement row as the complete current system prompt.
+for a butler's owner-operations content at the existing prompt route paths; these SHALL NOT
+select or activate a goal system prompt. The surface SHALL
+distinguish versioned git-roster guidance from mutable owner operations and SHALL never label an
+overlay or legacy full-replacement row as the complete current goal system prompt. Leads SHALL use lead policy and owner profile and
+children their briefs under RFC0038 D15; no route SHALL enable domain-daemon prompt composition.
 All prompt routes SHALL pass fail-closed dashboard owner control before body buffering, database-pool
 acquisition, roster-content reads, or protected-state observation. Unavailable authoritative owner-auth state SHALL
 return 503; a missing or mismatched credential SHALL return 401. `authenticated_principal()` SHALL
 provide attribution only after admission. Unknown roster names SHALL return 404 before prompt-pool
 acquisition.
-The current response SHALL report resolved roster identity content and digest; overlay content,
+The current owner response SHALL report resolved versioned roster guidance content and digest; overlay content,
 active state, version, source `owner_operations`, trust `trusted_owner_input`, timestamp, and
-server-derived actor; the selected composition mode and mode version; the ordered layer names; and
+server-derived actor; historical mode and mode-version provenance labeled non-authorizing for goals; applicable guidance source names; and
 `semantic_enforcement=false`. The update body
 SHALL contain exactly `overlay`, `active`, and `expected_version`. Overlay text SHALL be at most
 65,536 UTF-8 bytes and stored byte-for-byte. NUL, invalid UTF-8, reserved overlay delimiters, an
@@ -26,23 +28,23 @@ current version and no prompt text. Persistence or audit failure SHALL commit ne
 history, errors, audit, logs, metrics, and traces outside the owner response SHALL be content-blind.
 A committed divergent overlay update SHALL emit `butler.prompt_overlay_set` with target equal to the
 canonical agent name and metadata limited to `version`, `active`, `byte_count`, `digest`, and
-`roster_digest`. An exact no-op SHALL emit no audit event. The owner-only
-`PUT /api/butlers/{name}/prompt/mode` route SHALL accept exactly `mode` (`roster_overlay` or
-rollback-only `legacy_full_replacement`), `expected_mode_version`, and
-`acknowledge_identity_replacement`. It SHALL use the same pre-body owner control, dedicated pool,
-per-agent serialization, compare-and-swap conflict, content-blind privacy, and atomic audit rules as
-overlay PUT. Selecting legacy mode SHALL require an open approved rollback window, an existing
-legacy head, and `acknowledge_identity_replacement=true`. A committed transition SHALL emit
-`butler.prompt_mode_changed` with target equal to the canonical agent name and metadata limited to
-`mode_version`, `from_mode`, `to_mode`, `overlay_version`, and `roster_digest`. An exact no-op SHALL
-emit no audit event.
-Rollback-window authority SHALL come only from server-side deployment configuration
-`BUTLERS_PROMPT_LEGACY_ROLLBACK_UNTIL`, parsed as an RFC 3339 UTC timestamp. A missing, malformed,
-or expired value SHALL mean closed. No request field, prompt/mode row, MCP tool, runtime session, or
-generic API route SHALL open or extend the window. The migration-seeded
-`precutover_legacy_hold` SHALL be a distinct read-only compatibility state: it SHALL NOT require or
-claim owner selection, SHALL NOT be accepted as a mode PUT target, and SHALL NOT be re-enterable
-after an agent leaves it.
+`roster_digest`. An exact no-op SHALL emit no audit event. The historical `PUT /api/butlers/{name}/prompt/mode` contract SHALL NOT act as a goal prompt
+selector. Its integrity duties SHALL remain explicit: exact `mode`, `expected_mode_version` and
+`acknowledge_identity_replacement` shape; pre-body owner control; dedicated pool; per-agent CAS;
+identical-state no-op; at most one divergent winner; immutable history; and atomic content-blind
+`butler.prompt_mode_changed` evidence limited to canonical target, `mode_version`, `from_mode`,
+`to_mode`, `overlay_version` and `roster_digest`. They SHALL NOT authorize an append that selects an
+obsolete goal mode. No replacement mode wire operation is selected here.
+Historical legacy selection required explicit acknowledgement, an existing legacy head and the
+approved deployment-owned `BUTLERS_PROMPT_LEGACY_ROLLBACK_UNTIL` RFC3339 UTC window, closed when
+missing, malformed or expired. Requests, stored rows, MCP tools, runtimes and generic API paths
+SHALL NOT create or extend operational rollback authority. An acknowledged/open-window request
+SHALL still fail closed without a write if it attempts to select a legacy goal prompt.
+`precutover_legacy_hold` SHALL remain truthful historical seeded state, never fabricated owner
+selection, a new-agent default, an input target or a re-enterable live goal mode. Owner projections
+SHALL disclose obsolete/expired state without content in error metadata. A separately authorized
+safe exit SHALL retain owner control, CAS and atomic audit but SHALL NOT reopen goal legacy
+selection, rewrite history or activate an overlay automatically.
 The central `dashboard-owner-auth` boundary SHALL admit a valid configured
 `X-API-Key` or a valid server-managed owner session before protected body reads,
 domain-pool acquisition, caches or handlers. Passkey verification issues a session;
@@ -60,9 +62,8 @@ Scope: v1-mandatory
 
 #### Scenario: Read current prompt
 - **WHEN** an authenticated owner calls `GET /api/butlers/{name}/prompt` for a known roster agent
-- **THEN** the response separates resolved roster identity from the current owner-operations overlay
-- **AND** it reports source/trust/version metadata, roster digest, closed layer order, and `semantic_enforcement=false`
-- **AND** it reports the selected composition mode and mode version, labeling legacy mode as identity-replacing
+- **THEN** the response separates versioned roster guidance from owner-operations content and reports source/trust/version, digest, applicable guidance sources and `semantic_enforcement=false`
+- **AND** historical mode/version provenance is labeled identity-replacing history with no goal-selection authority, not the complete goal system prompt
 - **AND** it sets `Cache-Control: no-store`
 
 #### Scenario: Update prompt snapshots history
@@ -118,42 +119,42 @@ Scope: v1-mandatory
 - **AND** the prior active state and version remain unchanged
 
 #### Scenario: Owner changes composition mode with compare-and-swap
-- **WHEN** an authenticated owner submits a valid divergent mode with the current `expected_mode_version`
-- **THEN** the mode route appends exactly one mode-history version
-- **AND** `butler.prompt_mode_changed` with the specified target and metadata commits in the same transaction
-- **AND** no prompt text enters the mode response or audit event
+- **WHEN** an authenticated owner submits a divergent historical mode request with a current `expected_mode_version`
+- **THEN** CAS, per-agent serialization, immutable history and atomic metadata-only `butler.prompt_mode_changed` remain required integrity duties for any separately authorized history transition
+- **AND** a request that would select an obsolete goal prompt is refused without a write even with a matching version
+- **AND** no response or audit contains prompt text, and this amendment supplies no replacement mode operation
 
 #### Scenario: Concurrent mode writers produce one winner
-- **WHEN** two authenticated requests submit different modes from the same observed mode version
-- **THEN** per-agent serialization permits at most one transition to commit
-- **AND** the other returns 409 with the current mode version and no prompt text
+- **WHEN** concurrent requests attempt a separately authorized mode-history transition from the same observed version
+- **THEN** the retained CAS integrity boundary permits at most one divergent commit and returns content-blind 409 for a stale divergent version, with identical-state retries a no-op
+- **AND** requests to activate an obsolete goal selector are all denied without mode or audit writes
 
 #### Scenario: Legacy rollback requires explicit acknowledgement
-- **WHEN** an authenticated owner selects `legacy_full_replacement` during the approved rollback window
-- **THEN** the change succeeds only when a legacy head exists and `acknowledge_identity_replacement=true`
-- **AND** a missing acknowledgement, closed window, or absent legacy head returns a fixed content-blind conflict without a write
+- **WHEN** an authenticated owner requests `legacy_full_replacement`, with or without acknowledgement, a legacy head or an open old window
+- **THEN** the route grants no goal-prompt exception and the obsolete goal selection fails content-blind without a write
+- **AND** historical/operational review retains the old explicit acknowledgement, existing-head and approved-window duties without treating them as sufficient D15 authority
 
 #### Scenario: Rollback window fails closed
-- **WHEN** `BUTLERS_PROMPT_LEGACY_ROLLBACK_UNTIL` is absent, malformed, or not later than the current UTC time
-- **THEN** a request for `legacy_full_replacement` returns the fixed content-blind conflict without a write
-- **AND** no request or stored row can override that closed result
+- **WHEN** `BUTLERS_PROMPT_LEGACY_ROLLBACK_UNTIL` is absent, malformed or not later than current UTC time
+- **THEN** legacy selection remains closed with a fixed content-blind conflict and no write
+- **AND** no request or stored row can override closure; even an open historical value cannot authorize a legacy goal mode
 
 #### Scenario: Owner can leave expired rollback mode
-- **WHEN** rollback configuration is closed while mode history still selects `legacy_full_replacement`
-- **THEN** the owner projection reports the expired blocked state without prompt text in error metadata
-- **AND** an authenticated compare-and-swap transition to `roster_overlay` remains available
-- **AND** selecting or re-entering `legacy_full_replacement` remains denied
+- **WHEN** historical mode evidence still records `legacy_full_replacement` after its rollback authority has closed
+- **THEN** the owner projection reports obsolete/expired blocked state without prompt text in error metadata
+- **AND** a separately authorized safe exit retains owner authentication, compare-and-swap, atomic audit and original provenance without automatically activating an overlay
+- **AND** selecting or re-entering legacy goal composition remains denied
 
 #### Scenario: Pre-cutover hold is not an owner rollback target
-- **WHEN** an existing agent is still in migration-seeded `precutover_legacy_hold`
-- **THEN** the owner projection labels it as unreviewed pre-cutover compatibility state
-- **AND** the mode route accepts a transition out to `roster_overlay` but rejects `precutover_legacy_hold` as an input mode
-- **AND** no audit evidence claims the owner selected the seeded hold
+- **WHEN** historical evidence records migration-seeded `precutover_legacy_hold`
+- **THEN** the owner projection labels it as unreviewed historical state, not owner selection or live goal composition
+- **AND** no mode route accepts it as a target or permits re-entry or a new-agent assignment
+- **AND** any authorized exit preserves history and does not silently activate owner operations
 
 #### Scenario: Dashboard discloses the semantic limit
-- **WHEN** the owner views or edits an overlay
-- **THEN** the interface persistently explains that roster identity remains structurally present but natural-language conflicts are not mechanically prevented
-- **AND** activation requires explicit owner confirmation of that warning
+- **WHEN** the owner views or edits operations content
+- **THEN** the interface persistently distinguishes versioned guidance, mutable operations and the separately governed goal prompt, and explains that natural-language conflicts are not mechanically prevented
+- **AND** an owner-management change requires explicit confirmation of that warning, which grants no runtime activation or goal authority
 
 #### Scenario: Non-owner evidence is content-blind
 - **WHEN** any prompt route succeeds, is denied, conflicts, or fails

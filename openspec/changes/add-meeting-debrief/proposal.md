@@ -22,7 +22,7 @@ them back out. "I'll send you the deck" said in a 1:1 is lost; "nothing agreed" 
 
 ## Deferred
 
-- The dashboard Debrief card and a "work commitments" filter on the condition ledger (frontend).
+- A "work commitments" filter on the condition ledger (frontend).
 - Deriving `sphere` from endpoint custody (waits for the custody move); the first slice takes the
   owner's declaration only.
 - A Vocation butler home for the job (an owner decision).

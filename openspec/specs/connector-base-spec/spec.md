@@ -177,7 +177,28 @@ The Switchboard SHALL compute a stable deduplication key for each ingest submiss
 
 #### Scenario: Priority 3 — Content hash fallback
 - **WHEN** neither explicit key nor usable event ID is available
-- **THEN** the dedupe key is `"hash:{channel}:{endpoint_identity}:{sender}:{hour_bucket}:{content_hash[:16]}"` where `content_hash` is SHA256 of `normalized_text:sender_identity` and `hour_bucket` is the hourly time window (`YYYYMMDDHH`)
+- **THEN** the dedupe key is `"hash:{channel}:{endpoint_identity}:{sender}:{hour_bucket}:{content_hash[:16]}"` where `content_hash` is SHA256 of `bearer_scrubbed_normalized_text:sender_identity` and `hour_bucket` is the hourly time window (`YYYYMMDDHH`)
+- **AND** text containing no bearer material hashes exactly as its `normalized_text`
+
+#### Scenario: Keys never derive from withheld bearer material
+- **WHEN** the submitted text contains bearer material (one-time codes, reset or magic links) that ingest withholds from the stored text
+- **THEN** every stored dedupe or content-hash key (`request_context.dedupe_key`, `request_context.content_hash_key`, `public.ingestion_events.dedupe_key`) is derived from the scrubbed text and never from the raw text
+- **AND** two submissions differing only in the withheld material derive the same content-hash key
+- **AND** the Switchboard MUST NOT store any value from which the withheld material can be recovered by hashing candidate values
+
+#### Scenario: Secondary content-hash lookup skips withheld bearer text
+- **WHEN** a submission has a Priority 1 or 2 key and bearer material was withheld from any centrally scrubbed content subtree (including `payload.raw` even when `normalized_text` is benign), whether by ingest or by a connector that scrubbed before submitting (the envelope's `control.bearer_scrubbed` flag, or a canonical withheld-artifact placeholder in the text)
+- **THEN** the Switchboard omits `request_context.content_hash_key` and skips the secondary cross-connector content-hash lookup, inside and outside the advisory lock
+- **AND** primary-key deduplication still applies, so a second code with its own event ID is not dropped as a duplicate
+
+#### Scenario: Scrub failure fails closed
+- **WHEN** scrubbing for key derivation raises
+- **THEN** the content hash is derived from a constant withheld-text marker and `content_hash_key` is omitted
+- **AND** no key is derived from the raw text
+
+#### Scenario: Pipeline ingress dedupe key
+- **WHEN** the in-process pipeline records an ingress without a stable event id or idempotency key
+- **THEN** its payload-hash dedupe key is derived from the bearer-scrubbed message text, scrubbed before the key is built
 
 #### Scenario: Advisory lock serialization
 - **WHEN** the Switchboard processes an ingest submission
@@ -910,3 +931,98 @@ The preview seam SHALL treat provider and sender-domain labels as untrusted hint
 - **THEN** it SHALL reuse the shared preview detector, update only subject_or_preview in locked keyset batches, preserve other columns and report content-free complete/incomplete counts
 - **AND** a complete rerun SHALL change zero rows; rollback/restart/unknown acknowledgements SHALL not skip a row or fabricate completion
 - **AND** source-only implementation SHALL NOT imply live execution or reversal of already redacted bearer material
+
+### Requirement: Auth-state columns on connector_registry
+
+The `public.connector_registry` table SHALL include four additive columns to
+expose auth and scope state. All columns are nullable; no data backfill is
+required.
+
+#### Scenario: Additive columns present
+
+- **WHEN** the `public.connector_registry` schema is the most recent
+  migration head
+- **THEN** the table SHALL include the columns:
+  - `observed_scopes TEXT[] NULL`
+  - `observed_scopes_fetched_at TIMESTAMPTZ NULL`
+  - `required_scopes_version SMALLINT NULL`
+  - `auth_status VARCHAR(32) NULL`
+- **AND** existing columns SHALL be unchanged in type, default, or
+  constraint
+- **AND** existing inserts, queries, and rollups SHALL continue to function
+  without modification
+
+#### Scenario: NULL values are well-defined
+
+- **WHEN** any of the four columns is NULL
+- **THEN** the meaning SHALL be as specified in
+  `connector-oauth-scope-surface/spec` (§Observed-scope storage on
+  connector_registry §Scenario: NULL semantics on read)
+- **AND** dashboard surfaces SHALL NOT treat NULL as a database error — NULL
+  is the documented absence-of-observation state
+
+### Requirement: ConnectorDetailEntry Pydantic auth and scopes blocks
+
+The flat `ConnectorDetailEntry` Pydantic response model SHALL be extended
+additively to include an `auth` block and a `scopes` block, populated per
+`connector-oauth-scope-surface/spec` §Dashboard API response shape. The model
+is defined by `connector-base-spec`.
+
+#### Scenario: ConnectorDetailEntry includes auth block
+
+- **WHEN** `GET /api/ingestion/connectors/{type}/{identity}` returns a
+  `ConnectorDetailEntry` payload
+- **THEN** the payload SHALL include an `auth` field whose shape conforms to
+  `connector-oauth-scope-surface/spec` §Dashboard API response shape
+- **AND** the `auth.status` field SHALL be a non-null enum value drawn from
+  `{ok, degraded, needs_reauth, unsupported, unconfigured}`
+- **AND** the API SHALL apply the documented
+  `expired | rotation-needed` → `needs_reauth` normalization before the
+  typed recovery resolver consumes the response
+- **AND** `auth.recovery_reason` SHALL preserve `expired` or
+  `rotation-needed` when normalization occurred, and otherwise be null
+
+#### Scenario: ConnectorDetailEntry includes scopes block
+
+- **WHEN** the same endpoint returns a `ConnectorDetailEntry` payload
+- **THEN** the payload SHALL include a `scopes` array
+- **AND** for connectors with `auth.status = unsupported`, the array SHALL
+  be the empty list `[]`
+- **AND** for OAuth-bound connectors, the array entries SHALL conform to
+  the per-scope shape in `connector-oauth-scope-surface/spec`
+
+#### Scenario: Backward compatibility for ConnectorSummary
+
+- **WHEN** a `ConnectorSummary` list entry (per
+  `connector-base-spec/spec.md:431-443`) is serialized
+- **THEN** the model SHALL NOT be extended with the `auth` or `scopes`
+  blocks (those are detail-only to keep list-page payloads small)
+- **AND** the list endpoint MAY include a single `auth_status` enum field on
+  each summary entry for the connector-attention strip; despite the legacy
+  field name, this public value SHALL use
+  `{ok, degraded, needs_reauth, unsupported, unconfigured}` and SHALL apply
+  the same stored-cause normalization as `ConnectorDetailEntry.auth.status`
+- **AND** full scope state is reserved for the detail endpoint
+
+### Requirement: OAuth connector observation responsibility
+
+OAuth-bound connectors SHALL maintain `observed_scopes` and `observed_scopes_fetched_at` on their `connector_registry` row per the re-introspection cadence defined in `connector-oauth-scope-surface/spec` §Re-introspection cadence and triggers. The applicability matrix in `connector-oauth-scope-surface/spec` determines which connectors are OAuth-bound. This is an additive responsibility; it does not modify the existing heartbeat protocol.
+
+#### Scenario: OAuth connector updates observed scopes
+
+- **WHEN** an OAuth-bound connector successfully refreshes its access token
+  OR completes a fallback-cadence introspection
+- **THEN** the connector SHALL update its row's `observed_scopes` and
+  `observed_scopes_fetched_at` per the contract in
+  `connector-oauth-scope-surface/spec`
+- **AND** the connector SHALL recompute and persist `auth_status` per the
+  parent spec's §Auth status computation requirement
+
+#### Scenario: Non-OAuth connectors do not observe scopes
+
+- **WHEN** a non-OAuth connector (Telegram bot, OwnTracks, etc.) starts
+- **THEN** it SHALL NOT attempt to populate `observed_scopes` (the column
+  remains NULL)
+- **AND** the dashboard API SHALL compute `auth_status = unsupported` for
+  the row based on the per-connector applicability matrix in
+  `connector-oauth-scope-surface/spec`

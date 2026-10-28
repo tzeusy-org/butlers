@@ -11,4 +11,4 @@
 - [Email Priority Queuing](email-priority-queuing.md) — email priority and queuing design
 - [Pre-Classification Triage](pre-classification-triage.md) — pre-classification triage design
 - [Thread Affinity Routing](thread-affinity-routing.md) — thread affinity routing design
-- [Beads Runtime Data Bridge](beads-runtime-data-bridge.md) — the shipped single-host read-only Beads export mount and its consumers
+- [Beads Runtime Data Bridge](beads-runtime-data-bridge.md) — the retired product bridge, preserved tracker isolation and deployment-gated storage removal

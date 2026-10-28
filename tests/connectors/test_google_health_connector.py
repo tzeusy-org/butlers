@@ -57,7 +57,8 @@ from butlers.connectors.google_health_client import (
     exponential_backoff_delay,
 )
 from butlers.google_account_registry import GoogleAccount, HealthScopedAccount
-from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+from butlers.testing.clock import FakeClock
+from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
 _OWNER_EMAIL = "owner@example.com"
 _ENDPOINT = _endpoint_identity_for_user(_OWNER_EMAIL)
@@ -613,12 +614,17 @@ async def test_poll_resource_emits_envelope_for_new_record(
     """Per-Resource Polling emits stable, schema-valid sleep and daily envelopes."""
     from datetime import UTC, datetime
 
+    poll_clock = FakeClock(datetime(2026, 4, 24, 10, 0, tzinfo=UTC))
+
     class _PollClock(datetime):
-        values = iter(datetime(2026, 4, 24, 10, minute, tzinfo=UTC) for minute in range(30))
+        values = iter(range(30))
 
         @classmethod
         def now(cls, _tz: object = None) -> datetime:
-            return next(cls.values)
+            next(cls.values)
+            instant = poll_clock.now()
+            poll_clock.advance(60)
+            return instant
 
     connector, ctx = _make_connector_with_account()
     sleep_state = connector._resources[(ctx.account_id, "sleep")]
