@@ -1652,6 +1652,89 @@ def test_function_manifest_binds_fixed_overloads_to_actual_consumers_and_selecte
     indexed = {row.identity: row for row in rows}
     assert len(indexed) == len(rows)
     assert indexed["public", "qa_local_schedule_policy", ""].executors == ("butler_qa_rw",)
+    assert ("public", "butler_local_schedule_policy", "") in indexed
+    own_policy = indexed["public", "butler_local_schedule_policy", ""]
+    assert own_policy.executors == tuple(profile.role for profile in profiles)
+    assert own_policy.owner == "registry_control_owner"
+    assert own_policy.security_definer and own_policy.signature == ""
+    assert own_policy.settings == ("search_path=pg_catalog, pg_temp",)
+    assert (
+        own_policy.producer == "roster/switchboard/migrations/053_butler_local_schedule_policy.py"
+    )
+    import runpy
+    from pathlib import Path
+
+    emitted = []
+    producer = runpy.run_path(str(Path(__file__).parents[2] / own_policy.producer))
+    driver = Mock()
+    driver.exec_driver_sql.return_value.scalar_one.return_value = "switchboard"
+    with (
+        patch("alembic.op.get_bind", return_value=driver),
+        patch("alembic.op.execute", side_effect=emitted.append),
+    ):
+        producer["upgrade"]()
+    driver.exec_driver_sql.assert_called_once_with("SELECT current_schema()")
+    header, rest = emitted[0].split("AS $fn$", 1)
+    body, terminator = rest.split("$fn$;", 1)
+    assert not terminator.strip()
+    assert own_policy.header.strip() == header.strip()
+    assert own_policy.body == body
+    assert "current_setting('role', true)" in body
+    assert "WHERE p.name = v_name" in body
+    assert "current_user =" not in body and "session_user" not in body
+    assert not any(word in body.upper().split() for word in ("INSERT", "UPDATE", "DELETE"))
+    assert emitted[1].strip() == (
+        "REVOKE ALL ON FUNCTION public.butler_local_schedule_policy() FROM PUBLIC"
+    )
+    assert "rolname ~ '^butler_[a-z][a-z0-9_]*_rw$'" in emitted[2]
+    isolated = compile_function_manifest(
+        profiles, "migration_selected", (("switchboard", "isolated_registry", None),)
+    )
+    isolated = next(row for row in isolated if row.name == "butler_local_schedule_policy")
+    assert isolated.body == body.replace('"switchboard"', '"isolated_registry"')
+    assert isolated.executors == own_policy.executors
+    from butlers.db_authority.apply import validate_function_population
+    from butlers.db_authority.interfaces import function_matches
+
+    observed = dict(
+        oid=713,
+        schema="public",
+        name="butler_local_schedule_policy",
+        arguments="",
+        owner=own_policy.owner,
+    )
+    assert validate_function_population((observed,), (own_policy,), (own_policy.identity,)) == (
+        (observed, own_policy),
+    )
+    for wrong in (dict(name="unlisted_policy"), dict(arguments="text"), dict(owner="foreign")):
+        with pytest.raises(AuthorityError):
+            validate_function_population((observed | wrong,), (own_policy,), ())
+    actual = dict(
+        oid=713,
+        owner=own_policy.owner,
+        definer=True,
+        config=own_policy.settings,
+        body=own_policy.body,
+    )
+    acl = [dict(role=role, privilege="EXECUTE", grantable=False) for role in own_policy.executors]
+    connection = Mock()
+    connection.execute.return_value.mappings.return_value = acl
+    assert function_matches(connection, own_policy, actual)
+    for wrong in (
+        dict(body=body.replace("current_setting('role', true)", "current_user")),
+        dict(body=body.replace("WHERE p.name = v_name", "WHERE true")),
+        dict(config=("search_path=public",)),
+        dict(definer=False),
+        dict(owner="migration_selected"),
+    ):
+        assert not function_matches(connection, own_policy, actual | wrong)
+    for wrong_acl in (
+        acl + [dict(role="PUBLIC", privilege="EXECUTE", grantable=False)],
+        acl + [dict(role="dashboard_api", privilege="EXECUTE", grantable=False)],
+        [dict(row, grantable=True) for row in acl],
+    ):
+        connection.execute.return_value.mappings.return_value = wrong_acl
+        assert not function_matches(connection, own_policy, actual)
     assert indexed["public", "reserve_butler_probe", "text"].executors == (
         "butler_switchboard_rw",
         "dashboard_api",
@@ -5950,22 +6033,58 @@ def test_current_relation_manifest_matches_actual_log_and_retirement_producers()
         "test_selected", "normal_owner", "maintenance", source_database="butlers"
     )
     profiles = {profile.primary_schema for profile in full.profiles}
-    assert {row.schema for row in full.relations if row.name == "butler_logs"} == (
-        log_schemas & profiles
+    # core_281 adds the selected current schema, independent of the old roster.
+    current_emitted = []
+    producer = runpy.run_path(
+        str(root / "alembic/versions/core/core_281_current_schema_butler_logs.py")
     )
+    with patch("alembic.op.execute", side_effect=current_emitted.append):
+        producer["upgrade"]()
+    assert len(current_emitted) == 1
+    assert "own_schema text := current_schema()" in current_emitted[0]
+    assert "CREATE TABLE IF NOT EXISTS %I.butler_logs" in current_emitted[0]
+    assert "BIGSERIAL PRIMARY KEY" in current_emitted[0]
+    assert "'butler_' || own_schema || '_rw'" in current_emitted[0]
+    assert {row.schema for row in full.relations if row.name == "butler_logs"} == (
+        profiles | {"public"}
+    )
+    public = next(row for row in full.relations if row.identity[:2] == ("public", "butler_logs"))
+    assert not public.required and public.permissions == ()
     assert not any(
         row.name in {"dashboard_audit_log", "contacts_source_accounts"} for row in full.relations
     )
-    for schema in ("public", "lifecycle", *sorted(log_schemas)):
+    for schema in ("public", "lifecycle", "concierge", *sorted(log_schemas)):
         selected = grants.select_migration_manifest(
             full, (("core", None if schema == "public" else schema, None),)
         )
-        logs = [row for row in selected.relations if row.name == "butler_logs"]
-        sequences = [row for row in selected.relations if row.name == "butler_logs_id_seq"]
-        assert bool(logs) is (schema in log_schemas)
-        assert bool(sequences) is (schema in log_schemas)
-        if not logs:
-            continue
+        logs = [
+            row for row in selected.relations if (row.schema, row.name) == (schema, "butler_logs")
+        ]
+        sequences = [
+            row
+            for row in selected.relations
+            if (row.schema, row.name) == (schema, "butler_logs_id_seq")
+        ]
+        if schema != "public":
+            public_logs = next(
+                row
+                for row in selected.relations
+                if (row.schema, row.name) == ("public", "butler_logs")
+            )
+            assert not public_logs.required and public_logs.permissions == ()
+        assert len(logs) == len(sequences) == 1
+        for revision in ("core_088", "core_089", "core_090", "core_280", "core_281"):
+            historical = grants.select_migration_manifest(
+                full, (("core", None if schema == "public" else schema, revision),)
+            )
+            assert all(not row.required and not row.permissions for row in historical.relations)
+            # No future grant or required table follows from an old prefix.
+            if schema not in log_schemas and revision != "core_281":
+                assert not any(
+                    row.required or row.permissions
+                    for row in historical.relations
+                    if row.name in {"butler_logs", "butler_logs_id_seq"}
+                )
         assert len(logs) == len(sequences) == 1
         table, sequence = logs[0], sequences[0]
         assert table.required and sequence.sequence_parent == (schema, "butler_logs", "id")

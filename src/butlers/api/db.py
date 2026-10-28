@@ -11,6 +11,7 @@ import logging
 from typing import Any
 
 import asyncpg
+from fastapi import HTTPException
 
 from butlers.db import (
     pool_sizes_from_env,
@@ -61,6 +62,7 @@ class DatabaseManager:
         self._max_pool_size = env_max_pool_size if max_pool_size is None else max_pool_size
         self._pools: dict[str, asyncpg.Pool] = {}
         self._shared_pool: asyncpg.Pool | None = None
+        self._shared_pool_configured = False
         self._butler_modules: dict[str, frozenset[str]] = {}
         self._configured_butler_modules: dict[str, frozenset[str] | None] = {}
         # The explicit target schema for each butler pool.  Query paths that
@@ -175,6 +177,7 @@ class DatabaseManager:
 
     async def set_credential_shared_pool(self, db_name: str, db_schema: str | None = None) -> None:
         """Set the dedicated shared credential DB pool."""
+        self._shared_pool_configured = True
         if self._shared_pool is not None:
             pool = self._shared_pool
 
@@ -193,15 +196,24 @@ class DatabaseManager:
     def credential_shared_pool(self) -> asyncpg.Pool:
         """Return dedicated shared credential pool or raise KeyError."""
         if self._shared_pool is None:
+            if self._shared_pool_configured:
+                raise HTTPException(
+                    status_code=503, detail="Shared credential source is unavailable"
+                )
             raise KeyError("Shared credential pool is not configured")
         return self._shared_pool
 
     def pool(self, butler_name: str) -> asyncpg.Pool:
         """Get the connection pool for a specific butler.
 
-        Raises KeyError if the butler hasn't been added.
+        Unknown names raise KeyError. A configured source whose admission or
+        connection failed raises 503; it must not look like an absent source.
         """
         if butler_name not in self._pools:
+            if butler_name in self._configured_butler_modules:
+                raise HTTPException(
+                    status_code=503, detail="Configured database source is unavailable"
+                )
             raise KeyError(f"No pool for butler: {butler_name}")
         return self._pools[butler_name]
 
@@ -331,8 +343,13 @@ class DatabaseManager:
 
     @property
     def butler_names(self) -> list[str]:
-        """Return list of all registered butler names."""
-        return list(self._pools.keys())
+        """Registered sources, including configured sources without an admitted pool.
+
+        Reader fan-out must attempt these names so a failed registration cannot
+        masquerade as a complete healthy empty result. Direct lookups of healthy
+        siblings remain usable; no unavailable source receives a partial pool.
+        """
+        return list(dict.fromkeys((*self._configured_butler_modules, *self._pools)))
 
     def register_configured_modules(self, butler_name: str, modules: frozenset[str] | None) -> None:
         """Retain intended sources before provisioning/pool creation can fail."""
@@ -430,7 +447,7 @@ class DatabaseManager:
 
         async def _query_one(name: str) -> tuple[str, list[asyncpg.Record]]:
             try:
-                p = self._pools[name]
+                p = self.pool(name)
                 rows = await p.fetch(query, *args)
                 return (name, rows)
             except Exception:
@@ -469,3 +486,5 @@ class DatabaseManager:
         if errors:
             logger.warning("Database pool cleanup is incomplete")
             raise errors[0]
+        self._configured_butler_modules.clear()
+        self._shared_pool_configured = False

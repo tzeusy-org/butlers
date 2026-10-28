@@ -535,6 +535,46 @@ async def test_real_migrated_private_consumer_and_independent_commit(authority_d
         finally:
             await child.close()
 
+        # Actual complete-catalog dashboard admission remains a positive:
+        # absent matching data is healthy empty, not an unconditional 503.
+        # The case owns this fresh login; no table/catalog/owner repair occurs.
+        from butlers.api.db import DatabaseManager
+        from butlers.api.routers.preferences import get_preferences
+
+        await primary.close()
+        login = primary.user.replace('"', '""')
+        await admin.execute(f'REVOKE butler_chronicler_rw FROM "{login}"')
+        await admin.execute(f'GRANT dashboard_api TO "{login}"')
+        manager = DatabaseManager(
+            host=primary.host,
+            port=primary.port,
+            user=primary.user,
+            password=primary.password,
+            min_pool_size=0,
+            max_pool_size=1,
+        )
+        try:
+            await manager.add_butler(
+                "chronicler",
+                db_name=primary.db_name,
+                db_schema="chronicler",
+                memory_schema="chronicler_mem",
+                modules=frozenset({"memory", "chronicler"}),
+            )
+            assert (
+                await manager.pool("chronicler").fetchval("SELECT current_user") == "dashboard_api"
+            )
+            response = await get_preferences(
+                predicate="preferences:absent_" + uuid.uuid4().hex, db=manager
+            )
+            assert response.data == []
+        finally:
+            try:
+                await manager.close()
+            finally:
+                await admin.execute(f'REVOKE dashboard_api FROM "{login}"')
+                await admin.execute(f'GRANT butler_chronicler_rw TO "{login}"')
+
 
 @pytest.mark.parametrize(
     "fault",
@@ -1447,6 +1487,30 @@ def _observe_rebuilt_relation_matrix(result, engine):
             assert tuple(
                 connection.exec_driver_sql("SELECT * FROM public.qa_local_schedule_policy()").one()
             ) == ("active", "operator")
+            # sw_053 derives its subject from the current effective runtime
+            # role, never from its definer owner or a caller-supplied name.
+            for name in ("finance", "qa"):
+                connection.exec_driver_sql(f"SET LOCAL ROLE butler_{name}_rw")
+                assert tuple(
+                    connection.exec_driver_sql(
+                        "SELECT * FROM public.butler_local_schedule_policy()"
+                    ).one()
+                ) == (name, "active", "operator")
+                with connection.begin_nested() as denied_read:
+                    with pytest.raises(DBAPIError) as denied:
+                        connection.exec_driver_sql(
+                            "SELECT * FROM switchboard.butler_registry_control_plane"
+                        )
+                    assert denied.value.orig.pgcode == "42501"
+                    denied_read.rollback()
+            connection.exec_driver_sql("SET LOCAL ROLE dashboard_api")
+            with connection.begin_nested() as denied_read:
+                with pytest.raises(DBAPIError) as denied:
+                    connection.exec_driver_sql(
+                        "SELECT * FROM public.butler_local_schedule_policy()"
+                    )
+                assert denied.value.orig.pgcode == "42501"
+                denied_read.rollback()
             connection.exec_driver_sql("RESET ROLE")
             assert (
                 connection.execute(

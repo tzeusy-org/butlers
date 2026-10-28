@@ -325,6 +325,16 @@ def public_objects(
             required=policy != "history",
         )
         for name, policy, producer in _PUBLIC_ROWS
+    ) + (
+        ObjectAuthority(
+            "public",
+            "butler_logs",
+            ObjectKind.TABLE,
+            migration_owner,
+            (),
+            "core_281 selected public schema log producer",
+            required=False,
+        ),
     )
     if len({row.identity for row in result}) != len(result):
         raise AuthorityError("Database object authority is ambiguous")
@@ -359,8 +369,9 @@ _CORE_TABLES = (
     "calendar_action_log",
 )
 
-# core_089 creates logs only in its eleven fixed schemas; core_090 adds
-# Chronicler. Neither producer creates a public or arbitrary target-schema log.
+# core_089 creates logs in eleven fixed schemas; core_090 adds Chronicler.
+# core_281 additionally creates the actual selected core target's log. Its
+# public/isolated administrative targets confer no invented serving profile.
 _BUTLER_LOG_SCHEMAS = frozenset(
     {
         "education",
@@ -379,8 +390,15 @@ _BUTLER_LOG_SCHEMAS = frozenset(
 )
 
 
-def _core_tables(schema: str) -> tuple[str, ...]:
-    return _CORE_TABLES + (("butler_logs",) if schema in _BUTLER_LOG_SCHEMAS else ())
+def _core_tables(schema: str, *, core_revisions: set[str] | None = None) -> tuple[str, ...]:
+    if core_revisions is None:
+        has_logs = True  # Current source includes core_281 for every core target.
+    else:
+        old_edge = "core_090" if schema == "chronicler" else "core_089"
+        has_logs = "core_281" in core_revisions or (
+            schema in _BUTLER_LOG_SCHEMAS and old_edge in core_revisions
+        )
+    return _CORE_TABLES + (("butler_logs",) if has_logs else ())
 
 
 # These exact old producer windows permit closed administrative inspection.
@@ -794,7 +812,7 @@ def declared_sequences(relations: tuple[ObjectAuthority, ...]) -> tuple[ObjectAu
             for name, parent in _PUBLIC_SEQUENCES.items()
             if row.schema == "public" and parent == row.name
         ]
-        if row.name == "butler_logs" and row.schema != "public":
+        if row.name == "butler_logs":
             names.append("butler_logs_id_seq")
         if row.name == "ha_command_log" or (row.schema, row.name) == (
             "switchboard",
@@ -1454,7 +1472,7 @@ def select_migration_manifest(
         names = {"alembic_version"}
         for chain in chains:
             names.update(
-                _core_tables(target)
+                _core_tables(target, core_revisions=selected_revisions[(target, chain)])
                 if chain == "core"
                 else _MODULE_TABLES.get(chain, _DOMAIN_TABLES.get(chain, ()))
             )
@@ -1550,12 +1568,14 @@ def select_migration_manifest(
             required_names = {"alembic_version"}
             for chain in chains:
                 required_names.update(
-                    _core_tables(row.schema)
+                    _core_tables(row.schema, core_revisions=selected_revisions[(row.schema, chain)])
                     if chain == "core"
                     else _MODULE_TABLES.get(chain, _DOMAIN_TABLES.get(chain, ()))
                 )
                 required_names.update(_DOMAIN_VIEWS.get(chain, ()))
             required = row.required and row.name in required_names
+        if (row.schema, row.name) == ("public", "butler_logs"):
+            required = "core_281" in selected_revisions.get(("public", "core"), set())
         if row.name in _SWITCHBOARD_VIEW_EDGES:
             required = row.required and row.name in infra_views
         elif (row.schema, row.name) == ("general", "v_briefing_contributions"):
@@ -4827,6 +4847,36 @@ _ORDINARY_FUNCTION_SOURCES = (
     (
         "switchboard",
         "public",
+        "butler_local_schedule_policy",
+        "",
+        True,
+        (
+            "\n        CREATE OR REPLACE FUNCTION public.butler_local_sche"
+            "dule_policy()\n        RETURNS TABLE (butler_name text, polic"
+            "y_state text, policy_provenance text)\n        LANGUAGE plpgs"
+            "ql\n        SECURITY DEFINER\n        SET search_path = pg_cat"
+            "alog, pg_temp\n        "
+        ),
+        (
+            "\n        DECLARE\n            v_name text;\n        BEGIN\n    "
+            "        -- current_user is the definer here, not the runtime"
+            " caller.\n            v_name := substring(\n                cu"
+            "rrent_setting('role', true) from '^butler_([a-z][a-z0-9_]*)_"
+            "rw$'\n            );\n            IF v_name IS NULL THEN\n     "
+            "           RAISE EXCEPTION 'butler_policy_denied' USING ERRC"
+            "ODE = '42501';\n            END IF;\n            RETURN QUERY\n"
+            "                SELECT p.name::text, p.policy_state::text, p"
+            ".policy_provenance::text\n                FROM __CHAIN_SCHEMA"
+            "__.butler_registry_control_plane AS p\n                WHERE "
+            "p.name = v_name;\n            IF NOT FOUND THEN\n             "
+            "   RAISE EXCEPTION 'butler_policy_missing' USING ERRCODE = '"
+            "P0002';\n            END IF;\n        END\n        "
+        ),
+        ("roster/switchboard/migrations/053_butler_local_schedule_policy.py"),
+    ),
+    (
+        "switchboard",
+        "public",
         "qa_local_schedule_policy",
         "",
         True,
@@ -4950,6 +5000,7 @@ _ORDINARY_DEFINER_OWNERS = {
     ("public", "record_butler_probe"): "registry_control_owner",
     ("public", "set_butler_registry_policy"): "registry_control_owner",
     ("public", "qa_local_schedule_policy"): "registry_control_owner",
+    ("public", "butler_local_schedule_policy"): "registry_control_owner",
     ("public", "finance_warning_boot_current"): "registry_control_owner",
 }
 
@@ -5036,6 +5087,8 @@ def _declared_function_executors(name, schema, profiles, trigger):
         return ("butler_finance_rw",)
     if name == "qa_local_schedule_policy":
         return ("butler_qa_rw",)
+    if name == "butler_local_schedule_policy":
+        return runtimes
     if name == "enqueue_premise_amendments":
         return runtimes
     if name in {
