@@ -83,7 +83,7 @@ export function ConfirmRequests() {
     <Section eyebrow="Questions for you" className="border-b border-border/60 pb-5">
       <SectionContent>
         <Query q={questions}
-          loadingFallback={<Skeleton className="h-20 w-full" aria-label="Loading questions" />}
+          loadingFallback={<Skeleton role="status" className="h-20 w-full" aria-label="Loading questions" />}
           errorFallback={
             <div role="alert" className="space-y-2 text-sm">
               <p className="text-destructive">Questions could not be loaded.</p>

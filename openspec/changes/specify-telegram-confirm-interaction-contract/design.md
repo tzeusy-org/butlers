@@ -2,8 +2,11 @@
 
 ## Status and authority
 
-Phase A of bu-ow5a4, source baseline 6b5f474c9, prepared 2026-10-28.
-This is a proposed replacement of the stale routing design, not implementation authority.
+Phase A of bu-ow5a4 was prepared against source baseline 6b5f474c9 on 2026-10-28.
+The owner adopted independently reviewed commit
+`537046f73f9d7d41ed70af0bb662241867c9dc25` before Phase B implementation.
+The source map below records that baseline; current implementation custody and activation
+limits are documented in `docs/runtime/signed-confirms.md`.
 The original bounded-choice, durable answer, recipient identity, replay, timeout,
 concurrency, channel fallback, and approval-separation outcomes are retained.
 Collision-dispositions row 56 and RFC 0038 D7/D13/D18 govern the replacement.
@@ -129,6 +132,8 @@ needed by implementation must use the repository's actual current allocation.
 
 Independent review must examine the exact commit and source custody, all preserved outcomes,
 new sink/application semantics, identity, and the goal-runtime switch boundary. Then the
-owner must adopt that exact reviewed artifact before Phase B. Any semantic edit invalidates
-review/adoption. This PR does not implement, migrate, deploy, send Telegram messages, replay
-callbacks, or complete bu-ow5a4. The older live approval E2E remains a separate owner action.
+owner must adopt that exact reviewed artifact before Phase B. Any semantic contract edit
+requires renewed review/adoption. That adoption is recorded above; Phase B remains subject
+to independent implementation review and the repository's verification gates. Runtime
+emission stays dark, with no deployment, live message or callback replay. The older live
+approval E2E remains a separate owner action.

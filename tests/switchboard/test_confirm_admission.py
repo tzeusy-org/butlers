@@ -29,6 +29,16 @@ async def test_exact_prompt_binding_owner_f3_and_authoritative_content(ledger):
     admin, runtime = ledger
     await admin.execute("TRUNCATE public.pending_confirms")
     async with verified_owner(admin) as entity:
+        # Accepted-ingest fixtures only need ownership. Signed owner callbacks
+        # additionally require the live primary-channel designation.
+        assert (
+            await admin.execute(
+                'UPDATE relationship.entity_facts SET "primary"=true '
+                "WHERE subject=$1 AND predicate='has-handle' AND object='telegram:987'",
+                entity,
+            )
+            == "UPDATE 1"
+        )
         original = await admit(
             runtime, Evidence("message", "test", owner=True, outside_content=True)
         )

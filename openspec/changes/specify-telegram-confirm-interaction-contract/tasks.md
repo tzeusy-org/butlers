@@ -12,15 +12,22 @@ Owner adopted independently reviewed commit `537046f73f9d7d41ed70af0bb662241867c
 
 ## 2. Phase B: implement under bu-ow5a4 after adoption
 
-- [ ] 2.1 Add restricted durable prompt, answer and dispatch storage with actual role migration proof.
-- [ ] 2.2 Add immutable confirm producer/schema, token helper and closed deterministic sink registry.
-- [ ] 2.3 Wire Messenger delivery/edit receipts, numbered-text fallback and shared card read model.
-- [ ] 2.4 Wire connector and exact authenticated API, trusted source reader and goal admission consumer.
-- [ ] 2.5 Implement recoverable sink dispatch, expiry and rendering reconciliation workers.
-- [ ] 2.6 Wire dashboard authenticated read/answer and Telegram fact/claim/quote rendering.
+- [x] 2.1 Add restricted durable prompt, answer and dispatch storage with actual role migration proof.
+- [x] 2.2 Add immutable confirm producer/schema, token helper and closed deterministic sink registry.
+- [x] 2.3 Wire Messenger delivery/edit receipts, numbered-text fallback and shared card read model.
+- [x] 2.4 Wire connector and exact authenticated API, trusted source reader and goal admission consumer.
+- [x] 2.5 Implement recoverable sink dispatch, expiry and rendering reconciliation workers.
+- [x] 2.6 Wire dashboard authenticated read/answer and Telegram fact/claim/quote rendering.
 - [ ] 2.7 Prove token, identity, concurrency, expiry, F3, exposure, restart and ambiguous application outcomes.
 - [ ] 2.8 Run scoped tests, planner, migrated PG/API/contract/roster evidence and terminal hosted CI.
-- [ ] 2.9 Obtain independent exact-head implementation review; keep runtime emission dark until the switch.
+- [x] 2.9 Obtain independent exact-head implementation review; keep runtime emission dark until the switch.
+
+Independent source review approved implementation commit
+`0cf525bec97d4a2d3b53a6e72692f133a2d634bd`. Hosted run `40725059577` proved
+restricted storage, callback/replay/expiry/recovery and populated backup/restore outcomes.
+Its final verdict was failure: an owner-admission fixture lacked its primary-channel flag,
+and the frontend route accessibility suite found a loading-placeholder ARIA violation.
+These are being corrected before terminal verification; source review is not CI evidence.
 
 ## 3. Migration and closeout
 

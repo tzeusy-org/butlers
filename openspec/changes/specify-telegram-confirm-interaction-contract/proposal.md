@@ -38,8 +38,13 @@ These changes require exact-artifact review and owner adoption before implementa
 
 ## Impact
 
-Phase A authoring under bu-ow5a4 only. `design.md` maps current source, new interfaces,
-producer ownership, behavior and Phase B steps. No implementation, migration, runtime
-activation, Telegram interaction or deployment. Runtime emission remains dark until the
-canonical RFC 0038 switch. bu-jjy9p consumes the transport after its own existing gates.
-No completion or archival is claimed. Tests: +0 ~0 -0 (specification only).
+The owner adopted the independently reviewed Phase A contract at
+`537046f73f9d7d41ed70af0bb662241867c9dc25` before Phase B implementation under
+bu-ow5a4. The implementation adds restricted durable storage, authenticated callbacks,
+protected producer/sink/Messenger composition, recovery workers and dashboard answers.
+`tasks.md` records implementation and verification status; the runtime contract and
+activation boundary are documented in `docs/runtime/signed-confirms.md`.
+
+Runtime emission remains dark until the canonical RFC 0038 switch installs trusted
+composition. No live Telegram interaction or deployment is included. bu-jjy9p consumes
+the transport after its own existing gates. The migration and archival remain separate.
