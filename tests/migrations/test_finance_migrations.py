@@ -1148,14 +1148,173 @@ async def test_actual_field_claim_upgrade_constraints_and_lossless_refusal(
             )
 
 
+def _observe_finance_sequence_refusal(postgres_container, connection):
+    """Failure-only same-DB sequence binding facts; never change admission."""
+    import hashlib
+    import json
+    import sys
+
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    from butlers.db_authority.grants import compile_relation_manifest
+    from butlers.testing.migration import migration_bootstrap_db_url
+
+    statement = """
+    SELECT seq.oid,seq.relkind,
+      seq.relowner=expected.oid AS sequence_owner_expected,
+      seq.relowner=database.datdba AS sequence_owner_migration,
+      seq.relowner=session_user::regrole AS sequence_owner_maintenance,
+      dependency.deptype,parent_namespace.nspname,parent.relname,parent.relkind,
+      parent.relowner=expected.oid AS parent_owner_expected,
+      parent.relowner=database.datdba AS parent_owner_migration,
+      attribute.attname
+    FROM pg_catalog.pg_class seq
+    JOIN pg_catalog.pg_namespace namespace ON namespace.oid=seq.relnamespace
+    JOIN pg_catalog.pg_database database ON database.datname=current_database()
+    LEFT JOIN pg_catalog.pg_roles expected ON expected.rolname=:owner
+    LEFT JOIN pg_catalog.pg_depend dependency
+      ON dependency.classid='pg_catalog.pg_class'::regclass AND dependency.objid=seq.oid
+      AND dependency.refclassid='pg_catalog.pg_class'::regclass
+    LEFT JOIN pg_catalog.pg_class parent ON parent.oid=dependency.refobjid
+    LEFT JOIN pg_catalog.pg_namespace parent_namespace ON parent_namespace.oid=parent.relnamespace
+    LEFT JOIN pg_catalog.pg_attribute attribute ON attribute.attrelid=parent.oid
+      AND attribute.attnum=dependency.refobjsubid AND NOT attribute.attisdropped
+    WHERE namespace.nspname=:schema AND seq.relname=:name
+    ORDER BY dependency.deptype,dependency.refobjid,dependency.refobjsubid LIMIT 9
+    """
+    identity_sql = (
+        "SELECT d.datname,d.oid,pg_catalog.pg_get_userbyid(d.datdba),session_user "
+        "FROM pg_catalog.pg_database d WHERE d.datname=current_database()"
+    )
+    database, oid, owner, maintenance = connection.exec_driver_sql(identity_sql).one()
+    manifest = compile_relation_manifest(database, owner, maintenance, source_database="butlers")
+    expected = next(
+        row
+        for row in manifest.relations
+        if (row.schema, row.name) == ("switchboard", "connector_heartbeat_log_id_seq")
+    )
+    if expected.sequence_parent != ("switchboard", "connector_heartbeat_log", "id"):
+        raise ValueError("Diagnostic source binding changed")
+    parameters = {"schema": expected.schema, "name": expected.name, "owner": expected.owner}
+    held = connection.execute(text(statement), parameters).all()
+    engine = create_engine(
+        migration_bootstrap_db_url(postgres_container, database),
+        poolclass=NullPool,
+        connect_args={"connect_timeout": 2, "options": "-c statement_timeout=2000"},
+    )
+    try:
+        with engine.begin() as admin:
+            admin.exec_driver_sql("SET TRANSACTION READ ONLY")
+            observed_db, observed_oid, _, _ = admin.exec_driver_sql(identity_sql).one()
+            if observed_db != database or type(oid) is not int or oid <= 0 or observed_oid != oid:
+                raise ValueError("Diagnostic database identity differs")
+            independent = admin.execute(text(statement), parameters).all()
+    finally:
+        engine.dispose()
+
+    def project(rows):
+        facts = []
+        for row in rows[:8]:
+            seq_oid, kind, *tail = row
+            if type(seq_oid) is not int or seq_oid <= 0 or kind != "S":
+                raise ValueError("Diagnostic sequence identity unavailable")
+            (
+                seq_expected,
+                seq_migration,
+                seq_maintenance,
+                dependency,
+                schema,
+                name,
+                parent_kind,
+                parent_expected,
+                parent_migration,
+                column,
+            ) = tail
+            if any(
+                type(value) is not bool for value in (seq_expected, seq_migration, seq_maintenance)
+            ):
+                raise ValueError("Diagnostic owner facts unavailable")
+            if any(
+                value is not None and (type(value) is not str or len(value.encode()) > 1024)
+                for value in (dependency, schema, name, parent_kind, column)
+            ):
+                raise ValueError("Diagnostic dependency facts unavailable")
+            facts.append(
+                {
+                    "sequence_owner_expected": seq_expected,
+                    "sequence_owner_migration": seq_migration,
+                    "sequence_owner_maintenance": seq_maintenance,
+                    "dependency": dependency if dependency in {"a", "i", "n"} else "UNKNOWN",
+                    "declared_parent": (schema, name, column) == expected.sequence_parent,
+                    "parent_kind": parent_kind if parent_kind in {"r", "p", "S"} else "UNKNOWN",
+                    "parent_owner_expected": parent_expected
+                    if type(parent_expected) is bool
+                    else None,
+                    "parent_owner_migration": parent_migration
+                    if type(parent_migration) is bool
+                    else None,
+                    "parent_identity_sha256": hashlib.sha256(
+                        json.dumps([schema, name, column], separators=(",", ":")).encode()
+                    ).hexdigest(),
+                }
+            )
+        return {"rows": facts, "count_observed_capped": len(rows), "truncated": len(rows) > 8}
+
+    payload = {
+        "version": 1,
+        "phase": "finance_preparation_original_refusal",
+        "same_physical_database": True,
+        "independent_snapshot_may_exclude_uncommitted_DDL": True,
+        "source_query_sha256": hashlib.sha256(statement.encode()).hexdigest(),
+        "sequence_identity_sha256": hashlib.sha256(
+            json.dumps([expected.schema, expected.name], separators=(",", ":")).encode()
+        ).hexdigest(),
+        "held": project(held),
+        "independent_admin": project(independent),
+        "same_sequence_oid": bool(held and independent and held[0][0] == independent[0][0]),
+        "original_refusal_preserved": True,
+    }
+    sys.stderr.write("DB_FINANCE_SEQUENCE_DIAGNOSTIC " + json.dumps(payload) + "\n")
+
+
 @pytest.fixture
-async def finance_runtime_deployment(postgres_container):
+async def finance_runtime_deployment(postgres_container, monkeypatch):
+    from butlers.db_authority import apply
+    from butlers.db_authority.roles import AuthorityError
     from butlers.testing.migration import async_serving_test_deployment
 
-    async with async_serving_test_deployment(
-        postgres_container, finance_revision="finance_018"
-    ) as deployment:
-        yield deployment
+    original = apply.converge_authority
+    observed = False
+
+    def diagnose(connection, *args, **kwargs):
+        nonlocal observed
+        try:
+            return original(connection, *args, **kwargs)
+        except AuthorityError:
+            if not observed:
+                observed = True
+                try:
+                    _observe_finance_sequence_refusal(postgres_container, connection)
+                except BaseException:
+                    try:
+                        import sys
+
+                        sys.stderr.write(
+                            "DB_FINANCE_SEQUENCE_DIAGNOSTIC "
+                            '{"version":1,"observation":"unavailable",'
+                            '"original_refusal_preserved":true}\n'
+                        )
+                    except BaseException:
+                        pass
+            raise
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(apply, "converge_authority", diagnose)
+        async with async_serving_test_deployment(
+            postgres_container, finance_revision="finance_018"
+        ) as deployment:
+            yield deployment
 
 
 @pytest.fixture

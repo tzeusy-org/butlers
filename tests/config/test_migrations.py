@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
+import json
 import shutil
+import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -55,49 +58,299 @@ def _native_url(db_url):
     return make_url(db_url).set(drivername="postgresql").render_as_string(hide_password=False)
 
 
+def _failed_catalog_observation(postgres_container, db_url, plans, error, *, relation=None):
+    """Observe failure in an independent admin snapshot; never repair its oracle.
+
+    Uncommitted migration DDL may be invisible to this separate read-only
+    transaction. Source expectations are selected-plan context, not a claim
+    that this snapshot is the complete installed or serving catalog.
+    Only bounded counts, booleans and metadata hashes leave memory.
+    """
+    from butlers.db_authority import grants
+    from butlers.db_authority.interfaces import selected_protected_functions
+
+    def digest(value):
+        return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
+
+    def identity(schema, name, signature=""):
+        return digest([schema, name, signature])
+
+    engine = None
+    try:
+        engine = create_engine(
+            _maintenance_url(postgres_container, db_url),
+            connect_args={"connect_timeout": 3, "options": "-c statement_timeout=2000"},
+        )
+        with engine.begin() as admin:
+            admin.exec_driver_sql("SET TRANSACTION READ ONLY")
+            database, maintenance_owner = admin.exec_driver_sql(
+                "SELECT current_database(), session_user"
+            ).one()
+            if database != make_url(db_url).database:
+                raise ValueError("Diagnostic physical database differs")
+            owner = admin.exec_driver_sql(
+                "SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_catalog.pg_database "
+                "WHERE datname=current_database()"
+            ).scalar_one()
+            relations, functions, required = {}, {}, set()
+            source_available = False
+            try:
+                manifest = grants.compile_relation_manifest(
+                    database, owner, maintenance_owner, source_database="butlers"
+                )
+                # Empty installed vector selects desired source only; it does
+                # not certify a durable installed phase or approve any object.
+                selected = grants.select_migration_manifest(
+                    manifest, plans, installed_audit_vector=()
+                )
+                relations = {(row.schema, row.name): row for row in selected.relations}
+                current = grants.compile_function_manifest(manifest.profiles, owner, plans)
+                required = {row.identity for row in current}
+                deployment = (
+                    ("core", None, None),
+                    *grants.deployment_function_plans(manifest.profiles),
+                )
+                known = grants.compile_function_manifest(
+                    manifest.profiles, owner, (*deployment, *plans)
+                )
+                protected = selected_protected_functions(manifest.profiles, owner, plans)
+                functions = {row.identity: row for row in (*known, *protected)}
+                source_available = True
+            except Exception:
+                # Physical evidence remains useful when this exact historical
+                # plan cannot be compiled. Do not invent its expected catalog.
+                relations, functions, required = {}, {}, set()
+            rows = admin.exec_driver_sql(
+                "SELECT n.nspname,c.relname,c.relkind,pg_catalog.pg_get_userbyid(c.relowner),"
+                "c.relrowsecurity,c.relforcerowsecurity,c.relispartition,"
+                "ARRAY(SELECT pn.nspname||'.'||p.relname FROM pg_catalog.pg_inherits i "
+                "JOIN pg_catalog.pg_class p ON p.oid=i.inhparent "
+                "JOIN pg_catalog.pg_namespace pn ON pn.oid=p.relnamespace WHERE i.inhrelid=c.oid),"
+                "c.relacl::text FROM pg_catalog.pg_class c "
+                "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+                "WHERE left(n.nspname,3)<>'pg_' AND n.nspname<>'information_schema' "
+                "AND c.relkind IN ('r','p','v','m','S','f') ORDER BY n.nspname,c.relname LIMIT 1025"
+            ).all()
+            physical = []
+            for schema, name, kind, actual_owner, enabled, forced, partition, parents, acl in rows[
+                :1024
+            ]:
+                declared = relations.get((schema, name))
+                physical.append(
+                    {
+                        "identity_sha256": identity(schema, name),
+                        "selected_declared": declared is not None if source_available else None,
+                        "kind": kind,
+                        "owner_matches_selected": actual_owner == declared.owner
+                        if declared is not None
+                        else None,
+                        "enabled": enabled,
+                        "forced": forced,
+                        "partition": partition,
+                        "parents_sha256": digest(parents),
+                        "acl_sha256": digest(acl),
+                    }
+                )
+            actual_functions = admin.exec_driver_sql(
+                "SELECT n.nspname,p.proname,pg_catalog.oidvectortypes(p.proargtypes),"
+                "pg_catalog.pg_get_userbyid(p.proowner),p.prosecdef,p.proconfig,"
+                "pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(p.prosrc,'UTF8')),'hex'),"
+                "p.proacl::text FROM pg_catalog.pg_proc p "
+                "JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace "
+                "WHERE left(n.nspname,3)<>'pg_' AND n.nspname<>'information_schema' "
+                "AND NOT EXISTS(SELECT FROM pg_catalog.pg_depend d "
+                "WHERE d.classid='pg_catalog.pg_proc'::regclass AND d.objid=p.oid AND d.deptype='e') "
+                "ORDER BY n.nspname,p.proname,p.proargtypes LIMIT 257"
+            ).all()
+            seen, function_rows = set(), []
+            for (
+                schema,
+                name,
+                signature,
+                actual_owner,
+                definer,
+                settings,
+                body_digest,
+                acl,
+            ) in actual_functions[:256]:
+                key = (schema, name, signature)
+                seen.add(key)
+                declared = functions.get(key)
+                function_rows.append(
+                    {
+                        "identity_sha256": identity(*key),
+                        "selected_declared": declared is not None if source_available else None,
+                        "owner_matches_selected": actual_owner == declared.owner
+                        if declared is not None
+                        else None,
+                        "definer": definer,
+                        "settings_sha256": digest(settings),
+                        "body_sha256": body_digest,
+                        "acl_sha256": digest(acl),
+                    }
+                )
+            namespaces = admin.exec_driver_sql(
+                "SELECT n.nspname,pg_catalog.pg_get_userbyid(n.nspowner),n.nspacl::text "
+                "FROM pg_catalog.pg_namespace n WHERE left(n.nspname,3)<>'pg_' "
+                "AND n.nspname<>'information_schema' ORDER BY n.nspname LIMIT 33"
+            ).all()
+            # Read only actual catalog-listed ledger tables. Version values
+            # are hashed, bounded source metadata, never adopted as authority.
+            ledgers = [
+                (schema, name)
+                for schema, name, kind, *_ in rows[:1024]
+                if name == "alembic_version" and kind == "r"
+            ][:32]
+            revisions = []
+            for schema, name in ledgers:
+                values = (
+                    admin.exec_driver_sql(
+                        "SELECT version_num FROM "
+                        + _quote_ident(schema)
+                        + "."
+                        + _quote_ident(name)
+                        + " ORDER BY version_num LIMIT 33"
+                    )
+                    .scalars()
+                    .all()
+                )
+                revisions.append(
+                    {
+                        "ledger_sha256": identity(schema, name),
+                        "versions_sha256": digest(values[:32]),
+                        "truncated": len(values) > 32,
+                    }
+                )
+            observation = {
+                "version": 1,
+                "phase": "original_failure",
+                "exception": "AuthorityError" if isinstance(error, AuthorityError) else "UNKNOWN",
+                "same_physical_database": True,
+                "snapshot": "independent_admin_uncommitted_DDL_not_visible",
+                "selected_plan_sha256": digest(plans),
+                "source_context_available": source_available,
+                "selected_source_sha256": digest(
+                    [(key, row.owner) for key, row in sorted(relations.items())]
+                )
+                if source_available
+                else None,
+                "relations_truncated": len(rows) > 1024,
+                "functions_truncated": len(actual_functions) > 256,
+                "missing_selected_required_functions": sorted(
+                    identity(*key) for key in required - seen
+                )
+                if source_available and len(actual_functions) <= 256
+                else None,
+                "namespaces": [
+                    {
+                        "identity_sha256": digest(schema),
+                        "owner_sha256": digest(actor),
+                        "acl_sha256": digest(acl),
+                    }
+                    for schema, actor, acl in namespaces[:32]
+                ],
+                "namespaces_truncated": len(namespaces) > 32,
+                "installed_ledger_observations": revisions,
+                "original_failure_preserved": True,
+            }
+            if relation is not None:
+                observation["requested_relation_sha256"] = identity(*relation)
+                observation["requested_relation_physical_rows"] = sum(
+                    (schema, name) == relation for schema, name, *_ in rows
+                )
+            observation["relation_count"] = len(physical)
+            observation["selected_undeclared_count"] = (
+                sum(row["selected_declared"] is False for row in physical)
+                if source_available
+                else None
+            )
+            observation["relations"] = [
+                row
+                for row in physical
+                if row["selected_declared"] is not True or row["owner_matches_selected"] is False
+            ][:32]
+            observation["function_count"] = len(function_rows)
+            observation["functions"] = function_rows[:32]
+            sys.stderr.write("DB_MIGRATION_PHYSICAL_DIAGNOSTIC " + json.dumps(observation) + "\n")
+    except Exception:
+        try:
+            sys.stderr.write(
+                "DB_MIGRATION_PHYSICAL_DIAGNOSTIC "
+                '{"version":1,"observation":"unavailable",'
+                '"original_failure_preserved":true}\n'
+            )
+        except Exception:
+            pass
+    finally:
+        if engine is not None:
+            try:
+                engine.dispose()
+            except Exception:
+                # This independent observer never owns the primary failure.
+                pass
+
+
 async def _run_selected_head(postgres_container, db_url, *, chain="core", schema=None):
     """Use the real maintenance actor, ordinary DDL identity and finalizer."""
-    with migration_session(
-        _maintenance_url(postgres_container, db_url), source_database="butlers"
-    ) as connection:
-        await run_migrations(db_url, chain=chain, schema=schema, connection=connection)
-        finalize_authority(connection, source_database="butlers", plans=((chain, schema, None),))
+    try:
+        with migration_session(
+            _maintenance_url(postgres_container, db_url), source_database="butlers"
+        ) as connection:
+            await run_migrations(db_url, chain=chain, schema=schema, connection=connection)
+            finalize_authority(
+                connection, source_database="butlers", plans=((chain, schema, None),)
+            )
+    except Exception as error:
+        _failed_catalog_observation(postgres_container, db_url, ((chain, schema, None),), error)
+        raise
 
 
 def _upgrade_selected(postgres_container, db_url, config, revision, *, chain="core"):
     schema = config.get_main_option("butlers.target_schema") or None
-    with migration_session(
-        _maintenance_url(postgres_container, db_url), source_database="butlers"
-    ) as connection:
-        if revision is None:
-            asyncio.run(run_migrations(db_url, chain=chain, schema=schema, connection=connection))
-        else:
-            _upgrade_chain_to_revision(
-                db_url, chain=chain, schema=schema, revision=revision, connection=connection
+    try:
+        with migration_session(
+            _maintenance_url(postgres_container, db_url), source_database="butlers"
+        ) as connection:
+            if revision is None:
+                asyncio.run(
+                    run_migrations(db_url, chain=chain, schema=schema, connection=connection)
+                )
+            else:
+                _upgrade_chain_to_revision(
+                    db_url, chain=chain, schema=schema, revision=revision, connection=connection
+                )
+            finalize_authority(
+                connection, source_database="butlers", plans=((chain, schema, revision),)
             )
-        finalize_authority(
-            connection, source_database="butlers", plans=((chain, schema, revision),)
-        )
+    except Exception as error:
+        _failed_catalog_observation(postgres_container, db_url, ((chain, schema, revision),), error)
+        raise
 
 
 def _downgrade_selected(postgres_container, db_url, config, target, *, revision):
     """Keep actual Alembic destination/refusal handling; do not emulate selectors."""
     schema = config.get_main_option("butlers.target_schema") or None
-    with migration_session(
-        _maintenance_url(postgres_container, db_url), source_database="butlers"
-    ) as connection:
-        previous = config.attributes.get("connection")
-        config.attributes["connection"] = connection
-        try:
-            command.downgrade(config, target)
-            finalize_authority(
-                connection, source_database="butlers", plans=(("core", schema, revision),)
-            )
-        finally:
-            if previous is None:
-                config.attributes.pop("connection", None)
-            else:
-                config.attributes["connection"] = previous
+    try:
+        with migration_session(
+            _maintenance_url(postgres_container, db_url), source_database="butlers"
+        ) as connection:
+            previous = config.attributes.get("connection")
+            config.attributes["connection"] = connection
+            try:
+                command.downgrade(config, target)
+                finalize_authority(
+                    connection, source_database="butlers", plans=(("core", schema, revision),)
+                )
+            finally:
+                if previous is None:
+                    config.attributes.pop("connection", None)
+                else:
+                    config.attributes["connection"] = previous
+    except Exception as error:
+        _failed_catalog_observation(
+            postgres_container, db_url, (("core", schema, revision),), error
+        )
+        raise
 
 
 def _latest_core_revision() -> str:
@@ -174,7 +427,9 @@ def _schema_exists(db_url: str, schema_name: str) -> bool:
     return bool(exists)
 
 
-def _table_exists_in_schema(db_url: str, schema_name: str, table_name: str) -> bool:
+def _table_exists_in_schema(
+    db_url: str, schema_name: str, table_name: str, *, postgres_container=None
+) -> bool:
     engine = create_engine(db_url)
     with engine.connect() as conn:
         result = conn.execute(
@@ -185,6 +440,14 @@ def _table_exists_in_schema(db_url: str, schema_name: str, table_name: str) -> b
         )
         exists = result.scalar()
     engine.dispose()
+    if not exists and postgres_container is not None:
+        _failed_catalog_observation(
+            postgres_container,
+            db_url,
+            (("core", None, None),),
+            AssertionError(),
+            relation=(schema_name, table_name),
+        )
     return bool(exists)
 
 
@@ -781,7 +1044,9 @@ def test_connector_writer_can_ensure_filtered_events_partition(postgres_containe
         scalar=True,
     )
     assert partition_name == "filtered_events_209903"
-    assert _table_exists_in_schema(db_url, "connectors", "filtered_events_209903")
+    assert _table_exists_in_schema(
+        db_url, "connectors", "filtered_events_209903", postgres_container=postgres_container
+    )
 
 
 def test_core_scheduled_tasks_schema_and_constraints(postgres_container):

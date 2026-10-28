@@ -20,6 +20,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 
 from butlers.api import db as api_db
 from butlers.api import deps as api_deps
@@ -255,10 +256,16 @@ async def test_listener_daemon_publisher_and_api_pools_resolve_the_same_database
             assert len(api_refusals) == 2
             assert all(type(exc) is AuthorityError for exc in api_refusals)
             assert pool_targets == [expected_database]
-            with pytest.raises(KeyError):
+            with pytest.raises(HTTPException) as rejected:
                 api_manager.pool("switchboard")
-            with pytest.raises(KeyError):
+            assert rejected.value.status_code == 503
+            assert rejected.value.detail == "Configured database source is unavailable"
+            with pytest.raises(HTTPException) as shared_rejected:
                 api_manager.credential_shared_pool()
+            assert shared_rejected.value.status_code == 503
+            assert shared_rejected.value.detail == "Shared credential source is unavailable"
+            with pytest.raises(KeyError):
+                api_manager.pool("never_configured")
     finally:
         await publisher_db.close()
         if api_manager is not None:
@@ -399,12 +406,17 @@ async def test_api_startup_uses_resolved_targets_for_one_db_schema_topology(
         assert len(refusals) == 3
         assert all(type(exc) is AuthorityError for exc in refusals)
         assert pool_kwargs == []
-        with pytest.raises(KeyError):
-            api_manager.pool("switchboard")
-        with pytest.raises(KeyError):
-            api_manager.pool("general")
-        with pytest.raises(KeyError):
+        for name in ("switchboard", "general"):
+            with pytest.raises(HTTPException) as unavailable:
+                api_manager.pool(name)
+            assert unavailable.value.status_code == 503
+            assert unavailable.value.detail == "Configured database source is unavailable"
+        with pytest.raises(HTTPException) as unavailable_shared:
             api_manager.credential_shared_pool()
+        assert unavailable_shared.value.status_code == 503
+        assert unavailable_shared.value.detail == "Shared credential source is unavailable"
+        with pytest.raises(KeyError):
+            api_manager.pool("never_configured")
     finally:
         if api_manager is not None:
             await api_manager.close()

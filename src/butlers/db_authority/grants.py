@@ -4372,7 +4372,7 @@ _ORDINARY_FUNCTION_SOURCES = (
         False,
         (
             "CREATE OR REPLACE FUNCTION relationship.reject_fact_evidence_update()\n     "
-            "   RETURNS trigger\nSET search_path = pg_catalog, pg_temp\n"
+            "   RETURNS trigger\n        LANGUAGE plpgsql\nSET search_path = pg_catalog, pg_temp\n"
         ),
         (
             "\n        BEGIN\n            RAISE EXCEPTION\n                'relationship."

@@ -22,6 +22,7 @@ import tarfile
 import uuid
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import unquote, urlparse
 
 import asyncpg
@@ -267,6 +268,160 @@ def authority_database(postgres_container, tmp_path, monkeypatch):
     return url, migration_bootstrap_db_url(postgres_container, name)
 
 
+def _catalog_failure_parts(statement):
+    """Split only the fixed predicate's outer conjunction for observation.
+
+    This never feeds admission. Unknown syntax refuses this diagnostic rather
+    than changing the original failure or inventing a successful clause.
+    """
+    import re
+
+    marker = "\nSELECT NOT EXISTS("
+    if statement.count(marker) != 1 or len(statement) > 131072:
+        raise ValueError("Unsupported catalog diagnostic source")
+    prefix, expression = statement.split(marker, 1)
+    expression = "NOT EXISTS(" + expression
+    parts = []
+    start = i = depth = 0
+    while i < len(expression):
+        char = expression[i]
+        if char in {"'", '"'}:
+            quote = char
+            i += 1
+            while i < len(expression):
+                if expression[i] == quote:
+                    i += 1
+                    if i < len(expression) and expression[i] == quote:
+                        i += 1
+                        continue
+                    break
+                i += 1
+            else:
+                raise ValueError("Unclosed catalog diagnostic quote")
+            continue
+        dollar = re.match(r"\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$", expression[i:])
+        if dollar:
+            end = expression.find(dollar[0], i + len(dollar[0]))
+            if end < 0:
+                raise ValueError("Unclosed catalog diagnostic dollar quote")
+            i = end + len(dollar[0])
+            continue
+        if expression.startswith(("--", "/*"), i):
+            raise ValueError("Unsupported catalog diagnostic comment")
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif depth == 0 and expression.startswith("AND ", i):
+            parts.append(expression[start:i].strip())
+            i += 4
+            start = i
+            continue
+        if not 0 <= depth <= 128:
+            raise ValueError("Unsupported catalog diagnostic nesting")
+        i += 1
+    parts.append(expression[start:].strip())
+    if depth or not 1 <= len(parts) <= 32:
+        raise ValueError("Unsupported catalog diagnostic clauses")
+    if any(not re.match(r"NOT EXISTS\s*\(", value) or not value.endswith(")") for value in parts):
+        raise ValueError("Unsupported catalog diagnostic predicate")
+    return prefix, parts
+
+
+async def _observe_object_catalog_failure(admin, held, database):
+    """Read the same physical database independently, after strict refusal only.
+
+    Only fixed source clauses, bools, counts and hashed catalog identities leave
+    memory. No data rows, body text, role names, OIDs or DSNs are emitted.
+    """
+    import re
+
+    from butlers.db_authority import catalog
+    from butlers.db_authority.grants import serving_catalog_contract
+
+    statement = catalog._CATALOG_OBJECT_SQL
+    expected = serving_catalog_contract(database)
+    payload = json.dumps(expected)
+    prefix, parts = _catalog_failure_parts(statement)
+    same_db = "SELECT oid FROM pg_catalog.pg_database WHERE datname=current_database()"
+    admin_oid = await admin.fetchval(same_db, timeout=2)
+    held_oid = await held.fetchval(same_db, timeout=2)
+    if type(admin_oid) is not int or admin_oid <= 0 or admin_oid != held_oid:
+        raise ValueError("Catalog diagnostic database identity changed")
+    facts = await admin.fetchrow(
+        prefix + "\nSELECT " + ",".join(f"({term}) AS f{i}" for i, term in enumerate(parts)),
+        payload,
+        timeout=3,
+    )
+    if facts is None or len(facts) != len(parts) or any(type(value) is not bool for value in facts):
+        raise ValueError("Catalog diagnostic facts are unavailable")
+    clauses = []
+    for index, (term, valid) in enumerate(zip(parts, facts, strict=True)):
+        item = {
+            "index": index,
+            "source_sha256": hashlib.sha256(term.encode()).hexdigest(),
+            "admin_predicate": valid,
+        }
+        if not valid:
+            inner = term[re.match(r"NOT EXISTS\s*\(", term).end() : -1].strip()
+            projections = (
+                ("SELECT FROM expected_schemas expected", "expected.value->>'name', '', ''"),
+                ("SELECT FROM pg_catalog.pg_namespace n", "n.nspname, '', ''"),
+                ("SELECT FROM expected_relations e", "e.value->>'schema', e.value->>'name', ''"),
+                ("SELECT FROM relation_catalog c", "c.schema_name, c.relname, ''"),
+                (
+                    "SELECT FROM expected_functions e",
+                    "e.value->>'schema', e.value->>'name', e.value->>'signature'",
+                ),
+                (
+                    "SELECT FROM function_catalog p",
+                    "p.schema_name, p.proname, pg_catalog.oidvectortypes(p.proargtypes)",
+                ),
+                (
+                    "SELECT FROM pg_catalog.jsonb_array_elements(",
+                    "expected->>'schema', expected->>'table', expected->>'name'",
+                ),
+            )
+            choice = next(
+                (columns for start, columns in projections if inner.startswith(start)), None
+            )
+            item["offending_count"] = await admin.fetchval(
+                prefix + "\nSELECT count(*) FROM (" + inner + ") failed", payload, timeout=3
+            )
+            if type(item["offending_count"]) is not int or item["offending_count"] < 0:
+                raise ValueError("Catalog diagnostic count is unavailable")
+            if choice is not None:
+                projected = inner.replace("SELECT FROM ", "SELECT " + choice + " FROM ", 1)
+                rows = await admin.fetch(
+                    prefix + "\nSELECT * FROM (" + projected + ") failed LIMIT 33",
+                    payload,
+                    timeout=3,
+                )
+                item["identity_hashes"] = [
+                    hashlib.sha256(
+                        json.dumps(list(row), separators=(",", ":")).encode()
+                    ).hexdigest()
+                    for row in rows[:32]
+                ]
+                item["identities_truncated"] = len(rows) > 32
+        clauses.append(item)
+    sys.stderr.write(
+        "DB_AUTHORITY_OBJECT_DIAGNOSTIC "
+        + json.dumps(
+            {
+                "version": 1,
+                "phase": "strict_object_refusal",
+                "same_physical_database": True,
+                "statement_sha256": hashlib.sha256(statement.encode()).hexdigest(),
+                "expected_sha256": hashlib.sha256(payload.encode()).hexdigest(),
+                "clauses": clauses,
+                "original_refusal_preserved": True,
+            }
+        )
+        + "\n"
+    )
+
+
 @asynccontextmanager
 async def _case(authority_database):
     url, admin_url = authority_database
@@ -383,7 +538,35 @@ async def _case(authority_database):
             min_pool_size=0,
             max_pool_size=1,
         )
-        yield database, admin, login
+        from butlers.db_authority import catalog
+
+        original = catalog.assert_object_catalog
+        observed = False
+
+        async def diagnose(connection, selected):
+            nonlocal observed
+            try:
+                return await original(connection, selected)
+            except roles.AuthorityError:
+                if not observed:
+                    observed = True
+                    try:
+                        await asyncio.wait_for(
+                            _observe_object_catalog_failure(admin, connection, selected), timeout=5
+                        )
+                    except (Exception, asyncio.CancelledError):
+                        try:
+                            sys.stderr.write(
+                                "DB_AUTHORITY_OBJECT_DIAGNOSTIC "
+                                '{"version":1,"observation":"unavailable",'
+                                '"original_refusal_preserved":true}\n'
+                            )
+                        except Exception:
+                            pass
+                raise
+
+        with patch.object(catalog, "assert_object_catalog", diagnose):
+            yield database, admin, login
     except BaseException as exc:
         primary_error = exc
         raise

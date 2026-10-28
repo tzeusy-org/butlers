@@ -11291,13 +11291,15 @@ def test_owner_lookup_actual_reminder_guard_and_inverse_populations(calendar):
 )
 def test_owner_lookup_managed_public_census_preserves_real_function_producers(edge, name):
     """Actual producer actions establish PUBLIC-default source provenance."""
+    import re
     import runpy
     from pathlib import Path
     from types import SimpleNamespace
 
     from sqlalchemy import text
 
-    from butlers.db_authority import interfaces
+    from butlers.db_authority import grants, interfaces
+    from butlers.db_authority.roles import runtime_profiles
 
     producer = runpy.run_path(
         str(
@@ -11332,6 +11334,26 @@ def test_owner_lookup_managed_public_census_preserves_real_function_producers(ed
         == 1
     )
     assert not any("REVOKE" in sql for sql in statements)
+    # rel034 declares LANGUAGE after its dollar body. Reconstructed current
+    # DDL must preserve that actual producer fact as well as the exact body;
+    # the historical PUBLIC-default assertions below remain independent.
+    current = next(
+        row
+        for row in grants.compile_function_manifest(
+            runtime_profiles("butlers"),
+            "normal_owner",
+            (("core", "relationship", None), ("relationship", "relationship", None)),
+        )
+        if row.schema == "relationship" and row.name == name
+    )
+    function_sql = create[0].split(f"FUNCTION relationship.{name}()", 1)[1]
+    source_language = re.search(r"\bLANGUAGE\s+([a-z]+)", function_sql, re.IGNORECASE)
+    assert source_language is not None
+    compiled_language = re.search(r"\bLANGUAGE\s+([a-z]+)", current.sql, re.IGNORECASE)
+    assert compiled_language is not None
+    assert compiled_language[1].lower() == source_language[1].lower() == "plpgsql"
+    source_body = re.search(r"\bAS\s+(\$[A-Za-z_0-9]*\$)(.*?)\1", function_sql, re.I | re.S)
+    assert source_body is not None and current.body.strip() == source_body[2].strip()
     model = _OwnerLookupPrefixCatalog("closed", prefix=edge, transition=f"closed:{edge - 1}:closed")
     row = next(row for row in model.component.functions if row.name == name)
     assert row.executors == ("PUBLIC",) and row.settings == ()

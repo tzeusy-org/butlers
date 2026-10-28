@@ -19,7 +19,7 @@ import logging
 import shutil
 import uuid
 from collections.abc import Awaitable, Callable
-from contextlib import ExitStack
+from contextlib import ExitStack, asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,7 +36,11 @@ from butlers.db import Database, register_jsonb_codec
 from butlers.modules import memory as memory_module
 from butlers.modules.memory import MemoryModule
 from butlers.modules.registry import ModuleRegistry
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -1422,13 +1426,121 @@ def qa_policy_db_url(postgres_container) -> str:
     )
 
 
-@pytest.fixture
-async def qa_pools(qa_policy_db_url: str):
-    """Yield ``(owner, qa)``: the migration login and QA's runtime-role pool."""
+@asynccontextmanager
+async def _policy_runtime_pool(postgres_container, db_url: str, *, butler: str):
+    """Own one disposable native policy caller, never the migration identity.
 
-    async def as_qa_role(conn: asyncpg.Connection) -> None:
-        # Mirrors butlers.db.Database._setup_connection for the QA daemon.
-        await conn.execute('SET ROLE "butler_qa_rw"')
+    This exercises the fixed policy's runtime-role fence. It is not a serving
+    catalog certificate; complete Database admission is tested independently.
+    Only the testcontainer control login creates this fresh login/membership.
+    """
+    from sqlalchemy.engine import make_url
+
+    if butler not in {"qa", "general"}:
+        raise ValueError("Unsupported scheduler policy fixture")
+    source = make_url(db_url)
+    role = f"butler_{butler}_rw"
+    login = "scheduler_" + uuid.uuid4().hex[:16]
+    admin_url = make_url(migration_bootstrap_db_url(postgres_container, source.database))
+    admin = await asyncpg.connect(
+        admin_url.set(drivername="postgresql").render_as_string(hide_password=False), timeout=5
+    )
+    runtime = None
+    created = False
+    creation_unknown = False
+    primary = None
+
+    async def cleanup():
+        failures = []
+
+        async def attempt(operation, terminate=None):
+            try:
+                await asyncio.wait_for(operation(), timeout=5)
+            except (Exception, asyncio.CancelledError) as exc:
+                failures.append(exc)
+                if terminate is not None:
+                    try:
+                        terminate()
+                    except Exception as cleanup_error:
+                        failures.append(cleanup_error)
+
+        if runtime is not None:
+            await attempt(runtime.close, runtime.terminate)
+        if created:
+            # Only an acknowledged CREATE owns this login. No table grants,
+            # owner repair or migration-login membership was introduced.
+            await attempt(lambda: admin.execute(f'DROP ROLE "{login}"', timeout=5))
+        if creation_unknown:
+            failures.append(RuntimeError("Disposable policy login creation is unknown"))
+        await attempt(lambda: admin.close(timeout=5), admin.terminate)
+        return failures
+
+    try:
+        assert (
+            await admin.fetchval(
+                "SELECT pg_catalog.pg_has_role($1,$2,'MEMBER')", source.username, role, timeout=5
+            )
+            is False
+        )
+        creation_unknown = True
+        try:
+            await admin.execute(
+                f'CREATE ROLE "{login}" LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE '
+                "NOREPLICATION NOBYPASSRLS PASSWORD 'synthetic-test-only'",
+                timeout=5,
+            )
+        except asyncpg.DuplicateObjectError:
+            creation_unknown = False
+            raise
+        created = True
+        creation_unknown = False
+        await admin.execute(f'GRANT "{role}" TO "{login}"', timeout=5)
+
+        async def select_role(conn):
+            await conn.execute(f'SET ROLE "{role}"')
+            assert (
+                await conn.fetchval("SELECT current_user=$1 AND session_user<>current_user", role)
+                is True
+            )
+
+        runtime = asyncpg.create_pool(
+            source.set(
+                drivername="postgresql", username=login, password="synthetic-test-only"
+            ).render_as_string(hide_password=False),
+            min_size=1,
+            max_size=2,
+            timeout=5,
+            command_timeout=30,
+            init=register_jsonb_codec,
+            setup=select_role,
+            server_settings={"search_path": f"{butler},public"},
+        )
+        await runtime
+        yield runtime
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        task = asyncio.create_task(cleanup())
+        cancelled = None
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as exc:
+                cancelled = cancelled or exc
+        failures = task.result()
+        if failures:
+            if primary is not None:
+                primary.add_note("Disposable policy login cleanup incomplete")
+            elif cancelled is None:
+                raise RuntimeError("Disposable policy login cleanup incomplete") from failures[0]
+        if cancelled is not None and primary is None:
+            raise cancelled
+
+
+@pytest.fixture
+async def qa_pools(qa_policy_db_url: str, postgres_container):
+    """Yield the unchanged migration writer and a separate QA policy caller."""
 
     owner = await asyncpg.create_pool(
         qa_policy_db_url,
@@ -1437,22 +1549,16 @@ async def qa_pools(qa_policy_db_url: str):
         init=register_jsonb_codec,
         server_settings={"search_path": "qa,public"},
     )
-    qa = await asyncpg.create_pool(
-        qa_policy_db_url,
-        min_size=1,
-        max_size=2,
-        init=register_jsonb_codec,
-        setup=as_qa_role,
-        server_settings={"search_path": "qa,public"},
-    )
-    await owner.execute("TRUNCATE TABLE scheduled_tasks CASCADE")
-    await owner.execute(
-        "INSERT INTO switchboard.butler_registry (name, endpoint_url) "
-        "VALUES ('qa', 'http://qa:41100/mcp') ON CONFLICT (name) DO NOTHING"
-    )
-    yield owner, qa
-    await qa.close()
-    await owner.close()
+    try:
+        async with _policy_runtime_pool(postgres_container, qa_policy_db_url, butler="qa") as qa:
+            await owner.execute("TRUNCATE TABLE scheduled_tasks CASCADE")
+            await owner.execute(
+                "INSERT INTO switchboard.butler_registry (name, endpoint_url) "
+                "VALUES ('qa', 'http://qa:41100/mcp') ON CONFLICT (name) DO NOTHING"
+            )
+            yield owner, qa
+    finally:
+        await owner.close()
 
 
 async def _set_qa_policy(owner: asyncpg.Pool, state: str, provenance: str) -> None:
@@ -1477,51 +1583,47 @@ def general_policy_db_url(postgres_container) -> str:
 
 @_asyncio_session
 async def test_non_qa_butler_reads_its_own_hold_through_its_runtime_role(
-    general_policy_db_url, monkeypatch
+    general_policy_db_url, postgres_container, monkeypatch
 ):
     """sw_053: general's own role sees its own hold; a role-less pool is refused."""
     from butlers.core.scheduler import _butler_dispatch_gated
 
     monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
 
-    async def as_general_role(conn: asyncpg.Connection) -> None:
-        await conn.execute('SET ROLE "butler_general_rw"')
-
     owner = await asyncpg.create_pool(general_policy_db_url, min_size=1, max_size=1)
-    general = await asyncpg.create_pool(
-        general_policy_db_url, min_size=1, max_size=1, setup=as_general_role
-    )
     try:
-        await owner.execute(
-            "INSERT INTO switchboard.butler_registry (name, endpoint_url) "
-            "VALUES ('general', 'http://general:41101/mcp') ON CONFLICT (name) DO NOTHING"
-        )
-        # Switchboard tables stay unreadable to the runtime role.
-        with pytest.raises(asyncpg.InsufficientPrivilegeError):
-            await general.fetch("SELECT 1 FROM switchboard.butler_registry_control_plane")
+        async with _policy_runtime_pool(
+            postgres_container, general_policy_db_url, butler="general"
+        ) as general:
+            await owner.execute(
+                "INSERT INTO switchboard.butler_registry (name, endpoint_url) "
+                "VALUES ('general', 'http://general:41101/mcp') ON CONFLICT (name) DO NOTHING"
+            )
+            # Switchboard tables stay unreadable to the runtime role.
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await general.fetch("SELECT 1 FROM switchboard.butler_registry_control_plane")
 
-        for state, provenance, held in (
-            ("active", "operator", False),
-            ("paused", "operator", True),
-            ("active", "operator", False),
-        ):
+            for state, provenance, held in (
+                ("active", "operator", False),
+                ("paused", "operator", True),
+                ("active", "operator", False),
+            ):
+                await owner.execute(
+                    "UPDATE switchboard.butler_registry_control_plane "
+                    "SET policy_state = $1, policy_provenance = $2 WHERE name = 'general'",
+                    state,
+                    provenance,
+                )
+                reason = await _butler_dispatch_gated(general, "general")
+                assert (reason is not None) is held, (state, reason)
+
+            # No runtime role: the function refuses and the gate fails open.
             await owner.execute(
                 "UPDATE switchboard.butler_registry_control_plane "
-                "SET policy_state = $1, policy_provenance = $2 WHERE name = 'general'",
-                state,
-                provenance,
+                "SET policy_state = 'paused', policy_provenance = 'operator' WHERE name = 'general'"
             )
-            reason = await _butler_dispatch_gated(general, "general")
-            assert (reason is not None) is held, (state, reason)
-
-        # No runtime role: the function refuses and the gate fails open.
-        await owner.execute(
-            "UPDATE switchboard.butler_registry_control_plane "
-            "SET policy_state = 'paused', policy_provenance = 'operator' WHERE name = 'general'"
-        )
-        assert await _butler_dispatch_gated(owner, "general") is None
+            assert await _butler_dispatch_gated(owner, "general") is None
     finally:
-        await general.close()
         await owner.close()
 
 
