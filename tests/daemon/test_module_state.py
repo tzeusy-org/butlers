@@ -28,6 +28,7 @@ from butlers.daemon import (
 )
 from butlers.modules.base import Module
 from butlers.modules.registry import ModuleRegistry
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -193,8 +194,6 @@ def _make_mock_pool(state_store: dict | None = None) -> AsyncMock:
     # pool.acquire() is used as `async with pool.acquire() as conn:` in some
     # daemon code paths (e.g. contact_info resolution). Provide a context
     # manager that yields a no-op connection so those paths don't crash.
-    from contextlib import asynccontextmanager
-
     mock_conn = AsyncMock()
     transaction = MagicMock()
     transaction.__aenter__ = AsyncMock(return_value=None)
@@ -205,9 +204,8 @@ def _make_mock_pool(state_store: dict | None = None) -> AsyncMock:
     mock_conn.fetch = AsyncMock(return_value=[])
     mock_conn.execute = AsyncMock(return_value=None)
 
-    @asynccontextmanager
-    async def _acquire():
-        yield mock_conn
+    def _acquire():
+        return AsyncCtx(mock_conn)
 
     pool.acquire = _acquire
     return pool
