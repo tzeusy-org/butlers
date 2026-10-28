@@ -7,7 +7,8 @@ Generalises sw_038 (QA only). Runtime roles ``butler_<name>_rw`` cannot read
 switchboard tables, so since role isolation (#5016) non-switchboard schedulers
 could not observe an administrative hold. The function derives the butler from
 the caller's effective role, never from caller input, and returns only that
-butler's control-plane policy. No table grant is added.
+butler's control-plane policy. No table grant is added. The search path is
+pinned to ``pg_catalog, pg_temp`` (sw_039); the body qualifies every relation.
 
 The function is retained on downgrade: migration state cannot prove that every
 reader has stopped, and removing its authority would strand active schedulers.
@@ -33,7 +34,7 @@ def upgrade() -> None:
         RETURNS TABLE (butler_name text, policy_state text, policy_provenance text)
         LANGUAGE plpgsql
         SECURITY DEFINER
-        SET search_path = pg_catalog, {quoted_schema}, pg_temp
+        SET search_path = pg_catalog, pg_temp
         AS $fn$
         DECLARE
             v_name text;
