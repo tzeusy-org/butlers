@@ -115,16 +115,25 @@ const REFUSAL_KEYS = ['scan_refused', 'task_overflow', 'children_overflow',
   'owned_overflow', 'pending_overflow', 'walk_overflow'];
 function supervisorDiagnostic(value) {
   if (Object.keys(value).sort().join() !==
-      'counts,counts_saturated,direct_remaining,event,kernel_children_closed,owned_remaining,reason' ||
+      'counts,counts_saturated,direct_remaining,event,first_scan_refusal,kernel_children_closed,owned_remaining,reason' ||
       !['settled', 'latched_refusal', 'settlement_deadline'].includes(value.reason) ||
       typeof value.counts_saturated !== 'boolean' || typeof value.kernel_children_closed !== 'boolean' ||
       !value.counts || typeof value.counts !== 'object' || Array.isArray(value.counts) ||
       Object.keys(value.counts).sort().join() !== [...REFUSAL_KEYS].sort().join() ||
       !REFUSAL_KEYS.every(key => Number.isSafeInteger(value.counts[key]) && value.counts[key] >= 0 && value.counts[key] <= 65535) ||
       ![value.owned_remaining, value.direct_remaining].every(count => Number.isSafeInteger(count) && count >= 0 && count <= MAX_PROCESSES)) return null;
+  const first = value.first_scan_refusal;
+  if (value.counts.scan_refused === 0 ? first !== null :
+      !first || typeof first !== 'object' || Array.isArray(first) ||
+      Object.keys(first).sort().join() !== 'b,k,o,s' ||
+      ![first.s, first.k, first.o, first.b].every(Number.isSafeInteger) ||
+      first.s < 1 || first.s > 3 || first.k < 1 || first.k > 6 || first.o < 1 || first.o > 4 ||
+      ![0, 1, 2, 3, 7, 10, 11, 15, 17, 19, 23, 27, 31].includes(first.b) ||
+      (first.k === 1 && (first.b & 15) === 15)) return null;
   return {reason: value.reason, counts: {...value.counts}, counts_saturated: value.counts_saturated,
     owned_remaining: value.owned_remaining, direct_remaining: value.direct_remaining,
-    kernel_children_closed: value.kernel_children_closed};
+    kernel_children_closed: value.kernel_children_closed,
+    first_scan_refusal: first === null ? null : {...first}};
 }
 function managed(command, args, options = {}) {
   const {ipc = false, ...launch} = options;

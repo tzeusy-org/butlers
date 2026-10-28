@@ -113,6 +113,20 @@ The local terminal transport record retains the subject diagnostic and at most
 eight uploader diagnostics; sealed snapshot and manifest membership is unchanged.
 Missing or malformed control remains incomplete. These observations neither
 change cleanup acceptance or deadlines nor identify a historical failure's cause.
+The same record retains only the first refused scan as `first_scan_refusal`,
+or `null` when the scan-refusal counter is zero. Its exact numeric keys are `s`
+(1 normal self scan, 2 descendant walk, 3 settlement self scan), `k` (1 ENOENT,
+2 ESRCH, 3 EACCES, 4 EPERM, 5 other OS error, 6 ValueError), `o`
+(1 task list, 2 child-file open/context, 3 read, 4 integer conversion), and `b`.
+The identity mask `b` uses bits 1/2 for the existing pre/post identity being
+present, 4 for both having equal start ticks, 8 for post state Z/X, and 16 for
+pre state Z/X. No identity is exported or read again. The strict reader rejects
+impossible masks and ENOENT with the known same-start/post-Z/X exception bits:
+that accepted scan never reaches the refusal recorder. Later refusals keep the
+first tuple and increment the existing counters. This classification covers
+every caller and uploader invocation; it does not establish a safe repair or
+restore missing ownership proof. Missing or invalid classification remains
+incomplete, even when the final process sets are empty.
 Cancellation enters bounded cleanup immediately. Supervisor ownership also
 settles if the action process disappears or its control reader closes. Descriptor
 health is checked independently on every bounded supervisor loop, even when a
