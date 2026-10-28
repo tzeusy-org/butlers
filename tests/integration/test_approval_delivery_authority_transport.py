@@ -133,28 +133,30 @@ async def authority_pools(authority_db_url):
             assert await pool.fetchval("SELECT current_user") == f"butler_{schema}_rw"
             for peer in ("relationship", "switchboard", "messenger"):
                 if peer != schema:
-                    legacy_relationship_reader = schema == "relationship" and peer == "switchboard"
+                    inbox_reader = schema in {"relationship", "messenger"} and peer == "switchboard"
                     assert (
                         await pool.fetchval("SELECT has_schema_privilege($1, 'USAGE')", peer)
-                        is legacy_relationship_reader
+                        is inbox_reader
                     )
                     peer_table = {
                         "relationship": "pending_actions",
                         "switchboard": "notifications",
                         "messenger": "approval_delivery_handoffs",
                     }[peer]
-                    if legacy_relationship_reader:
-                        # Existing bootstrap deliberately grants Relationship
-                        # generic Switchboard reads for follow-up jobs. It is
-                        # not approval-source authority or a new grant here.
-                        assert await pool.fetchval(f"SELECT count(*) FROM {peer}.{peer_table}") >= 0
+                    if inbox_reader:
+                        # core_077/core_143 retain USAGE; core_283/sw_054 grant
+                        # only the inbox needed by deterministic follow-up jobs.
+                        # This read is under the actual owning runtime role.
+                        assert (
+                            await pool.fetchval("SELECT count(*) FROM switchboard.message_inbox")
+                            >= 0
+                        )
                         with pytest.raises(asyncpg.InsufficientPrivilegeError):
                             await pool.execute(
                                 "UPDATE switchboard.notifications SET message=message WHERE false"
                             )
-                    else:
-                        with pytest.raises(asyncpg.InsufficientPrivilegeError):
-                            await pool.fetchval(f"SELECT count(*) FROM {peer}.{peer_table}")
+                    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                        await pool.fetchval(f"SELECT count(*) FROM {peer}.{peer_table}")
         source = pools["relationship"]
         await source.execute(
             "UPDATE approval_delivery_rollout SET admission_enabled=true, worker_enabled=false"

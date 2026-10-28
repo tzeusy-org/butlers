@@ -47,11 +47,14 @@ After finalization consumes one-shot installer privileges, repeat migrations,
 second-schema replay and mixed-chain tracking do not demand those grants back.
 The stable prerequisite profile excludes the ordinary Relationship SELECT default
 on Switchboard: immutable `core_001` revokes cross-schema defaults during bounded
-replay and `core_077` repairs this one. Requiring it before that continuation would
-prevent the repair itself. This exclusion grants no runtime access and does not
-waive required own-schema/base ACLs or protected authority. Its absence is not a
-bootstrap failure, nor proof of working Relationship reads: actual default-ACL
-and effective `SET ROLE` readback separately witness the repair. No revision or
+replay. `core_077` used to restore it; head (`core_283`) now leaves the relationship,
+messenger and travel roles with SELECT on `switchboard.message_inbox` only and no
+Switchboard default, so there is no read default to require. Rerunning the bootstrap grants
+these three roles `USAGE` on the schema only and does not restore either. This exclusion grants no
+runtime access and does not waive required own-schema/base ACLs or protected
+authority. Its absence is not a bootstrap failure, nor proof of working Relationship
+reads: actual catalog and effective `SET ROLE` readback separately witness the
+`message_inbox` grant. No revision or
 completion marker supplies bootstrap provenance.
 
 The applied `core_196`, `core_197` and `core_198` point-of-use guards remain
