@@ -7,13 +7,27 @@ used to hold SELECT on every Switchboard table (core_077, core_143), including
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import AsyncExitStack
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from urllib.parse import urlparse
+from uuid import uuid4
 
+import asyncpg
 import pytest
 from sqlalchemy import create_engine, text
 
 from alembic import command
-from butlers.migrations import _build_alembic_config
+from butlers.core.state import state_get, state_set
+from butlers.db import register_jsonb_codec, schema_search_path
+from butlers.jobs.calendar_prep import (
+    prep_key,
+    run_messenger_calendar_prep_contribution,
+    run_travel_calendar_prep_contribution,
+)
+from butlers.migrations import _build_alembic_config, get_chain_head
+from butlers.modules.calendar import CalendarEvent, CalendarModule, EventStatus
 from butlers.testing.migration import (
     create_migration_db,
     migration_bootstrap_db_url,
@@ -55,6 +69,199 @@ def _readable(db_url: str, role: str) -> set[str]:
     return {name for name, granted in _select_grants(db_url, role).items() if granted}
 
 
+async def _exercise_calendar_prep_readers(db_url: str) -> None:
+    """Exercise real LOCAL projections, jobs and state through the narrowed runtime roles."""
+    jobs = {
+        "messenger": run_messenger_calendar_prep_contribution,
+        "travel": run_travel_calendar_prep_contribution,
+    }
+    now = datetime.now(UTC)
+    received_at = now - timedelta(minutes=1)
+    entity_id = uuid4()
+    entity_name = f"SV13 native attendee {entity_id}"
+    thread_id = f"sv13-native-thread-{uuid4()}"
+    subject = "Synthetic native meeting context"
+    message = "Harmless persisted native message"
+    sentinel_key = "sv13/native-unrelated-state"
+    sentinel = {"retained": True}
+    pools = {}
+    events = {}
+
+    async with AsyncExitStack() as stack:
+        # This ordinary migration identity owns only disposable setup/fault SQL.
+        # Pool methods finish each statement before any later migration or DDL.
+        control = await asyncpg.create_pool(
+            db_url,
+            min_size=1,
+            max_size=1,
+            init=register_jsonb_codec,
+            server_settings={"search_path": schema_search_path("switchboard")},
+        )
+        stack.push_async_callback(control.close)
+        for schema, chain in (("switchboard", "switchboard"), *[(s, s) for s in jobs]):
+            versions = await control.fetch(f'SELECT version_num FROM "{schema}".alembic_version')
+            assert {row["version_num"] for row in versions} == {
+                get_chain_head("core"),
+                get_chain_head(chain),
+            }
+        await control.execute(
+            "INSERT INTO public.entities(id, canonical_name, entity_type) VALUES ($1, $2, 'person')",
+            entity_id,
+            entity_name,
+        )
+        await control.execute(
+            "SELECT switchboard.switchboard_message_inbox_ensure_partition($1)", received_at
+        )
+        await control.execute(
+            "INSERT INTO switchboard.message_inbox "
+            "(received_at, request_context, raw_payload, direction, normalized_text) "
+            "VALUES ($1, $2, $3, 'inbound', $4)",
+            received_at,
+            {
+                "source_channel": "email",
+                "source_sender_entity_id": str(entity_id),
+                "source_thread_identity": thread_id,
+                "subject": subject,
+            },
+            {},
+            message,
+        )
+
+        for schema in jobs:
+            role = f"butler_{schema}_rw"
+
+            async def setup(connection, *, runtime_role=role):
+                await connection.execute(f'SET ROLE "{runtime_role}"')
+
+            pool = await asyncpg.create_pool(
+                db_url,
+                min_size=1,
+                max_size=2,
+                init=register_jsonb_codec,
+                setup=setup,
+                server_settings={"search_path": schema_search_path(schema)},
+            )
+            stack.push_async_callback(pool.close)
+            pools[schema] = pool
+            async with pool.acquire() as connection:
+                assert await connection.fetchval("SELECT current_user") == role
+                assert await connection.fetchval("SELECT current_schema()") == schema
+                assert await connection.fetchval("SHOW search_path") == schema_search_path(schema)
+                # Returning this connection must not make the next acquire run as the login.
+                await connection.execute("RESET ROLE")
+            assert await pool.fetchval("SELECT current_user") == role
+            assert await pool.fetchval("SELECT count(*) FROM switchboard.message_inbox") == 1
+            for relation in (
+                "switchboard.butler_secrets",
+                "switchboard.notifications",
+                f"{'travel' if schema == 'messenger' else 'messenger'}.state",
+            ):
+                with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                    await pool.fetchval(f"SELECT count(*) FROM {relation}")
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await pool.execute(
+                    "UPDATE switchboard.notifications SET message=message WHERE false"
+                )
+
+            # These LOCAL methods issue SQL only: never start the module/provider.
+            module = CalendarModule()
+            module._db = SimpleNamespace(pool=pool)
+            module._butler_name = schema
+            source_id = await module._ensure_calendar_source(
+                source_key=f"provider:google:sv13-native-{schema}",
+                source_kind="provider",
+                lane="user",
+                provider="google",
+                calendar_id=f"sv13-native-{schema}",
+                butler_name=schema,
+                writable=False,
+            )
+            assert source_id is not None
+            event = CalendarEvent(
+                event_id=f"sv13-native-{schema}-{uuid4()}",
+                title=f"SV13 {schema} meeting",
+                start_at=now + timedelta(hours=1),
+                end_at=now + timedelta(hours=2),
+                timezone="UTC",
+                status=EventStatus.confirmed,
+                entity_ids=[entity_id],
+                source_butler=schema,
+                butler_name=schema,
+            )
+            await module._project_provider_changes(
+                source_id=source_id,
+                provider_name="google",
+                calendar_id=f"sv13-native-{schema}",
+                updated_events=[event],
+                cancelled_ids=[],
+            )
+            row = await pool.fetchrow(
+                "SELECT e.id, e.source_butler, e.source_id, cee.entity_id "
+                "FROM calendar_events e JOIN calendar_event_entities cee ON cee.event_id=e.id "
+                "WHERE e.origin_ref=$1",
+                event.event_id,
+            )
+            assert row is not None
+            assert row["source_butler"] == schema
+            assert row["source_id"] == source_id
+            assert row["entity_id"] == entity_id
+            events[schema] = (row["id"], event.title)
+            await state_set(pool, sentinel_key, sentinel)
+
+        async def populated(schema: str) -> int:
+            pool = pools[schema]
+            result = await jobs[schema](pool, None)
+            assert result["butler"] == schema
+            assert result["events_written"] == result["attendees"] == result["threads"] == 1
+            assert result["pruned"] == 0
+            event_id, title = events[schema]
+            envelope = await state_get(pool, prep_key(str(event_id)))
+            assert envelope is not None
+            assert envelope["butler"] == schema
+            assert envelope["event_id"] == str(event_id)
+            assert envelope["event_title"] == title
+            assert envelope["has_context"] is True
+            assert len(envelope["attendees"]) == 1
+            attendee = envelope["attendees"][0]
+            assert attendee["entity_id"] == str(entity_id)
+            assert attendee["name"] == entity_name
+            assert attendee["message_context"] == [
+                {
+                    "channel": "email",
+                    "thread_id": thread_id,
+                    "subject": subject,
+                    "snippet": message,
+                    "last_message_at": received_at.isoformat(),
+                    "message_count": 1,
+                }
+            ]
+            assert await state_get(pool, sentinel_key) == sentinel
+            return await pool.fetchval(
+                "SELECT version FROM state WHERE key=$1", prep_key(str(event_id))
+            )
+
+        versions = {schema: await populated(schema) for schema in jobs}
+        try:
+            await control.execute(
+                "REVOKE SELECT ON TABLE switchboard.message_inbox FROM butler_messenger_rw"
+            )
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await pools["messenger"].fetchval("SELECT count(*) FROM switchboard.message_inbox")
+            result = await jobs["messenger"](pools["messenger"], None)
+            assert result["events_written"] == result["attendees"] == result["threads"] == 0
+            assert result["pruned"] == 1
+            event_id, _ = events["messenger"]
+            assert await state_get(pools["messenger"], prep_key(str(event_id))) is None
+            assert await state_get(pools["messenger"], sentinel_key) == sentinel
+            assert await populated("travel") > versions["travel"]
+        finally:
+            # Restore exactly the one named grant, including on failed assertions.
+            await control.execute(
+                "GRANT SELECT ON TABLE switchboard.message_inbox TO butler_messenger_rw"
+            )
+        await populated("messenger")
+
+
 def test_fresh_database_grants_message_inbox_and_nothing_else(postgres_container) -> None:
     """Core runs before the Switchboard chain; sw_054 supplies the grant once the table exists."""
     db_url = create_migration_db(postgres_container, migration_db_name())
@@ -66,6 +273,17 @@ def test_fresh_database_grants_message_inbox_and_nothing_else(postgres_container
         grants = _select_grants(db_url, role)
         assert grants["message_inbox"] is True
         assert "butler_secrets" in grants
+        assert _readable(db_url, role) == {"message_inbox"}, role
+
+    # Migrate before opening any async control/runtime connections. Replaying
+    # the real core chain supplies each LOCAL calendar projection and state.
+    for schema in ("messenger", "travel"):
+        for name in ("core", schema):
+            command.upgrade(
+                _build_alembic_config(db_url, chains=[name], target_schema=schema), f"{name}@head"
+            )
+    asyncio.run(_exercise_calendar_prep_readers(db_url))
+    for role in _ROLES:
         assert _readable(db_url, role) == {"message_inbox"}, role
 
 
