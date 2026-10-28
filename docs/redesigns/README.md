@@ -69,6 +69,7 @@ live in the [JARVIS pursuit skill, Phase 4](../../.claude/skills/butlers-develop
 
 | Run | Dossier |
 |---|---|
+| 23 (2026-10-28) | [2026-10-28-jarvis-pursuit.md](2026-10-28-jarvis-pursuit.md) — realtime integrated feature exploration |
 | 22 (2026-10-16) | [2026-10-16-backlog-pursuit.md](2026-10-16-backlog-pursuit.md) — backlog optimization and unblocking lens |
 | 21 (2026-10-16) | [2026-10-16-jarvis-arch-pursuit.md](2026-10-16-jarvis-arch-pursuit.md) — JARVIS architecture from the Dots diff matrix |
 | 20 (2026-10-15) | [2026-10-15-dots-superset-pursuit.md](2026-10-15-dots-superset-pursuit.md) — Dots superset lens |
