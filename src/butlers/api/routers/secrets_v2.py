@@ -3829,7 +3829,8 @@ def _catalogue_row_capability_or_none(provider: str, required_scopes: list[str])
 
 @router.get(
     "/breaks-catalogue",
-    response_model=ApiResponseWithMeta[list[BreakEntry], BreaksCatalogueMeta],
+    response_model=ApiResponse[list[BreakEntry]],
+    responses={200: {"model": ApiResponseWithMeta[list[BreakEntry], BreaksCatalogueMeta]}},
 )
 async def get_breaks_catalogue(
     provider: str | None = Query(

@@ -26,7 +26,7 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, ValidationError, with_config
+from pydantic import BaseModel, ConfigDict, ValidationError, create_model, with_config
 from typing_extensions import TypedDict
 
 from butlers.api.approval_review import resolve_messenger_reviews
@@ -124,6 +124,15 @@ class ApprovalActionsMeta(ApprovalSourceMeta):
     limit: int
     has_more: bool
 
+
+# A native refinement of the real canonical envelope, used only for output metadata.
+# Keep the shared generic and every default component/validation schema unchanged.
+_ApprovalActionsPage = create_model(
+    "PaginatedResponse[ApprovalAction, ApprovalActionsMeta]",
+    __base__=PaginatedResponse[ApprovalAction],
+    __config__=ConfigDict(json_schema_serialization_defaults_required=False),
+    meta=(ApprovalActionsMeta, ...),
+)
 
 logger = logging.getLogger(__name__)
 
@@ -887,7 +896,9 @@ def _configured_gated_tools_for(butler_name: str) -> list[tuple[str, str, int]]:
 
 
 @router.get(
-    "/actions", response_model=ApiResponseWithMeta[list[ApprovalAction], ApprovalActionsMeta]
+    "/actions",
+    response_model=PaginatedResponse[ApprovalAction],
+    responses={200: {"model": _ApprovalActionsPage}},
 )
 async def list_actions(
     offset: int = Query(default=0, ge=0),

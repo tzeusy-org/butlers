@@ -16069,6 +16069,12 @@ export interface components {
             data: components["schemas"]["AuditEvent"][];
             meta?: components["schemas"]["ApiMeta"];
         };
+        /** ApiResponse[list[BreakEntry]] */
+        ApiResponse_list_BreakEntry__: {
+            /** Data */
+            data: components["schemas"]["BreakEntry"][];
+            meta?: components["schemas"]["ApiMeta"];
+        };
         /** ApiResponse[list[ButlerModelOverride]] */
         ApiResponse_list_ButlerModelOverride__: {
             /** Data */
@@ -16647,12 +16653,6 @@ export interface components {
         ApiResponseWithMeta_InventoryData_InventoryMeta_: {
             data: components["schemas"]["InventoryData"];
             meta: components["schemas"]["InventoryMeta"];
-        };
-        /** ApiResponseWithMeta[list[ApprovalAction], ApprovalActionsMeta] */
-        ApiResponseWithMeta_list_ApprovalAction__ApprovalActionsMeta_: {
-            /** Data */
-            data: components["schemas"]["ApprovalAction"][];
-            meta: components["schemas"]["ApprovalActionsMeta"];
         };
         /** ApiResponseWithMeta[list[ApprovalGatedTool], ApprovalSourceMeta] */
         ApiResponseWithMeta_list_ApprovalGatedTool__ApprovalSourceMeta_: {
@@ -29816,6 +29816,12 @@ export interface components {
             data: components["schemas"]["ApprovalAction"][];
             meta: components["schemas"]["PaginationMeta"];
         };
+        /** PaginatedResponse[ApprovalAction, ApprovalActionsMeta] */
+        PaginatedResponse_ApprovalAction__ApprovalActionsMeta_: {
+            /** Data */
+            data: components["schemas"]["ApprovalAction"][];
+            meta: components["schemas"]["ApprovalActionsMeta"];
+        };
         /** PaginatedResponse[ApprovalRule] */
         PaginatedResponse_ApprovalRule_: {
             /** Data */
@@ -37542,7 +37548,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiResponseWithMeta_list_ApprovalAction__ApprovalActionsMeta_"];
+                    "application/json": components["schemas"]["PaginatedResponse_ApprovalAction__ApprovalActionsMeta_"];
                 };
             };
             /** @description Validation Error */
