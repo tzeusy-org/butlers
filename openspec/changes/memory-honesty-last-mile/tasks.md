@@ -1,18 +1,34 @@
+`bu-kqnum.14.8` amends the remaining work to adopted RFC 0038 goal-runtime
+terms before `bu-kqnum.14.7` reconciliation/archive. Existing checkmarks record
+their merged implementation slices, not goal-runtime completion. Goal delivery
+remains with the generalist change's domain conversion (2.12) and switch (4.1);
+its baseline rebuild (4.2) must retain this change's recovery and throughput
+clauses. No task is newly completed by this specification amendment.
+
 ## 1. Episode consolidation lifecycle
 
 - [ ] 1.1 Add failing module-memory regressions for pending claims, failed rows
   before and after their retry timestamp, expired leases, dead-letter exclusion,
   concurrent claimant safety, and exclusion of Chronicler's private
-  `chronicler_mem` episodes from the new failed-retry claimant.
-- [ ] 1.2 Update the schema-qualified episode claimant to select only eligible
-  pending/failed rows, preserve ordered `FOR UPDATE SKIP LOCKED` grouping, and
+  `chronicler_mem` episodes from the new failed-retry claimant; cover one
+  obligation admission per tenant/source/taint partition, empty-population
+  no-admission, dry-run no-execution and independent group failures.
+- [ ] 1.2 Update the source-scoped read capability's schema-qualified episode
+  claimant to select only eligible pending/failed rows, preserve ordered
+  `FOR UPDATE SKIP LOCKED` grouping, and
   never automatically select `dead_letter` or `consolidated` rows; apply the
   recovery-eligible source predicate so a distinct private `memory_schema` is
   not newly retried without changing its existing private-source pending path.
-- [ ] 1.3 Complete lifecycle persistence for failed, terminal, and successful
-  outcomes: sanitized errors/reasons, bounded retry timing, lease clearing, and
+  The deterministic schedule submits declared obligation admissions rather than
+  spawning; read context preserves authority/taint partition isolation.
+- [ ] 1.3 Complete deterministic consolidation-apply lifecycle persistence for
+  failed, terminal, and successful outcomes: sanitized errors/reasons, bounded
+  retry timing, lease clearing, and
   truthful public-field reset behavior, including a requeue reset of the
-  non-null `consolidation_attempts` integer to `0`.
+  non-null `consolidation_attempts` integer to `0`. Validate artifact evidence
+  before persistence and retain source tenant, authority/taint and held-rule
+  guarantees; use the active memory pool/embedding lifecycle and catalog-backed
+  goal-runner policy without job model/runtime/timeout overrides.
 - [ ] 1.4 Add focused lifecycle-event regressions proving terminal failure and
   owner requeue event payloads contain no raw runtime, prompt, credential, or
   lease data.
@@ -48,6 +64,8 @@
 - [x] 2.6 Prove the requeue request never invokes a spawner, consolidation
   runner, scheduler run-now path, MCP tool, or bulk replay path; keep migrations
   and direct operator SQL out of this implementation.
+  Goal-runtime reconciliation must also prove the same request admits no goal;
+  this historical checkmark does not certify that future path.
 
 ## 3. Truthful and accessible dashboard surfaces
 
@@ -82,7 +100,12 @@
   required quality gates in proportion to the merged implementation risk.
 - [ ] 4.2 Validate that public copy, API types, and tests jointly preserve the
   no-run-now/no-bulk/no-MCP boundary and do not widen into activity, entities,
-  or re-embedding surfaces.
+  or re-embedding surfaces; requeue must admit no goal, and a later scheduled
+  obligation must preserve retry, lease and partition rules.
 - [ ] 4.3 Run `openspec validate memory-honesty-last-mile --strict`, review the
   final diff against the proposal/design/spec scenarios, and record the actual
-  verification evidence before implementation reconciliation.
+  verification evidence against the amended goal-runtime contract before
+  implementation reconciliation. Preserve all twelve baseline consolidation
+  scenario names, the private-source scenario, the adopted goal-partition
+  scenarios and all five throughput-decision scenarios/four policy declines;
+  do not infer delivery from a spec-only amendment or archive unproven work.
