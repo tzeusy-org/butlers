@@ -74,6 +74,7 @@ describe("CalendarWorkspacePage sync freshness plaque (bu-hmdqz.10)", () => {
               staleness_ms: 60_000,
               error_kind: "none",
               sync_enabled: true,
+              sync_applicable: true,
             },
             {
               source_id: "source-stale",
@@ -96,6 +97,7 @@ describe("CalendarWorkspacePage sync freshness plaque (bu-hmdqz.10)", () => {
               staleness_ms: 96 * 24 * 60 * 60 * 1000, // 96 days, matches live incident
               error_kind: "none",
               sync_enabled: true,
+              sync_applicable: true,
             },
           ],
           writable_calendars: [],
@@ -216,6 +218,7 @@ describe("CalendarWorkspacePage sync freshness plaque (bu-hmdqz.10)", () => {
               staleness_ms: 400 * 24 * 60 * 60 * 1000,
               error_kind: "none",
               sync_enabled: false,
+              sync_applicable: true,
             },
           ],
           writable_calendars: [],

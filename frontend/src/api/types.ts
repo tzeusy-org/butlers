@@ -1354,6 +1354,12 @@ export interface CalendarWorkspaceSourceFreshness {
    * failed) and is skipped by the sync loop. Defaults to `true`.
    */
   sync_enabled: boolean;
+  /**
+   * Whether a sync verdict applies. Only provider sources sync; internal
+   * sources (schedules, reminders) are projected locally and never get a
+   * cursor, so their null `last_synced_at` is normal, not "never synced".
+   */
+  sync_applicable: boolean;
 }
 
 /** Coarse per-source sync error classification surfaced alongside `last_error`. */

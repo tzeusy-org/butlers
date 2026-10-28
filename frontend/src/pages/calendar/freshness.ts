@@ -31,7 +31,7 @@ export function formatStaleness(stalenessMs: number | null): string {
 
 /**
  * Grid-level sync-freshness plaque (bu-hmdqz.10): the worst-case staleness
- * across every enabled source, phrased for the masthead rather than the
+ * across every enabled provider-synced source, phrased for the masthead rather than the
  * Sources rail's compact per-source dots. Only returns non-null when the
  * data warrants a degraded clause -- callers must render nothing otherwise
  * (quiet by default; a fresh calendar gets no pixel here).
@@ -96,13 +96,16 @@ export function computeFreshnessPlaque(
     // a false all-clear. Name the degraded lookup instead (bu-sn71y).
     return { detail: "Sync status unavailable", unknown: true };
   }
-  const enabled = sources.filter((source) => source.sync_enabled);
+  // Internal sources never sync, so their missing cursor would otherwise read
+  // as "Never synced" forever (bu-ak7fij).
+  const syncable = sources.filter((source) => source.sync_applicable);
+  const enabled = syncable.filter((source) => source.sync_enabled);
   if (enabled.length === 0) {
     // No sources configured, or every source was deliberately disabled --
     // a legitimate empty state (see backend `sync_enabled` semantics), but
     // an empty *connected* list on a page the owner expects synced data on
     // is itself unusual enough to name rather than silently show nothing.
-    return sources.length === 0
+    return syncable.length === 0
       ? { detail: "Sync status unknown", unknown: true }
       : null;
   }

@@ -55,7 +55,7 @@ def test_complete_route_and_openapi_snapshot(tmp_path, monkeypatch):
     }
     encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "132bacdb5423245cdd33e17dc4c885d1f1a12daee03fa3c5bb28945cacbfdfea"
+        "9e220d878c65175a2d42244fdedfd37ed9e71a5ddff3ad136ce8d2bfbd92aec7"
     )
     assert "/api/health/baselines" in snapshot["openapi"]["paths"]
     assert len(snapshot["routes"]) == 615
