@@ -57,6 +57,7 @@ async def _make_schema(pool: asyncpg.Pool) -> None:
             status             TEXT NOT NULL,
             closed_at          TIMESTAMPTZ,
             healing_session_id UUID,
+            error_detail       TEXT,
             qa_patrol_id       UUID REFERENCES public.qa_patrols(id) ON DELETE SET NULL
         )
     """)

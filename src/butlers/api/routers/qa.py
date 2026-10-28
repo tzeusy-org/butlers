@@ -1230,12 +1230,15 @@ _CIRCUIT_BREAKER_THRESHOLD = 5
 # lets an operator reset clear the failure chain while the real, un-fabricated
 # attempt/patrol history stays visible in summary + all-time stats. Kept
 # byte-identical to the dispatch-admission filter in
-# ``butlers.core.qa.dispatch._is_circuit_breaker_tripped``.
+# ``butlers.core.qa.dispatch._is_circuit_breaker_tripped``, including the exclusion of
+# ``publication_unavailable`` outcomes (publication is disabled by design).
 _QA_CIRCUIT_BREAKER_WHERE_CLAUSE = """
 FROM public.healing_attempts
 WHERE qa_patrol_id IS NOT NULL
   AND closed_at IS NOT NULL
   AND healing_session_id IS NOT NULL
+  AND NOT (status = 'failed'
+           AND starts_with(COALESCE(error_detail, ''), 'publication_unavailable:'))
   AND closed_at > COALESCE(
         (SELECT max(reset_at) FROM public.breaker_resets WHERE breaker = 'qa'),
         '-infinity'::timestamptz
