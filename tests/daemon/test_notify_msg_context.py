@@ -17,12 +17,12 @@ Migration note (bu-km8xr):
 from __future__ import annotations
 
 import uuid
-from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from butlers.testing.approval_parking_fake import record_pending_action
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -79,9 +79,8 @@ def _make_mock_pool_with_entity_facts(
 
     mock_pool = AsyncMock()
 
-    @asynccontextmanager
-    async def mock_acquire():
-        yield mock_conn
+    def mock_acquire():
+        return AsyncCtx(mock_conn)
 
     mock_pool.acquire = mock_acquire
     return mock_pool, mock_conn
