@@ -327,7 +327,7 @@ def test_core_267_shared_guard_survives_all_but_the_last_schema_downgrade(
 ) -> None:
     """The core chain runs once per butler schema over the shared table."""
     url = create_migration_db(postgres_container, migration_db_name())
-    # Historical shared-DDL round trip stays before the core_281 cutover;
+    # Historical shared-DDL round trip stays before the core_282 cutover;
     # all original downgrade targets, seeds and observers remain real.
     stage_test_migration_history(postgres_container, url, plans=(("core", "general", "core_280"),))
     stage_test_migration_history(
@@ -517,7 +517,7 @@ def test_core_268_shared_hardening_survives_all_but_the_last_schema_downgrade(
     postgres_container,
 ) -> None:
     url = create_migration_db(postgres_container, migration_db_name())
-    # Historical shared-DDL round trip stays before the core_281 cutover;
+    # Historical shared-DDL round trip stays before the core_282 cutover;
     # all original downgrade targets, seeds and observers remain real.
     stage_test_migration_history(postgres_container, url, plans=(("core", "general", "core_280"),))
     stage_test_migration_history(

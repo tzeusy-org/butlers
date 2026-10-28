@@ -67,6 +67,25 @@ entity, or exposes a mapping read surface, and it returns only an opaque receipt
 Remap, delete, and rollback are separate owner-authorized operations. Route:
 `src/butlers/api/routers/home_person_mappings.py`.
 
+## Proposed realtime feature specifications
+
+The shared [event-response contract](../../openspec/changes/specify-realtime-feature-contracts/specs/event-response-contract/spec.md)
+is owner-adopted. Two domain feature specifications are under review; their numerical profiles
+and behavior are proposed and do not describe currently shipped features:
+
+- [Appliance handoffs](../../openspec/changes/specify-home-appliance-handoff/proposal.md): explicit
+  washer/dishwasher cycle evidence opens one unload/transfer task; only owner Done completes it.
+  Monitoring and fixed reminders require no model calls. Stop watching preserves a fresh Done-only
+  action for an existing task. Actual appliance mappings must pass commissioning before enrollment.
+- [Comfort sessions](../../openspec/changes/specify-home-comfort-sessions/proposal.md): observe a
+  room band for a finite period, optionally applying one exact authorized thermostat setpoint.
+  Fresh room observations establish attainment; command acknowledgement does not. Manual override,
+  source uncertainty and Stop remain explicit. Expiry does not automatically restore a setpoint.
+
+Both reuse existing Home authority, canonical owner delivery and deterministic infrastructure.
+Their design documents contain concrete initial runtime profiles and behavior-executing
+verification matrices; they claim no measured live latency or token savings.
+
 ## Implementation Notes
 
 - Recorder statistics go through `connectors/home_assistant_statistics.py::HAStatisticsClient` and

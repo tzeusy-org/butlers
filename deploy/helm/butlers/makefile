@@ -30,10 +30,14 @@ secrets-%:
 image-%:
 	../../../scripts/k8s/build-push.sh $*
 
-deploy-%:
-	helm upgrade --install $(RELEASE_NAME) . --create-namespace $(call helm_args,$*)
-	kubectl -n $(NAMESPACE_$*) rollout status deploy/dashboard-api --timeout=10m
-	kubectl -n $(NAMESPACE_$*) rollout status deploy/butlers-up --timeout=10m
+# Online migrations check the privileged bootstrap but never create it, so
+# rerun the deployed tag's scripts/init-db.sql before the rollout (dev only).
+bootstrap-%:
+	../../../scripts/k8s/bootstrap-db.sh $* $(TAG)
+
+# Wrapped so each release leaves one public.deployments row (success or failed).
+deploy-%: bootstrap-%
+	../../../scripts/k8s/record-deploy.sh "$(NAMESPACE_$*)" "$(TAG)" "$(RELEASE_NAME)" -- $(call helm_args,$*)
 
 # Build + push images for the current commit, then deploy them. Migrations run
 # in dashboard-api's initContainer on every rollout. Run under `bws run`.

@@ -472,7 +472,7 @@ def migrate_test_database(
 def stage_test_migration_history(postgres_container, db_url, *, plans):
     """Stage an explicit pre-cutover migration window without current finalization.
 
-    This disposable historical fixture never crosses core_281 or claims serving
+    This disposable historical fixture never crosses core_282 or claims serving
     admission. Every core target must be an actual source revision before the
     cutover. Later current deployment proof uses the separate complete finalizer.
     """
@@ -480,9 +480,9 @@ def stage_test_migration_history(postgres_container, db_url, *, plans):
 
     for chain, _schema, revision in plans:
         if chain == "core" and (
-            revision is None or "core_281" in get_chain_revision_path("core", revision)
+            revision is None or "core_282" in get_chain_revision_path("core", revision)
         ):
-            raise ValueError("Historical core setup requires an explicit pre-core_281 target")
+            raise ValueError("Historical core setup requires an explicit pre-core_282 target")
     selected_database = unquote(urlparse(db_url).path.lstrip("/"))
     maintenance_url = migration_bootstrap_db_url(postgres_container, selected_database)
     with migration_session(maintenance_url, source_database="butlers") as connection:
@@ -504,7 +504,7 @@ def bind_historical_test_environment(config, directory, source, *, expected_sha2
     This never replaces the current environment. The literal historical online
     body is preserved; only its engine and version-location inputs borrow the
     caller-owned physical maintenance connection. It supports ownership/metadata
-    diagnostics, not current serving admission or a reverse across core_281.
+    diagnostics, not current serving admission or a reverse across core_282.
     """
     if hashlib.sha256(source.encode()).hexdigest() != expected_sha256:
         raise AssertionError("Pinned historical environment changed")

@@ -2395,7 +2395,7 @@ def restore_predecessor_r1(connection, capsule):
     """Reverse only this rebuild's catalog effects, retaining every stored row.
 
     The owning migration wrapper must subsequently execute the genuine Alembic
-    core_281→core_280 edge in each captured core schema and independently verify
+    core_282→core_281→core_280 edges in each captured core schema and independently verify
     the complete original vector. This function never writes a version table.
     """
     from .interfaces import (
@@ -2417,7 +2417,7 @@ def restore_predecessor_r1(connection, capsule):
     current = _snapshot_authority_catalog(connection, manifest)
     old_vectors = {row["schema"]: row["revisions"] for row in expected["versions"]}
     if {row["schema"]: row["revisions"] for row in current["versions"]} != {
-        schema: sorted("core_281" if rev == "core_280" else rev for rev in revisions)
+        schema: sorted("core_282" if rev == "core_280" else rev for rev in revisions)
         for schema, revisions in old_vectors.items()
     }:
         raise AuthorityError("R1 selected revision vector is not the exact rebuild")
@@ -2544,7 +2544,7 @@ def require_preserving_reverse(connection):
         if (
             acceptable is None
             or sorted(
-                "core_280" if revision == "core_281" else revision for revision in row["revisions"]
+                "core_280" if revision == "core_282" else revision for revision in row["revisions"]
             )
             != acceptable
         ):

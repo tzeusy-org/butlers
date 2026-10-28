@@ -3801,6 +3801,90 @@
       "excerpt": "- **THEN** episodes with `consolidation_status='pending'` MUST be fetched ordered by `(tenant_id, butler, created_at,...",
       "kind": "clause",
       "scenario": "Episode grouping by tenant and butler"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Episode grouping by tenant and butler",
+      "digest": "4bb765e58d83",
+      "excerpt": "- **WHEN** `run_consolidation` is called"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Consolidation with LLM spawner",
+      "digest": "48a8c108327c",
+      "excerpt": "- **WHEN** a `cc_spawner` is provided to `run_consolidation`"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Consolidation with LLM spawner",
+      "digest": "572b603fc5ad",
+      "excerpt": "- **THEN** for each `(tenant_id, butler)` group, a runtime session MUST be spawned with `trigger_source='schedule:con..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Consolidation with LLM spawner",
+      "digest": "c55e2214bff7",
+      "excerpt": "- **AND** the runtime output MUST be parsed for a JSON block containing `new_facts`, `updated_facts`, `new_rules`, an..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Scheduled consolidation uses the catalog-backed daemon spawner",
+      "digest": "3788ac2cbdb4",
+      "excerpt": "- **THEN** it MUST pass the daemon's live `Spawner` to `run_consolidation` rather than using the `cc_spawner=None` dr..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Scheduled consolidation uses the catalog-backed daemon spawner",
+      "digest": "56a4e76c9ddc",
+      "excerpt": "- **AND** an empty pending-episode claim MUST spawn no runtime session"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Scheduled consolidation uses the catalog-backed daemon spawner",
+      "digest": "bb4028671b99",
+      "excerpt": "- **AND** each non-empty `(tenant_id, butler)` group MUST use `trigger_source='schedule:consolidation'` without overr..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Scheduled consolidation uses the catalog-backed daemon spawner",
+      "digest": "7615af82a44d",
+      "excerpt": "- **AND** the handler's returned consolidation statistics or raised error MUST remain the scheduled task result recor..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Consolidation without spawner (dry run)",
+      "digest": "20681e103806",
+      "excerpt": "- **WHEN** `run_consolidation` is called with `cc_spawner=None`"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Episode content wrapped in XML tags for prompt injection prevention",
+      "digest": "6236250ad5b3",
+      "excerpt": "- **WHEN** episode content is formatted for the consolidation prompt"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Episode content wrapped in XML tags for prompt injection prevention",
+      "digest": "44d6f96cbaea",
+      "excerpt": "- **AND** the SKILL.md MUST contain a security notice instructing the LLM to treat episode content as data only"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Throughput decision retains existing batching",
+      "digest": "4fe5f5e49a98",
+      "excerpt": "- **AND** existing bounded episode claims, deterministic grouping and one session per non-empty tenant/source group S..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Throughput decision declines an additional per-run cap",
+      "digest": "06a061acb0c0",
+      "excerpt": "- **AND** existing model-catalog and Spawner quota, failover and timeout authority SHALL remain unchanged"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Throughput decision preserves catalog-authoritative transport",
+      "digest": "8372740efbcc",
+      "excerpt": "- **AND** scheduled consolidation SHALL continue through the live catalog-backed Spawner without model, runtime or se..."
     }
   ],
   "reconcile-dashboard-conversation-contracts/dashboard-conversations/Dashboard Ingestion Envelope Construction": [

@@ -1828,7 +1828,7 @@ async def test_real_predecessor_r0_r1_preserve_data_receipts_and_actual_stamps(
         assert rebuilt["dnd"] == before["dnd"]
         assert rebuilt["generation"] == before["generation"]
         assert all(
-            "core_281" in stamps
+            "core_282" in stamps
             for stamps in rebuilt["versions"].values()
             if any(revision.startswith("core_") for revision in stamps)
         )

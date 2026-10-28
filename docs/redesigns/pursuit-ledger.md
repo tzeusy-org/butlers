@@ -33,6 +33,7 @@ Five-second fleet verification with earned calm: nothing fabricated, failure nev
 | 20 (Dots superset) | 2026-10-15 | 15 | bu-jv1moa | [2026-10-15-dots-superset-pursuit.md](2026-10-15-dots-superset-pursuit.md) |
 | 21 (JARVIS architecture) | 2026-10-16 | 15 | bu-dhloi1 | [2026-10-16-jarvis-arch-pursuit.md](2026-10-16-jarvis-arch-pursuit.md) |
 | 22 (backlog optimization) | 2026-10-16 | 2 + reconciliation | bu-1mbyoa | [2026-10-16-backlog-pursuit.md](2026-10-16-backlog-pursuit.md) |
+| 23 (realtime outcomes) | 2026-10-28 | 3 + reconciliation | bu-okh0fw | [2026-10-28-jarvis-pursuit.md](2026-10-28-jarvis-pursuit.md) |
 
 ## Tier history
 
@@ -57,7 +58,8 @@ Verdicts per surface key across runs (blank: not tiered that run; keys were norm
 
 ## Ranked moves by run
 
-Titles only; packets live in the epic's child beads and in the run's data file (`jq '.synthesis.ranked_moves'`).
+Titles only; current packets and observations live in the epic's structured child fields.
+Older runs retain their existing pinned historical data-file references.
 
 ### 01 (audit) (2026-07-03) · epic bu-86c4c
 
@@ -456,3 +458,21 @@ Backlog lens, run concurrently with run 21 (working files and bead labels call i
 1. Backlog graph lint: a read-only check for graph states that hide or strand work (bu-1mbyoa.1)
 2. Weekly decision digest raises one attention row when the graph lint finds defects (bu-1mbyoa.2)
 3. Reconcile graph hygiene against the live backlog (gen-1) (bu-1mbyoa.3)
+
+
+### 23 (realtime outcomes) (2026-10-28) · epic bu-okh0fw
+
+Focused feature exploration with the owner's approved native-agent execution override: three
+concurrent research lanes covered the five standing lenses plus Home/environment, mobility,
+commerce and Travel. Three new domain extensions survived deduplication; no UI tier movement
+is claimed. Gate `bu-69cc1o` remains owner-held and releases specification work only.
+
+1. Appliance completion through the owner handoff, using explicit device states and a separate human obligation (`bu-okh0fw.1`).
+2. Trip disruption review over owner-confirmed linked plans, with stale-choice rejection and exact recovery options (`bu-okh0fw.2`).
+3. Bounded room comfort sessions whose outcomes use observed temperature, with expiry and control relinquishment (`bu-okh0fw.3`).
+4. Reconcile specification coverage and adoption prerequisites (gen-1) (`bu-okh0fw.4`).
+
+Purchase aftercare, shipment feeds, general event/condition infrastructure, streaming and new
+latency lanes were prior art, not refiled. The detailed dispositions and source-confirmed
+surface snapshots are in [the dossier](2026-10-28-jarvis-pursuit.md). No tracked data JSON or
+separately published artifact was created; complete structured Beads fields hold the packets.

@@ -157,7 +157,7 @@ def run_migrations_offline() -> None:
 
 
 def _require_preserving_direction(connection) -> None:
-    """Refuse a core281 reverse before ordinary schema setup can commit.
+    """Refuse a core282 reverse before ordinary schema setup can commit.
 
     Alembic invokes revision downgrade hooks only after its environment has
     run. Read the actual selected version table first; neither a privileged
@@ -183,7 +183,7 @@ def _require_preserving_direction(connection) -> None:
     ):
         return
     revisions = connection.exec_driver_sql("SELECT version_num FROM " + relation).scalars().all()
-    if "core_281" not in revisions:
+    if "core_282" not in revisions:
         return
     script = ScriptDirectory.from_config(context.config)
     try:
@@ -196,7 +196,7 @@ def _require_preserving_direction(connection) -> None:
         # Invalid/ambiguous destinations still raise before ordinary setup.
         script._upgrade_revs(destination, tuple(revisions))
         return
-    if any(step.revision.revision == "core_281" for step in steps):
+    if any(step.revision.revision == "core_282" for step in steps):
         if connection.info.get("butlers.preserving_reverse") is None:
             raise AuthorityError("Explicit preserving operator reverse is required")
         require_preserving_reverse(connection)

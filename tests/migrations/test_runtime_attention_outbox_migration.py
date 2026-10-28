@@ -3083,7 +3083,7 @@ def test_nonempty_outbox_survives_a_refused_core_197_downgrade(
     """REQ-runtime-attention-outbox-001: current reverse refuses before effects.
 
     The actual current-head Alembic direction guard requires the source-owned
-    preserving R0/R1 path before crossing core281. It cannot tear down or restamp
+    preserving R0/R1 path before crossing core282. It cannot tear down or restamp
     this populated outbox. Bounded core198 separately proves its direct protected
     boundary guard; neither refusal substitutes for positive R0/R1 proof.
     """

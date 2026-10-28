@@ -433,8 +433,17 @@ async def _persist_registry(
             counter_source_api_calls = EXCLUDED.counter_source_api_calls,
             counter_checkpoint_saves = EXCLUDED.counter_checkpoint_saves,
             counter_dedupe_accepted = EXCLUDED.counter_dedupe_accepted,
-            checkpoint_cursor = EXCLUDED.checkpoint_cursor,
-            checkpoint_updated_at = EXCLUDED.checkpoint_updated_at,
+            -- A heartbeat without a checkpoint (e.g. before a connector's first
+            -- save after a restart) reports nothing about the cursor; it must
+            -- not erase the cursor the connector saved through cursor_store.
+            checkpoint_cursor = COALESCE(
+                EXCLUDED.checkpoint_cursor, connector_registry.checkpoint_cursor
+            ),
+            checkpoint_updated_at = CASE
+                WHEN EXCLUDED.checkpoint_cursor IS NULL
+                THEN connector_registry.checkpoint_updated_at
+                ELSE EXCLUDED.checkpoint_updated_at
+            END,
             capabilities = EXCLUDED.capabilities,
             -- A heartbeat is proof that an executable process owns this
             -- identity, so it claims the row unconditionally. This is the

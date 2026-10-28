@@ -479,6 +479,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{quoted_schema}.butler_registry_control_plane>",
     ): "sanctioned:QA-projection: migration-owned receiver/control-plane read surface; schema quoted at runtime",
     (
+        "roster/switchboard/migrations/053_butler_local_schedule_policy.py",
+        "<dynamic:{quoted_schema}.butler_registry_control_plane>",
+    ): "sanctioned:butler-local-policy: migration-owned role-derived read of the caller's own control-plane row (generalises sw_038); schema quoted at runtime",
+    (
         "roster/switchboard/migrations/047_goal_ledger.py",
         "<dynamic:switchboard.{table}>",
     ): "dynamic-local: owning migration's loop over its fixed ledger table tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
@@ -762,10 +766,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/core/runtime_config.py",
         "switchboard.runtime_config",
     ): "sanctioned:RFC-0038: goal admission reads only Switchboard's explicit goal_admission_config snapshot (D10, bu-fkoexp)",
-    (
-        "src/butlers/core/scheduler.py",
-        "switchboard.butler_registry_control_plane",
-    ): "burn-down: existing switchboard.butler_registry_control_plane coupling; route through owning service or make local schema authority explicit",
     (
         "src/butlers/daemon.py",
         "relationship.entity_facts",

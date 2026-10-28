@@ -529,7 +529,7 @@ and catalog verification. Required private schema/chain targets are actual
 metadata, not guessed schema names. Serving daemon startup verifies revisions
 and authority read-only; it cannot provision or repair a missing catalog.
 Historical revision identifiers/edges and protected data remain. The source's
-final core edge is `core_281` after delivered `core_280`; a test that requires an
+final core edge is `core_282` after delivered `core_281`; a test that requires an
 earlier bounded edge must state its real purpose and preserve the complete graph.
 
 Purpose functions keep exact pg_catalog, pg_temp search_path and qualified non-catalog references, NOLOGIN/nonprivileged owner and explicit EXECUTE. Final installers replace the three old admin bunkers and attention version ladder only with genuine fresh/old-state catalog and behavior survivors. Independent later dashboard purpose interfaces stay protected. Protected downgrade validation must occur before any newer autocommit side effect, and advanced DND generation or receipts cannot be discarded to make rollback pass.

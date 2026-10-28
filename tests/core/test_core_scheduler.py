@@ -1299,17 +1299,45 @@ async def test_receiver_scheduler_gate_uses_policy_when_legacy_heartbeat_expired
 
     monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
     eligibility_pool = AsyncMock()
-    eligibility_pool.fetchrow.return_value = {"policy_state": "active"}
+    eligibility_pool.fetchrow.return_value = {"butler_name": "health", "policy_state": "active"}
     with patch(
         "butlers.tools.switchboard.registry.registry.resolve_routing_target",
         new_callable=AsyncMock,
     ) as legacy:
         assert await _butler_dispatch_gated(eligibility_pool, "health") is None
     legacy.assert_not_awaited()
-    assert "butler_registry_control_plane" in eligibility_pool.fetchrow.await_args.args[0]
+    # The butler's own role reads its own policy (sw_053); no switchboard table.
+    query = eligibility_pool.fetchrow.await_args.args
+    assert query == ("SELECT butler_name, policy_state FROM public.butler_local_schedule_policy()",)
 
-    eligibility_pool.fetchrow.return_value = {"policy_state": "quarantined"}
+    eligibility_pool.fetchrow.return_value = {
+        "butler_name": "health",
+        "policy_state": "quarantined",
+    }
     assert "administrative policy" in await _butler_dispatch_gated(eligibility_pool, "health")
+
+
+@_asyncio_session
+async def test_receiver_scheduler_gate_policy_function_edges(monkeypatch):
+    """Missing policy holds; denial or another butler's pool fails open."""
+    from butlers.core.scheduler import _butler_dispatch_gated
+
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+
+    def raising(sqlstate: str) -> AsyncMock:
+        error = asyncpg.PostgresError("synthetic")
+        error.sqlstate = sqlstate
+        pool = AsyncMock()
+        pool.fetchrow.side_effect = error
+        return pool
+
+    assert "administrative policy" in await _butler_dispatch_gated(raising("P0002"), "health")
+    assert await _butler_dispatch_gated(raising("42501"), "health") is None
+    assert await _butler_dispatch_gated(raising("42883"), "health") is None
+
+    foreign = AsyncMock()
+    foreign.fetchrow.return_value = {"butler_name": "finance", "policy_state": "paused"}
+    assert await _butler_dispatch_gated(foreign, "health") is None
 
 
 @_asyncio_session
@@ -1434,6 +1462,67 @@ async def _set_qa_policy(owner: asyncpg.Pool, state: str, provenance: str) -> No
         state,
         provenance,
     )
+
+
+@pytest.fixture(scope="module")
+def general_policy_db_url(postgres_container) -> str:
+    """Core plus Switchboard (sw_053 producer) with a non-QA butler schema."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "switchboard"],
+        schemas={"core": "general", "switchboard": "switchboard"},
+    )
+
+
+@_asyncio_session
+async def test_non_qa_butler_reads_its_own_hold_through_its_runtime_role(
+    general_policy_db_url, monkeypatch
+):
+    """sw_053: general's own role sees its own hold; a role-less pool is refused."""
+    from butlers.core.scheduler import _butler_dispatch_gated
+
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+
+    async def as_general_role(conn: asyncpg.Connection) -> None:
+        await conn.execute('SET ROLE "butler_general_rw"')
+
+    owner = await asyncpg.create_pool(general_policy_db_url, min_size=1, max_size=1)
+    general = await asyncpg.create_pool(
+        general_policy_db_url, min_size=1, max_size=1, setup=as_general_role
+    )
+    try:
+        await owner.execute(
+            "INSERT INTO switchboard.butler_registry (name, endpoint_url) "
+            "VALUES ('general', 'http://general:41101/mcp') ON CONFLICT (name) DO NOTHING"
+        )
+        # Switchboard tables stay unreadable to the runtime role.
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await general.fetch("SELECT 1 FROM switchboard.butler_registry_control_plane")
+
+        for state, provenance, held in (
+            ("active", "operator", False),
+            ("paused", "operator", True),
+            ("active", "operator", False),
+        ):
+            await owner.execute(
+                "UPDATE switchboard.butler_registry_control_plane "
+                "SET policy_state = $1, policy_provenance = $2 WHERE name = 'general'",
+                state,
+                provenance,
+            )
+            reason = await _butler_dispatch_gated(general, "general")
+            assert (reason is not None) is held, (state, reason)
+
+        # No runtime role: the function refuses and the gate fails open.
+        await owner.execute(
+            "UPDATE switchboard.butler_registry_control_plane "
+            "SET policy_state = 'paused', policy_provenance = 'operator' WHERE name = 'general'"
+        )
+        assert await _butler_dispatch_gated(owner, "general") is None
+    finally:
+        await general.close()
+        await owner.close()
 
 
 class _PoisonPool:

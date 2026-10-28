@@ -125,6 +125,14 @@ make deploy-dev                                             # helm upgrade --ins
 make status-dev
 ```
 
+`make deploy-*` runs through `scripts/k8s/record-deploy.sh`, so each release appends one
+`public.deployments` row with `source='deploy'` and `serving_mode='image'`: `success` once `dashboard-api`, `butlers-up` and the optional enabled `butlers-control`
+rollouts have finished, `failed` when `helm upgrade` or a rollout fails. The row is written by
+`butlers deployments record` inside the `dashboard-api` pod (`kubectl exec`), so no database
+credential leaves the cluster. The target keeps the release's exit status; if the pod is
+unreachable it prints that no row was recorded, and a failed write after a good release only
+warns. Boot rows (`source='boot'`) are separate: a pod restart is not a release.
+
 ### Iterating on a change
 
 Commit, then ship the commit from `deploy/helm/butlers`:
@@ -135,14 +143,32 @@ bws run --project-id "$BWS_PROJECT_ID" -- make ship-dev   # build + push images,
 
 `ship-*` runs `build-push.sh` and deploys the tag it prints. Migrations run automatically: they are
 an initContainer of `dashboard-api`, so every rollout runs `butlers db migrate` before the new API
-starts. `dashboard-api`, `butlers-up` and the connectors use the Recreate strategy, so old and new
+starts. Migrations only *check* the privileged bootstrap
+([reviewed-bootstrap.md](../data_and_storage/reviewed-bootstrap.md)); they never create it. So on
+dev `deploy-*` first runs `bootstrap-dev` (`scripts/k8s/bootstrap-db.sh dev <tag>`). That target
+reruns the deployed tag's `scripts/init-db.sql`, which is idempotent:
+
+- It runs as the CloudNativePG local superuser inside the `postgres-dev` primary pod, via
+  `kubectl exec`, so no superuser password is involved.
+- It takes the normal connecting login from the `butlers-bws` Secret, without printing it.
+
+Without this step, a tag whose migrations need a newer bootstrap surface fails in the
+`migrations` initContainer after the old pods are gone. `core_277` did this on 2026-10-27
+(bu-8jtq10). Prod has no privileged bootstrap configured here: `bootstrap-prod` only prints a
+reminder, and the operator runs `init-db.sql` by hand before `deploy-prod`. `dashboard-api`, `butlers-up` and the connectors use the Recreate strategy, so old and new
 pods never overlap. The image installs dependencies before copying `src/`, so a commit that touches
 only source rebuilds and pulls a few tens of MB (measured: `ship-dev` about 2.5 minutes, the API
 unavailable for about 70 seconds, every pod ready after about 3 minutes); a `uv.lock` or `Dockerfile.base` change rebuilds
 the multi-GB dependency layer and takes about 12 minutes.
 Compose's hotreload has no equivalent here: `butlers-dev` is the live system and only runs
 committed images. To roll back, `make deploy-dev TAG=<previous sha>` (`helm -n butlers-dev
-history butlers` lists the tags).
+history butlers` lists the tags). This renders the *current* chart with the older image and runs
+that tag's bootstrap.
+
+Do not use `helm rollback` across a chart change that removed a `helm.sh/resource-policy: keep`
+resource. Rolling back to revision 13, which still declared the retired `butlers-beads-export`
+PVC, failed with `no PersistentVolumeClaim with the name "butlers-beads-export" found`. The
+failure is recorded as revision 15, although the PVC still exists.
 
 The prod targets (`secrets-prod`, `image-prod`, `deploy-prod`) are the same with
 `/secrets/.bws.prod.env`.

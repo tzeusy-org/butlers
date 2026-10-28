@@ -2754,6 +2754,7 @@ def test_actual_rollback_pinned_revision_profile_keeps_module_and_private_heads(
     assert "home_004" in vectors["health"]
     assert "sw_051" in vectors["switchboard"]
     assert all("core_281" not in v for v in vectors.values())
+    assert all("core_282" not in v for v in vectors.values())
 
 
 @pytest.mark.parametrize(
@@ -4732,8 +4733,12 @@ def test_historical_window_uses_real_pre_cutover_graph_without_installing_curren
     assert migration.stage_test_migration_history(container, normal, plans=plans) == normal
     assert events == ["enter", *plans, "exit"]
     events.clear()
-    for revision in (None, "core_281"):
-        with pytest.raises(ValueError, match="explicit pre-core_281"):
+    pre_cutover = (("core", "general", "core_281"),)
+    assert migration.stage_test_migration_history(container, normal, plans=pre_cutover) == normal
+    assert events == ["enter", *pre_cutover, "exit"]
+    events.clear()
+    for revision in (None, "core_282"):
+        with pytest.raises(ValueError, match="explicit pre-core_282"):
             migration.stage_test_migration_history(
                 container, normal, plans=(("core", "general", revision),)
             )

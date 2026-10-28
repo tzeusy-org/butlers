@@ -2075,3 +2075,71 @@ def test_historical_priority_audit_fixed_owner_preserves_real_phase_transitions(
             assert interfaces._owner_lookup_capability_matches(conn, expected)
     finally:
         current_engine.dispose()
+
+
+# Current-schema butler_logs: core_089's fixed roster (and core_090's chronicler
+# patch) omitted concierge and calendar, so their log writes failed (bu-lilur7).
+@pytest.mark.parametrize("schema", ["concierge", "general"])
+def test_current_schema_butler_logs_converge_and_preserve_history(postgres_container, schema):
+    """core_281 installs butler_logs where missing, keeps existing rows, grants the
+    schema's own runtime role, and is idempotent with a no-op downgrade."""
+    from butlers.migrations import _build_alembic_config
+
+    quoted = _quote_ident(schema)
+    role = f"butler_{schema}_rw"
+    db_url = create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core"],
+        schemas={"core": schema},
+        revisions={"core": "core_280"},
+    )
+    # Genuine predecessor: core_089's roster covers general but not concierge.
+    assert _table_exists_in_schema(db_url, schema, "butler_logs") is (schema == "general")
+    engine = create_engine(db_url)
+    try:
+        if schema == "general":
+            with engine.begin() as conn:
+                conn.execute(
+                    text(f"INSERT INTO {quoted}.butler_logs (level, msg) VALUES ('INFO', 'old')")
+                )
+        config = _build_alembic_config(db_url, ["core"], target_schema=schema)
+        _upgrade_selected(postgres_container, db_url, config, "core_281")
+        assert _table_exists_in_schema(db_url, schema, "butler_logs")
+        assert _role_exists(db_url, role)
+        # The runtime role itself can append, the way butler_logging writes.
+        _execute_as_role(
+            postgres_container,
+            db_url,
+            role,
+            f"INSERT INTO {quoted}.butler_logs (level, msg) VALUES ('WARN', 'new')",
+        )
+
+        def history() -> list[tuple[str, str]]:
+            with engine.connect() as conn:
+                return [
+                    tuple(row)
+                    for row in conn.execute(
+                        text(f"SELECT level, msg FROM {quoted}.butler_logs ORDER BY id")
+                    )
+                ]
+
+        expected = ([("INFO", "old")] if schema == "general" else []) + [("WARN", "new")]
+        assert history() == expected
+        _downgrade_selected(postgres_container, db_url, config, "core_280", revision="core_280")
+        assert history() == expected
+        _upgrade_selected(postgres_container, db_url, config, "core_281")
+        assert history() == expected
+        with engine.connect() as conn:
+            indexes = set(
+                conn.execute(
+                    text(
+                        "SELECT indexname FROM pg_indexes"
+                        " WHERE schemaname = :schema AND tablename = 'butler_logs'"
+                    ),
+                    {"schema": schema},
+                ).scalars()
+            )
+        assert {"butler_logs_ts", "butler_logs_level"} <= indexes
+    finally:
+        engine.dispose()

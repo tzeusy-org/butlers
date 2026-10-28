@@ -162,7 +162,7 @@ def test_core_247_shared_columns_drop_only_after_last_schema_and_reupgrade(
     postgres_container,
 ) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
-    # Historical shared-DDL round trip stays before the core_281 cutover;
+    # Historical shared-DDL round trip stays before the core_282 cutover;
     # all original downgrade targets, seeds and observers remain real.
     stage_test_migration_history(
         postgres_container, db_url, plans=(("core", "general", "core_280"),)

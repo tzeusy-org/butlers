@@ -3639,38 +3639,6 @@
       "excerpt": "\"Ledger write failure never discards delivery or a queued row\" is not in the block"
     }
   ],
-  "2026-07-19-park-owner-default-notifications/core-scheduler/Tick Handler": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "b930417dfde1",
-      "excerpt": "Additionally, `tick()` SHALL perform deadline evaluation, event-chain trigger detection, and a deferred-notification ..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Deferred notification flush runs each tick",
-      "digest": "2b18e52a42a8",
-      "excerpt": "- **THEN** pending deferred notifications with `deliver_at <= now()` are sent through the standard delivery path"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Seasonal context remains injected during task dispatch",
-      "digest": "430492503b68",
-      "excerpt": "\"Seasonal context remains injected during task dispatch\" is not in the block"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Legacy schema without until_at continues cron dispatch",
-      "digest": "593be00b99d3",
-      "excerpt": "- **WHEN** `tick()` runs against a legacy `scheduled_tasks` table without `until_at`"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Legacy schema without until_at continues cron dispatch",
-      "digest": "38a4119f2bd2",
-      "excerpt": "- **THEN** due cron tasks continue dispatching with the existing safe fallback"
-    }
-  ],
   "2026-07-19-park-owner-default-notifications/dashboard-approvals/Approvals Policy (Quiet Hours)": [
     {
       "kind": "requirement",

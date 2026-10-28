@@ -808,7 +808,7 @@ def test_direct_online_environment_admits_before_ddl_and_offline_never_attests()
         events.append("reset")
 
     script = MagicMock()
-    script.get_revisions.return_value = (SimpleNamespace(revision="core_281"),)
+    script.get_revisions.return_value = (SimpleNamespace(revision="core_282"),)
     connection.rollback.side_effect = lambda: events.append("rollback")
     connection.exec_driver_sql.side_effect = lambda _sql: events.append("ddl")
     context.configure.side_effect = lambda **_kwargs: events.append("configure")
@@ -818,11 +818,11 @@ def test_direct_online_environment_admits_before_ddl_and_offline_never_attests()
         patch("alembic.script.ScriptDirectory.from_config", return_value=script),
         patch("butlers.migrations.migration_session", selected_session),
         patch("butlers.migrations.get_all_chains", return_value=["core"]),
-        patch("butlers.migrations.get_chain_revision_ids", return_value={"core_281"}),
-        patch("butlers.migrations.get_chain_head", return_value="core_281"),
+        patch("butlers.migrations.get_chain_revision_ids", return_value={"core_281", "core_282"}),
+        patch("butlers.migrations.get_chain_head", return_value="core_282"),
         patch(
             "butlers.migrations.get_chain_revision_path",
-            return_value=frozenset({"core_277", "core_278", "core_281"}),
+            return_value=frozenset({"core_277", "core_278", "core_281", "core_282"}),
         ),
         patch("butlers.migrations.ordinary_migration_identity", normal_owner),
         patch(
@@ -1547,18 +1547,19 @@ def test_direct_bounded_online_entrypoint_uses_real_chain_edges(
 @pytest.mark.parametrize(
     ("current", "target", "refuses", "operation"),
     [
-        ("core_281", "core_280", True, "downgrade"),
-        ("core_281", "-1", True, "downgrade"),
-        ("core_281", "base", True, "downgrade"),
-        ("core_281", "core_281", False, "downgrade"),
-        ("core_281", "core@head", False, "downgrade"),
+        ("core_282", "core_280", True, "downgrade"),
+        ("core_282", "-1", True, "downgrade"),
+        ("core_282", "base", True, "downgrade"),
+        ("core_282", "core_282", False, "downgrade"),
+        ("core_282", "core@head", False, "downgrade"),
         ("core_280", "core_279", False, "downgrade"),
-        (("core_281", "mem_014"), "mem_013", False, "downgrade"),
-        (("core_281", "mem_013"), "mem_014", False, "upgrade"),
-        (("core_281", "mem_014"), "base", True, "downgrade"),
-        (("core_281", "unknown_001"), "core_280", "invalid", "downgrade"),
-        ("core_281", "unknown_001", "invalid", "downgrade"),
-        ("core_281", "head", "invalid", "downgrade"),
+        ("core_281", "core_280", False, "downgrade"),
+        (("core_282", "mem_014"), "mem_013", False, "downgrade"),
+        (("core_282", "mem_013"), "mem_014", False, "upgrade"),
+        (("core_282", "mem_014"), "base", True, "downgrade"),
+        (("core_282", "unknown_001"), "core_280", "invalid", "downgrade"),
+        ("core_282", "unknown_001", "invalid", "downgrade"),
+        ("core_282", "head", "invalid", "downgrade"),
     ],
 )
 def test_actual_alembic_reverse_refuses_before_ordinary_setup(

@@ -658,7 +658,7 @@ def operator_rollback_session(db_url: str):
 
 
 def run_preserving_rollback(db_url: str, capsule: dict, *, transition: str):
-    """Execute source-owned R0 or the actual core281→280 reverse on one session."""
+    """Execute source-owned R0 or the actual core282→281→280 reverse on one session."""
     from butlers.db_authority.apply import (
         replay_predecessor_r0,
         restore_predecessor_r1,

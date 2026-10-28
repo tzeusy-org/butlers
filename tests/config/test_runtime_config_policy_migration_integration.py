@@ -57,7 +57,7 @@ def _apply_selected_revision(db_url: str, control_url: str, direction: str, targ
     """Keep one selected administrative session; ordinary DDL keeps its normal owner.
 
     These historical column/constraint controls deliberately remain below the
-    final core281 serving transition. They are not runtime catalog admission.
+    final core282 serving transition. They are not runtime catalog admission.
     """
     from alembic import command
     from butlers.migrations import _build_alembic_config, migration_session
@@ -494,7 +494,7 @@ def test_core_232_deep_downgrade_preflight_preserves_head_and_round_trips(
     from tests.bootstrap_prerequisite_helpers import _readback
 
     db_name = migration_db_name()
-    # Own the historical pre-autocommit boundary without crossing core281.
+    # Own the historical pre-autocommit boundary without crossing core282.
     # Current operator R0/R1 and its genuine PG matrix own the final reversal.
     db_url = create_migrated_test_db(
         postgres_container, db_name, ["core"], revisions={"core": "core_232"}
@@ -618,7 +618,7 @@ def test_core_232_deep_downgrade_rechecks_evidence_after_lock_wait(
     )
 
     db_name = migration_db_name()
-    # Own the historical pre-autocommit boundary without crossing core281.
+    # Own the historical pre-autocommit boundary without crossing core282.
     # Current operator R0/R1 and its genuine PG matrix own the final reversal.
     db_url = create_migrated_test_db(
         postgres_container, db_name, ["core"], revisions={"core": "core_232"}

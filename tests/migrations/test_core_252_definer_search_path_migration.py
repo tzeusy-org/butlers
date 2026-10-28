@@ -121,7 +121,7 @@ def _core_config(db_url: str, schema: str | None):
 def _migrated_db(postgres_container) -> str:
     db_url = create_migration_db(postgres_container, migration_db_name())
     # The search-path round trip is a pre-cutover historical migration subject.
-    # Do not install core_281 and then bypass its preserving-reverse protocol.
+    # Do not install core_282 and then bypass its preserving-reverse protocol.
     stage_test_migration_history(
         postgres_container,
         db_url,
