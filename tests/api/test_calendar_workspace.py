@@ -2222,6 +2222,48 @@ async def test_meta_carries_per_source_error_kind(app):
     assert by_key["provider:google:work"]["error_kind"] == "none"
 
 
+async def test_meta_flags_only_provider_sources_as_sync_applicable(app):
+    """Internal sources never get a sync cursor, so they must not carry a sync verdict.
+
+    Live incident (bu-ak7fij): cursorless ``internal_reminders`` rows made the grid
+    plaque read "Never synced" while every provider source was fresh.
+    """
+    provider = _workspace_source_row(
+        source_key="provider:google:primary",
+        source_kind="provider_event",
+        lane="user",
+        butler_name=None,
+        provider="google",
+        calendar_id="owner@example.com",
+        writable=True,
+    )
+    reminders = _workspace_source_row(
+        source_key="internal_reminders:general",
+        source_kind="internal_reminders",
+        lane="butler",
+        butler_name="general",
+        provider="internal",
+    )
+    for key in ("cursor_name", "last_synced_at", "last_success_at"):
+        reminders[key] = None
+
+    app, _, _ = _build_app(
+        app,
+        source_rows={"general": [provider, reminders]},
+        calendar_butlers=["general"],
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/calendar/workspace/meta")
+
+    assert resp.status_code == 200
+    by_key = {s["source_key"]: s for s in resp.json()["data"]["connected_sources"]}
+    assert by_key["provider:google:primary"]["sync_applicable"] is True
+    assert by_key["internal_reminders:general"]["sync_applicable"] is False
+
+
 # ---------------------------------------------------------------------------
 # Butler-event recurrence dry-run preview (bu-15srd1)
 #

@@ -58,6 +58,7 @@ function makeSource(butlerName: string): CalendarWorkspaceSourceFreshness {
     staleness_ms: 0,
     error_kind: "none",
     sync_enabled: true,
+    sync_applicable: true,
   };
 }
 

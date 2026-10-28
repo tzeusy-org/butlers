@@ -363,6 +363,7 @@ def _to_source_freshness(row: Mapping[str, Any]) -> CalendarWorkspaceSourceFresh
         staleness_ms=staleness_ms,
         error_kind=classify_sync_error_kind(row.get("last_error")),
         sync_enabled=sync_enabled,
+        sync_applicable=row["source_kind"] == "provider_event",
     )
 
 

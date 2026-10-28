@@ -138,6 +138,11 @@ class CalendarWorkspaceSourceFreshness(BaseModel):
     #: ``POST /api/calendar/sources``. A disabled source is rendered "off" (not
     #: failed) and is skipped by the sync loop. Default ``True`` (opt-out).
     sync_enabled: bool = True
+    #: Whether a sync verdict applies at all. Only provider sources are synced;
+    #: internal sources (schedules, reminders) are projected locally and never
+    #: get a cursor, so their null ``last_synced_at`` is normal, not "never
+    #: synced". Mirrors the sync deadman's provider-only rule (bu-ak7fij).
+    sync_applicable: bool = True
 
 
 class CalendarWorkspaceLaneDefinition(BaseModel):
