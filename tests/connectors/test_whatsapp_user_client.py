@@ -2059,3 +2059,15 @@ def test_unforwarded_events_carry_no_spans(connector: WhatsAppUserClientConnecto
         {"kind": "quoted", "start": 0, "end": len("[no text]")}
     ]
     assert batch["payload"]["raw"]["conversation_history"][0]["reply_to"] == "q-9"
+
+
+def test_descriptor_identity_preserves_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    from butlers.connectors import whatsapp_user_client as module
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "17")
+    config = module.WhatsAppUserClientConnectorConfig.from_env()
+    assert (config.channel, config.provider) == ("whatsapp_user_client", "whatsapp")
+    assert config.max_inflight == 17

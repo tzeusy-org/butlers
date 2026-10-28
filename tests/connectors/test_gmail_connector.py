@@ -1916,3 +1916,208 @@ async def test_html_citation_metadata_tier_and_replay_keep_provider_quote(gmail_
             {"kind": "quoted", "start": 0, "end": len("[no text]")}
         ]
         assert "owner before" not in str(stored)
+
+
+async def test_static_identity_env_cannot_relabel_real_gmail_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DB-injected credentials and the real envelope retain Gmail identity."""
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    config = GmailConnectorConfig.from_env(
+        gmail_client_id="synthetic-client",
+        gmail_client_secret="synthetic-secret",
+        gmail_refresh_token="synthetic-refresh",
+    )
+    runtime = GmailConnectorRuntime(config, cursor_pool=MagicMock())
+    first = await runtime._build_ingest_envelope(_make_message())
+    replay = await runtime._build_ingest_envelope(_make_message())
+    assert first["source"] == {
+        "channel": "email",
+        "provider": "gmail",
+        "endpoint_identity": "gmail:user:test@example.com",
+    }
+    assert first["control"]["idempotency_key"] == (
+        "gmail:gmail:user:test@example.com:<unique-msg-id@example.com>"
+    )
+    assert first["control"]["idempotency_key"] == replay["control"]["idempotency_key"]
+    assert first["event"]["external_conversation_id"] == "thread456"
+
+
+@pytest.mark.parametrize(
+    ("raw", "legacy_pubsub", "process_pubsub", "legacy_backfill", "process_backfill"),
+    [
+        (None, False, False, True, True),
+        ("true", True, True, True, True),
+        ("1", True, True, True, True),
+        ("yes", True, True, True, True),
+        ("on", False, True, True, True),
+        ("false", False, False, False, False),
+        ("0", False, False, False, False),
+        ("no", False, False, False, False),
+        ("off", False, False, False, False),
+        ("other", False, False, True, False),
+        ("", False, False, True, False),
+    ],
+)
+def test_shared_gmail_loader_keeps_each_boolean_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    raw: str | None,
+    legacy_pubsub: bool,
+    process_pubsub: bool,
+    legacy_backfill: bool,
+    process_backfill: bool,
+) -> None:
+    from butlers.connectors.gmail import GmailProcessConfig
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("GMAIL_PUBSUB_TOPIC", "synthetic-topic")
+    for key in ("GMAIL_PUBSUB_ENABLED", "CONNECTOR_BACKFILL_ENABLED"):
+        if raw is None:
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, raw)
+    legacy = GmailConnectorConfig._load_non_secret_env_config()
+    process = GmailProcessConfig.from_env()
+    assert legacy["gmail_pubsub_enabled"] is legacy_pubsub
+    assert process.gmail_pubsub_enabled is process_pubsub
+    assert legacy["connector_backfill_enabled"] is legacy_backfill
+    assert process.connector_backfill_enabled is process_backfill
+
+
+def test_shared_gmail_defaults_keep_real_account_overrides_and_credential_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from butlers.connectors.gmail import GmailProcessConfig
+
+    settings = {
+        "SWITCHBOARD_MCP_URL": "http://switchboard.test/sse",
+        "CONNECTOR_MAX_INFLIGHT": "17",
+        "CONNECTOR_HEALTH_PORT": "40123",
+        "GMAIL_WATCH_RENEW_INTERVAL_S": "321",
+        "GMAIL_POLL_INTERVAL_S": "23",
+        "GMAIL_PUBSUB_ENABLED": "true",
+        "GMAIL_PUBSUB_TOPIC": "shared-topic",
+        "GMAIL_PUBSUB_WEBHOOK_PORT": "40124",
+        "GMAIL_PUBSUB_WEBHOOK_PATH": "/synthetic-hook",
+        "GMAIL_PUBSUB_WEBHOOK_TOKEN": "synthetic-hook-token",
+        "GMAIL_LABEL_INCLUDE": "INBOX",
+        "GMAIL_LABEL_EXCLUDE": "TRASH",
+        "CONNECTOR_BACKFILL_ENABLED": "false",
+        "CONNECTOR_BACKFILL_POLL_INTERVAL_S": "24",
+        "CONNECTOR_BACKFILL_PROGRESS_INTERVAL": "25",
+        "GMAIL_ACCOUNT_RESCAN_INTERVAL_S": "26",
+        "GMAIL_USER_EMAIL": "legacy@example.com",
+        "GMAIL_SENT_LOOKBACK_DAYS": "27",
+        "GMAIL_SENT_MAX_MESSAGES": "28",
+        "GMAIL_CLIENT_SECRET": "ignored-env-secret",
+    }
+    for key, value in settings.items():
+        monkeypatch.setenv(key, value)
+    runtime = GmailConnectorConfig.from_env(
+        gmail_client_id=" client ",
+        gmail_client_secret=" injected ",
+        gmail_refresh_token=" refresh ",
+    )
+    process = GmailProcessConfig.from_env()
+    common = {
+        "switchboard_mcp_url",
+        "connector_max_inflight",
+        "connector_health_port",
+        "gmail_watch_renew_interval_s",
+        "gmail_poll_interval_s",
+        "gmail_pubsub_enabled",
+        "gmail_pubsub_topic",
+        "gmail_pubsub_webhook_port",
+        "gmail_pubsub_webhook_path",
+        "gmail_pubsub_webhook_token",
+        "gmail_label_include",
+        "gmail_label_exclude",
+        "connector_backfill_enabled",
+        "connector_backfill_poll_interval_s",
+        "connector_backfill_progress_interval",
+    }
+    assert {k: getattr(runtime, k) for k in common} == {k: getattr(process, k) for k in common}
+    assert runtime.gmail_client_secret == "injected"
+    assert runtime.connector_endpoint_identity == "gmail:user:legacy@example.com"
+    assert (runtime.gmail_sent_lookback_days, runtime.gmail_sent_max_messages) == (27, 28)
+    assert process.gmail_account_rescan_interval_s == 26
+    first = process.make_account_config(
+        "one@example.com",
+        "one-client",
+        "one-secret",
+        "one-refresh",
+        {
+            "label_include": "STARRED",
+            "label_exclude": "SPAM",
+            "poll_interval_s": 29,
+            "pubsub_enabled": False,
+            "pubsub_topic": "one-topic",
+        },
+        pubsub_webhook_token="one-hook",
+    )
+    second = process.make_account_config(
+        "two@example.com", "two-client", "two-secret", "two-refresh"
+    )
+    assert (first.connector_endpoint_identity, second.connector_endpoint_identity) == (
+        "gmail:user:one@example.com",
+        "gmail:user:two@example.com",
+    )
+    assert first.connector_health_port == second.connector_health_port == 0
+    assert first.gmail_client_secret == "one-secret" and second.gmail_client_secret == "two-secret"
+    assert first.gmail_pubsub_webhook_token == "one-hook"
+    assert second.gmail_pubsub_webhook_token == "synthetic-hook-token"
+    assert (first.gmail_label_include, first.gmail_label_exclude, first.gmail_poll_interval_s) == (
+        ("STARRED",),
+        ("SPAM",),
+        29,
+    )
+    assert first.gmail_pubsub_enabled is False and first.gmail_pubsub_topic == "one-topic"
+    assert (
+        second.gmail_label_include,
+        second.gmail_label_exclude,
+        second.gmail_poll_interval_s,
+    ) == (("INBOX",), ("TRASH",), 23)
+    assert second.gmail_pubsub_enabled is True and second.gmail_pubsub_topic == "shared-topic"
+    with pytest.raises(ValueError, match="DB-resolved Gmail credentials"):
+        GmailConnectorConfig.from_env(
+            gmail_client_id="client", gmail_client_secret=" ", gmail_refresh_token="refresh"
+        )
+
+
+@pytest.mark.parametrize("entry", ["runtime", "process"])
+def test_gmail_loader_preserves_error_order_and_path_only_inputs(
+    monkeypatch: pytest.MonkeyPatch, entry: str
+) -> None:
+    from butlers.connectors.gmail import GmailProcessConfig
+
+    monkeypatch.delenv("SWITCHBOARD_MCP_URL", raising=False)
+    monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "bad")
+    monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "true")
+    monkeypatch.delenv("GMAIL_PUBSUB_TOPIC", raising=False)
+    loader = (
+        GmailConnectorConfig._load_non_secret_env_config
+        if entry == "runtime"
+        else GmailProcessConfig.from_env
+    )
+    with pytest.raises(
+        ValueError, match="CONNECTOR_MAX_INFLIGHT" if entry == "runtime" else "GMAIL_PUBSUB_TOPIC"
+    ):
+        loader()
+    monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "false")
+    if entry == "process":
+        with pytest.raises(KeyError, match="SWITCHBOARD_MCP_URL"):
+            loader()
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "8")
+    monkeypatch.setenv("GMAIL_SENT_LOOKBACK_DAYS", "bad")
+    monkeypatch.setenv("GMAIL_ACCOUNT_RESCAN_INTERVAL_S", "bad")
+    with pytest.raises(
+        ValueError,
+        match="GMAIL_SENT_LOOKBACK_DAYS"
+        if entry == "runtime"
+        else "GMAIL_ACCOUNT_RESCAN_INTERVAL_S",
+    ):
+        loader()

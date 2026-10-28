@@ -336,8 +336,6 @@ services:
     command: []
     environment:
       <<: *connector-env
-      CONNECTOR_PROVIDER: telegram
-      CONNECTOR_CHANNEL: telegram_bot
       # Apply gap-interview (bu-whhll.12) inline-button taps deterministically
       # via the chronicler dashboard API (the connector's own role cannot write
       # the chronicler schema). Override to disable the round-trip.
@@ -362,8 +360,6 @@ services:
     command: []
     environment:
       <<: *connector-env
-      CONNECTOR_PROVIDER: telegram
-      CONNECTOR_CHANNEL: telegram_user_client
     volumes:
       - ./logs:/app/logs
     networks: [db, backend, egress]
@@ -382,8 +378,6 @@ services:
     command: []
     environment:
       <<: *connector-env
-      CONNECTOR_PROVIDER: whatsapp
-      CONNECTOR_CHANNEL: whatsapp_user_client
       CONNECTOR_HEALTH_PORT: "40082"
       WA_BRIDGE_SOCKET: /tmp/wa-bridge/bridge.sock
     volumes:
@@ -405,8 +399,6 @@ services:
     command: []
     environment:
       <<: *connector-env
-      CONNECTOR_PROVIDER: google_calendar
-      CONNECTOR_CHANNEL: google_calendar
       CONNECTOR_HEALTH_PORT: "40085"
       CONNECTOR_BUTLER_DB_NAME: ${POSTGRES_DB:-butlers}
       BUTLER_SHARED_DB_NAME: ${POSTGRES_DB:-butlers}
@@ -429,8 +421,6 @@ services:
     command: []
     environment:
       <<: *connector-env
-      CONNECTOR_PROVIDER: spotify
-      CONNECTOR_CHANNEL: spotify
       CONNECTOR_HEALTH_PORT: "40083"
     volumes:
       - ./logs:/app/logs
@@ -452,8 +442,6 @@ services:
     command: []
     environment:
       <<: *connector-env
-      CONNECTOR_PROVIDER: steam
-      CONNECTOR_CHANNEL: gaming
       CONNECTOR_HEALTH_PORT: "40089"
     volumes:
       - ./logs:/app/logs
@@ -482,8 +470,6 @@ services:
     command: []
     environment:
       <<: *connector-env
-      CONNECTOR_PROVIDER: live-listener
-      CONNECTOR_CHANNEL: voice
       CONNECTOR_HEALTH_PORT: "40091"
       LIVE_LISTENER_DEVICES: ${LIVE_LISTENER_DEVICES:-[{"name":"webcam","device":"hw:2,0"}]}
     volumes:
@@ -506,8 +492,6 @@ services:
     command: []
     environment:
       <<: *connector-env
-      CONNECTOR_PROVIDER: owntracks
-      CONNECTOR_CHANNEL: owntracks
       CONNECTOR_HEALTH_PORT: "40086"
     ports:
       - "127.0.0.1:${OWNTRACKS_HOST_PORT:-40086}:40086"
@@ -535,8 +519,6 @@ services:
     command: []
     environment:
       <<: *connector-env
-      CONNECTOR_PROVIDER: activitywatch
-      CONNECTOR_CHANNEL: activitywatch
       CONNECTOR_HEALTH_PORT: "40092"
       ACTIVITYWATCH_BASE_URL: ${ACTIVITYWATCH_BASE_URL:-http://localhost:5600}
       ACTIVITYWATCH_MACHINE_ID: ${ACTIVITYWATCH_MACHINE_ID:-desktop}
@@ -560,8 +542,6 @@ services:
     command: []
     environment:
       <<: *connector-env
-      CONNECTOR_PROVIDER: home_assistant
-      CONNECTOR_CHANNEL: home_assistant
       CONNECTOR_HEALTH_PORT: "40087"
       CONNECTOR_BUTLER_DB_NAME: ${POSTGRES_DB:-butlers}
       CONNECTOR_BUTLER_DB_SCHEMA: shared
@@ -754,8 +734,6 @@ services:
     command: []
     environment:
       <<: *connector-env
-      CONNECTOR_PROVIDER: gmail
-      CONNECTOR_CHANNEL: email
       CONNECTOR_BUTLER_DB_NAME: ${POSTGRES_DB:-butlers}
       CONNECTOR_BUTLER_DB_SCHEMA: shared
       BUTLER_SHARED_DB_NAME: ${POSTGRES_DB:-butlers}
@@ -778,8 +756,6 @@ services:
     command: []
     environment:
       <<: *connector-env
-      CONNECTOR_PROVIDER: google_drive
-      CONNECTOR_CHANNEL: google_drive
       CONNECTOR_HEALTH_PORT: "40088"
       CONNECTOR_BUTLER_DB_NAME: ${POSTGRES_DB:-butlers}
       BUTLER_SHARED_DB_NAME: ${POSTGRES_DB:-butlers}
@@ -811,8 +787,6 @@ services:
     command: []
     environment:
       <<: *connector-env
-      CONNECTOR_PROVIDER: google_health
-      CONNECTOR_CHANNEL: wellness
       CONNECTOR_HEALTH_PORT: "40090"
     volumes:
       - ./logs:/app/logs

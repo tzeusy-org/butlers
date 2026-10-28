@@ -111,11 +111,12 @@ Switchboard through the module's `react_for_ingest()`; the emoji constants live 
 
 ## Environment Variables
 
+The canonical descriptor supplies provider `telegram` and channel `telegram_bot`;
+identity environment variables cannot relabel emitted envelopes.
+
 | Variable | Required | Description |
 |---|---|---|
 | `SWITCHBOARD_MCP_URL` | Yes | SSE endpoint for Switchboard MCP server |
-| `CONNECTOR_PROVIDER` | Yes (default: `telegram`) | Provider name |
-| `CONNECTOR_CHANNEL` | Yes (default: `telegram_bot`) | Channel name |
 | `BUTLER_TELEGRAM_TOKEN` | Yes | Bot token (resolved from DB first, then env) |
 | `CONNECTOR_POLL_INTERVAL_S` | For polling | Poll interval in seconds (default: 1.0) |
 | `CONNECTOR_WEBHOOK_URL` | For webhook | Public webhook URL |

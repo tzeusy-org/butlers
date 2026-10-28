@@ -11,8 +11,6 @@ downstream responsibilities of the Switchboard after ingest acceptance.
 
 Environment Variables (from docs/connectors/telegram_bot.md):
     SWITCHBOARD_MCP_URL: SSE endpoint URL for Switchboard MCP server (required)
-    CONNECTOR_PROVIDER: "telegram" (required)
-    CONNECTOR_CHANNEL: "telegram_bot" (required)
     CONNECTOR_POLL_INTERVAL_S: Poll interval in seconds (required for polling)
     CONNECTOR_MAX_INFLIGHT: Max concurrent ingest submissions (optional, default 8)
     CONNECTOR_HEALTH_PORT: HTTP port for health endpoint (optional, default 40081)
@@ -43,6 +41,7 @@ from fastapi import FastAPI
 from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel
 
+from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
@@ -71,6 +70,8 @@ from butlers.identity import resolve_owner_channel_via_definer
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.storage import BlobStorageStartupError, BlobStore, S3BlobStore
 from butlers.telegram_api import edit_telegram_message_text, remove_telegram_inline_keyboard
+
+_DESCRIPTOR = connector_descriptor("telegram_bot")
 
 logger = logging.getLogger(__name__)
 
@@ -232,8 +233,8 @@ class TelegramBotConnectorConfig:
     switchboard_mcp_url: str
 
     # Connector identity
-    provider: str = "telegram"
-    channel: str = "telegram_bot"
+    provider: str = _DESCRIPTOR.provider
+    channel: str = _DESCRIPTOR.channel
     endpoint_identity: str = field(default="")
 
     # Telegram credentials
@@ -274,8 +275,8 @@ class TelegramBotConnectorConfig:
         if not switchboard_mcp_url:
             raise ValueError("SWITCHBOARD_MCP_URL environment variable is required")
 
-        provider = os.environ.get("CONNECTOR_PROVIDER", "telegram")
-        channel = os.environ.get("CONNECTOR_CHANNEL", "telegram_bot")
+        provider = _DESCRIPTOR.provider
+        channel = _DESCRIPTOR.channel
 
         telegram_token = os.environ.get("BUTLER_TELEGRAM_TOKEN") or None
 
@@ -362,7 +363,7 @@ class TelegramBotConnector:
 
         # Metrics
         self._metrics = ConnectorMetrics(
-            connector_type="telegram_bot",
+            connector_type=_DESCRIPTOR.connector_type,
             endpoint_identity=config.endpoint_identity,
         )
 
@@ -493,7 +494,7 @@ class TelegramBotConnector:
     def _start_heartbeat(self) -> None:
         """Initialize and start heartbeat background task."""
         heartbeat_config = HeartbeatConfig.from_env(
-            connector_type="telegram_bot",
+            connector_type=_DESCRIPTOR.connector_type,
             endpoint_identity=self._config.endpoint_identity,
             version=None,  # Could be set from env or git sha
         )
@@ -1375,7 +1376,7 @@ class TelegramBotConnector:
                     chat_id = str(chat["id"])
                     break
         return IngestionEnvelope(
-            source_channel="telegram_bot",
+            source_channel=_DESCRIPTOR.channel,
             raw_key=chat_id,
         )
 

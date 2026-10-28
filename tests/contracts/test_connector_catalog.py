@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import subprocess
+import sys
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from uuid import UUID
@@ -83,35 +85,34 @@ def test_catalog_preserves_every_existing_accepted_ingress_pair() -> None:
 
 
 def test_discovery_pairs_match_actual_connector_emission_defaults() -> None:
+    from butlers.connectors.catalog import connector_descriptor
+
     for row in CONNECTOR_DESCRIPTORS:
         path = ROOT / "src" / (row.module.replace(".", "/") + ".py")
         if row.connector_type == "live_listener":
             path = ROOT / "src/butlers/connectors/live_listener/config.py"
         tree = ast.parse(path.read_text())
-        constants = {
-            n.targets[0].id: n.value.value
+        binding = next(
+            n
             for n in tree.body
             if isinstance(n, ast.Assign)
-            and len(n.targets) == 1
-            and isinstance(n.targets[0], ast.Name)
-            and isinstance(n.value, ast.Constant)
-        }
+            and any(isinstance(t, ast.Name) and t.id == "_DESCRIPTOR" for t in n.targets)
+        )
+        assert isinstance(binding.value, ast.Call)
+        assert ast.unparse(binding.value.func) == "connector_descriptor"
+        assert len(binding.value.args) == 1
+        assert isinstance(binding.value.args[0], ast.Constant)
+        assert binding.value.args[0].value == row.connector_type
+        owned = connector_descriptor(binding.value.args[0].value)
         for field in ("channel", "provider"):
-            constant = constants.get(f"_CONNECTOR_{field.upper()}")
-            if constant is not None:
-                actual = {constant}
-            else:
-                actual = {
-                    n.args[1].value
-                    for n in ast.walk(tree)
-                    if isinstance(n, ast.Call)
-                    and isinstance(n.func, ast.Attribute)
-                    and n.func.attr == "get"
-                    and len(n.args) > 1
-                    and isinstance(n.args[0], ast.Constant)
-                    and n.args[0].value == f"CONNECTOR_{field.upper()}"
-                    and isinstance(n.args[1], ast.Constant)
-                }
+            actual = {
+                getattr(owned, field)
+                for n in ast.walk(tree)
+                if isinstance(n, ast.Attribute)
+                and isinstance(n.value, ast.Name)
+                and n.value.id == "_DESCRIPTOR"
+                and n.attr == field
+            }
             assert actual == {getattr(row, field)}, (row.connector_type, field, actual)
         assert set(row.discovery_profile()) == {
             "connector_type",
@@ -121,25 +122,10 @@ def test_discovery_pairs_match_actual_connector_emission_defaults() -> None:
         }
 
 
-# These exact literal populations are deferred S2 consumers or the existing
-# wire vocabularies, not permission for a new list in an exempted file. A
+# Only the existing wire vocabularies remain literal populations.
+# These are not permission for a new list in an exempted file. A
 # changed/new owner or changed labels must fail until that mechanism is derived.
 _EXISTING_LITERALS = {
-    (
-        "src/butlers/api/oauth_scope_registry.py",
-        "APPLICABILITY_MATRIX",
-        "Dict",
-    ): "0636b7c7b714fea93e81b7193b911925c49fcaf7e4d842bba921779e8b7749aa",
-    (
-        "src/butlers/api/routers/channel_defaults.py",
-        "_REQUIRED_KEYS",
-        "Dict",
-    ): "c547916c9ee1d099dba491905a2ea408e80aa071685013e7ebe943910f259ceb",
-    (
-        "roster/switchboard/tools/contracts.py",
-        "_ALLOWED_PROVIDERS_BY_CHANNEL",
-        "Dict",
-    ): "5402b6e3886ff75d8a7de292f79272e4dbfc970216673aac3ea00b314ed70358",
     (
         "roster/switchboard/tools/contracts.py",
         "SourceChannel",
@@ -150,11 +136,6 @@ _EXISTING_LITERALS = {
         "SourceProvider",
         "Tuple",
     ): "a3c015957c37e36c8e92452dff953836d5e0fbb9bdb4f050a22d17430d04bcb2",
-    (
-        "roster/switchboard/tools/connector/heartbeat.py",
-        "VALID_CONNECTOR_TYPES",
-        "Set",
-    ): "dd2ee200a58870e54d227d463c0d5b5ed75fdbc5b7aa5ab545d2b13cedad96ac",
 }
 
 
@@ -207,3 +188,107 @@ def test_no_new_large_hardcoded_connector_identity_populations() -> None:
     assert len(found) == 1 and found[0][0] == "COPIED"
     assert ("src/butlers/api/oauth_scope_registry.py", *found[0][:2]) not in _EXISTING_LITERALS
     assert _identity_literals("CATEGORIES = ['one','two','three','four','five','six']") == []
+
+
+def test_selector_namespaces_retain_all_shared_and_unsupported_alternatives() -> None:
+    from typing import get_args
+
+    from butlers.connectors.catalog import resolve_selector
+    from butlers.tools.switchboard.contracts import SourceChannel, SourceProvider
+
+    for namespace, selectors in (
+        ("provider", get_args(SourceProvider)),
+        ("channel", get_args(SourceChannel)),
+    ):
+        for selector in selectors:
+            result = resolve_selector(namespace, selector)
+            index = 1 if namespace == "provider" else 0
+            assert set(result.pairs) == {p for p in ingress_pairs() if p[index] == selector}
+            assert result.kind != "unknown"
+            assert set(result.unsupported_pairs) == set(result.pairs) & NON_CONNECTOR_INGRESS_PAIRS
+    assert resolve_selector("provider", "telegram").members == (
+        "telegram_bot",
+        "telegram_user_client",
+    )
+    wellness = resolve_selector("channel", "wellness")
+    assert set(wellness.members) == {"google_health", "home_assistant"}
+    assert wellness.kind == "group"
+    email = resolve_selector("channel", "email")
+    assert email.members == ("gmail",)
+    assert email.unsupported_pairs == (("email", "imap"),)
+    assert email.kind == "group"
+    for selector in canonical_connector_types():
+        result = resolve_selector("connector", selector)
+        assert result.kind == "single" and result.members == (selector,)
+    for alias, member in (("whatsapp", "whatsapp_user_client"), ("live-listener", "live_listener")):
+        assert resolve_selector("connector", alias).kind == "alias"
+        assert resolve_selector("connector", alias).members == (member,)
+        assert alias not in canonical_connector_types()
+    for retired in ("discord", "discord_user"):
+        assert resolve_selector("connector", retired).kind == "retired"
+    for value in ("unknown", "__proto__", "constructor", "spotify_user_client", "wellness"):
+        assert resolve_selector("connector", value).kind == "unknown"
+    for provider in ("imap", "internal", "slack"):
+        assert resolve_selector("provider", provider).kind == "unsupported"
+        assert not resolve_selector("provider", provider).members
+
+
+def test_generated_recovery_projection_matches_catalog_and_refuses_stale_output(tmp_path) -> None:
+    import importlib.util
+
+    from butlers.connectors.catalog import public_recovery_capabilities
+
+    path = ROOT / "scripts/render_connector_catalog.py"
+    spec = importlib.util.spec_from_file_location("render_connector_catalog", path)
+    assert spec is not None and spec.loader is not None
+    renderer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(renderer)
+    assert subprocess.run([sys.executable, str(path), "--check"], check=False).returncode == 0
+    output = renderer.OUTPUT
+    assert output.read_text() == renderer.render()
+    # Exercise the real check path against a disposable stale artifact.
+    stale = tmp_path / "stale.ts"
+    stale.write_text(output.read_text() + "// stale\n")
+    renderer.OUTPUT = stale
+    from unittest.mock import patch
+
+    with patch.object(sys, "argv", [str(path), "--check"]):
+        assert renderer.main() == 1
+    assert (
+        not {"telegram", "activitywatch", "live_listener", "discord", "__proto__", "constructor"}
+        & public_recovery_capabilities().keys()
+    )
+
+
+@pytest.mark.parametrize("key", ["telegram", "live-listener", "discord", "internal", "unknown"])
+def test_row_lookup_never_promotes_alias_or_unsupported_identity(key: str) -> None:
+    from butlers.connectors.catalog import connector_descriptor
+
+    with pytest.raises(KeyError):
+        connector_descriptor(key)
+    for row in CONNECTOR_DESCRIPTORS:
+        assert connector_descriptor(row.connector_type) is row
+
+
+def test_retired_row_cannot_become_runtime_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    from dataclasses import replace
+
+    from butlers.connectors import catalog
+
+    row = catalog.CONNECTOR_DESCRIPTORS[0]
+    monkeypatch.setattr(catalog, "CONNECTOR_DESCRIPTORS", (replace(row, retired=True),))
+    with pytest.raises(KeyError):
+        catalog.connector_descriptor(row.connector_type)
+
+
+def test_static_identity_env_is_absent_from_runtime_and_compose() -> None:
+    forbidden = {"CONNECTOR_PROVIDER", "CONNECTOR_CHANNEL"}
+    for path in (ROOT / "src/butlers/connectors").rglob("*.py"):
+        strings = {
+            n.value
+            for n in ast.walk(ast.parse(path.read_text()))
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+        }
+        assert not forbidden & strings, path
+    compose = (ROOT / "docker-compose.yml").read_text()
+    assert not any(f"      {key}:" in compose for key in forbidden)

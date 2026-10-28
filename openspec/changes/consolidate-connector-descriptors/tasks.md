@@ -8,15 +8,15 @@
 
 ## S2: all original consumer projections
 
-- [ ] 2.1 Derive switchboard pair and heartbeat/default projections without changing nineteen accepted pairs or aliases.
-- [ ] 2.2 Derive ordered/versioned OAuth scope and explicit auth applicability metadata without credential or enrollment changes.
-- [ ] 2.3 Derive frontend recovery and pipeline policies; retain stored historical readers without registration authority.
+- [x] 2.1 Derive switchboard pair and heartbeat/default projections without changing nineteen accepted pairs or aliases.
+- [x] 2.2 Derive ordered/versioned OAuth scope and explicit auth applicability metadata without credential or enrollment changes.
+- [x] 2.3 Derive frontend recovery and pipeline policies; retain stored historical readers without registration authority.
 
 ## S3: connector configuration and folded loader work
 
-- [ ] 3.1 Derive every connector's emitted identities and preserve secondary channels and stored key spellings.
-- [ ] 3.2 Remove identity env reads/Compose declarations and Spotify's unused configurable identity field.
-- [ ] 3.3 Consolidate Gmail environment loading while preserving per-account overrides and credential-origin guarantees.
+- [x] 3.1 Derive every connector's emitted identities and preserve secondary channels and stored key spellings.
+- [x] 3.2 Remove identity env reads/Compose declarations and Spotify's unused configurable identity field.
+- [x] 3.3 Consolidate Gmail environment loading while preserving per-account overrides and credential-origin guarantees.
 
 ## S4: health kit and deployment wiring
 

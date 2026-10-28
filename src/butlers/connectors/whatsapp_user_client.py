@@ -21,8 +21,6 @@ Key behaviors:
 
 Environment variables:
 - SWITCHBOARD_MCP_URL (required)
-- CONNECTOR_PROVIDER=whatsapp (required)
-- CONNECTOR_CHANNEL=whatsapp_user_client (required)
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
 - CONNECTOR_BACKFILL_WINDOW_H (optional, bounded startup replay in hours)
 - CONNECTOR_BUTLER_DB_NAME (optional; local butler DB for per-butler overrides)
@@ -65,6 +63,7 @@ from butlers.connectors.bridge_manager import (
     BridgeConfig,
     BridgeSubprocessManager,
 )
+from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.discretion import (
     ContactWeightResolver,
@@ -92,6 +91,8 @@ from butlers.credential_store import (
 from butlers.db import db_params_from_env
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.ingestion_spans import forwarded_line_spans, whole_text_span
+
+_DESCRIPTOR = connector_descriptor("whatsapp_user_client")
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +144,7 @@ _SSE_KEEPALIVE_TIMEOUT_S = 90.0  # Max silence from SSE stream before treating a
 _SSE_PAIRING_WAIT_TIMEOUT_S = 30.0  # Maximum wait for the bridge to reconnect after pairing
 _BACKFILL_ACK_TIMEOUT_S = 10.0  # Entire bounded bridge acknowledgement exchange
 _BACKFILL_ACK_MAX_BYTES = 4 * 1024  # Bridge acknowledgement (headers plus JSON body)
-_CONNECTOR_TYPE = "whatsapp_user_client"
+_CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 
 # Discretion fail-open threshold for WhatsApp (bu-cicgb). WhatsApp is a primary
 # personal 1:1 messaging channel; a discretion *infra* failure (most observed:
@@ -241,8 +242,8 @@ class WhatsAppUserClientConnectorConfig:
     switchboard_mcp_url: str
 
     # Connector identity
-    provider: str = "whatsapp"
-    channel: str = "whatsapp_user_client"
+    provider: str = _DESCRIPTOR.provider
+    channel: str = _DESCRIPTOR.channel
     endpoint_identity: str = field(default="")
 
     # Bridge config
@@ -302,8 +303,8 @@ class WhatsAppUserClientConnectorConfig:
         if not switchboard_mcp_url:
             raise ValueError("SWITCHBOARD_MCP_URL environment variable is required")
 
-        provider = os.environ.get("CONNECTOR_PROVIDER", "whatsapp")
-        channel = os.environ.get("CONNECTOR_CHANNEL", "whatsapp_user_client")
+        provider = _DESCRIPTOR.provider
+        channel = _DESCRIPTOR.channel
 
         bridge_socket = os.environ.get("WA_BRIDGE_SOCKET", DEFAULT_STANDALONE_BRIDGE_SOCKET)
 
@@ -1521,7 +1522,7 @@ class WhatsAppUserClientConnector:
 
             # c. Evaluate ingestion policy (connector scope)
             _ip_envelope = IngestionEnvelope(
-                source_channel="whatsapp_user_client",
+                source_channel=_DESCRIPTOR.channel,
                 raw_key=chat_jid,
             )
             _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
@@ -2434,7 +2435,7 @@ async def _run_health_server(
                 state, error_msg = connector._get_health_state()
                 body_dict: dict[str, Any] = {
                     "status": state,
-                    "connector_type": "whatsapp_user_client",
+                    "connector_type": _DESCRIPTOR.connector_type,
                     "endpoint_identity": connector._config.endpoint_identity,
                 }
                 if error_msg:

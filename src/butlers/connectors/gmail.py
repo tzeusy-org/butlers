@@ -16,8 +16,6 @@ Key behaviors:
 
 Environment variables (see `docs/connectors/gmail.md`, "Environment Variables"):
 - SWITCHBOARD_MCP_URL (required)
-- CONNECTOR_PROVIDER=gmail (required)
-- CONNECTOR_CHANNEL=email (required)
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
 - CONNECTOR_HEALTH_PORT (optional, default 40082)
 - DATABASE_URL or POSTGRES_* (DB connectivity for credential lookup; defaults apply if unset)
@@ -66,6 +64,7 @@ from fastapi import FastAPI, Request
 from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
+from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.email_spans import email_untrusted_spans
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
@@ -102,6 +101,8 @@ from butlers.ingestion_policy import (
 from butlers.ingestion_spans import collapse_spans
 from butlers.oauth_token_payload import validate_oauth_token_payload
 from butlers.storage.blobs import BlobStore
+
+_DESCRIPTOR = connector_descriptor("gmail")
 
 logger = logging.getLogger(__name__)
 
@@ -412,6 +413,57 @@ def _has_attached_message(payload: dict[str, Any], depth: int = 0) -> bool:
     return isinstance(parts, list) and any(_has_attached_message(part, depth + 1) for part in parts)
 
 
+def _gmail_int_env(key: str, default: int) -> int:
+    raw = os.environ.get(key, str(default))
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{key} must be an integer, got: {raw}") from exc
+
+
+def _gmail_runtime_controls() -> dict[str, int]:
+    return {
+        "connector_max_inflight": _gmail_int_env("CONNECTOR_MAX_INFLIGHT", 8),
+        "connector_health_port": _gmail_int_env("CONNECTOR_HEALTH_PORT", 40082),
+        "gmail_watch_renew_interval_s": _gmail_int_env("GMAIL_WATCH_RENEW_INTERVAL_S", 86400),
+        "gmail_poll_interval_s": _gmail_int_env("GMAIL_POLL_INTERVAL_S", 60),
+    }
+
+
+def _gmail_pubsub_topic(enabled: bool) -> str | None:
+    topic = os.environ.get("GMAIL_PUBSUB_TOPIC")
+    if enabled and not topic:
+        raise ValueError("GMAIL_PUBSUB_TOPIC is required when GMAIL_PUBSUB_ENABLED=true")
+    return topic
+
+
+def _gmail_pubsub_transport() -> dict[str, Any]:
+    return {
+        "gmail_pubsub_webhook_port": _gmail_int_env("GMAIL_PUBSUB_WEBHOOK_PORT", 40083),
+        "gmail_pubsub_webhook_path": os.environ.get("GMAIL_PUBSUB_WEBHOOK_PATH", "/gmail/webhook"),
+        "gmail_pubsub_webhook_token": os.environ.get("GMAIL_PUBSUB_WEBHOOK_TOKEN"),
+    }
+
+
+def _gmail_label_defaults(include: str, exclude: str) -> dict[str, tuple[str, ...]]:
+    return {
+        "gmail_label_include": tuple(parse_label_list(include)),
+        "gmail_label_exclude": tuple(parse_label_list(exclude)),
+    }
+
+
+def _gmail_backfill_controls(enabled: bool) -> dict[str, int | bool]:
+    return {
+        "connector_backfill_enabled": enabled,
+        "connector_backfill_poll_interval_s": _gmail_int_env(
+            "CONNECTOR_BACKFILL_POLL_INTERVAL_S", 60
+        ),
+        "connector_backfill_progress_interval": _gmail_int_env(
+            "CONNECTOR_BACKFILL_PROGRESS_INTERVAL", 50
+        ),
+    }
+
+
 class GmailConnectorConfig(BaseModel):
     """Configuration for Gmail connector runtime."""
 
@@ -421,8 +473,8 @@ class GmailConnectorConfig(BaseModel):
     switchboard_mcp_url: str
 
     # Connector identity
-    connector_provider: str = "gmail"
-    connector_channel: str = "email"
+    connector_provider: str = _DESCRIPTOR.provider
+    connector_channel: str = _DESCRIPTOR.channel
     connector_endpoint_identity: str
     connector_max_inflight: int = 8
 
@@ -472,137 +524,44 @@ class GmailConnectorConfig(BaseModel):
 
     @classmethod
     def _load_non_secret_env_config(cls) -> dict[str, Any]:
-        """Load connector config from environment variables excluding OAuth secrets."""
-        max_inflight_str = os.environ.get("CONNECTOR_MAX_INFLIGHT", "8")
-        try:
-            max_inflight = int(max_inflight_str)
-        except ValueError as exc:
-            raise ValueError(
-                f"CONNECTOR_MAX_INFLIGHT must be an integer, got: {max_inflight_str}"
-            ) from exc
-
-        health_port_str = os.environ.get("CONNECTOR_HEALTH_PORT", "40082")
-        try:
-            health_port = int(health_port_str)
-        except ValueError as exc:
-            raise ValueError(
-                f"CONNECTOR_HEALTH_PORT must be an integer, got: {health_port_str}"
-            ) from exc
-
-        watch_renew_str = os.environ.get("GMAIL_WATCH_RENEW_INTERVAL_S", "86400")
-        try:
-            watch_renew_interval = int(watch_renew_str)
-        except ValueError as exc:
-            raise ValueError(
-                f"GMAIL_WATCH_RENEW_INTERVAL_S must be an integer, got: {watch_renew_str}"
-            ) from exc
-
-        poll_interval_str = os.environ.get("GMAIL_POLL_INTERVAL_S", "60")
-        try:
-            poll_interval = int(poll_interval_str)
-        except ValueError as exc:
-            raise ValueError(
-                f"GMAIL_POLL_INTERVAL_S must be an integer, got: {poll_interval_str}"
-            ) from exc
-
-        # Parse Pub/Sub config
+        """Load runtime defaults, preserving the legacy parser's order and booleans."""
+        controls = _gmail_runtime_controls()
         pubsub_enabled = os.environ.get("GMAIL_PUBSUB_ENABLED", "false").lower() in (
             "true",
             "1",
             "yes",
         )
-        pubsub_topic = os.environ.get("GMAIL_PUBSUB_TOPIC")
-
-        if pubsub_enabled and not pubsub_topic:
-            raise ValueError("GMAIL_PUBSUB_TOPIC is required when GMAIL_PUBSUB_ENABLED=true")
-
-        pubsub_webhook_port_str = os.environ.get("GMAIL_PUBSUB_WEBHOOK_PORT", "40083")
-        try:
-            pubsub_webhook_port = int(pubsub_webhook_port_str)
-        except ValueError as exc:
-            raise ValueError(
-                f"GMAIL_PUBSUB_WEBHOOK_PORT must be an integer, got: {pubsub_webhook_port_str}"
-            ) from exc
-
-        pubsub_webhook_path = os.environ.get("GMAIL_PUBSUB_WEBHOOK_PATH", "/gmail/webhook")
-        pubsub_webhook_token = os.environ.get("GMAIL_PUBSUB_WEBHOOK_TOKEN")
-
-        # Label include/exclude policy (per docs/connectors/gmail-ingestion-policy.md,
-        # "Gmail Label Filtering")
+        pubsub_topic = _gmail_pubsub_topic(pubsub_enabled)
+        pubsub_transport = _gmail_pubsub_transport()
         label_include_raw = os.environ.get("GMAIL_LABEL_INCLUDE", "")
         label_exclude_raw = os.environ.get("GMAIL_LABEL_EXCLUDE", "SPAM,TRASH")
-        gmail_label_include = tuple(parse_label_list(label_include_raw))
-        gmail_label_exclude = tuple(parse_label_list(label_exclude_raw))
-
-        # Policy tier assignment (per docs/architecture/email-priority-queuing.md)
+        labels = _gmail_label_defaults(label_include_raw, label_exclude_raw)
         gmail_user_email = os.environ.get("GMAIL_USER_EMAIL", "")
-
-        # reply_to_outbound: recent SENT-mailbox window for sent_message_ids.
-        sent_lookback_days_str = os.environ.get("GMAIL_SENT_LOOKBACK_DAYS", "7")
-        try:
-            gmail_sent_lookback_days = int(sent_lookback_days_str)
-        except ValueError as exc:
-            raise ValueError(
-                f"GMAIL_SENT_LOOKBACK_DAYS must be an integer, got: {sent_lookback_days_str}"
-            ) from exc
-
-        sent_max_messages_str = os.environ.get("GMAIL_SENT_MAX_MESSAGES", "200")
-        try:
-            gmail_sent_max_messages = int(sent_max_messages_str)
-        except ValueError as exc:
-            raise ValueError(
-                f"GMAIL_SENT_MAX_MESSAGES must be an integer, got: {sent_max_messages_str}"
-            ) from exc
-
-        # Backfill polling protocol (backfill.poll / backfill.progress in
-        # openspec/specs/connector-base-spec)
-        backfill_enabled_str = os.environ.get("CONNECTOR_BACKFILL_ENABLED", "true").lower()
-        connector_backfill_enabled = backfill_enabled_str not in ("false", "0", "no", "off")
-
-        backfill_poll_interval_str = os.environ.get("CONNECTOR_BACKFILL_POLL_INTERVAL_S", "60")
-        try:
-            connector_backfill_poll_interval_s = int(backfill_poll_interval_str)
-        except ValueError as exc:
-            raise ValueError(
-                "CONNECTOR_BACKFILL_POLL_INTERVAL_S must be an integer, "
-                f"got: {backfill_poll_interval_str}"
-            ) from exc
-
-        backfill_progress_interval_str = os.environ.get(
-            "CONNECTOR_BACKFILL_PROGRESS_INTERVAL", "50"
+        sent_lookback_days = _gmail_int_env("GMAIL_SENT_LOOKBACK_DAYS", 7)
+        sent_max_messages = _gmail_int_env("GMAIL_SENT_MAX_MESSAGES", 200)
+        backfill_enabled = os.environ.get("CONNECTOR_BACKFILL_ENABLED", "true").lower() not in (
+            "false",
+            "0",
+            "no",
+            "off",
         )
-        try:
-            connector_backfill_progress_interval = int(backfill_progress_interval_str)
-        except ValueError as exc:
-            raise ValueError(
-                "CONNECTOR_BACKFILL_PROGRESS_INTERVAL must be an integer, "
-                f"got: {backfill_progress_interval_str}"
-            ) from exc
-
+        backfill = _gmail_backfill_controls(backfill_enabled)
         return {
             "switchboard_mcp_url": os.environ["SWITCHBOARD_MCP_URL"],
-            "connector_provider": os.environ.get("CONNECTOR_PROVIDER", "gmail"),
-            "connector_channel": os.environ.get("CONNECTOR_CHANNEL", "email"),
-            "connector_endpoint_identity": (
-                f"gmail:user:{gmail_user_email}" if gmail_user_email else ""
-            ),
-            "connector_max_inflight": max_inflight,
-            "connector_health_port": health_port,
-            "gmail_watch_renew_interval_s": watch_renew_interval,
-            "gmail_poll_interval_s": poll_interval,
+            "connector_provider": _DESCRIPTOR.provider,
+            "connector_channel": _DESCRIPTOR.channel,
+            "connector_endpoint_identity": f"gmail:user:{gmail_user_email}"
+            if gmail_user_email
+            else "",
+            **controls,
             "gmail_pubsub_enabled": pubsub_enabled,
             "gmail_pubsub_topic": pubsub_topic,
-            "gmail_pubsub_webhook_port": pubsub_webhook_port,
-            "gmail_pubsub_webhook_path": pubsub_webhook_path,
-            "gmail_pubsub_webhook_token": pubsub_webhook_token,
-            "gmail_label_include": gmail_label_include,
-            "gmail_label_exclude": gmail_label_exclude,
+            **pubsub_transport,
+            **labels,
             "gmail_user_email": gmail_user_email,
-            "gmail_sent_lookback_days": gmail_sent_lookback_days,
-            "gmail_sent_max_messages": gmail_sent_max_messages,
-            "connector_backfill_enabled": connector_backfill_enabled,
-            "connector_backfill_poll_interval_s": connector_backfill_poll_interval_s,
-            "connector_backfill_progress_interval": connector_backfill_progress_interval,
+            "gmail_sent_lookback_days": sent_lookback_days,
+            "gmail_sent_max_messages": sent_max_messages,
+            **backfill,
         }
 
     @classmethod
@@ -707,7 +666,7 @@ class GmailConnectorRuntime:
 
         # Metrics
         self._metrics = ConnectorMetrics(
-            connector_type="gmail",
+            connector_type=_DESCRIPTOR.connector_type,
             endpoint_identity=config.connector_endpoint_identity,
         )
 
@@ -2621,7 +2580,7 @@ class GmailConnectorRuntime:
 
         return IngestionEnvelope(
             sender_address=sender,
-            source_channel="email",
+            source_channel=_DESCRIPTOR.channel,
             headers=headers_dict,
             labels=list(message_data.get("labelIds") or []),
             raw_key=from_value,
@@ -3659,8 +3618,8 @@ class GmailProcessConfig(BaseModel):
     switchboard_mcp_url: str
 
     # Connector identity (process-level defaults; per-account values are derived)
-    connector_provider: str = "gmail"
-    connector_channel: str = "email"
+    connector_provider: str = _DESCRIPTOR.provider
+    connector_channel: str = _DESCRIPTOR.channel
     connector_max_inflight: int = 8
 
     # Health check
@@ -3691,48 +3650,27 @@ class GmailProcessConfig(BaseModel):
 
     @classmethod
     def from_env(cls) -> GmailProcessConfig:
-        """Load process-level config from environment variables."""
-
-        def _int_env(key: str, default: int) -> int:
-            raw = os.environ.get(key, str(default))
-            try:
-                return int(raw)
-            except ValueError as exc:
-                raise ValueError(f"{key} must be an integer, got: {raw}") from exc
+        """Load shared defaults with the process entrypoint's original boolean rules."""
 
         def _bool_env(key: str, default: bool) -> bool:
             raw = os.environ.get(key, "true" if default else "false").lower()
             return raw in ("true", "1", "yes", "on")
 
         pubsub_enabled = _bool_env("GMAIL_PUBSUB_ENABLED", False)
-        pubsub_topic = os.environ.get("GMAIL_PUBSUB_TOPIC")
-        if pubsub_enabled and not pubsub_topic:
-            raise ValueError("GMAIL_PUBSUB_TOPIC is required when GMAIL_PUBSUB_ENABLED=true")
-
+        pubsub_topic = _gmail_pubsub_topic(pubsub_enabled)
         label_include_raw = os.environ.get("GMAIL_LABEL_INCLUDE", "")
         label_exclude_raw = os.environ.get("GMAIL_LABEL_EXCLUDE", "SPAM,TRASH")
-
         return cls(
             switchboard_mcp_url=os.environ["SWITCHBOARD_MCP_URL"],
-            connector_provider=os.environ.get("CONNECTOR_PROVIDER", "gmail"),
-            connector_channel=os.environ.get("CONNECTOR_CHANNEL", "email"),
-            connector_max_inflight=_int_env("CONNECTOR_MAX_INFLIGHT", 8),
-            connector_health_port=_int_env("CONNECTOR_HEALTH_PORT", 40082),
-            gmail_watch_renew_interval_s=_int_env("GMAIL_WATCH_RENEW_INTERVAL_S", 86400),
-            gmail_poll_interval_s=_int_env("GMAIL_POLL_INTERVAL_S", 60),
+            connector_provider=_DESCRIPTOR.provider,
+            connector_channel=_DESCRIPTOR.channel,
+            **_gmail_runtime_controls(),
             gmail_pubsub_enabled=pubsub_enabled,
             gmail_pubsub_topic=pubsub_topic,
-            gmail_pubsub_webhook_port=_int_env("GMAIL_PUBSUB_WEBHOOK_PORT", 40083),
-            gmail_pubsub_webhook_path=os.environ.get("GMAIL_PUBSUB_WEBHOOK_PATH", "/gmail/webhook"),
-            gmail_pubsub_webhook_token=os.environ.get("GMAIL_PUBSUB_WEBHOOK_TOKEN"),
-            gmail_label_include=tuple(parse_label_list(label_include_raw)),
-            gmail_label_exclude=tuple(parse_label_list(label_exclude_raw)),
-            connector_backfill_enabled=_bool_env("CONNECTOR_BACKFILL_ENABLED", True),
-            connector_backfill_poll_interval_s=_int_env("CONNECTOR_BACKFILL_POLL_INTERVAL_S", 60),
-            connector_backfill_progress_interval=_int_env(
-                "CONNECTOR_BACKFILL_PROGRESS_INTERVAL", 50
-            ),
-            gmail_account_rescan_interval_s=_int_env(
+            **_gmail_pubsub_transport(),
+            **_gmail_label_defaults(label_include_raw, label_exclude_raw),
+            **_gmail_backfill_controls(_bool_env("CONNECTOR_BACKFILL_ENABLED", True)),
+            gmail_account_rescan_interval_s=_gmail_int_env(
                 "GMAIL_ACCOUNT_RESCAN_INTERVAL_S", _DEFAULT_ACCOUNT_RESCAN_INTERVAL_S
             ),
         )

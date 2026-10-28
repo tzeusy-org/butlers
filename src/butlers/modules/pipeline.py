@@ -23,6 +23,7 @@ from uuid import UUID
 from opentelemetry import metrics, trace
 from pydantic import BaseModel, ConfigDict, Field
 
+from butlers.connectors.catalog import conversation_history_strategies
 from butlers.core.approval_recovery_exclusion import message_inbox_recovery_exclusion_sql
 from butlers.core.fact_authority import accepted_source_scope
 from butlers.core.model_routing import Complexity
@@ -104,26 +105,9 @@ class HistoryConfig:
 
 
 # Channel strategy mapping
-HISTORY_STRATEGY: dict[str, Literal["realtime", "email", "none"]] = {
-    # Real-time messaging channels
-    "telegram_bot": "realtime",
-    "telegram_user_client": "realtime",
-    "whatsapp": "realtime",
-    "whatsapp_user_client": "realtime",
-    "slack": "realtime",
-    "discord": "realtime",
-    # Email
-    "email": "email",
-    # Google Calendar connector
-    "google_calendar": "realtime",
-    # Spotify connector
-    "spotify_user_client": "realtime",
-    # OwnTracks connector
-    "owntracks": "realtime",
-    # No history for other channels
-    "api": "none",
-    "mcp": "none",
-}
+HISTORY_STRATEGY: dict[str, Literal["realtime", "email", "none"]] = (
+    conversation_history_strategies()
+)
 
 
 async def _load_realtime_history(

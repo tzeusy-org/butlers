@@ -1637,3 +1637,18 @@ async def test_activation_failure_reports_error_not_awaiting_credentials() -> No
     assert connector._credentials_unconfigured is False
     assert connector._auth_error is True
     assert connector._get_health_state()[0] == "error"
+
+
+def test_dead_identity_settings_do_not_erase_spotify_runtime_knobs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    monkeypatch.setenv("SPOTIFY_POLL_ACTIVE_S", "17")
+    monkeypatch.setenv("CONNECTOR_HEALTH_PORT", "40123")
+    config = SpotifyConnectorConfig.from_env()
+    assert not hasattr(config, "provider")
+    assert not hasattr(config, "channel")
+    assert config.poll_active_s == 17
+    assert config.health_port == 40123

@@ -11,6 +11,10 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from butlers.connectors.catalog import connector_descriptor
+
+_DESCRIPTOR = connector_descriptor("live_listener")
+
 
 @dataclass
 class MicDeviceSpec:
@@ -56,8 +60,8 @@ class LiveListenerConfig:
     transcription_url: str
 
     # --- Connector identity ---
-    provider: str = "live-listener"
-    channel: str = "voice"
+    provider: str = _DESCRIPTOR.provider
+    channel: str = _DESCRIPTOR.channel
 
     # --- Audio / VAD thresholds ---
     vad_onset_threshold: float = 0.5
@@ -102,8 +106,6 @@ class LiveListenerConfig:
             LIVE_LISTENER_TRANSCRIPTION_URL
 
         Optional:
-            CONNECTOR_PROVIDER          (default: live-listener)
-            CONNECTOR_CHANNEL           (default: voice)
             LIVE_LISTENER_VAD_ONSET_THRESHOLD
             LIVE_LISTENER_VAD_OFFSET_THRESHOLD
             LIVE_LISTENER_VAD_ONSET_FRAMES
@@ -137,8 +139,8 @@ class LiveListenerConfig:
         if not transcription_url:
             raise ValueError("LIVE_LISTENER_TRANSCRIPTION_URL environment variable is required")
 
-        provider = os.environ.get("CONNECTOR_PROVIDER", "live-listener")
-        channel = os.environ.get("CONNECTOR_CHANNEL", "voice")
+        provider = _DESCRIPTOR.provider
+        channel = _DESCRIPTOR.channel
 
         def _float(key: str, default: float) -> float:
             v = os.environ.get(key, "").strip()
