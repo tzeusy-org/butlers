@@ -21367,7 +21367,9 @@ def runtime_probe_verifier_revision_reuse(connection) -> bool:
     return True
 
 
-def _owner_lookup_revision_vector(connection, manifest, target, *, source_identity):
+def _owner_lookup_revision_vector(
+    connection, manifest, target=None, *, source_identity, selected_plans=None
+):
     """Read source-qualified durable producer state; never a grant authority.
 
     The caller binds an actual source snapshot for this catalog read. No
@@ -21379,6 +21381,8 @@ def _owner_lookup_revision_vector(connection, manifest, target, *, source_identi
     from .apply import _COLUMN_ACL, _RELATION_ACL, _RELATIONS, _rows, quote_identifier
     from .grants import (
         _owner_lookup_graph_templates,
+        _owner_lookup_revision_reader_candidates,
+        _owner_lookup_revision_readers,
         _owner_lookup_selected_template,
         _owner_lookup_validate_source_plans,
     )
@@ -21386,10 +21390,19 @@ def _owner_lookup_revision_vector(connection, manifest, target, *, source_identi
 
     # Admit the current ordinary target independently; this does not attest that
     # its future producers (or any future domain chain) have already executed.
-    _owner_lookup_selected_template(manifest, (("core", target, None),), source_identity)
-    # Only the actual source manifest and already-admitted ordinary target supply
-    # possible ledger namespaces. An observed name cannot append a namespace.
-    schemas = tuple(sorted(set(manifest.schemas) | {target}))
+    if selected_plans is None:
+        _owner_lookup_selected_template(manifest, (("core", target, None),), source_identity)
+        admitted_targets = {target}
+    else:
+        if target is not None or type(selected_plans) is not tuple or not selected_plans:
+            raise AuthorityError("Installed revision source context is unavailable")
+        # This admits only source-declared selection/context. Its requested
+        # revision is never inserted into the installed vector read below.
+        _owner_lookup_validate_source_plans(manifest, selected_plans, source_identity)
+        admitted_targets = {schema or "public" for _, schema, _ in selected_plans}
+    # Only the source manifest and admitted target contexts supply possible
+    # namespaces. A private Memory target never claims a local core chain.
+    schemas = tuple(sorted(set(manifest.schemas) | admitted_targets))
     ledgers = tuple(
         row
         for row in _rows(connection, _RELATIONS, schemas=list(schemas))
@@ -21403,6 +21416,7 @@ def _owner_lookup_revision_vector(connection, manifest, target, *, source_identi
     heads = {chain: head for chain, head, _ in templates}
     result = []
     qualified_plans = []
+    pending_acls = []
     for ledger in ledgers:
         if (
             ledger["schema"] not in schemas
@@ -21441,25 +21455,19 @@ def _owner_lookup_revision_vector(connection, manifest, target, *, source_identi
         ).scalar_one()
         if abi is not True:
             raise AuthorityError("Owner lookup revision structure differs from source")
-        declaration = tuple(
-            row
-            for row in manifest.relations
-            if (row.schema, row.name) == (ledger["schema"], "alembic_version")
-        )
-        allowed_readers = {
-            permission.role
-            for row in declaration
-            for permission in row.permissions
-            if permission.verbs == ("SELECT",) and not permission.columns
-        }
+        candidates = _owner_lookup_revision_reader_candidates(manifest, ledger["schema"])
         acl = _rows(connection, _RELATION_ACL, oid=ledger["oid"])
         if any(
             row["grantable"] is not False
             or row["verb"] != "SELECT"
-            or row["role"] not in allowed_readers
+            or row["role"] not in candidates
             for row in acl
         ) or _rows(connection, _COLUMN_ACL, oid=ledger["oid"]):
             raise AuthorityError("Owner lookup revision write authority differs from source")
+        pending_acls.append((ledger["schema"], acl))
+        # These are untrusted metadata reads, not an admitted source state.
+        # No effect or caller may consume a vector until every ledger's graph
+        # and complete READ ACL have passed the collective qualification below.
         identity = quote_identifier(ledger["schema"]) + '."alembic_version"'
         revisions = tuple(
             connection.exec_driver_sql("SELECT version_num FROM " + identity).scalars()
@@ -21480,10 +21488,21 @@ def _owner_lookup_revision_vector(connection, manifest, target, *, source_identi
             qualified_plans.append(plan)
             result.append((chain, ledger["schema"], revision))
     _owner_lookup_validate_source_plans(manifest, tuple(qualified_plans), source_identity)
-    return tuple(sorted(result))
+    vector = tuple(sorted(result))
+    for schema, acl in pending_acls:
+        readers = _owner_lookup_revision_readers(
+            manifest, schema, vector, source_identity=source_identity
+        )
+        if any(row["role"] not in readers for row in acl):
+            raise AuthorityError("Owner lookup revision write authority differs from source")
+    return vector
 
 
 def _owner_lookup_capability_matches(connection, expected):
+    return _fixed_purpose_capability_matches(connection, expected, purpose="identity_lookup_owner")
+
+
+def _fixed_purpose_capability_matches(connection, expected, *, purpose, final=True):
     """Compare complete explicit fixed-role capabilities, including other schemas.
 
     Owner-implicit rights remain separately checked by the complete ownership
@@ -21494,93 +21513,119 @@ def _owner_lookup_capability_matches(connection, expected):
     from sqlalchemy import text
 
     from .grants import PurposeCapability
+    from .roles import AuthorityError
 
-    rows = tuple(
-        connection.execute(
-            text(
-                "\n      /* owner-lookup-replay:complete-purpose-capabilities "
-                "*/\n      WITH purpose AS (SELECT oid FROM pg_catalog.pg_role"
-                "s WHERE rolname='identity_lookup_owner'),\n      caps AS (\n  "
-                "      SELECT 'relation'::text AS kind,n.nspname::text AS sch"
-                "ema,c.relname::text AS name,\n          ''::text AS signature"
-                ",''::text AS \"column\",a.privilege_type::text AS verb,a.is_gr"
-                "antable AS grantable\n        FROM pg_catalog.pg_class c JOIN"
-                " pg_catalog.pg_namespace n ON n.oid=c.relnamespace\n        C"
-                "ROSS JOIN LATERAL pg_catalog.aclexplode(c.relacl) a\n        "
-                "WHERE a.grantee=(SELECT oid FROM purpose) AND c.relowner<>a."
-                "grantee\n        UNION ALL\n        SELECT 'column',n.nspname,"
-                "c.relname,'',att.attname,a.privilege_type,a.is_grantable\n   "
-                "     FROM pg_catalog.pg_attribute att JOIN pg_catalog.pg_cla"
-                "ss c ON c.oid=att.attrelid\n        JOIN pg_catalog.pg_namesp"
-                "ace n ON n.oid=c.relnamespace\n        CROSS JOIN LATERAL pg_"
-                "catalog.aclexplode(att.attacl) a\n        WHERE a.grantee=(SE"
-                "LECT oid FROM purpose) AND c.relowner<>a.grantee\n        UNI"
-                "ON ALL\n        SELECT 'function',n.nspname,p.proname,pg_cata"
-                "log.oidvectortypes(p.proargtypes),'',\n          a.privilege_"
-                "type,a.is_grantable\n        FROM pg_catalog.pg_proc p JOIN p"
-                "g_catalog.pg_namespace n ON n.oid=p.pronamespace\n        CRO"
-                "SS JOIN LATERAL pg_catalog.aclexplode(p.proacl) a\n        WH"
-                "ERE a.grantee=(SELECT oid FROM purpose) AND p.proowner<>a.gr"
-                "antee\n        UNION ALL\n        SELECT 'namespace',n.nspname"
-                ",'','','',a.privilege_type,a.is_grantable\n        FROM pg_ca"
-                "talog.pg_namespace n CROSS JOIN LATERAL pg_catalog.aclexplod"
-                "e(n.nspacl) a\n        WHERE a.grantee=(SELECT oid FROM purpo"
-                "se) AND n.nspowner<>a.grantee\n        UNION ALL\n        SELE"
-                "CT 'database','',d.datname,'','',a.privilege_type,a.is_grant"
-                "able\n        FROM pg_catalog.pg_database d CROSS JOIN LATERA"
-                "L pg_catalog.aclexplode(d.datacl) a\n        WHERE a.grantee="
-                "(SELECT oid FROM purpose) AND d.datdba<>a.grantee\n        UN"
-                "ION ALL\n        SELECT 'default',COALESCE(n.nspname,''),d.de"
-                "faclobjtype::text,'','',a.privilege_type,a.is_grantable\n    "
-                "    FROM pg_catalog.pg_default_acl d LEFT JOIN pg_catalog.pg"
-                "_namespace n ON n.oid=d.defaclnamespace\n        CROSS JOIN L"
-                "ATERAL pg_catalog.aclexplode(d.defaclacl) a\n        WHERE a."
-                "grantee=(SELECT oid FROM purpose) OR d.defaclrole=(SELECT oi"
-                "d FROM purpose)\n        UNION ALL\n        SELECT 'type',n.ns"
-                "pname,t.typname,'','',a.privilege_type,a.is_grantable\n      "
-                "  FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n O"
-                "N n.oid=t.typnamespace\n        CROSS JOIN LATERAL pg_catalog"
-                ".aclexplode(t.typacl) a\n        WHERE a.grantee=(SELECT oid "
-                "FROM purpose) AND t.typowner<>a.grantee\n        UNION ALL\n  "
-                "      SELECT 'language','',l.lanname,'','',a.privilege_type,"
-                "a.is_grantable\n        FROM pg_catalog.pg_language l CROSS J"
-                "OIN LATERAL pg_catalog.aclexplode(l.lanacl) a\n        WHERE "
-                "a.grantee=(SELECT oid FROM purpose) AND l.lanowner<>a.grante"
-                "e\n        UNION ALL\n        SELECT 'tablespace','',s.spcname"
-                ",'','',a.privilege_type,a.is_grantable\n        FROM pg_catal"
-                "og.pg_tablespace s CROSS JOIN LATERAL pg_catalog.aclexplode("
-                "s.spcacl) a\n        WHERE a.grantee=(SELECT oid FROM purpose"
-                ") AND s.spcowner<>a.grantee\n        UNION ALL\n        SELECT"
-                " 'large_object','',l.oid::text,'','',a.privilege_type,a.is_g"
-                "rantable\n        FROM pg_catalog.pg_largeobject_metadata l C"
-                "ROSS JOIN LATERAL pg_catalog.aclexplode(l.lomacl) a\n        "
-                "WHERE a.grantee=(SELECT oid FROM purpose) AND l.lomowner<>a."
-                "grantee\n        UNION ALL\n        SELECT 'foreign_wrapper','"
-                "',f.fdwname,'','',a.privilege_type,a.is_grantable\n        FR"
-                "OM pg_catalog.pg_foreign_data_wrapper f CROSS JOIN LATERAL p"
-                "g_catalog.aclexplode(f.fdwacl) a\n        WHERE a.grantee=(SE"
-                "LECT oid FROM purpose) AND f.fdwowner<>a.grantee\n        UNI"
-                "ON ALL\n        SELECT 'foreign_server','',s.srvname,'','',a."
-                "privilege_type,a.is_grantable\n        FROM pg_catalog.pg_for"
-                "eign_server s CROSS JOIN LATERAL pg_catalog.aclexplode(s.srv"
-                "acl) a\n        WHERE a.grantee=(SELECT oid FROM purpose) AND"
-                " s.srvowner<>a.grantee\n        UNION ALL\n        SELECT 'par"
-                "ameter','',p.parname,'','',a.privilege_type,a.is_grantable\n "
-                "       FROM pg_catalog.pg_parameter_acl p\n        CROSS JOIN"
-                " LATERAL pg_catalog.aclexplode(p.paracl) a\n        WHERE a.g"
-                "rantee=(SELECT oid FROM purpose)\n        UNION ALL\n        S"
-                "ELECT 'ownership','','','','','OWN',false\n        FROM pg_ca"
-                "talog.pg_shdepend d\n        WHERE d.refclassid='pg_catalog.p"
-                "g_authid'::regclass\n          AND d.refobjid=(SELECT oid FRO"
-                "M purpose) AND d.deptype='o'\n          AND d.dbid IN (0,(SEL"
-                "ECT oid FROM pg_catalog.pg_database WHERE datname=current_da"
-                "tabase()))\n          AND NOT (d.classid='pg_catalog.pg_proc'"
-                "::regclass\n            AND d.objid='public.resolve_owner_tri"
-                "ple(text,text[])'::regprocedure)\n      ) SELECT kind,schema,"
-                'name,signature,"column",verb,grantable FROM caps\n    '
-            )
-        ).mappings()
+    query = text(
+        "\n      /* owner-lookup-replay:complete-purpose-capabilities "
+        "*/\n      WITH purpose AS (SELECT oid FROM pg_catalog.pg_role"
+        "s WHERE rolname='identity_lookup_owner'),\n      closed_defau"
+        "lts AS (\n        SELECT d.oid FROM pg_catalog.pg_default_acl"
+        " d\n        WHERE d.defaclrole=(SELECT oid FROM purpose)\n    "
+        "      AND d.defaclnamespace=0 AND d.defaclobjtype IN ('f','T"
+        "')\n          AND pg_catalog.cardinality(d.defaclacl)=1\n     "
+        "     AND (SELECT pg_catalog.count(*) FROM pg_catalog.aclexpl"
+        "ode(d.defaclacl))=1\n          AND EXISTS (\n            SELEC"
+        "T FROM pg_catalog.aclexplode(d.defaclacl) a\n            WHER"
+        "E a.grantee=d.defaclrole AND a.grantor=d.defaclrole\n        "
+        "      AND a.is_grantable=false\n              AND a.privilege"
+        "_type=CASE d.defaclobjtype\n                WHEN 'f' THEN 'EX"
+        "ECUTE' WHEN 'T' THEN 'USAGE' END\n          )\n      ), caps A"
+        "S (\n        SELECT 'relation'::text AS kind,n.nspname::text "
+        "AS schema,c.relname::text AS name,\n          ''::text AS sig"
+        "nature,''::text AS \"column\",a.privilege_type::text AS verb,a"
+        ".is_grantable AS grantable\n        FROM pg_catalog.pg_class "
+        "c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace\n   "
+        "     CROSS JOIN LATERAL pg_catalog.aclexplode(c.relacl) a\n  "
+        "      WHERE a.grantee=(SELECT oid FROM purpose) AND c.relown"
+        "er<>a.grantee\n        UNION ALL\n        SELECT 'column',n.ns"
+        "pname,c.relname,'',att.attname,a.privilege_type,a.is_grantab"
+        "le\n        FROM pg_catalog.pg_attribute att JOIN pg_catalog."
+        "pg_class c ON c.oid=att.attrelid\n        JOIN pg_catalog.pg_"
+        "namespace n ON n.oid=c.relnamespace\n        CROSS JOIN LATER"
+        "AL pg_catalog.aclexplode(att.attacl) a\n        WHERE a.grant"
+        "ee=(SELECT oid FROM purpose) AND c.relowner<>a.grantee\n     "
+        "   UNION ALL\n        SELECT 'function',n.nspname,p.proname,p"
+        "g_catalog.oidvectortypes(p.proargtypes),'',\n          a.priv"
+        "ilege_type,a.is_grantable\n        FROM pg_catalog.pg_proc p "
+        "JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace\n     "
+        "   CROSS JOIN LATERAL pg_catalog.aclexplode(p.proacl) a\n    "
+        "    WHERE a.grantee=(SELECT oid FROM purpose) AND p.proowner"
+        "<>a.grantee\n        UNION ALL\n        SELECT 'namespace',n.n"
+        "spname,'','','',a.privilege_type,a.is_grantable\n        FROM"
+        " pg_catalog.pg_namespace n CROSS JOIN LATERAL pg_catalog.acl"
+        "explode(n.nspacl) a\n        WHERE a.grantee=(SELECT oid FROM"
+        " purpose) AND n.nspowner<>a.grantee\n        UNION ALL\n      "
+        "  SELECT 'database','',d.datname,'','',a.privilege_type,a.is"
+        "_grantable\n        FROM pg_catalog.pg_database d CROSS JOIN "
+        "LATERAL pg_catalog.aclexplode(d.datacl) a\n        WHERE a.gr"
+        "antee=(SELECT oid FROM purpose) AND d.datdba<>a.grantee\n    "
+        "    UNION ALL\n        SELECT 'default',COALESCE(n.nspname,''"
+        "),d.defaclobjtype::text,'','',a.privilege_type,a.is_grantabl"
+        "e\n        FROM pg_catalog.pg_default_acl d LEFT JOIN pg_cata"
+        "log.pg_namespace n ON n.oid=d.defaclnamespace\n        CROSS "
+        "JOIN LATERAL pg_catalog.aclexplode(d.defaclacl) a\n        WH"
+        "ERE (a.grantee=(SELECT oid FROM purpose) OR d.defaclrole=(SE"
+        "LECT oid FROM purpose))\n          AND d.oid NOT IN (SELECT o"
+        "id FROM closed_defaults)\n        UNION ALL\n        SELECT 't"
+        "ype',n.nspname,t.typname,'','',a.privilege_type,a.is_grantab"
+        "le\n        FROM pg_catalog.pg_type t JOIN pg_catalog.pg_name"
+        "space n ON n.oid=t.typnamespace\n        CROSS JOIN LATERAL p"
+        "g_catalog.aclexplode(t.typacl) a\n        WHERE a.grantee=(SE"
+        "LECT oid FROM purpose) AND t.typowner<>a.grantee\n        UNI"
+        "ON ALL\n        SELECT 'language','',l.lanname,'','',a.privil"
+        "ege_type,a.is_grantable\n        FROM pg_catalog.pg_language "
+        "l CROSS JOIN LATERAL pg_catalog.aclexplode(l.lanacl) a\n     "
+        "   WHERE a.grantee=(SELECT oid FROM purpose) AND l.lanowner<"
+        ">a.grantee\n        UNION ALL\n        SELECT 'tablespace','',"
+        "s.spcname,'','',a.privilege_type,a.is_grantable\n        FROM"
+        " pg_catalog.pg_tablespace s CROSS JOIN LATERAL pg_catalog.ac"
+        "lexplode(s.spcacl) a\n        WHERE a.grantee=(SELECT oid FRO"
+        "M purpose) AND s.spcowner<>a.grantee\n        UNION ALL\n     "
+        "   SELECT 'large_object','',l.oid::text,'','',a.privilege_ty"
+        "pe,a.is_grantable\n        FROM pg_catalog.pg_largeobject_met"
+        "adata l CROSS JOIN LATERAL pg_catalog.aclexplode(l.lomacl) a"
+        "\n        WHERE a.grantee=(SELECT oid FROM purpose) AND l.lom"
+        "owner<>a.grantee\n        UNION ALL\n        SELECT 'foreign_w"
+        "rapper','',f.fdwname,'','',a.privilege_type,a.is_grantable\n "
+        "       FROM pg_catalog.pg_foreign_data_wrapper f CROSS JOIN "
+        "LATERAL pg_catalog.aclexplode(f.fdwacl) a\n        WHERE a.gr"
+        "antee=(SELECT oid FROM purpose) AND f.fdwowner<>a.grantee\n  "
+        "      UNION ALL\n        SELECT 'foreign_server','',s.srvname"
+        ",'','',a.privilege_type,a.is_grantable\n        FROM pg_catal"
+        "og.pg_foreign_server s CROSS JOIN LATERAL pg_catalog.aclexpl"
+        "ode(s.srvacl) a\n        WHERE a.grantee=(SELECT oid FROM pur"
+        "pose) AND s.srvowner<>a.grantee\n        UNION ALL\n        SE"
+        "LECT 'parameter','',p.parname,'','',a.privilege_type,a.is_gr"
+        "antable\n        FROM pg_catalog.pg_parameter_acl p\n        C"
+        "ROSS JOIN LATERAL pg_catalog.aclexplode(p.paracl) a\n        "
+        "WHERE a.grantee=(SELECT oid FROM purpose)\n        UNION ALL\n"
+        "        SELECT 'ownership','','','','','OWN',false\n        F"
+        "ROM pg_catalog.pg_shdepend d\n        WHERE d.refclassid='pg_"
+        "catalog.pg_authid'::regclass\n          AND d.refobjid=(SELEC"
+        "T oid FROM purpose) AND d.deptype='o'\n          AND d.dbid I"
+        "N (0,(SELECT oid FROM pg_catalog.pg_database WHERE datname=c"
+        "urrent_database()))\n          AND NOT (d.classid='pg_catalog"
+        ".pg_default_acl'::regclass\n            AND d.objid IN (SELEC"
+        "T oid FROM closed_defaults))\n          AND NOT (d.classid='p"
+        "g_catalog.pg_proc'::regclass\n            AND d.objid='public"
+        ".resolve_owner_triple(text,text[])'::regprocedure)\n      ) S"
+        'ELECT kind,schema,name,signature,"column",verb,grantable FRO'
+        "M caps\n    "
     )
+    # Closed source dispatch preserves the original lookup query byte-for-byte.
+    # Neither role nor owned overload can be supplied by a caller's request.
+    if purpose == "priority_contact_audit_owner":
+        query = text(
+            str(query)
+            .replace("rolname='identity_lookup_owner'", "rolname='priority_contact_audit_owner'")
+            .replace(
+                "'public.resolve_owner_triple(text,text[])'::regprocedure",
+                "pg_catalog.to_regprocedure('public.priority_contacts_cascade_audit()')",
+            )
+        )
+    elif purpose != "identity_lookup_owner":
+        raise AuthorityError("Fixed purpose capability is not declared")
+    rows = tuple(connection.execute(query).mappings())
     if any(row["grantable"] is not False for row in rows):
         return False
     observed = tuple(
@@ -21602,7 +21647,7 @@ def _owner_lookup_capability_matches(connection, expected):
     )
     if not (len(observed) == len(set(observed)) and set(observed) == set(normalized)):
         return False
-    return _owner_lookup_public_capability_matches(connection, expected) and all(
+    return (not final or _owner_lookup_public_capability_matches(connection, expected)) and all(
         _owner_lookup_metadata_matches(connection, row)
         and function_matches(connection, row, inspect_function(connection, row))
         for row in expected.functions
@@ -22400,3 +22445,295 @@ def owner_lookup_revision_reuse(connection, revision):
     if _owner_lookup_source_template_identity() != source_identity:
         raise AuthorityError("Owner lookup source changed during validation")
     return True
+
+
+_PRIORITY_AUDIT_TRIGGER_SQL = """
+    SELECT NOT EXISTS (
+      SELECT FROM pg_catalog.pg_trigger t
+      WHERE NOT t.tgisinternal AND
+        (t.tgfoid=pg_catalog.to_regprocedure('public.priority_contacts_cascade_audit()')
+         OR (t.tgrelid=pg_catalog.to_regclass('public.priority_contacts')
+             AND t.tgname='trg_priority_contacts_cascade_audit'))
+      AND NOT (t.tgrelid=pg_catalog.to_regclass('public.priority_contacts')
+        AND t.tgname='trg_priority_contacts_cascade_audit' AND t.tgtype=9
+        AND t.tgenabled='O' AND t.tgnargs=0 AND t.tgargs=''::bytea
+        AND t.tgattr=''::int2vector AND t.tgqual IS NULL AND t.tgconstraint=0
+        AND t.tgoldtable IS NULL AND t.tgnewtable IS NULL
+        AND t.tgfoid=pg_catalog.to_regprocedure('public.priority_contacts_cascade_audit()'))
+    ) AND (SELECT count(*) FROM pg_catalog.pg_trigger t
+      WHERE NOT t.tgisinternal AND t.tgfoid=
+        pg_catalog.to_regprocedure('public.priority_contacts_cascade_audit()')) =
+      CASE WHEN pg_catalog.to_regclass('public.priority_contacts') IS NULL THEN 0 ELSE 1 END
+"""
+
+
+def validate_historical_priority_audit(connection, manifest, authority, *, allow_legacy=True):
+    """Read-only exact producer/owner/trigger/dependency admission before effects."""
+    from dataclasses import replace
+
+    from sqlalchemy import text
+
+    from .apply import validate_ordinary_purpose_owners
+    from .grants import (
+        _PRIORITY_AUDIT_101_INVERSE_BODY,
+        _historical_priority_audit_profile,
+        historical_priority_audit_capabilities,
+    )
+    from .roles import AuthorityError
+
+    exemplar = authority or _historical_priority_audit_profile(manifest.migration_owner, "129")
+    validate_ordinary_purpose_owners(connection, (exemplar.definition,))
+    overloads = tuple(
+        connection.execute(
+            text("""
+        SELECT pg_catalog.oidvectortypes(p.proargtypes) AS signature
+        FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+        WHERE n.nspname='public' AND p.proname='priority_contacts_cascade_audit'
+    """)
+        ).scalars()
+    )
+    if authority is None:
+        if overloads:
+            raise AuthorityError("Retired priority audit function remains available")
+        return None
+    if overloads != ("",):
+        raise AuthorityError("Historical priority audit overload differs from source")
+    if (
+        connection.execute(
+            text("""
+        /* historical-audit:public-namespace */
+        SELECT count(*)=1 AND bool_and(pg_catalog.pg_get_userbyid(n.nspowner)
+          IN (:owner, 'pg_database_owner'))
+        FROM pg_catalog.pg_namespace n WHERE n.nspname='public'
+        """),
+            {"owner": manifest.migration_owner},
+        ).scalar_one()
+        is not True
+    ):
+        raise AuthorityError("Historical priority audit namespace differs from source")
+    definition = authority.definition
+    actual = inspect_function(connection, definition)
+    if actual is None or not _owner_lookup_metadata_matches(connection, definition):
+        raise AuthorityError("Historical priority audit metadata differs from source")
+    normalized = function_matches(connection, definition, actual)
+    if not normalized:
+        variants = (authority.legacy_definition,)
+        if authority.stage == "101":
+            variants += (
+                replace(authority.legacy_definition, body=_PRIORITY_AUDIT_101_INVERSE_BODY),
+            )
+        # The two exact source input ACLs are producer PUBLIC EXECUTE or closed.
+        if not allow_legacy or not any(
+            function_matches(connection, replace(row, executors=executors), actual)
+            for row in variants
+            for executors in ((), ("PUBLIC",))
+        ):
+            raise AuthorityError("Historical priority audit body or ACL differs from source")
+    if connection.execute(text(_PRIORITY_AUDIT_TRIGGER_SQL)).scalar_one() is not True:
+        raise AuthorityError("Historical priority audit trigger differs from source")
+    if (
+        connection.execute(
+            text("""
+        SELECT count(*)=2 AND bool_and(pg_catalog.pg_get_userbyid(c.relowner)=:owner
+            AND NOT c.relrowsecurity AND NOT c.relforcerowsecurity)
+        FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname='public' AND ((c.relname='audit_log' AND c.relkind='r')
+          OR (c.relname='audit_log_id_seq' AND c.relkind='S'))
+    """),
+            {"owner": manifest.migration_owner},
+        ).scalar_one()
+        is not True
+    ):
+        raise AuthorityError("Historical priority audit dependencies differ from source")
+    if (
+        connection.execute(
+            text("""
+        SELECT (SELECT count(*)=4 AND bool_and(a.atttypid='text'::regtype)
+          FROM pg_catalog.pg_attribute a
+          WHERE a.attrelid='public.audit_log'::regclass AND a.attnum>0 AND NOT a.attisdropped
+          AND a.attname IN ('actor','action','target','note'))
+        AND (SELECT count(*)=1 FROM pg_catalog.pg_depend d
+          JOIN pg_catalog.pg_attribute a ON a.attrelid=d.refobjid AND a.attnum=d.refobjsubid
+          WHERE d.classid='pg_catalog.pg_class'::regclass
+            AND d.objid='public.audit_log_id_seq'::regclass
+            AND d.refclassid='pg_catalog.pg_class'::regclass
+            AND d.refobjid='public.audit_log'::regclass AND a.attname='id'
+            AND d.deptype IN ('a','i'))
+    """)
+        ).scalar_one()
+        is not True
+    ):
+        raise AuthorityError(
+            "Historical priority audit column/sequence binding differs from source"
+        )
+    expected = historical_priority_audit_capabilities(manifest, authority)
+    # Preimages have not yet closed ordinary producer PUBLIC defaults. They are
+    # never an admitted final state: complete effective PUBLIC census follows
+    # closure, before the caller can commit finalization.
+    if not _fixed_purpose_capability_matches(
+        connection, expected, purpose=definition.owner, final=not allow_legacy
+    ) and not (
+        allow_legacy
+        and _fixed_purpose_capability_matches(
+            connection,
+            historical_priority_audit_capabilities(manifest, authority, preimage=True),
+            purpose=definition.owner,
+            final=False,
+        )
+    ):
+        raise AuthorityError("Historical priority audit purpose has excess capabilities")
+    return actual
+
+
+def normalize_historical_priority_audit(connection, authority):
+    """Install only an independently validated fixed producer, without data effects."""
+    from sqlalchemy import text
+
+    from .apply import quote_identifier
+    from .roles import AuthorityError
+
+    definition = authority.definition
+    privileged = connection.exec_driver_sql(
+        "SELECT session_user=current_user AND rolsuper FROM pg_catalog.pg_roles "
+        "WHERE rolname=session_user"
+    ).scalar_one()
+    if privileged is not True:
+        raise AuthorityError("Historical priority audit maintenance is unavailable")
+    connection.exec_driver_sql(definition.sql.replace("%", "%%"))
+    target = _signature(definition)
+    connection.exec_driver_sql(
+        f"ALTER FUNCTION {target} OWNER TO {quote_identifier(definition.owner)}"
+    )
+    actual = inspect_function(connection, definition)
+    for acl in connection.execute(text(_FUNCTION_ACL), {"oid": actual["oid"]}).mappings():
+        role = "PUBLIC" if acl["role"] == "PUBLIC" else quote_identifier(acl["role"])
+        connection.exec_driver_sql(f"REVOKE ALL ON FUNCTION {target} FROM {role}")
+    if not _owner_lookup_metadata_matches(connection, definition) or not function_matches(
+        connection, definition, inspect_function(connection, definition)
+    ):
+        raise AuthorityError("Historical priority audit normalization differs from source")
+
+
+def historical_priority_audit_revision(connection, edge, direction):
+    """Fixed held-session source operation; never a SQL/role/callback interface."""
+    from butlers.migrations import maintenance_profile
+
+    from .apply import quote_identifier
+    from .grants import (
+        _historical_priority_audit_profile,
+        _owner_lookup_source_template_identity,
+        compile_historical_priority_audit,
+        compile_relation_manifest,
+    )
+    from .roles import AuthorityError
+
+    allowed = {
+        (edge, direction)
+        for edge in ("core_101", "core_129", "core_205")
+        for direction in ("upgrade", "downgrade")
+    }
+    if (edge, direction) not in allowed:
+        raise AuthorityError("Historical priority audit source operation is undeclared")
+    owner = maintenance_profile(connection)
+    database, previous, maintenance = connection.exec_driver_sql(
+        "SELECT current_database(), current_user, session_user"
+    ).one()
+    source = connection.info.get("butlers.source_database", database)
+    manifest = compile_relation_manifest(database, owner, maintenance, source_database=source)
+    source_identity = _owner_lookup_source_template_identity()
+    # Alembic's admitted env sets the physical search_path for this chain.
+    # A future requested target or writable connection-info value is not proof.
+    target = connection.exec_driver_sql("SELECT current_schema()").scalar_one()
+    if not isinstance(target, str) or target.startswith("pg_") or target == "information_schema":
+        raise AuthorityError("Historical priority audit target is not admitted")
+    vector = _owner_lookup_revision_vector(
+        connection, manifest, target, source_identity=source_identity
+    )
+    profile = compile_historical_priority_audit(manifest.profiles, owner, vector)
+    exemplar = _historical_priority_audit_profile(owner, "129")
+    actual = inspect_function(connection, exemplar.definition)
+    # Ordinary fresh/history remains the original producer path. Only an actual
+    # already-finalized source component, or the exact205 inverse, uses maintenance.
+    from butlers.migrations import get_chain_revision_path
+
+    retired = any(
+        chain == "core" and "core_205" in get_chain_revision_path("core", revision)
+        for chain, _, revision in vector
+    )
+    inverse205 = edge == "core_205" and direction == "downgrade"
+    if actual is None and retired and not inverse205:
+        validate_historical_priority_audit(connection, manifest, None)
+        # A later installed source target supersedes this earlier local replay.
+        # Ordinary table/index/data statements still execute in their producer.
+        return True
+    if actual is None and not inverse205:
+        if profile is not None:
+            raise AuthorityError("Required historical priority audit function is unavailable")
+        return False
+    if actual is not None and actual["owner"] == owner:
+        validate_historical_priority_audit(connection, manifest, profile)
+        return False
+    if profile is None and not inverse205:
+        raise AuthorityError("Historical priority audit prestate is not source-admitted")
+    validate_historical_priority_audit(connection, manifest, profile, allow_legacy=False)
+    # The installed vector, not a name or requested future plan, admits this inverse.
+    if inverse205:
+        if ("core", target, "core_205") not in vector or any(
+            chain == "core"
+            and schema != target
+            and "core_205" in get_chain_revision_path("core", revision)
+            for chain, schema, revision in vector
+        ):
+            raise AuthorityError("Historical priority audit inverse revision is unavailable")
+    connection.exec_driver_sql("RESET ROLE")
+    primary = None
+    try:
+        remove = (edge, direction) in {("core_101", "downgrade"), ("core_205", "upgrade")}
+        # On current finalized multischema replay core101/129 must not resurrect
+        # the component already retired by another declared core target.
+        if profile is None and not (edge == "core_205" and direction == "downgrade"):
+            return True
+        if remove:
+            connection.exec_driver_sql("""
+                DO $audit_retire$ BEGIN
+                  IF pg_catalog.to_regclass('public.priority_contacts') IS NOT NULL THEN
+                    DROP TRIGGER IF EXISTS trg_priority_contacts_cascade_audit
+                      ON public.priority_contacts;
+                  END IF;
+                END $audit_retire$;
+            """)
+            connection.exec_driver_sql(
+                "DROP FUNCTION IF EXISTS public.priority_contacts_cascade_audit()"
+            )
+        else:
+            stage = (
+                "101"
+                if (edge, direction) == ("core_129", "downgrade")
+                else (profile.stage if edge == "core_101" else "129")
+            )
+            destination = _historical_priority_audit_profile(owner, stage)
+            normalize_historical_priority_audit(connection, destination)
+            connection.exec_driver_sql("""
+                DO $audit_attach$ BEGIN
+                  IF pg_catalog.to_regclass('public.priority_contacts') IS NOT NULL THEN
+                    DROP TRIGGER IF EXISTS trg_priority_contacts_cascade_audit
+                      ON public.priority_contacts;
+                    CREATE TRIGGER trg_priority_contacts_cascade_audit
+                      AFTER DELETE ON public.priority_contacts FOR EACH ROW
+                      EXECUTE FUNCTION public.priority_contacts_cascade_audit();
+                  END IF;
+                END $audit_attach$;
+            """)
+        if _owner_lookup_source_template_identity() != source_identity:
+            raise AuthorityError("Historical priority audit source changed during operation")
+        return True
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            connection.exec_driver_sql(f"SET ROLE {quote_identifier(previous)}")
+        except BaseException:
+            if primary is None:
+                raise
+            primary.add_note("Historical priority audit role restoration was incomplete")

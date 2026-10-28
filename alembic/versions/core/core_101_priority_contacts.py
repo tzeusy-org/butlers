@@ -43,6 +43,7 @@ SELECT, INSERT, UPDATE, DELETE on priority_contacts granted to all runtime roles
 from __future__ import annotations
 
 from alembic import op
+from butlers.db_authority.interfaces import historical_priority_audit_revision
 
 revision = "core_101"
 down_revision = "core_100"
@@ -129,6 +130,29 @@ def upgrade() -> None:
         $$;
     """)
 
+    if not historical_priority_audit_revision(op.get_bind(), "core_101", "upgrade"):
+        _ordinary_audit_install()
+
+    # --- Grants ---
+    for role in _ALL_RUNTIME_ROLES:
+        _grant_best_effort("public.priority_contacts", _TABLE_PRIVILEGES, role)
+
+
+def downgrade() -> None:
+    if historical_priority_audit_revision(op.get_bind(), "core_101", "downgrade"):
+        op.execute("DROP INDEX IF EXISTS public.idx_priority_contacts_butler")
+        op.execute("DROP TABLE IF EXISTS public.priority_contacts")
+        return
+    op.execute("""
+        DROP TRIGGER IF EXISTS trg_priority_contacts_cascade_audit
+        ON public.priority_contacts
+    """)
+    op.execute("DROP FUNCTION IF EXISTS public.priority_contacts_cascade_audit()")
+    op.execute("DROP INDEX IF EXISTS public.idx_priority_contacts_butler")
+    op.execute("DROP TABLE IF EXISTS public.priority_contacts")
+
+
+def _ordinary_audit_install():
     # --- Cascade-delete audit trigger ---
     # The trigger function inserts one audit_log row per deleted priority_contacts
     # row so that cascaded removals (from DELETE on public.contacts) are observable.
@@ -162,17 +186,3 @@ def upgrade() -> None:
         FOR EACH ROW
         EXECUTE FUNCTION public.priority_contacts_cascade_audit()
     """)
-
-    # --- Grants ---
-    for role in _ALL_RUNTIME_ROLES:
-        _grant_best_effort("public.priority_contacts", _TABLE_PRIVILEGES, role)
-
-
-def downgrade() -> None:
-    op.execute("""
-        DROP TRIGGER IF EXISTS trg_priority_contacts_cascade_audit
-        ON public.priority_contacts
-    """)
-    op.execute("DROP FUNCTION IF EXISTS public.priority_contacts_cascade_audit()")
-    op.execute("DROP INDEX IF EXISTS public.idx_priority_contacts_butler")
-    op.execute("DROP TABLE IF EXISTS public.priority_contacts")

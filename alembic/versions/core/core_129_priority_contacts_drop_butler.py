@@ -51,6 +51,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 
 from alembic import op
+from butlers.db_authority.interfaces import historical_priority_audit_revision
 
 # revision identifiers, used by Alembic.
 revision = "core_129"
@@ -242,7 +243,8 @@ def upgrade() -> None:
     #    reinstalls the butler-referencing function body — which would break every
     #    cascade DELETE against the now butler-less table. ``CREATE OR REPLACE``
     #    is body-late-bound, so re-asserting here is always safe.
-    op.execute(_TRIGGER_FN_GLOBAL)
+    if not historical_priority_audit_revision(bind, "core_129", "upgrade"):
+        op.execute(_TRIGGER_FN_GLOBAL)
 
     # Re-grant on the table (privileges survive column drops, but keep parity with
     # core_101's grant block in case the table was recreated on a fresh DB).
@@ -287,4 +289,5 @@ def downgrade() -> None:
     op.execute(f"CREATE INDEX IF NOT EXISTS idx_priority_contacts_butler ON {_TABLE} (butler)")
 
     # Restore the butler-suffixed cascade-audit trigger function.
-    op.execute(_TRIGGER_FN_BUTLER)
+    if not historical_priority_audit_revision(bind, "core_129", "downgrade"):
+        op.execute(_TRIGGER_FN_BUTLER)

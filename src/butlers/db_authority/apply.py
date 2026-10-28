@@ -230,6 +230,7 @@ def validate_relations(
     *,
     administrative_history=False,
     transition_owner=None,
+    historical_audit=None,
 ):
     """Check source identities/owners before effects; serving always requires RLS.
 
@@ -238,8 +239,22 @@ def validate_relations(
     its selected graph/revision has already been proved by the maintenance
     caller. It closes ACLs rather than certifying any runtime catalog.
     """
-    if administrative_history and any(row.permissions for row in declared):
-        raise AuthorityError("Historical administration cannot grant a serving privilege")
+    if administrative_history:
+        from .grants import HistoricalPriorityAuditAuthority
+
+        if historical_audit is not None and not isinstance(
+            historical_audit, HistoricalPriorityAuditAuthority
+        ):
+            raise AuthorityError("Historical audit source profile is unavailable")
+        allowed = (
+            {row.identity: row.permissions for row in historical_audit.dependencies}
+            if historical_audit is not None
+            else {}
+        )
+        if any(
+            row.permissions and row.permissions != allowed.get(row.identity) for row in declared
+        ):
+            raise AuthorityError("Historical administration cannot grant a serving privilege")
     expected = {row.identity: row for row in declared}
     if len(expected) != len(declared):
         raise AuthorityError("Database object authority is ambiguous")
@@ -487,13 +502,38 @@ def converge_authority(
         "SELECT current_database(), session_user"
     ).one()
     source = source_database or connection.info.get("butlers.source_database", database)
-    manifest = select_migration_manifest(
-        compile_relation_manifest(
-            database, migration_owner, maintenance_owner, source_database=source
-        ),
-        plans,
+    from .grants import (
+        _owner_lookup_source_template_identity,
+        compile_historical_priority_audit,
     )
+    from .interfaces import _owner_lookup_revision_vector, validate_historical_priority_audit
+
+    source_identity = _owner_lookup_source_template_identity()
+    full_manifest = compile_relation_manifest(
+        database, migration_owner, maintenance_owner, source_database=source
+    )
+    # Validate desired source selection without classifying an installed global
+    # component from that partial/future target. Stamps still verify separately.
+    select_migration_manifest(full_manifest, plans, installed_audit_vector=())
     verify_selected_revisions(connection, plans)
+    installed = _owner_lookup_revision_vector(
+        connection, full_manifest, source_identity=source_identity, selected_plans=plans
+    )
+    if _owner_lookup_source_template_identity() != source_identity:
+        raise AuthorityError("Installed revision source changed during admission")
+    manifest = select_migration_manifest(full_manifest, plans, installed_audit_vector=installed)
+    historical_audit = compile_historical_priority_audit(
+        manifest.profiles, migration_owner, installed
+    )
+    public_selected = "public" in manifest.schemas
+    audit_context = manifest if public_selected else full_manifest
+    # A selected global installer may normalize its exact ordinary preimage.
+    # A separate module retains an already-closed component and cannot adopt
+    # incomplete global authority or rewrite its function/dependencies.
+    validate_historical_priority_audit(
+        connection, audit_context, historical_audit, allow_legacy=public_selected
+    )
+
     current_core = any(chain == "core" and revision is None for chain, _, revision in plans)
     historical = any(revision is not None for _, _, revision in plans)
     definitions = selected_protected_functions(manifest.profiles, migration_owner, plans)
@@ -512,6 +552,8 @@ def converge_authority(
         manifest.profiles, migration_owner, tuple(deployment_plans) + tuple(plans)
     )
     known_ordinary = tuple(row for row in known_ordinary if row.schema in schemas)
+    if historical_audit is not None and public_selected:
+        known_ordinary += (historical_audit.definition,)
     if historical:
         from dataclasses import replace
 
@@ -560,6 +602,7 @@ def converge_authority(
             declared,
             administrative_history=historical,
             transition_owner=migration_owner if not historical else None,
+            historical_audit=historical_audit,
         )
     except AuthorityError as error:
         _add_relation_failure_note(
@@ -605,6 +648,12 @@ def converge_authority(
     # Every current object/dependency/namespace/revision above is checked before
     # the first installer or ACL effect. The installer checks complete fixed
     # protected shapes and owners before changing any managed definition.
+    if _owner_lookup_source_template_identity() != source_identity:
+        raise AuthorityError("Installed revision source changed before convergence")
+    if historical_audit is not None and public_selected:
+        from .interfaces import normalize_historical_priority_audit
+
+        normalize_historical_priority_audit(connection, historical_audit)
     if current_core:
         install_protected_state(connection, manifest.profiles, migration_owner)
         retire_predecessor_interfaces(connection, retired)
@@ -615,6 +664,7 @@ def converge_authority(
         (actual, row)
         for actual, row in function_bound
         if row.identity in {definition.identity for definition in known_ordinary}
+        and (historical_audit is None or row.identity != historical_audit.definition.identity)
     )
     if any(revision is None for _, _, revision in plans):
         current_identities = {row.identity for row in current_ordinary}
@@ -686,11 +736,22 @@ def converge_authority(
     for actual, row in bound:
         verify_relation(connection, actual, row)
     after = _rows(connection, _RELATIONS, schemas=list(schemas))
-    validate_relations(after, declared, administrative_history=historical)
+    validate_relations(
+        after, declared, administrative_history=historical, historical_audit=historical_audit
+    )
     if {(row["oid"], row["schema"], row["name"]) for row in after} != {
         (row["oid"], row["schema"], row["name"]) for row in observed
     }:
         raise AuthorityError("Managed database population changed during convergence")
+    from .grants import historical_priority_audit_capabilities
+    from .interfaces import _fixed_purpose_capability_matches
+
+    if not _fixed_purpose_capability_matches(
+        connection,
+        historical_priority_audit_capabilities(audit_context, historical_audit),
+        purpose="priority_contact_audit_owner",
+    ):
+        raise AuthorityError("Final historical priority audit capabilities differ from source")
     connection.commit()
 
 

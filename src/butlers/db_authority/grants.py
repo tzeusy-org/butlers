@@ -471,6 +471,8 @@ _DOMAIN_TABLES = {
         "connector_heartbeat_log",
         "connector_registry",
         "dead_letter_queue",
+        "decision_intents",
+        "decision_prompts",
         "extraction_log",
         "extraction_queue",
         "ingestion_rules",
@@ -1285,7 +1287,12 @@ def ordinary_purpose_relations(relations):
 _RETIRED_MEMORY_TABLES = ("embedding_versions", "rule_applications")
 
 
-def select_migration_manifest(manifest: RelationManifest, plans: tuple | None) -> RelationManifest:
+def select_migration_manifest(
+    manifest: RelationManifest,
+    plans: tuple | None,
+    *,
+    installed_audit_vector: tuple | None = None,
+) -> RelationManifest:
     """Bind required populations to the selected source chains, not catalog discovery.
 
     Full CLI plans and core-only/private-module administrative plans use the
@@ -1407,19 +1414,16 @@ def select_migration_manifest(manifest: RelationManifest, plans: tuple | None) -
         ("public", "entities_contact_profile_bak_rel_031"),
     }
     rows = {key: row for key, row in rows.items() if (row.schema, row.name) not in retained_keys}
-    relationship_revisions = frozenset().union(
-        *(
-            revisions
-            for (_, chain), revisions in selected_revisions.items()
-            if chain == "relationship"
-        )
-    )
-    for row in relationship_retained_objects(
-        manifest.migration_owner,
-        relationship_revisions=relationship_revisions,
-        core_revisions=core_revisions,
-    ):
-        rows[row.identity] = row
+    for (target, chain), revisions in sorted(selected_revisions.items()):
+        if chain != "relationship":
+            continue
+        for row in relationship_retained_objects(
+            manifest.migration_owner,
+            relationship_revisions=revisions,
+            core_revisions=core_revisions,
+            target_schema=target,
+        ):
+            rows[row.identity] = row
     # core_002 creates this database-global table; core_115 drops it. A later
     # selected core replay supersedes an older prefix, independent of target schema.
     if "core_002" in core_revisions and "core_115" not in core_revisions:
@@ -1570,7 +1574,12 @@ def select_migration_manifest(manifest: RelationManifest, plans: tuple | None) -
                 required=False if historical else required,
                 permissions=() if historical else row.permissions,
                 owner=manifest.migration_owner
-                if historical and (row.schema, row.name) in ORDINARY_PARTITION_OWNERS
+                if (historical and (row.schema, row.name) in ORDINARY_PARTITION_OWNERS)
+                or (
+                    (row.schema, row.name) == ("public", "user_context")
+                    and core_revisions
+                    and "core_197" not in core_revisions
+                )
                 else row.owner,
             )
         )
@@ -1580,7 +1589,23 @@ def select_migration_manifest(manifest: RelationManifest, plans: tuple | None) -
         rows_by_identity = {value.identity for value in result}
         if row.identity not in rows_by_identity:
             result.append(replace(row, permissions=() if historical else row.permissions))
-    return replace(manifest, relations=tuple(result), selected_plans=plans)
+    # Only the qualified physical vector can determine an installed global
+    # component during finalization. Other compiler callers keep their original
+    # pure selected-source behavior; no catalog observation supplies a grant.
+    audit = compile_historical_priority_audit(
+        manifest.profiles,
+        manifest.migration_owner,
+        plans if installed_audit_vector is None else installed_audit_vector,
+    )
+    return replace(
+        manifest,
+        relations=(
+            historical_priority_audit_dependencies(tuple(result), audit)
+            if "public" in schemas
+            else tuple(result)
+        ),
+        selected_plans=plans,
+    )
 
 
 @dataclass(frozen=True)
@@ -4943,7 +4968,7 @@ def _declared_function_executors(name, schema, profiles, trigger):
             "dashboard_auth_api",
             "connector_writer",
             "credential_store_writer",
-            *PURPOSE_OWNERS,
+            *(role for role in PURPOSE_OWNERS if role != "priority_contact_audit_owner"),
         )
     if name == "resolve_owner_triple":
         return (*runtimes, "connector_writer", "dashboard_api")
@@ -5839,6 +5864,20 @@ def compiled_security_contract(manifest: RelationManifest, *, ordinary_purposes=
                 columns=("created_from",),
                 constraint=True,
             )
+    if (
+        manifest.selected_plans is not None
+        and compile_historical_priority_audit(
+            manifest.profiles, manifest.migration_owner, manifest.selected_plans
+        )
+        is not None
+    ):
+        trigger(
+            "public",
+            "priority_contacts",
+            "trg_priority_contacts_cascade_audit",
+            9,
+            "public.priority_contacts_cascade_audit",
+        )
     return dict(policies=policies, triggers=triggers)
 
 
@@ -5858,20 +5897,25 @@ _RELATIONSHIP_RETAINED_NAMES = (
 )
 
 
-def relationship_retained_objects(migration_owner, *, relationship_revisions, core_revisions):
+def relationship_retained_objects(
+    migration_owner, *, relationship_revisions, core_revisions, target_schema="relationship"
+):
     """Closed, conditional outputs of exact checked-in producer edges.
 
     Current source cannot attest which conditional branch ran. It declares
     only these possible retained identities, without granting a capability or
     requiring that a fresh deployment contain a backup.
     """
+    from .roles import _identifier
+
+    _identifier(target_schema)
     rows = []
     if "rel_001" in relationship_revisions:
         # rel007 can return before its rename when local core calendar
         # producers have not run. rel020 drops only the backup, not this table.
         rows.append(
             ObjectAuthority(
-                "relationship",
+                target_schema,
                 "reminders",
                 ObjectKind.TABLE,
                 migration_owner,
@@ -5882,7 +5926,7 @@ def relationship_retained_objects(migration_owner, *, relationship_revisions, co
         )
         rows.append(
             ObjectAuthority(
-                "relationship",
+                target_schema,
                 "contacts",
                 ObjectKind.TABLE,
                 migration_owner,
@@ -5894,7 +5938,7 @@ def relationship_retained_objects(migration_owner, *, relationship_revisions, co
     if "rel_030" in relationship_revisions:
         rows.extend(
             ObjectAuthority(
-                "relationship",
+                target_schema,
                 name,
                 ObjectKind.TABLE,
                 migration_owner,
@@ -6190,6 +6234,89 @@ def _owner_lookup_validate_source_plans(manifest, plans, source_identity):
     # its physical catalog still undergo independent component validation.
     for plan in plans:
         _owner_lookup_selected_template(manifest, (plan,), source_identity)
+
+
+def _owner_lookup_revision_reader_candidates(manifest, schema) -> frozenset[str]:
+    """Bound a safe metadata-read population; this is not ACL admission.
+
+    Only the complete installed source vector can qualify the edge readers
+    below. Neither an observed grant nor a future requested plan adds a role.
+    Current serving manifests and their permissions remain unchanged.
+    """
+    readers = {
+        permission.role
+        for row in manifest.relations
+        if (row.schema, row.name) == (schema, "alembic_version")
+        for permission in row.permissions
+        if permission.verbs == ("SELECT",) and not permission.columns
+    }
+    if schema == "switchboard":
+        readers.update(
+            profile.role
+            for profile in manifest.profiles
+            if (profile.primary_schema, profile.role)
+            in {
+                ("relationship", "butler_relationship_rw"),
+                ("messenger", "butler_messenger_rw"),
+                ("travel", "butler_travel_rw"),
+            }
+        )
+    return frozenset(readers)
+
+
+def _owner_lookup_revision_readers(
+    manifest, schema, installed_plans, *, source_identity
+) -> frozenset[str]:
+    """Compile ledger READ alternatives from actual installed source prefixes.
+
+    The physical reader supplies untrusted durable rows only after its owner,
+    RLS, ABI, column and immediate no-write fences. Qualify the entire vector
+    before admitting any of those rows or ACLs. Historical producer SELECTs
+    are allowed, never required: their best-effort producers and subsequent
+    administrative closure may legitimately leave a subset or no such grants.
+    """
+    if type(installed_plans) is not tuple or any(
+        type(plan) is not tuple
+        or len(plan) != 3
+        or any(type(value) is not str or not value for value in plan)
+        for plan in installed_plans
+    ):
+        raise AuthorityError("Owner lookup installed reader vector is unavailable")
+    if len({(chain, target) for chain, target, _ in installed_plans}) != len(installed_plans):
+        raise AuthorityError("Owner lookup installed reader vector is ambiguous")
+    graph = {
+        chain: revisions for chain, _, revisions in _owner_lookup_graph_templates(source_identity)
+    }
+    if any(
+        chain not in graph or revision not in graph[chain] for chain, _, revision in installed_plans
+    ):
+        raise AuthorityError("Owner lookup installed reader revision is not source-owned")
+    _owner_lookup_validate_source_plans(manifest, installed_plans, source_identity)
+    readers = {
+        permission.role
+        for row in manifest.relations
+        if (row.schema, row.name) == (schema, "alembic_version")
+        for permission in row.permissions
+        if permission.verbs == ("SELECT",) and not permission.columns
+    }
+    if schema == "switchboard":
+        core_prefix = {
+            edge
+            for chain, _, revision in installed_plans
+            if chain == "core"
+            for edge in _owner_lookup_revision_path_template(chain, revision, source_identity)
+        }
+        profiles = {(profile.primary_schema, profile.role) for profile in manifest.profiles}
+        readers.update(
+            role
+            for edge, target, role in (
+                ("core_077", "relationship", "butler_relationship_rw"),
+                ("core_143", "messenger", "butler_messenger_rw"),
+                ("core_143", "travel", "butler_travel_rw"),
+            )
+            if edge in core_prefix and (target, role) in profiles
+        )
+    return frozenset(readers)
 
 
 def _owner_lookup_admit_source_plans(manifest, plans):
@@ -6792,4 +6919,198 @@ def _compile_owner_lookup_capabilities(manifest, *, component, ordinary_closed, 
                 | {row.owner for row in (*relations, *functions)}
             )
         ),
+    )
+
+
+# Fixed historical producer literals; never current serving-function authority.
+
+_PRIORITY_AUDIT_129_BODY = (
+    "\n"
+    "    BEGIN\n"
+    "        INSERT INTO public.audit_log (actor, action, target, note)\n"
+    "        VALUES (\n"
+    "            'system:contact_cascade',\n"
+    "            'ingestion.priority_contact.cascade_remove',\n"
+    "            OLD.contact_id::text,\n"
+    "            'contact removed from public.contacts'\n"
+    "        );\n"
+    "        RETURN OLD;\n"
+    "    END;\n"
+    "    "
+)
+
+_PRIORITY_AUDIT_101_INVERSE_BODY = (
+    "\n"
+    "    BEGIN\n"
+    "        INSERT INTO public.audit_log (actor, action, target, note)\n"
+    "        VALUES (\n"
+    "            'system:contact_cascade',\n"
+    "            'ingestion.priority_contact.cascade_remove',\n"
+    "            OLD.contact_id::text || ':' || OLD.butler,\n"
+    "            'contact removed from public.contacts'\n"
+    "        );\n"
+    "        RETURN OLD;\n"
+    "    END;\n"
+    "    "
+)
+
+
+@dataclass(frozen=True)
+class HistoricalPriorityAuditAuthority:
+    stage: str
+    definition: FunctionAuthority
+    legacy_definition: FunctionAuthority
+    dependencies: tuple[ObjectAuthority, ...]
+
+
+def compile_historical_priority_audit(profiles, migration_owner, qualified_core_vector):
+    """Compile a finite legacy profile from admitted source revisions, never ACLs.
+
+    The caller qualifies physical ledgers before using installed vectors. A
+    desired future target is not an installed-state witness. None means the
+    actual source head, including core205's retirement.
+    """
+    from butlers.migrations import get_chain_revision_path
+
+    from .roles import _identifier
+
+    _identifier(migration_owner)
+    if not isinstance(qualified_core_vector, tuple):
+        raise AuthorityError("Historical audit source vector is unavailable")
+    revisions = set()
+    seen = set()
+    for plan in qualified_core_vector:
+        if not isinstance(plan, tuple) or len(plan) != 3:
+            raise AuthorityError("Historical audit source vector is malformed")
+        chain, schema, revision = plan
+        if chain != "core":
+            continue
+        target = schema or "public"
+        _identifier(target)
+        if target in seen:
+            raise AuthorityError("Historical audit source vector is ambiguous")
+        seen.add(target)
+        try:
+            revisions.update(get_chain_revision_path("core", revision))
+        except RuntimeError as error:
+            raise AuthorityError("Historical audit revision is not source-owned") from error
+    if "core_101" not in revisions or "core_205" in revisions:
+        return None
+    stage = "129" if "core_129" in revisions else "101"
+    return _historical_priority_audit_profile(migration_owner, stage)
+
+
+def _historical_priority_audit_profile(migration_owner, stage):
+    """Closed source dispatch shared by the selected compiler and fixed edges."""
+    from dataclasses import replace
+
+    if stage not in {"101", "129"}:
+        raise AuthorityError("Historical audit stage is not declared")
+    body = _PRIORITY_AUDIT_101_BODY if stage == "101" else _PRIORITY_AUDIT_129_BODY
+    header = (
+        "CREATE OR REPLACE FUNCTION public.priority_contacts_cascade_audit()\n"
+        "RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER\n"
+    )
+    definition = FunctionAuthority(
+        "public",
+        "priority_contacts_cascade_audit",
+        "",
+        "priority_contact_audit_owner",
+        (),
+        True,
+        header + "SET search_path = pg_catalog, pg_temp\n",
+        body,
+        "core_101" if stage == "101" else "core_129",
+        ("search_path=pg_catalog, pg_temp",),
+    )
+    legacy = replace(definition, owner=migration_owner, header=header, settings=())
+    dependencies = (
+        ObjectAuthority(
+            "public",
+            "audit_log",
+            ObjectKind.TABLE,
+            migration_owner,
+            (Permission(definition.owner, ("INSERT",), ("actor", "action", "target", "note")),),
+            definition.producer,
+        ),
+        ObjectAuthority(
+            "public",
+            "audit_log_id_seq",
+            ObjectKind.SEQUENCE,
+            migration_owner,
+            (Permission(definition.owner, ("USAGE",)),),
+            definition.producer,
+            sequence_parent=("public", "audit_log", "id"),
+        ),
+    )
+    return HistoricalPriorityAuditAuthority(stage, definition, legacy, dependencies)
+
+
+def historical_priority_audit_dependencies(relations, authority):
+    """Add only source-compiled, non-serving trigger dependencies."""
+    from dataclasses import replace
+
+    if authority is None:
+        return relations
+    if not isinstance(authority, HistoricalPriorityAuditAuthority):
+        raise AuthorityError("Historical audit dependency profile is unavailable")
+    replacements = {row.identity: row for row in authority.dependencies}
+    result = []
+    for row in relations:
+        fixed = replacements.pop(row.identity, None)
+        result.append(
+            replace(row, permissions=(*row.permissions, *fixed.permissions), required=True)
+            if fixed
+            else row
+        )
+    if replacements:
+        raise AuthorityError("Historical audit dependency is not source-declared")
+    return tuple(result)
+
+
+_PRIORITY_AUDIT_101_BODY = (
+    "\n"
+    "        BEGIN\n"
+    "            INSERT INTO public.audit_log (actor, action, target, note)\n"
+    "            VALUES (\n"
+    "                'system:contact_cascade',\n"
+    "                'ingestion.priority_contact.cascade_remove',\n"
+    "                OLD.contact_id::text || ':' || OLD.butler,\n"
+    "                'contact removed from public.contacts'\n"
+    "            );\n"
+    "            RETURN OLD;\n"
+    "        END;\n"
+    "        "
+)
+
+
+def historical_priority_audit_capabilities(manifest, authority, *, preimage=False):
+    """Only the declared trigger dependencies; retirement has an empty allow-set.
+
+    An ordinary fresh producer has no purpose grants. That exact transition is
+    distinct from the normalized final profile and never confers runtime admission.
+    """
+    role = "priority_contact_audit_owner"
+    caps = (
+        ()
+        if authority is None or preimage
+        else (
+            *(
+                PurposeCapability("column", "public", "audit_log", "", column, "INSERT")
+                for column in ("actor", "action", "target", "note")
+            ),
+            PurposeCapability("relation", "public", "audit_log_id_seq", "", "", "USAGE"),
+            PurposeCapability("namespace", "public", "", "", "", "USAGE"),
+        )
+    )
+    return PurposeAuthorityProfile(
+        tuple(caps),
+        () if authority is None or preimage else (authority.definition,),
+        (),
+        tuple((r.schema, r.name) for r in manifest.relations),
+        () if authority is None else (authority.definition.identity,),
+        (),
+        manifest.schemas,
+        ("public",),
+        (manifest.migration_owner, manifest.maintenance_owner, role),
     )

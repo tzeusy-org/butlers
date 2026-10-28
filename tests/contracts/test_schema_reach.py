@@ -307,6 +307,10 @@ _DYNAMIC_RELATION_RE = re.compile(
 # Dynamic entries are exact normalized relation slots, not whole-file waivers.
 SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
+        "src/butlers/db_authority/interfaces.py",
+        "<dynamic:{identity}>",
+    ): "sanctioned: owner-lookup prestate reads only quoted qualified alembic_version after physical ledger owner/shape/ACL checks; every revision is admitted against the fixed source graph before capability selection, never caller-provided SQL",
+    (
         "roster/finance/tests/test_jobs.py",
         "switchboard.butler_registry_control_plane",
     ): "sanctioned:Finance-warning-currentness: privileged independent test observer reads the committed boot successor; production Finance receives no table read grant",

@@ -1737,3 +1737,341 @@ def test_current_schema_event_chains_qa_role_tick_and_foreign_write_refusal(post
         asyncio.run(exercise_qa())
     finally:
         engine.dispose()
+
+
+def test_historical_priority_audit_fixed_owner_preserves_real_phase_transitions(postgres_container):
+    """Actual101→129→205 and bounded inverses preserve audit/role authority.
+
+    The second database exercises129→128→100 without crossing198's independent
+    protected rollback boundary. No ownership fixture substitutes a producer.
+    """
+    import uuid
+
+    from butlers.db_authority import apply, grants, interfaces
+    from butlers.migrations import _build_alembic_config
+
+    db_url = create_migrated_test_db(
+        postgres_container, migration_db_name(), chains=["core"], revisions={"core": "core_101"}
+    )
+    config = _build_alembic_config(db_url, chains=["core"])
+    engine = create_engine(_maintenance_url(postgres_container, db_url))
+
+    def default_catalog(conn, purpose):
+        # Independently inspect actual stored ACLITEM and exploded populations;
+        # never infer privilege count from the array's cardinality alone.
+        rows = conn.execute(
+            text("""
+            SELECT d.oid,d.defaclnamespace,d.defaclobjtype,
+                   pg_catalog.cardinality(d.defaclacl),
+                   pg_catalog.pg_get_userbyid(a.grantor),
+                   pg_catalog.pg_get_userbyid(a.grantee),a.privilege_type,a.is_grantable,
+                   (SELECT count(*) FROM pg_catalog.aclexplode(d.defaclacl))
+            FROM pg_catalog.pg_default_acl d
+            CROSS JOIN LATERAL pg_catalog.aclexplode(d.defaclacl) a
+            WHERE d.defaclrole=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname=:purpose)
+            ORDER BY d.defaclobjtype
+        """),
+            {"purpose": purpose},
+        ).all()
+        assert {row[2] for row in rows} == {"f", "T"} and len(rows) == 2
+        for oid, namespace, kind, count, grantor, grantee, verb, option, exploded in rows:
+            assert namespace == 0 and count == exploded == 1
+            assert grantor == grantee == purpose and option is False
+            assert verb == {"f": "EXECUTE", "T": "USAGE"}[kind]
+            assert (
+                conn.execute(
+                    text("""
+                SELECT count(*) FROM pg_catalog.pg_shdepend d
+                WHERE d.classid='pg_catalog.pg_default_acl'::regclass AND d.objid=:oid
+                  AND d.refclassid='pg_catalog.pg_authid'::regclass AND d.deptype='o'
+                  AND d.refobjid=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname=:purpose)
+                  AND d.dbid=(SELECT oid FROM pg_catalog.pg_database WHERE datname=current_database())
+            """),
+                    {"oid": oid, "purpose": purpose},
+                ).scalar_one()
+                == 1
+            )
+
+    def default_refusal_and_restore(active_engine, purpose, expected):
+        assert purpose in {"priority_contact_audit_owner", "identity_lookup_owner"}
+        with active_engine.connect() as conn:
+            default_catalog(conn, purpose)
+            assert interfaces._fixed_purpose_capability_matches(conn, expected, purpose=purpose)
+        # Real, legal PostgreSQL grants exercise native refusal; mixed-bit
+        # malformed ACLITEMs belong only to the software transport controls.
+        with active_engine.begin() as conn:
+            conn.execute(
+                text(
+                    f'ALTER DEFAULT PRIVILEGES FOR ROLE "{purpose}" '
+                    "GRANT EXECUTE ON FUNCTIONS TO butler_switchboard_rw"
+                )
+            )
+        with active_engine.connect() as conn:
+            assert not interfaces._fixed_purpose_capability_matches(conn, expected, purpose=purpose)
+        with active_engine.begin() as conn:
+            apply.converge_default_privileges(conn, ("public",), (purpose,))
+        with active_engine.connect() as conn:
+            default_catalog(conn, purpose)
+            assert interfaces._fixed_purpose_capability_matches(conn, expected, purpose=purpose)
+        with active_engine.begin() as conn:
+            conn.execute(text("CREATE TABLE public._audit_default_owned_negative (id integer)"))
+            conn.execute(
+                text(f'ALTER TABLE public._audit_default_owned_negative OWNER TO "{purpose}"')
+            )
+        with active_engine.connect() as conn:
+            assert not interfaces._fixed_purpose_capability_matches(conn, expected, purpose=purpose)
+        with active_engine.begin() as conn:
+            conn.execute(text("DROP TABLE public._audit_default_owned_negative"))
+        with active_engine.connect() as conn:
+            default_catalog(conn, purpose)
+            assert interfaces._fixed_purpose_capability_matches(conn, expected, purpose=purpose)
+
+    def catalog(stage):
+        with engine.connect() as conn:
+            owner = conn.execute(
+                text(
+                    "SELECT pg_catalog.pg_get_userbyid(datdba) "
+                    "FROM pg_catalog.pg_database WHERE datname=current_database()"
+                )
+            ).scalar_one()
+            manifest = grants.compile_relation_manifest(
+                make_url(db_url).database,
+                owner,
+                conn.execute(text("SELECT session_user")).scalar_one(),
+                source_database="butlers",
+            )
+            profile = grants.compile_historical_priority_audit(
+                manifest.profiles, owner, (("core", "public", "core_" + stage),)
+            )
+            assert profile is not None
+            default_catalog(conn, "priority_contact_audit_owner")
+            expected = grants.historical_priority_audit_capabilities(manifest, profile)
+            assert interfaces._fixed_purpose_capability_matches(
+                conn, expected, purpose="priority_contact_audit_owner"
+            )
+            assert interfaces.function_matches(
+                conn, profile.definition, interfaces.inspect_function(conn, profile.definition)
+            )
+            assert interfaces._owner_lookup_metadata_matches(conn, profile.definition)
+            assert conn.execute(text(interfaces._PRIORITY_AUDIT_TRIGGER_SQL)).scalar_one()
+            assert conn.execute(
+                text("""
+                SELECT NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper AND NOT rolcreaterole
+                  AND NOT rolcreatedb AND NOT rolbypassrls AND NOT rolreplication
+                  AND NOT EXISTS(SELECT FROM pg_catalog.pg_auth_members m
+                    WHERE m.roleid=r.oid OR m.member=r.oid)
+                FROM pg_catalog.pg_roles r WHERE rolname='priority_contact_audit_owner'
+            """)
+            ).scalar_one()
+            assert conn.execute(
+                text("""
+                SELECT has_column_privilege('priority_contact_audit_owner','public.audit_log','actor','INSERT')
+                  AND NOT has_table_privilege('priority_contact_audit_owner','public.audit_log','INSERT')
+                  AND NOT has_table_privilege('priority_contact_audit_owner','public.audit_log','SELECT')
+                  AND has_sequence_privilege('priority_contact_audit_owner','public.audit_log_id_seq','USAGE')
+                  AND NOT has_sequence_privilege('priority_contact_audit_owner','public.audit_log_id_seq','SELECT')
+                  AND NOT has_schema_privilege('priority_contact_audit_owner','public','CREATE')
+            """)
+            ).scalar_one()
+
+    def history():
+        with engine.connect() as conn:
+            return tuple(
+                conn.execute(
+                    text("SELECT id,actor,action,target,note FROM public.audit_log ORDER BY id")
+                )
+            )
+
+    def deletion(stage):
+        identifier = uuid.uuid4()
+        with engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO public.contacts (id,name) VALUES (:id,'history-proof')"),
+                {"id": identifier},
+            )
+            if stage == "101":
+                conn.execute(
+                    text(
+                        "INSERT INTO public.priority_contacts (contact_id,butler) VALUES (:id,'gmail')"
+                    ),
+                    {"id": identifier},
+                )
+            else:
+                conn.execute(
+                    text("INSERT INTO public.priority_contacts (contact_id) VALUES (:id)"),
+                    {"id": identifier},
+                )
+        before = history()
+        with engine.connect() as conn:
+            transaction = conn.begin()
+            assert (
+                conn.execute(
+                    text("DELETE FROM public.priority_contacts WHERE contact_id=:id"),
+                    {"id": identifier},
+                ).rowcount
+                == 1
+            )
+            transaction.rollback()
+        assert history() == before
+        with engine.begin() as conn:
+            assert (
+                conn.execute(
+                    text("DELETE FROM public.priority_contacts WHERE contact_id=:id"),
+                    {"id": identifier},
+                ).rowcount
+                == 1
+            )
+        after = history()
+        assert after[:-1] == before
+        assert after[-1][1:] == (
+            "system:contact_cascade",
+            "ingestion.priority_contact.cascade_remove",
+            str(identifier) + (":gmail" if stage == "101" else ""),
+            "contact removed from public.contacts",
+        )
+        with engine.connect() as independent:
+            assert (
+                independent.execute(
+                    text("SELECT count(*) FROM public.priority_contacts WHERE contact_id=:id"),
+                    {"id": identifier},
+                ).scalar_one()
+                == 0
+            )
+        for statement in (
+            "SELECT public.priority_contacts_cascade_audit()",
+            "DELETE FROM public.priority_contacts",
+        ):
+            with pytest.raises(ProgrammingError) as denied:
+                _execute_as_role(postgres_container, db_url, "butler_switchboard_rw", statement)
+            assert denied.value.orig.pgcode == "42501"
+
+    try:
+        catalog("101")
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO public.audit_log (actor,action,target,note) VALUES ('test:history','preserve','existing','unchanged')"
+                )
+            )
+        original = history()
+        deletion("101")
+        _upgrade_selected(postgres_container, db_url, config, "core_129")
+        catalog("129")
+        with engine.connect() as conn:
+            owner = conn.execute(
+                text(
+                    "SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_catalog.pg_database "
+                    "WHERE datname=current_database()"
+                )
+            ).scalar_one()
+            manifest = grants.compile_relation_manifest(
+                make_url(db_url).database,
+                owner,
+                conn.execute(text("SELECT session_user")).scalar_one(),
+                source_database="butlers",
+            )
+            authority = grants.compile_historical_priority_audit(
+                manifest.profiles, owner, (("core", "public", "core_129"),)
+            )
+            expected = grants.historical_priority_audit_capabilities(manifest, authority)
+        audit_before_defaults = history()
+        default_refusal_and_restore(engine, "priority_contact_audit_owner", expected)
+        assert history() == audit_before_defaults
+        deletion("129")
+        before_retirement = history()
+        _upgrade_selected(postgres_container, db_url, config, "core_205")
+        with engine.connect() as conn:
+            assert conn.execute(
+                text(
+                    "SELECT pg_catalog.to_regprocedure('public.priority_contacts_cascade_audit()') IS NULL"
+                )
+            ).scalar_one()
+            assert not conn.execute(
+                text(
+                    "SELECT has_column_privilege('priority_contact_audit_owner','public.audit_log','actor','INSERT')"
+                )
+            ).scalar_one()
+            assert not conn.execute(
+                text(
+                    "SELECT has_sequence_privilege('priority_contact_audit_owner','public.audit_log_id_seq','USAGE')"
+                )
+            ).scalar_one()
+        assert history() == before_retirement
+        _downgrade_selected(postgres_container, db_url, config, "core_204", revision="core_204")
+        catalog("204")
+        assert history() == before_retirement and history()[: len(original)] == original
+    finally:
+        engine.dispose()
+    inverse_url = create_migrated_test_db(
+        postgres_container, migration_db_name(), chains=["core"], revisions={"core": "core_129"}
+    )
+    inverse_config = _build_alembic_config(inverse_url, chains=["core"])
+    _downgrade_selected(
+        postgres_container, inverse_url, inverse_config, "core_128", revision="core_128"
+    )
+    inverse_engine = create_engine(_maintenance_url(postgres_container, inverse_url))
+    try:
+        with inverse_engine.connect() as conn:
+            owner = conn.execute(
+                text(
+                    "SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_catalog.pg_database WHERE datname=current_database()"
+                )
+            ).scalar_one()
+            profile = grants._historical_priority_audit_profile(owner, "101")
+            assert interfaces.function_matches(
+                conn, profile.definition, interfaces.inspect_function(conn, profile.definition)
+            )
+        _downgrade_selected(
+            postgres_container, inverse_url, inverse_config, "core_100", revision="core_100"
+        )
+        with inverse_engine.connect() as conn:
+            assert conn.execute(
+                text(
+                    "SELECT pg_catalog.to_regprocedure('public.priority_contacts_cascade_audit()') IS NULL"
+                )
+            ).scalar_one()
+            assert conn.execute(
+                text("SELECT pg_catalog.to_regclass('public.priority_contacts') IS NULL")
+            ).scalar_one()
+    finally:
+        inverse_engine.dispose()
+
+    # A separate genuine current-core producer/finalizer supplies the other
+    # fixed purpose. Historical audit absence and current lookup are distinct.
+    current_url = create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+    current_engine = create_engine(_maintenance_url(postgres_container, current_url))
+    try:
+        with current_engine.connect() as conn:
+            owner = conn.execute(
+                text(
+                    "SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_catalog.pg_database "
+                    "WHERE datname=current_database()"
+                )
+            ).scalar_one()
+            manifest = grants.compile_relation_manifest(
+                make_url(current_url).database,
+                owner,
+                conn.execute(text("SELECT session_user")).scalar_one(),
+                source_database="butlers",
+            )
+            expected = grants.compile_owner_lookup_capabilities(
+                manifest, component=None, ordinary_closed=False
+            )
+            assert conn.execute(
+                text(
+                    "SELECT pg_catalog.to_regprocedure('public.priority_contacts_cascade_audit()') IS NULL"
+                )
+            ).scalar_one()
+        default_refusal_and_restore(current_engine, "identity_lookup_owner", expected)
+        # Repeat the exact current source operation and finalizer after repair.
+        _upgrade_selected(
+            postgres_container,
+            current_url,
+            _build_alembic_config(current_url, chains=["core"]),
+            None,
+        )
+        with current_engine.connect() as conn:
+            default_catalog(conn, "identity_lookup_owner")
+            assert interfaces._owner_lookup_capability_matches(conn, expected)
+    finally:
+        current_engine.dispose()

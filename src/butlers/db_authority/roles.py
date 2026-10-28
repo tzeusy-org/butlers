@@ -170,6 +170,7 @@ ORDINARY_PURPOSE_OWNERS = (
     "premise_amendment_owner",
     "health_refill_status_owner",
     "registry_control_owner",
+    "priority_contact_audit_owner",
 )
 
 PURPOSE_OWNERS = (

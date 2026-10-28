@@ -61,6 +61,7 @@ rows included).
 from __future__ import annotations
 
 from alembic import op
+from butlers.db_authority.interfaces import historical_priority_audit_revision
 
 revision = "core_205"
 down_revision = "core_204"
@@ -94,6 +95,11 @@ _TRIGGER_FN_GLOBAL = """
 
 
 def upgrade() -> None:
+    if not historical_priority_audit_revision(op.get_bind(), "core_205", "upgrade"):
+        _ordinary_upgrade()
+
+
+def _ordinary_upgrade() -> None:
     # Idempotent, and a clean no-op on a provision where core_101 never ran:
     # DROP TRIGGER ... ON a missing table still errors, so guard on the table.
     op.execute(f"""
@@ -114,6 +120,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if not historical_priority_audit_revision(op.get_bind(), "core_205", "downgrade"):
+        _ordinary_downgrade()
+
+
+def _ordinary_downgrade() -> None:
     # The function stands alone (no table dependency), so recreate it first and
     # unconditionally; only the trigger needs the table-presence guard.
     op.execute(_TRIGGER_FN_GLOBAL)

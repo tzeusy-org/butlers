@@ -416,11 +416,20 @@ def test_actual_convergence_relation_notes_preserve_validator_and_error(monkeypa
         def one(self):
             return self.rows[0]
 
+        def scalar_one(self):
+            return self.one()[0]
+
+        def scalars(self):
+            return (row[0] for row in self.rows)
+
         def mappings(self):
             return self.rows
 
         def __iter__(self):
             return iter(self.rows)
+
+    purpose_owner_query = "\n        WITH owners AS (SELECT * FROM pg_catalog.pg_roles WHERE rolname=ANY(:owners))\n        SELECT (SELECT count(*)=:count AND bool_and(NOT rolcanlogin AND NOT rolinherit\n          AND NOT rolsuper AND NOT rolcreaterole AND NOT rolcreatedb\n          AND NOT rolreplication AND NOT rolbypassrls) FROM owners)\n          AND NOT EXISTS(SELECT FROM pg_catalog.pg_auth_members\n            WHERE roleid IN (SELECT oid FROM owners) OR member IN (SELECT oid FROM owners))\n    "
+    retired_audit_query = "\n        SELECT pg_catalog.oidvectortypes(p.proargtypes) AS signature\n        FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace\n        WHERE n.nspname='public' AND p.proname='priority_contacts_cascade_audit'\n    "
 
     class Connection:
         info = {}
@@ -433,8 +442,14 @@ def test_actual_convergence_relation_notes_preserve_validator_and_error(monkeypa
             assert sql == 'SELECT version_num FROM "chronicler".alembic_version'
             return Result([(get_chain_head("chronicler"),)])
 
-        def execute(self, sql, params):
+        def execute(self, sql, params=None):
             sql = str(sql)
+            if sql == purpose_owner_query:
+                assert params == {"owners": ["priority_contact_audit_owner"], "count": 1}
+                return Result([(True,)])
+            if sql == retired_audit_query:
+                assert params is None
+                return Result([])
             if sql == apply._FUNCTIONS:
                 return Result([])
             if sql == apply._RELATIONS:
@@ -3074,7 +3089,43 @@ def test_historical_core_namespace_selection_follows_real_source_graph(revision,
     selected = select_migration_manifest(full, (("core", None, revision),))
     assert set(present) <= set(selected.schemas)
     assert not set(absent) & set(selected.schemas)
-    assert all(not row.permissions and not row.required for row in selected.relations)
+    # Historical plans grant no serving access. The admitted legacy trigger
+    # still needs its exact non-serving purpose dependencies at core196.
+    expected_dependencies = (
+        {
+            ("public", "audit_log", "table", ""): (
+                (
+                    "priority_contact_audit_owner",
+                    ("INSERT",),
+                    ("actor", "action", "target", "note"),
+                ),
+            ),
+            ("public", "audit_log_id_seq", "sequence", ""): (
+                ("priority_contact_audit_owner", ("USAGE",), ()),
+            ),
+        }
+        if revision == "core_196"
+        else {}
+    )
+    assert all(
+        not row.permissions and not row.required
+        for row in selected.relations
+        if row.identity not in expected_dependencies
+    )
+    dependencies = {
+        row.identity: row for row in selected.relations if row.identity in expected_dependencies
+    }
+    assert set(dependencies) == set(expected_dependencies)
+    for identity, row in dependencies.items():
+        assert row.owner == "migration_selected"
+        assert row.required is True
+        assert (
+            tuple(
+                (permission.role, permission.verbs, permission.columns)
+                for permission in row.permissions
+            )
+            == expected_dependencies[identity]
+        )
 
 
 @pytest.mark.parametrize(
@@ -6669,8 +6720,642 @@ def test_finance_materialized_view_uses_actual_producer_namespace_and_closed_kin
     assert apply._relation_ddl_kind(replace(source_row, kind=grants.ObjectKind.VIEW)) == "VIEW"
 
 
+class _HistoricalPriorityAuditConvergenceTransport:
+    """Fixed audit component observations behind real finalizer/reader consumers.
+
+    Ledger rows are explicit installed test inputs, never desired plans. Source
+    producers provide function/table/trigger facts; all expected authority still
+    comes from the unpatched application compiler. Unknown SQL is delegated to
+    the original rejecting recorder. This is not native PostgreSQL evidence.
+    """
+
+    UNHANDLED = object()
+    purpose = "priority_contact_audit_owner"
+    function_name = "priority_contacts_cascade_audit"
+
+    @staticmethod
+    def _literal_queries(function):
+        import ast
+        import inspect
+        import textwrap
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+        return tuple(
+            node.args[0].value
+            for node in sorted(ast.walk(tree), key=lambda node: getattr(node, "lineno", 0))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "text"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        )
+
+    def __init__(self, delegate, installed):
+        import ast
+        import inspect
+        import re
+        import runpy
+        import textwrap
+        from pathlib import Path
+
+        from alembic.ddl.impl import DefaultImpl
+
+        from butlers import migrations
+        from butlers.db_authority import apply, interfaces
+
+        self.delegate, self.apply, self.interfaces = delegate, apply, interfaces
+        self.re = re
+        # This dictionary is the recorder's physical stamp observation. The
+        # reader below must independently qualify every revision and ACL.
+        self.installed = {schema: tuple(revisions) for schema, revisions in installed.items()}
+        self.ledgers = {}
+        self.ledger_metadata = {}
+        for schema in self.installed:
+            table = DefaultImpl.version_table_impl(
+                None,
+                version_table="alembic_version",
+                version_table_schema=schema,
+                version_table_pk=True,
+            )
+            oid = 791000 + len(self.ledgers)
+            self.ledgers[oid] = dict(
+                oid=oid,
+                schema=str(table.schema),
+                name=str(table.name),
+                kind="r",
+                owner="normal_owner",
+                rls=False,
+                forced_rls=False,
+                partition=False,
+            )
+            self.ledger_metadata[oid] = table
+        self.role = dict(
+            rolcanlogin=False,
+            rolinherit=False,
+            rolsuper=False,
+            rolcreaterole=False,
+            rolcreatedb=False,
+            rolreplication=False,
+            rolbypassrls=False,
+        )
+        self.memberships = []
+        self.namespace_owner = "normal_owner"
+        self.actor = "maintenance"
+        self.defaults, self.owned_dependencies = [], []
+        self.tables, self.table_acl, self.column_acl = {}, {}, {}
+        self.namespace_acl, self.public_caps = set(), []
+        self.function = None
+        self.trigger = None
+        self.audit_columns = ()
+        self.sequence_binding = None
+        self.effects = []
+        root = Path(__file__).parents[2]
+        core_prefix = set()
+        for revisions in self.installed.values():
+            for revision in revisions:
+                if revision.startswith("core_"):
+                    core_prefix.update(migrations.get_chain_revision_path("core", revision))
+        self.produced = []
+        if "core_101" in core_prefix and "core_205" not in core_prefix:
+            first = runpy.run_path(
+                str(root / "alembic/versions/core/core_101_priority_contacts.py")
+            )
+            audit = runpy.run_path(str(root / "alembic/versions/core/core_092_audit_log.py"))
+            with patch(
+                "alembic.op.execute", side_effect=lambda sql: self.produced.append(str(sql))
+            ):
+                audit["upgrade"]()
+                upgrade_tree = ast.parse(textwrap.dedent(inspect.getsource(first["upgrade"])))
+                table_statement = upgrade_tree.body[0].body[0].value.args[0].value
+                from alembic import op
+
+                assert "CREATE TABLE IF NOT EXISTS public.priority_contacts (" in table_statement
+                op.execute(table_statement)
+                first["_ordinary_audit_install"]()
+                for role in first["_ALL_RUNTIME_ROLES"]:
+                    first["_grant_best_effort"](
+                        "public.priority_contacts", first["_TABLE_PRIVILEGES"], role
+                    )
+            function_sql = next(sql for sql in self.produced if "CREATE OR REPLACE FUNCTION" in sql)
+            if "core_129" in core_prefix:
+                middle = runpy.run_path(
+                    str(root / "alembic/versions/core/core_129_priority_contacts_drop_butler.py")
+                )
+                function_sql = middle["_TRIGGER_FN_GLOBAL"]
+            body = function_sql.split("AS $$", 1)[1].rsplit("$$", 1)[0]
+            self.function = dict(
+                oid=792001,
+                owner="normal_owner",
+                definer="SECURITY DEFINER" in function_sql,
+                config=[],
+                body=body,
+                arguments="",
+                acl=[("PUBLIC", "EXECUTE", False)],
+                language="plpgsql",
+                returns="trigger",
+                strict=False,
+                leakproof=False,
+                parallel="u",
+                cost=100,
+                support=0,
+                variadic=0,
+                bin=None,
+                transform=None,
+            )
+            self.normalized_sql = (
+                "CREATE OR REPLACE FUNCTION public.priority_contacts_cascade_audit()\n"
+                "RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER\n"
+                "SET search_path = pg_catalog, pg_temp\n"
+                "AS $db_authority_body$" + body + "$db_authority_body$;"
+            )
+            table_sql = next(
+                sql for sql in self.produced if "CREATE TABLE IF NOT EXISTS public.audit_log" in sql
+            )
+            self.audit_columns = tuple(
+                (column, "text")
+                for column in ("actor", "action", "target", "note")
+                if re.search(r"\b" + column + r"\s+TEXT\b", table_sql, re.I)
+            )
+            self.sequence_binding = (
+                ("public", "audit_log", "id", "a") if "BIGSERIAL PRIMARY KEY" in table_sql else None
+            )
+            trigger_sql = next(
+                sql
+                for sql in self.produced
+                if "CREATE TRIGGER trg_priority_contacts_cascade_audit" in sql
+            )
+            self.trigger = dict(
+                table=("public", "priority_contacts"),
+                name="trg_priority_contacts_cascade_audit",
+                type=9 if "AFTER DELETE" in trigger_sql and "FOR EACH ROW" in trigger_sql else None,
+                function=("public", self.function_name),
+                enabled="O",
+                args=(),
+                constraint=0,
+            )
+            for name, kind in (
+                ("audit_log", "r"),
+                ("audit_log_id_seq", "S"),
+                ("priority_contacts", "r"),
+            ):
+                oid = 793000 + len(self.tables)
+                self.tables[oid] = dict(
+                    oid=oid,
+                    schema="public",
+                    name=name,
+                    kind=kind,
+                    owner="normal_owner",
+                    rls=False,
+                    forced_rls=False,
+                    partition=False,
+                )
+                self.table_acl[oid], self.column_acl[oid] = set(), set()
+            for sql in self.produced:
+                for match in re.finditer(
+                    r"EXECUTE 'GRANT ([A-Z, ]+) ON TABLE public\.(audit_log|priority_contacts) TO \"([a-z_]+)\"'",
+                    sql,
+                ):
+                    oid = next(oid for oid, row in self.tables.items() if row["name"] == match[2])
+                    self.table_acl[oid].update(
+                        (match[3], verb.strip()) for verb in match[1].split(",")
+                    )
+        (self.role_query,) = self._literal_queries(apply.validate_ordinary_purpose_owners)
+        audit_queries = self._literal_queries(interfaces.validate_historical_priority_audit)
+        self.overload_query, self.namespace_query, self.dependency_query, self.column_query = (
+            audit_queries
+        )
+        (self.abi_query,) = self._literal_queries(interfaces._owner_lookup_revision_vector)
+        self.capability_query = (
+            self._literal_queries(interfaces._fixed_purpose_capability_matches)[0]
+            .replace("rolname='identity_lookup_owner'", "rolname='priority_contact_audit_owner'")
+            .replace(
+                "'public.resolve_owner_triple(text,text[])'::regprocedure",
+                "pg_catalog.to_regprocedure('public.priority_contacts_cascade_audit()')",
+            )
+        )
+        (self.public_query,) = self._literal_queries(
+            interfaces._owner_lookup_public_capability_matches
+        )
+        # Build the exact trigger metadata query from literal source fragments;
+        # observed metadata below is independently stored, not expected success.
+        tree = ast.parse(
+            textwrap.dedent(inspect.getsource(interfaces._owner_lookup_metadata_matches))
+        )
+        trigger_predicate = next(
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and "p.prorettype='trigger'" in node.value
+        )
+        expression = next(
+            node.args[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "text"
+            and node.args
+            and isinstance(node.args[0], ast.BinOp)
+        )
+        self.metadata_query = (
+            expression.left.left.value + trigger_predicate + expression.right.value
+        )
+        # Scalar observations below implement only these fixed SQL predicates.
+        # Re-reading source literals is not permission to adopt a changed query.
+        # An unknown source query remains UNHANDLED by this component adapter.
+        import hashlib
+
+        fixed_queries = {
+            "role_query": "de58226fb14aac2e856e7163b634d111bd1903edf6d68930f0cf5364772d5ae1",
+            "overload_query": "460f5c8cddab2fa11d5376f58442ce8c5bb861293263264c38745aef43685d0f",
+            "namespace_query": "45d5fa6ef2940d1e7e3bb104976cba12816cf5b526f5948b79425654e1a4aa33",
+            "dependency_query": "b26adb02c2b0efaa20c5e4be3b49854cf08fde4f5537896940a0ac203e0c7a7c",
+            "column_query": "3b6fdaf9b63238abc6b237fdf0241b6b8c356c3cab47147064655d95cb1c6a62",
+            "abi_query": "53eb6ead85943beddbf932af6e5d0ea8c53d437ec1c2177fb50f7d423297fd46",
+            "capability_query": "981402ffb5a12f9ddd0034596e16a4ac9b0af57c9bfd5be9989dfcb6555a130f",
+            "public_query": "d297895361b4c579924eb5f5a9554735e03d2c5e0e6ce87d4301240776593e44",
+            "metadata_query": "b1102d91edf361cdb1a3a9fdc3b546d8a7fbc5a4415bcba7410938827f0eace7",
+        }
+        for name, digest in fixed_queries.items():
+            if hashlib.sha256(getattr(self, name).encode()).hexdigest() != digest:
+                setattr(self, name, self.UNHANDLED)
+
+    @staticmethod
+    def rows(values, columns):
+        return columns, list(values)
+
+    def dispatch(self, wire, params, decoded):
+        sql = self.re.sub(r"%\((\w+)\)s", r":\1", wire).replace("%%", "%")
+        sql = sql.replace(r"\:", ":")
+        apply, interfaces = self.apply, self.interfaces
+        if sql == self.role_query and params == {"owners": [self.purpose], "count": 1}:
+            return ("valid",), [(not any(self.role.values()) and not self.memberships,)]
+        if sql == self.overload_query and params == {}:
+            return ("signature",), [] if self.function is None else [(self.function["arguments"],)]
+        if sql == self.abi_query and params.get("oid") in self.ledger_metadata:
+            table = self.ledger_metadata[params["oid"]]
+            columns = tuple(table.columns)
+            valid = (
+                len(columns) == 1
+                and str(columns[0].name) == "version_num"
+                and str(columns[0].type) == "VARCHAR(32)"
+                and columns[0].nullable is False
+                and tuple(table.primary_key.columns) == columns
+                and columns[0].server_default is None
+                and columns[0].identity is None
+                and columns[0].computed is None
+            )
+            return ("valid",), [(valid,)]
+        for schema, revisions in self.installed.items():
+            if decoded in {
+                f'SELECT version_num FROM "{schema}".alembic_version',
+                f'SELECT version_num FROM "{schema}"."alembic_version"',
+            }:
+                return ("version_num",), [(revision,) for revision in revisions]
+        if sql in {apply._RELATION_ACL, apply._COLUMN_ACL} and params.get("oid") in self.ledgers:
+            return (
+                ("role", "verb", "grantable")
+                if sql == apply._RELATION_ACL
+                else ("role", "name", "verb", "grantable")
+            ), []
+        if sql == self.namespace_query and params == {"owner": "normal_owner"}:
+            return ("valid",), [(self.namespace_owner in {"normal_owner", "pg_database_owner"},)]
+        signature = '"public"."priority_contacts_cascade_audit"()'
+        if sql == interfaces._FUNCTION_CATALOG and params == {"signature": signature}:
+            keys = ("oid", "owner", "definer", "config", "body", "arguments")
+            return keys, [] if self.function is None else [
+                tuple(self.function[key] for key in keys)
+            ]
+        if sql == interfaces._FUNCTION_ACL and params == {"oid": 792001}:
+            return ("role", "privilege", "grantable"), self.function["acl"]
+        if sql == self.metadata_query and params == {
+            "schema": "public",
+            "name": self.function_name,
+            "language": "plpgsql",
+        }:
+            f = self.function
+            valid = f is not None and (
+                f["language"],
+                f["returns"],
+                f["strict"],
+                f["leakproof"],
+                f["parallel"],
+                f["cost"],
+                f["support"],
+                f["variadic"],
+                f["bin"],
+                f["transform"],
+            ) == ("plpgsql", "trigger", False, False, "u", 100, 0, 0, None, None)
+            return ("valid",), [(valid,)]
+        if sql == interfaces._PRIORITY_AUDIT_TRIGGER_SQL and params == {}:
+            valid = self.trigger == dict(
+                table=("public", "priority_contacts"),
+                name="trg_priority_contacts_cascade_audit",
+                type=9,
+                function=("public", self.function_name),
+                enabled="O",
+                args=(),
+                constraint=0,
+            )
+            return ("valid",), [(valid,)]
+        if sql == self.dependency_query and params == {"owner": "normal_owner"}:
+            dependencies = [
+                row
+                for row in self.tables.values()
+                if row["name"] in {"audit_log", "audit_log_id_seq"}
+            ]
+            valid = len(dependencies) == 2 and all(
+                row["owner"] == "normal_owner" and not row["rls"] and not row["forced_rls"]
+                for row in dependencies
+            )
+            return ("valid",), [(valid,)]
+        if sql == self.column_query and params == {}:
+            return ("valid",), [
+                (
+                    self.audit_columns
+                    == tuple((col, "text") for col in ("actor", "action", "target", "note"))
+                    and self.sequence_binding == ("public", "audit_log", "id", "a"),
+                )
+            ]
+        if sql in (apply._RELATION_ACL, apply._COLUMN_ACL) and params.get("oid") in self.tables:
+            oid = params["oid"]
+            if sql == apply._RELATION_ACL:
+                return ("role", "verb", "grantable"), [
+                    (role, verb, False) for role, verb in self.table_acl[oid]
+                ]
+            return ("role", "name", "verb", "grantable"), [
+                (role, col, verb, False) for role, col, verb in self.column_acl[oid]
+            ]
+        if sql == apply._SEQUENCE_LINKS and params.get("oids") == [793001]:
+            return (
+                "oid",
+                "parent_schema",
+                "parent_name",
+                "parent_column",
+                "parent_owner",
+                "deptype",
+            ), [(793001, "public", "audit_log", "id", "normal_owner", "a")]
+        produced = self.default_producer(
+            sql, decoded, self.purpose, self.defaults, self.owned_dependencies
+        )
+        if produced is not None:
+            self.effects.append(decoded)
+            return produced
+        if sql == self.capability_query and params == {}:
+            rows = [
+                ("relation", "public", self.tables[oid]["name"], "", "", verb, False)
+                for oid, acl in self.table_acl.items()
+                for role, verb in acl
+                if role == self.purpose
+            ]
+            rows += [
+                ("column", "public", self.tables[oid]["name"], "", col, verb, False)
+                for oid, acl in self.column_acl.items()
+                for role, col, verb in acl
+                if role == self.purpose
+            ]
+            rows += [
+                ("namespace", "public", "", "", "", verb, False)
+                for role, verb in self.namespace_acl
+                if role == self.purpose
+            ]
+            rows += self.default_observations(
+                sql, self.purpose, self.defaults, self.owned_dependencies
+            )
+            return ("kind", "schema", "name", "signature", "column", "verb", "grantable"), rows
+        if sql == self.public_query:
+            assert set(params) == {
+                "relations",
+                "functions",
+                "contexts",
+                "object_schemas",
+                "schemas",
+                "owners",
+            }
+            assert "a.grantee=0" in sql
+            return ("kind", "schema", "name", "signature", "column", "verb", "grantable"), [
+                row[:7] for row in self.public_caps if row[7] == 0
+            ]
+        if self.function is not None and decoded == self.normalized_sql:
+            self.function.update(config=["search_path=pg_catalog, pg_temp"])
+            self.effects.append(decoded)
+            return None, []
+        if (
+            decoded
+            == "SELECT session_user=current_user AND rolsuper FROM pg_catalog.pg_roles WHERE rolname=session_user"
+        ):
+            return ("valid",), [(self.actor == "maintenance",)]
+        if (
+            decoded
+            == 'ALTER FUNCTION "public"."priority_contacts_cascade_audit"() OWNER TO "priority_contact_audit_owner"'
+        ):
+            assert self.function is not None
+            self.function["owner"] = self.purpose
+            self.effects.append(decoded)
+            return None, []
+        if match := self.re.fullmatch(
+            r'REVOKE ALL ON FUNCTION "public"\."priority_contacts_cascade_audit"\(\) FROM (PUBLIC|"[a-z_]+")',
+            decoded,
+        ):
+            self.function["acl"] = [
+                entry for entry in self.function["acl"] if entry[0] != match[1].strip('"')
+            ]
+            self.effects.append(decoded)
+            return None, []
+        if decoded in {
+            f'GRANT USAGE ON SCHEMA "public" TO "{self.purpose}"',
+            f'REVOKE ALL ON SCHEMA "public" FROM "{self.purpose}"',
+        }:
+            self.namespace_acl.clear()
+            if decoded.startswith("GRANT"):
+                self.namespace_acl.add((self.purpose, "USAGE"))
+            self.effects.append(decoded)
+            return None, []
+        for oid, row in self.tables.items():
+            target = f'"public"."{row["name"]}"'
+            if (
+                decoded
+                == f"REVOKE ALL PRIVILEGES ON {'SEQUENCE' if row['kind'] == 'S' else 'TABLE'} {target} FROM PUBLIC"
+            ):
+                self.table_acl[oid] = {
+                    entry for entry in self.table_acl[oid] if entry[0] != "PUBLIC"
+                }
+                self.effects.append(decoded)
+                return None, []
+            if match := self.re.fullmatch(
+                r"REVOKE ALL PRIVILEGES ON (TABLE|SEQUENCE) "
+                + self.re.escape(target)
+                + r' FROM "([a-z_]+)"',
+                decoded,
+            ):
+                self.table_acl[oid] = {
+                    entry for entry in self.table_acl[oid] if entry[0] != match[2]
+                }
+                self.effects.append(decoded)
+                return None, []
+            if (
+                decoded
+                == f'GRANT INSERT ("actor", "action", "target", "note") ON TABLE {target} TO "{self.purpose}"'
+            ):
+                assert row["name"] == "audit_log"
+                self.column_acl[oid].update(
+                    (self.purpose, col, "INSERT") for col in ("actor", "action", "target", "note")
+                )
+                self.effects.append(decoded)
+                return None, []
+            if decoded == f'GRANT USAGE ON SEQUENCE {target} TO "{self.purpose}"':
+                assert row["name"] == "audit_log_id_seq"
+                self.table_acl[oid].add((self.purpose, "USAGE"))
+                self.effects.append(decoded)
+                return None, []
+        return self.UNHANDLED
+
+    def respond(self, wire, params, decoded):
+        result = self.dispatch(wire, params, decoded)
+        if result is not self.UNHANDLED:
+            return result
+        sql = self.re.sub(r"%\((\w+)\)s", r":\1", wire).replace("%%", "%")
+        columns, values = self.delegate(wire, params, decoded)
+        values = list(values)
+        if sql == self.apply._RELATIONS:
+            records = [dict(zip(columns, row, strict=True)) for row in values]
+            identities = {(row["schema"], row["name"]) for row in records}
+            for row in records:
+                if row["name"] == "alembic_version" and row["schema"] in self.installed:
+                    source_oid = next(
+                        oid
+                        for oid, ledger in self.ledgers.items()
+                        if ledger["schema"] == row["schema"]
+                    )
+                    self.ledger_metadata[row["oid"]] = self.ledger_metadata[source_oid]
+            records += [
+                row
+                for row in (*self.ledgers.values(), *self.tables.values())
+                if row["schema"] in params["schemas"]
+                and (row["schema"], row["name"]) not in identities
+            ]
+            return columns, [tuple(row[key] for key in columns) for row in records]
+        if (
+            sql == self.apply._FUNCTIONS
+            and self.function is not None
+            and "public" in params["schemas"]
+        ):
+            row = dict(
+                oid=self.function["oid"],
+                schema="public",
+                name=self.function_name,
+                arguments=self.function["arguments"],
+                owner=self.function["owner"],
+            )
+            values.append(tuple(row[key] for key in columns))
+        if sql == self.apply._NAMESPACE_ACL:
+            # The delegate supplies the actual namespace identity; its original
+            # rights remain visible alongside independently recorded audit rights.
+            if self.public_namespace_oid == params["oid"]:
+                values += [(role, verb, False) for role, verb in self.namespace_acl]
+        if sql == self.apply._NAMESPACE_CATALOG:
+            for row in values:
+                if row[columns.index("name")] == "public":
+                    self.public_namespace_oid = row[columns.index("oid")]
+        return columns, values
+
+    public_namespace_oid = None
+
+    @staticmethod
+    def default_observations(sql, purpose, defaults, owned_dependencies):
+        # Three independent catalog inputs: ACLITEM cardinality, aclexplode
+        # population, and pg_shdepend class/OID. This is transport modeling,
+        # not PostgreSQL ACL interpretation or a catalog-success cache.
+        source_filter = all(
+            fragment in sql
+            for fragment in (
+                "closed_defaults AS",
+                "d.defaclrole=(SELECT oid FROM purpose)",
+                "d.defaclnamespace=0",
+                "d.defaclobjtype IN ('f','T')",
+                "pg_catalog.cardinality(d.defaclacl)=1",
+                "a.grantee=d.defaclrole",
+                "a.grantor=d.defaclrole",
+                "a.is_grantable=false",
+                "WHEN 'f' THEN 'EXECUTE' WHEN 'T' THEN 'USAGE' END",
+            )
+        )
+        count_required = (
+            "(SELECT pg_catalog.count(*) FROM pg_catalog.aclexplode(d.defaclacl))=1" in sql
+        )
+        validated = set()
+        for row in defaults:
+            matching = (purpose, purpose, "EXECUTE" if row["kind"] == "f" else "USAGE", False)
+            if (
+                source_filter
+                and row["owner"] == purpose
+                and row["schema"] == ""
+                and row["kind"] in {"f", "T"}
+                and row["aclitem_count"] == 1
+                and matching in row["exploded"]
+                and (not count_required or len(row["exploded"]) == 1)
+            ):
+                validated.add(row["oid"])
+        caps = []
+        for row in defaults:
+            if "d.oid NOT IN (SELECT oid FROM closed_defaults)" in sql and row["oid"] in validated:
+                continue
+            caps += [
+                ("default", row["schema"], row["kind"], "", "", verb, grantable)
+                for grantor, grantee, verb, grantable in row["exploded"]
+                if row["owner"] == purpose or grantee == purpose
+            ]
+        for classid, oid in owned_dependencies:
+            excluded = (
+                "d.classid='pg_catalog.pg_default_acl'::regclass" in sql
+                and "d.objid IN (SELECT oid FROM closed_defaults)" in sql
+                and classid == "pg_default_acl"
+                and oid in validated
+            )
+            if not excluded:
+                caps.append(("ownership", "", "", "", "", "OWN", False))
+        return caps
+
+    @staticmethod
+    def default_producer(sql, decoded, purpose, defaults, owned_dependencies):
+        from butlers.db_authority import apply
+
+        normalized = __import__("re").sub(r"%\((\w+)\)s", r":\1", sql)
+        if normalized == apply._DEFAULT_ACL:
+            assert "a.grantee<>d.defaclrole" in sql
+            return ("owner", "schema", "kind", "role", "verb"), [
+                (row["owner"], row["schema"] or None, row["kind"], grantee, verb)
+                for row in defaults
+                for grantor, grantee, verb, grantable in row["exploded"]
+                if grantee != row["owner"]
+            ]
+        if decoded.startswith(f'ALTER DEFAULT PRIVILEGES FOR ROLE "{purpose}" '):
+            assert decoded in {
+                f'ALTER DEFAULT PRIVILEGES FOR ROLE "{purpose}" REVOKE ALL ON FUNCTIONS FROM PUBLIC',
+                f'ALTER DEFAULT PRIVILEGES FOR ROLE "{purpose}" REVOKE ALL ON TYPES FROM PUBLIC',
+            }
+            kind, verb = ("f", "EXECUTE") if " ON FUNCTIONS " in decoded else ("T", "USAGE")
+            oid = 741001 if kind == "f" else 741002
+            defaults[:] = [row for row in defaults if row["oid"] != oid]
+            defaults.append(
+                dict(
+                    oid=oid,
+                    owner=purpose,
+                    schema="",
+                    kind=kind,
+                    aclitem_count=1,
+                    exploded=[(purpose, purpose, verb, False)],
+                )
+            )
+            if ("pg_default_acl", oid) not in owned_dependencies:
+                owned_dependencies.append(("pg_default_acl", oid))
+            return None, []
+        return None
+
+
 def test_actual_finalizer_keeps_finance_materialized_view_closed_on_bounded_source():
-    from butlers.db_authority import apply
+    from butlers.db_authority import apply, grants
 
     for target in (None, "finance"):
         schema = target or "public"
@@ -6727,7 +7412,10 @@ def test_actual_finalizer_keeps_finance_materialized_view_closed_on_bounded_sour
                 return None, []
             pytest.fail("Unexpected bounded finalizer operation")
 
-        with _recording_postgresql_connection(respond) as (connection, calls):
+        audit_transport = _HistoricalPriorityAuditConvergenceTransport(
+            respond, {schema: ("finance_006",)}
+        )
+        with _recording_postgresql_connection(audit_transport.respond) as (connection, calls):
             connection.info["butlers.source_database"] = "butlers"
             apply.converge_authority(
                 connection, source_database="butlers", plans=(("finance", target, "finance_006"),)
@@ -6738,16 +7426,58 @@ def test_actual_finalizer_keeps_finance_materialized_view_closed_on_bounded_sour
                 )
                 for _, _, decoded in calls
             )
+            relation_reads = [
+                parameters
+                for statement, parameters, _ in calls
+                if __import__("re").sub(r"%\((\w+)\)s", r":\1", statement) == apply._RELATIONS
+            ]
+            assert len(relation_reads) == 3
+            graph_schemas = sorted(
+                set(
+                    grants.compile_relation_manifest(
+                        "test_windows", "normal_owner", "maintenance", source_database="butlers"
+                    ).schemas
+                )
+                | {schema}
+            )
+            assert (
+                sum(parameters.get("schemas") == graph_schemas for parameters in relation_reads)
+                == 1
+            )
+            graph_index = next(
+                index
+                for index, (statement, parameters, _) in enumerate(calls)
+                if __import__("re").sub(r"%\((\w+)\)s", r":\1", statement) == apply._RELATIONS
+                and parameters.get("schemas") == graph_schemas
+            )
+            first_effect = next(
+                index
+                for index, (_, _, decoded) in enumerate(calls)
+                if decoded.lstrip().startswith(("CREATE ", "ALTER ", "DROP ", "GRANT ", "REVOKE "))
+            )
+            assert graph_index < first_effect
             assert (
                 sum(
                     __import__("re").sub(r"%\((\w+)\)s", r":\1", statement) == apply._RELATIONS
-                    for statement, _, _ in calls
+                    for statement, parameters, _ in calls
+                    if parameters.get("schemas") == [schema]
                 )
                 == 2
             )
 
+        # A rejected driver operation owns its separate connection lifetime;
+        # do not reuse that SQLAlchemy transaction for positive finalization.
+        from sqlalchemy import text
 
-def _converge_source_history(plans, observed):
+        with _recording_postgresql_connection(audit_transport.respond) as (connection, _calls):
+            with pytest.raises(pytest.fail.Exception):
+                connection.execute(
+                    text(audit_transport.role_query.replace("NOT rolinherit", "true")),
+                    {"owners": [audit_transport.purpose], "count": 1},
+                )
+
+
+def _converge_source_history(plans, observed, *, installed):
     """Exercise the real historical finalizer through a recording DBAPI boundary."""
     import re
 
@@ -6797,14 +7527,158 @@ def _converge_source_history(plans, observed):
             return None, []
         pytest.fail("Unexpected historical producer finalizer operation")
 
-    with _recording_postgresql_connection(respond) as (connection, calls):
+    audit_transport = _HistoricalPriorityAuditConvergenceTransport(respond, installed)
+    with _recording_postgresql_connection(audit_transport.respond) as (connection, calls):
         connection.info["butlers.source_database"] = "butlers"
         apply.converge_authority(connection, source_database="butlers", plans=plans)
         assert not any(
             decoded.startswith(("GRANT SELECT", "GRANT INSERT", "ALTER TABLE ", "CREATE "))
+            and decoded
+            not in {
+                audit_transport.normalized_sql,
+                'GRANT INSERT ("actor", "action", "target", "note") ON TABLE "public"."audit_log" TO "priority_contact_audit_owner"',
+            }
+            if audit_transport.function is not None
+            else decoded.startswith(("GRANT SELECT", "GRANT INSERT", "ALTER TABLE ", "CREATE "))
             for _, _, decoded in calls
         )
         assert sum("FROM pg_catalog.pg_class c" in statement for statement, _, _ in calls) >= 2
+
+        if audit_transport.function is not None:
+            from copy import deepcopy
+
+            from butlers.db_authority import grants, interfaces
+
+            assert audit_transport.function["owner"] == audit_transport.purpose
+            assert audit_transport.function["acl"] == []
+            assert audit_transport.table_acl[793000] == set()
+            assert audit_transport.table_acl[793001] == {(audit_transport.purpose, "USAGE")}
+            assert audit_transport.table_acl[793002] == set()
+            assert audit_transport.column_acl[793000] == {
+                (audit_transport.purpose, column, "INSERT")
+                for column in ("actor", "action", "target", "note")
+            }
+            assert audit_transport.namespace_acl == {(audit_transport.purpose, "USAGE")}
+            assert all(
+                decoded
+                in {
+                    audit_transport.normalized_sql,
+                    'ALTER FUNCTION "public"."priority_contacts_cascade_audit"() OWNER TO "priority_contact_audit_owner"',
+                    'GRANT INSERT ("actor", "action", "target", "note") ON TABLE "public"."audit_log" TO "priority_contact_audit_owner"',
+                    'GRANT USAGE ON SEQUENCE "public"."audit_log_id_seq" TO "priority_contact_audit_owner"',
+                    'GRANT USAGE ON SCHEMA "public" TO "priority_contact_audit_owner"',
+                }
+                for decoded in audit_transport.effects
+                if decoded.startswith(("CREATE ", "ALTER FUNCTION ", "GRANT "))
+            )
+            full = grants.compile_relation_manifest(
+                "test_windows", "normal_owner", "maintenance", source_database="butlers"
+            )
+            identity = grants._owner_lookup_source_template_identity()
+            vector = interfaces._owner_lookup_revision_vector(
+                connection, full, source_identity=identity, selected_plans=plans
+            )
+            authority = grants.compile_historical_priority_audit(
+                full.profiles, "normal_owner", vector
+            )
+            fields = (
+                "role",
+                "function",
+                "trigger",
+                "tables",
+                "audit_columns",
+                "sequence_binding",
+                "table_acl",
+                "column_acl",
+                "defaults",
+                "owned_dependencies",
+                "namespace_owner",
+                "public_caps",
+            )
+            original_state = {field: deepcopy(getattr(audit_transport, field)) for field in fields}
+            for fault in (
+                "role",
+                "signature",
+                "body",
+                "owner",
+                "security",
+                "path",
+                "trigger",
+                "dependencies",
+                "columns",
+                "sequence",
+                "execute",
+                "capability",
+                "default",
+                "public",
+                "namespace",
+            ):
+                if fault == "role":
+                    audit_transport.role["rolcanlogin"] = True
+                elif fault in {"signature", "body", "owner", "security", "path", "execute"}:
+                    key, value = {
+                        "signature": ("arguments", "text"),
+                        "body": ("body", "invalid"),
+                        "owner": ("owner", "foreign"),
+                        "security": ("definer", False),
+                        "path": ("config", []),
+                        "execute": ("acl", [("PUBLIC", "EXECUTE", False)]),
+                    }[fault]
+                    audit_transport.function[key] = value
+                elif fault == "trigger":
+                    audit_transport.trigger["type"] = 5
+                elif fault == "dependencies":
+                    audit_transport.tables[793000]["owner"] = "foreign"
+                elif fault == "columns":
+                    audit_transport.audit_columns = ()
+                elif fault == "sequence":
+                    audit_transport.sequence_binding = None
+                elif fault == "capability":
+                    audit_transport.table_acl[793000].add((audit_transport.purpose, "SELECT"))
+                elif fault == "default":
+                    audit_transport.defaults.append(
+                        dict(
+                            oid=749991,
+                            owner=audit_transport.purpose,
+                            schema="public",
+                            kind="f",
+                            aclitem_count=1,
+                            exploded=[(audit_transport.purpose, "PUBLIC", "EXECUTE", False)],
+                        )
+                    )
+                elif fault == "public":
+                    audit_transport.public_caps.append(
+                        ("column", "public", "audit_log", "", "actor", "SELECT", False, 749999)
+                    )
+                    assert (
+                        interfaces.validate_historical_priority_audit(
+                            connection, full, authority, allow_legacy=False
+                        )
+                        is not None
+                    )
+                    audit_transport.public_caps.pop()
+                    audit_transport.public_caps.append(
+                        ("column", "public", "audit_log", "", "actor", "SELECT", False, 0)
+                    )
+                else:
+                    audit_transport.namespace_owner = "foreign"
+                before_fault = len(calls)
+                with pytest.raises(AuthorityError):
+                    interfaces.validate_historical_priority_audit(
+                        connection, full, authority, allow_legacy=False
+                    )
+                assert not any(
+                    decoded.lstrip().startswith(("CREATE ", "ALTER ", "DROP ", "GRANT ", "REVOKE "))
+                    for _, _, decoded in calls[before_fault:]
+                ), fault
+                for field in fields:
+                    setattr(audit_transport, field, deepcopy(original_state[field]))
+            assert (
+                interfaces.validate_historical_priority_audit(
+                    connection, full, authority, allow_legacy=False
+                )
+                is not None
+            )
 
 
 def test_sw037_receiver_view_preserves_actual_qa_only_producer_and_revision_edge():
@@ -6873,7 +7747,11 @@ def test_sw037_receiver_view_preserves_actual_qa_only_producer_and_revision_edge
         grants.select_migration_manifest(
             full, (("switchboard", "switchboard", "unknown_revision"),)
         )
-    _converge_source_history((("switchboard", "switchboard", "sw_037"),), (actual,))
+    _converge_source_history(
+        (("switchboard", "switchboard", "sw_037"),),
+        (actual,),
+        installed={"switchboard": ("sw_037",)},
+    )
 
 
 def test_general_rename_manifest_follows_actual_producer_and_closed_historical_window():
@@ -6922,7 +7800,9 @@ def test_general_rename_manifest_follows_actual_producer_and_closed_historical_w
             oid=42,
             partition=False,
         )
-        _converge_source_history((("general", "general", revision),), (actual,))
+        _converge_source_history(
+            (("general", "general", revision),), (actual,), installed={"general": (revision,)}
+        )
     accumulated = grants.select_migration_manifest(
         full, (("general", "general", "gen_001"), ("general", "general", None))
     )
@@ -7044,7 +7924,9 @@ def test_public_contacts_window_uses_real_core002_and_core134_without_current_ad
             assert apply.validate_relations((actual,), (row,), administrative_history=True) == (
                 (actual, row),
             )
-            _converge_source_history((("core", None, revision),), (actual,))
+            _converge_source_history(
+                (("core", None, revision),), (actual,), installed={"public": (revision,)}
+            )
             with pytest.raises(AuthorityError):
                 apply.validate_relations(
                     (actual | {"owner": "foreign"},), (row,), administrative_history=True
@@ -7078,6 +7960,9 @@ class _SelectedPolicyCatalog:
         self.re = re
         self.plans = (("core", "switchboard", None),)
         self.head = get_chain_head("core")
+        self.audit_transport = _HistoricalPriorityAuditConvergenceTransport(
+            self._respond_without_audit, {"switchboard": (self.head,)}
+        )
         self.manifest = grants.select_migration_manifest(
             grants.compile_relation_manifest(
                 "test_policy_targets", "normal_owner", "maintenance", source_database="butlers"
@@ -7241,6 +8126,9 @@ class _SelectedPolicyCatalog:
         )
 
     def respond(self, statement, parameters, decoded):
+        return self.audit_transport.respond(statement, parameters, decoded)
+
+    def _respond_without_audit(self, statement, parameters, decoded):
         import hashlib
 
         apply, interfaces = self.apply, self.interfaces
@@ -9524,6 +10412,190 @@ def test_owner_lookup_all_relationship_source_prefixes_use_actual_consumers(pref
 
 
 def test_owner_lookup_prefix_transitions_keep_actual_recreated_and_retained_rights():
+    # These real source producers grant SELECT to existing and future
+    # Switchboard tables, including its physical Alembic ledger. Record their
+    # actual SQL independently of the source-profile compiler under test.
+    import re
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from sqlalchemy import text
+
+    from butlers.db_authority import apply, interfaces
+
+    root = Path(__file__).parents[2]
+    produced_readers = []
+    producer_statements = []
+
+    def observe_producer(wire, parameters, decoded):
+        producer_statements.append(decoded)
+        match = re.search(
+            r"""EXECUTE 'GRANT SELECT ON ALL TABLES IN SCHEMA "switchboard" TO "([a-z_]+)"';""",
+            decoded,
+        )
+        if match:
+            produced_readers.append(match[1])
+        return None, []
+
+    with _recording_postgresql_connection(observe_producer) as (connection, _):
+        with patch("alembic.op.execute", side_effect=lambda sql: connection.execute(text(sql))):
+            for edge in (77, 143):
+                source = runpy.run_path(
+                    str(next((root / "alembic/versions/core").glob(f"core_{edge:03}_*.py")))
+                )
+                source["upgrade"]()
+    assert produced_readers == [
+        "butler_relationship_rw",
+        "butler_messenger_rw",
+        "butler_travel_rw",
+    ]
+    assert len(producer_statements) == 9
+
+    class SourceLedgerCatalog(_OwnerLookupPrefixCatalog):
+        def __init__(self, mode):
+            super().__init__(mode)
+            self.ledger_readers = tuple(produced_readers)
+            self.ledger_fault = None
+            self.version_reads = 0
+
+        def respond(self, wire, parameters, decoded):
+            normalized = re.sub(r"%\(([A-Za-z0-9_]+)\)s", r":\1", wire).replace("%%", "%").strip()
+            names, records = super().respond(wire, parameters, decoded)
+            records = list(records)
+            relation = self.catalog_relations.get(parameters.get("oid"))
+            switchboard_ledger = relation is not None and (relation.schema, relation.name) == (
+                "general" if self.ledger_fault == "wrong_ledger" else "switchboard",
+                "alembic_version",
+            )
+            if normalized == apply._RELATION_ACL.strip() and switchboard_ledger:
+                records.extend((role, "SELECT", False) for role in self.ledger_readers)
+                if self.ledger_fault in {"write", "grantable"}:
+                    records.append(
+                        (
+                            produced_readers[0],
+                            "INSERT" if self.ledger_fault == "write" else "SELECT",
+                            self.ledger_fault == "grantable",
+                        )
+                    )
+            if normalized == apply._COLUMN_ACL.strip() and switchboard_ledger:
+                if self.ledger_fault == "column":
+                    records.append(("version_num", produced_readers[0], "SELECT", False))
+            if normalized == apply._RELATIONS.strip() and self.ledger_fault in {
+                "owner",
+                "schema",
+                "kind",
+                "rls",
+            }:
+                records = [list(row) for row in records]
+                for row in records:
+                    if (
+                        row[names.index("schema")] == "switchboard"
+                        and row[names.index("name")] == "alembic_version"
+                    ):
+                        key, value = {
+                            "owner": ("owner", "foreign_owner"),
+                            "schema": ("schema", "unknown_ledger"),
+                            "kind": ("kind", "v"),
+                            "rls": ("rls", True),
+                        }[self.ledger_fault]
+                        row[names.index(key)] = value
+            if decoded.strip().startswith("SELECT version_num FROM "):
+                self.version_reads += 1
+            return names, records
+
+    # Actual source migration bodies reach the real full reuse consumer. The
+    # old reader rejects the legitimate producer SELECTs here, before effects.
+    migration = runpy.run_path(str(next((root / "alembic/versions/core").glob("core_145_*.py"))))
+    for mode in ("current", "closed"):
+        ledger = SourceLedgerCatalog(mode)
+        with _recording_postgresql_connection(ledger.respond) as (connection, _):
+            connection.info["butlers.source_database"] = "butlers"
+            with (
+                patch("alembic.op.get_bind", return_value=connection),
+                patch(
+                    "alembic.op.get_context",
+                    return_value=SimpleNamespace(opts={"version_table_schema": "general"}),
+                ),
+            ):
+                migration["upgrade"]()
+        assert ledger.version_reads > 0
+        assert not ledger.scratch
+        assert not any(
+            sql.lstrip().startswith(
+                ("CREATE OR REPLACE FUNCTION public.resolve_owner_triple", "GRANT ")
+            )
+            for sql in ledger.statements
+        )
+
+    from butlers.db_authority import grants
+
+    ledger = SourceLedgerCatalog("current")
+    source_identity = grants._owner_lookup_source_template_identity()
+    original_versions = {schema: list(rows) for schema, rows in ledger.version_rows.items()}
+    with _recording_postgresql_connection(ledger.respond) as (connection, _):
+        for fault in (
+            "wrong_role",
+            "unknown_role",
+            "wrong_ledger",
+            "pre077",
+            "pre143",
+            "unknown_revision",
+            "duplicate",
+            "owner",
+            "schema",
+            "kind",
+            "rls",
+            "abi",
+            "column",
+            "write",
+            "grantable",
+        ):
+            ledger.version_rows = {schema: list(rows) for schema, rows in original_versions.items()}
+            ledger.ledger_readers = tuple(produced_readers)
+            ledger.ledger_fault = fault
+            ledger.lookup_fault = "ledger_abi" if fault == "abi" else None
+            if fault in {"wrong_role", "unknown_role"}:
+                ledger.ledger_readers = (
+                    "butler_general_rw" if fault == "wrong_role" else "unknown_role",
+                )
+            if fault in {"pre077", "pre143"}:
+                predecessor = "core_076" if fault == "pre077" else "core_142"
+                ledger.ledger_readers = (produced_readers[0 if fault == "pre077" else 1],)
+                ledger.version_rows = {
+                    schema: [predecessor if row.startswith("core_") else row for row in rows]
+                    for schema, rows in original_versions.items()
+                }
+            if fault == "unknown_revision":
+                ledger.version_rows["switchboard"].append("unknown_revision")
+            if fault == "duplicate":
+                ledger.version_rows["switchboard"].append(ledger.version_rows["switchboard"][0])
+            ledger.version_reads = 0
+            before_effects = tuple(ledger.statements)
+            with pytest.raises(AuthorityError):
+                interfaces._owner_lookup_revision_vector(
+                    connection, ledger.lookup_manifest, "general", source_identity=source_identity
+                )
+            if fault in {
+                "wrong_role",
+                "unknown_role",
+                "wrong_ledger",
+                "owner",
+                "schema",
+                "kind",
+                "rls",
+                "abi",
+                "column",
+                "write",
+                "grantable",
+            }:
+                # Earlier ledgers may already have been read; none of these
+                # observations may perform a persistent effect or grant.
+                assert not any(
+                    sql.lstrip().startswith(("CREATE ", "ALTER ", "GRANT ", "REVOKE "))
+                    for sql in ledger.statements[len(before_effects) :]
+                )
+
     from butlers.db_authority import grants
     from butlers.migrations import get_chain_head
 
@@ -9542,8 +10614,6 @@ def test_owner_lookup_prefix_transitions_keep_actual_recreated_and_retained_righ
     # Crossing rel033 really reintroduces only its exact Connector read grant.
     import runpy
     from pathlib import Path
-
-    from sqlalchemy import text
 
     producer = runpy.run_path(
         str(next((Path(__file__).parents[2] / "roster/relationship/migrations").glob("033_*.py")))
@@ -10162,3 +11232,1584 @@ def test_owner_lookup_public_census_preserves_actual_ordinary_target_wrapper():
             assert interfaces.owner_lookup_revision_reuse(connection, "core_145") is True
     assert "general" not in model.expected_capabilities.public_object_schemas
     assert ordinary.executors == ("PUBLIC",) and not model.scratch
+
+
+async def test_catalog_security_predicate_groups_are_closed():
+    """Check actual emitted groups; lexical balance is not PostgreSQL grammar proof."""
+    import re
+
+    from butlers.db_authority import catalog
+
+    connection = AsyncMock()
+    connection.fetchval.return_value = True
+    await catalog.assert_object_catalog(connection, "butlers")
+    statement, encoded = connection.fetchval.call_args.args
+    assert statement == catalog._CATALOG_OBJECT_SQL and encoded
+    # Ignore only complete SQL literals, identifiers, comments and dollar data.
+    # In particular, regexp pattern parentheses are data, not SQL grouping.
+    token = re.compile(
+        r"\$(?P<tag>[A-Za-z_][A-Za-z0-9_]*|)\$.*?\$(?P=tag)\$"
+        r"|'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|--[^\n]*|/\*.*?\*/",
+        re.DOTALL,
+    )
+    code = token.sub(" ", statement)
+    depth = 0
+    for character in code:
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            assert depth >= 0
+    assert depth == 0
+    # All three actual predicate consumers remain present in the sent query.
+    assert "p.polqual" in statement and "p.polwithcheck" in statement
+    assert "pg_catalog.pg_get_triggerdef(t.oid,false)" in statement
+
+
+def test_switchboard_decision_source_relations_are_declared():
+    """Real revision actions and real compiler/validators meet at the driver seam."""
+    import re
+    import runpy
+    from pathlib import Path
+
+    from butlers.db_authority import apply, grants
+    from butlers.migrations import get_chain_revision_path
+
+    root = Path(__file__).parents[2]
+    emitted = []
+    for relative in (
+        "roster/switchboard/migrations/042_decision_desk_intents.py",
+        "roster/switchboard/migrations/046_decision_intent_supersession.py",
+    ):
+        producer = runpy.run_path(str(root / relative))
+        with patch("alembic.op.execute", side_effect=emitted.append):
+            producer["upgrade"]()
+    produced = {
+        match[1]
+        for statement in emitted
+        if (match := re.search(r"CREATE TABLE IF NOT EXISTS (decision_\w+)\s*\(", statement))
+    }
+    assert produced == {"decision_intents", "decision_prompts"}
+    assert any("ALTER TABLE decision_intents ADD CONSTRAINT" in sql for sql in emitted)
+    assert "sw_042" not in get_chain_revision_path("switchboard", "sw_041")
+    assert "sw_042" in get_chain_revision_path("switchboard", "sw_042")
+    full = grants.compile_relation_manifest(
+        "test_decisions", "normal_owner", "maintenance", source_database="butlers"
+    )
+    actual = tuple(
+        dict(
+            schema="switchboard",
+            name=name,
+            kind="r",
+            owner="normal_owner",
+            rls=False,
+            forced_rls=False,
+            oid=700000 + index,
+            partition=False,
+        )
+        for index, name in enumerate(sorted(produced))
+    )
+    # The producer observations do not depend on the compiler remembering them.
+    apply.bind_partition_relations(actual, full.relations, ())
+    declared = tuple(
+        row for row in full.relations if row.schema == "switchboard" and row.name in produced
+    )
+    assert len(declared) == 2
+    for row in declared:
+        assert row.owner == "normal_owner" and row.kind == grants.ObjectKind.TABLE
+        assert row.required is True
+        assert row.permissions == (
+            grants.Permission("butler_switchboard_rw", ("SELECT", "INSERT", "UPDATE", "DELETE")),
+            grants.Permission("dashboard_api", ("SELECT", "INSERT", "UPDATE", "DELETE")),
+        )
+    assert apply.validate_relations(actual, declared) == tuple(zip(actual, declared, strict=True))
+    current = grants.select_migration_manifest(full, (("switchboard", "switchboard", None),))
+    assert all(
+        row.required and row.permissions
+        for row in current.relations
+        if row.schema == "switchboard" and row.name in produced
+    )
+    # Before the actual edge there are no producer tables. Historical source
+    # declarations confer neither required presence nor serving permission.
+    previous = grants.select_migration_manifest(full, (("switchboard", "switchboard", "sw_041"),))
+    historical = tuple(
+        row for row in previous.relations if row.schema == "switchboard" and row.name in produced
+    )
+    assert all(not row.required and not row.permissions for row in historical)
+    assert apply.validate_relations((), historical, administrative_history=True) == ()
+    for fault in (dict(name="decision_lookalike"), dict(owner="foreign"), dict(kind="v")):
+        with pytest.raises(AuthorityError):
+            apply.validate_relations((actual[0] | fault, actual[1]), declared)
+    with pytest.raises(AuthorityError):
+        apply.validate_relations(actual[:1], declared)
+    for observed, row in zip(actual, declared, strict=True):
+        entries = [
+            (role, verb, False)
+            for role in ("butler_switchboard_rw", "dashboard_api")
+            for verb in ("SELECT", "INSERT", "UPDATE", "DELETE")
+        ]
+        state = {"fault": None}
+
+        def acl_transport(
+            statement, parameters, decoded, *, observed=observed, entries=entries, state=state
+        ):
+            assert parameters == {"oid": observed["oid"]}
+            if "FROM pg_catalog.pg_attribute col" in statement:
+                columns = [("id", "PUBLIC", "SELECT", False)] if state["fault"] == "column" else []
+                return ("name", "role", "verb", "grantable"), columns
+            assert "FROM pg_catalog.pg_class c" in statement
+            found = list(entries)
+            if state["fault"] == "extra":
+                found.append(("PUBLIC", "SELECT", False))
+            elif state["fault"] == "grantable":
+                found[0] = (*found[0][:2], True)
+            elif state["fault"] == "missing":
+                found.pop()
+            return ("role", "verb", "grantable"), found
+
+        with _recording_postgresql_connection(acl_transport) as (connection, calls):
+            apply.verify_relation(connection, observed, row)
+            for fault in ("extra", "grantable", "missing", "column"):
+                state["fault"] = fault
+                with pytest.raises(AuthorityError):
+                    apply.verify_relation(connection, observed, row)
+            assert all(statement.lstrip().startswith("SELECT") for statement, _, _ in calls)
+
+
+def test_relationship_retained_outputs_follow_admitted_producer_target():
+    """Unqualified producer outputs follow each selected source target, with no ACL."""
+    import re
+    import runpy
+    from pathlib import Path
+
+    from butlers.db_authority import apply, grants
+
+    root = Path(__file__).parents[2]
+    emitted = []
+    for relative in (
+        "roster/relationship/migrations/001_relationship_tables.py",
+        "roster/relationship/migrations/030_dedup_contacts_drop_contacts_fks.py",
+    ):
+        producer = runpy.run_path(str(root / relative))
+        with patch("alembic.op.execute", side_effect=emitted.append):
+            producer["upgrade"]()
+    # This records real producer statements, including conditional DO data;
+    # it does not claim those branches executed in PostgreSQL.
+    names = {
+        match
+        for statement in emitted
+        for match in re.findall(r"CREATE TABLE\s+(\w+_dedup_bak_rel_030)\s+AS", statement)
+    }
+    assert names == {
+        "addresses_dedup_bak_rel_030",
+        "contact_labels_dedup_bak_rel_030",
+        "group_members_dedup_bak_rel_030",
+        "important_dates_dedup_bak_rel_030",
+        "life_events_dedup_bak_rel_030",
+        "relationships_dedup_bak_rel_030",
+        "tasks_dedup_bak_rel_030",
+        "contact_entity_map_dedup_bak_rel_030",
+    }
+    local = {
+        match
+        for statement in emitted
+        for match in re.findall(
+            r"CREATE TABLE IF NOT EXISTS\s+(contacts|reminders)\s*\(", statement
+        )
+    }
+    assert local == {"contacts", "reminders"}
+    full = grants.compile_relation_manifest(
+        "test_retained_targets", "normal_owner", "maintenance", source_database="butlers"
+    )
+    for schema in (None, "relationship", "isolated_admin"):
+        target = schema or "public"
+        for revision in (None, "rel_030"):
+            selected = grants.select_migration_manifest(full, (("relationship", schema, revision),))
+            actual = tuple(
+                dict(
+                    schema=target,
+                    name=name,
+                    kind="r",
+                    owner="normal_owner",
+                    rls=False,
+                    forced_rls=False,
+                    oid=710000 + index,
+                    partition=False,
+                )
+                for index, name in enumerate(sorted(names | local))
+            )
+            apply.bind_partition_relations(actual, selected.relations, ())
+            retained = tuple(
+                row
+                for row in selected.relations
+                if row.schema == target and row.name in names | local
+            )
+            assert len(retained) == 10
+            assert all(
+                not row.required and not row.permissions and row.owner == "normal_owner"
+                for row in retained
+            )
+            assert len(apply.validate_relations(actual, retained)) == 10
+            assert apply.validate_relations((), retained) == ()
+            assert any(
+                row.schema == target
+                and row.name == "important_dates"
+                and row.required == (revision is None)
+                for row in selected.relations
+            )
+            with pytest.raises(AuthorityError):
+                apply.validate_relations((actual[0] | {"owner": "foreign"}, *actual[1:]), retained)
+            with pytest.raises(AuthorityError):
+                apply.bind_partition_relations(
+                    (actual[0] | {"name": "unknown_retained_lookalike"},), selected.relations, ()
+                )
+            row = next(row for row in retained if row.name in names)
+            observed = next(value for value in actual if value["name"] == row.name)
+            state = {"extra": False}
+
+            def acl_transport(statement, parameters, decoded, *, state=state, observed=observed):
+                assert parameters == {"oid": observed["oid"]}
+                if "FROM pg_catalog.pg_attribute col" in statement:
+                    return ("name", "role", "verb", "grantable"), []
+                assert "FROM pg_catalog.pg_class c" in statement
+                return ("role", "verb", "grantable"), (
+                    [("PUBLIC", "SELECT", False)] if state["extra"] else []
+                )
+
+            with _recording_postgresql_connection(acl_transport) as (connection, _):
+                apply.verify_relation(connection, observed, row)
+                state["extra"] = True
+                with pytest.raises(AuthorityError):
+                    apply.verify_relation(connection, observed, row)
+        previous = grants.select_migration_manifest(full, (("relationship", schema, "rel_029"),))
+        assert not any(row.schema == target and row.name in names for row in previous.relations)
+    mixed = grants.select_migration_manifest(
+        full, (("relationship", None, "rel_029"), ("relationship", "relationship", "rel_030"))
+    )
+    assert not any(row.schema == "public" and row.name in names for row in mixed.relations)
+    assert {
+        row.name for row in mixed.relations if row.schema == "relationship" and row.name in names
+    } == names
+    core_only = grants.select_migration_manifest(full, (("core", None, None),))
+    assert not any(row.name in names for row in core_only.relations)
+    assert any(
+        row.name == "contacts_preferred_channel_dropbak_rel_003"
+        and row.schema == "public"
+        and not row.required
+        and not row.permissions
+        for row in mixed.relations
+    )
+    bounded = grants.select_migration_manifest(
+        full, (("core", None, "core_133"), ("relationship", "isolated_admin", "rel_031"))
+    )
+    assert any(
+        row.name == "entities_contact_profile_bak_rel_031"
+        and row.schema == "public"
+        and not row.required
+        and not row.permissions
+        for row in bounded.relations
+    )
+
+
+def test_selected_user_context_owner_follows_actual_dnd_producer_edge():
+    """Admit the ordinary predecessor only before the selected fixed DND edge."""
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from butlers.db_authority import apply, grants
+
+    root = Path(__file__).parents[2]
+    move = runpy.run_path(
+        str(root / "alembic/versions/core/core_046_migrate_user_context_to_public.py")
+    )
+    emitted = []
+
+    def predecessor_transport(statement, parameters, decoded):
+        assert "FROM pg_catalog.pg_class c" in statement
+        if "n.nspname = 'shared'" in statement:
+            return ("present",), [(1,)]
+        assert "n.nspname = 'public'" in statement
+        return ("present",), []
+
+    with _recording_postgresql_connection(predecessor_transport) as (connection, _):
+        with patch("alembic.op.get_bind", return_value=connection):
+            with patch("alembic.op.execute", side_effect=emitted.append):
+                move["upgrade"]()
+    assert emitted == [
+        "ALTER TABLE shared.user_context SET SCHEMA public",
+        "DROP SCHEMA IF EXISTS shared",
+    ]
+    assert not any("OWNER TO" in statement for statement in emitted)
+    dnd = runpy.run_path(
+        str(root / "alembic/versions/core/core_197_canonical_dnd_generation_guard.py")
+    )
+    dispatched = []
+    held = SimpleNamespace(source="test-held-driver")
+    with patch.dict(
+        dnd["upgrade"].__globals__,
+        {"install_revision_group": lambda conn, group: dispatched.append((conn, group))},
+    ):
+        with patch("alembic.op.get_bind", return_value=held):
+            dnd["upgrade"]()
+    assert dispatched == [(held, "dnd")]
+    full = grants.compile_relation_manifest(
+        "test_context_edge", "normal_owner", "maintenance", source_database="butlers"
+    )
+    for target in (None, "relationship"):
+        for revision in ("core_076", "core_170", "core_196", "core_197", None):
+            selected = grants.select_migration_manifest(full, (("core", target, revision),))
+            row = next(
+                row
+                for row in selected.relations
+                if (row.schema, row.name) == ("public", "user_context")
+            )
+            after_edge = revision in {"core_197", None}
+            actual = dict(
+                schema="public",
+                name="user_context",
+                kind="r",
+                owner="dnd_generation_owner" if after_edge else "normal_owner",
+                rls=after_edge,
+                forced_rls=after_edge,
+                oid=720000,
+            )
+            # Baseline reaches the actual validator with a source-produced normal
+            # predecessor; no import or mocked compiler failure is the RED.
+            assert apply.validate_relations(
+                (actual,), (row,), administrative_history=revision is not None
+            ) == ((actual, row),)
+            assert row.owner == ("dnd_generation_owner" if after_edge else "normal_owner")
+            assert bool(row.permissions) == (revision is None)
+            assert all(
+                row.owner == original.owner
+                for row in selected.relations
+                for original in full.relations
+                if row.identity == original.identity
+                and row.name != "user_context"
+                and (row.schema, row.name) not in grants.ORDINARY_PARTITION_OWNERS
+            )
+            for owner in ("foreign", "normal_owner" if after_edge else "dnd_generation_owner"):
+                with pytest.raises(AuthorityError):
+                    apply.validate_relations(
+                        (actual | {"owner": owner},),
+                        (row,),
+                        administrative_history=revision is not None,
+                    )
+            with pytest.raises(AuthorityError):
+                apply.validate_relations(
+                    (actual | {"name": "user_context_decoy"},),
+                    (row,),
+                    administrative_history=revision is not None,
+                )
+            if revision is not None:
+                state = {"fault": None}
+
+                def acl_transport(statement, parameters, decoded, *, state=state):
+                    assert parameters == {"oid": 720000}
+                    if "FROM pg_catalog.pg_attribute col" in statement:
+                        return ("name", "role", "verb", "grantable"), (
+                            [("id", "PUBLIC", "SELECT", False)]
+                            if state["fault"] == "column"
+                            else []
+                        )
+                    assert "FROM pg_catalog.pg_class c" in statement
+                    return ("role", "verb", "grantable"), (
+                        [("PUBLIC", "SELECT", False)] if state["fault"] == "table" else []
+                    )
+
+                with _recording_postgresql_connection(acl_transport) as (connection, _):
+                    apply.verify_relation(connection, actual, row)
+                    for fault in ("column", "table"):
+                        state["fault"] = fault
+                        with pytest.raises(AuthorityError):
+                            apply.verify_relation(connection, actual, row)
+    for plans in (
+        (("core", "relationship", "core_076"), ("core", "switchboard", "core_197")),
+        (("core", "switchboard", "core_197"), ("core", "relationship", "core_076")),
+        (("core", None, None), ("core", "relationship", "core_170")),
+        (("core", "relationship", "core_170"), ("core", None, None)),
+    ):
+        selected = grants.select_migration_manifest(full, plans)
+        row = next(
+            row
+            for row in selected.relations
+            if (row.schema, row.name) == ("public", "user_context")
+        )
+        assert row.owner == "dnd_generation_owner" and not row.permissions
+    no_core = grants.select_migration_manifest(full, (("relationship", None, "rel_037"),))
+    row = next(
+        row for row in no_core.relations if (row.schema, row.name) == ("public", "user_context")
+    )
+    assert row.owner == "dnd_generation_owner" and not row.permissions
+
+
+def test_historical_priority_audit_compiler_follows_actual_fixed_producers():
+    """Real producer literals and the population/permission consumers agree."""
+    import runpy
+    from dataclasses import replace
+    from pathlib import Path
+
+    from butlers.db_authority import apply, grants, roles
+
+    root = Path(__file__).parents[2]
+    first = runpy.run_path(str(root / "alembic/versions/core/core_101_priority_contacts.py"))
+    middle = runpy.run_path(
+        str(root / "alembic/versions/core/core_129_priority_contacts_drop_butler.py")
+    )
+    last = runpy.run_path(
+        str(root / "alembic/versions/core/core_205_priority_contacts_drop_cascade_audit.py")
+    )
+    produced = []
+    with patch("alembic.op.execute", side_effect=lambda sql: produced.append(str(sql))):
+        first["_ordinary_audit_install"]()
+    original = next(sql for sql in produced if "CREATE OR REPLACE FUNCTION" in sql)
+    source101 = original.split("AS $$", 1)[1].rsplit("$$", 1)[0]
+    source129 = middle["_TRIGGER_FN_GLOBAL"].split("AS $$", 1)[1].rsplit("$$", 1)[0]
+    assert "OLD.butler" in source101 and "OLD.butler" not in source129
+    assert middle["_TRIGGER_FN_GLOBAL"] == last["_TRIGGER_FN_GLOBAL"]
+    produced.clear()
+    with patch("alembic.op.execute", side_effect=lambda sql: produced.append(str(sql))):
+        last["_ordinary_upgrade"]()
+    assert len(produced) == 2 and all("audit_log" not in sql for sql in produced)
+    full = grants.compile_relation_manifest(
+        "test_priority_history", "normal_owner", "maintenance", source_database="butlers"
+    )
+    compiler = getattr(grants, "compile_historical_priority_audit", None)
+    profile = (
+        compiler(full.profiles, "normal_owner", (("core", "public", "core_101"),))
+        if compiler
+        else None
+    )
+    definitions = (profile.definition,) if profile else ()
+    observed = (
+        {
+            "schema": "public",
+            "name": "priority_contacts_cascade_audit",
+            "arguments": "",
+            "owner": "normal_owner",
+            "oid": 730001,
+        },
+    )
+    # The old implementation fails here in the actual population validator.
+    assert apply.validate_function_population(
+        observed,
+        definitions,
+        {("public", "priority_contacts_cascade_audit", "")},
+        migration_owner="normal_owner",
+    )
+    for revision, expected in (
+        ("core_100", None),
+        ("core_101", "101"),
+        ("core_128", "101"),
+        ("core_129", "129"),
+        ("core_204", "129"),
+        ("core_205", None),
+        (None, None),
+    ):
+        plans = (("core", "public", revision),)
+        authority = compiler(full.profiles, "normal_owner", plans)
+        if expected is None:
+            assert authority is None
+            continue
+        definition = authority.definition
+        assert authority.stage == expected
+        assert definition.body == (source101 if expected == "101" else source129)
+        assert definition.owner == "priority_contact_audit_owner" and definition.security_definer
+        assert definition.settings == ("search_path=pg_catalog, pg_temp",)
+        assert not definition.executors and definition.signature == ""
+        selected = grants.select_migration_manifest(full, plans)
+        dependencies = tuple(
+            row
+            for row in selected.relations
+            if row.identity in {dep.identity for dep in authority.dependencies}
+        )
+        actual = tuple(
+            dict(
+                schema=row.schema,
+                name=row.name,
+                kind="S" if row.kind == grants.ObjectKind.SEQUENCE else "r",
+                owner="normal_owner",
+                rls=False,
+                forced_rls=False,
+                oid=730010 + i,
+            )
+            for i, row in enumerate(dependencies)
+        )
+        assert apply.validate_relations(
+            actual, dependencies, administrative_history=True, historical_audit=authority
+        )
+        with pytest.raises(AuthorityError):
+            apply.validate_relations(actual, dependencies, administrative_history=True)
+        for wrong in ("PUBLIC", "butler_switchboard_rw", "foreign"):
+            bad = replace(dependencies[0], permissions=(grants.Permission(wrong, ("INSERT",)),))
+            with pytest.raises(AuthorityError):
+                apply.validate_relations(
+                    actual,
+                    (bad, *dependencies[1:]),
+                    administrative_history=True,
+                    historical_audit=authority,
+                )
+        contract = grants.compiled_security_contract(selected)
+        assert any(
+            row["name"] == "trg_priority_contacts_cascade_audit" and row["type"] == 9
+            for row in contract["triggers"]
+        )
+        capabilities = grants.historical_priority_audit_capabilities(selected, authority)
+        assert len(capabilities.capabilities) == 6
+        assert all(
+            cap.verb not in {"SELECT", "UPDATE", "EXECUTE", "CREATE"}
+            for cap in capabilities.capabilities
+        )
+        assert (
+            grants.PurposeCapability("relation", "public", "audit_log_id_seq", "", "", "USAGE")
+            in capabilities.capabilities
+        )
+        with pytest.raises(AuthorityError):
+            apply.validate_function_population(
+                (observed[0] | {"arguments": "text"},),
+                (definition,),
+                set(),
+                migration_owner="normal_owner",
+            )
+        with pytest.raises(AuthorityError):
+            apply.validate_function_population(
+                (observed[0] | {"owner": "foreign"},),
+                (definition,),
+                set(),
+                migration_owner="normal_owner",
+            )
+    for plans, expected in (
+        ((("core", "public", "core_101"), ("core", "relationship", "core_129")), "129"),
+        ((("core", "public", "core_101"), ("core", "relationship", "core_205")), None),
+        ((("core", "public", None), ("core", "relationship", "core_129")), None),
+    ):
+        result = compiler(full.profiles, "normal_owner", plans)
+        assert (result.stage if result else None) == expected
+    for invalid in (
+        (("core", "public", "core_unknown"),),
+        (("core", "public", "core_101"), ("core", "public", "core_129")),
+    ):
+        with pytest.raises(AuthorityError):
+            compiler(full.profiles, "normal_owner", invalid)
+    assert "priority_contact_audit_owner" in roles.PURPOSE_OWNERS
+    assert "priority_contact_audit_owner" not in grants._declared_function_executors(
+        "uuid_generate_v7", "public", full.profiles, False
+    )
+    current = grants.historical_priority_audit_capabilities(full, None)
+    assert not current.capabilities and not current.functions
+
+
+def test_historical_priority_audit_held_transition_preserves_owner_and_audit_boundaries():
+    """Actual source dispatch and held driver restore the ordinary actor."""
+    import runpy
+    from pathlib import Path
+
+    from butlers.db_authority import apply, grants, interfaces
+
+    root = Path(__file__).parents[2]
+    first = runpy.run_path(str(root / "alembic/versions/core/core_101_priority_contacts.py"))
+    middle = runpy.run_path(
+        str(root / "alembic/versions/core/core_129_priority_contacts_drop_butler.py")
+    )
+    source = []
+    with patch("alembic.op.execute", side_effect=lambda sql: source.append(str(sql))):
+        first["_ordinary_audit_install"]()
+    source101 = (
+        next(sql for sql in source if "CREATE OR REPLACE FUNCTION" in sql)
+        .split("AS $$", 1)[1]
+        .rsplit("$$", 1)[0]
+    )
+    state = {
+        "revision": "core_128",
+        "actor": "normal_owner",
+        "body": source101,
+        "exists": True,
+        "acl": [],
+        "fault": None,
+        "reset": 0,
+        "restore": 0,
+        "target": "public",
+        "vectors": None,
+        "defaults": [],
+        "owned_dependencies": [],
+    }
+    capabilities = [
+        ("column", "public", "audit_log", "", col, "INSERT", False)
+        for col in ("actor", "action", "target", "note")
+    ]
+    capabilities += [
+        ("relation", "public", "audit_log_id_seq", "", "", "USAGE", False),
+        ("namespace", "public", "", "", "", "USAGE", False),
+    ]
+
+    default_observations = _HistoricalPriorityAuditConvergenceTransport.default_observations
+
+    default_producer = _HistoricalPriorityAuditConvergenceTransport.default_producer
+
+    def default_matrix(connection, expected, purpose, defaults, owned_dependencies):
+        from copy import deepcopy
+
+        def matches():
+            return interfaces._fixed_purpose_capability_matches(
+                connection, expected, purpose=purpose
+            )
+
+        assert matches()  # No default record is also source-valid.
+        apply.converge_default_privileges(connection, ("public",), (purpose,))
+        assert {row["kind"] for row in defaults} == {"f", "T"}
+        original = deepcopy(defaults)
+        original_owned = list(owned_dependencies)
+        for kinds in ({"f"}, {"T"}, {"f", "T"}):
+            defaults[:] = [deepcopy(row) for row in original if row["kind"] in kinds]
+            owned_dependencies[:] = [("pg_default_acl", row["oid"]) for row in defaults]
+            assert matches()
+        mixed_bits_observations = []
+        for kind in ("f", "T"):
+            for mutation in (
+                "public",
+                "foreign",
+                "grantor",
+                "owner",
+                "schema",
+                "kind",
+                "verb",
+                "grantable",
+                "duplicate",
+                "mixed_bits",
+                "unknown_oid",
+                "other_class",
+                "unvalidated_empty",
+                "unrelated_owned",
+            ):
+                defaults[:] = deepcopy(original)
+                owned_dependencies[:] = original_owned
+                row = next(row for row in defaults if row["kind"] == kind)
+                verb = "EXECUTE" if kind == "f" else "USAGE"
+                if mutation in {"public", "foreign"}:
+                    row["aclitem_count"] = 2
+                    row["exploded"].append(
+                        (purpose, "PUBLIC" if mutation == "public" else "foreign", verb, False)
+                    )
+                elif mutation == "grantor":
+                    row["exploded"] = [("foreign", purpose, verb, False)]
+                elif mutation == "owner":
+                    row["owner"] = "foreign"
+                elif mutation == "schema":
+                    row["schema"] = "public"
+                elif mutation == "kind":
+                    row["kind"] = "S"
+                elif mutation == "verb":
+                    row["exploded"] = [(purpose, purpose, "SELECT", False)]
+                elif mutation == "grantable":
+                    row["exploded"] = [(purpose, purpose, verb, True)]
+                elif mutation == "duplicate":
+                    row["aclitem_count"] = 2
+                    row["exploded"] += row["exploded"]
+                elif mutation == "mixed_bits":
+                    # One ACLITEM, two privileges: EXISTS alone over-admits it.
+                    assert row["aclitem_count"] == 1
+                    row["exploded"].append((purpose, purpose, "SELECT", False))
+                elif mutation == "unknown_oid":
+                    owned_dependencies.append(("pg_default_acl", 749999))
+                elif mutation == "other_class":
+                    owned_dependencies.append(("pg_class", row["oid"]))
+                elif mutation == "unvalidated_empty":
+                    defaults.append(
+                        dict(
+                            oid=749998,
+                            owner=purpose,
+                            schema="",
+                            kind="r",
+                            aclitem_count=0,
+                            exploded=[],
+                        )
+                    )
+                    owned_dependencies.append(("pg_default_acl", 749998))
+                else:
+                    owned_dependencies.append(("pg_class", 749997))
+                if mutation == "mixed_bits":
+                    mixed_bits_observations.append((kind, matches()))
+                else:
+                    assert not matches(), (kind, mutation)
+        assert mixed_bits_observations == [("f", False), ("T", False)]
+        defaults[:] = original
+        owned_dependencies[:] = original_owned
+        assert matches()
+
+    def transport(sql, params, decoded):
+        if "actor.rolsuper AND actor.rolname=session_user" in sql:
+            return ("database", "owner", "valid"), [("test_priority_driver", "normal_owner", True)]
+        if sql == "SELECT current_schema()":
+            return ("schema",), [(state["target"],)]
+        if sql == "SELECT current_database(), current_user, session_user":
+            return ("database", "actor", "maintenance"), [
+                ("test_priority_driver", state["actor"], "maintenance")
+            ]
+        if sql.lstrip().startswith("SELECT n.nspname AS schema, c.relname AS name"):
+            columns = ("oid", "schema", "name", "kind", "owner", "rls", "forced_rls", "partition")
+            vectors = state["vectors"] or [("public", state["revision"])]
+            return columns, [
+                (731000 + i, schema, "alembic_version", "r", "normal_owner", False, False, False)
+                for i, (schema, revision) in enumerate(vectors)
+            ]
+        if "owner-lookup-replay:revision-abi" in sql:
+            return ("valid",), [(True,)]
+        if "FROM pg_catalog.pg_attribute col" in sql:
+            return ("name", "role", "verb", "grantable"), []
+        if "a.privilege_type AS verb" in sql and "FROM pg_catalog.pg_class c" in sql:
+            return ("role", "verb", "grantable"), []
+        if sql.startswith('SELECT version_num FROM "'):
+            schema = sql.split('"')[1]
+            vectors = dict(state["vectors"] or [("public", state["revision"])])
+            return ("version_num",), [(vectors[schema],)]
+        if "WITH owners AS" in sql:
+            return ("valid",), [(state["fault"] != "role",)]
+        if "AS signature" in sql and "p.proname='priority_contacts_cascade_audit'" in sql:
+            return ("signature",), (
+                [("text" if state["fault"] == "signature" else "",)] if state["exists"] else []
+            )
+        if "pg_get_function_identity_arguments" in sql:
+            return ("oid", "owner", "definer", "config", "body", "arguments"), (
+                [
+                    (
+                        731001,
+                        "foreign" if state["fault"] == "owner" else "priority_contact_audit_owner",
+                        state["fault"] != "security",
+                        [] if state["fault"] == "path" else ["search_path=pg_catalog, pg_temp"],
+                        state["body"] if state["fault"] != "body" else "invalid",
+                        "",
+                    )
+                ]
+                if state["exists"]
+                else []
+            )
+        if "owner-lookup-replay:metadata" in sql:
+            return ("valid",), [(state["fault"] != "metadata",)]
+        if "AS privilege" in sql and "FROM pg_catalog.pg_proc p" in sql:
+            return ("role", "privilege", "grantable"), (
+                [("PUBLIC", "EXECUTE", False)] if state["fault"] == "execute" else state["acl"]
+            )
+        if "historical-audit:public-namespace" in sql:
+            assert params == {"owner": "normal_owner"}
+            return ("valid",), [(state["fault"] != "namespace",)]
+        if "t.tgfoid=pg_catalog.to_regprocedure" in sql:
+            return ("valid",), [(state["fault"] != "trigger",)]
+        if "count(*)=2 AND bool_and" in sql:
+            return ("valid",), [(state["fault"] != "dependencies",)]
+        if "count(*)=4 AND bool_and" in sql:
+            return ("valid",), [(state["fault"] != "sequence",)]
+        produced = default_producer(
+            sql,
+            decoded,
+            "priority_contact_audit_owner",
+            state["defaults"],
+            state["owned_dependencies"],
+        )
+        if produced is not None:
+            return produced
+        if "complete-purpose-capabilities" in sql:
+            assert "rolname='priority_contact_audit_owner'" in sql
+            return ("kind", "schema", "name", "signature", "column", "verb", "grantable"), (
+                capabilities
+                + default_observations(
+                    sql,
+                    "priority_contact_audit_owner",
+                    state["defaults"],
+                    state["owned_dependencies"],
+                )
+                + (
+                    [("parameter", "", "work_mem", "", "", "SET", False)]
+                    if state["fault"] == "capability"
+                    else []
+                )
+            )
+        if "managed-public-capabilities" in sql:
+            assert "a.grantee=0" in sql
+            return ("kind", "schema", "name", "signature", "column", "verb", "grantable"), (
+                [("column", "public", "model_catalog", "", "id", "SELECT", False)]
+                if state["fault"] == "public"
+                else []
+            )
+        if sql == "RESET ROLE":
+            state["actor"] = "maintenance"
+            state["reset"] += 1
+            return None, []
+        if sql.startswith('SET ROLE "normal_owner"'):
+            state["actor"] = "normal_owner"
+            state["restore"] += 1
+            if state["fault"] == "cancel-close":
+                raise RuntimeError("restore failed")
+            return None, []
+        if "SELECT session_user=current_user AND rolsuper" in sql:
+            return ("valid",), [(state["actor"] == "maintenance",)]
+        if "CREATE OR REPLACE FUNCTION public.priority_contacts_cascade_audit" in sql:
+            if state["actor"] != "maintenance":
+                raise PermissionError("normal actor denied replacement")
+            if state["fault"] in {"cancel", "cancel-close"}:
+                raise asyncio.CancelledError()
+            state["body"] = decoded.split("AS $db_authority_body$", 1)[1].rsplit(
+                "$db_authority_body$", 1
+            )[0]
+            state["exists"] = True
+            return None, []
+        if sql.startswith('ALTER FUNCTION "public"."priority_contacts_cascade_audit"() OWNER'):
+            return None, []
+        if sql.startswith("REVOKE ALL ON FUNCTION"):
+            state["acl"] = []
+            return None, []
+        if "DO $audit_attach$" in sql or "DO $audit_retire$" in sql:
+            assert state["actor"] == "maintenance"
+            return None, []
+        if sql.startswith("DROP FUNCTION IF EXISTS public.priority_contacts_cascade_audit"):
+            assert state["actor"] == "maintenance"
+            state["exists"] = False
+            return None, []
+        raise AssertionError(
+            "Unmodeled catalog operation " + __import__("hashlib").sha256(sql.encode()).hexdigest()
+        )
+
+    with _recording_postgresql_connection(transport) as (connection, calls):
+        connection.info["butlers.source_database"] = "butlers"
+
+        def ordinary(sql):
+            if "CREATE OR REPLACE FUNCTION" in str(sql):
+                raise PermissionError("ordinary actor cannot replace purpose function")
+
+        with patch.dict(
+            middle["upgrade"].__globals__,
+            {
+                "_table_exists": lambda conn: True,
+                "_column_exists": lambda *a: False,
+                "_grant_best_effort": lambda *a: None,
+            },
+        ):
+            with (
+                patch("alembic.op.get_bind", return_value=connection),
+                patch("alembic.op.execute", side_effect=ordinary),
+            ):
+                middle["upgrade"]()
+        assert state["body"] == middle["_TRIGGER_FN_GLOBAL"].split("AS $$", 1)[1].rsplit("$$", 1)[0]
+        assert state["actor"] == "normal_owner" and state["reset"] == state["restore"] == 1
+        for fault in (
+            "role",
+            "body",
+            "signature",
+            "owner",
+            "security",
+            "path",
+            "execute",
+            "metadata",
+            "trigger",
+            "dependencies",
+            "sequence",
+            "capability",
+            "namespace",
+        ):
+            state.update(revision="core_129", fault=fault)
+            before = state["reset"]
+            with pytest.raises(AuthorityError):
+                interfaces.historical_priority_audit_revision(connection, "core_205", "upgrade")
+            assert state["reset"] == before
+        state.update(revision="core_129", fault=None)
+        manifest = grants.compile_relation_manifest(
+            "test_priority_driver", "normal_owner", "maintenance", source_database="butlers"
+        )
+        authority = grants.compile_historical_priority_audit(
+            manifest.profiles, "normal_owner", (("core", "public", "core_129"),)
+        )
+        expected = grants.historical_priority_audit_capabilities(manifest, authority)
+        assert interfaces._fixed_purpose_capability_matches(
+            connection, expected, purpose="priority_contact_audit_owner"
+        )
+        default_matrix(
+            connection,
+            expected,
+            "priority_contact_audit_owner",
+            state["defaults"],
+            state["owned_dependencies"],
+        )
+        state["fault"] = "public"
+        assert not interfaces._fixed_purpose_capability_matches(
+            connection, expected, purpose="priority_contact_audit_owner"
+        )
+        state.update(revision="core_204", fault=None)
+        assert interfaces.historical_priority_audit_revision(connection, "core_205", "upgrade")
+        assert not state["exists"] and state["actor"] == "normal_owner"
+        from butlers.migrations import get_chain_head
+
+        for target, vectors in (
+            ("public", [("public", "core_205"), ("switchboard", get_chain_head("core"))]),
+            ("public", [("public", "core_204"), ("switchboard", "core_205")]),
+            ("public", [("public", "core_205"), ("switchboard", "core_205")]),
+            ("switchboard", [("public", "core_205"), ("switchboard", "core_204")]),
+        ):
+            state.update(target=target, vectors=vectors)
+            before = state["reset"]
+            with pytest.raises(AuthorityError):
+                interfaces.historical_priority_audit_revision(connection, "core_205", "downgrade")
+            assert state["reset"] == before and not state["exists"]
+        state.update(target="public", vectors=None, revision="core_205")
+        assert interfaces.historical_priority_audit_revision(connection, "core_205", "downgrade")
+        assert state["exists"] and state["actor"] == "normal_owner"
+        state["revision"] = "core_129"
+        assert interfaces.historical_priority_audit_revision(connection, "core_129", "downgrade")
+        assert state["body"] == source101
+        for fault in ("cancel", "cancel-close"):
+            state.update(revision="core_128", fault=fault)
+            primary = asyncio.CancelledError()
+
+            def cancelled_install(*args, primary=primary):
+                raise primary
+
+            with patch.object(
+                interfaces, "normalize_historical_priority_audit", side_effect=cancelled_install
+            ):
+                with pytest.raises(asyncio.CancelledError) as observed:
+                    interfaces.historical_priority_audit_revision(connection, "core_129", "upgrade")
+            assert observed.value is primary
+            assert state["actor"] == "normal_owner"
+        state["fault"] = None
+        for args in (("core_101;DROP", "upgrade"), ("core_129", "other")):
+            before = len(calls)
+            with pytest.raises(AuthorityError):
+                interfaces.historical_priority_audit_revision(connection, *args)
+            assert len(calls) == before
+
+    # Exercise the same actual shared query with the other fixed purpose and
+    # its real compiler-selected UUID/function/PUBLIC population.
+    lookup = _OwnerLookupPrefixCatalog("current")
+    lookup_defaults = []
+    lookup_owned = []
+
+    def lookup_transport(sql, params, decoded):
+        produced = default_producer(
+            sql, decoded, "identity_lookup_owner", lookup_defaults, lookup_owned
+        )
+        if produced is not None:
+            return produced
+        columns, rows = lookup.respond(sql, params, decoded)
+        if "complete-purpose-capabilities" in sql:
+            assert "rolname='identity_lookup_owner'" in sql
+            rows = list(rows) + default_observations(
+                sql, "identity_lookup_owner", lookup_defaults, lookup_owned
+            )
+        return columns, rows
+
+    with _recording_postgresql_connection(lookup_transport) as (connection, calls):
+        assert any(
+            row.name == "uuid_generate_v7" for row in lookup.expected_capabilities.capabilities
+        )
+        default_matrix(
+            connection,
+            lookup.expected_capabilities,
+            "identity_lookup_owner",
+            lookup_defaults,
+            lookup_owned,
+        )
+        for fault in (
+            "uuid_execute_missing",
+            "parameter_set_grant",
+            "model_catalog_extra_column",
+            "public_model_catalog_extra_column",
+        ):
+            lookup.lookup_fault = fault
+            assert not interfaces._owner_lookup_capability_matches(
+                connection, lookup.expected_capabilities
+            )
+        lookup.lookup_fault = None
+        assert interfaces._owner_lookup_capability_matches(connection, lookup.expected_capabilities)
+
+    # A selected private-module retry is not evidence that the installed public
+    # core retired its source-produced trigger. Record actual producers and
+    # actual finalizer effects; the catalog boundary remains software only.
+    import re
+
+    phase_sources = []
+    for filename in ("core_002_identity.py", "core_092_audit_log.py"):
+        producer = runpy.run_path(str(root / "alembic/versions/core" / filename))
+        with patch("alembic.op.execute", side_effect=lambda sql: phase_sources.append(str(sql))):
+            producer["upgrade"]()
+    # Capture the actual ordinary core101 producer too; its function-only
+    # helper alone cannot prove the priority_contacts table was produced.
+    state.update(
+        revision="core_100",
+        actor="normal_owner",
+        fault=None,
+        exists=False,
+        vectors=None,
+        target="public",
+    )
+    with _recording_postgresql_connection(transport) as (producer_connection, _):
+        producer_connection.info["butlers.source_database"] = "butlers"
+        with (
+            patch("alembic.op.get_bind", return_value=producer_connection),
+            patch("alembic.op.execute", side_effect=lambda sql: phase_sources.append(str(sql))),
+        ):
+            first["upgrade"]()
+    phase_sources.extend(source)
+    memory_root = root / "src/butlers/modules/memory/migrations"
+    memory_sources = []
+    for filename in (
+        "001_memory_schema.py",
+        "002_seed_predicates.py",
+        "003_wellness_predicates.py",
+        "004_embedding_model_version.py",
+        "005_drop_embedding_versions.py",
+        "006_drop_rule_applications.py",
+    ):
+        producer = runpy.run_path(str(memory_root / filename))
+        with patch("alembic.op.execute", side_effect=lambda sql: memory_sources.append(str(sql))):
+            producer["upgrade"]()
+    full = grants.compile_relation_manifest(
+        "test_priority_driver", "normal_owner", "maintenance", source_database="butlers"
+    )
+    private = next(p.private_schemas[0] for p in full.profiles if p.private_schemas)
+    assert any(private in p.private_schemas and "memory" in p.modules for p in full.profiles)
+    from butlers.migrations import finalize_authority, get_chain_revision_path
+
+    assert {"core_092", "core_101", "core_129"} <= get_chain_revision_path("core", "core_133")
+    assert {"mem_001", "mem_005", "mem_006"} <= get_chain_revision_path("memory", "mem_006")
+    # The other public identity tables are outside this component observation;
+    # every table modeled below is bound to its actual emitted producer.
+    public_names = {"contacts", "audit_log", "priority_contacts"}
+    observed_names = {
+        match[1]
+        for sql in phase_sources
+        if (match := re.search(r"CREATE TABLE IF NOT EXISTS public\.([a-z_]+)\s*\(", sql))
+        and match[1] in public_names
+    }
+    assert observed_names == public_names
+    assert any("id         BIGSERIAL PRIMARY KEY" in sql for sql in phase_sources)
+    assert any("CREATE TRIGGER trg_priority_contacts_cascade_audit" in sql for sql in source)
+    assert all(
+        f"{col}" in next(sql for sql in phase_sources if "public.audit_log (" in sql)
+        for col in ("actor", "action", "target", "note")
+    )
+    memory_names = set()
+    for sql in memory_sources:
+        if match := re.search(r"CREATE TABLE IF NOT EXISTS ([a-z_]+)\s*\(", sql):
+            memory_names.add(match[1])
+        if match := re.fullmatch(r"DROP TABLE IF EXISTS ([a-z_]+)(?: CASCADE)?", sql):
+            memory_names.discard(match[1])
+    assert memory_names and not {"embedding_versions", "rule_applications"} & memory_names
+    tables = {}
+    for schema, names in (
+        ("public", observed_names | {"audit_log_id_seq"}),
+        (private, memory_names),
+    ):
+        for name in sorted(names):
+            oid = 751000 + len(tables)
+            tables[oid] = dict(
+                oid=oid,
+                schema=schema,
+                name=name,
+                kind="S" if name == "audit_log_id_seq" else "r",
+                owner="normal_owner",
+                rls=False,
+                forced_rls=False,
+                partition=False,
+            )
+    # The ledger ABI is constructed by the installed real Alembic producer,
+    # independently of the application's reader/compiler expectations.
+    from alembic.ddl.impl import DefaultImpl
+
+    ledger = {"public": "core_133", private: "mem_006"}
+    ledger_metadata = {}
+    for schema in ledger:
+        table = DefaultImpl.version_table_impl(
+            None,
+            version_table="alembic_version",
+            version_table_schema=schema,
+            version_table_pk=True,
+        )
+        oid = 751000 + len(tables)
+        tables[oid] = dict(
+            oid=oid,
+            schema=str(table.schema),
+            name=str(table.name),
+            kind="r",
+            owner="normal_owner",
+            rls=False,
+            forced_rls=False,
+            partition=False,
+        )
+        ledger_metadata[oid] = table
+    table_acl = {oid: set() for oid in tables}
+    column_acl = {oid: set() for oid in tables}
+    # Source runtime grants are observed preimages and later revoked; they do
+    # not define the finalizer's allow-set or the non-serving purpose profile.
+    for sql in phase_sources:
+        for grant in re.finditer(
+            r"EXECUTE 'GRANT ([A-Z, ]+) ON TABLE public\.([a-z_]+) TO \"([a-z_]+)\"'", sql
+        ):
+            for oid, row in tables.items():
+                if (row["schema"], row["name"]) == ("public", grant[2]):
+                    table_acl[oid].update((grant[3], verb.strip()) for verb in grant[1].split(","))
+    namespace_ids = {
+        schema: 752000 + i for i, schema in enumerate(("public", "connectors", "calendar", private))
+    }
+    namespace_acl = {oid: set() for oid in namespace_ids.values()}
+    audit_body = middle["_TRIGGER_FN_GLOBAL"].split("AS $$", 1)[1].rsplit("$$", 1)[0]
+    memory_body = next(sql for sql in memory_sources if "CREATE OR REPLACE FUNCTION" in sql)
+    memory_body = memory_body.split("AS $$", 1)[1].rsplit("$$", 1)[0]
+    functions = {
+        ("public", "priority_contacts_cascade_audit"): dict(
+            oid=753001,
+            owner="normal_owner",
+            definer=True,
+            config=[],
+            body=audit_body,
+            arguments="",
+            acl=[("PUBLIC", "EXECUTE", False)],
+        ),
+        (private, "predicate_registry_search_vector_trigger"): dict(
+            oid=753002,
+            owner="normal_owner",
+            definer=False,
+            config=[],
+            body=memory_body,
+            arguments="",
+            acl=[("PUBLIC", "EXECUTE", False)],
+        ),
+    }
+    state.update(
+        revision="core_133",
+        actor="maintenance",
+        fault=None,
+        defaults=[],
+        owned_dependencies=[],
+        exists=True,
+        vectors=list(ledger.items()),
+    )
+
+    ledger_grant_options = set()
+    duplicate_ledger = []
+    public_column_acl = set()
+    public_observations = []
+    source_read_drift = {"armed": False, "active": False}
+
+    def phase_transport(sql, params, decoded):
+        canonical = re.sub(r"%\((\w+)\)s", r":\1", sql)
+        if decoded == "SELECT current_database(), session_user":
+            return ("database", "actor"), [("test_priority_driver", "maintenance")]
+        for schema, revision in ledger.items():
+            if decoded in {
+                f'SELECT version_num FROM "{schema}".alembic_version',
+                f'SELECT version_num FROM "{schema}"."alembic_version"',
+            }:
+                values = revision if type(revision) is tuple else (revision,)
+                if source_read_drift["armed"]:
+                    source_read_drift["active"] = True
+                return ("version_num",), [(value,) for value in values]
+        if "owner-lookup-replay:revision-abi" in sql:
+            table = ledger_metadata[params["oid"]]
+            columns = tuple(table.columns)
+            valid = (
+                len(columns) == 1
+                and columns[0].name == "version_num"
+                and str(columns[0].type) == "VARCHAR(32)"
+                and not columns[0].nullable
+                and tuple(col.name for col in table.primary_key) == ("version_num",)
+                and columns[0].server_default is None
+                and columns[0].identity is None
+                and columns[0].computed is None
+            )
+            return ("valid",), [(valid,)]
+        if canonical == apply._FUNCTIONS:
+            return ("oid", "schema", "name", "arguments", "owner"), [
+                (row["oid"], schema, name, row["arguments"], row["owner"])
+                for (schema, name), row in functions.items()
+                if schema in params["schemas"]
+            ]
+        if canonical == apply._RELATIONS:
+            rows = [row for row in tables.values() if row["schema"] in params["schemas"]]
+            rows += [row for row in duplicate_ledger if row["schema"] in params["schemas"]]
+            return tuple(next(iter(tables.values()))), [tuple(row.values()) for row in rows]
+        if canonical == apply._PARTITION_LINKS:
+            return ("oid", "parent_schema", "parent_name"), []
+        if canonical == apply._SEQUENCE_LINKS:
+            return (
+                "oid",
+                "parent_schema",
+                "parent_name",
+                "parent_column",
+                "parent_owner",
+                "deptype",
+            ), [
+                (oid, "public", "audit_log", "id", "normal_owner", "a")
+                for oid in params["oids"]
+                if tables[oid]["name"] == "audit_log_id_seq"
+            ]
+        if canonical == apply._RELATION_ACL:
+            return ("role", "verb", "grantable"), [
+                (role, verb, params["oid"] in ledger_grant_options)
+                for role, verb in table_acl[params["oid"]]
+            ]
+        if canonical == apply._COLUMN_ACL:
+            return ("role", "name", "verb", "grantable"), [
+                (role, col, verb, False) for role, col, verb in column_acl[params["oid"]]
+            ]
+        if canonical == apply._NAMESPACE_CATALOG:
+            return ("oid", "name", "owner"), [
+                (namespace_ids[s], s, "normal_owner") for s in params["schemas"]
+            ]
+        if canonical == apply._NAMESPACE_ACL:
+            return ("role", "verb", "grantable"), [
+                (role, verb, False) for role, verb in namespace_acl[params["oid"]]
+            ]
+        if "AS signature" in sql and "p.proname='priority_contacts_cascade_audit'" in sql:
+            return ("signature",), [
+                (functions[("public", "priority_contacts_cascade_audit")]["arguments"],)
+            ]
+        if canonical == interfaces._FUNCTION_CATALOG:
+            signature = params["signature"]
+            for (schema, name), row in functions.items():
+                if signature == f'"{schema}"."{name}"()':
+                    keys = ("oid", "owner", "definer", "config", "body", "arguments")
+                    return keys, [tuple(row[key] for key in keys)]
+            raise AssertionError("Unknown component function observation")
+        if canonical == interfaces._FUNCTION_ACL:
+            return ("role", "privilege", "grantable"), next(
+                row["acl"] for row in functions.values() if row["oid"] == params["oid"]
+            )
+        if "managed-public-capabilities" in sql:
+            assert "a.grantee=0" in sql
+            public_observations.append(True)
+            rows = [
+                ("column", tables[oid]["schema"], tables[oid]["name"], "", column, verb, grantable)
+                for oid, column, grantee, verb, grantable in public_column_acl
+                if grantee == 0 and tables[oid]["schema"] in params["object_schemas"]
+            ]
+            return ("kind", "schema", "name", "signature", "column", "verb", "grantable"), rows
+        if "complete-purpose-capabilities" in sql:
+            assert "rolname='priority_contact_audit_owner'" in sql
+            rows = [
+                ("relation", row["schema"], row["name"], "", "", verb, False)
+                for oid, row in tables.items()
+                for role, verb in table_acl[oid]
+                if role == "priority_contact_audit_owner"
+            ]
+            rows += [
+                ("column", row["schema"], row["name"], "", col, verb, False)
+                for oid, row in tables.items()
+                for role, col, verb in column_acl[oid]
+                if role == "priority_contact_audit_owner"
+            ]
+            rows += [
+                ("namespace", schema, "", "", "", verb, False)
+                for schema, oid in namespace_ids.items()
+                for role, verb in namespace_acl[oid]
+                if role == "priority_contact_audit_owner"
+            ]
+            rows += default_observations(
+                sql, "priority_contact_audit_owner", state["defaults"], state["owned_dependencies"]
+            )
+            return ("kind", "schema", "name", "signature", "column", "verb", "grantable"), rows
+        if decoded.startswith("CREATE OR REPLACE FUNCTION public.priority_contacts_cascade_audit"):
+            assert state["actor"] == "maintenance"
+            row = functions[("public", "priority_contacts_cascade_audit")]
+            row.update(
+                body=decoded.split("AS $db_authority_body$", 1)[1].rsplit("$db_authority_body$", 1)[
+                    0
+                ],
+                config=["search_path=pg_catalog, pg_temp"],
+            )
+            return None, []
+        if match := re.fullmatch(
+            r'ALTER FUNCTION "([a-z_]+)"\."([a-z_]+)"\(\) OWNER TO "([a-z_]+)"', decoded
+        ):
+            functions[(match[1], match[2])]["owner"] = match[3]
+            return None, []
+        if match := re.fullmatch(
+            r'REVOKE ALL ON FUNCTION "([a-z_]+)"\."([a-z_]+)"\(\) FROM (PUBLIC|"[a-z_]+")', decoded
+        ):
+            row = functions[(match[1], match[2])]
+            role = match[3].strip('"')
+            row["acl"] = [acl for acl in row["acl"] if acl[0] != role]
+            return None, []
+        if match := re.fullmatch(r'GRANT USAGE ON SCHEMA "([a-z_]+)" TO "([a-z_]+)"', decoded):
+            namespace_acl[namespace_ids[match[1]]].add((match[2], "USAGE"))
+            return None, []
+        if match := re.fullmatch(r'REVOKE ALL ON SCHEMA "([a-z_]+)" FROM "([a-z_]+)"', decoded):
+            namespace_acl[namespace_ids[match[1]]].difference_update(
+                {(match[2], "USAGE"), (match[2], "CREATE")}
+            )
+            return None, []
+        for oid, row in tables.items():
+            target = f'"{row["schema"]}"."{row["name"]}"'
+            if match := re.fullmatch(
+                r"REVOKE ALL PRIVILEGES ON (TABLE|SEQUENCE) "
+                + re.escape(target)
+                + r' FROM "([a-z_]+)"',
+                decoded,
+            ):
+                table_acl[oid].difference_update(
+                    {entry for entry in table_acl[oid] if entry[0] == match[2]}
+                )
+                return None, []
+            if (
+                decoded
+                == f'GRANT INSERT ("actor", "action", "target", "note") ON TABLE {target} TO "priority_contact_audit_owner"'
+            ):
+                assert (row["schema"], row["name"]) == ("public", "audit_log")
+                column_acl[oid].update(
+                    ("priority_contact_audit_owner", col, "INSERT")
+                    for col in ("actor", "action", "target", "note")
+                )
+                return None, []
+            if decoded == f'GRANT USAGE ON SEQUENCE {target} TO "priority_contact_audit_owner"':
+                assert (row["schema"], row["name"]) == ("public", "audit_log_id_seq")
+                table_acl[oid].add(("priority_contact_audit_owner", "USAGE"))
+                return None, []
+        if canonical == apply._DEFAULT_ACL:
+            return ("owner", "schema", "kind", "role", "verb"), []
+        if decoded.startswith('ALTER DEFAULT PRIVILEGES FOR ROLE "'):
+            role = decoded.split('"')[1]
+            assert role in {*roles.PURPOSE_OWNERS, "normal_owner", "maintenance"}
+            if role != "priority_contact_audit_owner":
+                assert decoded in {
+                    f'ALTER DEFAULT PRIVILEGES FOR ROLE "{role}" REVOKE ALL ON {kind} FROM PUBLIC'
+                    for kind in ("FUNCTIONS", "TYPES")
+                }
+                return None, []
+        return transport(sql, params, decoded)
+
+    with _recording_postgresql_connection(phase_transport) as (connection, calls):
+        connection.info["butlers.source_database"] = "butlers"
+        initial = (("core", "public", "core_133"), ("memory", private, "mem_006"))
+        finalize_authority(connection, source_database="butlers", plans=initial)
+        assert (
+            functions[("public", "priority_contacts_cascade_audit")]["owner"]
+            == "priority_contact_audit_owner"
+        )
+        assert functions[("public", "priority_contacts_cascade_audit")]["acl"] == []
+        assert ledger == {"public": "core_133", private: "mem_006"}
+        # This actual consumer must retain the already-finalized public phase;
+        # requested module plans cannot authorize global retirement.
+        assert not connection.in_transaction()
+        assert all(
+            role == "priority_contact_audit_owner"
+            for rows in table_acl.values()
+            for role, _verb in rows
+        )
+        assert all(
+            role == "priority_contact_audit_owner"
+            for rows in column_acl.values()
+            for role, _column, _verb in rows
+        )
+        before_replay = len(calls)
+        try:
+            finalize_authority(
+                connection, source_database="butlers", plans=(("memory", private, "mem_006"),)
+            )
+        except AuthorityError as error:
+            # Closed source-category check; no raw exception text is retained.
+            assert str(error) == "Retired priority audit function remains available"
+            assert not any(
+                decoded.lstrip().startswith(("CREATE ", "ALTER ", "DROP ", "GRANT ", "REVOKE "))
+                for _, _, decoded in calls[before_replay:]
+            )
+            assert ledger == {"public": "core_133", private: "mem_006"}
+            error.add_note(
+                "DB_MODULE_ONLY_PHASE_BASELINE_V1 initial_finalizer=complete selected_memory=mem_006 durable_core=core_133 category=retired_audit"
+            )
+            raise
+
+        assert ledger == {"public": "core_133", private: "mem_006"}
+        assert (
+            functions[("public", "priority_contacts_cascade_audit")]["owner"]
+            == "priority_contact_audit_owner"
+        )
+        assert functions[("public", "priority_contacts_cascade_audit")]["acl"] == []
+        assert not any(
+            "priority_contacts_cascade_audit" in decoded
+            and decoded.lstrip().startswith(("CREATE ", "ALTER ", "DROP ", "GRANT ", "REVOKE "))
+            for _, _, decoded in calls[before_replay:]
+        )
+
+        # These contexts come from the installed source vector. Requested future
+        # source205 may not retire a still-installed133 component.
+        installed = (("core", "public", "core_133"), ("memory", private, "mem_006"))
+        future = grants.select_migration_manifest(
+            full, (("core", "public", "core_205"),), installed_audit_vector=installed
+        )
+        assert any(
+            row.name == "audit_log"
+            and any(
+                permission.role == "priority_contact_audit_owner" for permission in row.permissions
+            )
+            for row in future.relations
+        )
+        for installed_core, expected_stage in (
+            ("core_100", None),
+            ("core_101", "101"),
+            ("core_129", "129"),
+            ("core_133", "129"),
+            ("core_205", None),
+        ):
+            compiled = grants.compile_historical_priority_audit(
+                full.profiles,
+                "normal_owner",
+                (("core", "public", installed_core), ("memory", private, "mem_006")),
+            )
+            assert (compiled.stage if compiled else None) == expected_stage
+        assert (
+            grants.compile_historical_priority_audit(
+                full.profiles, "normal_owner", (("memory", private, "mem_006"),)
+            )
+            is None
+        )
+        assert (
+            grants.compile_historical_priority_audit(
+                full.profiles,
+                "normal_owner",
+                (("core", "public", "core_133"), ("core", "general", "core_205")),
+            )
+            is None
+        )
+        from copy import deepcopy
+
+        public_ledger = next(
+            oid
+            for oid, row in tables.items()
+            if row["schema"] == "public" and row["name"] == "alembic_version"
+        )
+        audit = functions[("public", "priority_contacts_cascade_audit")]
+        audit_oid = next(
+            oid
+            for oid, row in tables.items()
+            if row["schema"] == "public" and row["name"] == "audit_log"
+        )
+        original_ledger = dict(tables[public_ledger])
+        original_audit = deepcopy(audit)
+        for fault in (
+            "public_column",
+            "owner",
+            "kind",
+            "rls",
+            "forced_rls",
+            "abi",
+            "unknown_revision",
+            "duplicate_revision",
+            "duplicate_ledger",
+            "unknown_reader",
+            "write",
+            "grant_option",
+            "column",
+            "audit_body",
+            "audit_owner",
+            "audit_security",
+            "audit_path",
+            "audit_signature",
+            "audit_execute",
+            "audit_capability",
+            "namespace",
+        ):
+            tables[public_ledger].update(original_ledger)
+            audit.update(deepcopy(original_audit))
+            ledger["public"] = "core_133"
+            if fault == "public_column":
+                public_column_acl.add((audit_oid, "actor", 0, "SELECT", False))
+            elif fault in {"owner", "kind", "rls", "forced_rls"}:
+                field = {
+                    "owner": "owner",
+                    "kind": "kind",
+                    "rls": "rls",
+                    "forced_rls": "forced_rls",
+                }[fault]
+                tables[public_ledger][field] = {
+                    "owner": "foreign",
+                    "kind": "v",
+                    "rls": True,
+                    "forced_rls": True,
+                }[fault]
+            elif fault == "abi":
+                ledger_metadata[public_ledger].c.version_num.nullable = True
+            elif fault == "unknown_revision":
+                ledger["public"] = "core_unknown"
+            elif fault == "duplicate_revision":
+                ledger["public"] = ("core_133", "core_133")
+            elif fault == "duplicate_ledger":
+                duplicate_ledger.append(dict(tables[public_ledger]))
+            elif fault in {"unknown_reader", "write", "grant_option"}:
+                role, verb = (
+                    ("unknown_role", "SELECT")
+                    if fault == "unknown_reader"
+                    else ("dashboard_api", "UPDATE" if fault == "write" else "SELECT")
+                )
+                table_acl[public_ledger].add((role, verb))
+                if fault == "grant_option":
+                    ledger_grant_options.add(public_ledger)
+            elif fault == "column":
+                column_acl[public_ledger].add(("dashboard_api", "version_num", "SELECT"))
+            elif fault.startswith("audit_"):
+                field = fault.removeprefix("audit_")
+                if field == "body":
+                    audit["body"] = "invalid"
+                elif field == "owner":
+                    audit["owner"] = "foreign"
+                elif field == "security":
+                    audit["definer"] = False
+                elif field == "path":
+                    audit["config"] = []
+                elif field == "signature":
+                    audit["arguments"] = "text"
+                elif field == "execute":
+                    audit["acl"] = [("PUBLIC", "EXECUTE", False)]
+                else:
+                    table_acl[audit_oid].add(("priority_contact_audit_owner", "SELECT"))
+            else:
+                state["fault"] = "namespace"
+            before_fault = len(calls)
+            before_public_observation = len(public_observations)
+            with pytest.raises(AuthorityError):
+                finalize_authority(
+                    connection, source_database="butlers", plans=(("memory", private, "mem_006"),)
+                )
+            if fault == "public_column":
+                assert len(public_observations) > before_public_observation
+            assert not any(
+                decoded.lstrip().startswith(("CREATE ", "ALTER ", "DROP ", "GRANT ", "REVOKE "))
+                for _, _, decoded in calls[before_fault:]
+            ), fault
+            tables[public_ledger].update(original_ledger)
+            audit.update(deepcopy(original_audit))
+            ledger["public"] = "core_133"
+            ledger_metadata[public_ledger].c.version_num.nullable = False
+            duplicate_ledger.clear()
+            ledger_grant_options.clear()
+            public_column_acl.clear()
+            table_acl[public_ledger].clear()
+            column_acl[public_ledger].clear()
+            table_acl[audit_oid].discard(("priority_contact_audit_owner", "SELECT"))
+            state["fault"] = None
+        assert ledger == {"public": "core_133", private: "mem_006"}
+        assert audit == original_audit
+
+        actual_source_bytes = Path.read_bytes
+        compiler_path = Path(grants.__file__).resolve()
+
+        def changed_source_read(path):
+            observed = actual_source_bytes(path)
+            if source_read_drift["active"] and path.resolve() == compiler_path:
+                return observed + b"\n# independently observed source change\n"
+            return observed
+
+        before_drift = len(calls)
+        source_read_drift["armed"] = True
+        try:
+            with patch.object(Path, "read_bytes", changed_source_read):
+                with pytest.raises(AuthorityError):
+                    finalize_authority(
+                        connection,
+                        source_database="butlers",
+                        plans=(("memory", private, "mem_006"),),
+                    )
+        finally:
+            source_read_drift.update(armed=False, active=False)
+        assert not any(
+            decoded.lstrip().startswith(("CREATE ", "ALTER ", "DROP ", "GRANT ", "REVOKE "))
+            for _, _, decoded in calls[before_drift:]
+        )
+        assert ledger == {"public": "core_133", private: "mem_006"}

@@ -593,7 +593,7 @@ def _security_catalog_sql() -> str:
             f"{tokens(expression)}=to_jsonb(ARRAY(SELECT CASE WHEN value="
             "pg_catalog.quote_literal('__NORMAL_OWNER__') THEN pg_catalog.quote_literal("
             "(SELECT pg_catalog.pg_get_userbyid(datdba) FROM normal_owner)) "
-            f"ELSE value END FROM pg_catalog.jsonb_array_elements_text({expected}))))"
+            f"ELSE value END FROM pg_catalog.jsonb_array_elements_text({expected})))))"
         )
 
     return (
