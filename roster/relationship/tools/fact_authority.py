@@ -8,12 +8,37 @@ from datetime import UTC, datetime
 from typing import Any
 
 from butlers.core.fact_authority import FactWriteContext, current_fact_write_context
+from butlers.tools.relationship.fact_temporal import TemporalError
+
+ENTITY_TOMBSTONED = "entity_tombstoned"
 
 REPORT_COLUMNS = (
     "content_authority, authority_entity_id, authority_original_entity_id, "
     "authority_entity_created_at, confirmed_by_entity_id, confirmed_by_original_entity_id, "
     "confirmed_at, confirmation_source"
 )
+
+
+class EntityTombstonedError(TemporalError):
+    """A fact write names a subject or entity object that a merge has tombstoned.
+
+    A :class:`TemporalError` (so a ``ValueError`` with a stable ``code``) so every
+    existing writer caller and refusal mapping keeps working; the code leads the
+    message because MCP callers see only the message. ``survivor_id`` is the
+    ``metadata.merged_into`` entity: re-resolve to it and retry. Nothing is redirected.
+    """
+
+    def __init__(self, side: str, entity_id: uuid.UUID, survivor_id: str | None) -> None:
+        self.side = side
+        self.entity_id = entity_id
+        self.survivor_id = survivor_id
+        super().__init__(
+            ENTITY_TOMBSTONED,
+            f"the {side} entity {entity_id} was merged away"
+            + (f"; re-resolve to {survivor_id} and retry" if survivor_id else ""),
+        )
+
+
 IDENTITY_PREDICATES = frozenset(
     {"has-email", "has-phone", "has-handle", "has-website", "prefers-channel"}
 )
@@ -55,11 +80,19 @@ async def locked_report(
     object_kind: str,
     src: str,
     extra_entity_ids: set[uuid.UUID] | None = None,
+    refuse_tombstoned: bool = False,
 ) -> FactWriteContext:
     """Lock the full FK union first; compare the source-captured birth witness.
 
     An unavailable live pointer never refills on preservation. The original UUID
     is never used as a display join, recipient selector or source credential.
+
+    With ``refuse_tombstoned`` (fact writes only; retract and confirm paths must still
+    reach a merged-away entity) the subject and an entity object are re-read after the
+    lock and a merge tombstone (``metadata.merged_into``) raises
+    :class:`EntityTombstonedError` before any fact or evidence row is written
+    (bu-gm93xc). The rows are ``FOR KEY SHARE`` locked, so a merge cannot commit
+    between this check and the write, and a write that waited on a merge sees it.
     """
     from butlers.tools.relationship.relationship_assert_fact import _lock_fact_entities_batch
 
@@ -96,6 +129,8 @@ async def locked_report(
     if report.confirmation_entity_id:
         ids.add(report.confirmation_entity_id)
     await _lock_fact_entities_batch(conn, ids)
+    if refuse_tombstoned:
+        await _refuse_tombstoned(conn, subject, object, object_kind)
     if report.live_entity_id:
         live = await conn.fetchrow(
             "SELECT created_at,metadata FROM public.entities WHERE id=$1", report.live_entity_id
@@ -124,6 +159,21 @@ async def locked_report(
             confirmation_source="owner_assertion",
         )
     return report
+
+
+async def _refuse_tombstoned(conn: Any, subject: uuid.UUID, object: str, object_kind: str) -> None:
+    sides = {subject: "subject"}
+    if object_kind == "entity":
+        sides.setdefault(uuid.UUID(object), "object")
+    rows = await conn.fetch(
+        "SELECT id, metadata->>'merged_into' AS survivor FROM public.entities "
+        "WHERE id = ANY($1::uuid[]) AND metadata ? 'merged_into'",
+        list(sides),
+    )
+    tombstoned = {row["id"]: row["survivor"] for row in rows}
+    for entity_id, side in sides.items():  # subject first
+        if entity_id in tombstoned:
+            raise EntityTombstonedError(side, entity_id, tombstoned[entity_id])
 
 
 async def should_hold_candidate(

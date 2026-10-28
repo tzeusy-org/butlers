@@ -804,9 +804,11 @@ async def _lock_fact_entities(
     with another writer. The subject and, for ``object_kind='entity'``, the
     object entity are locked; a missing entity row simply locks nothing.
 
-    Locking is all this does. A write that waits for a merge still proceeds
-    against the tombstoned source afterwards (``metadata.merged_into``); whether
-    the writer should refuse or follow the merge is bu-gm93xc.
+    Locking is all this does. A write that waited for a merge is refused by
+    :func:`butlers.tools.relationship.fact_authority.locked_report` once the
+    lock is held: it re-reads ``metadata.merged_into`` on the subject and an
+    entity object and raises ``EntityTombstonedError`` rather than follow the
+    merge (bu-gm93xc).
 
     Retract/verify-only paths write no FK column and take no entity lock, so
     they cannot join the cycle. Must run inside the caller's transaction.
@@ -1104,6 +1106,7 @@ async def _upsert_fact(
         object=object,
         object_kind=object_kind,
         src=src,
+        refuse_tombstoned=True,
     )
     if predicate in IDENTITY_PREDICATES:
         from butlers.tools.relationship.identity_slots import lock_identity_slot
@@ -2454,8 +2457,6 @@ async def assert_prefers_channel(
 
     async def _do(c: asyncpg.Connection) -> AssertResult:
         await _validate_predicate(c, PREFERS_CHANNEL_PREDICATE)
-        if not await _entity_has_reachability_fact(c, subject, channel):
-            raise ValueError(f"Cannot prefer channel {channel!r}: no active contact fact")
         context = await locked_report(
             c,
             current_fact_write_context(),
@@ -2463,7 +2464,12 @@ async def assert_prefers_channel(
             object=channel,
             object_kind="literal",
             src=src,
+            refuse_tombstoned=True,
         )
+        # Reachability is read under the entity lock, after the tombstone refusal, so a
+        # merged-away subject is refused as such rather than as "no contact fact".
+        if not await _entity_has_reachability_fact(c, subject, channel):
+            raise ValueError(f"Cannot prefer channel {channel!r}: no active contact fact")
         from butlers.tools.relationship.fact_identity_decisions import lock_identity_slot
 
         await lock_identity_slot(c, PREFERS_CHANNEL_PREDICATE, channel, subject)

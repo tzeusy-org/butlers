@@ -1,0 +1,16 @@
+{
+  "schema": "contract-evolution-request/v1",
+  "authorization": "bu-gm93xc-tombstone-refusal-20261018",
+  "owners": [
+    "roster/relationship/tests/test_contacts_merge_no_stranded_triples.py::TestFactEntityLockOrder::test_ordinary_supersede_waits_on_the_entity_while_a_merge_holds_it",
+    "roster/relationship/tests/test_resolve_outbound_channel.py::TestFallback::test_no_preference_falls_to_email_when_no_telegram",
+    "roster/relationship/tests/test_resolve_outbound_channel.py::TestFallback::test_no_preference_prefers_telegram",
+    "roster/relationship/tests/test_resolve_outbound_channel.py::TestFallback::test_no_reachable_channel_returns_none",
+    "roster/relationship/tests/test_resolve_outbound_channel.py::TestPreferenceHonored::test_email_preference_honored_over_telegram_fallback",
+    "roster/relationship/tests/test_resolve_outbound_channel.py::TestPreferenceHonored::test_preference_honored_when_deliverable_and_reachable",
+    "roster/relationship/tests/test_resolve_outbound_channel.py::TestPreferenceSkipped::test_skipped_when_deliverable_but_not_reachable",
+    "roster/relationship/tests/test_resolve_outbound_channel.py::TestPreferenceSkipped::test_skipped_when_not_deliverable_falls_back",
+    "roster/relationship/tests/test_resolve_outbound_channel.py::TestUnknownEntity::test_unknown_entity_returns_none"
+  ],
+  "timeout_s": 300
+}
