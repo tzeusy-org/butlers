@@ -74,3 +74,9 @@ exact stored replay, inert message text and disabled previews remain in force.
 The fixed dashboard control does not turn message-body URLs into live links,
 change unsupported transport policy, or authorize general links or login flows.
 A source guard binds every Python self route to the existing phone entry routes.
+
+## Long Telegram delivery and terminal tails
+
+Messenger keeps the original approved text and exact argument binding; the Telegram adapter performs ordered chunking after admission. A successful multi-chunk receipt names the last chunk and retains all validated chunk IDs. A known prefix failure returns `delivery_error`, `partial_delivery: true`, and `retryable: false`; an actual selected Telegram timeout/unknown effect is distinct `telegram_effect_uncertain: true` without prefix IDs. Neither is complete delivery. Cached route reconnect and legacy candidate selection must not replay these effects; read-only and proven-not-attempted retry controls remain intact.
+
+Deferred notifications, Secrets transition notifications, Insight and Health visit briefs settle their existing failed-tail/dedup state before a later automatic admission. Failed terminal writes remain quarantined within the process, including changed selection windows. Stored terminal state prevents replay after successful settlement and restart; no provider/database crash-atomic chunk outbox is claimed. Authenticated approval recovery continues to use its own provider-started/ambiguous durable handoff. Inert link handling, callback authority and ordinary preview behavior are unchanged.

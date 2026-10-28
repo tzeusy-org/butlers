@@ -784,16 +784,26 @@ jobs:
     # dispatch on main, also opens a PR with it. It never pushes to main. A stale
     # file only skews group balance: which tests run stays exact, because
     # `ci_lanes.py totals` checks every lane's groups against --collect-only
-    # (bu-29wkwj.2).
+    # (bu-29wkwj.2). The PR is pushed and opened as the butlers-ci-bot GitHub App,
+    # not GITHUB_TOKEN: the repo does not let Actions open PRs, and a PR opened
+    # with GITHUB_TOKEN would not trigger pull_request CI (bu-29wkwj.9).
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: [coverage-shards]
     if: ${{ !cancelled() }}
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     steps:
+      - name: Mint the butlers-ci-bot token
+        id: ci-bot
+        if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.CI_BOT_APP_ID }}
+          private-key: ${{ secrets.CI_BOT_APP_PRIVATE_KEY }}
       - uses: actions/checkout@v6
+        with:
+          token: ${{ steps.ci-bot.outputs.token || github.token }}
       - name: Download every lane group's evidence
         uses: actions/download-artifact@v4
         with:
@@ -813,7 +823,7 @@ jobs:
       - name: Open a durations refresh PR
         if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.ci-bot.outputs.token }}
         run: |
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" = schedule ] && [ "$(date -u +%u)" != 1 ]; then
@@ -825,8 +835,9 @@ jobs:
             exit 0
           fi
           branch="ci/test-durations-${GITHUB_RUN_ID}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          bot="${{ steps.ci-bot.outputs.app-slug }}[bot]"
+          git config user.name "$bot"
+          git config user.email "$(gh api "/users/${bot}" --jq .id)+${bot}@users.noreply.github.com"
           git switch -c "$branch"
           git add .test_durations
           git commit -m "ci: refresh .test_durations from nightly run ${GITHUB_RUN_ID}"

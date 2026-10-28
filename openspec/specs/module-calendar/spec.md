@@ -568,6 +568,12 @@ The dashboard SHALL provide a page at `/butlers/calendar` with a view toggle bet
   source's staleness (e.g. "Last synced Apr 7 — 96 days ago") with a
   "Sync now" action wired to the existing sync mutation
 - **AND** the clause is absent (quiet) when every enabled source is fresh
+- **AND** only provider sources count: each connected source carries
+  `sync_applicable` (true only for `source_kind = provider_event`), and an
+  internal source (schedules, reminders) is excluded from the worst-of because
+  it is projected locally and never gets a sync cursor — its null
+  `last_synced_at` is normal, not "Never synced" (same rule as the sync
+  deadman)
 
 #### Scenario: Freshness plaque never silently reads as fresh
 

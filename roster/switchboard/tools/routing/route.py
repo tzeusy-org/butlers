@@ -201,12 +201,26 @@ async def _call_tool_with_router_client(
 ) -> Any:
     first_exc: Exception | None = None
     telemetry = get_switchboard_telemetry()
+    # This narrowly guards effect calls, preserving existing read-only retry.
+    # A reset after the peer accepted a chunk cannot justify another call_tool.
+    route_input = args.get("input")
+    context = route_input.get("context") if isinstance(route_input, dict) else None
+    notify = context.get("notify_request") if isinstance(context, dict) else None
+    delivery = notify.get("delivery", {}) if isinstance(notify, dict) else {}
+    telegram_effect = tool_name in {"telegram_send_message", "telegram_reply_to_message"} or (
+        tool_name == "route.execute"
+        and isinstance(delivery, dict)
+        and delivery.get("channel") == "telegram"
+        and delivery.get("intent") not in {"react", "edit"}
+    )
 
     for reconnect in (False, True):
         try:
             client = await _get_cached_router_client(endpoint_url, reconnect=reconnect)
             return await client.call_tool(tool_name, args, raise_on_error=False)
         except Exception as exc:
+            if telegram_effect and not proves_transport_not_attempted(exc):
+                raise
             if not is_retryable_route_exception(exc):
                 raise
             if reconnect:

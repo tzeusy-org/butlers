@@ -17,6 +17,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.telegram_api import terminal_telegram_metadata
+
 logger = logging.getLogger(__name__)
 
 # Sentinel used when a retention policy row explicitly sets max_rows = NULL
@@ -222,6 +224,7 @@ def _build_switchboard_insight_notify_fn(
             return {
                 "status": "error",
                 "error": deliver_result.get("error", "delivery failed"),
+                **terminal_telegram_metadata(deliver_result),
             }
         return deliver_result
 

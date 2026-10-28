@@ -96,6 +96,43 @@ class TestIsPriorityUrgent:
 
 
 class TestRecordAttentionEvent:
+    @pytest.mark.parametrize("registered_codec", [False, True], ids=["bare", "registered-codec"])
+    async def test_metadata_stays_an_object_across_jsonb_bind_boundaries(self, registered_codec):
+        """Model parameter encoding with the actual codec, without claiming native SQL proof."""
+        from butlers.db import encode_jsonb
+
+        class BoundaryPool:
+            stored_metadata = None
+
+            async def fetchval(self, query, *args):
+                value = args[10]
+                if "$11::text::jsonb" in query:
+                    # PostgreSQL first receives text; the JSONB codec is not selected.
+                    assert isinstance(value, str)
+                else:
+                    assert "$11::jsonb" in query
+                    if registered_codec:
+                        value = encode_jsonb(value)[1:].decode()
+                self.stored_metadata = json.loads(value)
+                return "boundary-row"
+
+        pool = BoundaryPool()
+        result = await record_attention_event(
+            pool,
+            origin_butler="health",
+            source="notify",
+            outcome="failed",
+            session_id="boundary-session",
+            metadata={"partial_delivery": True, "retryable": False},
+        )
+
+        assert result == "boundary-row"
+        assert pool.stored_metadata == {
+            "partial_delivery": True,
+            "retryable": False,
+            ATTENTION_LEDGER_SESSION_KEY: "boundary-session",
+        }
+
     async def test_none_pool_returns_none_without_error(self):
         result = await record_attention_event(
             None,

@@ -22,6 +22,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -29,23 +30,6 @@ pytestmark = pytest.mark.unit
 _GID = uuid.uuid4()
 _CID = uuid.uuid4()
 _EID = uuid.uuid4()
-
-
-class _Row(dict):
-    """dict subclass that mimics asyncpg Record."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return super().get(key, default)
-
-
-def _row(data: dict) -> _Row:
-    return _Row(data)
 
 
 def _mock_pool(*, fetch_rows: list | None = None, fetchval_result: Any = None):
@@ -71,7 +55,7 @@ def _make_app(pool):
 
 class TestGetGroupMembers:
     async def test_returns_members_for_group(self):
-        member_row = _row(
+        member_row = Record(
             {
                 "id": _CID,
                 "entity_id": _EID,

@@ -20,6 +20,7 @@ from butlers.core.approval_delivery_transport import (
 )
 from butlers.core.approval_review import review_from_notify_refusal
 from butlers.core.tool_call_capture import get_current_runtime_session_id
+from butlers.telegram_api import terminal_telegram_metadata
 from butlers.tools.switchboard.contracts import (
     NotifyRequestV1,
     parse_notify_request,
@@ -388,6 +389,7 @@ async def _deliver_via_notify_request(
             "error": error_msg,
             "error_class": error_class,
             "retryable": retryable,
+            **terminal_telegram_metadata(route_result),
             **_transport_fragment(transport),
         }
         return result
@@ -434,6 +436,7 @@ async def _deliver_via_notify_request(
             "error": error_msg,
             "error_class": error_class,
             "retryable": False,
+            **terminal_telegram_metadata(route_result),
             **_transport_fragment(failure_transport),
         }
 
@@ -471,6 +474,7 @@ async def _deliver_via_notify_request(
             "error": error_msg,
             "error_class": error_class,
             "retryable": retryable,
+            **terminal_telegram_metadata(route_result),
             **_transport_fragment(transport),
         }
 
@@ -893,6 +897,47 @@ async def deliver(
                 source_butler=source_butler,
                 call_fn=call_fn,
             )
+            terminal = terminal_telegram_metadata(candidate_result)
+            candidate_transport = transport_result_from_envelope(candidate_result)
+            if (
+                channel == "telegram"
+                and candidate_transport is not None
+                and candidate_transport.as_dict()["outcome"] == "uncertain"
+            ):
+                terminal = terminal or {"telegram_effect_uncertain": True, "retryable": False}
+            if terminal:
+                terminal_reason = (
+                    "telegram_partial_delivery"
+                    if terminal.get("partial_delivery")
+                    else "telegram_delivery_uncertain"
+                )
+                span.set_status(trace.StatusCode.ERROR, terminal_reason)
+                # Preserve the route's existing error ABI; typed fields fence replay.
+                failure = (
+                    str(candidate_result["error"])
+                    if "error" in candidate_result
+                    else terminal_reason
+                )
+                notification_id = await _log_notification_best_effort(
+                    pool,
+                    source_butler=source_butler,
+                    channel=channel,
+                    recipient=recipient,
+                    message=message or "",
+                    metadata=metadata,
+                    status="failed",
+                    error=failure,
+                    session_id=session_id,
+                    trace_id=_current_trace_id(),
+                )
+                return {
+                    "notification_id": notification_id,
+                    "status": "failed",
+                    "error": failure,
+                    "error_class": "delivery_error",
+                    **terminal,
+                    **_transport_fragment(TRANSPORT_CONNECTION_LOST),
+                }
             if "error" in candidate_result:
                 route_errors.append(str(candidate_result["error"]))
                 continue
