@@ -36,8 +36,9 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   one row per attempt and closed operation kind, with binding/payload digests, stage and result.
   Only `butler_qa_rw` writes (forced RLS); every runtime role reads. An unresolved row holds its
   fingerprint lineage. See [QA Publication Boundary](../operations/qa-publication-boundary.md).
-- **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the
-  [Credential Store](credential-store.md)), created at daemon boot by `ensure_secrets_schema`.
+- **`public.butler_secrets`** -- Shared credential authority installed by the
+  explicit migrator. Its dedicated credential-writer pool is distinct from the
+  connector capability; daemon boot performs no credential-table DDL.
 
 ### Per-Butler Schemas
 
@@ -59,42 +60,32 @@ without qualifying it.
 
 ## Database Provisioning
 
-### Pre-migration setup (privileged cluster superuser required)
+### Explicit bootstrap and migration
 
-Before running Alembic migrations on a fresh database, run
-`scripts/init-db.sql` as a privileged cluster superuser. Supply the normal
-connecting/migration user through the `butlers.connecting_user` GUC; it must
-not be the active bootstrap identity:
+The operator provisions the normal migration owner and the separate serving
+logins/secret references. The explicit `butlers db bootstrap` producer compiles
+the source deployment manifest and executes `scripts/init-db.sql` on its
+selected privileged maintenance connection. The script refuses an absent or
+ambiguous manifest. It prepares extensions, source roles and schemas; it does
+not grant serving membership to the normal owner, create runtime passwords or
+install broad table/default privileges.
 
-```bash
-psql -h <host> -U <superuser> -d <dbname> -f scripts/init-db.sql
-```
+`butlers db migrate` retains one maintenance session and advisory lock across
+all declared chains and exact finalization. Ordinary DDL runs as the independently
+observed normal owner. Controlled protected installation uses only the explicit
+maintenance prerequisite. The final manifest records each object/signature,
+owner, operation, column and capability. Missing prerequisites or unlisted
+objects refuse instead of producing an inferred grant.
 
-This script:
+### Read-only runtime admission
 
-1. Installs required PostgreSQL extensions (`pgcrypto`, `uuid-ossp`, `vector`,
-   `pg_trgm`).
-2. Grants each butler runtime role (`butler_{schema}_rw`, one per butler schema as listed in
-   `init-db.sql`) and `connector_writer` to the connecting user (`POSTGRES_USER`, typically
-   `butlers`).
-
-**Why role membership matters:** Butler runtime code calls `SET ROLE
-butler_{schema}_rw` before performing schema-isolated operations.  PostgreSQL
-only permits `SET ROLE` to a role that the current user is a member of.
-Without the grants in `init-db.sql`, all `SET ROLE` calls fail at runtime.
-
-The `core_065` migration also grants membership via `GRANT role TO
-CURRENT_USER`, which covers the migration-time user.  `init-db.sql` ensures
-the same membership exists for the runtime connecting user, which may be
-different.
-
-### Runtime provisioning
-
-The `Database` class handles provisioning at startup:
-
-1. Connects to the `postgres` maintenance database.
-2. Creates the target database if it does not exist (using `CREATE DATABASE ... TEMPLATE template0`).
-3. Creates an asyncpg connection pool with `server_settings` that set the `search_path`.
+`Database.connect()` opens the configured existing database, selects the exact
+source-derived runtime role and validates the real session login's recursive
+role reach, attributes, ownership, CREATE reach and object catalog before
+publishing a pool. Every acquisition repeats admission after role reset.
+Serving startup cannot create databases, run migrations or repair grants.
+An authorized isolated administrative provisioning helper remains separate
+from this serving path.
 
 The pool size comes from `BUTLERS_DB_POOL_MIN_SIZE` / `BUTLERS_DB_POOL_MAX_SIZE` (default 1/10; see
 `pool_sizes_from_env` in `db.py`), with optional SSL mode support. SSL fallback logic handles environments where the server doesn't support STARTTLS gracefully.
@@ -106,7 +97,11 @@ Connection parameters are resolved from environment in this order:
 1. **`DATABASE_URL`** -- Full libpq-style URL (e.g., `postgres://user:pass@host:port/dbname?sslmode=require`)
 2. **Individual `POSTGRES_*` variables** -- `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_SSLMODE`
 
-Defaults: `localhost:5432`, user `butlers`, password `butlers`.
+Transport defaults do not establish authority. A serving login must still have
+exactly its source-selected capability reach and satisfy current catalog
+admission. Dashboard, connector, credential, owner-auth and migration consumers
+select their distinct explicit credential references; a missing reference never
+falls back to a shared owner or migration login.
 
 ## Pool Proxy Methods
 
@@ -114,9 +109,9 @@ The `Database` class exposes `fetch()`, `fetchrow()`, `fetchval()`, and `execute
 
 ## Schema Isolation Guarantees
 
-- Each butler can only see its own schema plus `public`.
-- Inter-butler communication is MCP-only through the Switchboard -- no direct cross-schema SQL.
-- The `public` schema is read-accessible by all butlers but write patterns are controlled by the core migration chain and identity resolution code.
+- Each butler's runtime has its declared primary/private schemas plus only the exact additional reads and operations named by the adopted source manifest. Named Chronicler evidence readers and other adopted cross-schema projections are explicit exceptions; discovery cannot extend them.
+- Inter-butler actions go through MCP and the Switchboard. Direct cross-schema SQL is limited to the exact adopted readers/projections in the source manifest; it is not a general action or ownership channel.
+- `public` access is defined per object, operation and role, with the required RLS policies retained. An unlisted public object has no ambient runtime read or write grant.
 
 ## Verification
 
@@ -157,40 +152,12 @@ psql -h localhost -U butlers -d butlers -c \
 
 ## Implementation Notes
 
-- With `name = "butlers"`, `[butler.db]` requires an explicit `schema` (no implicit fallback). The
-  API's `init_db_manager` uses the shared-credentials path (schema `public`), and daemon migration
-  URLs carry libpq `options=-csearch_path=...` so Alembic runs in the intended schema.
-- `scripts/init-db.sql` is the single privileged bootstrap step. It deliberately grants broad DML
-  defaults on migration-user-created `public` objects to every runtime role; rerun it when the
-  schema or role surface changes. On PostgreSQL 16+ `SET ROLE` also needs `set_option` on the
-  membership, so it re-grants with `WITH SET TRUE` / `WITH INHERIT TRUE`.
-- If `scripts/compose.sh` clears its gates but `butlers-up` logs `permission denied for schema
-  <butler>` or `permission denied to set role "butler_<name>_rw"`, the dev DB user is missing those
-  grants: rerun `init-db.sql` as a privileged role.
-- Fencing a `public` table to one role needs RLS (a policy keyed on `current_user`), because
-  init-db re-widens grants on every rerun. Do not add `FORCE ROW LEVEL SECURITY` without checking
-  the backup path: `pg_dump` runs with `row_security = off` and raises on forced tables for the
-  migration user, so `deploy/backup/pg_dump.sh` must exclude them.
-- A forced-RLS table with no policy for a command denies that command to every role, including the
-  owner (used deliberately to make `core_217` fleet cases undeletable). Constraint and shape tests
-  against such tables connect with `butlers.testing.migration.migration_bootstrap_db_url()`
-  (superuser; replace `postgresql+psycopg2://` with `postgresql://` for asyncpg); keep `SET ROLE`
-  for tests of the policy itself.
-- DND mutation authority is bootstrap-only: `scripts/init-db.sql` owns the superuser
-  installer/finalizer, and `core_197` may only validate that interface or call its no-argument
-  installer. `public.user_context` and its guard, audit and policies belong to
-  `dnd_generation_owner` (NOLOGIN, NOINHERIT, NOBYPASSRLS) under forced RLS, reached through a
-  SECURITY INVOKER gateway plus a private SECURITY DEFINER `SET ROLE` recheck. Never restore generic
-  DND upserts or migration-role authority.
-- `dnd_generation_private.mutate` runs with `search_path = pg_catalog, pg_temp`. The migration login
-  can `CREATE` in `public`, where a `convert_to(text, text)` decoy would otherwise beat the catalog
-  function and run as `dnd_generation_owner`. Its hashes use the built-in `sha256()`, not pgcrypto's
-  `digest()` (installed in `public`); the hex output is byte-identical, so existing replay receipts
-  stay valid. `dnd_generation_admin.install_private_mutation()` is the single body source, and the
-  finalizer re-adopts it on every privileged rerun. An Alembic deploy does not: a database
-  bootstrapped before this change keeps the `digest()` body until `scripts/init-db.sql` runs again as
-  a cluster superuser. Until then `GET /api/system/stored-functions` reports `mutate` and
-  `install_interface` as `drifted` and `install_private_mutation` as `not_deployed`.
+- With `name = "butlers"`, `[butler.db]` requires an explicit primary schema. Serving `Database` profiles bind the actual declared database, primary/private ownership and dedicated login reach; a random database or search path cannot manufacture a serving profile.
+- Runtime, dashboard, connector, credential, migration and bootstrap consumers use their distinct declared purpose profiles. Missing, privileged or cross-purpose membership refuses before a usable pool. Owner authentication remains independently provisioned.
+- `scripts/init-db.sql` prepares the explicit source role/schema/extension manifest on an authorized administrative connection. The held migrator then applies ordinary DDL as the normal owner and installs/converges exact final permissions. Neither bootstrap reruns nor core replay grant broad runtime/default public DML; catalog discovery cannot add authority.
+- A permission failure requires diagnosing the actual dedicated login, complete role reach and source catalog. Do not repair it by falling back to the normal owner, adding caller membership or replaying a predecessor initializer against the rebuilt serving state. The pinned predecessor initializer is reserved for the explicit preserving operator rollback.
+- Forced RLS, append-only evidence and narrow cross-schema readers remain mandatory independently of table ACLs. Backup and restore use their exact selected purpose; inaccessible objects must be handled through the supported backup policy, never by disabling RLS or widening serving grants.
+- DND gateway/private writer, guard, audit and policies retain their fixed `dnd_generation_owner` NOLOGIN/nonprivileged ownership, forced RLS and General/Switchboard-only invocation. The private mutation body uses `search_path = pg_catalog, pg_temp`, qualified built-in `sha256()` and exact replay/current-generation fences. The source-owned finalizer installs that body; the retired `dnd_generation_admin` namespace is not an operative repair interface. Read-only catalog diagnostics distinguish unavailable, missing and mismatch without exposing function bodies or row contents.
 - One `permission denied` in `pg_dump`'s lock sweep aborts the whole dump, so derive the exclusion
   list from all three fences as the dump role (no schema `USAGE`, no table `SELECT`, forced RLS or
   RLS on a table it does not own), not from the last error. Never use `--enable-row-security`: it
@@ -229,3 +196,14 @@ non-FORCE RLS for the exact Switchboard runtime, preserving migration-owner full
 backup while denying other runtimes after bootstrap regrants. See
 [goal ledger and admission](../architecture/goal-ledger-and-admission.md) for
 source keys, lock order, policy snapshots and actual verification obligations.
+
+## Database-authority source and deployment boundary
+
+This source implements the adopted successor to shared ownership and ambient
+grants. Source/software controls do not establish actual PostgreSQL acceptance
+or a completed deployment. See [the cutover procedure](../identity_and_secrets/database-authority-cutover.md)
+for the complete proof and operator boundary; do not operate a mixed model.
+
+The target has three connecting profiles: CLI-only migrator, cooperative runtime with exactly derived roster capabilities, and a constrained dashboard capability. Dedicated owner-auth remains independent. The migrator owns ordinary objects; unreachable NOLOGIN purpose owners retain fenced state and definers. Recursive reachable ownership, not only current_user after SET ROLE, is admission evidence. Actual private Memory schemas and current same-database JSONB/search_path/SSL behavior remain.
+
+One exact manifest records every managed public object/signature, owner, role operation/column, PUBLIC/default ACL, RLS, producer and selected pool. Unknown objects get no default SELECT or DML. Runtime own-schema access does not imply access to another schema. General briefing, QA policy projection, Concierge telemetry and named message_inbox reads retain only their adopted scopes. The current per-butler schema layout does not change, and retired table names do not become new shared objects.

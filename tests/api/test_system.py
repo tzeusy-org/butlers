@@ -508,187 +508,140 @@ async def test_drift_check_unavailable_returns_flag_not_503(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _stored_function_entry(status: str, **overrides):
-    from butlers.core.stored_function_drift import StoredFunctionEntry
+def _stored_function_entry(status="conforming", **overrides):
+    from butlers.core.stored_function_drift import FunctionAuthorityFact
 
-    fields = {
-        "function": "public.runtime_attention_plant_legacy_debounce_marker",
-        "status": status,
-        "committed_lines": (2247,),
-        "committed_digests": ("aaaaaaaaaaaa",),
-        "deployed_digests": ("bbbbbbbbbbbb",),
-        "matched_line": None,
-    }
-    fields.update(overrides)
-    return StoredFunctionEntry(**fields)
+    return FunctionAuthorityFact(
+        **(
+            dict(
+                function="public.context_dnd_mutate(uuid,text,text,timestamp with time zone,text,real,jsonb)",
+                status=status,
+                expected_digest="a" * 64,
+                actual_digest="b" * 64,
+                owner_ok=True,
+                settings_ok=True,
+                acl_ok=True,
+            )
+            | overrides
+        )
+    )
+
+
+def _authority_probe(monkeypatch, *, status="conforming", functions=(), objects=True):
+    from butlers.core.stored_function_drift import DatabaseAuthorityReport
+
+    monkeypatch.setattr(
+        "butlers.core.stored_function_drift.compute_database_authority",
+        AsyncMock(return_value=DatabaseAuthorityReport(_NOW, status, functions, objects)),
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = AsyncMock()
+    return _make_app_with_db(mock_db)
 
 
 async def test_stored_functions_happy_path_reports_no_drift(monkeypatch):
-    from butlers.core.stored_function_drift import MATCHED, StoredFunctionDriftReport
-
-    matched = _stored_function_entry(MATCHED, deployed_digests=("aaaaaaaaaaaa",), matched_line=2247)
-    monkeypatch.setattr(
-        "butlers.core.stored_function_drift.compute_stored_function_drift",
-        AsyncMock(return_value=StoredFunctionDriftReport(checked_at=_NOW, entries=(matched,))),
-    )
-    mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = AsyncMock()
+    app = _authority_probe(monkeypatch, functions=(_stored_function_entry(),))
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/api/system/stored-functions")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["stored_function_check_available"] is True
-    assert data["is_drifted"] is False
-    assert data["drifted"] == []
-    assert data["not_deployed"] == []
-    assert data["matched_count"] == 1
+        response = await client.get("/api/system/database-authority")
+        retired = await client.get("/api/system/stored-functions")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["catalog_check_available"] is True
+    assert data["status"] == "conforming" and data["objects_ok"] is True
+    assert len(data["functions"]) == 1
+    assert retired.status_code == 404
 
 
 async def test_stored_functions_reports_drift_with_digests_and_never_a_body(monkeypatch):
-    from butlers.core.stored_function_drift import (
-        DRIFTED,
-        NOT_DEPLOYED,
-        StoredFunctionDriftReport,
-    )
-
-    entries = (
-        _stored_function_entry(DRIFTED),
-        _stored_function_entry(
-            NOT_DEPLOYED, function="restore_drill.record_result", deployed_digests=()
+    app = _authority_probe(
+        monkeypatch,
+        status="mismatch",
+        objects=False,
+        functions=(
+            _stored_function_entry("mismatch", acl_ok=False),
+            _stored_function_entry(
+                "missing", function="restore_drill_executor.latest_result()", actual_digest=None
+            ),
         ),
     )
-    monkeypatch.setattr(
-        "butlers.core.stored_function_drift.compute_stored_function_drift",
-        AsyncMock(return_value=StoredFunctionDriftReport(checked_at=_NOW, entries=entries)),
-    )
-    mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = AsyncMock()
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/api/system/stored-functions")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["is_drifted"] is True
-    assert data["drifted"] == [
-        {
-            "function": "public.runtime_attention_plant_legacy_debounce_marker",
-            "committed_lines": [2247],
-            "committed_digests": ["aaaaaaaaaaaa"],
-            "deployed_digests": ["bbbbbbbbbbbb"],
-        }
-    ]
-    # An undeployed function is a legitimate state, named but never escalated.
-    assert data["not_deployed"] == ["restore_drill.record_result"]
-    assert data["matched_count"] == 0
+        response = await client.get("/api/system/database-authority")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == "mismatch" and data["objects_ok"] is False
+    assert data["functions"][0]["actual_digest"] == "b" * 64
+    assert data["functions"][0]["acl_ok"] is False
+    assert data["functions"][1]["status"] == "missing"
+    assert "body" not in response.text and "committed_lines" not in response.text
 
 
 async def test_stored_functions_check_unavailable_returns_flag_not_503(monkeypatch):
-    from butlers.core.stored_function_drift import StoredFunctionDriftReport
-
-    monkeypatch.setattr(
-        "butlers.core.stored_function_drift.compute_stored_function_drift",
-        AsyncMock(
-            return_value=StoredFunctionDriftReport(
-                checked_at=_NOW, entries=(), check_error="cannot read init-db.sql: OSError"
-            )
-        ),
-    )
-    mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = AsyncMock()
+    app = _authority_probe(monkeypatch, status="unavailable", objects=None)
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/api/system/stored-functions")
-    # Fleet-wide degraded-envelope convention: never a fabricated all-clear, never a 503.
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["stored_function_check_available"] is False
-    assert data["is_drifted"] is False
-    assert data["drifted"] == []
-    assert data["not_deployed"] == []
-    assert data["matched_count"] == 0
+        response = await client.get("/api/system/database-authority")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["catalog_check_available"] is False
+    assert data["status"] == "unavailable" and data["objects_ok"] is None
+    assert data["functions"] == []
 
 
 async def test_stored_functions_reports_unpinned_definers_with_owner_and_remedy(monkeypatch):
-    """bu-hefzis: unpinned definers ride along without changing body-drift semantics."""
-    from butlers.core.definer_search_path import (
-        REMEDY_INIT_DB,
-        DefinerSearchPathReport,
-        UnpinnedDefiner,
-    )
-    from butlers.core.stored_function_drift import MATCHED, StoredFunctionDriftReport
+    from butlers.core.definer_search_path import DefinerSearchPathReport, UnpinnedDefiner
 
-    matched = _stored_function_entry(MATCHED, deployed_digests=("aaaaaaaaaaaa",), matched_line=2247)
-    monkeypatch.setattr(
-        "butlers.core.stored_function_drift.compute_stored_function_drift",
-        AsyncMock(return_value=StoredFunctionDriftReport(checked_at=_NOW, entries=(matched,))),
-    )
-    unpinned = UnpinnedDefiner(
-        signature="restore_drill_executor.is_due(p_interval_seconds integer)",
-        owner="restore_drill_executor_owner",
-        search_path="pg_catalog, public, pg_temp",
-        remedy=REMEDY_INIT_DB,
-    )
+    app = _authority_probe(monkeypatch, functions=(_stored_function_entry(),))
     monkeypatch.setattr(
         "butlers.core.definer_search_path.compute_unpinned_definers",
         AsyncMock(
             return_value=DefinerSearchPathReport(
-                checked_at=_NOW, entries=(unpinned,), checked_count=74
+                _NOW,
+                (
+                    UnpinnedDefiner(
+                        "restore_drill_executor.is_due(integer)",
+                        "restore_drill_executor_owner",
+                        "pg_catalog, public, pg_temp",
+                        "controlled_migrator",
+                    ),
+                ),
+                1,
             )
         ),
     )
-    mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = AsyncMock()
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/api/system/stored-functions")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["is_drifted"] is False
-    assert data["matched_count"] == 1
+        response = await client.get("/api/system/database-authority")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["catalog_check_available"] is True
     assert data["definer_check_available"] is True
-    assert data["unpinned_definers"] == [
-        {
-            "function": "restore_drill_executor.is_due(p_interval_seconds integer)",
-            "owner": "restore_drill_executor_owner",
-            "search_path": "pg_catalog, public, pg_temp",
-            "remedy": "init_db",
-        }
-    ]
+    assert data["unpinned_definers"][0]["owner"] == "restore_drill_executor_owner"
+    assert data["unpinned_definers"][0]["search_path"] == "pg_catalog, public, pg_temp"
+    assert data["unpinned_definers"][0]["remedy"] == "controlled_migrator"
 
 
 async def test_stored_functions_definer_check_degrades_independently_of_bodies(monkeypatch):
-    """A failed catalog read is flagged unavailable, never an empty all-clear."""
     from butlers.core.definer_search_path import DefinerSearchPathReport
-    from butlers.core.stored_function_drift import MATCHED, StoredFunctionDriftReport
 
-    matched = _stored_function_entry(MATCHED, deployed_digests=("aaaaaaaaaaaa",), matched_line=2247)
-    monkeypatch.setattr(
-        "butlers.core.stored_function_drift.compute_stored_function_drift",
-        AsyncMock(return_value=StoredFunctionDriftReport(checked_at=_NOW, entries=(matched,))),
-    )
+    app = _authority_probe(monkeypatch, functions=(_stored_function_entry(),))
     monkeypatch.setattr(
         "butlers.core.definer_search_path.compute_unpinned_definers",
-        AsyncMock(
-            return_value=DefinerSearchPathReport(
-                checked_at=_NOW, entries=(), check_error="cannot read pg_proc: OSError"
-            )
-        ),
+        AsyncMock(return_value=DefinerSearchPathReport(_NOW, (), check_error="closed")),
     )
-    mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = AsyncMock()
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/api/system/stored-functions")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["stored_function_check_available"] is True
-    assert data["matched_count"] == 1
+        response = await client.get("/api/system/database-authority")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["catalog_check_available"] is True
+    assert data["status"] == "conforming"
     assert data["definer_check_available"] is False
     assert data["unpinned_definers"] == []
 
@@ -967,11 +920,17 @@ async def test_conditions_without_marker_report_not_raised_or_within_grace(
 
 
 def test_attention_grace_mirror_agrees_with_the_producer():
-    """The Python mirror of the producer's attention grace must match init-db.sql."""
+    """The Python mirror matches the selected current protected producer."""
     from butlers.api.runtime_attention_status import CONDITION_ATTENTION_GRACE
+    from butlers.db_authority.interfaces import protected_group_functions
+    from butlers.db_authority.roles import runtime_profiles
 
-    sql = (Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql").read_text()
-    match = re.search(r"v_attention_grace CONSTANT INTERVAL := interval '(\d+) minutes'", sql)
+    definitions = protected_group_functions(runtime_profiles("butlers"), "butlers", {"attention"})
+    producers = [row for row in definitions if "v_attention_grace CONSTANT" in row.body]
+    assert len(producers) == 1
+    match = re.search(
+        r"v_attention_grace CONSTANT INTERVAL := interval '(\d+) minutes'", producers[0].body
+    )
     assert match is not None
     assert CONDITION_ATTENTION_GRACE.total_seconds() == int(match.group(1)) * 60
 

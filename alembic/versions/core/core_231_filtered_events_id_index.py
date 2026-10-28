@@ -48,6 +48,10 @@ def _acquire_lock(connection) -> None:
 
 
 def upgrade() -> None:
+    from butlers.db_authority.interfaces import connectors_revision_reuse
+
+    if connectors_revision_reuse(op.get_bind(), revision).global_reused:
+        return
     with op.get_context().autocommit_block():
         connection = op.get_bind()
         previous_timeout = connection.exec_driver_sql("SHOW lock_timeout").scalar_one()

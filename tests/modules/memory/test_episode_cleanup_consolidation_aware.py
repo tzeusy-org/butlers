@@ -25,6 +25,7 @@ from butlers.modules.memory.consolidation import (
     EPISODE_PENDING_GRACE_DAYS,
     run_episode_cleanup,
 )
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [

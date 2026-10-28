@@ -1,28 +1,35 @@
 """Real migrated, role-enforced local calendar projection fixtures.
 
 These helpers never start CalendarModule, resolve credentials, or call a provider.
-The migration login is used only for disposable setup/cleanup and fault injection;
+The selected testcontainer control transport is used only for disposable setup/cleanup
+and explicit effective-role probes;
 the projection writer and interaction job share the actual Relationship role.
 """
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from urllib.parse import urlparse
 
 import asyncpg
 
 from butlers.core.approvals_hooks import register_approval_hooks, unregister_approval_hooks
 from butlers.db import register_jsonb_codec, schema_search_path
-from butlers.migrations import get_chain_head, run_migrations
+from butlers.migrations import get_chain_head
 from butlers.modules.approvals.email_guard import check_email_recipient, check_recipient
 from butlers.modules.approvals.park import park_pending_action
 from butlers.modules.calendar import AttendeeInfo, CalendarEvent, CalendarModule, EventStatus
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import (
+    async_migrate_test_database,
+    create_migration_db,
+    migrate_test_database,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
 from butlers.tools.relationship.relationship_assert_fact import relationship_assert_fact
 
 _CHAINS = ("core", "relationship", "contacts", "memory", "approvals")
@@ -31,29 +38,31 @@ _DATABASES: dict[asyncpg.Pool, InteractionSyncDatabase] = {}
 
 def create_interaction_sync_database(postgres_container: object) -> InteractionSyncDatabase:
     """Follow lifecycle's core -> roster -> enabled-module ordering at real heads."""
-    dsn = create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=list(_CHAINS),
-        schemas=dict.fromkeys(_CHAINS, "relationship"),
+    dsn = create_migration_db(postgres_container, migration_db_name())
+    plans = tuple((chain, "relationship", None) for chain in _CHAINS) + (
+        ("core", "switchboard", None),
+        ("switchboard", "switchboard", None),
     )
-    asyncio.run(run_migrations(dsn, chain="core", schema="switchboard"))
-    asyncio.run(run_migrations(dsn, chain="switchboard", schema="switchboard"))
-    return InteractionSyncDatabase(dsn)
+    migrate_test_database(postgres_container, dsn, plans=plans)
+    return InteractionSyncDatabase(dsn, postgres_container)
 
 
 class InteractionSyncDatabase:
     """Callable pool factory, provisioned once per test module and reset per case."""
 
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, postgres_container: object) -> None:
         self._dsn = dsn
+        self._postgres_container = postgres_container
+        selected = urlparse(dsn).path.lstrip("/")
+        control = migration_bootstrap_db_url(postgres_container, selected)
+        self._control_dsn = urlparse(control)._replace(scheme="postgresql").geturl()
         self._controls_migrated = False
         self._checked_topology = False
 
     @asynccontextmanager
     async def control(self, schema: str = "relationship") -> AsyncIterator[asyncpg.Pool]:
         pool = await asyncpg.create_pool(
-            self._dsn,
+            self._control_dsn,
             min_size=1,
             max_size=2,
             init=register_jsonb_codec,
@@ -97,7 +106,7 @@ class InteractionSyncDatabase:
             await conn.execute('SET ROLE "butler_relationship_rw"')
 
         pool = await asyncpg.create_pool(
-            self._dsn,
+            self._control_dsn,
             min_size=1,
             max_size=3,
             init=register_jsonb_codec,
@@ -130,11 +139,18 @@ class InteractionSyncDatabase:
         if self._controls_migrated:
             return
 
-        def migrate() -> None:
-            for schema in ("public", "health"):
-                asyncio.run(run_migrations(self._dsn, chain="core", schema=schema))
-
-        await asyncio.to_thread(migrate)
+        plans = (("core", "public", None), ("core", "health", None))
+        final_plans = tuple((chain, "relationship", None) for chain in _CHAINS) + (
+            ("core", "switchboard", None),
+            ("switchboard", "switchboard", None),
+            *plans,
+        )
+        await async_migrate_test_database(
+            self._postgres_container,
+            self._dsn,
+            plans=plans,
+            final_plans=final_plans,
+        )
         async with self.control() as control:
             for schema in ("public", "health"):
                 await self._assert_heads(control, schema, ("core",))

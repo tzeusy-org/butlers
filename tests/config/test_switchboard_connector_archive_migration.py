@@ -14,7 +14,6 @@ inserts the fixture rows, then applies sw_022 and asserts the resulting
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 
 import pytest
@@ -25,7 +24,9 @@ from butlers.testing.migration import (
     create_migration_db,
     get_column_info,
     index_exists,
+    migrate_test_database,
     migration_db_name,
+    run_test_alembic_command,
 )
 
 docker_available = shutil.which("docker") is not None
@@ -37,21 +38,21 @@ pytestmark = [
 
 def _prepare_pre_seed_db(postgres_container) -> str:
     """Run core (full) + switchboard up to sw_021 (the revision before sw_022)."""
-    from butlers.migrations import _build_alembic_config, run_migrations
+    from butlers.migrations import _build_alembic_config
 
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    migrate_test_database(postgres_container, db_url, plans=(("core", None, None),))
     config = _build_alembic_config(db_url, chains=["switchboard"])
-    command.upgrade(config, "switchboard@sw_021")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_021")
     return db_url
 
 
-def _apply_sw_022(db_url: str) -> None:
+def _apply_sw_022(db_url: str, *, postgres_container) -> None:
     from butlers.migrations import _build_alembic_config
 
     config = _build_alembic_config(db_url, chains=["switchboard"])
-    command.upgrade(config, "switchboard@sw_022")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_022")
 
 
 def _insert_connector(db_url: str, connector_type: str, endpoint_identity: str) -> None:
@@ -87,7 +88,7 @@ def _archived_at(db_url: str, connector_type: str, endpoint_identity: str):
 def test_archived_at_column_and_index_exist(postgres_container):
     """sw_022 adds the archived_at column and the live-set partial index."""
     db_url = _prepare_pre_seed_db(postgres_container)
-    _apply_sw_022(db_url)
+    _apply_sw_022(db_url, postgres_container=postgres_container)
 
     info = get_column_info(db_url, "connector_registry", "archived_at")
     assert info is not None
@@ -130,7 +131,7 @@ def test_seed_archives_only_the_dead_identities(postgres_container, monkeypatch)
     for ctype, ident in dead + live:
         _insert_connector(db_url, ctype, ident)
 
-    _apply_sw_022(db_url)
+    _apply_sw_022(db_url, postgres_container=postgres_container)
 
     for ctype, ident in dead:
         assert _archived_at(db_url, ctype, ident) is not None, f"{ctype}/{ident} should be archived"
@@ -142,7 +143,7 @@ def test_seed_is_idempotent(postgres_container):
     """Re-running the seed statements does not change an already-archived timestamp."""
     db_url = _prepare_pre_seed_db(postgres_container)
     _insert_connector(db_url, "owntracks", "owntracks:unknown")
-    _apply_sw_022(db_url)
+    _apply_sw_022(db_url, postgres_container=postgres_container)
 
     first = _archived_at(db_url, "owntracks", "owntracks:unknown")
     assert first is not None
@@ -169,11 +170,11 @@ def test_downgrade_drops_archived_column_and_index(postgres_container):
     from butlers.migrations import _build_alembic_config
 
     db_url = _prepare_pre_seed_db(postgres_container)
-    _apply_sw_022(db_url)
+    _apply_sw_022(db_url, postgres_container=postgres_container)
     assert get_column_info(db_url, "connector_registry", "archived_at") is not None
 
     config = _build_alembic_config(db_url, chains=["switchboard"])
-    command.downgrade(config, "switchboard@sw_021")
+    run_test_alembic_command(postgres_container, command.downgrade, config, "switchboard@sw_021")
 
     assert get_column_info(db_url, "connector_registry", "archived_at") is None
     assert not index_exists(db_url, "ix_connector_registry_live")

@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 import pytest
 
 from butlers.core.definer_search_path import (
-    REMEDY_INIT_DB,
+    REMEDY_CONTROLLED_MIGRATOR,
     DefinerSearchPathReport,
     UnpinnedDefiner,
     is_pinned,
@@ -73,7 +73,7 @@ _UNPINNED = UnpinnedDefiner(
     signature="restore_drill_executor.is_due(p_interval_seconds integer)",
     owner="restore_drill_executor_owner",
     search_path="pg_catalog, public, pg_temp",
-    remedy=REMEDY_INIT_DB,
+    remedy=REMEDY_CONTROLLED_MIGRATOR,
 )
 
 
@@ -94,10 +94,10 @@ _UNPINNED = UnpinnedDefiner(
                 "restore_drill_executor.is_due(p_interval_seconds integer)",
                 "owner=restore_drill_executor_owner",
                 "search_path=pg_catalog, public, pg_temp",
-                "run migrations to head",
-                "re-run scripts/init-db.sql",
+                "controlled migrator",
+                "explicit maintenance prerequisites",
             ],
-            [],
+            ["re-run scripts/init-db.sql", "cluster superuser"],
         ),
         (
             DefinerSearchPathReport(

@@ -1,4 +1,10 @@
-"""Static source coverage for the admin ownership guard lists in ``init-db.sql``.
+"""Historical ownership-guard coverage for the PINNED operator rollback initializer.
+
+The adopted authority rebuild removes these administrative installers from
+current bootstrap. Their complete historical guard/case population remains
+relevant to the actual R0/R1 producer, whose hash-bound source is inspected here.
+Current serving/installer authority is exercised in test_db_authority.py; these
+tests do not authorize installing old admin surfaces into a serving deployment.
 
 ``scripts/init-db.sql`` protects each admin schema with two families of ownership
 assertion. Functions::
@@ -153,7 +159,9 @@ class _GuardBlock:
 
 
 def _read_sql() -> str:
-    return _INIT_DB.read_text(encoding="utf-8")
+    from butlers.db_authority.apply import pinned_predecessor_initializer
+
+    return pinned_predecessor_initializer()
 
 
 def _line_of(source: str, offset: int) -> int:

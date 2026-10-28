@@ -19,9 +19,8 @@ import pytest
 from butlers.api.deps import get_db
 from butlers.api.routers.memory import list_facts, list_rules
 from butlers.db import register_jsonb_codec
-from butlers.migrations import run_migrations
 from butlers.modules.memory.storage import get_links
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.testing.migration import create_migration_db, migrate_test_database, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -35,8 +34,11 @@ pytestmark = [
 def memory_migrated_db(postgres_container) -> str:
     """Return a fresh database with the complete memory chain applied."""
     db_url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(db_url, chain="core"))
-    asyncio.run(run_migrations(db_url, chain="memory"))
+    migrate_test_database(
+        postgres_container,
+        db_url,
+        plans=(("core", None, None), ("memory", None, None)),
+    )
     return db_url
 
 

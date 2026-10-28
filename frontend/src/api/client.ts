@@ -6041,7 +6041,7 @@ export function getDriftFacts(): Promise<ApiResponse<DriftFacts>> {
  * comparison itself failed -- treat that as "unknown", not "clean".
  */
 export function getStoredFunctionFacts(): Promise<ApiResponse<StoredFunctionFacts>> {
-  return apiFetch<ApiResponse<StoredFunctionFacts>>("/system/stored-functions");
+  return apiFetch<ApiResponse<StoredFunctionFacts>>("/system/database-authority");
 }
 
 /** Params for getSystemConditions(). */

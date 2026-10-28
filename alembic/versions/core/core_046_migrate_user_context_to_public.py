@@ -54,15 +54,19 @@ def upgrade() -> None:
     # -------------------------------------------------------------------------
     has_shared_table = conn.execute(
         text(
-            "SELECT 1 FROM information_schema.tables "
-            "WHERE table_schema = 'shared' AND table_name = 'user_context'"
+            "SELECT 1 FROM pg_catalog.pg_class c "
+            "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = 'shared' AND c.relname = 'user_context' "
+            "AND c.relkind IN ('r', 'p')"
         )
     ).scalar()
 
     has_public_table = conn.execute(
         text(
-            "SELECT 1 FROM information_schema.tables "
-            "WHERE table_schema = 'public' AND table_name = 'user_context'"
+            "SELECT 1 FROM pg_catalog.pg_class c "
+            "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = 'public' AND c.relname = 'user_context' "
+            "AND c.relkind IN ('r', 'p')"
         )
     ).scalar()
 
@@ -77,10 +81,7 @@ def upgrade() -> None:
         # 2. Verify the shared schema is now empty (safety guard).
         # ---------------------------------------------------------------------
         remaining = conn.execute(
-            text(
-                "SELECT count(*) FROM information_schema.tables "
-                "WHERE table_schema = 'shared'"
-            )
+            text("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'shared'")
         ).scalar()
         if remaining:
             raise RuntimeError(

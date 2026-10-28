@@ -40,14 +40,8 @@ _RUNTIME_ROLES = (
     "butler_relationship_rw",
     "butler_switchboard_rw",
     "butler_travel_rw",
-    "butler_calendar_rw",
     "connector_writer",
     "restore_drill_executor",
-)
-
-_PROTECTED_ROLLBACK_ERROR = (
-    "core_246 cannot enter non-transactional downgrade work because the protected "
-    "core_198 rollback preflight failed"
 )
 
 
@@ -116,13 +110,6 @@ def _downgrade_crosses_core_198() -> bool:
     return any(
         step.revision == "core_198" for step in script.iterate_revisions(revision, destination)
     )
-
-
-def _protected_rollback_preflight_passes(bind) -> bool:
-    script = op.get_context().script
-    if script is None:
-        return False
-    return script.get_revision("core_198").module.protected_rollback_preflight_passes(bind)
 
 
 def upgrade() -> None:
@@ -209,8 +196,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    if _downgrade_crosses_core_198() and not _protected_rollback_preflight_passes(op.get_bind()):
-        raise RuntimeError(_PROTECTED_ROLLBACK_ERROR)
+    if _downgrade_crosses_core_198():
+        from butlers.db_authority.interfaces import require_boundary_absence
+
+        require_boundary_absence(op.get_bind(), "attention")
     op.execute(
         "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_246:ha-person-mapping', 0))"
     )

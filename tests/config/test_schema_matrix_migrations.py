@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 from pathlib import Path
 
@@ -10,8 +9,8 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from butlers.config import ButlerConfig, load_config
-from butlers.migrations import ROSTER_DIR, has_butler_chain, run_migrations
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.migrations import ROSTER_DIR, has_butler_chain
+from butlers.testing.migration import create_migration_db, migrate_test_database, migration_db_name
 
 # Skip all tests if Docker is not available.
 docker_available = shutil.which("docker") is not None
@@ -249,6 +248,7 @@ def test_one_db_schema_table_matrix_for_core_and_enabled_modules(postgres_contai
     """Enabled module + core table sets should exist in every configured one-db schema."""
     db_url = create_migration_db(postgres_container, migration_db_name())
     configs = _load_one_db_roster_configs()
+    plans = []
 
     # Provision every schema's core tables before any butler-specific chain.
     # Concierge's real migration builds a fleet-wide UNION over each rostered
@@ -260,7 +260,7 @@ def test_one_db_schema_table_matrix_for_core_and_enabled_modules(postgres_contai
     for config in configs:
         schema = config.db_schema
         assert schema is not None
-        asyncio.run(run_migrations(db_url, chain="core", schema=schema))
+        plans.append(("core", schema, None))
 
     # Module-owned tables are the next shared prerequisite layer. Lifestyle's
     # butler chain seeds the Memory module's predicate registry, so its real
@@ -271,13 +271,7 @@ def test_one_db_schema_table_matrix_for_core_and_enabled_modules(postgres_contai
         for module_chain in _enabled_module_chains(config):
             # Route each module chain to its target schema (private override or
             # the butler's own schema) — mirrors lifecycle.py step 8.
-            asyncio.run(
-                run_migrations(
-                    db_url,
-                    chain=module_chain,
-                    schema=_module_target_schema(config, module_chain),
-                )
-            )
+            plans.append((module_chain, _module_target_schema(config, module_chain), None))
 
     # Butler-specific chains run only after fleet core and module prerequisites
     # exist. This is the first phase allowed to construct cross-schema views or
@@ -286,7 +280,9 @@ def test_one_db_schema_table_matrix_for_core_and_enabled_modules(postgres_contai
         schema = config.db_schema
         assert schema is not None
         if has_butler_chain(config.name):
-            asyncio.run(run_migrations(db_url, chain=config.name, schema=schema))
+            plans.append((config.name, schema, None))
+
+    migrate_test_database(postgres_container, db_url, plans=tuple(plans))
 
     expected_by_schema, chain_by_schema = _expected_schema_matrix(configs)
     actual_by_schema = _fetch_tables_by_schema(db_url, set(expected_by_schema.keys()))

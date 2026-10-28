@@ -1,67 +1,24 @@
-// ---------------------------------------------------------------------------
-// StoredFunctionsTile -- deployed stored-function bodies vs init-db.sql (bu-bi5an)
-//
-// Data source: useStoredFunctionFacts -> GET /api/system/stored-functions
-// Fields used: is_drifted, drifted, not_deployed, matched_count,
-//              stored_function_check_available, unpinned_definers,
-//              definer_check_available
-//
-// The definer search-path check (bu-hefzis) is independent of the body
-// comparison: it renders its own section in every state, and only when there
-// is something to say (unpinned definers, or the check itself failed).
-//
-// `not_deployed` is an ordinary state (the function's bootstrap installer has
-// not run yet), never rendered as an alarm -- only `drifted` (a deployed body
-// that disagrees with the committed source) turns the card red. The API
-// carries names, init-db.sql line references, and short digests only, never a
-// function body or a digest preimage; this tile renders names and line
-// references and never touches the digest fields.
-// ---------------------------------------------------------------------------
-
-import {
-  Tile,
-  TileContent,
-  TileDescription,
-  TileHeader,
-  TileTitle,
-} from "@/components/ui/Tile"
+import { Tile, TileContent, TileDescription, TileHeader, TileTitle } from "@/components/ui/Tile"
 import { QueryTile } from "@/components/ui/query-tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import type { StoredFunctionFacts } from "@/api/types"
 import { useStoredFunctionFacts } from "@/hooks/use-system"
 
-const REMEDY_TEXT: Record<"migrations" | "init_db", string> = {
-  migrations: "run migrations to head",
-  init_db: "re-run scripts/init-db.sql as a cluster superuser",
-}
-
-/**
- * SECURITY DEFINER functions whose search_path is not `pg_catalog, pg_temp`.
- * Renders nothing when the check ran and found none.
- */
 function DefinerSearchPathSection({ facts }: { facts: StoredFunctionFacts }) {
-  if (!facts.definer_check_available) {
-    return (
-      <p
-        data-testid="stored-functions-tile-definer-unavailable"
-        className="text-muted-foreground mt-3 text-xs"
-      >
-        Definer search-path check unavailable. This is not a clean bill of health.
-      </p>
-    )
-  }
-  if (facts.unpinned_definers.length === 0) return null
-  const count = facts.unpinned_definers.length
+  if (!facts.definer_check_available) return (
+    <p data-testid="stored-functions-tile-definer-unavailable" className="mt-3 text-xs text-muted-foreground">
+      Definer search-path observation unavailable. Authority remains unknown.
+    </p>
+  )
+  if (!facts.unpinned_definers.length) return null
   return (
     <div data-testid="stored-functions-tile-unpinned" className="mt-3">
-      <span className="bg-[var(--red)] text-white mb-2 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium">
-        {count} definer{count === 1 ? "" : "s"} not pinned to pg_catalog, pg_temp
-      </span>
-      <ul className="space-y-1 text-sm">
-        {facts.unpinned_definers.map((entry) => (
-          <li key={entry.function} className="font-mono text-xs">
-            {entry.function} (owner {entry.owner}, search_path{" "}
-            {entry.search_path ?? "unset"}): {REMEDY_TEXT[entry.remedy]}
+      <p className="text-sm text-[var(--red)]">{facts.unpinned_definers.length} unpinned definers</p>
+      <ul className="space-y-1 text-xs">
+        {facts.unpinned_definers.map(entry => (
+          <li key={entry.function} className="font-mono">
+            {entry.function} (owner {entry.owner}, search_path {entry.search_path ?? "unset"}):
+            {" "}run controlled migrator with the operator maintenance prerequisite
           </li>
         ))}
       </ul>
@@ -69,148 +26,51 @@ function DefinerSearchPathSection({ facts }: { facts: StoredFunctionFacts }) {
   )
 }
 
-// ---------------------------------------------------------------------------
-// Loading / error sub-components
-// ---------------------------------------------------------------------------
-
 function TileSkeleton() {
-  return (
-    <Tile loading>
-      <TileHeader>
-        <TileTitle>Stored Functions</TileTitle>
-        <TileDescription>Deployed bodies vs. init-db.sql</TileDescription>
-      </TileHeader>
-      <TileContent>
-        <div data-testid="stored-functions-tile-skeleton" className="space-y-2">
-          <Skeleton className="h-8 w-40" />
-          <Skeleton className="h-4 w-52" />
-        </div>
-      </TileContent>
-    </Tile>
-  )
+  return <Tile loading><TileHeader><TileTitle>Database Authority</TileTitle></TileHeader>
+    <TileContent data-testid="stored-functions-tile-skeleton"><Skeleton className="h-8 w-40" /></TileContent>
+  </Tile>
 }
 
-// ---------------------------------------------------------------------------
-// StoredFunctionsTile
-// ---------------------------------------------------------------------------
-
-/**
- * Displays the stored-function drift comparison's live result.
- *
- * States:
- *   - Unavailable (stored_function_check_available=false): the comparison
- *     itself failed -- rendered as "unknown", never a fabricated all-clear.
- *   - All matched (is_drifted=false, no not_deployed): green "All matched" badge.
- *   - Otherwise: matched/drifted/not_deployed counts, a red section naming
- *     each drifted function with its init-db.sql line reference(s), and an
- *     amber (never red) section naming not_deployed functions -- a distinct,
- *     non-alarm color because not_deployed is an expected state.
- */
 export function StoredFunctionsTile() {
   const q = useStoredFunctionFacts()
-
   return (
-    <QueryTile q={q} title="Stored Functions" description="Deployed bodies vs. init-db.sql"
-      errorMessage="Could not load stored-function drift status." errorTestId="stored-functions-tile-error" loadingFallback={<TileSkeleton />}>
-      {(response) => <StoredFunctionsContent response={response} />}
+    <QueryTile q={q} title="Database Authority" description="Actual catalog vs. source authority"
+      errorMessage="Could not load database authority facts." errorTestId="stored-functions-tile-error"
+      loadingFallback={<TileSkeleton />}>
+      {response => <AuthorityContent facts={response.data} />}
     </QueryTile>
   )
 }
 
-function StoredFunctionsContent({ response }: {
-  response: NonNullable<ReturnType<typeof useStoredFunctionFacts>["data"]>
-}) {
-  const facts = response.data
-
-  if (!facts.stored_function_check_available) {
-    return (
-      <Tile degraded>
-        <TileHeader>
-          <TileTitle>Stored Functions</TileTitle>
-          <TileDescription>Deployed bodies vs. init-db.sql</TileDescription>
-        </TileHeader>
-        <TileContent data-testid="stored-functions-tile-unavailable">
-          <p className="text-muted-foreground text-sm">Stored-function check unavailable.</p>
-          <p className="text-muted-foreground mt-1 text-xs">
-            The comparison itself failed. This is not a clean bill of health.
-          </p>
-          {facts && <DefinerSearchPathSection facts={facts} />}
-        </TileContent>
-      </Tile>
-    )
-  }
-
-  const hasNotDeployed = facts.not_deployed.length > 0
-
-  if (!facts.is_drifted && !hasNotDeployed) {
-    return (
-      <Tile>
-        <TileHeader>
-          <TileTitle>Stored Functions</TileTitle>
-          <TileDescription>Deployed bodies vs. init-db.sql</TileDescription>
-        </TileHeader>
-        <TileContent data-testid="stored-functions-tile-clean">
-          <span
-            data-testid="stored-functions-tile-clean-badge"
-            className="bg-[var(--green)] text-white inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
-          >
-            All {facts.matched_count} matched
-          </span>
-          <DefinerSearchPathSection facts={facts} />
-        </TileContent>
-      </Tile>
-    )
-  }
-
+function AuthorityContent({ facts }: { facts: StoredFunctionFacts }) {
+  const available = facts.catalog_check_available && ["conforming", "mismatch"].includes(facts.status)
+  const conforming = available && facts.status === "conforming" && facts.objects_ok === true &&
+    facts.functions.every(row => row.status === "conforming" && row.owner_ok && row.settings_ok && row.acl_ok)
+  const failures = facts.functions.filter(row => row.status !== "conforming" ||
+    !row.owner_ok || !row.settings_ok || !row.acl_ok)
   return (
-    <Tile className={facts.is_drifted ? "border-[var(--red)]/40" : undefined}>
-      <TileHeader>
-        <TileTitle>Stored Functions</TileTitle>
-        <TileDescription>Deployed bodies vs. init-db.sql</TileDescription>
-      </TileHeader>
-      <TileContent data-testid="stored-functions-tile-drifted">
-        <p className="text-muted-foreground mb-3 text-xs">
-          {facts.matched_count} matched, {facts.drifted.length} drifted,{" "}
-          {facts.not_deployed.length} not deployed
-        </p>
-
-        {facts.is_drifted && (
-          <div className="mb-3">
-            <span
-              data-testid="stored-functions-tile-drifted-badge"
-              className="bg-[var(--red)] text-white mb-2 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
-            >
-              {facts.drifted.length} function{facts.drifted.length === 1 ? "" : "s"} drifted
-            </span>
-            <ul className="space-y-1 text-sm">
-              {facts.drifted.map((entry) => (
-                <li key={entry.function} className="font-mono text-xs">
-                  {entry.function} (init-db.sql line
-                  {entry.committed_lines.length === 1 ? "" : "s"}{" "}
-                  {entry.committed_lines.join(", ")})
-                </li>
-              ))}
+    <Tile degraded={!available} className={available && !conforming ? "border-[var(--red)]/40" : undefined}>
+      <TileHeader><TileTitle>Database Authority</TileTitle>
+        <TileDescription>Actual catalog vs. source authority</TileDescription></TileHeader>
+      <TileContent data-testid={!available ? "stored-functions-tile-unavailable" :
+        conforming ? "stored-functions-tile-clean" : "stored-functions-tile-drifted"}>
+        {!available ? <p className="text-sm text-muted-foreground">Database authority unavailable. This is not a clean bill of health.</p> :
+          conforming ? <span data-testid="stored-functions-tile-clean-badge" className="text-sm text-[var(--green)]">
+            Catalog conforms to source ({facts.functions.length} function overloads)
+          </span> : <>
+            <p data-testid="stored-functions-tile-drifted-badge" className="text-sm text-[var(--red)]">
+              Catalog authority mismatch. Run the controlled migrator before serving.
+            </p>
+            {facts.objects_ok !== true && <p className="text-xs">Object ownership or privileges do not conform.</p>}
+            <ul className="mt-2 space-y-1 text-xs">
+              {failures.map(row => <li key={row.function} className="font-mono"
+                data-testid={row.status === "missing" ? "stored-functions-tile-not-deployed-badge" : undefined}>
+                {row.function}: {row.status}{!row.owner_ok ? "; owner mismatch" : ""}
+                {!row.settings_ok ? "; settings mismatch" : ""}{!row.acl_ok ? "; privileges mismatch" : ""}
+              </li>)}
             </ul>
-          </div>
-        )}
-
-        {hasNotDeployed && (
-          <div>
-            <span
-              data-testid="stored-functions-tile-not-deployed-badge"
-              className="text-[var(--amber-text)] border-[var(--amber)] mb-2 inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium"
-            >
-              {facts.not_deployed.length} not deployed
-            </span>
-            <ul className="space-y-1 text-sm">
-              {facts.not_deployed.map((name) => (
-                <li key={name} className="font-mono text-xs">
-                  {name}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+          </>}
         <DefinerSearchPathSection facts={facts} />
       </TileContent>
     </Tile>

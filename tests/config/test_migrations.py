@@ -3,21 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
+import json
 import shutil
+import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 
 from alembic import command
-from butlers.migrations import get_chain_head
+from butlers.bootstrap_prerequisite import prepare_bootstrap_connection
+from butlers.db_authority.roles import AuthorityError
+from butlers.migrations import finalize_authority, get_chain_head, migration_session, run_migrations
 from butlers.testing.migration import (
+    _upgrade_chain_to_revision,
     create_migrated_test_db,
     create_migration_db,
-    init_db_sql_for_dbapi,
     migration_bootstrap_db_url,
     migration_db_name,
     table_exists,
@@ -38,6 +44,313 @@ RUNTIME_ROLES = {
     "relationship": "butler_relationship_rw",
     "switchboard": "butler_switchboard_rw",
 }
+
+
+def _maintenance_url(postgres_container, db_url):
+    database = make_url(db_url).database
+    if database is None:
+        raise ValueError("Disposable migration database is required")
+    return migration_bootstrap_db_url(postgres_container, database)
+
+
+def _native_url(db_url):
+    # testcontainers may use a SQLAlchemy-only driver-qualified scheme.
+    return make_url(db_url).set(drivername="postgresql").render_as_string(hide_password=False)
+
+
+def _failed_catalog_observation(postgres_container, db_url, plans, error, *, relation=None):
+    """Observe failure in an independent admin snapshot; never repair its oracle.
+
+    Uncommitted migration DDL may be invisible to this separate read-only
+    transaction. Source expectations are selected-plan context, not a claim
+    that this snapshot is the complete installed or serving catalog.
+    Only bounded counts, booleans and metadata hashes leave memory.
+    """
+    from butlers.db_authority import grants
+    from butlers.db_authority.interfaces import selected_protected_functions
+
+    def digest(value):
+        return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
+
+    def identity(schema, name, signature=""):
+        return digest([schema, name, signature])
+
+    engine = None
+    try:
+        engine = create_engine(
+            _maintenance_url(postgres_container, db_url),
+            connect_args={"connect_timeout": 3, "options": "-c statement_timeout=2000"},
+        )
+        with engine.begin() as admin:
+            admin.exec_driver_sql("SET TRANSACTION READ ONLY")
+            database, maintenance_owner = admin.exec_driver_sql(
+                "SELECT current_database(), session_user"
+            ).one()
+            if database != make_url(db_url).database:
+                raise ValueError("Diagnostic physical database differs")
+            owner = admin.exec_driver_sql(
+                "SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_catalog.pg_database "
+                "WHERE datname=current_database()"
+            ).scalar_one()
+            relations, functions, required = {}, {}, set()
+            source_available = False
+            try:
+                manifest = grants.compile_relation_manifest(
+                    database, owner, maintenance_owner, source_database="butlers"
+                )
+                # Empty installed vector selects desired source only; it does
+                # not certify a durable installed phase or approve any object.
+                selected = grants.select_migration_manifest(
+                    manifest, plans, installed_audit_vector=()
+                )
+                relations = {(row.schema, row.name): row for row in selected.relations}
+                current = grants.compile_function_manifest(manifest.profiles, owner, plans)
+                required = {row.identity for row in current}
+                deployment = (
+                    ("core", None, None),
+                    *grants.deployment_function_plans(manifest.profiles),
+                )
+                known = grants.compile_function_manifest(
+                    manifest.profiles, owner, (*deployment, *plans)
+                )
+                protected = selected_protected_functions(manifest.profiles, owner, plans)
+                functions = {row.identity: row for row in (*known, *protected)}
+                source_available = True
+            except Exception:
+                # Physical evidence remains useful when this exact historical
+                # plan cannot be compiled. Do not invent its expected catalog.
+                relations, functions, required = {}, {}, set()
+            rows = admin.exec_driver_sql(
+                "SELECT n.nspname,c.relname,c.relkind,pg_catalog.pg_get_userbyid(c.relowner),"
+                "c.relrowsecurity,c.relforcerowsecurity,c.relispartition,"
+                "ARRAY(SELECT pn.nspname||'.'||p.relname FROM pg_catalog.pg_inherits i "
+                "JOIN pg_catalog.pg_class p ON p.oid=i.inhparent "
+                "JOIN pg_catalog.pg_namespace pn ON pn.oid=p.relnamespace WHERE i.inhrelid=c.oid),"
+                "c.relacl::text FROM pg_catalog.pg_class c "
+                "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+                "WHERE left(n.nspname,3)<>'pg_' AND n.nspname<>'information_schema' "
+                "AND c.relkind IN ('r','p','v','m','S','f') ORDER BY n.nspname,c.relname LIMIT 1025"
+            ).all()
+            physical = []
+            for schema, name, kind, actual_owner, enabled, forced, partition, parents, acl in rows[
+                :1024
+            ]:
+                declared = relations.get((schema, name))
+                physical.append(
+                    {
+                        "identity_sha256": identity(schema, name),
+                        "selected_declared": declared is not None if source_available else None,
+                        "kind": kind,
+                        "owner_matches_selected": actual_owner == declared.owner
+                        if declared is not None
+                        else None,
+                        "enabled": enabled,
+                        "forced": forced,
+                        "partition": partition,
+                        "parents_sha256": digest(parents),
+                        "acl_sha256": digest(acl),
+                    }
+                )
+            actual_functions = admin.exec_driver_sql(
+                "SELECT n.nspname,p.proname,pg_catalog.oidvectortypes(p.proargtypes),"
+                "pg_catalog.pg_get_userbyid(p.proowner),p.prosecdef,p.proconfig,"
+                "pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(p.prosrc,'UTF8')),'hex'),"
+                "p.proacl::text FROM pg_catalog.pg_proc p "
+                "JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace "
+                "WHERE left(n.nspname,3)<>'pg_' AND n.nspname<>'information_schema' "
+                "AND NOT EXISTS(SELECT FROM pg_catalog.pg_depend d "
+                "WHERE d.classid='pg_catalog.pg_proc'::regclass AND d.objid=p.oid AND d.deptype='e') "
+                "ORDER BY n.nspname,p.proname,p.proargtypes LIMIT 257"
+            ).all()
+            seen, function_rows = set(), []
+            for (
+                schema,
+                name,
+                signature,
+                actual_owner,
+                definer,
+                settings,
+                body_digest,
+                acl,
+            ) in actual_functions[:256]:
+                key = (schema, name, signature)
+                seen.add(key)
+                declared = functions.get(key)
+                function_rows.append(
+                    {
+                        "identity_sha256": identity(*key),
+                        "selected_declared": declared is not None if source_available else None,
+                        "owner_matches_selected": actual_owner == declared.owner
+                        if declared is not None
+                        else None,
+                        "definer": definer,
+                        "settings_sha256": digest(settings),
+                        "body_sha256": body_digest,
+                        "acl_sha256": digest(acl),
+                    }
+                )
+            namespaces = admin.exec_driver_sql(
+                "SELECT n.nspname,pg_catalog.pg_get_userbyid(n.nspowner),n.nspacl::text "
+                "FROM pg_catalog.pg_namespace n WHERE left(n.nspname,3)<>'pg_' "
+                "AND n.nspname<>'information_schema' ORDER BY n.nspname LIMIT 33"
+            ).all()
+            # Read only actual catalog-listed ledger tables. Version values
+            # are hashed, bounded source metadata, never adopted as authority.
+            ledgers = [
+                (schema, name)
+                for schema, name, kind, *_ in rows[:1024]
+                if name == "alembic_version" and kind == "r"
+            ][:32]
+            revisions = []
+            for schema, name in ledgers:
+                values = (
+                    admin.exec_driver_sql(
+                        "SELECT version_num FROM "
+                        + _quote_ident(schema)
+                        + "."
+                        + _quote_ident(name)
+                        + " ORDER BY version_num LIMIT 33"
+                    )
+                    .scalars()
+                    .all()
+                )
+                revisions.append(
+                    {
+                        "ledger_sha256": identity(schema, name),
+                        "versions_sha256": digest(values[:32]),
+                        "truncated": len(values) > 32,
+                    }
+                )
+            observation = {
+                "version": 1,
+                "phase": "original_failure",
+                "exception": "AuthorityError" if isinstance(error, AuthorityError) else "UNKNOWN",
+                "same_physical_database": True,
+                "snapshot": "independent_admin_uncommitted_DDL_not_visible",
+                "selected_plan_sha256": digest(plans),
+                "source_context_available": source_available,
+                "selected_source_sha256": digest(
+                    [(key, row.owner) for key, row in sorted(relations.items())]
+                )
+                if source_available
+                else None,
+                "relations_truncated": len(rows) > 1024,
+                "functions_truncated": len(actual_functions) > 256,
+                "missing_selected_required_functions": sorted(
+                    identity(*key) for key in required - seen
+                )
+                if source_available and len(actual_functions) <= 256
+                else None,
+                "namespaces": [
+                    {
+                        "identity_sha256": digest(schema),
+                        "owner_sha256": digest(actor),
+                        "acl_sha256": digest(acl),
+                    }
+                    for schema, actor, acl in namespaces[:32]
+                ],
+                "namespaces_truncated": len(namespaces) > 32,
+                "installed_ledger_observations": revisions,
+                "original_failure_preserved": True,
+            }
+            if relation is not None:
+                observation["requested_relation_sha256"] = identity(*relation)
+                observation["requested_relation_physical_rows"] = sum(
+                    (schema, name) == relation for schema, name, *_ in rows
+                )
+            observation["relation_count"] = len(physical)
+            observation["selected_undeclared_count"] = (
+                sum(row["selected_declared"] is False for row in physical)
+                if source_available
+                else None
+            )
+            observation["relations"] = [
+                row
+                for row in physical
+                if row["selected_declared"] is not True or row["owner_matches_selected"] is False
+            ][:32]
+            observation["function_count"] = len(function_rows)
+            observation["functions"] = function_rows[:32]
+            sys.stderr.write("DB_MIGRATION_PHYSICAL_DIAGNOSTIC " + json.dumps(observation) + "\n")
+    except Exception:
+        try:
+            sys.stderr.write(
+                "DB_MIGRATION_PHYSICAL_DIAGNOSTIC "
+                '{"version":1,"observation":"unavailable",'
+                '"original_failure_preserved":true}\n'
+            )
+        except Exception:
+            pass
+    finally:
+        if engine is not None:
+            try:
+                engine.dispose()
+            except Exception:
+                # This independent observer never owns the primary failure.
+                pass
+
+
+async def _run_selected_head(postgres_container, db_url, *, chain="core", schema=None):
+    """Use the real maintenance actor, ordinary DDL identity and finalizer."""
+    try:
+        with migration_session(
+            _maintenance_url(postgres_container, db_url), source_database="butlers"
+        ) as connection:
+            await run_migrations(db_url, chain=chain, schema=schema, connection=connection)
+            finalize_authority(
+                connection, source_database="butlers", plans=((chain, schema, None),)
+            )
+    except Exception as error:
+        _failed_catalog_observation(postgres_container, db_url, ((chain, schema, None),), error)
+        raise
+
+
+def _upgrade_selected(postgres_container, db_url, config, revision, *, chain="core"):
+    schema = config.get_main_option("butlers.target_schema") or None
+    try:
+        with migration_session(
+            _maintenance_url(postgres_container, db_url), source_database="butlers"
+        ) as connection:
+            if revision is None:
+                asyncio.run(
+                    run_migrations(db_url, chain=chain, schema=schema, connection=connection)
+                )
+            else:
+                _upgrade_chain_to_revision(
+                    db_url, chain=chain, schema=schema, revision=revision, connection=connection
+                )
+            finalize_authority(
+                connection, source_database="butlers", plans=((chain, schema, revision),)
+            )
+    except Exception as error:
+        _failed_catalog_observation(postgres_container, db_url, ((chain, schema, revision),), error)
+        raise
+
+
+def _downgrade_selected(postgres_container, db_url, config, target, *, revision):
+    """Keep actual Alembic destination/refusal handling; do not emulate selectors."""
+    schema = config.get_main_option("butlers.target_schema") or None
+    try:
+        with migration_session(
+            _maintenance_url(postgres_container, db_url), source_database="butlers"
+        ) as connection:
+            previous = config.attributes.get("connection")
+            config.attributes["connection"] = connection
+            try:
+                command.downgrade(config, target)
+                finalize_authority(
+                    connection, source_database="butlers", plans=(("core", schema, revision),)
+                )
+            finally:
+                if previous is None:
+                    config.attributes.pop("connection", None)
+                else:
+                    config.attributes["connection"] = previous
+    except Exception as error:
+        _failed_catalog_observation(
+            postgres_container, db_url, (("core", schema, revision),), error
+        )
+        raise
 
 
 def _latest_core_revision() -> str:
@@ -114,7 +427,9 @@ def _schema_exists(db_url: str, schema_name: str) -> bool:
     return bool(exists)
 
 
-def _table_exists_in_schema(db_url: str, schema_name: str, table_name: str) -> bool:
+def _table_exists_in_schema(
+    db_url: str, schema_name: str, table_name: str, *, postgres_container=None
+) -> bool:
     engine = create_engine(db_url)
     with engine.connect() as conn:
         result = conn.execute(
@@ -125,6 +440,14 @@ def _table_exists_in_schema(db_url: str, schema_name: str, table_name: str) -> b
         )
         exists = result.scalar()
     engine.dispose()
+    if not exists and postgres_container is not None:
+        _failed_catalog_observation(
+            postgres_container,
+            db_url,
+            (("core", None, None),),
+            AssertionError(),
+            relation=(schema_name, table_name),
+        )
     return bool(exists)
 
 
@@ -171,9 +494,16 @@ def _has_schema_create_privilege(db_url: str, schema_name: str) -> bool:
     return bool(has_privilege)
 
 
-def _execute_as_role(db_url: str, role_name: str, sql: str, *, scalar: bool = False):
+def _execute_as_role(
+    postgres_container, db_url: str, role_name: str, sql: str, *, scalar: bool = False
+):
+    # The normal migration owner is deliberately not a member of runtime roles.
+    # This is an explicit disposable administration connection, not a runtime
+    # LOGIN/admission proof or a fixture-created membership/grant.
     quoted_role = _quote_ident(role_name)
-    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    engine = create_engine(
+        _maintenance_url(postgres_container, db_url), isolation_level="AUTOCOMMIT"
+    )
     try:
         with engine.connect() as conn:
             conn.execute(text(f"SET ROLE {quoted_role}"))
@@ -189,27 +519,29 @@ def _execute_as_role(db_url: str, role_name: str, sql: str, *, scalar: bool = Fa
 
 
 def _replay_init_db(postgres_container, db_name: str, db_url: str) -> None:
-    """Replay production bootstrap so RLS must survive its broad public grants."""
+    """Replay actual compiled prerequisite setup; it cannot widen application ACLs."""
     migration_user = urlparse(db_url).username
     assert migration_user is not None
     engine = create_engine(
         migration_bootstrap_db_url(postgres_container, db_name), isolation_level="AUTOCOMMIT"
     )
-    raw_connection = engine.raw_connection()
+    raw_connection = None
     try:
+        raw_connection = engine.raw_connection()
         raw_connection.autocommit = True
-        with raw_connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT set_config('butlers.connecting_user', %s, false)", (migration_user,)
-            )
-            cursor.execute(init_db_sql_for_dbapi())
+        prepare_bootstrap_connection(
+            raw_connection, db_name, migration_user, source_database="butlers"
+        )
     finally:
-        raw_connection.close()
-        engine.dispose()
+        try:
+            if raw_connection is not None:
+                raw_connection.close()
+        finally:
+            engine.dispose()
 
 
 def test_create_migration_db_bootstraps_restore_drill_prerequisite(postgres_container):
-    """REQ-database-security-006: fresh test databases stage the trusted bootstrap interface."""
+    """REQ-database-security-006: source preparation replaces the three old admin installers."""
     db_url = create_migration_db(postgres_container, migration_db_name())
 
     engine = create_engine(db_url)
@@ -256,16 +588,14 @@ def test_create_migration_db_bootstraps_restore_drill_prerequisite(postgres_cont
 
     assert database_owner == current_user
     assert can_create_databases is False
-    assert has_trusted_installer is True
+    assert has_trusted_installer is False
 
 
 def test_core_migrations_tables_schemas_and_idempotency(postgres_container):
     """Core migrations create all required tables and schemas; idempotent on second run."""
-    from butlers.migrations import run_migrations
-
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    asyncio.run(_run_selected_head(postgres_container, db_url, chain="core"))
 
     for table in (
         "state",
@@ -288,7 +618,7 @@ def test_core_migrations_tables_schemas_and_idempotency(postgres_container):
         assert _schema_exists(db_url, schema), f"schema {schema!r} should exist"
 
     # Idempotency
-    asyncio.run(run_migrations(db_url, chain="core"))
+    asyncio.run(_run_selected_head(postgres_container, db_url, chain="core"))
     assert table_exists(db_url, "state")
 
     # ``init-db.sql``'s managed bootstrap owns the schemas. The normal
@@ -379,10 +709,12 @@ def test_bounded_chain_revision_keeps_rollback_off_the_protected_boundary(postgr
     bootstrap_config = _build_alembic_config(
         migration_bootstrap_db_url(postgres_container, db_name), chains=["core"]
     )
-    command.downgrade(bootstrap_config, prior_revision)
+    _downgrade_selected(
+        postgres_container, db_url, bootstrap_config, prior_revision, revision=prior_revision
+    )
     assert _stamped_versions(db_url) == [prior_revision]
 
-    command.upgrade(bootstrap_config, f"core@{bounded_revision}")
+    _upgrade_selected(postgres_container, db_url, bootstrap_config, bounded_revision, chain="core")
     assert _stamped_versions(db_url) == [bounded_revision]
 
 
@@ -395,11 +727,10 @@ def test_core_migrations_retire_legacy_permission_default_seeds(postgres_contain
         check_permission,
         require_permission,
     )
-    from butlers.migrations import run_migrations
 
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    asyncio.run(_run_selected_head(postgres_container, db_url, chain="core"))
 
     # core_121 initially seeded defaults, but final core head retires those rows
     # so inherited state remains distinguishable from an operator decision.
@@ -414,7 +745,7 @@ def test_core_migrations_retire_legacy_permission_default_seeds(postgres_contain
     # Runtime enforcer against a real asyncpg pool: absent rows default-allow,
     # an explicit revoke denies (deny BLOCKS), and unknown butlers stay inherited.
     async def _exercise_enforcer() -> None:
-        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+        pool = await asyncpg.create_pool(_native_url(db_url), min_size=1, max_size=2)
         try:
             # No persisted row → inherited system default allows.
             allowed = await check_permission(pool, "chronicler", SPAWN_PERMISSION)
@@ -448,11 +779,9 @@ def test_core_migrations_retire_legacy_permission_default_seeds(postgres_contain
 
 def test_core_migrations_create_delivery_tables_in_target_schema(postgres_container):
     """Schema-scoped core runs create notification delivery tables for new butlers."""
-    from butlers.migrations import run_migrations
-
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core", schema="chronicler"))
+    asyncio.run(_run_selected_head(postgres_container, db_url, chain="core", schema="chronicler"))
 
     assert _table_exists_in_schema(db_url, "chronicler", "delivery_preferences")
     assert _table_exists_in_schema(db_url, "chronicler", "deferred_notifications")
@@ -473,77 +802,93 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
         db_url, chains=["switchboard"], target_schema="switchboard"
     )
 
-    from butlers.bootstrap_prerequisite import BootstrapPrerequisiteError, check_bootstrap_database
+    from butlers.bootstrap_prerequisite import (
+        BootstrapPrerequisiteError,
+        check_bootstrap_connection,
+    )
 
     def relationship_read_default() -> bool:
-        with create_engine(db_url).connect() as connection:
-            return connection.execute(
-                text(
-                    "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_default_acl AS d "
-                    "JOIN pg_catalog.pg_namespace AS n ON n.oid = d.defaclnamespace "
-                    "CROSS JOIN LATERAL pg_catalog.aclexplode(d.defaclacl) AS a "
-                    "WHERE d.defaclrole = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user) "
-                    "AND n.nspname = 'switchboard' AND d.defaclobjtype = 'r' "
-                    "AND a.grantee = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = 'butler_relationship_rw') "
-                    "AND a.privilege_type = 'SELECT')"
-                )
-            ).scalar_one()
+        engine = create_engine(db_url)
+        try:
+            with engine.connect() as connection:
+                return connection.execute(
+                    text(
+                        "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_default_acl AS d "
+                        "JOIN pg_catalog.pg_namespace AS n ON n.oid = d.defaclnamespace "
+                        "CROSS JOIN LATERAL pg_catalog.aclexplode(d.defaclacl) AS a "
+                        "WHERE d.defaclrole = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user) "
+                        "AND n.nspname = 'switchboard' AND d.defaclobjtype = 'r' "
+                        "AND a.grantee = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = 'butler_relationship_rw') "
+                        "AND a.privilege_type = 'SELECT')"
+                    )
+                ).scalar_one()
+        finally:
+            engine.dispose()
 
-    # Genuine checked-init -> immutable bounded replay -> second schema -> repair.
-    assert relationship_read_default() is True
-    command.upgrade(relationship_core, "core_076")
+    # Checked prerequisites carry no future relation privileges. A bounded
+    # historical core closes ACLs rather than certifying today's runtime.
     assert relationship_read_default() is False
-    check_bootstrap_database(db_url)
-    # Losing an ordinary cross-schema read must not waive a required own ACL.
-    # These are the disposable normal creator's existing default-ACL privileges.
-    profile_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
-    try:
-        with profile_engine.connect() as connection:
+    _upgrade_selected(postgres_container, db_url, relationship_core, "core_076", chain="core")
+    assert relationship_read_default() is False
+    with migration_session(
+        _maintenance_url(postgres_container, db_url), source_database="butlers"
+    ) as connection:
+        check_bootstrap_connection(connection)
+        before = tuple(
             connection.execute(
                 text(
-                    "ALTER DEFAULT PRIVILEGES IN SCHEMA relationship "
-                    "REVOKE INSERT ON TABLES FROM butler_relationship_rw"
+                    "SELECT defaclrole,defaclnamespace,defaclobjtype,defaclacl::text "
+                    "FROM pg_catalog.pg_default_acl ORDER BY 1,2,3"
                 )
             )
-        try:
-            with profile_engine.connect() as connection:
-                before = tuple(
-                    connection.execute(
-                        text(
-                            "SELECT defaclrole, defaclnamespace, defaclobjtype, defaclacl::text "
-                            "FROM pg_catalog.pg_default_acl ORDER BY 1,2,3"
-                        )
-                    )
-                )
-            with pytest.raises(BootstrapPrerequisiteError):
-                check_bootstrap_database(db_url)
-            with profile_engine.connect() as connection:
-                assert (
-                    tuple(
-                        connection.execute(
-                            text(
-                                "SELECT defaclrole, defaclnamespace, defaclobjtype, defaclacl::text "
-                                "FROM pg_catalog.pg_default_acl ORDER BY 1,2,3"
-                            )
-                        )
-                    )
-                    == before
-                )
-        finally:
-            with profile_engine.connect() as connection:
+        )
+        check_bootstrap_connection(connection)
+        assert (
+            tuple(
                 connection.execute(
                     text(
-                        "ALTER DEFAULT PRIVILEGES IN SCHEMA relationship "
-                        "GRANT INSERT ON TABLES TO butler_relationship_rw"
+                        "SELECT defaclrole,defaclnamespace,defaclobjtype,defaclacl::text "
+                        "FROM pg_catalog.pg_default_acl ORDER BY 1,2,3"
                     )
                 )
-    finally:
-        profile_engine.dispose()
-    check_bootstrap_database(db_url)
-    command.upgrade(switchboard_core, "core_076")
+            )
+            == before
+        )
+        # The retired own-table default GRANT is no longer a prerequisite.
+        # Corrupt a genuinely required role fact instead and prove admission
+        # refuses read-only; explicit administrator restoration stays visible.
+        connection.exec_driver_sql("ALTER ROLE butler_relationship_rw LOGIN")
+        connection.commit()
+        try:
+            unsafe_before = tuple(
+                connection.execute(
+                    text(
+                        "SELECT rolname,rolcanlogin,rolinherit,rolsuper,rolcreaterole,"
+                        "rolcreatedb,rolreplication,rolbypassrls FROM pg_roles ORDER BY rolname"
+                    )
+                )
+            )
+            with pytest.raises(BootstrapPrerequisiteError):
+                check_bootstrap_connection(connection)
+            assert (
+                tuple(
+                    connection.execute(
+                        text(
+                            "SELECT rolname,rolcanlogin,rolinherit,rolsuper,rolcreaterole,"
+                            "rolcreatedb,rolreplication,rolbypassrls FROM pg_roles ORDER BY rolname"
+                        )
+                    )
+                )
+                == unsafe_before
+            )
+        finally:
+            connection.rollback()
+            connection.exec_driver_sql("ALTER ROLE butler_relationship_rw NOLOGIN")
+            connection.commit()
+        check_bootstrap_connection(connection)
+    _upgrade_selected(postgres_container, db_url, switchboard_core, "core_076", chain="core")
     assert relationship_read_default() is False
-    check_bootstrap_database(db_url)
-    command.upgrade(switchboard_chain, "switchboard@head")
+    _upgrade_selected(postgres_container, db_url, switchboard_chain, None, chain="switchboard")
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
@@ -571,6 +916,7 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
 
     with pytest.raises(ProgrammingError, match="permission denied"):
         _execute_as_role(
+            postgres_container,
             db_url,
             RUNTIME_ROLES["relationship"],
             "SELECT COUNT(*) FROM switchboard.message_inbox",
@@ -580,8 +926,8 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
     relationship_core = _build_alembic_config(db_url, chains=["core"], target_schema="relationship")
     # pinned-revision: both genuine schema histories must finish core_083's
     # shared contact_info ALTER before the first core_115 retires that table.
-    command.upgrade(relationship_core, "core_114")
-    command.upgrade(switchboard_core, "core_114")
+    _upgrade_selected(postgres_container, db_url, relationship_core, "core_114", chain="core")
+    _upgrade_selected(postgres_container, db_url, switchboard_core, "core_114", chain="core")
     staged_engine = create_engine(db_url)
     try:
         with staged_engine.connect() as connection:
@@ -604,24 +950,25 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
             )
     finally:
         staged_engine.dispose()
-    command.upgrade(relationship_core, "core@head")
+    _upgrade_selected(postgres_container, db_url, relationship_core, None, chain="core")
+    _upgrade_selected(postgres_container, db_url, switchboard_core, None, chain="core")
 
     count = _execute_as_role(
+        postgres_container,
         db_url,
         RUNTIME_ROLES["relationship"],
         "SELECT COUNT(*) FROM switchboard.message_inbox",
         scalar=True,
     )
     assert count == 1
-    assert relationship_read_default() is True
-    check_bootstrap_database(db_url)
-    command.upgrade(relationship_core, "core@head")
-    command.upgrade(switchboard_core, "core@head")
-    command.upgrade(switchboard_core, "core@head")
-    check_bootstrap_database(db_url)
-    assert relationship_read_default() is True
+    assert relationship_read_default() is False
+    _upgrade_selected(postgres_container, db_url, relationship_core, None, chain="core")
+    _upgrade_selected(postgres_container, db_url, switchboard_core, None, chain="core")
+    _upgrade_selected(postgres_container, db_url, switchboard_core, None, chain="core")
+    assert relationship_read_default() is False
     assert (
         _execute_as_role(
+            postgres_container,
             db_url,
             RUNTIME_ROLES["relationship"],
             "SELECT COUNT(*) FROM switchboard.message_inbox",
@@ -643,8 +990,8 @@ def test_switchboard_runtime_role_can_ensure_message_inbox_partitions(postgres_c
         db_url, chains=["switchboard"], target_schema="switchboard"
     )
 
-    command.upgrade(switchboard_core, "core@head")
-    command.upgrade(switchboard_chain, "switchboard@head")
+    _upgrade_selected(postgres_container, db_url, switchboard_core, None, chain="core")
+    _upgrade_selected(postgres_container, db_url, switchboard_chain, None, chain="switchboard")
 
     assert _function_is_security_definer(
         db_url,
@@ -653,6 +1000,7 @@ def test_switchboard_runtime_role_can_ensure_message_inbox_partitions(postgres_c
     )
 
     partition_name = _execute_as_role(
+        postgres_container,
         db_url,
         RUNTIME_ROLES["switchboard"],
         "SELECT switchboard.switchboard_message_inbox_ensure_partition("
@@ -672,11 +1020,9 @@ def test_connector_writer_can_ensure_filtered_events_partition(postgres_containe
     call it to create new monthly partitions even though it is not the owner of
     connectors.filtered_events.
     """
-    from butlers.migrations import run_migrations
-
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    asyncio.run(_run_selected_head(postgres_container, db_url, chain="core"))
 
     # Verify the schema-qualified function is SECURITY DEFINER.
     assert _function_is_security_definer(
@@ -689,6 +1035,7 @@ def test_connector_writer_can_ensure_filtered_events_partition(postgres_containe
     # NOT pre-created by the migration (guarantees we're testing a genuine DDL
     # execution path, not a no-op IF NOT EXISTS).
     partition_name = _execute_as_role(
+        postgres_container,
         db_url,
         "connector_writer",
         "SELECT connectors.connectors_filtered_events_ensure_partition("
@@ -697,16 +1044,16 @@ def test_connector_writer_can_ensure_filtered_events_partition(postgres_containe
         scalar=True,
     )
     assert partition_name == "filtered_events_209903"
-    assert _table_exists_in_schema(db_url, "connectors", "filtered_events_209903")
+    assert _table_exists_in_schema(
+        db_url, "connectors", "filtered_events_209903", postgres_container=postgres_container
+    )
 
 
 def test_core_scheduled_tasks_schema_and_constraints(postgres_container):
     """scheduled_tasks has dispatch/calendar columns; constraints enforced; calendar linkage columns present."""
-    from butlers.migrations import run_migrations
-
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    asyncio.run(_run_selected_head(postgres_container, db_url, chain="core"))
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
@@ -767,7 +1114,7 @@ def test_core_migration_backfills_scheduled_tasks_calendar_linkage_columns(postg
     db_url = create_migration_db(postgres_container, db_name)
 
     config = _build_alembic_config(db_url, chains=["core"], target_schema="messenger")
-    command.upgrade(config, "core_103")
+    _upgrade_selected(postgres_container, db_url, config, "core_103", chain="core")
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
@@ -799,7 +1146,7 @@ def test_core_migration_backfills_scheduled_tasks_calendar_linkage_columns(postg
     finally:
         engine.dispose()
 
-    command.upgrade(config, "core@head")
+    _upgrade_selected(postgres_container, db_url, config, None, chain="core")
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
@@ -858,11 +1205,9 @@ def test_core_112_downgrade_preserves_baseline_scheduler_projection_columns(monk
 
 def test_core_calendar_tables_and_constraints(postgres_container):
     """Calendar tables support source lookup, window queries, idempotency keys; GIST indexes exist."""
-    from butlers.migrations import run_migrations
-
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    asyncio.run(_run_selected_head(postgres_container, db_url, chain="core"))
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
@@ -949,11 +1294,9 @@ def test_core_calendar_tables_and_constraints(postgres_container):
 
 def test_alembic_version_tracking_and_schema_scoped(postgres_container):
     """alembic_version table has correct head revision; schema-scoped runs track in schema-local tables."""
-    from butlers.migrations import run_migrations
-
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    asyncio.run(_run_selected_head(postgres_container, db_url, chain="core"))
 
     assert table_exists(db_url, "alembic_version")
     engine = create_engine(db_url)
@@ -963,8 +1306,8 @@ def test_alembic_version_tracking_and_schema_scoped(postgres_container):
     assert _latest_core_revision() in versions
 
     # Schema-scoped version tracking
-    asyncio.run(run_migrations(db_url, chain="core", schema="general"))
-    asyncio.run(run_migrations(db_url, chain="core", schema="health"))
+    asyncio.run(_run_selected_head(postgres_container, db_url, chain="core", schema="general"))
+    asyncio.run(_run_selected_head(postgres_container, db_url, chain="core", schema="health"))
     assert _table_exists_in_schema(db_url, "general", "alembic_version")
     assert _table_exists_in_schema(db_url, "health", "alembic_version")
     assert _table_exists_in_schema(db_url, "public", "alembic_version")
@@ -972,10 +1315,8 @@ def test_alembic_version_tracking_and_schema_scoped(postgres_container):
 
 def test_insight_feedback_migration_shape_and_constraints(postgres_container):
     """core_241 keeps feedback typed and engagement attributable by category."""
-    from butlers.migrations import run_migrations
-
     db_url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(db_url, chain="core"))
+    asyncio.run(_run_selected_head(postgres_container, db_url, chain="core"))
 
     engine = create_engine(db_url)
     try:
@@ -1043,11 +1384,9 @@ def test_insight_feedback_migration_shape_and_constraints(postgres_container):
 
 def test_insight_feedback_rls_survives_bootstrap_replay(postgres_container):
     """Public-table grants cannot let non-Switchboard roles read or forge feedback."""
-    from butlers.migrations import run_migrations
-
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    asyncio.run(_run_selected_head(postgres_container, db_url, chain="core"))
 
     engine = create_engine(db_url)
     try:
@@ -1094,6 +1433,7 @@ def test_insight_feedback_rls_survives_bootstrap_replay(postgres_container):
 
     assert (
         _execute_as_role(
+            postgres_container,
             db_url,
             RUNTIME_ROLES["switchboard"],
             "SELECT count(*) FROM public.insight_feedback",
@@ -1102,30 +1442,40 @@ def test_insight_feedback_rls_survives_bootstrap_replay(postgres_container):
         == 1
     )
     for role in (RUNTIME_ROLES["general"], "connector_writer"):
-        assert (
+        with pytest.raises(ProgrammingError) as read_error:
             _execute_as_role(
+                postgres_container,
                 db_url,
                 role,
                 "SELECT count(*) FROM public.insight_feedback",
                 scalar=True,
             )
-            == 0
-        )
-        with pytest.raises(ProgrammingError, match="row-level security"):
+        assert read_error.value.orig.pgcode == "42501"
+        with pytest.raises(ProgrammingError) as write_error:
             _execute_as_role(
+                postgres_container,
                 db_url,
                 role,
                 "INSERT INTO public.insight_feedback "
                 f"(insight_id, dedup_family, category, origin_butler, verdict, actor) VALUES "
                 f"('{candidate_id}', 'health:signal', 'Health', 'health', 'useful', 'forged')",
             )
+        assert write_error.value.orig.pgcode == "42501"
 
     async def owner_feedback_still_reaches_the_server_path() -> None:
         import asyncpg
 
         from butlers.tools.switchboard.insight.broker import record_insight_feedback
 
-        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=1)
+        async def as_switchboard(connection):
+            await connection.execute('SET ROLE "butler_switchboard_rw"')
+
+        pool = await asyncpg.create_pool(
+            _native_url(_maintenance_url(postgres_container, db_url)),
+            min_size=1,
+            max_size=1,
+            setup=as_switchboard,
+        )
         try:
             result = await record_insight_feedback(
                 pool,
@@ -1149,72 +1499,29 @@ def test_insight_feedback_downgrade_tolerates_shared_table_replay(postgres_conta
     general = _build_alembic_config(db_url, chains=["core"], target_schema="general")
     health = _build_alembic_config(db_url, chains=["core"], target_schema="health")
 
-    command.upgrade(general, "core@head")
-    command.upgrade(health, "core@head")
+    _upgrade_selected(postgres_container, db_url, general, "core_114", chain="core")
+    _upgrade_selected(postgres_container, db_url, health, "core_114", chain="core")
+    _upgrade_selected(postgres_container, db_url, general, "core_241", chain="core")
+    _upgrade_selected(postgres_container, db_url, health, "core_241", chain="core")
     assert table_exists(db_url, "insight_feedback")
 
-    command.downgrade(general, "core_240")
-    command.downgrade(health, "core_240")
+    _downgrade_selected(postgres_container, db_url, general, "core_240", revision="core_240")
+    _downgrade_selected(postgres_container, db_url, health, "core_240", revision="core_240")
     assert not table_exists(db_url, "insight_feedback")
 
 
 def test_core_acl_and_relationship_chain(postgres_container):
     """ACL: runtime roles exist, own-schema write allowed, cross-schema denied. relationship chain creates reminders."""
-    from butlers.migrations import run_migrations
-
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    asyncio.run(_run_selected_head(postgres_container, db_url, chain="core"))
 
     for role in RUNTIME_ROLES.values():
         assert _role_exists(db_url, role), f"expected role {role!r}"
 
-    setup_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
-    try:
-        with setup_engine.connect() as conn:
-            conn.execute(text("CREATE TABLE general.acl_test (id INT PRIMARY KEY, note TEXT)"))
-            conn.execute(text("CREATE TABLE health.acl_test (id INT PRIMARY KEY, note TEXT)"))
-            conn.execute(text("CREATE TABLE public.acl_shared (id SERIAL PRIMARY KEY, note TEXT)"))
-            conn.execute(text("INSERT INTO public.acl_shared (note) VALUES ('seed')"))
-    finally:
-        setup_engine.dispose()
-
-    general_role = RUNTIME_ROLES["general"]
-    _execute_as_role(
-        db_url, general_role, "INSERT INTO general.acl_test (id, note) VALUES (1, 'ok')"
-    )
-    assert (
-        _execute_as_role(
-            db_url, general_role, "SELECT note FROM general.acl_test WHERE id = 1", scalar=True
-        )
-        == "ok"
-    )
-    assert (
-        _execute_as_role(
-            db_url,
-            general_role,
-            "SELECT note FROM public.acl_shared ORDER BY id LIMIT 1",
-            scalar=True,
-        )
-        == "seed"
-    )
-    # ``public`` is an explicitly shared surface: managed bootstrap grants
-    # normal runtime roles its table DML while specialist schemas remain
-    # isolated from one another.
-    _execute_as_role(
-        db_url, general_role, "INSERT INTO public.acl_shared (note) VALUES ('shared-write')"
-    )
-    assert (
-        _execute_as_role(
-            db_url, general_role, "SELECT count(*) FROM public.acl_shared", scalar=True
-        )
-        == 2
-    )
-    with pytest.raises(ProgrammingError, match="permission denied"):
-        _execute_as_role(db_url, general_role, "SELECT * FROM health.acl_test")
-
+    asyncio.run(_run_selected_head(postgres_container, db_url, chain="core", schema="general"))
     # relationship chain
-    asyncio.run(run_migrations(db_url, chain="relationship"))
+    asyncio.run(_run_selected_head(postgres_container, db_url, chain="relationship"))
     # rel_007 renamed the live `reminders` table to `_reminders_backup` as a
     # safety net; rel_020 then dropped that dead backup table. After the full
     # relationship chain neither table should exist.
@@ -1245,6 +1552,48 @@ def test_core_acl_and_relationship_chain(postgres_container):
     # alembic_version also holds the core head here, so check membership of the
     # resolved relationship head rather than assert_at_chain_head's single row.
     assert get_chain_head("relationship") in versions
+    setup_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with setup_engine.connect() as conn:
+            conn.execute(text("CREATE TABLE general.acl_test (id INT PRIMARY KEY, note TEXT)"))
+            conn.execute(text("CREATE TABLE health.acl_test (id INT PRIMARY KEY, note TEXT)"))
+            conn.execute(text("CREATE TABLE public.acl_shared (id SERIAL PRIMARY KEY, note TEXT)"))
+            conn.execute(text("INSERT INTO public.acl_shared (note) VALUES ('seed')"))
+    finally:
+        setup_engine.dispose()
+
+    general_role = RUNTIME_ROLES["general"]
+    _execute_as_role(
+        postgres_container,
+        db_url,
+        general_role,
+        "INSERT INTO general.state (key,value) VALUES ('acl-probe','{\"note\":\"ok\"}'::jsonb)",
+    )
+    assert (
+        _execute_as_role(
+            postgres_container,
+            db_url,
+            general_role,
+            "SELECT value->>'note' FROM general.state WHERE key='acl-probe'",
+            scalar=True,
+        )
+        == "ok"
+    )
+    for sql in (
+        "INSERT INTO general.acl_test (id,note) VALUES (1,'unknown')",
+        "SELECT note FROM public.acl_shared ORDER BY id LIMIT 1",
+        "INSERT INTO public.acl_shared (note) VALUES ('shared-write')",
+        "SELECT * FROM health.acl_test",
+    ):
+        with pytest.raises(ProgrammingError) as error:
+            _execute_as_role(postgres_container, db_url, general_role, sql)
+        assert error.value.orig.pgcode == "42501"
+    # Unknown objects cannot be adopted by a later source finalization either.
+    with migration_session(
+        _maintenance_url(postgres_container, db_url), source_database="butlers"
+    ) as connection:
+        with pytest.raises(AuthorityError, match="not declared"):
+            finalize_authority(connection, plans=(("core", "general", None),))
 
 
 # ---------------------------------------------------------------------------
@@ -1269,11 +1618,9 @@ def test_core_migration_smoke_empty_to_head(postgres_container):
     specialist relationship chain. Core's cross-schema grant must consequently
     tolerate absent ``relationship.entity_facts``.
     """
-    from butlers.migrations import run_migrations
-
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    asyncio.run(_run_selected_head(postgres_container, db_url, chain="core"))
 
     engine = create_engine(db_url)
     try:
@@ -1293,26 +1640,33 @@ def test_core_migration_smoke_empty_to_head(postgres_container):
 
 @pytest.mark.smoke
 def test_core_migration_smoke_downgrade_upgrade_round_trip(postgres_container):
-    """Smoke: latest core revision survives a one-step downgrade/upgrade round-trip.
+    """Raw protected reverse refuses before effects, then head remains re-applicable.
 
-    Confirms that the most recent migration has a coherent downgrade path and
-    that down-by-one followed by up-to-head leaves alembic_version at the
-    expected head revision.
+    The older bounded roundtrip and full preserving R0/R1 operator population
+    remain separate; this refusal cannot earn the supported reverse positive.
     """
-    from butlers.migrations import _build_alembic_config, run_migrations
+    from butlers.migrations import _build_alembic_config
 
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    asyncio.run(_run_selected_head(postgres_container, db_url, chain="core"))
 
     bootstrap_config = _build_alembic_config(
         migration_bootstrap_db_url(postgres_container, db_name), chains=["core"]
     )
-    # core_196's rollback and reapplication are deliberately managed-bootstrap
-    # operations. The empty-to-head smoke above separately proves the ordinary
-    # NOCREATEDB migration path after bootstrap has exposed its installer.
-    command.downgrade(bootstrap_config, "core@-1")
-    command.upgrade(bootstrap_config, "core@head")
+    before_versions = _stamped_versions(db_url)
+    before_tables = _get_table_columns_sql(db_url)
+    with pytest.raises(AuthorityError, match="Explicit preserving operator reverse is required"):
+        _downgrade_selected(
+            postgres_container,
+            db_url,
+            bootstrap_config,
+            "core@-1",
+            revision=None,
+        )
+    assert _stamped_versions(db_url) == before_versions
+    assert _get_table_columns_sql(db_url) == before_tables
+    _upgrade_selected(postgres_container, db_url, bootstrap_config, None, chain="core")
 
     engine = create_engine(db_url)
     try:
@@ -1326,24 +1680,24 @@ def test_core_migration_smoke_downgrade_upgrade_round_trip(postgres_container):
     expected_head = _latest_core_revision()
     assert expected_head in versions, (
         f"alembic_version should record the core head revision {expected_head!r} "
-        f"after down/up round-trip; recorded: {versions}"
+        f"after protected refusal and head reapply; recorded: {versions}"
     )
 
-    # Verify schema equivalence: the round-tripped DB must have an identical
+    # Verify schema equivalence: the refused/reapplied DB must have an identical
     # table/column inventory to a fresh empty→head migration.  This catches
     # migrations whose downgrade path drops a column or table that upgrade
     # never recreates, leaving the schema in a state the alembic_version alone
     # cannot detect.
     fresh_db_name = migration_db_name()
     fresh_db_url = create_migration_db(postgres_container, fresh_db_name)
-    asyncio.run(run_migrations(fresh_db_url, chain="core"))
+    asyncio.run(_run_selected_head(postgres_container, fresh_db_url, chain="core"))
 
     round_trip_tables = _get_table_columns_sql(db_url)
     fresh_tables = _get_table_columns_sql(fresh_db_url)
     only_round_trip = set(round_trip_tables) - set(fresh_tables)
     only_fresh = set(fresh_tables) - set(round_trip_tables)
     assert round_trip_tables == fresh_tables, (
-        "Schema after round-trip must be equivalent to a direct empty→head migration. "
+        "Schema after refusal/reapply must be equivalent to a direct empty→head migration. "
         f"Tables only in round-trip DB: {only_round_trip!r}. "
         f"Tables only in fresh DB: {only_fresh!r}. "
         "This is the ordinary login's privilege-filtered metadata inventory. "
@@ -1431,7 +1785,7 @@ def test_current_schema_event_chains_converge_and_preserve_history(postgres_cont
                 )
             before = _event_chains_history(db_url, target)
         config = _build_alembic_config(db_url, ["core"], target_schema=schema)
-        command.upgrade(config, "core_280")
+        _upgrade_selected(postgres_container, db_url, config, "core_280", chain="core")
         assert _table_exists_in_schema(db_url, target, "event_chains")
         if before:
             assert _event_chains_history(db_url, target) == before
@@ -1507,9 +1861,9 @@ def test_current_schema_event_chains_converge_and_preserve_history(postgres_cont
                 )
         _apply_current_event_chains_revision(db_url, target, "upgrade")
         assert _event_chains_history(db_url, target) == history
-        command.downgrade(config, "core_279")
+        _downgrade_selected(postgres_container, db_url, config, "core_279", revision="core_279")
         assert _event_chains_history(db_url, target) == history
-        command.upgrade(config, "core_280")
+        _upgrade_selected(postgres_container, db_url, config, "core_280", chain="core")
         assert _event_chains_history(db_url, target) == history
         if target in {"public", "future_scheduler"}:
             assert not _role_exists(db_url, f"butler_{target}_rw")
@@ -1605,6 +1959,7 @@ def test_current_schema_event_chains_qa_role_tick_and_foreign_write_refusal(post
         for role, destination in (("butler_general_rw", "qa"), ("butler_qa_rw", "general")):
             with pytest.raises(ProgrammingError) as error:
                 _execute_as_role(
+                    postgres_container,
                     db_url,
                     role,
                     f"INSERT INTO {destination}.event_chains "
@@ -1618,7 +1973,7 @@ def test_current_schema_event_chains_qa_role_tick_and_foreign_write_refusal(post
                 await conn.execute('SET ROLE "butler_qa_rw"')
 
             pool = await asyncpg.create_pool(
-                db_url,
+                _native_url(_maintenance_url(postgres_container, db_url)),
                 min_size=1,
                 max_size=1,
                 init=register_jsonb_codec,
@@ -1649,6 +2004,344 @@ def test_current_schema_event_chains_qa_role_tick_and_foreign_write_refusal(post
         engine.dispose()
 
 
+def test_historical_priority_audit_fixed_owner_preserves_real_phase_transitions(postgres_container):
+    """Actual101→129→205 and bounded inverses preserve audit/role authority.
+
+    The second database exercises129→128→100 without crossing198's independent
+    protected rollback boundary. No ownership fixture substitutes a producer.
+    """
+    import uuid
+
+    from butlers.db_authority import apply, grants, interfaces
+    from butlers.migrations import _build_alembic_config
+
+    db_url = create_migrated_test_db(
+        postgres_container, migration_db_name(), chains=["core"], revisions={"core": "core_101"}
+    )
+    config = _build_alembic_config(db_url, chains=["core"])
+    engine = create_engine(_maintenance_url(postgres_container, db_url))
+
+    def default_catalog(conn, purpose):
+        # Independently inspect actual stored ACLITEM and exploded populations;
+        # never infer privilege count from the array's cardinality alone.
+        rows = conn.execute(
+            text("""
+            SELECT d.oid,d.defaclnamespace,d.defaclobjtype,
+                   pg_catalog.cardinality(d.defaclacl),
+                   pg_catalog.pg_get_userbyid(a.grantor),
+                   pg_catalog.pg_get_userbyid(a.grantee),a.privilege_type,a.is_grantable,
+                   (SELECT count(*) FROM pg_catalog.aclexplode(d.defaclacl))
+            FROM pg_catalog.pg_default_acl d
+            CROSS JOIN LATERAL pg_catalog.aclexplode(d.defaclacl) a
+            WHERE d.defaclrole=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname=:purpose)
+            ORDER BY d.defaclobjtype
+        """),
+            {"purpose": purpose},
+        ).all()
+        assert {row[2] for row in rows} == {"f", "T"} and len(rows) == 2
+        for oid, namespace, kind, count, grantor, grantee, verb, option, exploded in rows:
+            assert namespace == 0 and count == exploded == 1
+            assert grantor == grantee == purpose and option is False
+            assert verb == {"f": "EXECUTE", "T": "USAGE"}[kind]
+            assert (
+                conn.execute(
+                    text("""
+                SELECT count(*) FROM pg_catalog.pg_shdepend d
+                WHERE d.classid='pg_catalog.pg_default_acl'::regclass AND d.objid=:oid
+                  AND d.refclassid='pg_catalog.pg_authid'::regclass AND d.deptype='o'
+                  AND d.refobjid=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname=:purpose)
+                  AND d.dbid=(SELECT oid FROM pg_catalog.pg_database WHERE datname=current_database())
+            """),
+                    {"oid": oid, "purpose": purpose},
+                ).scalar_one()
+                == 1
+            )
+
+    def default_refusal_and_restore(active_engine, purpose, expected):
+        assert purpose in {"priority_contact_audit_owner", "identity_lookup_owner"}
+        with active_engine.connect() as conn:
+            default_catalog(conn, purpose)
+            assert interfaces._fixed_purpose_capability_matches(conn, expected, purpose=purpose)
+        # Real, legal PostgreSQL grants exercise native refusal; mixed-bit
+        # malformed ACLITEMs belong only to the software transport controls.
+        with active_engine.begin() as conn:
+            conn.execute(
+                text(
+                    f'ALTER DEFAULT PRIVILEGES FOR ROLE "{purpose}" '
+                    "GRANT EXECUTE ON FUNCTIONS TO butler_switchboard_rw"
+                )
+            )
+        with active_engine.connect() as conn:
+            assert not interfaces._fixed_purpose_capability_matches(conn, expected, purpose=purpose)
+        with active_engine.begin() as conn:
+            apply.converge_default_privileges(conn, ("public",), (purpose,))
+        with active_engine.connect() as conn:
+            default_catalog(conn, purpose)
+            assert interfaces._fixed_purpose_capability_matches(conn, expected, purpose=purpose)
+        with active_engine.begin() as conn:
+            conn.execute(text("CREATE TABLE public._audit_default_owned_negative (id integer)"))
+            conn.execute(
+                text(f'ALTER TABLE public._audit_default_owned_negative OWNER TO "{purpose}"')
+            )
+        with active_engine.connect() as conn:
+            assert not interfaces._fixed_purpose_capability_matches(conn, expected, purpose=purpose)
+        with active_engine.begin() as conn:
+            conn.execute(text("DROP TABLE public._audit_default_owned_negative"))
+        with active_engine.connect() as conn:
+            default_catalog(conn, purpose)
+            assert interfaces._fixed_purpose_capability_matches(conn, expected, purpose=purpose)
+
+    def catalog(stage):
+        with engine.connect() as conn:
+            owner = conn.execute(
+                text(
+                    "SELECT pg_catalog.pg_get_userbyid(datdba) "
+                    "FROM pg_catalog.pg_database WHERE datname=current_database()"
+                )
+            ).scalar_one()
+            manifest = grants.compile_relation_manifest(
+                make_url(db_url).database,
+                owner,
+                conn.execute(text("SELECT session_user")).scalar_one(),
+                source_database="butlers",
+            )
+            profile = grants.compile_historical_priority_audit(
+                manifest.profiles, owner, (("core", "public", "core_" + stage),)
+            )
+            assert profile is not None
+            default_catalog(conn, "priority_contact_audit_owner")
+            expected = grants.historical_priority_audit_capabilities(manifest, profile)
+            assert interfaces._fixed_purpose_capability_matches(
+                conn, expected, purpose="priority_contact_audit_owner"
+            )
+            assert interfaces.function_matches(
+                conn, profile.definition, interfaces.inspect_function(conn, profile.definition)
+            )
+            assert interfaces._owner_lookup_metadata_matches(conn, profile.definition)
+            assert conn.execute(text(interfaces._PRIORITY_AUDIT_TRIGGER_SQL)).scalar_one()
+            assert conn.execute(
+                text("""
+                SELECT NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper AND NOT rolcreaterole
+                  AND NOT rolcreatedb AND NOT rolbypassrls AND NOT rolreplication
+                  AND NOT EXISTS(SELECT FROM pg_catalog.pg_auth_members m
+                    WHERE m.roleid=r.oid OR m.member=r.oid)
+                FROM pg_catalog.pg_roles r WHERE rolname='priority_contact_audit_owner'
+            """)
+            ).scalar_one()
+            assert conn.execute(
+                text("""
+                SELECT has_column_privilege('priority_contact_audit_owner','public.audit_log','actor','INSERT')
+                  AND NOT has_table_privilege('priority_contact_audit_owner','public.audit_log','INSERT')
+                  AND NOT has_table_privilege('priority_contact_audit_owner','public.audit_log','SELECT')
+                  AND has_sequence_privilege('priority_contact_audit_owner','public.audit_log_id_seq','USAGE')
+                  AND NOT has_sequence_privilege('priority_contact_audit_owner','public.audit_log_id_seq','SELECT')
+                  AND NOT has_schema_privilege('priority_contact_audit_owner','public','CREATE')
+            """)
+            ).scalar_one()
+
+    def history():
+        with engine.connect() as conn:
+            return tuple(
+                conn.execute(
+                    text("SELECT id,actor,action,target,note FROM public.audit_log ORDER BY id")
+                )
+            )
+
+    def deletion(stage):
+        identifier = uuid.uuid4()
+        with engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO public.contacts (id,name) VALUES (:id,'history-proof')"),
+                {"id": identifier},
+            )
+            if stage == "101":
+                conn.execute(
+                    text(
+                        "INSERT INTO public.priority_contacts (contact_id,butler) VALUES (:id,'gmail')"
+                    ),
+                    {"id": identifier},
+                )
+            else:
+                conn.execute(
+                    text("INSERT INTO public.priority_contacts (contact_id) VALUES (:id)"),
+                    {"id": identifier},
+                )
+        before = history()
+        with engine.connect() as conn:
+            transaction = conn.begin()
+            assert (
+                conn.execute(
+                    text("DELETE FROM public.priority_contacts WHERE contact_id=:id"),
+                    {"id": identifier},
+                ).rowcount
+                == 1
+            )
+            transaction.rollback()
+        assert history() == before
+        with engine.begin() as conn:
+            assert (
+                conn.execute(
+                    text("DELETE FROM public.priority_contacts WHERE contact_id=:id"),
+                    {"id": identifier},
+                ).rowcount
+                == 1
+            )
+        after = history()
+        assert after[:-1] == before
+        assert after[-1][1:] == (
+            "system:contact_cascade",
+            "ingestion.priority_contact.cascade_remove",
+            str(identifier) + (":gmail" if stage == "101" else ""),
+            "contact removed from public.contacts",
+        )
+        with engine.connect() as independent:
+            assert (
+                independent.execute(
+                    text("SELECT count(*) FROM public.priority_contacts WHERE contact_id=:id"),
+                    {"id": identifier},
+                ).scalar_one()
+                == 0
+            )
+        for statement in (
+            "SELECT public.priority_contacts_cascade_audit()",
+            "DELETE FROM public.priority_contacts",
+        ):
+            with pytest.raises(ProgrammingError) as denied:
+                _execute_as_role(postgres_container, db_url, "butler_switchboard_rw", statement)
+            assert denied.value.orig.pgcode == "42501"
+
+    try:
+        catalog("101")
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO public.audit_log (actor,action,target,note) VALUES ('test:history','preserve','existing','unchanged')"
+                )
+            )
+        original = history()
+        deletion("101")
+        _upgrade_selected(postgres_container, db_url, config, "core_129")
+        catalog("129")
+        with engine.connect() as conn:
+            owner = conn.execute(
+                text(
+                    "SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_catalog.pg_database "
+                    "WHERE datname=current_database()"
+                )
+            ).scalar_one()
+            manifest = grants.compile_relation_manifest(
+                make_url(db_url).database,
+                owner,
+                conn.execute(text("SELECT session_user")).scalar_one(),
+                source_database="butlers",
+            )
+            authority = grants.compile_historical_priority_audit(
+                manifest.profiles, owner, (("core", "public", "core_129"),)
+            )
+            expected = grants.historical_priority_audit_capabilities(manifest, authority)
+        audit_before_defaults = history()
+        default_refusal_and_restore(engine, "priority_contact_audit_owner", expected)
+        assert history() == audit_before_defaults
+        deletion("129")
+        before_retirement = history()
+        _upgrade_selected(postgres_container, db_url, config, "core_205")
+        with engine.connect() as conn:
+            assert conn.execute(
+                text(
+                    "SELECT pg_catalog.to_regprocedure('public.priority_contacts_cascade_audit()') IS NULL"
+                )
+            ).scalar_one()
+            assert not conn.execute(
+                text(
+                    "SELECT has_column_privilege('priority_contact_audit_owner','public.audit_log','actor','INSERT')"
+                )
+            ).scalar_one()
+            assert not conn.execute(
+                text(
+                    "SELECT has_sequence_privilege('priority_contact_audit_owner','public.audit_log_id_seq','USAGE')"
+                )
+            ).scalar_one()
+        assert history() == before_retirement
+        _downgrade_selected(postgres_container, db_url, config, "core_204", revision="core_204")
+        catalog("204")
+        assert history() == before_retirement and history()[: len(original)] == original
+    finally:
+        engine.dispose()
+    inverse_url = create_migrated_test_db(
+        postgres_container, migration_db_name(), chains=["core"], revisions={"core": "core_129"}
+    )
+    inverse_config = _build_alembic_config(inverse_url, chains=["core"])
+    _downgrade_selected(
+        postgres_container, inverse_url, inverse_config, "core_128", revision="core_128"
+    )
+    inverse_engine = create_engine(_maintenance_url(postgres_container, inverse_url))
+    try:
+        with inverse_engine.connect() as conn:
+            owner = conn.execute(
+                text(
+                    "SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_catalog.pg_database WHERE datname=current_database()"
+                )
+            ).scalar_one()
+            profile = grants._historical_priority_audit_profile(owner, "101")
+            assert interfaces.function_matches(
+                conn, profile.definition, interfaces.inspect_function(conn, profile.definition)
+            )
+        _downgrade_selected(
+            postgres_container, inverse_url, inverse_config, "core_100", revision="core_100"
+        )
+        with inverse_engine.connect() as conn:
+            assert conn.execute(
+                text(
+                    "SELECT pg_catalog.to_regprocedure('public.priority_contacts_cascade_audit()') IS NULL"
+                )
+            ).scalar_one()
+            assert conn.execute(
+                text("SELECT pg_catalog.to_regclass('public.priority_contacts') IS NULL")
+            ).scalar_one()
+    finally:
+        inverse_engine.dispose()
+
+    # A separate genuine current-core producer/finalizer supplies the other
+    # fixed purpose. Historical audit absence and current lookup are distinct.
+    current_url = create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+    current_engine = create_engine(_maintenance_url(postgres_container, current_url))
+    try:
+        with current_engine.connect() as conn:
+            owner = conn.execute(
+                text(
+                    "SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_catalog.pg_database "
+                    "WHERE datname=current_database()"
+                )
+            ).scalar_one()
+            manifest = grants.compile_relation_manifest(
+                make_url(current_url).database,
+                owner,
+                conn.execute(text("SELECT session_user")).scalar_one(),
+                source_database="butlers",
+            )
+            expected = grants.compile_owner_lookup_capabilities(
+                manifest, component=None, ordinary_closed=False
+            )
+            assert conn.execute(
+                text(
+                    "SELECT pg_catalog.to_regprocedure('public.priority_contacts_cascade_audit()') IS NULL"
+                )
+            ).scalar_one()
+        default_refusal_and_restore(current_engine, "identity_lookup_owner", expected)
+        # Repeat the exact current source operation and finalizer after repair.
+        _upgrade_selected(
+            postgres_container,
+            current_url,
+            _build_alembic_config(current_url, chains=["core"]),
+            None,
+        )
+        with current_engine.connect() as conn:
+            default_catalog(conn, "identity_lookup_owner")
+            assert interfaces._owner_lookup_capability_matches(conn, expected)
+    finally:
+        current_engine.dispose()
+
+
 # Current-schema butler_logs: core_089's fixed roster (and core_090's chronicler
 # patch) omitted concierge and calendar, so their log writes failed (bu-lilur7).
 @pytest.mark.parametrize("schema", ["concierge", "general"])
@@ -1676,15 +2369,16 @@ def test_current_schema_butler_logs_converge_and_preserve_history(postgres_conta
                     text(f"INSERT INTO {quoted}.butler_logs (level, msg) VALUES ('INFO', 'old')")
                 )
         config = _build_alembic_config(db_url, ["core"], target_schema=schema)
-        command.upgrade(config, "core_281")
+        _upgrade_selected(postgres_container, db_url, config, "core_281")
         assert _table_exists_in_schema(db_url, schema, "butler_logs")
         assert _role_exists(db_url, role)
         # The runtime role itself can append, the way butler_logging writes.
-        with engine.begin() as conn:
-            conn.execute(text(f"SET LOCAL ROLE {_quote_ident(role)}"))
-            conn.execute(
-                text(f"INSERT INTO {quoted}.butler_logs (level, msg) VALUES ('WARN', 'new')")
-            )
+        _execute_as_role(
+            postgres_container,
+            db_url,
+            role,
+            f"INSERT INTO {quoted}.butler_logs (level, msg) VALUES ('WARN', 'new')",
+        )
 
         def history() -> list[tuple[str, str]]:
             with engine.connect() as conn:
@@ -1697,9 +2391,9 @@ def test_current_schema_butler_logs_converge_and_preserve_history(postgres_conta
 
         expected = ([("INFO", "old")] if schema == "general" else []) + [("WARN", "new")]
         assert history() == expected
-        command.downgrade(config, "core_280")
+        _downgrade_selected(postgres_container, db_url, config, "core_280", revision="core_280")
         assert history() == expected
-        command.upgrade(config, "core_281")
+        _upgrade_selected(postgres_container, db_url, config, "core_281")
         assert history() == expected
         with engine.connect() as conn:
             indexes = set(

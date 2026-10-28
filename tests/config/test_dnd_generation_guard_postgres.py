@@ -20,12 +20,22 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError
 
-from alembic import command
-from butlers.migrations import _build_alembic_config, run_migrations
+from butlers.db_authority.interfaces import (
+    FUNCTIONS,
+    function_matches,
+    inspect_function,
+    install_revision_group,
+)
+from butlers.db_authority.roles import AuthorityError
+from butlers.migrations import (
+    migration_session,
+    ordinary_migration_identity,
+    run_migrations,
+)
 from butlers.testing.migration import (
+    _upgrade_chain_to_revision,
     create_migrated_test_db,
     create_migration_db,
-    init_db_sql_for_dbapi,
     migration_bootstrap_db_url,
     migration_db_name,
 )
@@ -38,10 +48,36 @@ pytestmark = [
 ]
 
 
+# Only disposable fixture URLs are registered. The normal owner never acquires
+# membership in serving roles; actual SET ROLE probes use the separately selected
+# testcontainer maintenance connection. No fixture GRANT or runtime bypass exists.
+_ROLE_PROBE_URLS: dict[str, str] = {}
+
+
 @pytest.fixture(scope="module")
 def migrated_db_url(postgres_container) -> str:
-    """A disposable core-migrated database with the privileged bootstrap staged."""
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+    """Current real migration/finalization, with a distinct normal migration URL."""
+    name = migration_db_name()
+    url = create_migrated_test_db(postgres_container, name, chains=["core"])
+    _ROLE_PROBE_URLS[url] = migration_bootstrap_db_url(postgres_container, name)
+    try:
+        yield url
+    finally:
+        _ROLE_PROBE_URLS.pop(url, None)
+
+
+def _probe_url(db_url: str) -> str:
+    return _ROLE_PROBE_URLS.get(db_url, db_url)
+
+
+def _observer_engine(db_url: str):
+    return create_engine(
+        _probe_url(db_url),
+        connect_args={
+            "connect_timeout": 5,
+            "options": "-c statement_timeout=30000 -c lock_timeout=5000",
+        },
+    )
 
 
 def _quote_ident(identifier: str) -> str:
@@ -62,7 +98,14 @@ def _execute_as_role(
     Receipt and DML-rowcount queries opt into a result so it is materialized
     before the role-bound connection is reset and disposed.
     """
-    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    engine = create_engine(
+        _probe_url(db_url),
+        isolation_level="AUTOCOMMIT",
+        connect_args={
+            "connect_timeout": 5,
+            "options": "-c statement_timeout=30000 -c lock_timeout=5000",
+        },
+    )
     try:
         with engine.connect() as conn:
             conn.execute(text(f"SET ROLE {_quote_ident(role_name)}"))
@@ -82,11 +125,18 @@ def _execute_as_role(
 def _execute_as_connecting_user(db_url: str, statement: str, params: dict | None = None):
     """Execute as the ordinary un-set connecting role.
 
-    The fixture's migration user deliberately inherits runtime-role ACLs, so
-    this is stronger than an ACL-only assertion: the private definer must still
-    reject because no active canonical ``SET ROLE`` is present.
+    This connection is the actual normal NOCREATEDB migration login, not the
+    maintenance role used by runtime SET ROLE probes. It receives neither a
+    runtime membership nor direct canonical-writer execution authority.
     """
-    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    engine = create_engine(
+        db_url,
+        isolation_level="AUTOCOMMIT",
+        connect_args={
+            "connect_timeout": 5,
+            "options": "-c statement_timeout=30000 -c lock_timeout=5000",
+        },
+    )
     try:
         with engine.connect() as conn:
             conn.execute(text(statement), params or {})
@@ -134,57 +184,83 @@ def _dnd_clear_statement(writer: str) -> str:
 
 def _run_core_chain_through_dnd_predecessor(db_url: str) -> None:
     """Reach the actual core_196 state before exercising core_197's installer."""
-    config = _build_alembic_config(db_url, chains=["core"])
-    command.upgrade(config, "core_122")
-    asyncio.run(run_migrations(db_url, chain="relationship", schema="relationship"))
-    command.upgrade(config, "core_196")
+    with migration_session(_probe_url(db_url), source_database="butlers") as connection:
+        _upgrade_chain_to_revision(
+            db_url, chain="core", schema=None, revision="core_122", connection=connection
+        )
+        connection.commit()
+        asyncio.run(
+            run_migrations(
+                db_url, chain="relationship", schema="relationship", connection=connection
+            )
+        )
+        _upgrade_chain_to_revision(
+            db_url, chain="core", schema=None, revision="core_196", connection=connection
+        )
+        connection.commit()
 
 
 def test_dnd_bootstrap_rejects_any_preexisting_user_context_policy(postgres_container) -> None:
     """A permissive policy must never be adopted into the forced-RLS handoff."""
-    db_url = create_migration_db(postgres_container, migration_db_name())
-    _run_core_chain_through_dnd_predecessor(db_url)
-
-    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    name = migration_db_name()
+    db_url = create_migration_db(postgres_container, name)
+    _ROLE_PROBE_URLS[db_url] = migration_bootstrap_db_url(postgres_container, name)
     try:
-        with engine.connect() as conn:
-            conn.execute(
-                text(
-                    """
-                    CREATE POLICY dnd_policy_poison
-                    ON public.user_context
-                    FOR ALL TO PUBLIC
-                    USING (true)
-                    WITH CHECK (true)
-                    """
-                )
-            )
-    finally:
-        engine.dispose()
+        _run_core_chain_through_dnd_predecessor(db_url)
 
-    config = _build_alembic_config(db_url, chains=["core"])
-    with pytest.raises(Exception, match="authority interface must be absent"):
-        command.upgrade(config, "core_197")
-
-    engine = create_engine(db_url)
-    try:
-        with engine.connect() as conn:
-            assert conn.execute(
-                text("SELECT to_regclass('public.dnd_generation_guard') IS NULL")
-            ).scalar_one()
-            assert conn.execute(
-                text(
-                    "SELECT to_regprocedure('public.context_dnd_mutate(uuid,text,text,timestamptz,text,real,jsonb)') IS NULL"
+        engine = create_engine(
+            db_url,
+            isolation_level="AUTOCOMMIT",
+            connect_args={
+                "connect_timeout": 5,
+                "options": "-c statement_timeout=30000 -c lock_timeout=5000",
+            },
+        )
+        try:
+            with engine.connect() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE POLICY dnd_policy_poison
+                        ON public.user_context
+                        FOR ALL TO PUBLIC
+                        USING (true)
+                        WITH CHECK (true)
+                        """
+                    )
                 )
-            ).scalar_one()
+        finally:
+            engine.dispose()
+
+        with pytest.raises(DBAPIError, match="authority interface must be absent") as poisoned:
+            with migration_session(_probe_url(db_url), source_database="butlers") as connection:
+                _upgrade_chain_to_revision(
+                    db_url, chain="core", schema=None, revision="core_197", connection=connection
+                )
+        assert poisoned.value.orig.pgcode == "P0001"
+
+        engine = _observer_engine(db_url)
+        try:
+            with engine.connect() as conn:
+                assert conn.execute(
+                    text("SELECT to_regclass('public.dnd_generation_guard') IS NULL")
+                ).scalar_one()
+                assert conn.execute(
+                    text(
+                        "SELECT to_regprocedure('public.context_dnd_mutate("
+                        "uuid,text,text,timestamptz,text,real,jsonb)') IS NULL"
+                    )
+                ).scalar_one()
+        finally:
+            engine.dispose()
     finally:
-        engine.dispose()
+        _ROLE_PROBE_URLS.pop(db_url, None)
 
 
 def test_dnd_final_catalog_has_no_login_owner_force_rls_and_no_public_execute(
     migrated_db_url: str,
 ) -> None:
-    engine = create_engine(migrated_db_url)
+    engine = _observer_engine(migrated_db_url)
     try:
         with engine.connect() as conn:
             catalog = conn.execute(
@@ -206,11 +282,14 @@ def test_dnd_final_catalog_has_no_login_owner_force_rls_and_no_public_execute(
                            private_mutation.prosecdef,
                            canonical_json.prosecdef,
                            canonical_json.proowner = owner_role.oid,
-                           bootstrap_owner.rolsuper,
-                           installer.proowner = admin_schema.nspowner,
-                           finalizer.proowner = admin_schema.nspowner,
-                           installer.prosecdef,
-                           finalizer.prosecdef,
+                           NOT migration_owner.rolsuper AND NOT migration_owner.rolcreatedb
+                               AND NOT migration_owner.rolcreaterole
+                               AND NOT migration_owner.rolbypassrls,
+                           NOT EXISTS (SELECT FROM pg_namespace
+                               WHERE nspname = 'dnd_generation_admin'),
+                           gateway.proowner = owner_role.oid,
+                           private_mutation.proowner = owner_role.oid,
+                           NOT has_schema_privilege(owner_role.oid, 'public', 'CREATE'),
                            NOT EXISTS (
                                SELECT 1
                                FROM aclexplode(
@@ -260,7 +339,7 @@ def test_dnd_final_catalog_has_no_login_owner_force_rls_and_no_public_execute(
                                FROM aclexplode(
                                    COALESCE(gateway.proacl, acldefault('f', gateway.proowner))
                                ) AS acl
-                               WHERE acl.grantee = current_user::regrole
+                               WHERE acl.grantee = migration_owner.oid
                                  AND acl.privilege_type = 'EXECUTE'
                            ) AS connecting_role_has_no_direct_gateway_grant
                     FROM pg_roles AS owner_role
@@ -286,20 +365,8 @@ def test_dnd_final_catalog_has_no_login_owner_force_rls_and_no_public_execute(
                        AND canonical_json.proname = 'canonical_json'
                        AND canonical_json.pronargs = 1
                        AND canonical_json.proargtypes = '3802'::oidvector
-                    JOIN pg_namespace AS admin_schema
-                        ON admin_schema.nspname = 'dnd_generation_admin'
-                    JOIN pg_roles AS bootstrap_owner
-                        ON bootstrap_owner.oid = admin_schema.nspowner
-                    JOIN pg_proc AS installer
-                        ON installer.pronamespace = admin_schema.oid
-                       AND installer.proname = 'install_interface'
-                       AND installer.pronargs = 0
-                       AND installer.prorettype = 'void'::regtype
-                    JOIN pg_proc AS finalizer
-                        ON finalizer.pronamespace = admin_schema.oid
-                       AND finalizer.proname = 'finalize_interface'
-                       AND finalizer.pronargs = 0
-                       AND finalizer.prorettype = 'void'::regtype
+                    JOIN pg_database AS database ON database.datname = current_database()
+                    JOIN pg_roles AS migration_owner ON migration_owner.oid = database.datdba
                     WHERE owner_role.rolname = 'dnd_generation_owner'
                     """
                 )
@@ -380,76 +447,36 @@ def test_dnd_final_catalog_has_no_login_owner_force_rls_and_no_public_execute(
                     )
                 )
             }
+            # These are current executing successors of the six retired admin-
+            # bunker assertions, not acceptance of a missing legacy relation.
             admin_catalog = conn.execute(
-                text(
-                    """
-                    SELECT admin_schema.nspowner = bootstrap_owner.oid,
-                           bootstrap_configuration.relowner = bootstrap_owner.oid,
-                           NOT EXISTS (
-                               SELECT 1
-                               FROM aclexplode(
-                                   COALESCE(
-                                       admin_schema.nspacl,
-                                       acldefault('n', admin_schema.nspowner)
-                                   )
-                               ) AS acl
-                               WHERE acl.grantee <> bootstrap_owner.oid
-                           ),
-                           NOT EXISTS (
-                               SELECT 1
-                               FROM aclexplode(
-                                   COALESCE(
-                                       bootstrap_configuration.relacl,
-                                       acldefault(
-                                           'r',
-                                           bootstrap_configuration.relowner
-                                       )
-                                   )
-                               ) AS acl
-                               WHERE acl.grantee <> bootstrap_owner.oid
-                           ),
-                           NOT EXISTS (
-                               SELECT 1
-                               FROM pg_proc AS admin_function,
-                                    LATERAL aclexplode(
-                                        COALESCE(
-                                            admin_function.proacl,
-                                            acldefault('f', admin_function.proowner)
-                                        )
-                                    ) AS acl
-                               WHERE admin_function.pronamespace = admin_schema.oid
-                                 AND admin_function.proname IN ('install_interface', 'finalize_interface')
-                                 AND admin_function.pronargs = 0
-                                 AND admin_function.prorettype = 'void'::regtype
-                                 AND acl.privilege_type = 'EXECUTE'
-                                 AND acl.grantee <> bootstrap_owner.oid
-                           ),
-                           NOT EXISTS (
-                               SELECT 1
-                               FROM pg_class AS guard_table,
-                                    LATERAL aclexplode(
-                                        COALESCE(
-                                            guard_table.relacl,
-                                            acldefault('r', guard_table.relowner)
-                                        )
-                                    ) AS acl
-                               WHERE guard_table.oid = 'public.dnd_generation_guard'::regclass
-                                 AND acl.privilege_type <> 'SELECT'
-                                 AND acl.grantee <> owner_role.oid
-                           )
-                    FROM pg_roles AS owner_role
-                    JOIN pg_namespace AS admin_schema
-                        ON admin_schema.nspname = 'dnd_generation_admin'
-                    JOIN pg_roles AS bootstrap_owner
-                        ON bootstrap_owner.oid = admin_schema.nspowner
-                    JOIN pg_class AS bootstrap_configuration
-                        ON bootstrap_configuration.relnamespace = admin_schema.oid
-                       AND bootstrap_configuration.relname = 'bootstrap_configuration'
-                       AND bootstrap_configuration.relkind = 'r'
-                    WHERE owner_role.rolname = 'dnd_generation_owner'
-                    """
-                )
+                text("""
+                SELECT NOT EXISTS (SELECT FROM pg_namespace
+                           WHERE nspname='dnd_generation_admin'),
+                       NOT EXISTS (SELECT FROM pg_auth_members m JOIN pg_roles r
+                           ON r.oid=m.roleid WHERE r.rolname='dnd_generation_owner'),
+                       NOT EXISTS (SELECT FROM pg_auth_members m JOIN pg_roles r
+                           ON r.oid=m.member WHERE r.rolname='dnd_generation_owner'),
+                       NOT owner.rolsuper AND NOT owner.rolcreatedb AND NOT owner.rolcreaterole
+                           AND NOT owner.rolbypassrls AND NOT owner.rolinherit,
+                       NOT has_function_privilege(owner.oid, gateway.oid, 'EXECUTE'),
+                       NOT EXISTS (SELECT FROM pg_class c,
+                         LATERAL aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) a
+                         WHERE c.oid='public.dnd_generation_guard'::regclass
+                           AND a.privilege_type<>'SELECT' AND a.grantee<>c.relowner)
+                FROM pg_database d JOIN pg_roles owner ON owner.oid=d.datdba
+                JOIN pg_proc gateway ON gateway.oid=
+                  'public.context_dnd_mutate(uuid,text,text,timestamptz,text,real,jsonb)'::regprocedure
+                WHERE d.datname=current_database()
+            """)
             ).one()
+            # The real catalog, exact overload, complete body/config/ACL are
+            # compared to the actual source-owned current function definitions.
+            definitions = tuple(d for d in FUNCTIONS if d.owner == "dnd_generation_owner")
+            assert len(definitions) == 3
+            for definition in definitions:
+                assert function_matches(conn, definition, inspect_function(conn, definition))
+
     finally:
         engine.dispose()
 
@@ -470,7 +497,7 @@ def test_dnd_final_catalog_has_no_login_owner_force_rls_and_no_public_execute(
         True,
         False,  # canonical JSON helper is explicitly SECURITY INVOKER
         True,
-        True,  # trusted bootstrap owner is a superuser
+        True,  # ordinary migration owner has no serving/admin bypass flags
         True,
         True,
         True,
@@ -548,10 +575,11 @@ def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
                 {**parameters, **changed_fields},
             )
 
-    with pytest.raises(DBAPIError, match="active canonical runtime role"):
+    with pytest.raises(DBAPIError) as normal_denial:
         _execute_as_connecting_user(migrated_db_url, gateway, parameters)
+    assert normal_denial.value.orig.pgcode == "42501"
 
-    with pytest.raises(DBAPIError, match="active canonical runtime role"):
+    with pytest.raises(DBAPIError) as normal_denial:
         _execute_as_connecting_user(
             migrated_db_url,
             """
@@ -567,14 +595,19 @@ def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
             """,
             {**parameters, "mutation_id": str(uuid.uuid4())},
         )
+    assert normal_denial.value.orig.pgcode == "42501"
 
-    with pytest.raises(DBAPIError):
-        _execute_as_connecting_user(
-            migrated_db_url,
-            "SELECT dnd_generation_admin.finalize_interface()",
-        )
+    # A missing retired function is not an authority-denial proof. Exercise
+    # the actual current producer using the real normal migration connection.
+    normal = create_engine(migrated_db_url, connect_args={"connect_timeout": 5})
+    try:
+        with normal.connect() as connection:
+            with pytest.raises(AuthorityError, match="maintenance/ownership prerequisite"):
+                install_revision_group(connection, "dnd")
+    finally:
+        normal.dispose()
 
-    with pytest.raises(DBAPIError):
+    with pytest.raises(DBAPIError) as role_denial:
         _execute_as_role(
             migrated_db_url,
             "butler_health_rw",
@@ -582,11 +615,13 @@ def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
             INSERT INTO public.user_context (
                 signal_type, value, set_by_butler, set_at, expires_at, confidence, metadata
             )
-            VALUES ('dnd', 'direct write denied', 'health', now(), now() + interval '1 hour', 1.0, NULL)
+            VALUES ('dnd', 'direct write denied', 'health', now(),
+                    now() + interval '1 hour', 1.0, NULL)
             """,
         )
+    assert role_denial.value.orig.pgcode == "42501"
 
-    with pytest.raises(DBAPIError):
+    with pytest.raises(DBAPIError) as role_denial:
         _execute_as_role(
             migrated_db_url,
             "butler_general_rw",
@@ -598,6 +633,7 @@ def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
                     now() + interval '1 hour', 1.0, NULL)
             """,
         )
+    assert role_denial.value.orig.pgcode == "42501"
 
     direct_dnd_update_rowcount = _execute_as_role(
         migrated_db_url,
@@ -624,15 +660,16 @@ def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
     )
     assert unchanged_dnd_row.value == parameters["value"]
 
-    with pytest.raises(DBAPIError):
+    with pytest.raises(DBAPIError) as role_denial:
         _execute_as_role(
             migrated_db_url,
             "butler_health_rw",
             gateway,
             {**parameters, "mutation_id": str(uuid.uuid4())},
         )
+    assert role_denial.value.orig.pgcode == "42501"
 
-    with pytest.raises(DBAPIError):
+    with pytest.raises(DBAPIError) as role_denial:
         _execute_as_role(
             migrated_db_url,
             "butler_general_rw",
@@ -649,13 +686,15 @@ def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
             """,
             {"mutation_id": str(uuid.uuid4())},
         )
+    assert role_denial.value.orig.pgcode == "P0001"
 
-    with pytest.raises(DBAPIError):
+    with pytest.raises(DBAPIError) as role_denial:
         _execute_as_role(
             migrated_db_url,
             "butler_general_rw",
             "SELECT * FROM public.dnd_generation_mutations",
         )
+    assert role_denial.value.orig.pgcode == "42501"
 
     # FORCE RLS must preserve the ordinary allowed path while rejecting DND.
     _execute_as_role(
@@ -669,7 +708,7 @@ def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
         """,
     )
 
-    with pytest.raises(DBAPIError):
+    with pytest.raises(DBAPIError) as role_denial:
         _execute_as_role(
             migrated_db_url,
             "butler_health_rw",
@@ -679,6 +718,85 @@ def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
             WHERE signal_type = 'exercising' AND set_by_butler = 'health'
             """,
         )
+    assert role_denial.value.orig.pgcode == "42501"
+
+    # Effective ACL denial is distinct from RLS filtering: no runtime can
+    # TRUNCATE either ordinary context or either protected state table.
+    for relation in ("user_context", "dnd_generation_guard", "dnd_generation_mutations"):
+        with pytest.raises(DBAPIError) as truncate_denial:
+            _execute_as_role(
+                migrated_db_url, "butler_general_rw", f"TRUNCATE TABLE public.{relation}"
+            )
+        assert truncate_denial.value.orig.pgcode == "42501"
+
+    # Snapshot all durable mutation state using a separate committed observer.
+    # A real server statement cancellation AFTER the writer returned must roll
+    # back both its receipt and generation; no fake write or catalog witness.
+    observer = _observer_engine(migrated_db_url)
+    cancelled = {**parameters, "mutation_id": str(uuid.uuid4())}
+    try:
+        with observer.connect() as observation:
+            before_generation = observation.execute(
+                text("SELECT generation FROM public.dnd_generation_guard WHERE guard_id=1")
+            ).scalar_one()
+            before_rows = tuple(
+                observation.execute(
+                    text("SELECT * FROM public.dnd_generation_mutations ORDER BY generation")
+                )
+            )
+        with pytest.raises(DBAPIError) as cancelled_statement:
+            with observer.begin() as transaction:
+                transaction.exec_driver_sql("SET LOCAL ROLE butler_general_rw")
+                transaction.execute(text(gateway), cancelled).one()
+                transaction.exec_driver_sql("SET LOCAL statement_timeout = '50ms'")
+                transaction.exec_driver_sql("SELECT pg_catalog.pg_sleep(1)")
+        assert cancelled_statement.value.orig.pgcode == "57014"
+        with observer.connect() as observation:
+            assert (
+                observation.execute(
+                    text("SELECT generation FROM public.dnd_generation_guard WHERE guard_id=1")
+                ).scalar_one()
+                == before_generation
+            )
+            assert (
+                tuple(
+                    observation.execute(
+                        text("SELECT * FROM public.dnd_generation_mutations ORDER BY generation")
+                    )
+                )
+                == before_rows
+            )
+            assert (
+                observation.execute(
+                    text(
+                        "SELECT count(*) FROM public.dnd_generation_mutations WHERE mutation_id=:id"
+                    ),
+                    {"id": cancelled["mutation_id"]},
+                ).scalar_one()
+                == 0
+            )
+        committed = _execute_as_role(
+            migrated_db_url, "butler_general_rw", gateway, cancelled, fetch_one=True
+        )
+        assert committed.generation == before_generation + 1
+        with observer.connect() as observation:
+            assert (
+                observation.execute(
+                    text(
+                        "SELECT count(*) FROM public.dnd_generation_mutations WHERE mutation_id=:id"
+                    ),
+                    {"id": cancelled["mutation_id"]},
+                ).scalar_one()
+                == 1
+            )
+            assert (
+                observation.execute(
+                    text("SELECT generation FROM public.dnd_generation_guard WHERE guard_id=1")
+                ).scalar_one()
+                == committed.generation
+            )
+    finally:
+        observer.dispose()
 
 
 def test_switchboard_can_mutate_only_its_own_dnd_row(migrated_db_url: str) -> None:
@@ -771,7 +889,7 @@ def test_dnd_concurrent_identical_retry_advances_generation_once(migrated_db_url
     start = Barrier(2)
 
     def invoke_same_action():
-        start.wait()
+        start.wait(timeout=10)
         return _execute_as_role(
             migrated_db_url,
             "butler_general_rw",
@@ -782,10 +900,10 @@ def test_dnd_concurrent_identical_retry_advances_generation_once(migrated_db_url
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(invoke_same_action) for _ in range(2)]
-        first, second = [future.result() for future in futures]
+        first, second = [future.result(timeout=30) for future in futures]
 
     assert first == second
-    engine = create_engine(migrated_db_url)
+    engine = _observer_engine(migrated_db_url)
     try:
         with engine.connect() as conn:
             generation = conn.execute(
@@ -828,19 +946,10 @@ def _rerun_actual_init_db(bootstrap_url: str, migration_url: str) -> None:
     """Execute the checked-in bootstrap source again, as production does."""
     migration_role = unquote(urlparse(migration_url).username or "")
     assert migration_role
-    engine = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
-    raw_connection = engine.raw_connection()
-    try:
-        raw_connection.autocommit = True
-        with raw_connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT set_config('butlers.connecting_user', %s, false)",
-                (migration_role,),
-            )
-            cursor.execute(init_db_sql_for_dbapi())
-    finally:
-        raw_connection.close()
-        engine.dispose()
+    with migration_session(bootstrap_url, source_database="butlers") as connection:
+        with ordinary_migration_identity(connection):
+            install_revision_group(connection, "dnd")
+        connection.commit()
 
 
 def test_dnd_mutate_rerun_readopts_pinned_body_with_identical_hashes(
@@ -858,98 +967,125 @@ def test_dnd_mutate_rerun_readopts_pinned_body_with_identical_hashes(
     runs as the private owner until the path is pinned.
     """
     db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
+    db_url = create_migrated_test_db(postgres_container, db_name, chains=["core"])
     bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
-    config = _build_alembic_config(db_url, chains=["core"])
-    command.upgrade(config, "core_122")
-    asyncio.run(run_migrations(db_url, chain="relationship", schema="relationship"))
-    asyncio.run(run_migrations(db_url, chain="core"))
-
-    def mutate_state(conn) -> tuple[list[str], str]:
-        row = conn.execute(
-            text("SELECT proconfig, prosrc FROM pg_proc WHERE oid = CAST(:sig AS regprocedure)"),
-            {"sig": _MUTATE_SIGNATURE},
-        ).one()
-        return list(row.proconfig or []), row.prosrc
-
-    admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    _ROLE_PROBE_URLS[db_url] = bootstrap_url
     try:
-        with admin.connect() as conn:
-            proconfig, prosrc = mutate_state(conn)
-            assert proconfig == ["search_path=pg_catalog, pg_temp"]
-            assert "sha256(" in prosrc and "digest(" not in prosrc
-            definition = conn.execute(
-                text("SELECT pg_get_functiondef(CAST(:sig AS regprocedure))"),
+        # The fresh actual current chain/finalizer above precedes this
+        # controlled compatibility specimen. It is not accepted by serving
+        # admission and no runtime receives maintenance authority.
+
+        def mutate_state(conn) -> tuple[list[str], str]:
+            row = conn.execute(
+                text(
+                    "SELECT proconfig, prosrc FROM pg_proc WHERE oid = CAST(:sig AS regprocedure)"
+                ),
                 {"sig": _MUTATE_SIGNATURE},
-            ).scalar_one()
-            # Raw DBAPI: the body's to_char format would parse as ':MI:SS' binds.
-            with conn.connection.cursor() as cursor:
-                cursor.execute(_legacy_digest_definition(definition))
-            conn.execute(
-                text(
-                    f"ALTER FUNCTION {_MUTATE_SIGNATURE} SET search_path = pg_catalog, public, pg_temp"
+            ).one()
+            return list(row.proconfig or []), row.prosrc
+
+        admin = create_engine(
+            bootstrap_url,
+            isolation_level="AUTOCOMMIT",
+            connect_args={
+                "connect_timeout": 5,
+                "options": "-c statement_timeout=30000 -c lock_timeout=5000",
+            },
+        )
+        try:
+            with admin.connect() as conn:
+                proconfig, prosrc = mutate_state(conn)
+                assert proconfig == ["search_path=pg_catalog, pg_temp"]
+                assert "sha256(" in prosrc and "digest(" not in prosrc
+                definition = conn.execute(
+                    text("SELECT pg_get_functiondef(CAST(:sig AS regprocedure))"),
+                    {"sig": _MUTATE_SIGNATURE},
+                ).scalar_one()
+                # Raw DBAPI: the body's to_char format would parse as ':MI:SS' binds.
+                with conn.connection.cursor() as cursor:
+                    cursor.execute(_legacy_digest_definition(definition))
+                conn.execute(
+                    text(
+                        f"ALTER FUNCTION {_MUTATE_SIGNATURE} "
+                        "SET search_path = pg_catalog, public, pg_temp"
+                    )
                 )
-            )
-            proconfig, prosrc = mutate_state(conn)
-            assert proconfig == ["search_path=pg_catalog, public, pg_temp"]
-            assert "sha256(" not in prosrc and "digest(" in prosrc
-    finally:
-        admin.dispose()
+                proconfig, prosrc = mutate_state(conn)
+                assert proconfig == ["search_path=pg_catalog, public, pg_temp"]
+                assert "sha256(" not in prosrc and "digest(" in prosrc
+        finally:
+            admin.dispose()
 
-    legacy_parameters = {
-        "mutation_id": str(uuid.uuid4()),
-        "expires_at": datetime.now(UTC) + timedelta(hours=1),
-        "value": "Caf\u00e9 written by the legacy digest body",
-        "confidence": 0.5,
-        "metadata": '{"proof":"hash-parity","nested":{"b":2,"a":1}}',
-    }
-    legacy_receipt = _execute_as_role(
-        db_url, "butler_general_rw", _dnd_set_statement(), legacy_parameters, fetch_one=True
-    )
+        legacy_parameters = {
+            "mutation_id": str(uuid.uuid4()),
+            "expires_at": datetime.now(UTC) + timedelta(hours=1),
+            "value": "Caf\u00e9 written by the legacy digest body",
+            "confidence": 0.5,
+            "metadata": '{"proof":"hash-parity","nested":{"b":2,"a":1}}',
+        }
+        legacy_receipt = _execute_as_role(
+            db_url, "butler_general_rw", _dnd_set_statement(), legacy_parameters, fetch_one=True
+        )
 
-    migration = create_engine(db_url, isolation_level="AUTOCOMMIT")
-    try:
-        with migration.connect() as conn:
-            conn.execute(
-                text(
-                    """
-                    CREATE FUNCTION public.convert_to(text, text)
-                    RETURNS bytea
-                    LANGUAGE plpgsql
-                    AS $$
-                    BEGIN
-                        RAISE EXCEPTION 'hijacked as %', current_user;
-                    END;
-                    $$
-                    """
+        migration = create_engine(
+            db_url,
+            isolation_level="AUTOCOMMIT",
+            connect_args={
+                "connect_timeout": 5,
+                "options": "-c statement_timeout=30000 -c lock_timeout=5000",
+            },
+        )
+        try:
+            with migration.connect() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE FUNCTION public.convert_to(text, text)
+                        RETURNS bytea
+                        LANGUAGE plpgsql
+                        AS $$
+                        BEGIN
+                            RAISE EXCEPTION 'hijacked as %', current_user;
+                        END;
+                        $$
+                        """
+                    )
                 )
-            )
+        finally:
+            migration.dispose()
+
+        fresh_parameters = {**legacy_parameters, "mutation_id": str(uuid.uuid4())}
+        with pytest.raises(DBAPIError, match="hijacked as dnd_generation_owner"):
+            _execute_as_role(db_url, "butler_general_rw", _dnd_set_statement(), fresh_parameters)
+
+        _rerun_actual_init_db(bootstrap_url, db_url)
+        _rerun_actual_init_db(bootstrap_url, db_url)
+
+        admin = create_engine(
+            bootstrap_url,
+            isolation_level="AUTOCOMMIT",
+            connect_args={
+                "connect_timeout": 5,
+                "options": "-c statement_timeout=30000 -c lock_timeout=5000",
+            },
+        )
+        try:
+            with admin.connect() as conn:
+                proconfig, prosrc = mutate_state(conn)
+        finally:
+            admin.dispose()
+        assert proconfig == ["search_path=pg_catalog, pg_temp"]
+        assert "sha256(" in prosrc and "digest(" not in prosrc
+
+        # Same mutation ID, same payload: any fingerprint drift between the two
+        # bodies would raise idempotency_conflict instead of replaying the receipt.
+        replay = _execute_as_role(
+            db_url, "butler_general_rw", _dnd_set_statement(), legacy_parameters, fetch_one=True
+        )
+        assert replay == legacy_receipt
+        fresh = _execute_as_role(
+            db_url, "butler_general_rw", _dnd_set_statement(), fresh_parameters, fetch_one=True
+        )
+        assert fresh.generation == legacy_receipt.generation + 1
     finally:
-        migration.dispose()
-
-    fresh_parameters = {**legacy_parameters, "mutation_id": str(uuid.uuid4())}
-    with pytest.raises(DBAPIError, match="hijacked as dnd_generation_owner"):
-        _execute_as_role(db_url, "butler_general_rw", _dnd_set_statement(), fresh_parameters)
-
-    _rerun_actual_init_db(bootstrap_url, db_url)
-    _rerun_actual_init_db(bootstrap_url, db_url)
-
-    admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
-    try:
-        with admin.connect() as conn:
-            proconfig, prosrc = mutate_state(conn)
-    finally:
-        admin.dispose()
-    assert proconfig == ["search_path=pg_catalog, pg_temp"]
-    assert "sha256(" in prosrc and "digest(" not in prosrc
-
-    # Same mutation ID, same payload: any fingerprint drift between the two
-    # bodies would raise idempotency_conflict instead of replaying the receipt.
-    replay = _execute_as_role(
-        db_url, "butler_general_rw", _dnd_set_statement(), legacy_parameters, fetch_one=True
-    )
-    assert replay == legacy_receipt
-    fresh = _execute_as_role(
-        db_url, "butler_general_rw", _dnd_set_statement(), fresh_parameters, fetch_one=True
-    )
-    assert fresh.generation == legacy_receipt.generation + 1
+        _ROLE_PROBE_URLS.pop(db_url, None)

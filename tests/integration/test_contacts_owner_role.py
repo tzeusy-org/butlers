@@ -11,35 +11,41 @@ import importlib
 import uuid
 from contextlib import AsyncExitStack
 from types import SimpleNamespace
+from urllib.parse import urlparse
 
 import asyncpg
 import pytest
 from fastmcp import Client, FastMCP
 
 from butlers.db import register_jsonb_codec
-from butlers.migrations import run_migrations
 from butlers.modules._roster_relationship import RelationshipModule, RelationshipModuleConfig
 from butlers.modules.approvals.module import ApprovalsModule
 from butlers.modules.contacts.owner import ContactsLookupAmbiguous, ContactsOwner
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import (
+    create_migration_db,
+    migrate_test_database,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
 @pytest.fixture(scope="module")
 def contacts_owning_database(postgres_container):
-    url = create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        ["core", "memory", "relationship", "approvals", "contacts"],
-        {
-            chain: "relationship"
-            for chain in ["core", "memory", "relationship", "approvals", "contacts"]
-        },
-    )
+    url = create_migration_db(postgres_container, migration_db_name())
+    plans = [
+        (chain, "relationship", None)
+        for chain in ["core", "memory", "relationship", "approvals", "contacts"]
+    ]
     for schema in ["general", "education", "health", "home"]:
         for chain in ["core", "contacts"]:
-            asyncio.run(run_migrations(url, chain=chain, schema=schema))
+            plans.append((chain, schema, None))
+    migrate_test_database(postgres_container, url, plans=tuple(plans))
+    # Explicit administrative transport supports the effective SET ROLE probes;
+    # no native authenticated runtime identity is claimed by this fixture.
+    url = migration_bootstrap_db_url(postgres_container, urlparse(url).path.lstrip("/"))
+    url = urlparse(url)._replace(scheme="postgresql").geturl()
     return url
 
 

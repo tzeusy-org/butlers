@@ -39,6 +39,24 @@ and the other CLI providers retain the normal local/fallback behavior.
 This is the implementation of `REQ-core-credentials-001` and
 `REQ-core-daemon-001`.
 
+### Explicit daemon credential purpose
+
+`ButlerDaemon(..., credential_purpose=CredentialPurposeConfig(...))` receives
+private connection configuration for the fixed credential-writer purpose.
+The configuration omits its URL from `repr`; it is not an authority certificate.
+`create_system_global_credential_store(config)` opens and admits the actual
+purpose pool before publishing a store, and each acquisition rechecks authority.
+The daemon owns that pool through its existing diagnostic-aware shutdown.
+
+Omitting this input supplies no system-global writer, even when a writer URL is
+present in the process environment. Ordinary public-schema read fallback remains
+separate. The two CLI startup paths and the trusted control startup explicitly
+compose this input from `BUTLERS_CREDENTIAL_DATABASE_URL` and the existing
+`BUTLER_SHARED_DB_SCHEMA` selection. An absent URL means no writer; a supplied
+blank or malformed URL refuses. Runtime or administrative credentials are never
+substituted. Standalone connectors retain the existing `from_env` adapter, which
+delegates to the same fixed-purpose factory.
+
 ## The `butler_secrets` Table
 
 Created in `alembic/versions/core/core_001_foundation.py`; `core_106_secrets_be2.py` adds the

@@ -94,3 +94,58 @@ def test_all_migration_chains_integrity() -> None:
 
         roots = [m for m in modules if getattr(m, "down_revision", None) is None]
         assert len(roots) == 1, f"Chain {chain!r}: expected 1 root, found {len(roots)}"
+
+
+async def test_migrated_test_pool_keeps_admin_transport_distinct_from_normal_owner(monkeypatch):
+    """Real helper/URL/codec path; physical database/driver boundaries only doubled."""
+    from unittest.mock import AsyncMock
+
+    from butlers.testing import migration
+
+    class Container:
+        def get_connection_url(self):
+            return "postgresql+psycopg2://test-control:synthetic@localhost:5433/postgres?sslmode=require"
+
+    normal = "postgresql://migration_owned:synthetic@localhost:5433/test_selected"
+    factory_calls = []
+
+    def create_database(*args):
+        factory_calls.append(args)
+        return normal
+
+    monkeypatch.setattr(migration, "create_migrated_test_db", create_database)
+    native_pool = AsyncMock()
+    driver = AsyncMock()
+
+    async def create_pool(*args, **options):
+        await options["init"](driver)
+        return native_pool
+
+    create = AsyncMock(side_effect=create_pool)
+    monkeypatch.setattr(migration.asyncpg, "create_pool", create)
+    container = Container()
+    selected = await migration.create_migrated_test_pool(
+        container,
+        chains=["core"],
+        schemas={"core": "general"},
+        pool_schema="general",
+        min_pool_size=2,
+        max_pool_size=4,
+    )
+    try:
+        assert selected is native_pool
+        assert factory_calls[0][0] is container
+        assert factory_calls[0][2:] == (["core"], {"core": "general"})
+        assert create.await_args.args == (
+            "postgresql://test-control:synthetic@localhost:5433/test_selected?sslmode=require",
+        )
+        assert create.await_args.kwargs["min_size"] == 2
+        assert create.await_args.kwargs["max_size"] == 4
+        assert create.await_args.kwargs["timeout"] == 5
+        assert create.await_args.kwargs["server_settings"] == {"search_path": "general,public"}
+        driver.set_type_codec.assert_awaited_once()
+        assert "setup" not in create.await_args.kwargs  # explicit role probes, not a fake runtime
+        assert normal.startswith("postgresql://migration_owned:")  # normal returned DSN untouched
+    finally:
+        await selected.close()
+    native_pool.close.assert_awaited_once()

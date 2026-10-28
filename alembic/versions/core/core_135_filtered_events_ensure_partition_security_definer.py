@@ -87,7 +87,7 @@ END;
 """
 
 
-def upgrade() -> None:
+def _upgrade_global() -> None:
     # ------------------------------------------------------------------
     # 1. Schema-qualified function (connectors schema) — SECURITY DEFINER
     # ------------------------------------------------------------------
@@ -104,6 +104,9 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     # 2. Unqualified backward-compat wrapper (public schema) — SECURITY DEFINER
     # ------------------------------------------------------------------
+
+
+def _upgrade_target_wrapper() -> None:
     op.execute(f"""
         CREATE OR REPLACE FUNCTION connectors_filtered_events_ensure_partition(
             reference_ts TIMESTAMPTZ DEFAULT now()
@@ -113,6 +116,9 @@ def upgrade() -> None:
         SET search_path = connectors, public, pg_temp
         AS $${_FUNCTION_BODY}$$
     """)
+
+
+def _seed_global() -> None:
 
     # ------------------------------------------------------------------
     # 3. Pre-create missing partitions (2026-06 and 2026-07)
@@ -127,6 +133,18 @@ def upgrade() -> None:
         "SELECT connectors.connectors_filtered_events_ensure_partition"
         "('2026-07-01 00:00:00+00'::TIMESTAMPTZ)"
     )
+
+
+def upgrade() -> None:
+    from butlers.db_authority.interfaces import connectors_revision_reuse
+
+    reuse = connectors_revision_reuse(op.get_bind(), revision)
+    if not reuse.global_reused:
+        _upgrade_global()
+    if not reuse.target_wrapper_reused:
+        _upgrade_target_wrapper()
+    if not reuse.global_reused:
+        _seed_global()
 
 
 def downgrade() -> None:

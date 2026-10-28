@@ -25,9 +25,12 @@ from butlers.db import register_jsonb_codec
 from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import (
     create_migrated_test_db,
+    create_migration_db,
     init_db_sql_for_dbapi,
     migration_bootstrap_db_url,
     migration_db_name,
+    run_test_alembic_command,
+    stage_test_migration_history,
 )
 
 pytestmark = [
@@ -657,11 +660,19 @@ async def test_concurrent_identical_assert_has_one_live_row(db_url: str) -> None
         await asyncio.gather(*(pool.close() for pool in pools))
 
 
-def test_core_239_downgrade_and_upgrade_round_trip(db_url: str) -> None:
+def test_core_239_downgrade_and_upgrade_round_trip(postgres_container) -> None:
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    stage_test_migration_history(
+        postgres_container,
+        db_url,
+        plans=(("core", None, "core_239"), ("finance", "finance", None)),
+    )
     finance_config = _build_alembic_config(db_url, ["finance"], target_schema="finance")
     core_config = _build_alembic_config(db_url, ["core"], target_schema=None)
-    command.downgrade(finance_config, "finance@finance_014")
-    command.downgrade(core_config, "core@core_238")
+    run_test_alembic_command(
+        postgres_container, command.downgrade, finance_config, "finance@finance_014"
+    )
+    run_test_alembic_command(postgres_container, command.downgrade, core_config, "core@core_238")
     engine = create_engine(db_url)
     try:
         with engine.connect() as conn:
@@ -671,5 +682,5 @@ def test_core_239_downgrade_and_upgrade_round_trip(db_url: str) -> None:
             )
     finally:
         engine.dispose()
-    command.upgrade(core_config, "core@head")
-    command.upgrade(finance_config, "finance@head")
+    run_test_alembic_command(postgres_container, command.upgrade, core_config, "core@core_239")
+    run_test_alembic_command(postgres_container, command.upgrade, finance_config, "finance@head")

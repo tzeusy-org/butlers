@@ -9,7 +9,6 @@ still works under the pinned path.
 
 from __future__ import annotations
 
-import asyncio
 import re
 import shutil
 import uuid
@@ -20,8 +19,13 @@ from sqlalchemy.exc import DBAPIError
 
 from alembic import command
 from butlers.core.definer_search_path import is_pinned
-from butlers.migrations import _build_alembic_config, run_migrations
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.migrations import _build_alembic_config
+from butlers.testing.migration import (
+    create_migration_db,
+    migrate_test_database,
+    migration_db_name,
+    run_test_alembic_command,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -95,8 +99,8 @@ def _switchboard_config(db_url: str):
 
 def _migrated_db(postgres_container) -> str:
     db_url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(db_url, chain="core"))
-    asyncio.run(run_migrations(db_url, chain="switchboard", schema=_SCHEMA))
+    migrate_test_database(postgres_container, db_url, plans=(("core", None, None),))
+    migrate_test_database(postgres_container, db_url, plans=(("switchboard", _SCHEMA, None),))
     return db_url
 
 
@@ -203,25 +207,25 @@ def test_sw_039_downgrade_restores_prior_bodies_and_reupgrade_is_idempotent(
 ) -> None:
     """sw_038 bodies and paths come back exactly, and the old key is the same key."""
     db_url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(db_url, chain="core"))
+    migrate_test_database(postgres_container, db_url, plans=(("core", None, None),))
     config = _switchboard_config(db_url)
-    command.upgrade(config, "switchboard@sw_038")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_038")
     prior = _targets(db_url)
     assert len(prior) == 10
     assert not any(is_pinned(config) for _body, config in prior.values())
     # Old and new callers queue on one key during a rolling deploy.
     assert _ensure_holds_the_literal_schema_lock(db_url)
 
-    command.upgrade(config, "switchboard@sw_039")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_039")
     pinned = _targets(db_url)
-    command.downgrade(config, "switchboard@sw_038")
+    run_test_alembic_command(postgres_container, command.downgrade, config, "switchboard@sw_038")
     assert _targets(db_url) == prior
 
-    command.upgrade(config, "switchboard@sw_039")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_039")
     assert _targets(db_url) == pinned
     # Re-running the revision body against an already pinned database is a no-op.
-    command.downgrade(config, "switchboard@sw_038")
-    command.upgrade(config, "switchboard@sw_039")
+    run_test_alembic_command(postgres_container, command.downgrade, config, "switchboard@sw_038")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_039")
     assert _targets(db_url) == pinned
 
 
@@ -229,7 +233,7 @@ def test_sw_039_definers_never_run_a_runtime_role_decoy(postgres_container) -> N
     """The runtime role's decoy runs on the prior path and never after sw_039."""
     db_url = _migrated_db(postgres_container)
     config = _switchboard_config(db_url)
-    command.downgrade(config, "switchboard@sw_038")
+    run_test_alembic_command(postgres_container, command.downgrade, config, "switchboard@sw_038")
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
@@ -251,7 +255,7 @@ def test_sw_039_definers_never_run_a_runtime_role_decoy(postgres_container) -> N
         outcome = _as_runtime_role(db_url, statement)
         assert outcome.startswith(f"error: hijacked as {owner}"), (name, outcome)
 
-    command.upgrade(config, "switchboard@sw_039")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_039")
     for name, statement in _PARTITION_CALLS.items():
         outcome = _as_runtime_role(db_url, statement)
         assert not outcome.startswith("error"), (name, outcome)

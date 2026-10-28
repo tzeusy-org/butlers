@@ -13,6 +13,20 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# Complete disposable renders use explicit, distinct, nonsecret purpose inputs.
+_PURPOSE_DATABASE_INPUTS = {
+    "RUNTIME_DB_USER": "test_runtime_login",
+    "RUNTIME_DB_PASSWORD": "synthetic-runtime-only",
+    "CONNECTOR_DB_USER": "test_connector_login",
+    "CONNECTOR_DB_PASSWORD": "synthetic-connector-only",
+    "DASHBOARD_DB_USER": "test_dashboard_login",
+    "DASHBOARD_DB_PASSWORD": "synthetic-dashboard-only",
+    "BACKUP_DB_USER": "test_backup_login",
+    "BACKUP_DB_PASSWORD": "synthetic-backup-only",
+    "BUTLERS_MIGRATOR_DATABASE_URL": "postgresql://test_migrator:synthetic-migrator-only@db.invalid/butlers",
+    "BUTLERS_CREDENTIAL_DATABASE_URL": "postgresql://test_credential:synthetic-credential-only@db.invalid/butlers",
+}
+
 
 def _write_executable(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
@@ -57,6 +71,9 @@ def _run_launcher(
         password.write_text("synthetic-only\n", encoding="utf-8")
         for mode in ("dev", "prod"):
             with (repo / f".env.{mode}").open("a", encoding="utf-8") as stream:
+                stream.write(
+                    "".join(f"{key}={value}\n" for key, value in _PURPOSE_DATABASE_INPUTS.items())
+                )
                 stream.write(
                     f"RESTORE_DRILL_EXECUTOR_PASSWORD_FILE={password}\n"
                     "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST=10.23.4.5\n"
@@ -109,7 +126,8 @@ def _run_launcher(
         "    json.dump({'argv': sys.argv[1:], 'env': {key: os.environ[key] for key in "
         "os.environ if key.startswith(('POSTGRES_', 'RESTORE_DRILL_EXECUTOR_', "
         "'OTEL_', 'GF_AUTH_', 'COMPOSE_PROJECT_', 'SKIP_OAUTH_', "
-        "'BUTLERS_SWITCHBOARD_SERVICE'))}}, stream)\n"
+        "'BUTLERS_SWITCHBOARD_SERVICE')) or key in "
+        f"{tuple(_PURPOSE_DATABASE_INPUTS)!r}}}}}, stream)\n"
         "    stream.write('\\n')\n"
         f"sys.exit({0 if complete_launch else 1})\n",
     )

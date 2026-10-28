@@ -14,6 +14,7 @@ import pytest
 
 from butlers.api.owner_time_bounds import owner_zoneinfo
 from butlers.core.general_settings import load_general_settings, resolve_general_timezone
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 docker_available = shutil.which("docker") is not None
 

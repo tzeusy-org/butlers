@@ -5,7 +5,6 @@ ceremony/CSRF coverage remains in its retained suite. No public.runtime_config
 is created, and no migration or production grant is changed by this fixture.
 """
 
-import asyncio
 import io
 import json
 import zipfile
@@ -19,12 +18,9 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
 from butlers.api.routers.data_ops import _decrypt_export
 from butlers.db import register_jsonb_codec
-from butlers.migrations import run_migrations
 from butlers.testing.migration import (
-    _bootstrap_migration_prerequisites,
-    create_migrated_test_db,
+    async_serving_test_deployment,
     migration_bootstrap_db_url,
-    migration_db_name,
 )
 from tests.api.auth_helpers import create_authenticated_domain_app
 
@@ -33,69 +29,63 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")
 
 @pytest.fixture(scope="module")
 async def export_sources(postgres_container):
-    name = migration_db_name()
-    url = await asyncio.to_thread(
-        create_migrated_test_db, postgres_container, name, ["core"], {"core": "general"}
-    )
-    await run_migrations(url, chain="core", schema="switchboard")
-    for schema in ("general_memory", "switchboard"):
-        await run_migrations(url, chain="memory", schema=schema)
-    await asyncio.to_thread(
-        _bootstrap_migration_prerequisites,
-        migration_bootstrap_db_url(postgres_container, name),
-        urlparse(url).username,
-    )
-    admin = await asyncpg.create_pool(url, min_size=1, max_size=2, init=register_jsonb_codec)
-    # An explicitly configured private memory override needs its own role's
-    # access. Only these three owned relations are granted in this disposable
-    # fixture, never another butler's schema or a foreign domain table.
-    await admin.execute("GRANT USAGE ON SCHEMA general_memory TO butler_general_rw")
-    await admin.execute(
-        "GRANT SELECT ON general_memory.facts, general_memory.rules, "
-        "general_memory.episodes TO butler_general_rw"
-    )
-    db = DatabaseManager()
-    for butler, memory in (("general", "general_memory"), ("switchboard", "switchboard")):
-
-        async def setup(conn, role=f"butler_{butler}_rw"):
-            await conn.execute(f"SET ROLE {role}")
-
-        pool = await asyncpg.create_pool(
-            url,
-            min_size=1,
-            max_size=2,
-            init=register_jsonb_codec,
-            setup=setup,
-            server_settings={"search_path": "public"},
+    # Use the actual declared private alias. General has no private override;
+    # Chronicler's source-owned profile declares chronicler_mem.
+    async with async_serving_test_deployment(postgres_container) as deployment:
+        normal_url = urlparse(deployment.migration_url)._replace(scheme="postgresql").geturl()
+        normal = await asyncpg.create_pool(
+            normal_url, min_size=1, max_size=2, init=register_jsonb_codec
         )
-        assert await pool.fetchval("SELECT current_user") == f"butler_{butler}_rw"
-        db._pools[butler] = pool
-        db._butler_schemas[butler] = butler
-        db._butler_memory_schema_overrides[butler] = memory
-        db._butler_modules[butler] = frozenset({"memory"})
-        db.register_configured_modules(butler, frozenset({"memory"}))
-        await admin.execute(
-            f'INSERT INTO "{butler}".runtime_config (butler_name) VALUES ($1)', butler
-        )
-        await admin.execute(
-            f'INSERT INTO "{memory}".facts (subject, predicate, content) VALUES ($1,$2,$3)',
-            butler,
-            "export_probe",
-            f"{butler} fact",
-        )
-        await admin.execute(f'INSERT INTO "{memory}".rules (content) VALUES ($1)', f"{butler} rule")
-        await admin.execute(
-            f'INSERT INTO "{memory}".episodes (butler, content) VALUES ($1,$2)',
-            butler,
-            f"{butler} episode",
-        )
-    assert await admin.fetchval("SELECT to_regclass('public.runtime_config')") is None
-    try:
-        yield db, admin
-    finally:
-        for pool in db._pools.values():
-            await pool.close()
-        await admin.close()
+        control_url = migration_bootstrap_db_url(postgres_container, "butlers")
+        control_url = urlparse(control_url)._replace(scheme="postgresql").geturl()
+        control = None
+        try:
+            control = await asyncpg.create_pool(
+                control_url, min_size=1, max_size=2, init=register_jsonb_codec
+            )
+            db = DatabaseManager()
+            for butler, memory in (
+                ("chronicler", "chronicler_mem"),
+                ("switchboard", "switchboard"),
+            ):
+                database = deployment.runtime_database(butler, min_size=1, max_size=2)
+                await database.connect()
+                pool = database.pool
+                async with pool.acquire() as connection:
+                    identity = await connection.fetchrow("SELECT session_user,current_user")
+                    assert identity["session_user"] == deployment.runtime_logins[butler].user
+                    assert identity["current_user"] == f"butler_{butler}_rw"
+                assert await pool.fetchval("SELECT current_user") == f"butler_{butler}_rw"
+                db._pools[butler] = pool
+                db._butler_schemas[butler] = butler
+                db._butler_memory_schema_overrides[butler] = memory
+                db._butler_modules[butler] = frozenset({"memory"})
+                db.register_configured_modules(butler, frozenset({"memory"}))
+                await normal.execute(
+                    f'INSERT INTO "{butler}".runtime_config (butler_name) VALUES ($1)', butler
+                )
+                await normal.execute(
+                    f'INSERT INTO "{memory}".facts (subject, predicate, content) VALUES ($1,$2,$3)',
+                    butler,
+                    "export_probe",
+                    f"{butler} fact",
+                )
+                await normal.execute(
+                    f'INSERT INTO "{memory}".rules (content) VALUES ($1)', f"{butler} rule"
+                )
+                await normal.execute(
+                    f'INSERT INTO "{memory}".episodes (butler, content) VALUES ($1,$2)',
+                    butler,
+                    f"{butler} episode",
+                )
+            assert await normal.fetchval("SELECT to_regclass('public.runtime_config')") is None
+            yield db, normal, control
+        finally:
+            try:
+                if control is not None:
+                    await control.close()
+            finally:
+                await normal.close()
 
 
 async def _signed_download(db):
@@ -110,13 +100,13 @@ async def _signed_download(db):
 
 
 async def test_all_export_matches_migrated_scope_union(export_sources, monkeypatch):
-    db, admin = export_sources
+    db, admin, control = export_sources
     key = bytes.fromhex("11" * 32)
     monkeypatch.setenv("DASHBOARD_EXPORT_ENCRYPTION_KEY", key.hex())
     monkeypatch.setenv("ENV", "dev")
     monkeypatch.setenv("DASHBOARD_EXPORT_SECRET", "synthetic-scope-export-signing-key")
     with pytest.raises(asyncpg.InsufficientPrivilegeError):
-        await db.pool("general").fetch("SELECT * FROM switchboard.runtime_config")
+        await db.pool("chronicler").fetch("SELECT * FROM switchboard.runtime_config")
     response = await _signed_download(db)
     assert response.status_code == 200, response.text
     assert response.headers["content-type"] == "application/octet-stream"
@@ -142,7 +132,7 @@ async def test_all_export_matches_migrated_scope_union(export_sources, monkeypat
         runtime = [
             json.loads(line) for line in zf.read("public_runtime_config.ndjson").splitlines()
         ]
-        assert [row["butler_name"] for row in runtime] == ["general", "switchboard"]
+        assert [row["butler_name"] for row in runtime] == ["chronicler", "switchboard"]
         assert all("id" not in row for row in runtime)
         for relation in ("audit_log", "model_catalog", "permissions"):
             order = "butler, permission" if relation == "permissions" else "id"
@@ -168,7 +158,7 @@ async def test_all_export_matches_migrated_scope_union(export_sources, monkeypat
 
 
 async def test_config_source_loss_never_returns_partial_export(export_sources, monkeypatch):
-    db, admin = export_sources
+    db, admin, control = export_sources
     monkeypatch.setenv("ENV", "dev")
     monkeypatch.setenv("DASHBOARD_EXPORT_SECRET", "synthetic-scope-export-signing-key")
     db.register_configured_modules("unavailable", frozenset())
@@ -178,11 +168,11 @@ async def test_config_source_loss_never_returns_partial_export(export_sources, m
         assert "unavailable" in response.json()["detail"]
     finally:
         db._configured_butler_modules.pop("unavailable")
-    # General sorts first and remains readable. The later own source fails;
+    # Chronicler sorts first and remains readable. The later own source fails;
     # neither a successful partial ZIP nor a public-schema retry is allowed.
     assert (
-        await db.pool("general").fetchval("SELECT butler_name FROM general.runtime_config")
-        == "general"
+        await db.pool("chronicler").fetchval("SELECT butler_name FROM chronicler.runtime_config")
+        == "chronicler"
     )
     for operation, restore in (
         (
@@ -194,11 +184,11 @@ async def test_config_source_loss_never_returns_partial_export(export_sources, m
             "GRANT SELECT ON switchboard.runtime_config TO butler_switchboard_rw",
         ),
     ):
-        await admin.execute(operation)
+        await control.execute(operation)
         try:
             response = await _signed_download(db)
             assert response.status_code == 500
             assert response.headers["content-type"] == "application/json"
             assert "unable to fetch table public.runtime_config" in response.json()["detail"]
         finally:
-            await admin.execute(restore)
+            await control.execute(restore)

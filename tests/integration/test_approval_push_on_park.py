@@ -13,6 +13,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from urllib.parse import unquote, urlparse
 
 import asyncpg
 import pytest
@@ -55,7 +56,10 @@ from butlers.modules.pipeline import (
 from butlers.testing.migration import (
     create_migrated_test_db,
     create_migration_db,
+    migrate_test_database,
+    migration_bootstrap_db_url,
     migration_db_name,
+    run_test_alembic_command,
 )
 from butlers.tools.switchboard.notification.deliver import deliver as switchboard_deliver
 
@@ -65,6 +69,18 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
+
+
+@pytest.fixture(scope="module")
+def selected_control_url(postgres_container):
+    """Explicit administrative table-state/effective-role transport, not native serving."""
+
+    def selected(normal_url):
+        database = unquote(urlparse(normal_url).path.lstrip("/"))
+        control = migration_bootstrap_db_url(postgres_container, database)
+        return urlparse(control)._replace(scheme="postgresql").geturl()
+
+    return selected
 
 
 @pytest.fixture(scope="module")
@@ -79,29 +95,25 @@ def migrated_db_url(postgres_container) -> str:
 
 @pytest.fixture(scope="module")
 def review_door_db_url(postgres_container) -> str:
-    """Current actual owning chains; bootstrap supplies existing runtime roles."""
-    from butlers.migrations import run_migrations
-
-    db_url = create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        ["core", "approvals"],
-        schemas={"core": "messenger", "approvals": "messenger"},
+    """Actual ordered owning chains, finalized once with all prior declarations."""
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    plans = tuple(
+        (chain, schema, None)
+        for schema, chains in (
+            ("messenger", ("core", "approvals")),
+            ("general", ("core", "approvals")),
+            ("switchboard", ("core", "switchboard")),
+        )
+        for chain in chains
     )
-    for schema, chains in (
-        ("general", ("core", "approvals")),
-        ("switchboard", ("core", "switchboard")),
-    ):
-        for chain in chains:
-            asyncio.run(run_migrations(db_url, chain=chain, schema=schema))
-    return db_url
+    return migrate_test_database(postgres_container, db_url, plans=plans)
 
 
 @pytest.fixture
-async def approval_push_pool(migrated_db_url: str):
+async def approval_push_pool(migrated_db_url: str, selected_control_url):
     """Return a clean JSONB-aware pool with approval pushes enabled."""
     pool = await asyncpg.create_pool(
-        migrated_db_url,
+        selected_control_url(migrated_db_url),
         min_size=1,
         max_size=3,
         init=register_jsonb_codec,
@@ -126,10 +138,10 @@ async def approval_push_pool(migrated_db_url: str):
 
 
 @pytest.fixture
-async def disabled_rollout_pool(migrated_db_url: str):
+async def disabled_rollout_pool(migrated_db_url: str, selected_control_url):
     """Return a clean pool with the new writer and worker kept default-off."""
     pool = await asyncpg.create_pool(
-        migrated_db_url,
+        selected_control_url(migrated_db_url),
         min_size=1,
         max_size=3,
         init=register_jsonb_codec,
@@ -151,42 +163,23 @@ async def disabled_rollout_pool(migrated_db_url: str):
 
 @pytest.fixture(scope="module")
 def recovery_transport_db_url(postgres_container) -> str:
-    """Provision real Messenger and Switchboard schemas for recovery isolation."""
-    from alembic import command
-    from butlers.migrations import _build_alembic_config
-
+    """Provision the original real Switchboard/Messenger chain sequence once."""
     db_url = create_migration_db(postgres_container, migration_db_name())
-    command.upgrade(
-        _build_alembic_config(
-            db_url,
-            chains=["core"],
-            target_schema="switchboard",
+    return migrate_test_database(
+        postgres_container,
+        db_url,
+        plans=(
+            ("core", "switchboard", None),
+            ("switchboard", "switchboard", None),
+            ("messenger", "messenger", None),
         ),
-        "core@head",
     )
-    command.upgrade(
-        _build_alembic_config(
-            db_url,
-            chains=["switchboard"],
-            target_schema="switchboard",
-        ),
-        "switchboard@head",
-    )
-    command.upgrade(
-        _build_alembic_config(
-            db_url,
-            chains=["messenger"],
-            target_schema="messenger",
-        ),
-        "messenger@head",
-    )
-    return db_url
 
 
 @pytest.fixture
-async def messenger_handoff_pool(recovery_transport_db_url: str):
+async def messenger_handoff_pool(recovery_transport_db_url: str, selected_control_url):
     pool = await asyncpg.create_pool(
-        recovery_transport_db_url,
+        selected_control_url(recovery_transport_db_url),
         min_size=1,
         max_size=4,
         server_settings={"search_path": "messenger,public"},
@@ -197,9 +190,9 @@ async def messenger_handoff_pool(recovery_transport_db_url: str):
 
 
 @pytest.fixture
-async def switchboard_recovery_pool(recovery_transport_db_url: str):
+async def switchboard_recovery_pool(recovery_transport_db_url: str, selected_control_url):
     pool = await asyncpg.create_pool(
-        recovery_transport_db_url,
+        selected_control_url(recovery_transport_db_url),
         min_size=1,
         max_size=3,
         init=register_jsonb_codec,
@@ -388,6 +381,7 @@ async def _never_execute(**_kwargs: object) -> dict[str, object]:
 async def test_gate_park_atomically_admits_one_recoverable_presentation_without_sending(
     approval_push_pool: asyncpg.Pool,
     review_door_db_url: str,
+    selected_control_url,
 ) -> None:
     """Park creates durable action/presentation state without live delivery."""
     dispatch = AsyncMock()
@@ -484,7 +478,11 @@ async def test_gate_park_atomically_admits_one_recoverable_presentation_without_
             assert identity["owning_path"] == [name, "public"]
 
         return await asyncpg.create_pool(
-            review_door_db_url, min_size=1, max_size=3, init=initialize, setup=setup
+            selected_control_url(review_door_db_url),
+            min_size=1,
+            max_size=3,
+            init=initialize,
+            setup=setup,
         )
 
     try:
@@ -982,7 +980,7 @@ def test_approvals_migration_preserves_legacy_rows_and_refuses_nonempty_downgrad
 
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, chains=["approvals"])
-    command.upgrade(config, "approvals_014")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "approvals_014")
     action_id = uuid.uuid4()
     engine = create_engine(db_url)
     try:
@@ -1002,7 +1000,7 @@ def test_approvals_migration_preserves_legacy_rows_and_refuses_nonempty_downgrad
                 ),
                 {"id": action_id},
             )
-        command.upgrade(config, "approvals@head")
+        run_test_alembic_command(postgres_container, command.upgrade, config, "approvals@head")
         with engine.connect() as connection:
             assert (
                 connection.execute(
@@ -1023,8 +1021,8 @@ def test_approvals_migration_preserves_legacy_rows_and_refuses_nonempty_downgrad
                 ).scalar_one()
                 == "single:delivered"
             )
-        command.downgrade(config, "approvals_014")
-        command.upgrade(config, "approvals@head")
+        run_test_alembic_command(postgres_container, command.downgrade, config, "approvals_014")
+        run_test_alembic_command(postgres_container, command.upgrade, config, "approvals@head")
         intent_id = uuid.uuid4()
         with engine.begin() as connection:
             connection.execute(
@@ -1040,7 +1038,7 @@ def test_approvals_migration_preserves_legacy_rows_and_refuses_nonempty_downgrad
                 },
             )
         with pytest.raises(exc.DBAPIError, match="approval delivery recovery data exists"):
-            command.downgrade(config, "approvals_014")
+            run_test_alembic_command(postgres_container, command.downgrade, config, "approvals_014")
     finally:
         engine.dispose()
 
@@ -1061,7 +1059,7 @@ def test_approvals_downgrade_refuses_selected_dependent_and_audit_categories(
 
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, chains=["approvals"])
-    command.upgrade(config, "approvals@head")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "approvals@head")
     engine = create_engine(db_url)
     try:
         with engine.begin() as connection:
@@ -1132,7 +1130,7 @@ def test_approvals_downgrade_refuses_selected_dependent_and_audit_categories(
             else "approval delivery recovery data exists"
         )
         with pytest.raises(exc.DBAPIError, match=expected):
-            command.downgrade(config, "approvals_014")
+            run_test_alembic_command(postgres_container, command.downgrade, config, "approvals_014")
     finally:
         engine.dispose()
 
@@ -1151,7 +1149,7 @@ def test_messenger_handoff_migration_enforces_binding_and_refuses_data_loss(
 
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, chains=["messenger"])
-    command.upgrade(config, "messenger@head")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "messenger@head")
     engine = create_engine(db_url)
     subject_id = uuid.uuid4()
     try:
@@ -1184,7 +1182,7 @@ def test_messenger_handoff_migration_enforces_binding_and_refuses_data_loss(
                 },
             )
         with pytest.raises(exc.DBAPIError, match="Cannot downgrade msg_004"):
-            command.downgrade(config, "msg_003")
+            run_test_alembic_command(postgres_container, command.downgrade, config, "msg_003")
     finally:
         engine.dispose()
 

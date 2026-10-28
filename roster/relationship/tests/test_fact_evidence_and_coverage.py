@@ -46,6 +46,7 @@ from roster.relationship.tests.evidence_schema import (
     apply_evidence_schema,
 )
 from roster.relationship.tests.fact_authority_fixtures import approve_fixture, replay_fixture
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 _PRED_HAS_EMAIL = "has-email"
 _PRED_HAS_PHONE = "has-phone"

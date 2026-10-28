@@ -14,6 +14,7 @@ import shutil
 import pytest
 
 from butlers.credential_store import ensure_secrets_schema
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [

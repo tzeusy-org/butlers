@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
+
 # ---------------------------------------------------------------------------
 # Migration file path
 # ---------------------------------------------------------------------------

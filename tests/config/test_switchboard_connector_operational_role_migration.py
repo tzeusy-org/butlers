@@ -31,7 +31,13 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from alembic import command
-from butlers.testing.migration import create_migration_db, get_column_info, migration_db_name
+from butlers.testing.migration import (
+    create_migration_db,
+    get_column_info,
+    migrate_test_database,
+    migration_db_name,
+    run_test_alembic_command,
+)
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -50,21 +56,21 @@ _SECOND_PARENT = f"google_health:user:{_SECOND_OWNER}"
 
 def _prepare_pre_backfill_db(postgres_container) -> str:
     """Run core (full) + switchboard up to sw_030 (the revision before sw_031)."""
-    from butlers.migrations import _build_alembic_config, run_migrations
+    from butlers.migrations import _build_alembic_config
 
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    migrate_test_database(postgres_container, db_url, plans=(("core", None, None),))
     config = _build_alembic_config(db_url, chains=["switchboard"])
-    command.upgrade(config, "switchboard@sw_030")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_030")
     return db_url
 
 
-def _apply_sw_031(db_url: str) -> None:
+def _apply_sw_031(db_url: str, *, postgres_container) -> None:
     from butlers.migrations import _build_alembic_config
 
     config = _build_alembic_config(db_url, chains=["switchboard"])
-    command.upgrade(config, "switchboard@sw_031")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_031")
 
 
 def _exec(db_url: str, sql: str, params: dict | None = None) -> None:
@@ -153,7 +159,7 @@ def _seed_live_google_health_shape(db_url: str) -> list[str]:
 def test_role_columns_exist_with_safe_defaults(postgres_container):
     """The role is persisted, NOT NULL, and defaults to the unavailable state."""
     db_url = _prepare_pre_backfill_db(postgres_container)
-    _apply_sw_031(db_url)
+    _apply_sw_031(db_url, postgres_container=postgres_container)
 
     role = get_column_info(db_url, "connector_registry", "operational_role")
     assert role is not None
@@ -168,7 +174,7 @@ def test_role_columns_exist_with_safe_defaults(postgres_container):
 def test_role_check_constraint_rejects_unnamed_roles(postgres_container):
     """Only the three defined roles are storable — no free-text role strings."""
     db_url = _prepare_pre_backfill_db(postgres_container)
-    _apply_sw_031(db_url)
+    _apply_sw_031(db_url, postgres_container=postgres_container)
 
     with pytest.raises(Exception, match="valid_operational_role"):
         _exec(
@@ -182,7 +188,7 @@ def test_role_check_constraint_rejects_unnamed_roles(postgres_container):
 def test_new_row_defaults_to_unknown_not_runtime(postgres_container):
     """An unclassified row must not arrive already counted as a live connector."""
     db_url = _prepare_pre_backfill_db(postgres_container)
-    _apply_sw_031(db_url)
+    _apply_sw_031(db_url, postgres_container=postgres_container)
 
     _insert_bare(db_url, "gmail", "gmail:synthetic")
 
@@ -199,7 +205,7 @@ def test_backfill_classifies_the_live_google_health_shape(postgres_container):
     db_url = _prepare_pre_backfill_db(postgres_container)
     cursors = _seed_live_google_health_shape(db_url)
 
-    _apply_sw_031(db_url)
+    _apply_sw_031(db_url, postgres_container=postgres_container)
 
     assert _role(db_url, _PARENT) == "runtime_instance"
     assert _role(db_url, _SECOND_PARENT) == "runtime_instance"
@@ -212,7 +218,7 @@ def test_backfill_attaches_each_cursor_to_its_own_account(postgres_container):
     db_url = _prepare_pre_backfill_db(postgres_container)
     _seed_live_google_health_shape(db_url)
 
-    _apply_sw_031(db_url)
+    _apply_sw_031(db_url, postgres_container=postgres_container)
 
     for resource in ("activity", "hrv", "sleep_sessions"):
         assert _parent(db_url, f"{_PARENT}:{_ACCOUNT}:{resource}") == _PARENT
@@ -224,7 +230,7 @@ def test_backfill_leaves_runtime_instances_unparented(postgres_container):
     db_url = _prepare_pre_backfill_db(postgres_container)
     _seed_live_google_health_shape(db_url)
 
-    _apply_sw_031(db_url)
+    _apply_sw_031(db_url, postgres_container=postgres_container)
 
     assert _parent(db_url, _PARENT) is None
     assert _parent(db_url, _SECOND_PARENT) is None
@@ -235,7 +241,7 @@ def test_backfill_keeps_unclassifiable_rows_unknown(postgres_container):
     db_url = _prepare_pre_backfill_db(postgres_container)
     _insert_bare(db_url, "steam", "steam:synthetic-unconfigured")
 
-    _apply_sw_031(db_url)
+    _apply_sw_031(db_url, postgres_container=postgres_container)
 
     assert _role(db_url, "steam:synthetic-unconfigured") == "unknown"
     assert _parent(db_url, "steam:synthetic-unconfigured") is None
@@ -255,7 +261,7 @@ def test_backfill_promotes_a_heartbeating_row_that_also_holds_a_cursor(
         "         'synthetic-cursor', now())",
     )
 
-    _apply_sw_031(db_url)
+    _apply_sw_031(db_url, postgres_container=postgres_container)
 
     assert _role(db_url, "gmail:synthetic") == "runtime_instance"
     assert _parent(db_url, "gmail:synthetic") is None
@@ -272,7 +278,7 @@ def test_backfill_does_not_attach_a_cursor_to_a_same_prefix_sibling(
     _insert_runtime(db_url, "google_health", _PARENT)
     _insert_cursor(db_url, "google_health", f"{_PARENT}:{_ACCOUNT}:activity")
 
-    _apply_sw_031(db_url)
+    _apply_sw_031(db_url, postgres_container=postgres_container)
 
     assert _parent(db_url, f"{_PARENT}:{_ACCOUNT}:activity") == _PARENT
 
@@ -281,7 +287,7 @@ def test_backfill_is_idempotent(postgres_container):
     """Re-running the classification does not reshuffle already-classified rows."""
     db_url = _prepare_pre_backfill_db(postgres_container)
     _seed_live_google_health_shape(db_url)
-    _apply_sw_031(db_url)
+    _apply_sw_031(db_url, postgres_container=postgres_container)
 
     before = _scalar(
         db_url,
@@ -312,7 +318,7 @@ def test_backfill_is_idempotent(postgres_container):
 def test_qa_view_reads_the_persisted_role(postgres_container):
     """The view stops re-inferring storage rows from column nullability."""
     db_url = _prepare_pre_backfill_db(postgres_container)
-    _apply_sw_031(db_url)
+    _apply_sw_031(db_url, postgres_container=postgres_container)
 
     definition = _scalar(db_url, "SELECT pg_get_viewdef('public.v_qa_connector_state', true)")
 
@@ -323,7 +329,7 @@ def test_qa_view_excludes_checkpoints_and_keeps_runtime_instances(postgres_conta
     """A cursor row carries no liveness into QA; its parent still does."""
     db_url = _prepare_pre_backfill_db(postgres_container)
     _seed_live_google_health_shape(db_url)
-    _apply_sw_031(db_url)
+    _apply_sw_031(db_url, postgres_container=postgres_container)
 
     identities = _scalar(
         db_url,
@@ -736,11 +742,11 @@ def test_downgrade_drops_role_columns_and_restores_the_view(postgres_container):
 
     db_url = _prepare_pre_backfill_db(postgres_container)
     _seed_live_google_health_shape(db_url)
-    _apply_sw_031(db_url)
+    _apply_sw_031(db_url, postgres_container=postgres_container)
     assert get_column_info(db_url, "connector_registry", "operational_role") is not None
 
     config = _build_alembic_config(db_url, chains=["switchboard"])
-    command.downgrade(config, "switchboard@sw_030")
+    run_test_alembic_command(postgres_container, command.downgrade, config, "switchboard@sw_030")
 
     assert get_column_info(db_url, "connector_registry", "operational_role") is None
     assert get_column_info(db_url, "connector_registry", "parent_endpoint_identity") is None

@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
+
 _MIGRATION_PATH = Path(__file__).resolve().parents[1] / "migrations" / "003_journey_identity.py"
 
 _docker = pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")

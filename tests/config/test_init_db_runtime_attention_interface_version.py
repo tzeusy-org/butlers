@@ -1,13 +1,19 @@
-"""Provisioning-path parity for ``runtime_attention_admin.bootstrap_configuration``.
+"""Pinned rollback provisioning parity for the old attention bootstrap table.
 
-``scripts/init-db.sql`` provisions the runtime-attention bootstrap table two
+The actual hash-bound predecessor initializer used by the operator R0/R1 path
+provisions ``runtime_attention_admin.bootstrap_configuration`` two
 ways: a ``CREATE TABLE IF NOT EXISTS`` for a fresh database, and an
 ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS`` for a database that predates the
 ``interface_version`` column. Both paths must leave the same constraint behind,
 otherwise upgraded deployments silently lose the version guard that
 ``finalize_interface`` assumes.
 
-These proofs run the real script against a disposable PostgreSQL container and
+Current bootstrap deliberately no longer installs that administrative surface.
+These historical cases retain their real rollback producer rather than require
+the retired installer to return to serving startup. Final authority admission
+and positive current R0/R1 are separately exercised by the authority matrix.
+
+These proofs run the actual pinned script against a disposable PostgreSQL container and
 read the resulting constraint back out of ``pg_constraint``; a source-only
 comparison would not answer the question.
 """
@@ -17,7 +23,6 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -32,7 +37,6 @@ pytestmark = [
     pytest.mark.skipif(not psql_available, reason="psql not available"),
 ]
 
-_INIT_DB = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
 _MIGRATION_ROLE = "butlers"
 _FRESH_DB = "init_db_iface_created"
 _UPGRADED_DB = "init_db_iface_upgraded"
@@ -95,6 +99,8 @@ def _admin_params(postgres_container) -> tuple[str, str, str, str]:
 
 
 def _run_init_db(*, host: str, port: str, user: str, password: str, database: str) -> None:
+    from butlers.db_authority.apply import pinned_predecessor_initializer
+
     env = os.environ.copy()
     env["PGPASSWORD"] = password
     subprocess.run(
@@ -111,13 +117,13 @@ def _run_init_db(*, host: str, port: str, user: str, password: str, database: st
             user,
             "-d",
             database,
-            "-f",
-            str(_INIT_DB),
         ],
+        input=pinned_predecessor_initializer(),
         check=True,
         env=env,
         capture_output=True,
         text=True,
+        timeout=300,
     )
 
 

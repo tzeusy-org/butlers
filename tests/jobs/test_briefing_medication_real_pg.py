@@ -21,8 +21,7 @@ import pytest
 
 from butlers.db import register_jsonb_codec
 from butlers.jobs.briefing import run_health_briefing_contribution
-from butlers.migrations import run_migrations
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.testing.migration import create_migration_db, migrate_test_database, migration_db_name
 
 pytestmark = [
     pytest.mark.integration,
@@ -39,8 +38,11 @@ _DAY = date(2026, 3, 25)
 def migrated_db(postgres_container) -> str:
     """A fresh database with the real core and memory chains applied."""
     db_url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(db_url, chain="core"))
-    asyncio.run(run_migrations(db_url, chain="memory"))
+    migrate_test_database(
+        postgres_container,
+        db_url,
+        plans=(("core", None, None), ("memory", None, None)),
+    )
     return db_url
 
 

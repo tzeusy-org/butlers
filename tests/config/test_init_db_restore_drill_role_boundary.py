@@ -1,5 +1,10 @@
 """Static privilege-boundary coverage for the restore-drill bootstrap path.
 
+The five historical initializer checks now bind the hash-verified R0/R1
+rollback producer; no current serving bootstrap installs those old surfaces.
+The two historical migration-oracle successors execute the current source-owned
+maintenance boundary, including refusal before any authority effects.
+
 The checks intentionally inspect checked-in contracts only.  They do not run
 ``init-db.sql`` or contact PostgreSQL, so no role or database is modified.
 
@@ -45,7 +50,8 @@ from pathlib import Path
 
 import pytest
 
-from butlers.testing.migration import init_db_sql_for_dbapi
+from butlers.db_authority.apply import pinned_predecessor_initializer
+from butlers.testing.migration import init_db_sql_for_dbapi, load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -446,7 +452,7 @@ _DOCS_OUTSIDE_BACKUP_RESTORE = (
 
 def test_init_db_reserves_an_isolated_executor_without_widening_shared_roles() -> None:
     """REQ-database-security-006 keeps the executor out of every shared grant path."""
-    source = _INIT_DB.read_text(encoding="utf-8")
+    source = pinned_predecessor_initializer()
     joined = _joined_sql_literals(source)
 
     # Fixed vocabulary: the provisioner, the executor job, and the migration all
@@ -529,7 +535,7 @@ def test_every_init_db_role_statement_denies_cluster_recovery_capability() -> No
     Requiring the union of both statements instead lets the repair be weakened
     silently, which is how the first draft of this check passed its own mutation.
     """
-    statements = _role_attribute_statements(_INIT_DB.read_text(encoding="utf-8"))
+    statements = _role_attribute_statements(pinned_predecessor_initializer())
     assert len(statements) >= 10, "role-attribute parsing found nothing to check"
 
     conferred = [
@@ -583,7 +589,7 @@ def test_record_result_ignores_every_compatibility_input_except_the_result() -> 
     the leak.  Asserting the parameter is never referenced in the body bans all of
     them, and does not depend on the explanatory comment surviving a rewrite.
     """
-    source = _INIT_DB.read_text(encoding="utf-8")
+    source = pinned_predecessor_initializer()
     body = _strip_sql_comments(_dollar_quoted_body(source, "record_result"))
 
     inert = [name for name in ("p_backup_name", "p_detail", "p_table_count") if name in body]
@@ -594,7 +600,7 @@ def test_record_result_ignores_every_compatibility_input_except_the_result() -> 
 
 def test_init_db_projects_restore_results_through_a_purpose_bound_audit_writer() -> None:
     """A hostile ``public.audit_log`` trigger must not run as the ledger owner."""
-    source = _INIT_DB.read_text(encoding="utf-8")
+    source = pinned_predecessor_initializer()
 
     assert "restore_drill_executor_audit_writer" in source
     assert "ALTER FUNCTION restore_drill_executor_admin.write_audit_projection(TEXT)" in source
@@ -626,7 +632,11 @@ def test_init_db_projects_restore_results_through_a_purpose_bound_audit_writer()
 
 def test_initial_bootstrap_preflight_precedes_every_ddl_or_dcl_mutation() -> None:
     """A future preflight mutation must fail static review before it can partially apply."""
-    source = _INIT_DB.read_text(encoding="utf-8")
+    # Inspect the actual hash-bound replay artifact including its psql guard.
+    # The production DBAPI loader intentionally strips that one directive.
+    replay = pinned_predecessor_initializer()
+    source = (_REPO_ROOT / "scripts" / "db_authority_cutover.sql").read_text(encoding="utf-8")
+    assert replay == source.replace(r"\set ON_ERROR_STOP on" + "\n", "", 1)
     marker = "INITIAL_READ_ONLY_BOOTSTRAP_PREFLIGHT"
     marker_offset = source.index(marker)
     assert source.count(marker) == 1
@@ -903,76 +913,83 @@ def _named_function(tree: ast.Module, name: str) -> ast.FunctionDef:
     raise AssertionError(f"core_196 has no {name}() to inspect")
 
 
-def test_migration_upgrade_issues_no_mutation_of_its_own() -> None:
-    """The shared migration login must create no authority object itself.
+class _CurrentMaintenanceConnection:
+    """Driver-only protocol; all production provenance predicates stay real."""
 
-    The previous form was a list of bans on specific spellings -- ``CREATE TABLE
-    restore_drill_executor.restore_drill_results``, ``CREATE SCHEMA IF NOT
-    EXISTS ...``, ``attention_ledger``.  ``CREATE TABLE IF NOT EXISTS`` defeats
-    the first, and every ban is one rename from silent.  What ``upgrade()``
-    actually promises is that it executes no mutating SQL at all.
+    def __init__(self, *, admitted):
+        self.admitted = admitted
+        self.info = {}
+        self.statements = []
+        self.effect_statements = []
+        self.shape_reads = []
+
+    def exec_driver_sql(self, sql):
+        from types import SimpleNamespace
+
+        self.statements.append(sql)
+        if "owner.rolname" in sql:
+            return SimpleNamespace(one=lambda: ("butlers", "normal_migration", self.admitted))
+        if sql == "SELECT current_database(), current_user":
+            return SimpleNamespace(one=lambda: ("butlers", "normal_migration"))
+        if sql.startswith("SELECT current_user=session_user AND rolsuper"):
+            return SimpleNamespace(scalar_one=lambda: False)
+        if sql in {"RESET ROLE", 'SET ROLE "normal_migration"'}:
+            return None
+        self.effect_statements.append(sql)
+        raise AssertionError("Unexpected maintenance effect before a current proof")
+
+    def execute(self, statement, parameters):
+        from types import SimpleNamespace
+
+        if "AS owner" not in str(statement):
+            raise AssertionError("Unexpected maintenance query")
+        self.shape_reads.append((parameters["schema"], parameters["name"]))
+        return SimpleNamespace(mappings=lambda: SimpleNamespace(one_or_none=lambda: None))
+
+
+def test_migration_upgrade_issues_no_mutation_of_its_own(monkeypatch) -> None:
+    """A normal migration login cannot turn a source edge into privileged repair.
+
+    Explicit successor to the retired stored-installer SQL-spelling oracle:
+    execute the real migration and actual maintenance guard, not an AST mirror.
     """
-    tree = ast.parse(_MIGRATION.read_text(encoding="utf-8"))
-    constants = _module_string_constants(tree)
-    executed = _executed_sql(_named_function(tree, "upgrade"), constants)
+    from butlers.db_authority.roles import AuthorityError
 
-    assert executed, "no executed SQL found in upgrade()"
-    unresolved = [line for line, sql in executed if sql is None]
-    assert not unresolved, f"upgrade() executes SQL this check cannot read, at lines {unresolved}"
-
-    mutations = [
-        (line, match.group(1).upper())
-        for line, sql in executed
-        if sql is not None
-        for match in _MUTATING_SQL_VERB.finditer(_strip_sql_literals(_strip_sql_comments(sql)))
-    ]
-    assert not mutations, f"upgrade() issues its own DDL/DML: {mutations}"
-
-    invoked = {
-        match.group(1)
-        for _, sql in executed
-        if sql is not None
-        for match in _INVOKED_FUNCTION.finditer(_strip_sql_comments(sql))
-    }
-    assert invoked == {constants["_ADMIN_INSTALLER"]}
-    assert constants["_ADMIN_INSTALLER"] == "restore_drill_executor_admin.install_interface"
+    connection = _CurrentMaintenanceConnection(admitted=False)
+    migration = load_migration(_MIGRATION)
+    monkeypatch.setattr(migration.op, "get_bind", lambda: connection)
+    with pytest.raises(AuthorityError, match="maintenance/ownership prerequisite"):
+        migration.upgrade()
+    assert len(connection.statements) == 1
+    assert connection.statements[0].lstrip().startswith("SELECT")
+    assert connection.effect_statements == []
 
 
-def test_migration_probes_each_demand_full_installer_provenance() -> None:
-    """Both catalog probes, not merely one of them, must prove bootstrap ownership.
+def test_migration_probes_each_demand_full_installer_provenance(monkeypatch) -> None:
+    """A stale first proof cannot substitute for the actual selected session.
 
-    ``"bootstrap_owner.rolsuper" in source`` is satisfied by a single surviving
-    occurrence, so weakening one probe -- the exploitable half -- passed.
+    The old two stored-bunker probes are retired. This executing successor
+    changes the native maintenance fact between the two real consumers and
+    requires the second guard to refuse before protected DDL, restoring ROLE.
     """
-    tree = ast.parse(_MIGRATION.read_text(encoding="utf-8"))
-    constants = _module_string_constants(tree)
-    probes = {
-        name: sql
-        for name, sql in constants.items()
-        if name.endswith("_SQL") and "installer.proname = 'install_interface'" in sql
-    }
-    assert len(probes) == 2, f"expected two installer probes, found {sorted(probes)}"
+    from butlers.db_authority.roles import AuthorityError
 
-    failures = [
-        f"{name} is missing {predicate!r}"
-        for name, sql in probes.items()
-        for predicate in _REQUIRED_INSTALLER_PROVENANCE
-        if predicate not in sql
-    ]
-    assert not failures, "installer provenance weakened:\n" + "\n".join(failures)
-
-    # The audit projection's definer is a separate, ledger-less role; the
-    # finalized-interface probe is the only one positioned to check it.
-    finalized = next(sql for name, sql in probes.items() if "audit_projection" in sql)
-    assert (
-        "audit_projection.proconfig = ARRAY['search_path=pg_catalog, pg_temp']::text[]" in finalized
+    connection = _CurrentMaintenanceConnection(admitted=True)
+    migration = load_migration(_MIGRATION)
+    monkeypatch.setattr(migration.op, "get_bind", lambda: connection)
+    with pytest.raises(AuthorityError, match="maintenance prerequisite"):
+        migration.upgrade()
+    # The current provenance preflight now proves the selected maintenance
+    # actor before even reading the protected ledger shape. A stale initial
+    # ownership proof cannot authorize that earlier boundary either.
+    assert connection.shape_reads == []
+    assert any(
+        sql.startswith("SELECT current_user=session_user AND rolsuper")
+        for sql in connection.statements
     )
-    assert "audit_projection.proowner = audit_writer_owner.oid" in finalized
-
-    # Operator-facing failure message from the fail-closed branch.
-    assert "restore-drill bootstrap installer is missing or untrusted" in _MIGRATION.read_text(
-        encoding="utf-8"
-    )
+    assert connection.statements.count("RESET ROLE") == 1
+    assert connection.statements[-1] == 'SET ROLE "normal_migration"'
+    assert connection.effect_statements == []
 
 
 # --------------------------------------------------------------------------- #
@@ -982,7 +999,15 @@ def test_migration_probes_each_demand_full_installer_provenance() -> None:
 # The executor job runs with the isolated credential.  Importing anything that
 # resolves the shared application credential would reintroduce the boundary this
 # whole file exists to hold, so its butlers-internal imports are an allowlist.
-_EXECUTOR_ALLOWED_IMPORTS = frozenset({"butlers.jobs.backup_health"})
+_EXECUTOR_ALLOWED_IMPORTS = frozenset(
+    {
+        "butlers.jobs.backup_health",
+        # Source-compiled purpose identity and fresh catalog admission consume
+        # only the already selected executor credential, never shared secrets.
+        "butlers.db_authority.catalog",
+        "butlers.db_authority.roles",
+    }
+)
 
 
 def test_dashboard_has_no_restore_drill_scheduler_or_shared_credential_launch_path() -> None:
@@ -1237,9 +1262,20 @@ def test_bootstrap_docs_require_a_cluster_superuser_distinct_from_the_migration_
     for path in (_SCRIPTS_README, _SCHEMA_TOPOLOGY_DOC, _COMPOSE_FILE):
         source = path.read_text(encoding="utf-8")
         normalized_source = " ".join(source.split())
-        # Fixed vocabulary: the GUC an operator sets.
-        assert "butlers.connecting_user" in source, path
-        # Deliberate wording fences, as above.
-        assert "privileged cluster superuser" in normalized_source, path
-        assert "must not be the active bootstrap identity" in normalized_source, path
+        if path == _SCHEMA_TOPOLOGY_DOC:
+            # Current topology has replaced the retired caller-selected GUC:
+            # the held source compiler independently observes the normal owner
+            # and requires a separate explicit maintenance prerequisite.
+            assert "selected privileged maintenance connection" in normalized_source, path
+            assert (
+                "Ordinary DDL runs as the independently observed normal owner" in normalized_source
+            ), path
+            assert "Missing prerequisites or unlisted objects refuse" in normalized_source, path
+            assert "butlers.connecting_user" not in source, path
+        else:
+            # Historical script/Compose operator notes retain their stricter
+            # explicit identity separation; no owner allowance is introduced.
+            assert "butlers.connecting_user" in source, path
+            assert "privileged cluster superuser" in normalized_source, path
+            assert "must not be the active bootstrap identity" in normalized_source, path
         assert _DATABASE_OWNER_ALLOWANCE.search(normalized_source) is None, path

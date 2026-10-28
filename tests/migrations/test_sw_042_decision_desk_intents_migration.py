@@ -7,15 +7,19 @@ reason iff failed) are covered against the migrated schema in
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 
 import pytest
 from sqlalchemy import create_engine, text
 
 from alembic import command
-from butlers.migrations import _build_alembic_config, run_migrations
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.migrations import _build_alembic_config
+from butlers.testing.migration import (
+    create_migration_db,
+    migrate_test_database,
+    migration_db_name,
+    run_test_alembic_command,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -39,11 +43,11 @@ def _tables(engine) -> set[str]:
 
 def test_sw_042_upgrade_downgrade_round_trip(postgres_container) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(db_url, chain="core"))
+    migrate_test_database(postgres_container, db_url, plans=(("core", None, None),))
     config = _build_alembic_config(db_url, ["switchboard"], target_schema="switchboard")
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
-        command.upgrade(config, "switchboard@sw_042")
+        run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_042")
         assert _tables(engine) == set(_TABLES)
         with engine.connect() as conn:
             index = conn.execute(
@@ -55,10 +59,12 @@ def test_sw_042_upgrade_downgrade_round_trip(postgres_container) -> None:
         assert "UNIQUE" in index
         assert "pending" in index and "applied" in index and "failed" not in index
 
-        command.downgrade(config, "switchboard@sw_041")
+        run_test_alembic_command(
+            postgres_container, command.downgrade, config, "switchboard@sw_041"
+        )
         assert _tables(engine) == set()
 
-        command.upgrade(config, "switchboard@sw_042")
+        run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_042")
         assert _tables(engine) == set(_TABLES)
     finally:
         engine.dispose()

@@ -25,6 +25,7 @@ import pytest
 from fastmcp import Client as MCPClient
 
 from butlers.core.scheduler import tick as _tick
+from tests.e2e._serving_ecosystem import butler_ecosystem as butler_ecosystem
 
 if TYPE_CHECKING:
     from asyncpg.pool import Pool

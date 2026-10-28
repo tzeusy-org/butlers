@@ -20,6 +20,7 @@ import shutil
 import pytest
 
 from butlers.core.butler_logging import ButlerLogger
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [

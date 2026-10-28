@@ -16,6 +16,8 @@ from decimal import Decimal
 
 import pytest
 
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
+
 pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
 ]

@@ -13,6 +13,7 @@ import pytest
 from butlers.core.expected_signals import ExpectedSignalState
 from butlers.identity import ResolvedContact
 from butlers.tools.relationship import stale_contacts
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 _THIS_FILE = Path(__file__).resolve()
 

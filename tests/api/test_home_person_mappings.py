@@ -30,12 +30,14 @@ from butlers.api.routers.home_person_mappings import (
     _key_digest,
 )
 from butlers.db import register_jsonb_codec
-from butlers.migrations import _build_alembic_config, run_migrations
+from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import (
     create_migration_db,
     init_db_sql_for_dbapi,
     migration_bootstrap_db_url,
     migration_db_name,
+    run_test_alembic_command,
+    stage_test_migration_history,
 )
 from tests.api.auth_helpers import _DomainOwnerState, create_authenticated_domain_app
 
@@ -257,7 +259,12 @@ def _batch(*pairs: tuple[str, str]) -> MappingBatch:
 @pytest.fixture(scope="module")
 def mapping_db_url(postgres_container) -> str:
     db_url = create_migration_db(postgres_container, migration_db_name())
-    command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core@head")
+    run_test_alembic_command(
+        postgres_container,
+        command.upgrade,
+        _build_alembic_config(db_url, chains=["core"]),
+        "core@head",
+    )
     return db_url
 
 
@@ -496,8 +503,14 @@ def test_core_246_shared_ddl_replays_and_downgrades_only_with_the_last_schema(
     postgres_container,
 ) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(db_url, chain="core", schema="general"))
-    asyncio.run(run_migrations(db_url, chain="core", schema="switchboard"))
+    # Historical shared-DDL round trip stays before the core_282 cutover;
+    # all original downgrade targets, seeds and observers remain real.
+    stage_test_migration_history(
+        postgres_container, db_url, plans=(("core", "general", "core_280"),)
+    )
+    stage_test_migration_history(
+        postgres_container, db_url, plans=(("core", "switchboard", "core_280"),)
+    )
     engine = create_engine(db_url)
     try:
         with engine.connect() as connection:
@@ -509,7 +522,7 @@ def test_core_246_shared_ddl_replays_and_downgrades_only_with_the_last_schema(
 
     general = _build_alembic_config(db_url, chains=["core"], target_schema="general")
     switchboard = _build_alembic_config(db_url, chains=["core"], target_schema="switchboard")
-    command.downgrade(general, "core_245")
+    run_test_alembic_command(postgres_container, command.downgrade, general, "core_245")
     engine = create_engine(db_url)
     try:
         with engine.connect() as connection:
@@ -519,7 +532,7 @@ def test_core_246_shared_ddl_replays_and_downgrades_only_with_the_last_schema(
     finally:
         engine.dispose()
 
-    command.downgrade(switchboard, "core_245")
+    run_test_alembic_command(postgres_container, command.downgrade, switchboard, "core_245")
     engine = create_engine(db_url)
     try:
         with engine.connect() as connection:
@@ -529,8 +542,8 @@ def test_core_246_shared_ddl_replays_and_downgrades_only_with_the_last_schema(
     finally:
         engine.dispose()
 
-    command.upgrade(general, "core@head")
-    command.upgrade(switchboard, "core@head")
+    run_test_alembic_command(postgres_container, command.upgrade, general, "core_280")
+    run_test_alembic_command(postgres_container, command.upgrade, switchboard, "core_280")
 
 
 @pytest.mark.integration

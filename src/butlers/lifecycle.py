@@ -51,7 +51,11 @@ from butlers.credentials import (
 from butlers.daemon_utils import _flatten_config_for_secret_scan
 from butlers.db import Database
 from butlers.exceptions import RuntimeBinaryNotFoundError
-from butlers.migrations import get_module_migration_chains, has_butler_chain, run_migrations
+from butlers.migrations import (
+    get_module_migration_chains,
+    has_butler_chain,
+    require_installed_chain,
+)
 from butlers.module_state import ModuleStartupStatus
 from butlers.owner_bootstrap import _ensure_owner_entity
 from butlers.storage import BlobStorageStartupError, S3BlobStore
@@ -187,14 +191,13 @@ async def _startup_credentials(daemon: Any, state: StartupState) -> None:
 
 async def _startup_database(daemon: Any, state: StartupState) -> None:
     """Acquire the database pool, establish owner identity and attach logging."""
-    # 6. Provision database
-    # If db was injected (e.g., for testing), skip provisioning
+    # Serving uses only an already provisioned database. The selected migrator
+    # owns database/schema creation and every version transition.
     if daemon.db is None:
         daemon.db = Database.from_env(daemon.config.db_name)
         daemon.db.set_schema(daemon.config.db_schema)
         if daemon.config.db_schema:
             daemon.db.role = f"butler_{daemon.config.db_schema}_rw"
-        await daemon.db.provision()
         state.pool = await daemon.db.connect()
     else:
         # Database already provisioned and connected externally
@@ -225,20 +228,19 @@ async def _startup_database(daemon: Any, state: StartupState) -> None:
 
 
 async def _startup_core_migrations(daemon: Any, state: StartupState) -> None:
-    """Set migration inputs and run the core and butler-specific chains."""
-    # 7. Run core Alembic migrations
-    state.db_url = daemon._build_db_url()
+    """Require installed core/domain revisions without serving DDL authority."""
     state.migration_schema = daemon.config.db_schema or None
-    await run_migrations(state.db_url, chain="core", schema=state.migration_schema)
+    await require_installed_chain(state.pool, chain="core", schema=state.migration_schema)
 
     # 7b. Run butler-specific Alembic migrations (if chain exists)
     if has_butler_chain(daemon.config.name):
-        logger.info("Running butler-specific migrations for: %s", daemon.config.name)
-        await run_migrations(state.db_url, chain=daemon.config.name, schema=state.migration_schema)
+        await require_installed_chain(
+            state.pool, chain=daemon.config.name, schema=state.migration_schema
+        )
 
 
 async def _startup_module_migrations(daemon: Any, state: StartupState) -> None:
-    """Run module migrations and cascade isolated migration failures."""
+    """Require installed module revisions and cascade isolated admission failures."""
     # 8. Run module Alembic migrations (non-fatal per-module)
     chains = get_module_migration_chains(daemon._modules, daemon.config.name)
     for mod in daemon._modules:
@@ -247,21 +249,21 @@ async def _startup_module_migrations(daemon: Any, state: StartupState) -> None:
         rev = chains.get(mod.name)
         if rev:
             # A module MAY declare a private schema (validated config field
-            # ``memory_schema`` on the memory module) so its chain migrates into
+            # ``memory_schema`` on the memory module) so its chain is installed in
             # a dedicated schema instead of the butler's own — e.g. chronicler
             # routes memory to ``chronicler_mem`` so the memory ``episodes``
             # table does not collide with the domain ``chronicler.episodes``
-            # (bu-93y4rt / bu-w6jca). ``env.py`` auto-creates the target schema,
-            # so no extra provisioning is needed. Falls back to the butler
-            # schema for every other module.
+            # (bu-93y4rt / bu-w6jca). Only the controlled migrator creates it.
+            # Serving checks its declared revision through the primary role;
+            # every other module uses the butler schema.
             mod_cfg = daemon._module_configs.get(mod.name)
             module_migration_schema = (
                 getattr(mod_cfg, "memory_schema", None) or state.migration_schema
             )
             try:
-                await run_migrations(state.db_url, chain=rev, schema=module_migration_schema)
-            except Exception as exc:
-                error_msg = str(exc)
+                await require_installed_chain(state.pool, chain=rev, schema=module_migration_schema)
+            except Exception:
+                error_msg = "Required module database revision is unavailable"
                 daemon._module_statuses[mod.name] = ModuleStartupStatus(
                     status="failed", phase="migration", error=error_msg
                 )
@@ -965,13 +967,51 @@ async def _shutdown_chronicler_dependents(daemon: Any) -> None:
             logger.exception("Error while detaching DB log handler")
         daemon._db_log_handler = None
 
-    # 7. Close credential-layer DB pools
-    if daemon._shared_credentials_db is not None:
-        await daemon._shared_credentials_db.close()
-        daemon._shared_credentials_db = None
+    # 7/8. Retain the complete dependent close sequence across caller timeout
+    # and repeated cancellation. The main pool cannot close before a pending
+    # credential diagnostic has physically released its lease.
+    tail = getattr(daemon, "_credential_dependents_close_task", None)
+    if tail is None:
 
-    # 8. Close DB pool
-    if daemon.db:
-        await daemon.db.close()
+        async def close_databases() -> None:
+            credential_pool = getattr(daemon, "_credential_purpose_pool", None)
+            if credential_pool is not None:
+                from butlers.db_authority.catalog import close_after_catalog_diagnostics
+
+                def credential_closed() -> None:
+                    daemon._credential_purpose_pool = None
+
+                await close_after_catalog_diagnostics(
+                    credential_pool, on_closed=credential_closed, wait_timeout=None
+                )
+            shared_db = getattr(daemon, "_shared_credentials_db", None)
+            if shared_db is not None:
+                shared_pool = shared_db.pool
+                if shared_pool is not None:
+                    from butlers.db_authority.catalog import close_after_catalog_diagnostics
+
+                    def shared_closed() -> None:
+                        if shared_db.pool is shared_pool:
+                            shared_db.pool = None
+                            if daemon._shared_credentials_db is shared_db:
+                                daemon._shared_credentials_db = None
+
+                    await close_after_catalog_diagnostics(
+                        shared_pool, on_closed=shared_closed, wait_timeout=None
+                    )
+                    if shared_db.pool is not None or daemon._shared_credentials_db is not None:
+                        raise RuntimeError("Shared credential reader close identity changed")
+                else:
+                    daemon._shared_credentials_db = None
+            if daemon.db:
+                await daemon.db.close()
+
+        tail = asyncio.create_task(close_databases(), name="daemon-credential-dependent-close")
+        daemon._credential_dependents_close_task = tail
+        tail.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+    completed, _ = await asyncio.wait({tail}, timeout=5)
+    if not completed:
+        raise TimeoutError("Daemon credential cleanup is still pending")
+    tail.result()
 
     logger.info("Butler shutdown complete")

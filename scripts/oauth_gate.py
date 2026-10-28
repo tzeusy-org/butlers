@@ -6,8 +6,8 @@ Used as a Docker Compose init service to gate Layer 3 startup.
 Environment variables:
   POSTGRES_HOST     (default: postgres)
   POSTGRES_PORT     (default: 5432)
-  POSTGRES_USER     (default: butlers)
-  POSTGRES_PASSWORD (default: butlers)
+  POSTGRES_USER     (required connector-purpose credential)
+  POSTGRES_PASSWORD (required connector-purpose credential)
   POSTGRES_DB       (default: butlers)
   OAUTH_GATE_TIMEOUT  (default: 0 = infinite)
   OAUTH_POLL_INTERVAL (default: 5)
@@ -27,31 +27,50 @@ def _check_token() -> bool:
     """Return True if a Google OAuth refresh token exists in public.entity_info."""
     import psycopg2
 
-    dsn = (
-        f"host={os.environ.get('POSTGRES_HOST', 'postgres')} "
-        f"port={os.environ.get('POSTGRES_PORT', '5432')} "
-        f"user={os.environ.get('POSTGRES_USER', 'butlers')} "
-        f"password={os.environ.get('POSTGRES_PASSWORD', 'butlers')} "
-        f"dbname={os.environ.get('POSTGRES_DB', 'butlers')}"
-    )
+    from butlers.db_authority.catalog import setup_dbapi_purpose
+    from butlers.db_authority.roles import purpose_profile
+
+    conn = None
+    available = False
     try:
-        with psycopg2.connect(dsn) as conn:
-            conn.autocommit = True
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
+        profile = purpose_profile(os.environ.get("POSTGRES_DB", "butlers"), "connector")
+        user, password = os.environ.get("POSTGRES_USER"), os.environ.get("POSTGRES_PASSWORD")
+        if not user or not password:
+            raise ValueError("Connector-purpose credential is unavailable")
+        conn = psycopg2.connect(
+            host=os.environ.get("POSTGRES_HOST", "postgres"),
+            port=os.environ.get("POSTGRES_PORT", "5432"),
+            user=user,
+            password=password,
+            dbname=profile.database,
+            sslmode=os.environ.get("POSTGRES_SSLMODE") or "prefer",
+            connect_timeout=5,
+            options="-c statement_timeout=5000",
+        )
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            setup_dbapi_purpose(cur, profile)
+            cur.execute(
+                """
                     SELECT COUNT(*) FROM public.entity_info ei
                     JOIN public.entities e ON e.id = ei.entity_id
                     WHERE ei.type = 'google_oauth_refresh'
                       AND ei.value IS NOT NULL
                       AND length(ei.value) > 0
                     """
-                )
-                row = cur.fetchone()
-                return bool(row and row[0] > 0)
-    except Exception as exc:
-        print(f"oauth-gate: DB check failed: {exc}", file=sys.stderr)
-        return False
+            )
+            row = cur.fetchone()
+            available = bool(row and row[0] > 0)
+    except Exception:
+        print("oauth-gate: database authority or token availability unreadable", file=sys.stderr)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                print("oauth-gate: owned database connection cleanup incomplete", file=sys.stderr)
+                available = False
+    return available
 
 
 def main() -> None:

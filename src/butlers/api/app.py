@@ -57,8 +57,8 @@ from butlers.core.definer_search_path import (
     log_unpinned_definers,
 )
 from butlers.core.stored_function_drift import (
-    compute_stored_function_drift,
-    log_stored_function_drift,
+    compute_database_authority,
+    log_database_authority,
 )
 from butlers.credential_store import CredentialStore
 from butlers.db import (
@@ -392,20 +392,14 @@ async def lifespan(app: FastAPI):
         # body change reaches an installed database only when an operator runs
         # it by hand -- and before this probe, nothing anywhere said so.
         #
-        # Reported, never fatal: a mismatch is one WARNING line, because
-        # refusing to boot the dashboard over a cosmetic body difference would
-        # be strictly worse than the drift it complains about. One-shot rather
-        # than a loop: the committed side only changes on deploy, and the
-        # deployed side only changes when an operator acts, so a periodic
-        # re-check would repeat the same answer. GET /api/system/stored-functions
-        # serves the live view.
+        # Advisory catalog observation is separate from mandatory pool admission.
+        # Missing/unreadable authority cannot become a clean diagnostic state.
         try:
-            report = await compute_stored_function_drift(get_db_manager().pool("switchboard"))
-            log_stored_function_drift(report)
+            report = await compute_database_authority(get_db_manager().pool("switchboard"))
+            log_database_authority(report)
         except Exception:
             logger.warning(
-                "Stored-function body drift check failed; deployed function bodies were "
-                "NOT compared against the configured stored-function source",
+                "Database authority catalog observation is unavailable",
                 exc_info=True,
             )
 
@@ -671,23 +665,14 @@ def create_app(
         #   Clears only when all infra creds are overridden AND anon access is
         #   disabled. This is a configuration diagnostic, not fleet attestation.
         #
-        # security.role_enforcement_disabled: True when SET ROLE schema-isolation
-        #   is NOT active for the managed database connections. The API
-        #   has its own authority boundary (no DB role configured
-        #   on the API pools); this clears only when all managed pools have an
-        #   active, verified DB role.  Read from the DatabaseManager singleton
-        #   so it reflects real connection state established at startup.
+        # This is current dashboard-purpose availability, not fleet attestation
+        # or an environment posture exemption. Missing diagnostics stay unknown.
         try:
-            db_mgr = get_db_manager()
-            # Use bool() to guard against non-bool values (e.g. a MagicMock
-            # leaked from a test's module-level singleton patch) reaching the
-            # JSON response, which would cause a RecursionError in FastAPI's
-            # jsonable_encoder.
-            role_enforcement_disabled: bool = bool(db_mgr.role_enforcement_disabled)
+            authority = await get_db_manager().authority_status()
+            if authority not in ("unknown", "unavailable", "admitted"):
+                authority = "unknown"
         except RuntimeError:
-            # DatabaseManager not yet initialized (startup path / tests that
-            # don't wire a DB).  Conservative default: report as disabled.
-            role_enforcement_disabled = True
+            authority = "unknown"
         return {
             "status": "ok",
             "auth": {
@@ -705,7 +690,7 @@ def create_app(
             "security": {
                 "insecure_infra_defaults": has_insecure_infra_defaults()
                 or is_grafana_anonymous_enabled(),
-                "role_enforcement_disabled": role_enforcement_disabled,
+                "database_authority": authority,
             },
         }
 

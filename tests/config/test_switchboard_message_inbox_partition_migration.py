@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import shutil
 from datetime import UTC, datetime
@@ -14,7 +13,9 @@ from alembic import command
 from butlers.testing.migration import (
     create_migration_db,
     index_exists,
+    migrate_test_database,
     migration_db_name,
+    run_test_alembic_command,
     table_exists,
 )
 
@@ -81,13 +82,13 @@ def _column_exists(db_url: str, table_name: str, column_name: str) -> bool:
 
 def test_partition_migration_builds_partitioned_table_and_indexes(postgres_container):
     """Switchboard migration creates a partitioned message_inbox lifecycle table."""
-    from butlers.migrations import run_migrations
 
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
 
-    asyncio.run(run_migrations(db_url, chain="core"))
-    asyncio.run(run_migrations(db_url, chain="switchboard"))
+    migrate_test_database(
+        postgres_container, db_url, plans=(("core", None, None), ("switchboard", None, None))
+    )
 
     assert table_exists(db_url, "message_inbox")
     assert _table_relkind(db_url, "message_inbox") == "p"
@@ -103,13 +104,14 @@ def test_partition_migration_builds_partitioned_table_and_indexes(postgres_conta
 @pytest.mark.pg_clock
 def test_partition_maintenance_and_downgrade_round_trip(postgres_container):
     """Maintenance functions and downgrade path preserve operability."""
-    from butlers.migrations import _build_alembic_config, run_migrations
+    from butlers.migrations import _build_alembic_config
 
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
 
-    asyncio.run(run_migrations(db_url, chain="core"))
-    asyncio.run(run_migrations(db_url, chain="switchboard"))
+    migrate_test_database(
+        postgres_container, db_url, plans=(("core", None, None), ("switchboard", None, None))
+    )
 
     engine = create_engine(db_url)
     with engine.begin() as conn:
@@ -185,7 +187,7 @@ def test_partition_maintenance_and_downgrade_round_trip(postgres_container):
     assert not table_exists(db_url, "message_inbox_p202401")
 
     config = _build_alembic_config(db_url, chains=["switchboard"])
-    command.downgrade(config, "switchboard@base")
+    run_test_alembic_command(postgres_container, command.downgrade, config, "switchboard@base")
 
     assert not table_exists(db_url, "message_inbox")
     assert not _function_exists(db_url, "switchboard_message_inbox_ensure_partition")

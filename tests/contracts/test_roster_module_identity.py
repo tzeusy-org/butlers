@@ -273,9 +273,6 @@ def _production_loads(root):
 def test_production_roster_execution_has_one_owner(tmp_path):
     assert _production_loads(_ROOT) == {
         "src/butlers/roster_imports.py": 3,
-        # Alembic revisions are not importable roster runtime modules.
-        "src/butlers/bootstrap_prerequisite.py": 1,
-        "src/butlers/migration_preflight.py": 1,
         # Dedicated private migration copies for tests, not roster runtime execution.
         "src/butlers/testing/migration.py": 1,
     }

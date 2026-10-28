@@ -61,7 +61,6 @@ import asyncpg
 import httpx
 
 from butlers.core.deployments import record_deployment, resolve_core_migration_head
-from butlers.db import db_params_from_env
 
 logger = logging.getLogger(__name__)
 
@@ -780,9 +779,60 @@ async def wait_for_health(config: DeployConfig) -> None:
 
 
 async def _make_pool() -> asyncpg.Pool:
-    params = db_params_from_env()
-    database = os.environ.get("POSTGRES_DB", "butlers")
-    return await asyncpg.create_pool(database=database, min_size=1, max_size=2, **params)
+    """Use an explicitly selected operator login, never serving credentials.
+
+    Deployment remains an administrative purpose: it may use the operator's
+    existing privileged principal. No serving role is selected or elevated.
+    The same physical connection proves the selected identity and ledger verbs
+    before publication and on every later acquisition.
+    """
+    from urllib.parse import unquote, urlparse
+
+    from butlers.db import register_jsonb_codec, should_retry_with_ssl_disable
+    from butlers.db_authority.catalog import create_owned_pool
+    from butlers.db_authority.roles import PURPOSE_OWNERS, AuthorityError, runtime_profiles
+
+    dsn = os.environ.get("BUTLERS_DEPLOY_DATABASE_URL")
+    if not dsn:
+        raise DeployError("database", "Explicit operator deployment database is required")
+    selected = urlparse(dsn)
+    database = unquote(selected.path.lstrip("/"))
+    login = unquote(selected.username or "")
+    profiles = runtime_profiles(database)
+    serving = (
+        {p.role for p in profiles}
+        | set(PURPOSE_OWNERS)
+        | {
+            "dashboard_api",
+            "dashboard_auth_api",
+            "connector_writer",
+            "credential_store_writer",
+            "restore_drill_executor",
+        }
+    )
+    if not login or login in serving:
+        raise AuthorityError("Explicit operator deployment identity is required")
+
+    async def setup(connection):
+        valid = await connection.fetchval(
+            """SELECT session_user=$1 AND current_user=$1 AND current_database()=$2
+            AND pg_catalog.has_table_privilege(current_user,'public.deployments','SELECT')
+            AND pg_catalog.has_table_privilege(current_user,'public.deployments','INSERT')""",
+            login,
+            database,
+        )
+        if valid is not True:
+            raise AuthorityError("Operator deployment authority is unavailable")
+
+    options = dict(dsn=dsn, min_size=1, max_size=2, setup=setup, init=register_jsonb_codec)
+    try:
+        return await create_owned_pool(**options)
+    except Exception as exc:
+        # An explicit sslmode always wins; preserve the one existing finite
+        # STARTTLS fallback only for an unspecified mode.
+        if "sslmode" in selected.query or not should_retry_with_ssl_disable(exc, None):
+            raise
+        return await create_owned_pool(**options, ssl="disable")
 
 
 async def _best_effort_migration_head(pool: asyncpg.Pool) -> str | None:
@@ -826,7 +876,7 @@ async def run_deploy(config: DeployConfig, *, pool: asyncpg.Pool | None = None) 
     pool:
         Injected asyncpg pool (tests use this to point at a real migrated
         Postgres without touching env vars). Production callers omit it —
-        a pool is created from ``POSTGRES_*`` env vars and closed on exit.
+        a pool is created from the explicit operator deployment URL and closed on exit.
     """
     # Preflight FIRST, before touching the pool or building anything: refuse
     # (or, under allow_dirty_root, loudly warn about) a frozen-worktree root or

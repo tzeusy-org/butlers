@@ -18,6 +18,7 @@ from butlers.modules.approvals.models import (
     ApprovalRule,
     PendingAction,
 )
+from butlers.testing.migration import migrate_test_database, run_test_alembic_command
 
 # ---------------------------------------------------------------------------
 # Unit tests — no Docker, no DB
@@ -216,9 +217,6 @@ def _column_exists(db_url: str, table_name: str, column_name: str) -> bool:
 class TestApprovalsMigration:
     def test_migration_creates_tables_indexes_and_is_idempotent(self, postgres_container):
         """Migration creates tables + indexes and is idempotent."""
-        import asyncio
-
-        from butlers.migrations import run_migrations
 
         db_name = _unique_db_name()
         db_url = _create_db(postgres_container, db_name)
@@ -239,7 +237,7 @@ class TestApprovalsMigration:
                 is True
             )
 
-        asyncio.run(run_migrations(db_url, chain="approvals"))
+        migrate_test_database(postgres_container, db_url, plans=(("approvals", None, None),))
 
         for tbl in [
             "pending_actions",
@@ -271,20 +269,19 @@ class TestApprovalsMigration:
             assert _column_exists(db_url, table_name, "fingerprint_version")
 
         # Idempotent
-        asyncio.run(run_migrations(db_url, chain="approvals"))
+        migrate_test_database(postgres_container, db_url, plans=(("approvals", None, None),))
         assert _table_exists(db_url, "pending_actions")
 
     def test_alembic_version_and_append_only_events(self, postgres_container):
         """Version tracked; approval_events rejects UPDATE/DELETE."""
-        import asyncio
 
         from sqlalchemy import create_engine, exc, text
 
-        from butlers.migrations import get_chain_head, run_migrations
+        from butlers.migrations import get_chain_head
 
         db_name = _unique_db_name()
         db_url = _create_db(postgres_container, db_name)
-        asyncio.run(run_migrations(db_url, chain="approvals"))
+        migrate_test_database(postgres_container, db_url, plans=(("approvals", None, None),))
 
         engine = create_engine(db_url)
         with engine.connect() as conn:
@@ -366,7 +363,9 @@ class TestApprovalsMigration:
         db_name = _unique_db_name()
         db_url = _create_db(postgres_container, db_name)
         config = _build_alembic_config(db_url, chains=["approvals"])
-        command.upgrade(config, "approvals@approvals_011")
+        run_test_alembic_command(
+            postgres_container, command.upgrade, config, "approvals@approvals_011"
+        )
 
         action_id = uuid.uuid4()
         deduplication_key = "relationship:entity-dedup:legacy-source:legacy-target"
@@ -401,7 +400,7 @@ class TestApprovalsMigration:
             )
             conn.execute(text("UPDATE alembic_version SET version_num = 'approvals_012'"))
 
-        command.upgrade(config, "approvals@head")
+        run_test_alembic_command(postgres_container, command.upgrade, config, "approvals@head")
 
         with engine.begin() as conn:
             versions = [r[0] for r in conn.execute(text("SELECT version_num FROM alembic_version"))]
@@ -449,33 +448,27 @@ class TestApprovalsMigration:
 
     def test_migration_updates_existing_approvals_001_pending_actions(self, postgres_container):
         """Existing approvals_001 tables receive dossier columns on upgrade."""
-        import asyncio
 
         from sqlalchemy import create_engine, text
 
-        from butlers.migrations import get_chain_head, run_migrations
+        from alembic import command
+        from butlers.migrations import _build_alembic_config, get_chain_head
 
         db_name = _unique_db_name()
         db_url = _create_db(postgres_container, db_name)
 
+        # Install the real base support tables/FKs before reproducing the
+        # historical pending shape. A version stamp alone cannot create them.
+        config = _build_alembic_config(db_url, chains=["approvals"])
+        run_test_alembic_command(
+            postgres_container, command.upgrade, config, "approvals@approvals_001"
+        )
         engine = create_engine(db_url)
         action_id = uuid.uuid4()
         with engine.begin() as conn:
-            # schema-standin-exempt: a deliberately pre-migration shape, stamped
-            # at an old revision so run_migrations() can be tested upgrading it.
-            conn.execute(
-                text(
-                    "CREATE TABLE pending_actions ("
-                    "id UUID PRIMARY KEY,"
-                    "tool_name TEXT NOT NULL,"
-                    "tool_args JSONB NOT NULL,"
-                    "status VARCHAR NOT NULL DEFAULT 'pending',"
-                    "requested_at TIMESTAMPTZ NOT NULL DEFAULT now()"
-                    ")"
-                )
-            )
-            conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            conn.execute(text("INSERT INTO alembic_version (version_num) VALUES ('approvals_001')"))
+            # The collapsed base includes these fields; the old pre-002
+            # contract intentionally lacks only them, not the subsystem.
+            conn.execute(text("ALTER TABLE pending_actions DROP COLUMN why, DROP COLUMN evidence"))
             conn.execute(
                 text(
                     "INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at)"
@@ -493,7 +486,7 @@ class TestApprovalsMigration:
         assert not _column_exists(db_url, "pending_actions", "why")
         assert not _column_exists(db_url, "pending_actions", "evidence")
 
-        asyncio.run(run_migrations(db_url, chain="approvals"))
+        migrate_test_database(postgres_container, db_url, plans=(("approvals", None, None),))
 
         assert _column_exists(db_url, "pending_actions", "why")
         assert _column_exists(db_url, "pending_actions", "evidence")
@@ -519,14 +512,18 @@ class TestApprovalsMigration:
         self, postgres_container
     ):
         """Real Postgres proves RFC 0021 migrates data before enforcing its schema."""
-        import asyncio
 
         from sqlalchemy import create_engine, exc, text
 
-        from butlers.migrations import get_chain_head, run_migrations
+        from alembic import command
+        from butlers.migrations import _build_alembic_config, get_chain_head
 
         db_name = _unique_db_name()
         db_url = _create_db(postgres_container, db_name)
+        config = _build_alembic_config(db_url, chains=["approvals"])
+        run_test_alembic_command(
+            postgres_container, command.upgrade, config, "approvals@approvals_002"
+        )
         engine = create_engine(db_url)
         action_id = uuid.uuid4()
         legacy_evidence = [
@@ -535,23 +532,8 @@ class TestApprovalsMigration:
         ]
 
         with engine.begin() as conn:
-            # schema-standin-exempt: a deliberately pre-migration shape, stamped
-            # at an old revision so run_migrations() can be tested upgrading it.
-            conn.execute(
-                text(
-                    "CREATE TABLE pending_actions ("
-                    "id UUID PRIMARY KEY,"
-                    "tool_name TEXT NOT NULL,"
-                    "tool_args JSONB NOT NULL,"
-                    "status VARCHAR NOT NULL DEFAULT 'pending',"
-                    "requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
-                    "why TEXT,"
-                    "evidence JSONB NOT NULL DEFAULT '[]'::jsonb"
-                    ")"
-                )
-            )
-            conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            conn.execute(text("INSERT INTO alembic_version (version_num) VALUES ('approvals_002')"))
+            # Keep the actual 001/002 support schema while seeding the
+            # genuine legacy evidence that 005 must convert before checks.
             conn.execute(
                 text(
                     "INSERT INTO pending_actions "
@@ -569,7 +551,7 @@ class TestApprovalsMigration:
                 },
             )
 
-        asyncio.run(run_migrations(db_url, chain="approvals"))
+        migrate_test_database(postgres_container, db_url, plans=(("approvals", None, None),))
 
         with engine.connect() as conn:
             row = (
@@ -618,15 +600,12 @@ class TestApprovalsMigration:
         engine.dispose()
 
     def test_model_round_trip_pending_action(self, postgres_container):
-        import asyncio
 
         from sqlalchemy import create_engine, text
 
-        from butlers.migrations import run_migrations
-
         db_name = _unique_db_name()
         db_url = _create_db(postgres_container, db_name)
-        asyncio.run(run_migrations(db_url, chain="approvals"))
+        migrate_test_database(postgres_container, db_url, plans=(("approvals", None, None),))
 
         engine = create_engine(db_url)
         action_id = uuid.uuid4()
@@ -659,15 +638,12 @@ class TestApprovalsMigration:
         assert restored.id == action_id and restored.tool_name == "email_send"
 
     def test_model_round_trip_approval_rule(self, postgres_container):
-        import asyncio
 
         from sqlalchemy import create_engine, text
 
-        from butlers.migrations import run_migrations
-
         db_name = _unique_db_name()
         db_url = _create_db(postgres_container, db_name)
-        asyncio.run(run_migrations(db_url, chain="approvals"))
+        migrate_test_database(postgres_container, db_url, plans=(("approvals", None, None),))
 
         engine = create_engine(db_url)
         rule_id = uuid.uuid4()
@@ -701,15 +677,12 @@ class TestApprovalsMigration:
         assert restored.id == rule_id and restored.max_uses == 10
 
     def test_status_check_constraint(self, postgres_container):
-        import asyncio
 
         from sqlalchemy import create_engine, exc, text
 
-        from butlers.migrations import run_migrations
-
         db_name = _unique_db_name()
         db_url = _create_db(postgres_container, db_name)
-        asyncio.run(run_migrations(db_url, chain="approvals"))
+        migrate_test_database(postgres_container, db_url, plans=(("approvals", None, None),))
 
         engine = create_engine(db_url)
         with pytest.raises(exc.IntegrityError):

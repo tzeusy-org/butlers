@@ -31,7 +31,6 @@
   "canonical-dnd-generation-guard/context-bus/DND Snapshot and Serialized Admission": "5c89913dece1f35c903bed0f7019ddd30331d484fce7ca3044d2dd4e5beb5abf",
   "canonical-dnd-generation-guard/context-bus/Write Permissions": "d11cf8247efe1caa4001ee5277ed07d5d15b07ad94c0c9a2d953db1d6e216c25",
   "canonical-dnd-generation-guard/database-security/DND Guard Least-Privilege Mutation Boundary": "d25c83f0fbb9635ad34219e41aab008f9d10e578139a37497889a45c456490c4",
-  "canonical-dnd-generation-guard/database-security/Public Schema Write Authorization Matrix": "f0a61f03edc9efce073d4325d9b784282993798b6201f2c2b8a47a6e74e10393",
   "chronicler-telemetry-distillation/butler-chronicler/Retention-Window-Aware Projection Adapters": "8f986c538a28579d5cdbfdc15e5f68893f64f5f43bce5af6deed989bb8ed1e72",
   "chronicler-telemetry-distillation/chronicler-telemetry-distillation/Daily Rollup Materialization": "05f73f1f6e2becc19bd62cfbd959610db8b3dcc9541b29db6510520de2b43e64",
   "chronicler-telemetry-distillation/chronicler-telemetry-distillation/Deterministic Anomaly Flags": "b9c7fccccd11cd724bab0f13cf96ca26614452891e1d3bf96635843e293eda00",

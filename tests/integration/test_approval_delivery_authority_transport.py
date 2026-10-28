@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import os
 import shutil
 import socket
 import sys
@@ -24,10 +25,10 @@ from urllib.parse import urlparse
 
 import asyncpg
 import pytest
+import pytest_asyncio
 import uvicorn
 from fastmcp import Client, FastMCP
 
-from alembic import command
 from butlers.config import ButlerType
 from butlers.core.approval_delivery_authority import (
     ApprovalAuthorityTopology,
@@ -41,7 +42,7 @@ from butlers.core_tools._base import ToolContext
 from butlers.core_tools._routing import register_routing_tools
 from butlers.db import register_jsonb_codec
 from butlers.mcp_wrappers import _SpanWrappingMCP, _ToolCallLoggingMCP
-from butlers.migrations import _build_alembic_config
+from butlers.migrations import finalize_authority, get_chain_head, migration_session
 from butlers.modules.approvals.delivery_lifecycle import (
     defer_pending_action,
     transition_pending_action,
@@ -55,7 +56,9 @@ from butlers.modules.approvals.park import park_pending_action
 from butlers.modules.registry import default_registry
 from butlers.testing.migration import (
     _bootstrap_migration_prerequisites,
+    async_serving_test_deployment,
     create_migration_db,
+    migrate_test_database,
     migration_bootstrap_db_url,
     migration_db_name,
 )
@@ -75,79 +78,131 @@ _MESSENGER_URL = "http://localhost:41102/mcp"
 
 
 @pytest.fixture(scope="module")
+def postgres_container():
+    """Own the canonical deployment and partial survivor on one isolated server."""
+    from testcontainers.postgres import PostgresContainer
+
+    from conftest import _configure_postgres_container
+
+    with _configure_postgres_container(
+        PostgresContainer("pgvector/pgvector:pg17"), os.environ
+    ) as container:
+        yield container
+
+
+@pytest.fixture(scope="module")
 def authority_db_url(postgres_container) -> str:
+    """Retain the real three-schema administrative producer independently."""
     name = migration_db_name()
     url = create_migration_db(postgres_container, name)
-    for schema, chains in (
-        ("relationship", ["core", "memory", "relationship", "approvals"]),
-        ("switchboard", ["core", "switchboard"]),
-        ("messenger", ["core", "messenger"]),
-    ):
-        for chain in chains:
-            command.upgrade(
-                _build_alembic_config(url, chains=[chain], target_schema=schema), f"{chain}@head"
-            )
-    # Replay the real privileged bootstrap against disposable capability
-    # state. This must not accidentally widen runtime access to peer schemas.
-    _bootstrap_migration_prerequisites(
-        migration_bootstrap_db_url(postgres_container, name), urlparse(url).username
+    plans = tuple(
+        (chain, schema, None)
+        for schema, chains in (
+            ("relationship", ("core", "memory", "relationship", "approvals")),
+            ("switchboard", ("core", "switchboard")),
+            ("messenger", ("core", "messenger")),
+        )
+        for chain in chains
     )
+    migrate_test_database(postgres_container, url, plans=plans)
+    # Preserve the original real bootstrap replay, then close its privileges
+    # through the actual selected-plan finalizer on a held maintenance session.
+    control = migration_bootstrap_db_url(postgres_container, name)
+    _bootstrap_migration_prerequisites(control, urlparse(url).username)
+    with migration_session(control, source_database="butlers") as connection:
+        finalize_authority(connection, source_database="butlers", plans=plans)
     return url
 
 
-@pytest.fixture
-async def authority_pools(authority_db_url):
+@pytest_asyncio.fixture(scope="module", loop_scope="session")
+async def authority_deployment(postgres_container):
+    async with async_serving_test_deployment(postgres_container) as deployment:
+        yield deployment
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def authority_pools(authority_deployment, postgres_container):
+    deployment = authority_deployment
     pools = {}
-    # Destructive disposable-fixture cleanup belongs to the migration owner.
-    # Bootstrap intentionally grants runtime DML, never TRUNCATE. All source
-    # admission, routing and ledger operations below retain owning SET ROLE.
-    cleanup = await asyncpg.connect(authority_db_url)
-    try:
+    # Retain before the first await. Cancellation and pool diagnostics settle
+    # before the constructor releases its actual database and synthetic logins.
+    control_url = urlparse(migration_bootstrap_db_url(postgres_container, "butlers"))
+    cleanup = asyncpg.create_pool(
+        control_url._replace(scheme="postgresql").geturl(),
+        min_size=1,
+        max_size=1,
+        init=register_jsonb_codec,
+    )
+    deployment.retain(cleanup)
+    await cleanup
+    async with AsyncExitStack() as stack:
+        stack.push_async_callback(cleanup.close)
+        maintenance_identity = await cleanup.fetchrow("SELECT session_user,current_user")
+        assert maintenance_identity["session_user"] == maintenance_identity["current_user"]
+        assert await cleanup.fetchval("SELECT rolsuper FROM pg_roles WHERE rolname=session_user")
+        # Exact incoming4925 cleanup: legacy pending actions are deleted without
+        # CASCADE TRUNCATE of immutable goal evidence.
+        await cleanup.execute(
+            "DELETE FROM relationship.pending_actions WHERE goal_origin = 'legacy'"
+        )
         await cleanup.execute(
             "TRUNCATE relationship.approval_delivery_attempts, "
             "relationship.approval_delivery_cohort_members, "
             "relationship.approval_delivery_presentations, "
             "relationship.approval_delivery_cohorts, "
             "relationship.approval_delivery_intents, relationship.approval_events, "
-            "relationship.pending_actions, switchboard.notifications, "
-            "switchboard.message_inbox, messenger.approval_delivery_handoffs CASCADE"
+            "switchboard.notifications, switchboard.message_inbox, "
+            "messenger.approval_delivery_handoffs CASCADE"
         )
-    finally:
-        await cleanup.close()
-    async with AsyncExitStack() as stack:
         for schema in ("relationship", "switchboard", "messenger"):
-
-            async def setup(connection, *, owning_schema=schema):
-                await connection.execute(f'SET ROLE "butler_{owning_schema}_rw"')
-
-            pool = await asyncpg.create_pool(
-                authority_db_url,
-                min_size=1,
-                max_size=4,
-                init=register_jsonb_codec,
-                setup=setup,
-                server_settings={"search_path": f"{schema},public"},
-            )
-            stack.push_async_callback(pool.close)
+            selected = deployment.runtime_logins[schema]
+            database = deployment.runtime_database(schema, min_size=1, max_size=4)
+            # The real constructor owns this Database even if connect fails.
+            stack.push_async_callback(database.close)
+            await database.connect()
+            pool = database.pool
             pools[schema] = pool
+            identity = await pool.fetchrow("SELECT session_user,current_user,current_database()")
+            assert identity["session_user"] == selected.user
+            assert identity["current_user"] == selected.role == f"butler_{schema}_rw"
+            assert identity["current_database"] == "butlers"
+            assert identity["session_user"] != maintenance_identity["session_user"]
+            assert await pool.fetchval("""
+                SELECT NOT rolsuper AND NOT rolcreaterole AND NOT rolcreatedb
+                  AND NOT rolreplication AND NOT rolbypassrls AND NOT rolinherit AND rolcanlogin
+                FROM pg_roles WHERE rolname=session_user
+            """)
+            assert [
+                row["rolname"]
+                for row in await pool.fetch("""
+                SELECT r.rolname FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.roleid
+                WHERE m.member=(SELECT oid FROM pg_roles WHERE rolname=session_user)
+                ORDER BY r.rolname
+            """)
+            ] == [selected.role]
             assert await pool.fetchval("SELECT current_user") == f"butler_{schema}_rw"
             for peer in ("relationship", "switchboard", "messenger"):
                 if peer != schema:
-                    legacy_relationship_reader = schema == "relationship" and peer == "switchboard"
+                    released_inbox_reader = (
+                        schema in {"relationship", "messenger", "travel"} and peer == "switchboard"
+                    )
                     assert (
                         await pool.fetchval("SELECT has_schema_privilege($1, 'USAGE')", peer)
-                        is legacy_relationship_reader
+                        is released_inbox_reader
                     )
                     peer_table = {
                         "relationship": "pending_actions",
                         "switchboard": "notifications",
                         "messenger": "approval_delivery_handoffs",
                     }[peer]
-                    if legacy_relationship_reader:
-                        # Existing bootstrap deliberately grants Relationship
-                        # generic Switchboard reads for follow-up jobs. It is
-                        # not approval-source authority or a new grant here.
-                        assert await pool.fetchval(f"SELECT count(*) FROM {peer}.{peer_table}") >= 0
+                    if released_inbox_reader:
+                        # REQ-database-security-024 releases only this evidence.
+                        assert (
+                            await pool.fetchval("SELECT count(*) FROM switchboard.message_inbox")
+                            >= 0
+                        )
+                        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                            await pool.fetchval("SELECT count(*) FROM switchboard.notifications")
                         with pytest.raises(asyncpg.InsufficientPrivilegeError):
                             await pool.execute(
                                 "UPDATE switchboard.notifications SET message=message WHERE false"
@@ -159,27 +214,28 @@ async def authority_pools(authority_db_url):
         await source.execute(
             "UPDATE approval_delivery_rollout SET admission_enabled=true, worker_enabled=false"
         )
-        await source.execute(
+        # Synthetic policy/owner preparation never runs as the source actor.
+        await cleanup.execute(
             "UPDATE public.approvals_policy SET quiet_start_hour=NULL, quiet_end_hour=NULL, "
             "timezone='UTC' WHERE id=1"
         )
-        owner = await source.fetchval(
+        owner = await cleanup.fetchval(
             "SELECT id FROM public.entities WHERE 'owner'=ANY(roles) LIMIT 1"
         )
         if owner is None:
-            owner = await source.fetchval(
+            owner = await cleanup.fetchval(
                 "INSERT INTO public.entities(canonical_name,entity_type,roles) "
                 "VALUES ('Synthetic authority owner','person',ARRAY['owner']) RETURNING id"
             )
-        await source.execute(
-            "INSERT INTO entity_facts(subject,predicate,object,object_kind,src) "
+        await cleanup.execute(
+            "INSERT INTO relationship.entity_facts(subject,predicate,object,object_kind,src) "
             "VALUES ($1,'has-handle',$2,'literal','synthetic-approval-authority') "
             "ON CONFLICT DO NOTHING",
             owner,
             f"telegram:{_RECIPIENT}",
         )
-        await source.execute(
-            "INSERT INTO entity_facts(subject,predicate,object,object_kind,src) "
+        await cleanup.execute(
+            "INSERT INTO relationship.entity_facts(subject,predicate,object,object_kind,src) "
             "VALUES ($1,'has-email','synthetic@example.test','literal',"
             "'synthetic-approval-authority') ON CONFLICT DO NOTHING",
             owner,
@@ -864,6 +920,36 @@ asyncio.run(main())
         assert await asyncio.to_thread(lambda: list(sockets.iterdir())) == []
         assert module._approval_recovery_call is None and not module._approval_recovery_verifiers
         assert await source.verify(payload, proof) == {"allowed": False}
+
+
+async def test_partial_authority_producer_retains_real_three_schema_heads(authority_db_url):
+    """Partial administrative scope is preserved, never claimed runtime-admitted."""
+    connection = await asyncpg.connect(authority_db_url)
+    try:
+        assert await connection.fetchval("SELECT current_user=session_user")
+        assert await connection.fetchval("""
+            SELECT current_user=pg_catalog.pg_get_userbyid(datdba)
+            FROM pg_catalog.pg_database WHERE datname=current_database()
+        """)
+        for schema, chains in (
+            ("relationship", ("core", "memory", "relationship", "approvals")),
+            ("switchboard", ("core", "switchboard")),
+            ("messenger", ("core", "messenger")),
+        ):
+            installed = {
+                row["version_num"]
+                for row in await connection.fetch(
+                    f'SELECT version_num FROM "{schema}".alembic_version'
+                )
+            }
+            assert installed == {get_chain_head(chain) for chain in chains}
+            assert await connection.fetchval(
+                "SELECT pg_catalog.to_regclass($1) IS NOT NULL", f"{schema}.state"
+            )
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await connection.execute('SET ROLE "butler_relationship_rw"')
+    finally:
+        await connection.close()
 
 
 async def test_actual_recovery_ledger_never_replays_native_telegram_unknown_receipt(

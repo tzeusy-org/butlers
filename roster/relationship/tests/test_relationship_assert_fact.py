@@ -58,6 +58,7 @@ from roster.relationship.tests.fact_authority_fixtures import (
     replay_fixture,
     synthetic_owner,
 )
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 # ---------------------------------------------------------------------------
 # Test markers

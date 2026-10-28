@@ -15,6 +15,7 @@ from butlers.testing.schema_standins import (
     CONTACT_ENTITY_MAP,
     PENDING_ACTIONS,
 )
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [

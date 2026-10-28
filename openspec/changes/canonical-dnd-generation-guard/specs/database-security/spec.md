@@ -1,199 +1,107 @@
 ## MODIFIED Requirements
 
 ### Requirement: Public Schema Write Authorization Matrix
-Butler runtime roles SHALL retain the migration-managed public-table write
-authorization matrix in the canonical specification. In particular,
-`public.user_context` keeps its existing broad `INSERT, UPDATE` runtime grants
-for ordinary context signals; the application-level context-bus permission
-mapping remains responsible for per-signal authorization outside DND.
 
-`dnd` is the sole exception. A trusted cluster-superuser bootstrap installer and
-finalizer SHALL establish the boundary; an ordinary core migration SHALL only
-catalog-validate that trusted interface or invoke its fixed no-argument
-installer. The ordinary migration SHALL NOT create, own, re-own, repair, or
-adopt the DND table, guard, audit, owner role, policy, gateway, or private
-definer.
+The manifest SHALL enumerate every managed public relation, sequence and function signature, its owner, and each exact role privilege, including column privileges, PUBLIC/default privileges and required RLS. An omitted or future object SHALL confer no runtime, connector or dashboard access. Roster generation SHALL expand identities, never infer object privileges. Every positive row SHALL identify its actual producer, selected pool, permitted verbs and governing contract; unclassified objects SHALL prevent successful finalization. This replaces blanket public grants and the older broad QA accepted-risk posture under the released .6 scope. The active canonical-DND matrix is a predecessor of this same requirement, not a parallel authority to archive later over this successor. Its protected table/guard/audit ownership, enabled and forced RLS, exact invoker/private-definer call chain, current active-role identity, atomic guard/context/audit, replay receipts and snapshot privacy SHALL survive. The ordinary migrator SHALL NOT bypass the canonical writer or directly mutate DND/generation state. The controlled migration installer replaces the bootstrap handoff, not the runtime security boundary. Before any legacy table ownership transition it SHALL validate exact shape, owner and policy/trigger/rule set while holding the required exclusive lock; arbitrary permissive policies, shadow objects or ambiguous pre-guard state SHALL refuse. A protected downgrade SHALL preserve user_context and refuse when durable receipts or advanced generation make restoration unsafe; reapply SHALL never reseed those records. Read policies SHALL keep active DND visible to the existing public readers and not use FOR ALL to hide it.
 
-A planned core downgrade MAY invoke only a separately catalog-proven,
-no-argument bootstrap rollback routine. It SHALL require a trusted superuser,
-an empty durable mutation audit, and a singleton guard at generation `0`; it
-SHALL otherwise fail before destructive DDL. The routine SHALL preserve
-`public.user_context` rows, restore the recorded migration-role ownership and
-ordinary non-DND RLS posture, and re-grant only the fixed installer handoff. It
-SHALL NOT drop/reseed a receipt-bearing or advanced generation boundary.
-
-A managed trusted-superuser down/up MAY then invoke the same catalog-proven
-installer. This does not grant the ordinary migration role finalizer or rollback
-authority.
-
-Before it transfers the existing shared table, the installer SHALL prove the
-complete known `public.user_context` column/key shape, the recorded migration
-role as its owner, and an ordinary disabled-RLS posture; it SHALL reject every
-pre-existing user policy, trigger, or rewrite rule. It SHALL not accept an
-arbitrary permissive RLS policy beside the guarded set, because permissive
-policies compose with OR and could reopen direct DND DML, nor an ambiguous
-pre-guard state that the bounded rollback could not restore.
-It SHALL hold an `ACCESS EXCLUSIVE` lock through this validation and final
-ownership handoff so the former shared-table owner cannot race a policy,
-trigger, or shape change.
-
-The finalized interface SHALL make a dedicated NOLOGIN, non-superuser,
-non-BYPASSRLS owner with no runtime/migration membership the owner of
-`public.user_context`, `public.dnd_generation_guard`,
-`public.dnd_generation_mutations`, the DND policies, and private pinned
-definer. It SHALL both enable and force row-level security on
-`public.user_context` so the existing runtime roles and `connector_writer` can
-directly write only rows whose `signal_type <> 'dnd'`. The policy SHALL reject
-direct DND insert, update, clear, delete, and any update that crosses into or
-out of `dnd`.
-
-The finalizer SHALL revoke `PUBLIC`, ordinary migration-role, and unapproved
-runtime direct DML/DDL/function authority; it SHALL grant no runtime role
-direct guard/audit access or audit read access. A pinned `SECURITY INVOKER`
-gateway SHALL first prove `current_user` is the active General/Switchboard role
-and that it matches the requested writer, then call a private pinned
-`SECURITY DEFINER` operation. The private operation SHALL independently verify
-`current_setting('role', true)` because its `current_user` is the NOLOGIN owner.
-`PUBLIC` receives no execute grant; only `butler_general_rw` and
-`butler_switchboard_rw` receive the minimum gateway grant and the private
-function/schema call-chain grants PostgreSQL requires for an invoker gateway to
-reach its definer. Those private grants do not create a second authority path:
-the private function independently rejects an absent or mismatched active role
-and writer. The private operation alone reads the audit for replay comparison
-and returns its receipt only to the calling canonical writer; snapshot/admission
-readers receive neither audit rows nor semantic fingerprints.
-
-The RLS policies SHALL constrain writes only. All butlers retain the RFC 0009
-public `SELECT` path for active DND state and guarded snapshots; a `FOR ALL`
-policy that hides DND from those readers is not permitted.
-
-The canonical operation SHALL prove the connection's active `SET ROLE` identity
-and require it to match the requested effective writer. It SHALL not trust a
-caller-supplied writer field, `session_user`, or an absent role as authority.
-This DND row-level exception does not add peer-schema grants, a shared DSN, or
-any direct Health/Messenger access to another butler's records.
+ID: REQ-database-security-017
+Source: bu-dss7he.6 owner release 2026-10-20; RFC 0006 proposed authority successor; about/heart-and-soul/security.md
+Scope: v1-mandatory
 
 #### Scenario: Role-enforced authorized non-DND write survives DND hardening
-- **WHEN** a non-owner integration-test session executes `SET ROLE
-  butler_health_rw` and writes an authorized non-DND context signal through the
-  normal context path
-- **THEN** the existing application permission check and the non-DND RLS policy
-  permit the write
-- **AND** the test does not use the migration owner, table owner, superuser, or
-  a privileged setup connection as its runtime proof
+- **WHEN** a non-owner session under butler_health_rw uses its authorized ordinary context path
+- **THEN** the application permission check and non-DND RLS permit that write
+- **AND** a migration owner, table owner or privileged setup session does not count as runtime proof
 
 #### Scenario: Direct DND DML cannot cross the RLS boundary
-- **WHEN** any runtime role or `connector_writer` directly inserts, updates,
-  clears, or deletes a DND row, including an update that changes a non-DND row
-  into DND or DND into non-DND
-- **THEN** the database rejects the statement before it changes a context row,
-  guard generation, or mutation audit
+- **WHEN** a runtime or connector directly inserts, updates, clears, deletes or crosses into or out of DND
+- **THEN** the statement is rejected before context, guard generation or audit changes
 
 #### Scenario: Canonical DND writer has narrow execution authority
-- **WHEN** `butler_general_rw` or `butler_switchboard_rw` invokes the canonical
-  DND operation under its verified active role with valid correlation
-- **THEN** the operation may use its dedicated DND policy owner to make the
-  atomic guard/context/audit change
-- **AND** Health, Messenger, connectors, and all other roles cannot invoke that
-  operation or write DND directly
+- **WHEN** verified General or Switchboard invokes the canonical gateway with valid correlation
+- **THEN** the gateway and private operation independently enforce the active role and requested writer before the atomic change
+- **AND** only the minimum invoker-to-definer schema/function call grants exist; other roles and absent role cannot invoke it
+- **AND** audit replay receipts remain private to the calling canonical writer, not snapshot/admission readers
 
 #### Scenario: Trusted bootstrap is the sole authority installer
-- **WHEN** an ordinary core migration encounters an absent DND interface or a
-  pre-existing interface with untrusted owner, ACL, policy, search path, or
-  function-security catalog state
-- **THEN** it only invokes a catalog-proven trusted bootstrap installer for the
-  absent case and otherwise fails closed
-- **AND** it never creates, adopts, re-owns, repairs, or grants authority to the
-  observed DND objects
+- **WHEN** the predecessor bootstrap-only installation is replaced under this authority rebuild
+- **THEN** only the reviewed controlled migrator installer may converge the catalog after explicit owner-provisioned ownership prerequisites
+- **AND** serving startup cannot create, adopt, re-own or repair an absent or untrusted interface and an ambiguous predecessor shape fails closed
 
 #### Scenario: Privileged pre-consumer rollback is bounded
-- **WHEN** a trusted-superuser core downgrade finds an empty mutation audit and
-  guard generation `0`
-- **THEN** it invokes only the catalog-proven bootstrap rollback routine, which
-  preserves `public.user_context` rows and restores the pre-guard handoff
-- **AND** any durable receipt or nonzero generation fails before it removes the
-  DND authority objects
+- **WHEN** an authorized disposable transition requests rollback before any canonical mutation
+- **THEN** actual empty mutation audit and generation zero are proven before the reviewed bounded rollback can preserve rows and restore its declared prior authority profile
+- **AND** any receipt or advanced generation refuses before destructive or autocommit work; a newer code rollback never silently reopens broad runtime ownership
 
 #### Scenario: Real PostgreSQL catalog proof establishes the final boundary
-- **WHEN** the authorized role/catalog integration suite runs against actual
-  PostgreSQL after the trusted installer/finalizer
-- **THEN** it proves the NOLOGIN ownership, `ENABLE` plus `FORCE RLS`, exact
-  policy predicates, pinned invoker/definer attributes, and revocation of
-  `PUBLIC`, migration-role, direct, and cross-role DND authority
-- **AND** static source inspection alone is not accepted as that proof
+- **WHEN** the genuine migrated runtime-role suite exercises the final interface
+- **THEN** it proves purpose NOLOGIN ownership, ENABLE plus FORCE RLS, exact predicates, pinned invoker/definer catalogs, and revoked direct/cross-role authority
+- **AND** independent committed readback and actual rejection controls are required in addition to source inspection
 
 #### Scenario: Core infrastructure table writes
-- **WHEN** a butler operates under SET ROLE enforcement
-- **THEN** it can write to these core infrastructure public tables:
-  - `public.ingestion_events` — INSERT, UPDATE, DELETE (ingestion pipeline, owntracks retention)
-  - `public.user_context` — INSERT, UPDATE (context bus, RFC 0009)
-  - `public.model_round_robin_counters` — INSERT, UPDATE (model routing)
-  - `public.token_usage_ledger` — INSERT (token tracking)
+- **WHEN** a registered infrastructure producer uses its verified role
+- **THEN** only its explicit manifest operations succeed: Switchboard/connector ingestion paths retain ingestion_events operations, model producers retain model_round_robin_counters INSERT/UPDATE and token_usage_ledger INSERT
+- **AND** ordinary user_context SELECT/non-DND INSERT/UPDATE remain available to the existing runtime and connector roles, while the separate DND fence forbids direct DND or DND-crossing writes
 
 #### Scenario: Identity and contacts table writes
-- **WHEN** a butler operates under SET ROLE enforcement
-- **THEN** it can write to these identity public tables:
-  - `public.entities` — INSERT, UPDATE, DELETE (identity module, bootstrap)
-  - `public.contacts` — INSERT, UPDATE (contacts module)
-  - `public.contact_info` — INSERT, UPDATE, DELETE (contacts, relationship)
-  - `public.entity_info` — INSERT, UPDATE, DELETE (credentials, entity management)
+- **WHEN** an actual identity or credential producer writes shared identity state
+- **THEN** entities and entity_info receive only the source-proven producer operations recorded in the manifest
+- **AND** dropped contacts/contact_info tables receive no ghost privileges; their current owning-domain successors keep their existing access, not a newly shared table
 
 #### Scenario: External account registry table writes
-- **WHEN** a butler operates under SET ROLE enforcement
-- **THEN** it can write to these account registry public tables:
-  - `public.google_accounts` — INSERT, UPDATE (Google OAuth registry)
-  - `public.steam_accounts` — INSERT, UPDATE, DELETE (Steam account registry)
+- **WHEN** an existing Google or Steam registry producer uses its selected pool
+- **THEN** only its explicitly recorded account-table operations succeed
+- **AND** credentials remain DB-authority bound; the manifest grants no new identity, account or secret-resolution authority
 
 #### Scenario: QA and healing table writes
-- **WHEN** a butler operates under SET ROLE enforcement
-- **THEN** it can write to these QA public tables:
-  - `public.healing_attempts` — INSERT, UPDATE
-  - `public.qa_dismissals` — INSERT, UPDATE, DELETE
-  - `public.qa_findings` — INSERT, UPDATE
-  - `public.qa_repo_config` — UPDATE
-  - `public.qa_patrols` — INSERT, UPDATE
+- **WHEN** QA or the dashboard records QA state or an existing still-delivered healing producer writes history
+- **THEN** qa_patrols, qa_findings, qa_dismissals and qa_repo_config writes are limited to QA and the actual authenticated dashboard operations
+- **AND** qa_allowed_repositories and breaker_resets remain dashboard-controlled; retired Retry/healing execution is not recreated and retained history readers keep their explicit reads
 
 #### Scenario: qa_patrols write access is an accepted trust boundary
-- **WHEN** the runtime-role grants on `public.qa_patrols` are reviewed
-- **THEN** every runtime role retaining INSERT and UPDATE (and the broad public baseline leaving DELETE effectively open) is an explicitly accepted risk, not a defect
-- **AND** the accepted risk is that a compromised or defective runtime role could insert a qualifying row that masks or resolves the paging QA-patrol-overdue condition, forge a recorded handoff mode, or delete patrol rows
-- **AND** narrowing the access (bootstrap ACL finalizer or forced RLS) requires a separate change, because a migration `REVOKE` alone does not persist against `scripts/init-db.sql` re-grants
+- **WHEN** the predecessor broad qa_patrols trust boundary is replaced by this authority model
+- **THEN** only butler_qa_rw and the authenticated dashboard synthetic-patrol path may INSERT/UPDATE; no runtime or dashboard role may DELETE patrol history
+- **AND** the old accepted risk is an explicit normative successor, not an assertion that broad grants were already safe or that a standalone migration REVOKE persists across bootstrap
 
 #### Scenario: Memory and domain table writes
-- **WHEN** a butler operates under SET ROLE enforcement
-- **THEN** it can write to these domain public tables:
-  - `public.memory_catalog` — INSERT, UPDATE (memory module)
-  - `public.facts` — INSERT, UPDATE (finance anomaly detection, ON CONFLICT DO UPDATE)
+- **WHEN** a memory or domain producer accesses shared data
+- **THEN** memory_catalog has only its actual module producer operations
+- **AND** the nonexistent public.facts entry is retired without moving domain facts into public or losing the actual Finance anomaly producer
 
 #### Scenario: Insight pipeline table writes
-- **WHEN** a butler operates under SET ROLE enforcement
-- **THEN** it can write to these insight public tables:
-  - `public.insight_candidates` — INSERT, UPDATE, DELETE (insight broker)
-  - `public.insight_cooldowns` — INSERT, DELETE (cooldown tracking)
-  - `public.insight_engagement` — INSERT, UPDATE, DELETE (engagement tracking)
-  - `public.insight_settings` — INSERT, UPDATE (delivery settings)
+- **WHEN** the current owning Insight producer or retention job operates
+- **THEN** the manifest uses the actual current schema-qualified Insight tables and exact owning role, verbs and retention conditions
+- **AND** old public names do not authorize another domain or bypass the existing currentness, owner, eligibility or feedback RLS rules
 
 #### Scenario: Expected-signal producer-owned writes
-
-- **WHEN** a butler operates under SET ROLE enforcement
-- **THEN** it can SELECT from `public.expected_signals`
-- **AND** it can INSERT or UPDATE only rows whose `producer_role` equals its active runtime role
-- **AND** forced row-level security prevents one runtime role from replacing another role's signal key
+- **WHEN** a verified producer accesses public.expected_signals
+- **THEN** its declared SELECT remains available and INSERT/UPDATE can affect only rows whose producer_role equals its active role
+- **AND** forced RLS still prevents replacing another producer signal key
 
 #### Scenario: Dispatch attempt provenance table writes
-- **WHEN** a butler operates under SET ROLE enforcement
-- **THEN** it can write to the dispatch attempt provenance table:
-  - `public.model_dispatch_attempts` — SELECT, INSERT (failover provenance, core_104 migration)
+- **WHEN** a model dispatch producer records provenance
+- **THEN** model_dispatch_attempts allows the existing SELECT/INSERT and token_usage_ledger remains append-only
+- **AND** unlisted UPDATE/DELETE and history rewriting are denied
 
 #### Scenario: Read-only public tables
-- **WHEN** a butler operates under SET ROLE enforcement
-- **THEN** it can only SELECT (not INSERT, UPDATE, or DELETE) from public tables not in the write authorization matrix
-- **AND** this includes `public.model_catalog`, `public.token_limits`, and any future public tables that do not have explicit write grants
+- **WHEN** a role accesses a public object outside its positive manifest rows
+- **THEN** SELECT and DML are both denied unless that exact operation has a positive row
+- **AND** model_catalog and token_limits keep source-proven runtime reads with dashboard-controlled changes; a new public table gets no automatic SELECT
 
 #### Scenario: Adding new public tables to the matrix
-- **WHEN** a new public table is created by a migration and butlers need to write to it
-- **THEN** a subsequent core migration SHALL add targeted GRANT statements for that table to all butler runtime roles
-- **AND** the write authorization matrix in this spec SHALL be updated
+- **WHEN** a migration adds or changes a public object used by a serving consumer
+- **THEN** the same change supplies its complete exact manifest row, producer provenance and role-level success/refusal controls
+- **AND** neither all-role GRANT generation nor a future-object default grant substitutes for that row
+
+#### Scenario: Audit and evidence are append-only
+- **WHEN** an actual audit, attention, domain-event or dispatch producer records evidence
+- **THEN** only its declared INSERT/read or canonical definer interface is usable; existing immutable ledger and RLS fences continue to apply
+- **AND** actual retention deletion is a separate explicit owning row, never permission inferred from an append caller
+
+#### Scenario: Formerly insufficient inventory rows are resolved
+- **WHEN** the finalizer encounters entity_info, account registries, spend_rules, secret_probe_log, butler_secrets, model_catalog, deployments, domain-event/subscription state, conversation turns, conditions, state, provider catalogue, Insight retention or historical backup objects
+- **THEN** each existing object has an explicit current producer/pool and operation classification before serving admission
+- **AND** per-schema state is distinguished from public.state, actual dropped backups are recorded absent, and a dated audit hypothesis or broad fallback cannot mint a grant
 ### Requirement: Fail-Closed Runtime Role Policy
 
 Butler runtime pools SHALL establish their designated role before serving queries in every environment. Missing or unverifiable roles, inability to assume the role, and missing role configuration for a butler schema SHALL fail startup or the affected connection acquire. No development setting SHALL permit shared-user runtime continuation. Every acquire SHALL re-establish the designated role, including after connection reset or revoked membership. Partial resources owned by a failed connect SHALL be closed without returning a usable connection. Diagnostics SHALL omit DSNs, credentials and private driver payloads while preserving the causal exception for internal diagnosis. This SHALL NOT alter connector pools, dashboard DatabaseManager, managed bootstrap, migration provisioning or grants. Independent DND RLS/ACL, singleton and database-time admission checks SHALL remain required; verified runtime role establishment alone SHALL NOT authorize a DND mutation or durable admission.

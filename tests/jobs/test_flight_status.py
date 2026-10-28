@@ -27,6 +27,7 @@ from butlers.jobs.flight_status import (
     parse_flight_status,
     run_flight_status_check,
 )
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = pytest.mark.unit
 

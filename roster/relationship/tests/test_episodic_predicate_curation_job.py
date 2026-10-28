@@ -41,6 +41,7 @@ from butlers.jobs._roster.relationship_jobs import (  # type: ignore[import]
     run_episodic_predicate_curation,
 )
 from butlers.testing.schema_standins import PENDING_ACTIONS
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 # ---------------------------------------------------------------------------
 # Skip if Docker unavailable

@@ -133,6 +133,10 @@ $fn$;
 
 
 def upgrade() -> None:
+    from butlers.db_authority.interfaces import owner_lookup_revision_reuse
+
+    if owner_lookup_revision_reuse(op.get_bind(), revision):
+        return
     op.execute(_AMBIGUITY_SAFE_FUNCTION)
 
 

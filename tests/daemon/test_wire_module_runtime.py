@@ -122,7 +122,9 @@ def _patch_infra():
 
     return {
         "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
+        "run_migrations": patch(
+            "butlers.lifecycle.require_installed_chain", new_callable=AsyncMock
+        ),
         "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
         "validate_module_credentials": patch(
             "butlers.lifecycle.validate_module_credentials_async",
@@ -376,6 +378,8 @@ async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> No
         await daemon.start()
         db_factory.assert_called()
         migrations.assert_awaited()
+        migrations.assert_any_await(patches["mock_pool"], chain="core", schema="test_butler")
+        patches["mock_db"].provision.assert_not_awaited()
         assert omitted_constructions == []
 
     stub_mod = next(m for m in daemon._modules if m.name == "stub_capture_name")

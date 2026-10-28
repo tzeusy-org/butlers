@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import uuid
 from pathlib import Path
@@ -13,8 +12,14 @@ import pytest
 from sqlalchemy import create_engine
 
 from alembic import command
-from butlers.migrations import _build_alembic_config, run_migrations
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.migrations import _build_alembic_config
+from butlers.testing.migration import (
+    create_migration_db,
+    migration_db_name,
+    run_test_alembic_command,
+    stage_test_migration_history,
+)
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = pytest.mark.integration
 
@@ -157,14 +162,20 @@ def test_core_247_shared_columns_drop_only_after_last_schema_and_reupgrade(
     postgres_container,
 ) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(db_url, chain="core", schema="general"))
-    asyncio.run(run_migrations(db_url, chain="core", schema="switchboard"))
+    # Historical shared-DDL round trip stays before the core_282 cutover;
+    # all original downgrade targets, seeds and observers remain real.
+    stage_test_migration_history(
+        postgres_container, db_url, plans=(("core", "general", "core_280"),)
+    )
+    stage_test_migration_history(
+        postgres_container, db_url, plans=(("core", "switchboard", "core_280"),)
+    )
     general = _build_alembic_config(db_url, chains=["core"], target_schema="general")
     switchboard = _build_alembic_config(db_url, chains=["core"], target_schema="switchboard")
     conversation_id = uuid.uuid4()
     message_id = uuid.uuid4()
 
-    command.downgrade(general, "core_246")
+    run_test_alembic_command(postgres_container, command.downgrade, general, "core_246")
     engine = create_engine(db_url)
     try:
         with engine.begin() as connection:
@@ -198,7 +209,7 @@ def test_core_247_shared_columns_drop_only_after_last_schema_and_reupgrade(
     finally:
         engine.dispose()
 
-    command.downgrade(switchboard, "core_246")
+    run_test_alembic_command(postgres_container, command.downgrade, switchboard, "core_246")
     engine = create_engine(db_url)
     try:
         with engine.connect() as connection:
@@ -215,7 +226,7 @@ def test_core_247_shared_columns_drop_only_after_last_schema_and_reupgrade(
     finally:
         engine.dispose()
 
-    command.upgrade(general, "core@head")
+    run_test_alembic_command(postgres_container, command.upgrade, general, "core_280")
     engine = create_engine(db_url)
     try:
         with engine.connect() as connection:
@@ -229,4 +240,4 @@ def test_core_247_shared_columns_drop_only_after_last_schema_and_reupgrade(
     finally:
         engine.dispose()
 
-    command.upgrade(switchboard, "core@head")
+    run_test_alembic_command(postgres_container, command.upgrade, switchboard, "core_280")

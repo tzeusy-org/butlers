@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from butlers.modules.memory import search as catalog_search
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 # ---------------------------------------------------------------------------
 # Unit tests — no DB required

@@ -61,14 +61,17 @@
 x-postgres-env: &postgres-env
   POSTGRES_HOST: ${POSTGRES_HOST:?Set POSTGRES_HOST in .env.dev or .env.prod}
   POSTGRES_PORT: ${POSTGRES_PORT:-5432}
-  POSTGRES_USER: ${POSTGRES_USER:-butlers}
-  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.dev or .env.prod}
+  POSTGRES_USER: ${RUNTIME_DB_USER:?Set RUNTIME_DB_USER}
+  POSTGRES_PASSWORD: ${RUNTIME_DB_PASSWORD:?Set RUNTIME_DB_PASSWORD}
   POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-}
+  BUTLERS_CREDENTIAL_DATABASE_URL: ${BUTLERS_CREDENTIAL_DATABASE_URL:?Set the credential-purpose DSN}
   BUTLERS_DB_POOL_MIN_SIZE: ${BUTLERS_DB_POOL_MIN_SIZE:-0}
   BUTLERS_DB_POOL_MAX_SIZE: ${BUTLERS_DB_POOL_MAX_SIZE:-4}
 
 x-connector-env: &connector-env
   <<: *postgres-env
+  POSTGRES_USER: ${CONNECTOR_DB_USER:?Set CONNECTOR_DB_USER}
+  POSTGRES_PASSWORD: ${CONNECTOR_DB_PASSWORD:?Set CONNECTOR_DB_PASSWORD}
   SWITCHBOARD_MCP_URL: http://${BUTLERS_SWITCHBOARD_SERVICE:-butlers-up}:41100/sse
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
 
@@ -124,7 +127,7 @@ services:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
     command: ["db", "migrate"]
     environment:
-      <<: *postgres-env
+      BUTLERS_MIGRATOR_DATABASE_URL: ${BUTLERS_MIGRATOR_DATABASE_URL:?Set the migration-only DSN}
     volumes:
       - ./roster:/app/roster:ro
     networks: [db]
@@ -206,6 +209,9 @@ services:
         exec crond -f -d 8
     environment:
       <<: *postgres-env
+      POSTGRES_USER: ${BACKUP_DB_USER:?Set BACKUP_DB_USER}
+      POSTGRES_PASSWORD: ${BACKUP_DB_PASSWORD:?Set BACKUP_DB_PASSWORD}
+      BUTLERS_CREDENTIAL_DATABASE_URL: ""
       POSTGRES_DB: ${POSTGRES_DB:-butlers}
       BACKUP_DIR: /backups
       BACKUP_RETAIN_DAYS: ${BACKUP_RETAIN_DAYS:-14}
@@ -231,6 +237,8 @@ services:
     command: ["dashboard", "--host", "0.0.0.0", "--port", "41200"]
     environment:
       <<: *postgres-env
+      POSTGRES_USER: ${DASHBOARD_DB_USER:?Set DASHBOARD_DB_USER}
+      POSTGRES_PASSWORD: ${DASHBOARD_DB_PASSWORD:?Set DASHBOARD_DB_PASSWORD}
       BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-0}
       BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:41200/api/oauth/google/callback}
@@ -603,7 +611,7 @@ services:
     entrypoint: ["uv", "run", "--frozen", "--no-dev", "python", "scripts/oauth_gate.py"]
     command: []
     environment:
-      <<: *postgres-env
+      <<: *connector-env
       POSTGRES_DB: ${POSTGRES_DB:-butlers}
       OAUTH_GATE_TIMEOUT: ${OAUTH_GATE_TIMEOUT:-0}
       OAUTH_POLL_INTERVAL: ${OAUTH_POLL_INTERVAL:-5}
@@ -954,6 +962,8 @@ services:
       - "127.0.0.1:${DASHBOARD_HOST_PORT:-41200}:41200"
     environment:
       <<: *postgres-env
+      POSTGRES_USER: ${DASHBOARD_DB_USER:?Set DASHBOARD_DB_USER}
+      POSTGRES_PASSWORD: ${DASHBOARD_DB_PASSWORD:?Set DASHBOARD_DB_PASSWORD}
       BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-1}
       BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:41200/api/oauth/google/callback}

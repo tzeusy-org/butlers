@@ -20,6 +20,7 @@ import asyncpg
 import pytest
 
 from butlers.api.routers.audit import append
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = pytest.mark.integration
 

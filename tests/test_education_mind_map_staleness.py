@@ -25,7 +25,11 @@ import pytest
 
 from butlers.db import register_jsonb_codec
 from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import (
+    async_migrate_test_database,
+    create_migrated_test_db,
+    migration_db_name,
+)
 from butlers.tools.education.mind_maps import mind_map_abandon_stale
 
 _THIS_FILE = Path(__file__).resolve()
@@ -230,15 +234,15 @@ def legacy_db_url(postgres_container):
     )
 
 
-async def test_lifecycle_migration_orders_backfill_audit_and_durable_guards(legacy_db_url):
+async def test_lifecycle_migration_orders_backfill_audit_and_durable_guards(
+    legacy_db_url, *, postgres_container
+):
     """Actual predecessor chain, ordinary migration login, installer replay and rollback."""
     import importlib.util
 
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
     from sqlalchemy import create_engine
-
-    from butlers.migrations import run_migrations
 
     connection = await asyncpg.connect(legacy_db_url)
     try:
@@ -254,7 +258,9 @@ async def test_lifecycle_migration_orders_backfill_audit_and_durable_guards(lega
         )
     finally:
         await connection.close()
-    await run_migrations(legacy_db_url, chain="education", schema="education")
+    await async_migrate_test_database(
+        postgres_container, legacy_db_url, plans=(("education", "education", None),)
+    )
     path = _THIS_FILE.parents[1] / "roster/education/migrations/006_mind_map_lifecycle.py"
     spec = importlib.util.spec_from_file_location("education_lifecycle_under_test", path)
     revision = importlib.util.module_from_spec(spec)

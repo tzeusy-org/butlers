@@ -1,6 +1,6 @@
 # Runtime Attention
 
-> **Purpose:** Check and repair the runtime-attention paging path and the bootstrap-owned stored
+> **Purpose:** Check and repair the runtime-attention paging path and its purpose-owned stored
 > functions it depends on.
 > **Audience:** Operators.
 > **Prerequisites:** [Model Routing](../runtime/model-routing.md) (breakers, dispatch attempts).
@@ -10,9 +10,11 @@
 A model breaker opening, or the first fleet-halt denial in a UTC month, creates one durable
 *episode* in `public.runtime_attention_outbox`, committed in the same transaction as the
 `public.model_dispatch_attempts` row that caused it. A delivery service leases and sends pending
-episodes. Producers, the outbox, and the delivery lease are database-global objects that the
-privileged bootstrap (`scripts/init-db.sql`) installs and owns, not Alembic. The ordinary migration
-role cannot rewrite them.
+episodes. Producers, the outbox, and the delivery lease are database-global
+objects owned by the isolated `runtime_attention_outbox_owner` purpose. The
+explicit held migrator installs/converges the exact source definitions; neither
+serving startup nor the ordinary migration owner can rewrite protected state.
+Bootstrap prepares the declared roles/extensions only. It is not a paging API.
 
 The independent fleet and QA-patrol controller is a third producer (`core_251`). See
 [Fleet and QA condition attention](#fleet-and-qa-condition-attention).
@@ -47,9 +49,11 @@ for each active `control_plane_fleet` or `qa_patrol_assurance`/`patrol_overdue` 
   delivery state mirrors every lifecycle transition, including one after the condition resolved:
   an owner-run AFTER UPDATE trigger (`runtime_attention_condition_marker_sync_trigger`, definer
   `public.runtime_attention_sync_condition_marker()`, pinned to `pg_catalog, pg_temp`) updates it
-  in the worker's own transaction. The worker role gains no marker privilege. The bootstrap-only
-  `public.runtime_attention_deactivate_condition_marker_v5()` removes the trigger and keeps every
-  marker, and `init-db.sql` reruns restore the trigger while it is installed.
+  in the worker's own transaction. The worker role gains no marker privilege.
+  The explicit source-owned `attention-transition` marker operation removes or
+  reinstalls only that exact trigger/callable, preserves every marker and
+  backfills retained marker delivery state from actual matching outbox rows.
+  The retired v5 administrative function is not a supported caller.
 - **A restore may re-page once.** The standard backup excludes both
   `public.runtime_attention_condition_episodes` and `public.runtime_attention_outbox`
   (owner decision `bu-43lod8`, option A). After a valid restore that loses both, once the
@@ -65,7 +69,8 @@ for each active `control_plane_fleet` or `qa_patrol_assurance`/`patrol_overdue` 
   still applies; a restore does not confer bootstrap authority.
 - **Owner status.** `GET /api/system/conditions` attaches `attention` to each fleet and overdue-QA
   row. It reads the content-blind `public.observe_runtime_attention_conditions()` projection,
-  which is granted to the migration and dashboard login only and refuses `SET ROLE`. `status` is
+  which requires the fixed active `dashboard_api` purpose. A normal migration
+  login, role-none caller or runtime capability cannot substitute. `status` is
   one of:
 
   | `status` | Meaning |
@@ -82,7 +87,7 @@ for each active `control_plane_fleet` or `qa_patrol_assurance`/`patrol_overdue` 
 
   `not_raised` and `within_grace` are derived by the API for rows with no marker, not stored. The
   bound mirrors the producer's five-minute grace (`CONDITION_ATTENTION_GRACE`, pinned to
-  `scripts/init-db.sql` by a test) plus half the registry TTL for one controller pass. A row
+  the current source function by a test) plus half the registry TTL for one controller pass. A row
   resolved inside that bound gets no attention line; one resolved after it keeps `not_raised`.
   The allowance assumes the default 300 s registry TTL (150 s); if an operator raises the TTL it
   must track min(live TTL) / 2, and no extra margin is added.
@@ -104,98 +109,60 @@ FROM public.observe_runtime_attention_conditions();
 
 A `Fleet condition controller: attention append failed (category=...)` warning names only the
 exception type. `UndefinedFunction` means the database has not reached `core_251`.
-`InsufficientPrivilegeError` means the Dashboard pool cannot `SET ROLE butler_switchboard_rw`.
+`InsufficientPrivilegeError` requires checking the actual selected purpose:
+condition append uses Switchboard's fixed producer, while observation uses the
+dashboard capability. It never authorizes a shared migration credential.
 ## Definer search path
 
-Every runtime-attention `SECURITY DEFINER` function runs with
-`search_path = pg_catalog, pg_temp`, and its body schema-qualifies each relation. The migration
-login can `CREATE` in `public`. With `public` on a definer's path, it could plant a better-matching
-overload, such as `public.hashtextextended(text, integer)` for a bare `0` seed, and run that
-overload as `runtime_attention_outbox_owner`. `runtime_attention_admin.finalize_interface()`
-re-applies the pin on every init-db rerun. That rerun also pins the v3 operator functions. A
-database bootstrapped before this rule keeps `public` on the path until the bootstrap runs again
-(see [Repair drift](#repair-drift)). A new definer must use the same path.
+Every runtime-attention `SECURITY DEFINER` function runs with exactly `search_path = pg_catalog, pg_temp`, and schema-qualifies relations and non-catalog calls. Fixed purpose ownership and exact EXECUTE ACLs are part of the same source catalog contract. The explicit controlled migrator installs and verifies current bodies; startup, diagnostics and `scripts/init-db.sql` do not run a retired administrative finalizer.
 
 ## Check
 
 - **Recorder health.** `runtime_attention_recorder_total{outcome,edge}` reports recorder results.
   `outcome=persisted` together with `edge=model_breaker_unauthorized` or `edge=fleet_halt_unauthorized`
   means the attempt row committed but the producer refused the call (SQLSTATE `42501`). The pool
-  holds no canonical `butler_*_rw` `SET ROLE`. That is expected on a non-hardened stack, and a
-  misconfiguration wherever role enforcement should be active.
-- **Stored-function drift.** `GET /api/system/stored-functions` compares every function defined in
-  the bootstrap source against `pg_proc.prosrc`. The same check logs one WARNING per drifted
-  function at dashboard-api startup (`src/butlers/core/stored_function_drift.py`). `drifted` means
-  the deployed body differs from the committed one, ignoring whitespace. `not_deployed` means the
-  bootstrap installer has not run yet. The source defaults to `scripts/init-db.sql`; set
-  `STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH` when it is mounted elsewhere. The check only reports.
-  It never converges anything.
-- **Definer search path.** The body comparison cannot see `proconfig`, so the same endpoint also
-  lists `unpinned_definers`: every `SECURITY DEFINER` function in the database, from any subsystem,
-  whose `search_path` is not exactly `pg_catalog, pg_temp`. Other settings such as
-  `row_security=on` are ignored. Each entry carries the signature, owner, deployed path and remedy.
-  Dashboard-api startup logs one line (`src/butlers/core/definer_search_path.py`):
-  - `Definer search path: N of M SECURITY DEFINER functions are not pinned` (WARNING).
-  - `Definer search-path check unavailable` (WARNING) when the catalog read failed. The endpoint
-    then sets `definer_check_available: false`. That is not a clean result.
-  - `all M ... are pinned` (INFO).
+  holds no canonical `butler_*_rw` `SET ROLE`. This is an admission/configuration
+  fault; there is no development continuation under a shared owner.
+- **Database-authority catalog.** `GET /api/system/stored-functions` reports the current source-derived authority comparison. `conforming` requires the complete expected overload population, exact body digests/settings/owners/EXECUTE and object catalog; `missing`, `mismatch`, `unavailable` and `unknown` cannot establish serving admission. The endpoint is read-only and emits closed identities/categories/digests, not stored bodies, row contents or driver errors. There is no bootstrap-file parser, source-path environment override or accepted historical body alternative.
+- **Definer search path.** The endpoint also reports application definers whose path is not exactly `pg_catalog, pg_temp`. An unavailable catalog read is not an all-clear. `controlled_migrator` identifies the source-owned repair route; it does not infer authority from the dashboard's connecting login. Run the complete explicit migration/finalization procedure under its separately provisioned maintenance profile, then independently read back the catalog before serving. Do not use ad hoc ALTERs or caller grants to mask a mismatch.
+- **Retained audit history.** The legacy debounce planter/trigger is retired;
+  current validated producers do not create new legacy marker rows. Existing
+  `runtime_attention_legacy_debounce_marker` and
+  `runtime_attention_cutover_fence` vocabularies remain unchanged. Historical
+  queries must still recognize both, including the original UTC `YYYY-MM`
+  ceiling note. Removing the planter does not authorize rewriting that history.
 
-  The System page Stored Functions tile shows the same list. The remedy depends on the owner:
-  - Owned by the migration login (`remedy: migrations`): run migrations to head.
-  - Owned by any other role (`remedy: init_db`), such as a fenced NOLOGIN owner: follow
-    [Repair drift](#repair-drift).
+## Repair catalog mismatch
 
-  The remedy is an operator hint, not an authority. It compares the definer owner to the
-  dashboard pool's connecting login (`session_user`), which is the shared migration/runtime login
-  from `scripts/init-db.sql`. If a deployment gives the dashboard a distinct login, migration-owned
-  definers show `remedy: init_db`, which is the wrong hint for them. `scripts/init-db.sql`
-  re-declares only the definers it owns (restore drill executor, DND generation, runtime
-  attention). Migration-owned definers are pinned only by migrations, so the real remedy is still
-  to run migrations to head as the migration login. Check the definer's actual owner
-  (`owner` in the entry) before acting on `remedy`.
-
-  If an entry persists after its remedy, someone changed the path by hand. Pin it with
-  `ALTER FUNCTION ... SET search_path = pg_catalog, pg_temp` as the owner or a superuser.
-- **Audit markers.** `public.runtime_attention_plant_legacy_debounce_marker()` plants
-  `public.audit_log` rows for runtimes that lack the current recorder ABI marker. Rows carry actor
-  `runtime_attention_legacy_debounce_marker`, and older rows carry `runtime_attention_cutover_fence`.
-  Both vocabularies persist, so any query that filters on actor must accept both. The ceiling
-  branch's note is the UTC month as `YYYY-MM`. Do not reformat it.
-
-## Repair drift
-
-Re-run the bootstrap as a cluster superuser:
-
-```bash
-psql -h <host> -U postgres -d butlers -f scripts/init-db.sql
-```
-
-`runtime_attention_admin.finalize_interface()` runs on every rerun and re-adopts the bodies defined
-in `runtime_attention_admin.install_legacy_debounce_marker()`. An Alembic deploy does not do this,
-so a database keeps its old bodies until someone runs the bootstrap again.
+Stop dependent serving admission, identify the closed mismatch category and verify the exact code/source and operator prerequisites. Use the explicit `butlers db migrate` action with the selected maintenance credential reference; it retains one session across declared chains, final-state installation, ACL convergence and verification. Never copy a secret into a command or diagnostic. A failed apply, commit or physical release is incomplete. Independently verify exact catalog and native serving-profile behavior before restarting traffic. See [the cutover procedure](../identity_and_secrets/database-authority-cutover.md).
 
 ## Stop paging
 
-Downgrade `core_199` alone. It must run as a cluster superuser, because it calls
-`runtime_attention_admin.deactivate_producers_v2()`. The downgrade clears `producers_enabled`, so
-episode production stops. The outbox, the delivery lease, attempt rows,
-`public.runtime_attention_producer_control`, and the marker trigger all stay in place. Repair from
-there is forward remediation only.
+Application shutdown stops new local producer/worker work and joins its owned transactions and physical release before dependent pools close. It does not erase durable outbox, claim, lease, attempt, marker, cancellation or unknown-once evidence. A process stop alone cannot certify every other producer is stopped.
 
-Supported rollback of the `core_251` condition-attention producer rolls back the database revision
-and application code together (owner decision `bu-6gdfxt`, option A). An ordinary migration-login
-downgrade never refuses: it only restamps and logs a warning, leaving the installed producer and
-its enabled flag in place. Code from before `core_251` does not call that producer, but newer code
-that remains deployed can still append and page. A DB-only partial rollback is not a stop-paging
-guarantee.
+An ordinary schema downgrade is not the operator stop/reverse interface. Protected installed boundaries refuse crossing before later autocommit effects; a core_282 reverse requires the explicit captured preserving procedure. R0/R1 separately prove the pinned predecessor initializer, exact revision vector, source-bound trigger transition, retained rows/receipts and old-profile grants before an operator restores the captured code/chart/secret reference. Do not run retired `runtime_attention_admin` deactivation functions or delete marker/history rows to make a downgrade pass. A database-only restamp is not a stop-paging guarantee. This branch's source/software checks do not establish an executed live rollback or authorize an operator action.
 
-To stop condition paging alone, downgrade `core_251` as a cluster superuser. It calls
-`public.runtime_attention_deactivate_condition_v4()`, which clears
-`runtime_attention_condition_control.producer_enabled`. Clearing the flag while newer code stays
-deployed remains a bootstrap-superuser operation. Emitted episodes, their markers, and their
-delivery truth all stay. Re-enabling with an `UPDATE` as bootstrap pages only conditions that have no
-marker, so an active condition whose marker remains is never re-armed.
+## Database-authority source and deployment boundary
 
-Downgrading below `core_198` is not supported on any database that has reached `core_199`. The
-`core_198` downgrade fails with `core_198 downgrade requires trusted bootstrap rollback interface`
-because the retained objects are present, and nothing restores the pre-outbox schema.
+The explicit `butlers db attention-transition` command accepts a fixed
+`--component` (`producers`, `reissue`, `conditions` or `marker`) and `--state`
+(`enabled` or `disabled`). It selects only `BUTLERS_BOOTSTRAP_DATABASE_URL`,
+requires the existing maintenance prerequisite, held migration lock and proven
+serving quiescence, then validates the complete current source/function/owner/
+ACL/relation shape before effects. Each change is atomic and retains episodes,
+attempts, claims, leases and history. Producer reenable starts a new activation
+cutoff without replaying preactivation failures; reissue reenable retains the
+one-successor and unknown-once fences. Marker disable/reinstall previews the
+exact full shape in a rolled-back savepoint and does not exempt arbitrary
+missing triggers or policies. A partial/poisoned catalog refuses. In disposable
+proof, an enumerated fixture-owned poison may be undone only by its exact
+inverse before the real finalizer and all original positive operations run.
+This does not create a generic production policy-repair API. Success is reported
+only after commit and physical session release. Real PostgreSQL transition,
+backfill and concurrency proof remains required before use.
+
+This branch moves the bootstrap-owned attention installer into controlled final-state migrations; genuine migrated-role and preserving-rollback proof remains required before delivery. It does not activate a new attention delivery path or change the current producer/worker protocol. See [the cutover procedure](../identity_and_secrets/database-authority-cutover.md).
+
+The model-breaker, fleet-halt, operator and condition episode/marker interfaces retain fixed server-derived inputs, exact purpose ownership/EXECUTE/search_path, append-only evidence, idempotent outbox representation and independent database-time/currentness fences. Existing Switchboard lifecycle/claim columns and delivery lease, at-most-once attempt/unknown outcome, owner stop, cancel and ACK behavior remain exact. Removing v2-v5/interface_version/legacy-debounce branches cannot remove these outcomes or authorize raw producer DML. No historical incident backfill or second transport is introduced.
+
+The dashboard observer uses its constrained dashboard pool and exact reserve/record functions. Removing DashboardProbeRoleView and ambient role-none acceptance must retain actual epoch/sequence/nonce/CAS and owner-policy checks. The runtime-probe signing-key plane is held unchanged, and the owner rehome question occurs only at actual completed rebuild closure. Catalog diagnostics distinguish unavailable, absent and mismatch without exposing stored bodies or row contents.

@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from butlers.testing.schema_standins import CONTACT_ENTITY_MAP
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = [
     pytest.mark.integration,

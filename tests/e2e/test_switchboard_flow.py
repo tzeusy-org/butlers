@@ -16,6 +16,7 @@ from uuid import uuid4
 import pytest
 
 from butlers.tools.switchboard.ingestion.ingest import ingest_v1
+from tests.e2e._serving_ecosystem import butler_ecosystem as butler_ecosystem
 
 if TYPE_CHECKING:
     from asyncpg.pool import Pool

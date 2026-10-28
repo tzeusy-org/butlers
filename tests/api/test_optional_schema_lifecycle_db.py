@@ -1,14 +1,14 @@
-"""Real-Postgres regressions for optional-schema lifecycle classification.
+"""Administrative lifecycle classifiers, with separate serving refusal witnesses.
 
-The dashboard may query a schema whose optional tables were deliberately never
-installed.  That absence is normal.  It must not, however, make an
-``UndefinedTableError`` from a table that existed while the dashboard was
-running look normal: a post-startup ``DROP TABLE`` is an operationally
-degraded source.
-
-These tests use the real core and memory migrations plus actual ``DROP TABLE``
-statements.  They intentionally exercise the same asyncpg failures that the
-secrets inventory and memory fan-out classifiers receive in production.
+The original native inputs and shadow/DDL/read-error/phase assertions below
+exercise explicitly ADMINISTRATIVE readers of partial migration catalogs.
+They do not establish dashboard role authority or authorize a serving pool.
+Every helper first tests the genuine DatabaseManager and actual API consumers:
+these deliberately partial/unknown deployments must be unavailable (503), never
+healthy empty, under REQ-dashboard-api-073. The later administrative reader is
+used only to isolate the original lifecycle classifier guarantees. Actual
+complete-catalog dashboard/empty-result admission is covered independently in
+test_db_authority_catalog and the software manager consumer carrier.
 """
 
 from __future__ import annotations
@@ -51,6 +51,9 @@ from butlers.api.routers.secrets_v2 import (
     rotate_cli_credential,
     set_system_credential,
 )
+from butlers.db import register_jsonb_codec, schema_search_path
+from butlers.db_authority.catalog import create_owned_pool
+from butlers.db_authority.roles import AuthorityError
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -109,6 +112,75 @@ def chronicler_domain_only_db_url(postgres_container) -> str:
     )
 
 
+class _AdministrativeLifecycleObserver(DatabaseManager):
+    """ADMIN ONLY: catalog-owner reader for fault injection/classifier data.
+
+    Never returned by production DatabaseManager or used as serving-admission
+    evidence. Administrative DDL/shadow observations below intentionally require
+    their separately provisioned migration-owner connection.
+    """
+
+    async def _create_pool(self, *, database, log_name, schema=None):
+        options = dict(
+            host=self._host,
+            port=self._port,
+            user=self._user,
+            password=self._password,
+            database=database,
+            min_size=self._min_pool_size,
+            max_size=self._max_pool_size,
+            init=register_jsonb_codec,
+        )
+        if schema is not None:
+            options["server_settings"] = {"search_path": schema_search_path(schema)}
+        return await create_owned_pool(**options)
+
+
+async def _assert_partial_source_is_not_dashboard_serving(
+    db_url, *, butler_name, schema, memory_schema, with_shared_pool
+):
+    """Actual serving manager/API refusal, separate from admin data observers."""
+    parsed = urlparse(db_url)
+    serving = DatabaseManager(
+        host=parsed.hostname or "localhost",
+        port=parsed.port or 5432,
+        user=parsed.username or "postgres",
+        password=parsed.password or "postgres",
+        min_pool_size=1,
+        max_pool_size=2,
+    )
+    try:
+        with pytest.raises(AuthorityError, match="Runtime database identity is not declared"):
+            await serving.add_butler(
+                butler_name,
+                db_name=parsed.path.lstrip("/"),
+                db_schema=schema,
+                memory_schema=memory_schema,
+            )
+        assert not serving._pools
+        for operation in (
+            lambda: get_preferences(predicate=None, db=serving),
+            lambda: get_activity_feed(butler_name, limit=50, db=serving),
+            lambda: get_system_credential("UNAVAILABLE_SOURCE_WITNESS", db=serving),
+        ):
+            with pytest.raises(HTTPException) as refused:
+                await operation()
+            assert refused.value.status_code == 503
+        results, failed = await serving.fan_out_with_status("SELECT 1")
+        assert results == {butler_name: []} and failed == [butler_name]
+        assert await serving.authority_status() == "unavailable"
+        if with_shared_pool:
+            with pytest.raises(AuthorityError):
+                await serving.set_credential_shared_pool(
+                    parsed.path.lstrip("/"), db_schema="public"
+                )
+            with pytest.raises(HTTPException) as refused:
+                serving.credential_shared_pool()
+            assert refused.value.status_code == 503
+    finally:
+        await serving.close()
+
+
 async def _manager_for_schema(
     db_url: str,
     *,
@@ -116,10 +188,17 @@ async def _manager_for_schema(
     schema: str,
     memory_schema: str | None = None,
     with_shared_pool: bool = False,
-) -> DatabaseManager:
-    """Create a real dashboard pool scoped to *schema*."""
+) -> _AdministrativeLifecycleObserver:
+    """Refuse genuine serving admission, then return ADMIN classifier input."""
+    await _assert_partial_source_is_not_dashboard_serving(
+        db_url,
+        butler_name=butler_name,
+        schema=schema,
+        memory_schema=memory_schema,
+        with_shared_pool=with_shared_pool,
+    )
     parsed = urlparse(db_url)
-    manager = DatabaseManager(
+    manager = _AdministrativeLifecycleObserver(
         host=parsed.hostname or "localhost",
         port=parsed.port or 5432,
         user=parsed.username or "postgres",
@@ -402,7 +481,7 @@ async def _copy_chronicler_memory_to_public_shadows(
 async def test_configured_chronicler_memory_schema_serves_preferences_and_activity(
     chronicler_memory_db_url: str,
 ) -> None:
-    """Dashboard reads Chronicler memory from ``chronicler_mem``, not its domain schema."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. Dashboard reads Chronicler memory from ``chronicler_mem``, not its domain schema."
     manager = await _manager_for_schema(
         chronicler_memory_db_url,
         butler_name="chronicler",
@@ -442,7 +521,7 @@ async def test_configured_chronicler_memory_schema_serves_preferences_and_activi
 async def test_configured_chronicler_memory_absent_at_boot_skips_public_shadows(
     chronicler_domain_only_db_url: str,
 ) -> None:
-    """An optional private schema absent at boot is empty, never public-backed."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. An optional private schema absent at boot is empty, never public-backed."
     manager = await _manager_for_schema(
         chronicler_domain_only_db_url,
         butler_name="chronicler",
@@ -483,7 +562,7 @@ async def test_configured_chronicler_memory_loss_fails_closed_without_public_fal
     chronicler_memory_db_url: str,
     snapshot_memory: bool,
 ) -> None:
-    """A dropped or unsnapshotted private source must return 503 instead of public data."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. A dropped or unsnapshotted private source must return 503 instead of public data."
     manager = await _manager_for_schema(
         chronicler_memory_db_url,
         butler_name="chronicler",
@@ -526,7 +605,7 @@ async def test_configured_chronicler_memory_loss_fails_closed_without_public_fal
 async def test_absent_at_startup_is_an_expected_optional_schema(
     migrated_db_url: str,
 ) -> None:
-    """A never-migrated schema is skipped by both surfaces without degradation."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. A never-migrated schema is skipped by both surfaces without degradation."
     bootstrap = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -577,7 +656,7 @@ async def test_absent_at_startup_is_an_expected_optional_schema(
 async def test_dropped_after_startup_is_a_degraded_source(
     migrated_db_url: str,
 ) -> None:
-    """Real post-startup drops surface on both secrets and memory trackers."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. Real post-startup drops surface on both secrets and memory trackers."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -622,7 +701,7 @@ async def test_dropped_after_startup_is_a_degraded_source(
 async def test_preferences_skip_public_fact_shadow_when_memory_absent_at_startup(
     migrated_db_url: str,
 ) -> None:
-    """A never-installed memory schema must not read public preference facts."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. A never-installed memory schema must not read public preference facts."
     bootstrap = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -655,7 +734,7 @@ async def test_preferences_skip_public_fact_shadow_when_memory_absent_at_startup
 async def test_activity_feed_skips_public_episode_shadow_when_memory_absent_at_startup(
     migrated_db_url: str,
 ) -> None:
-    """A never-installed memory schema must not read public activity episodes."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. A never-installed memory schema must not read public activity episodes."
     bootstrap = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -687,7 +766,7 @@ async def test_activity_feed_skips_public_episode_shadow_when_memory_absent_at_s
 async def test_post_boot_preferences_memory_loss_blocks_public_fact_shadow(
     migrated_db_url: str,
 ) -> None:
-    """A lost private facts table makes preferences unavailable, never public-backed."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. A lost private facts table makes preferences unavailable, never public-backed."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -712,7 +791,7 @@ async def test_post_boot_preferences_memory_loss_blocks_public_fact_shadow(
 async def test_post_boot_activity_memory_loss_blocks_public_episode_shadow(
     migrated_db_url: str,
 ) -> None:
-    """A lost private episodes table makes the raw activity feed unavailable."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. A lost private episodes table makes the raw activity feed unavailable."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -736,7 +815,7 @@ async def test_post_boot_activity_memory_loss_blocks_public_episode_shadow(
 async def test_unknown_preferences_memory_loss_blocks_public_fact_shadow(
     migrated_db_url: str,
 ) -> None:
-    """An unsnapshotted facts loss must fail closed instead of reading public.facts."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. An unsnapshotted facts loss must fail closed instead of reading public.facts."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -760,7 +839,7 @@ async def test_unknown_preferences_memory_loss_blocks_public_fact_shadow(
 async def test_unknown_activity_memory_loss_blocks_public_episode_shadow(
     migrated_db_url: str,
 ) -> None:
-    """An unsnapshotted episodes loss must fail closed instead of reading public.episodes."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. An unsnapshotted episodes loss must fail closed instead of reading public.episodes."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -783,7 +862,7 @@ async def test_unknown_activity_memory_loss_blocks_public_episode_shadow(
 async def test_post_boot_butler_memory_stats_never_reads_public_facts(
     migrated_db_url: str,
 ) -> None:
-    """A dropped private facts table must not become a healthy public-table count."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. A dropped private facts table must not become a healthy public-table count."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -811,7 +890,7 @@ async def test_post_boot_butler_memory_stats_never_reads_public_facts(
 async def test_unknown_butler_memory_stats_schema_loss_is_unavailable(
     migrated_db_url: str,
 ) -> None:
-    """No startup marker must fail closed rather than return invented zero stats."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. No startup marker must fail closed rather than return invented zero stats."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -832,7 +911,7 @@ async def test_unknown_butler_memory_stats_schema_loss_is_unavailable(
 async def test_memory_list_detail_and_inspect_do_not_read_public_episodes(
     migrated_db_url: str,
 ) -> None:
-    """Memory fan-out must retain private ownership after a table drops."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. Memory fan-out must retain private ownership after a table drops."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -911,7 +990,7 @@ async def test_memory_list_detail_and_inspect_do_not_read_public_episodes(
 async def test_boot_time_private_absence_can_use_a_public_system_secret(
     migrated_db_url: str,
 ) -> None:
-    """An optional private table absent at boot may legitimately defer to public."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. An optional private table absent at boot may legitimately defer to public."
     bootstrap = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -959,7 +1038,7 @@ async def test_boot_time_private_absence_can_use_a_public_system_secret(
 async def test_post_boot_private_loss_blocks_get_and_probe_public_fallback(
     migrated_db_url: str,
 ) -> None:
-    """A dropped private table is degraded, never a route to a public credential."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. A dropped private table is degraded, never a route to a public credential."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -1014,7 +1093,7 @@ async def test_post_boot_private_loss_blocks_get_and_probe_public_fallback(
 async def test_post_boot_shared_public_loss_blocks_system_credential_get(
     migrated_db_url: str,
 ) -> None:
-    """A shared credential table lost after boot is unavailable, not absent."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. A shared credential table lost after boot is unavailable, not absent."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -1045,7 +1124,7 @@ async def test_post_boot_shared_public_loss_blocks_system_credential_get(
 async def test_post_boot_shared_public_loss_blocks_system_credential_probe(
     migrated_db_url: str,
 ) -> None:
-    """A shared credential table lost after boot cannot be probed as missing."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. A shared credential table lost after boot cannot be probed as missing."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -1078,7 +1157,7 @@ async def test_post_boot_shared_public_loss_blocks_system_credential_probe(
 async def test_post_boot_shared_public_loss_blocks_cli_credential_get(
     migrated_db_url: str,
 ) -> None:
-    """A shared CLI credential table lost after boot is unavailable, not absent."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. A shared CLI credential table lost after boot is unavailable, not absent."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -1115,7 +1194,7 @@ async def test_post_boot_shared_public_loss_blocks_cli_credential_get(
 async def test_unknown_private_absence_blocks_public_fallback(
     migrated_db_url: str,
 ) -> None:
-    """Without a startup marker, a missing private relation is never an optional absence."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. Without a startup marker, a missing private relation is never an optional absence."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -1138,7 +1217,7 @@ async def test_unknown_private_absence_blocks_public_fallback(
 async def test_post_boot_private_loss_cannot_set_or_delete_public_secret(
     migrated_db_url: str,
 ) -> None:
-    """Per-butler mutations must target the private relation, never search_path public."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. Per-butler mutations must target the private relation, never search_path public."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -1186,7 +1265,7 @@ async def test_post_boot_private_loss_cannot_set_or_delete_public_secret(
 async def test_post_boot_memory_shadow_is_degraded_for_stats_and_catalog(
     migrated_db_url: str,
 ) -> None:
-    """Local memory loss must not make a same-named public table look healthy."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. Local memory loss must not make a same-named public table look healthy."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -1212,7 +1291,7 @@ async def test_post_boot_memory_shadow_is_degraded_for_stats_and_catalog(
 async def test_post_boot_memory_shadow_cannot_confirm_public_fact(
     migrated_db_url: str,
 ) -> None:
-    """A dashboard confirmation must never mutate public.facts after local loss."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. A dashboard confirmation must never mutate public.facts after local loss."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -1243,7 +1322,7 @@ async def test_post_boot_memory_shadow_cannot_confirm_public_fact(
 async def test_post_boot_memory_shadow_cannot_retract_public_fact(
     migrated_db_url: str,
 ) -> None:
-    """A dashboard retraction must never mutate public.facts after local loss."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. A dashboard retraction must never mutate public.facts after local loss."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -1271,7 +1350,7 @@ async def test_post_boot_memory_shadow_cannot_retract_public_fact(
 async def test_post_boot_memory_shadow_cannot_report_reembed_pending(
     migrated_db_url: str,
 ) -> None:
-    """A private facts drop cannot become a public stale-embedding count."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. A private facts drop cannot become a public stale-embedding count."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -1307,7 +1386,7 @@ async def test_post_boot_memory_shadow_cannot_reembed_public_fact(
     migrated_db_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A re-embedding run must fail closed before it can update public.facts."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. A re-embedding run must fail closed before it can update public.facts."
     from butlers.modules.memory import tools as memory_tools
 
     class _Engine:
@@ -1357,7 +1436,7 @@ async def test_post_boot_memory_shadow_cannot_reembed_public_fact(
 async def test_post_boot_shared_public_loss_blocks_cli_rotation(
     migrated_db_url: str,
 ) -> None:
-    """CLI rotation must surface a dropped shared credential table as unavailable."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. CLI rotation must surface a dropped shared credential table as unavailable."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -1390,7 +1469,7 @@ async def test_post_boot_shared_public_loss_blocks_cli_rotation(
 async def test_post_boot_shared_public_loss_blocks_cli_revocation(
     migrated_db_url: str,
 ) -> None:
-    """CLI revocation must surface a dropped shared credential table as unavailable."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. CLI revocation must surface a dropped shared credential table as unavailable."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",
@@ -1423,7 +1502,7 @@ async def test_post_boot_shared_public_loss_blocks_cli_revocation(
 async def test_absent_at_boot_shared_public_cli_source_remains_not_found(
     migrated_db_url: str,
 ) -> None:
-    """A shared CLI table deliberately absent at startup still follows 404 semantics."""
+    "ADMIN classifier/data observation; serving 503 is proved separately. A shared CLI table deliberately absent at startup still follows 404 semantics."
     manager = await _manager_for_schema(
         migrated_db_url,
         butler_name="lifecycle",

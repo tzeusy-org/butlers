@@ -8,7 +8,6 @@ so this test drives the actual core Alembic chain against PostgreSQL.
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 import uuid
 
@@ -16,7 +15,12 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ProgrammingError
 
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.testing.migration import (
+    create_migration_db,
+    migrate_test_database,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -32,10 +36,13 @@ def _turn_call(
     conn,
     function: str,
     *,
-    role: str | None = None,
+    role: str | None = "dashboard_api",
     **params: object,
 ) -> dict[str, object]:
     """Execute one dashboard-turn function and return its sole result row."""
+    # The caller keeps its ordinary seed/readback connection; function calls
+    # borrow this explicitly selected administrative effective-role transport.
+    conn = conn.info["test_dashboard_control_connection"]
     placeholders = ", ".join(f":{name}" for name in params)
     if role is not None:
         conn.execute(text(f"SET ROLE {_quote_identifier(role)}"))
@@ -94,14 +101,17 @@ def _execute_as_role(db_url: str, role: str, sql: str, *, scalar: bool = False):
 
 def test_dashboard_turn_stop_transitions_and_runtime_acl(postgres_container) -> None:
     """Stop wins pre-invoke, waits through active invocation, and keeps tables private."""
-    from butlers.migrations import run_migrations
 
-    db_url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(db_url, chain="core"))
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    migrate_test_database(postgres_container, db_url, plans=(("core", None, None),))
+    control_url = migration_bootstrap_db_url(postgres_container, db_name)
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    control_engine = create_engine(control_url, isolation_level="AUTOCOMMIT")
     try:
-        with engine.connect() as conn:
+        with engine.connect() as conn, control_engine.connect() as control:
+            conn.info["test_dashboard_control_connection"] = control
             # Normal ingress claims at the generator boundary, then a Stop
             # before any runtime starts terminally blocks a later route target.
             conversation_id, message_id = _seed_dashboard_user_turn(conn)
@@ -647,25 +657,28 @@ def test_dashboard_turn_stop_transitions_and_runtime_acl(postgres_container) -> 
                 p_request_id=request_id,
             )
     finally:
-        engine.dispose()
+        try:
+            control_engine.dispose()
+        finally:
+            engine.dispose()
 
     with pytest.raises(ProgrammingError, match="permission denied"):
         _execute_as_role(
-            db_url,
+            control_url,
             "butler_general_rw",
             "INSERT INTO public.dashboard_conversation_turns "
             "(message_id, conversation_id) VALUES (gen_random_uuid(), gen_random_uuid())",
         )
     with pytest.raises(ProgrammingError, match="permission denied"):
         _execute_as_role(
-            db_url,
+            control_url,
             "connector_writer",
             "INSERT INTO public.dashboard_conversation_turns "
             "(message_id, conversation_id) VALUES (gen_random_uuid(), gen_random_uuid())",
         )
     with pytest.raises(ProgrammingError, match="dashboard turn control is not authorized"):
         _execute_as_role(
-            db_url,
+            control_url,
             "butler_health_rw",
             "SELECT outcome FROM public.dashboard_turn_claim_target("
             f"'{message_id}', '{request_id}', 'general'"
@@ -674,7 +687,7 @@ def test_dashboard_turn_stop_transitions_and_runtime_acl(postgres_container) -> 
         )
     assert (
         _execute_as_role(
-            db_url,
+            control_url,
             "butler_general_rw",
             "SELECT outcome FROM public.dashboard_turn_claim_target("
             f"'{message_id}', '{request_id}', 'general'"

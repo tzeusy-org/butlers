@@ -13,7 +13,9 @@ Covers:
 from __future__ import annotations
 
 import ast
+import asyncio
 import ipaddress
+import os
 import re
 import uuid
 from datetime import UTC, datetime
@@ -25,6 +27,7 @@ import pytest
 from asyncpg.exceptions import UndefinedTableError
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 
 from butlers.api.db import DatabaseManager
@@ -33,6 +36,7 @@ from butlers.api.models.audit import AuditLogEntry
 from butlers.api.routers import audit as audit_module
 from butlers.api.routers.audit import AuditTableNotAvailableError, append, audit_log_appended_total
 from butlers.core.credential_keys import normalize_credential_key
+from butlers.testing.migration import serving_test_deployment
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 from tests.migrations.test_core_279_audit_writer_integrity import (
     _RUNTIME_ROLES,
@@ -1411,16 +1415,103 @@ def test_audit_log_credential_row_without_free_text_is_not_marked_redacted():
     assert entry.redacted is False
 
 
+@pytest.fixture(scope="module")
+def postgres_container():
+    """One isolated server owns canonical source logins and random audit DBs."""
+    from testcontainers.postgres import PostgresContainer
+
+    from conftest import _configure_postgres_container
+
+    with _configure_postgres_container(
+        PostgresContainer("pgvector/pgvector:pg17"), os.environ
+    ) as container:
+        yield container
+
+
+@pytest.fixture(scope="module")
+def audit_writer_deployment(postgres_container):
+    with serving_test_deployment(postgres_container, include_connector=True) as deployment:
+        try:
+            yield deployment
+        finally:
+            asyncio.run(deployment.close_resources())
+
+
 # Real migrated append-only refusal; the unit owner excludes these DB instances.
 @pytest.mark.integration
 @pytest.mark.db
 @pytest.mark.parametrize("role", _RUNTIME_ROLES)
-def test_runtime_writer_and_append_only_survive_bootstrap(audit_database, role):
+def test_runtime_writer_and_append_only_survive_bootstrap(
+    audit_database, audit_writer_deployment, role
+):
     url, _ = audit_database
-    engine = create_engine(url)
+    deployment = audit_writer_deployment
+    if role == "connector_writer":
+        selected = deployment.purpose_logins["connector"]
+        schema = None
+    else:
+        matches = [
+            (schema, login)
+            for schema, login in deployment.runtime_logins.items()
+            if login.role == role
+        ]
+        assert len(matches) == 1
+        schema, selected = matches[0]
+    assert selected.role == role
+
+    async def canonical_admission():
+        # Canonical production admission is separate from the native CONNECT
+        # obligation to the original random core-only database below.
+        if schema is not None:
+            database = deployment.runtime_database(schema)
+            try:
+                await database.connect()
+                assert await database.pool.fetchval("SELECT session_user") == selected.user
+                assert await database.pool.fetchval("SELECT current_database()") == "butlers"
+            finally:
+                await database.close()
+        else:
+            import asyncpg
+
+            from butlers.db_authority.catalog import setup_purpose
+            from butlers.db_authority.roles import purpose_profile
+
+            connection = await asyncpg.connect(deployment.purpose_url("connector"))
+            try:
+                await setup_purpose(connection, purpose_profile("butlers", "connector"))
+                assert await connection.fetchval("SELECT session_user") == selected.user
+                assert await connection.fetchval("SELECT current_database()") == "butlers"
+            finally:
+                await connection.close()
+
+    asyncio.run(canonical_admission())
+    original = make_url(url)
+    # URL object passes credentials directly to the driver; never render them.
+    engine = create_engine(original.set(username=selected.user, password=selected.password))
+    observer_engine = create_engine(url)
     marker = str(uuid.uuid4())
     try:
         with engine.begin() as connection:
+            assert connection.execute(text("SELECT session_user")).scalar_one() == selected.user
+            assert (
+                connection.execute(text("SELECT current_database()")).scalar_one()
+                == original.database
+            )
+            assert connection.execute(
+                text("""
+                SELECT rolcanlogin AND NOT rolinherit AND NOT rolsuper AND NOT rolcreatedb
+                  AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls
+                FROM pg_catalog.pg_roles WHERE rolname=session_user
+            """)
+            ).scalar_one()
+            assert connection.execute(
+                text("""
+                SELECT r.rolname FROM pg_catalog.pg_auth_members m
+                JOIN pg_catalog.pg_roles r ON r.oid=m.roleid
+                WHERE m.member=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname=session_user)
+                ORDER BY r.rolname
+            """)
+            ).all() == [(role,)]
             # Role comes exclusively from this closed test matrix, not caller data.
             connection.execute(text(f'SET LOCAL ROLE "{role}"'))
             assert connection.execute(text("SELECT current_user")).scalar_one() == role
@@ -1442,7 +1533,7 @@ def test_runtime_writer_and_append_only_survive_bootstrap(audit_database, role):
             ).one()
             assert row.writer_role == role
         # An independent acquisition proves commit, not this transaction's view.
-        with engine.connect() as observer:
+        with observer_engine.connect() as observer:
             assert (
                 observer.execute(
                     text("SELECT writer_role FROM public.audit_log WHERE id=:id"), {"id": row.id}
@@ -1462,7 +1553,7 @@ def test_runtime_writer_and_append_only_survive_bootstrap(audit_database, role):
                 connection.execute(text(f'SET LOCAL ROLE "{role}"'))
                 connection.execute(text(sql), {"id": row.id})
             assert refused.value.orig.pgcode == "42501"
-        with engine.connect() as observer:
+        with observer_engine.connect() as observer:
             after = observer.execute(
                 text("SELECT actor,writer_role FROM public.audit_log WHERE id=:id"), {"id": row.id}
             ).one()
@@ -1475,3 +1566,4 @@ def test_runtime_writer_and_append_only_survive_bootstrap(audit_database, role):
             )
     finally:
         engine.dispose()
+        observer_engine.dispose()

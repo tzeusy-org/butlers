@@ -61,6 +61,16 @@ async def _as_role(pool: asyncpg.Pool, role: str, statement: str, *args: Any) ->
             await connection.execute("RESET ROLE")
 
 
+async def _dashboard_query(pool: asyncpg.Pool, method: str, statement: str, *args: Any):
+    """Administrative effective-role probe, not native session-login evidence."""
+    async with pool.acquire() as connection:
+        await connection.execute('SET ROLE "dashboard_api"')
+        try:
+            return await getattr(connection, method)(statement, *args)
+        finally:
+            await connection.execute("RESET ROLE")
+
+
 async def _seed_pending_episode(pool: asyncpg.Pool, alias: str) -> uuid.UUID:
     """Create one pending outbox episode through the real producer.
 
@@ -368,8 +378,10 @@ async def test_fenced_claim_evidence_reaches_the_safe_reason_projection(
         assert row["delivery_error_detail"] == "worker_recovery"
         assert row["notification_ref"] is None
 
-        # No SET ROLE: this is the same access path the dashboard API uses.
-        observed = await pool.fetch("SELECT * FROM public.observe_runtime_attention_models()")
+        # Fixed dashboard effective role; native login admission is proved separately.
+        observed = await _dashboard_query(
+            pool, "fetch", "SELECT * FROM public.observe_runtime_attention_models()"
+        )
         observed_row = next(r for r in observed if r["episode_id"] == episode_id)
         assert observed_row["delivery_error_class"] == "transport_uncertain"
         assert observed_row["delivery_error_detail"] == "worker_recovery"
@@ -468,8 +480,11 @@ async def test_manual_reissue_waits_for_recovery_then_returns_one_successor(
 
         # A sending row and its live claimant lease are never eligible.
         with pytest.raises(asyncpg.ObjectNotInPrerequisiteStateError):
-            await pool.fetchrow(
-                "SELECT * FROM public.reissue_runtime_attention_episode($1)", episode_id
+            await _dashboard_query(
+                pool,
+                "fetchrow",
+                "SELECT * FROM public.reissue_runtime_attention_episode($1)",
+                episode_id,
             )
         assert (await _row(pool, episode_id))["lifecycle_state"] == "sending"
 
@@ -482,14 +497,27 @@ async def test_manual_reissue_waits_for_recovery_then_returns_one_successor(
         # Recovery has fenced the row uncertain, but its still-live service
         # lease closes the tiny recovery/reissue overlap.
         with pytest.raises(asyncpg.ObjectNotInPrerequisiteStateError):
-            await pool.fetchrow(
-                "SELECT * FROM public.reissue_runtime_attention_episode($1)", episode_id
+            await _dashboard_query(
+                pool,
+                "fetchrow",
+                "SELECT * FROM public.reissue_runtime_attention_episode($1)",
+                episode_id,
             )
         await repo_b.release_service_lease(lease_b)
 
         first, second = await asyncio.gather(
-            pool.fetchrow("SELECT * FROM public.reissue_runtime_attention_episode($1)", episode_id),
-            pool.fetchrow("SELECT * FROM public.reissue_runtime_attention_episode($1)", episode_id),
+            _dashboard_query(
+                pool,
+                "fetchrow",
+                "SELECT * FROM public.reissue_runtime_attention_episode($1)",
+                episode_id,
+            ),
+            _dashboard_query(
+                pool,
+                "fetchrow",
+                "SELECT * FROM public.reissue_runtime_attention_episode($1)",
+                episode_id,
+            ),
         )
         assert first is not None and second is not None
         assert first["successor_episode_id"] == second["successor_episode_id"]
@@ -666,8 +694,10 @@ async def test_terminal_delivery_evidence_reaches_the_safe_reason_projection(
         assert row["delivery_error_detail"] == "transport_timeout"
         assert row["notification_ref"] == notification_ref
 
-        # No SET ROLE: this is the same access path the dashboard API uses.
-        observed = await pool.fetch("SELECT * FROM public.observe_runtime_attention_models()")
+        # Fixed dashboard effective role; native login admission is proved separately.
+        observed = await _dashboard_query(
+            pool, "fetch", "SELECT * FROM public.observe_runtime_attention_models()"
+        )
         observed_row = next(r for r in observed if r["episode_id"] == episode_id)
         assert observed_row["delivery_error_class"] == "transport_uncertain"
         assert observed_row["delivery_error_detail"] == "transport_timeout"
@@ -781,7 +811,9 @@ async def _condition_statuses(pool: asyncpg.Pool) -> dict[uuid.UUID, tuple[str, 
             condition_attention_status(row),
             safe_reason(row["delivery_error_class"], row["delivery_error_detail"]),
         )
-        for row in await pool.fetch("SELECT * FROM public.observe_runtime_attention_conditions()")
+        for row in await _dashboard_query(
+            pool, "fetch", "SELECT * FROM public.observe_runtime_attention_conditions()"
+        )
     }
 
 
@@ -881,8 +913,10 @@ async def test_condition_delivery_outcomes_stay_distinct_without_resend(
         )
         assert sorted(await _controller_append(pool)) == sorted([fleet_episode, qa_episode])
         assert (
-            await pool.fetchval(
-                "SELECT count(*) FROM public.observe_runtime_attention_conditions()"
+            await _dashboard_query(
+                pool,
+                "fetchval",
+                "SELECT count(*) FROM public.observe_runtime_attention_conditions()",
             )
             == 2
         )
@@ -945,7 +979,9 @@ async def _resolve_condition(pool: asyncpg.Pool, condition_id: uuid.UUID) -> Non
 
 
 async def _marker_view(pool: asyncpg.Pool, condition_id: uuid.UUID) -> tuple[str, bool]:
-    row = await pool.fetchrow(
+    row = await _dashboard_query(
+        pool,
+        "fetchrow",
         """
         SELECT lifecycle_state, outbox_retained
         FROM public.observe_runtime_attention_conditions()
@@ -1027,3 +1063,44 @@ async def test_rolled_back_transition_leaves_the_condition_marker_unchanged(
         assert claimed is not None and claimed.id == episode
         assert await _marker_state(pool, postgres_container, condition) == "sending"
         await repository.release_service_lease(lease)
+
+
+@pytest.mark.parametrize(
+    "function,arguments",
+    [
+        ("observe_runtime_attention_models", ()),
+        ("observe_runtime_attention_fleet_halt", ()),
+        ("observe_runtime_attention_conditions", ()),
+        ("reissue_runtime_attention_episode", (uuid.UUID(int=0),)),
+    ],
+)
+async def test_attention_operator_functions_require_fixed_dashboard_purpose(
+    migrated_core_postgres_pool, function, arguments
+):
+    """Real SQL/guard/ACL proof, including superuser role-none refusal.
+
+    Administrative SET ROLE is intentional here. Native dedicated dashboard
+    session admission has separate real-login catalog controls.
+    """
+    query = (
+        f"SELECT * FROM public.{function}({','.join(f'${i + 1}' for i in range(len(arguments)))})"
+    )
+    async with migrated_core_postgres_pool() as pool:
+        for role in (None, "butler_general_rw", "butler_switchboard_rw"):
+            async with pool.acquire() as connection:
+                if role:
+                    await connection.execute(f'SET ROLE "{role}"')
+                try:
+                    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                        await connection.fetch(query, *arguments)
+                finally:
+                    await connection.execute("RESET ROLE")
+        if arguments:
+            # Eligible caller passes the guard and reaches the real missing-id
+            # behavior; no fabricated uncertain row or relaxed reissue fence.
+            with pytest.raises(asyncpg.NoDataFoundError):
+                await _dashboard_query(pool, "fetch", query, *arguments)
+        else:
+            assert await _dashboard_query(pool, "fetch", query) == []
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await _dashboard_query(pool, "fetch", "SELECT id FROM public.runtime_attention_outbox")

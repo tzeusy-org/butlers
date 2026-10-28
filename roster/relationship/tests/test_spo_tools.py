@@ -16,6 +16,7 @@ from fastmcp import FastMCP
 
 from butlers.testing.mcp import registered_tools
 from butlers.testing.schema_standins import CONTACT_ENTITY_MAP, ENTITY_GRAPH_EDGES
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = [
     pytest.mark.integration,

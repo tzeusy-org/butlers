@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 
 import pytest
@@ -12,6 +11,7 @@ from butlers.testing.migration import (
     create_migration_db,
     get_column_info,
     index_exists,
+    migrate_test_database,
     migration_db_name,
     table_exists,
 )
@@ -25,15 +25,16 @@ pytestmark = [
 
 def test_notifications_table_schema_and_indexes(postgres_container):
     """Run switchboard migrations and verify notifications table schema and idempotency."""
-    from butlers.migrations import run_migrations
 
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
 
-    asyncio.run(run_migrations(db_url, chain="core"))
-    asyncio.run(run_migrations(db_url, chain="switchboard"))
-    # Idempotency: second run should not raise
-    asyncio.run(run_migrations(db_url, chain="switchboard"))
+    # Keep the real repeated Switchboard replay under one held finalizer.
+    migrate_test_database(
+        postgres_container,
+        db_url,
+        plans=(("core", None, None), ("switchboard", None, None), ("switchboard", None, None)),
+    )
 
     assert table_exists(db_url, "notifications")
 

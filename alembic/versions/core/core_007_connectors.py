@@ -29,10 +29,8 @@ Creates the database foundation for the connectors subsystem:
        queries and dashboard listing
      - (received_at DESC) — UNION timeline queries
 
-  5. Grants:
-     - connector_writer: USAGE + CREATE on connectors schema, DML on all tables,
-       default privileges for future partitions, SELECT on public schema.
-     - All butler roles: USAGE on connectors schema, SELECT on connectors tables.
+  5. Serving access is installed by the locked source-owned final manifest;
+     replay never widens schema CREATE, unrelated tables, or default privileges.
 
 Downgrade drops the connectors schema entirely (CASCADE).
 """
@@ -47,57 +45,11 @@ down_revision = "core_006"
 branch_labels = None
 depends_on = None
 
-_CONNECTOR_ROLE = "connector_writer"
-_CONNECTORS_SCHEMA = "connectors"
-_PUBLIC_SCHEMA = "public"
 
 # All butler roles that need read access to connectors tables.
-_ALL_BUTLER_ROLES = (
-    "butler_education_rw",
-    "butler_finance_rw",
-    "butler_general_rw",
-    "butler_health_rw",
-    "butler_home_rw",
-    "butler_messenger_rw",
-    "butler_relationship_rw",
-    "butler_switchboard_rw",
-    "butler_travel_rw",
-)
 
 
-def _quote_ident(identifier: str) -> str:
-    return '"' + identifier.replace('"', '""') + '"'
-
-
-def _quote_literal(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
-
-
-def _execute_best_effort(statement: str, *, role_name: str | None = None) -> None:
-    """Execute SQL while tolerating privilege/role availability differences."""
-    condition = "TRUE"
-    if role_name is not None:
-        condition = f"EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {_quote_literal(role_name)})"
-
-    op.execute(
-        f"""
-        DO $$
-        BEGIN
-            IF {condition} THEN
-                EXECUTE {_quote_literal(statement)};
-            END IF;
-        EXCEPTION
-            WHEN insufficient_privilege THEN
-                NULL;
-            WHEN undefined_object THEN
-                NULL;
-        END
-        $$;
-        """
-    )
-
-
-def upgrade() -> None:
+def _upgrade_global() -> None:
     # -------------------------------------------------------------------------
     # 1. Create connectors schema
     # -------------------------------------------------------------------------
@@ -198,6 +150,9 @@ def upgrade() -> None:
     # -------------------------------------------------------------------------
     # 5. Unqualified backward-compat wrapper (for butler-scoped search_path).
     # -------------------------------------------------------------------------
+
+
+def _upgrade_target_wrapper() -> None:
     op.execute("""
         CREATE OR REPLACE FUNCTION connectors_filtered_events_ensure_partition(
             reference_ts TIMESTAMPTZ DEFAULT now()
@@ -245,70 +200,30 @@ def upgrade() -> None:
         $$
     """)
 
+
+def _seed_global() -> None:
+
     # Create initial partitions for current month and next month.
-    op.execute(
-        "SELECT connectors.connectors_filtered_events_ensure_partition(now())"
-    )
+    op.execute("SELECT connectors.connectors_filtered_events_ensure_partition(now())")
 
-    # -------------------------------------------------------------------------
-    # 6. Grants for connector_writer role (best-effort; skipped if role absent)
-    # -------------------------------------------------------------------------
-    _execute_best_effort(
-        f"GRANT USAGE, CREATE ON SCHEMA {_quote_ident(_CONNECTORS_SCHEMA)}"
-        f" TO {_quote_ident(_CONNECTOR_ROLE)}",
-        role_name=_CONNECTOR_ROLE,
-    )
-    _execute_best_effort(
-        f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES"
-        f" IN SCHEMA {_quote_ident(_CONNECTORS_SCHEMA)}"
-        f" TO {_quote_ident(_CONNECTOR_ROLE)}",
-        role_name=_CONNECTOR_ROLE,
-    )
-    # Ensure future partitions (created by ensure_partition()) also get DML grants.
-    _execute_best_effort(
-        f"ALTER DEFAULT PRIVILEGES IN SCHEMA {_quote_ident(_CONNECTORS_SCHEMA)}"
-        f" GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {_quote_ident(_CONNECTOR_ROLE)}",
-        role_name=_CONNECTOR_ROLE,
-    )
-    _execute_best_effort(
-        f"GRANT USAGE ON SCHEMA {_quote_ident(_PUBLIC_SCHEMA)} TO {_quote_ident(_CONNECTOR_ROLE)}",
-        role_name=_CONNECTOR_ROLE,
-    )
-    _execute_best_effort(
-        f"GRANT SELECT ON ALL TABLES"
-        f" IN SCHEMA {_quote_ident(_PUBLIC_SCHEMA)}"
-        f" TO {_quote_ident(_CONNECTOR_ROLE)}",
-        role_name=_CONNECTOR_ROLE,
-    )
-    # Ensure future public schema tables also get SELECT grant.
-    _execute_best_effort(
-        f"ALTER DEFAULT PRIVILEGES IN SCHEMA {_quote_ident(_PUBLIC_SCHEMA)}"
-        f" GRANT SELECT ON TABLES TO {_quote_ident(_CONNECTOR_ROLE)}",
-        role_name=_CONNECTOR_ROLE,
-    )
 
-    # -------------------------------------------------------------------------
-    # 7. Grants for butler roles (read access to connectors schema)
-    # -------------------------------------------------------------------------
-    for role in _ALL_BUTLER_ROLES:
-        _execute_best_effort(
-            f"GRANT USAGE ON SCHEMA {_quote_ident(_CONNECTORS_SCHEMA)}"
-            f" TO {_quote_ident(role)}",
-            role_name=role,
-        )
-        _execute_best_effort(
-            f"GRANT SELECT ON ALL TABLES"
-            f" IN SCHEMA {_quote_ident(_CONNECTORS_SCHEMA)}"
-            f" TO {_quote_ident(role)}",
-            role_name=role,
-        )
+def upgrade() -> None:
+    from butlers.db_authority.interfaces import connectors_revision_reuse
+
+    reuse = connectors_revision_reuse(op.get_bind(), revision)
+    if not reuse.global_reused:
+        _upgrade_global()
+    if not reuse.target_wrapper_reused:
+        _upgrade_target_wrapper()
+    if not reuse.global_reused:
+        _seed_global()
+
+    # Serving privileges are finalized from the source-owned object manifest.
+    # No schema CREATE, ALL TABLES, or future-object default ACL is replayed here.
 
 
 def downgrade() -> None:
-    op.execute(
-        "DROP FUNCTION IF EXISTS"
-        " connectors_filtered_events_ensure_partition(TIMESTAMPTZ)"
-    )
+    op.execute("DROP FUNCTION IF EXISTS connectors_filtered_events_ensure_partition(TIMESTAMPTZ)")
     op.execute(
         "DROP FUNCTION IF EXISTS"
         " connectors.connectors_filtered_events_ensure_partition(TIMESTAMPTZ)"

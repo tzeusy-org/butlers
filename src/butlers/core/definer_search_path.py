@@ -2,8 +2,8 @@
 
 A ``SECURITY DEFINER`` function runs with its owner's privileges, so every name
 it resolves through ``search_path`` is a place a less-privileged role can plant
-code.  The migration login can ``CREATE`` in ``public``, and runtime roles such
-as ``butler_switchboard_rw`` can ``CREATE`` in their own schema.  With either
+code.  Any role permitted to ``CREATE`` in a searched schema can exploit such a
+path; runtime authority admission separately refuses that privilege. With that
 schema on a definer's path, a better-matching overload (``format(text, text)``
 beats the catalog's variadic ``format``) runs as the owner.  Leaving ``pg_temp``
 implicit is no better: an implicit ``pg_temp`` is searched *first* for relation
@@ -20,21 +20,10 @@ health probe below both use it rather than restating the rule.
 
 Runtime probe (bu-hefzis)
 -------------------------
-A database bootstrapped before the pins keeps its old paths until an operator
-acts, and the stored-function body drift check compares ``prosrc`` only, so it
-cannot see a search path.  :func:`compute_unpinned_definers` reports every
-deployed definer that fails :func:`is_pinned`, with its owner, so the operator
-can pick the remedy:
-
-- owned by the connecting (migration) login: run migrations to head;
-- owned by any other role (a fenced NOLOGIN owner or the bootstrap superuser):
-  re-run ``scripts/init-db.sql`` as a cluster superuser.
-
-The remedy is an operator hint: it compares the owner to ``session_user`` of the
-dashboard pool, assumed to be the shared migration/runtime login.  A distinct dashboard
-login would label migration-owned definers ``init_db``, which is the wrong hint:
-``scripts/init-db.sql`` re-pins only the definers it declares, and migration-owned ones are
-pinned only by migrations.  Check the definer's actual owner before acting on ``remedy``.
+The controlled migrator owns convergence of both ordinary and protected
+function definitions under explicit operator prerequisites. The connecting
+dashboard login never determines repair authority. The runtime diagnostic
+reports unpinned paths without performing DDL or reading credential material.
 
 Reported, never fatal, and never repaired here: the probe only reads
 ``pg_proc``/``pg_namespace``/``pg_depend``, which every role can read.  A failed
@@ -114,11 +103,7 @@ def unpinned(definers: Iterable[DefinerConfig]) -> list[DefinerConfig]:
     return [definer for definer in definers if not is_pinned(definer.proconfig)]
 
 
-#: Remedy for a definer owned by the connecting (migration) login.
-REMEDY_MIGRATIONS = "migrations"
-#: Remedy for a definer owned by any other role: only the privileged bootstrap
-#: can re-pin a function the migration login does not own.
-REMEDY_INIT_DB = "init_db"
+REMEDY_CONTROLLED_MIGRATOR = "controlled_migrator"
 
 
 @dataclass(frozen=True)
@@ -171,7 +156,7 @@ async def compute_unpinned_definers(pool: asyncpg.Pool) -> DefinerSearchPathRepo
                 signature=row["signature"],
                 owner=row["owner"],
                 search_path="; ".join(paths) if paths else None,
-                remedy=REMEDY_MIGRATIONS if row["owned_by_connecting_login"] else REMEDY_INIT_DB,
+                remedy=REMEDY_CONTROLLED_MIGRATOR,
             )
         )
     return DefinerSearchPathReport(
@@ -192,8 +177,8 @@ def log_unpinned_definers(report: DefinerSearchPathReport) -> None:
     if report.entries:
         logger.warning(
             "Definer search path: %d of %d SECURITY DEFINER functions are not pinned to "
-            "'%s' (%s). Owned by the migration login: run migrations to head. Owned by "
-            "any other role: re-run scripts/init-db.sql as a cluster superuser.",
+            "'%s' (%s). Run controlled migrator with explicit maintenance prerequisites "
+            "to converge the source-owned function definitions.",
             len(report.entries),
             report.checked_count,
             PINNED_SEARCH_PATH,

@@ -1,448 +1,163 @@
-"""Stored-function body drift probe (bu-bi5an).
+"""Read-only source/catalog authority diagnostics, never an admission capability.
 
-The gap this closes
--------------------
-``scripts/init-db.sql`` is the single privileged bootstrap entrypoint, and it
-defines the body of every managed stored function -- some at the top level,
-most nested inside a bootstrap-owned installer or finalizer whose whole job is
-to emit them.  Changing one of those bodies reaches an **already installed**
-database only when an operator re-runs that script by hand: nothing in
-``deploy/`` or the Makefile invokes it, and
-``docs/data_and_storage/schema-topology.md`` tells operators to re-run it when
-the schema or role surface changes -- which a change to a stored body is not.
-Alembic cannot close the gap either; several of these functions are owned by
-NOLOGIN roles the migration role is deliberately not a member of.
-
-So a deployed database can keep executing an old body indefinitely, and --
-before this module -- nothing anywhere reported that the deployed body and the
-committed body disagreed.  bu-95gq7 is the case that surfaced it; the problem
-generalises to every future body change.  The source defaults to the committed
-``scripts/init-db.sql`` path and can be overridden with
-``STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH`` when that source is mounted
-elsewhere.
-
-This module does not converge anything.  It converts silent drift into a
-visible, actionable state: it parses the committed definitions out of
-the configured bootstrap source (``scripts/init-db.sql`` by default), reads the
-deployed bodies out of ``pg_proc.prosrc``, and reports which functions disagree.
-
-Reported, never fatal
----------------------
-A mismatch is reported (``GET /api/system/stored-functions``, plus one WARNING
-line at dashboard-api startup), never raised.  Refusing to boot over a
-cosmetic body difference would be strictly worse than the drift it complains
-about, and this probe's own comparison is the thing most likely to be wrong.
-
-Scope: every function the configured source defines
----------------------------------------------
-Scope is *discovered*, not declared: every ``CREATE [OR REPLACE] FUNCTION``
-statement in the configured source (``scripts/init-db.sql`` by default),
-including the ones nested inside an installer body, is in scope.  There is
-deliberately no opt-in list, because an
-opt-in list is one more thing to forget to update -- a function added tomorrow
-is covered tomorrow.
-
-The two outcomes that a naive check would swallow silently are named instead:
-
-* a function ``init-db.sql`` defines that is **not deployed** is reported as
-  ``not_deployed`` rather than skipped.  This is a legitimate state, not drift
-  -- ``restore_drill_executor.*`` and the ``public.runtime_attention_*``
-  interface only exist once ``core_196``/``core_198`` have invoked their
-  bootstrap installers -- so it is surfaced separately from ``drifted``
-  instead of being escalated as if it were.
-* a function with **more than one committed variant** is matched against all of
-  them.  ``public.append_runtime_attention_model_breaker`` and
-  ``public.append_runtime_attention_fleet_halt`` each have a v1 body (emitted
-  by ``runtime_attention_admin.install_interface``) and a v2 body (emitted by
-  ``runtime_attention_admin.upgrade_producers_v2``, invoked once by
-  ``core_199``).  Both are committed states, so a database sitting on either is
-  ``matched``; the report names *which* variant matched, by ``init-db.sql``
-  line, so an operator can still see that a database is on the older one.
-
-Comparison: whitespace-insensitive, literal-sensitive
------------------------------------------------------
-``pg_proc.prosrc`` stores the function body **verbatim** -- PostgreSQL does not
-reformat it -- so against a freshly bootstrapped database the committed body
-and the deployed body are byte-identical today.  The normalisation in
-:func:`normalize_function_body` is therefore defensive rather than load-bearing:
-it exists so that a body re-installed from differently indented source, or a
-checkout with different line endings, does not read as drift.  A probe that
-cries wolf on every deploy gets ignored, which would reproduce the exact defect
-this module exists to fix.
-
-Every rule is whitespace-only.  Nothing here folds case, strips comments, or
-canonicalises SQL, because each of those would mask a real change to a body:
-the literals inside these bodies are the thing most likely to be edited, and
-the comments are load-bearing documentation of a security boundary.
-
-Redaction
----------
-Bodies are never returned, logged, or serialised.  A stored body can contain
-operator-supplied literals, so the report carries the function name, the
-outcome, and a short digest of each side -- enough to see *that* two bodies
-disagree and to tell two drifts apart, never enough to reconstruct one.
+The source compiler supplies exact current function overloads and object ACLs.
+There is no bootstrap parser, source-path environment override or accepted old
+body variant. Missing or unreadable state cannot report conformance. Returned
+identities come exclusively from source; catalog bodies and dynamic error text
+never leave this module. Each request observes the actual held connection.
 """
 
 from __future__ import annotations
 
-import hashlib
+import asyncio
+import json
 import logging
-import os
-import re
-import textwrap
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 
-import asyncpg
+from butlers.db_authority.catalog import _CATALOG_OBJECT_SQL, observe_catalog_owned
+from butlers.db_authority.grants import serving_catalog_contract
 
 logger = logging.getLogger(__name__)
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-
-#: The committed authority for every managed stored-function body.
-INIT_DB_SQL_PATH = _REPO_ROOT / "scripts" / "init-db.sql"
-
-#: Optional source override for installations that mount the privileged bootstrap
-#: outside the package. This diagnostic remains advisory: an unreadable configured
-#: source produces an unavailable report rather than blocking startup, because the
-#: comparison is evidence about deployment state, not an enforcement authority.
-STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH_ENV = "STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH"
-
-
-def _configured_init_db_sql_path() -> Path:
-    """Return the operator override, or the package-relative committed source."""
-    configured_path = os.environ.get(STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH_ENV)
-    return Path(configured_path) if configured_path is not None else INIT_DB_SQL_PATH
-
-
-#: Deployed body matches one of the committed definitions.
-MATCHED = "matched"
-#: Deployed body matches none of them -- the actionable outcome.
-DRIFTED = "drifted"
-#: ``init-db.sql`` defines it, but no such function exists in the catalog.
-NOT_DEPLOYED = "not_deployed"
-
-_CREATE_FUNCTION_RE = re.compile(
-    r"CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+"
-    r"(?P<name>[A-Za-z_][\w$]*\.[A-Za-z_][\w$]*)\s*\(",
-    re.IGNORECASE,
+_FUNCTION_FACTS_SQL = """
+WITH expected AS (
+ SELECT value FROM pg_catalog.jsonb_array_elements(($1::json)::jsonb->'functions')
+), normal_owner AS (
+ SELECT pg_catalog.pg_get_userbyid(datdba) AS name FROM pg_catalog.pg_database
+ WHERE datname=current_database()
 )
-_BODY_TAG_RE = re.compile(r"\bAS\s+(?P<tag>\$[A-Za-z_0-9]*\$)", re.IGNORECASE)
-
-_DEPLOYED_BODIES_SQL = """
-    SELECT n.nspname || '.' || p.proname AS function_name, p.prosrc AS body
-    FROM pg_catalog.pg_proc p
-    JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
-    WHERE p.prokind = 'f'
-      AND n.nspname || '.' || p.proname = ANY($1::text[])
+SELECT expected.value->>'schema' AS schema_name, expected.value->>'name' AS name,
+ expected.value->>'signature' AS signature, p.oid IS NOT NULL AS present,
+ p.oid IS NOT NULL AND pg_catalog.pg_get_userbyid(p.proowner)=
+   COALESCE(expected.value->>'owner',(SELECT name FROM normal_owner)) AS owner_ok,
+ p.oid IS NOT NULL AND p.prosecdef=(expected.value->>'definer')::boolean
+   AND COALESCE(p.proconfig,ARRAY[]::text[])=ARRAY(
+     SELECT pg_catalog.jsonb_array_elements_text(expected.value->'settings')) AS settings_ok,
+ CASE WHEN p.oid IS NOT NULL THEN
+   pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(p.prosrc,'UTF8')),'hex')
+ END AS digest,
+ p.oid IS NOT NULL AND NOT EXISTS(
+   SELECT FROM pg_catalog.aclexplode(COALESCE(p.proacl,
+     pg_catalog.acldefault('f',p.proowner))) a
+   LEFT JOIN pg_catalog.pg_roles role ON role.oid=a.grantee
+   WHERE a.grantee<>p.proowner AND (a.is_grantable OR NOT EXISTS(
+     SELECT FROM pg_catalog.jsonb_array_elements_text(expected.value->'executors') executor
+     WHERE COALESCE(executor,(SELECT name FROM normal_owner))=role.rolname))
+ ) AND NOT EXISTS(
+   SELECT FROM pg_catalog.jsonb_array_elements_text(expected.value->'executors') executor
+   WHERE NOT EXISTS(SELECT FROM pg_catalog.aclexplode(COALESCE(p.proacl,
+     pg_catalog.acldefault('f',p.proowner))) a
+     JOIN pg_catalog.pg_roles role ON role.oid=a.grantee
+     WHERE role.rolname=COALESCE(executor,(SELECT name FROM normal_owner))
+       AND a.privilege_type='EXECUTE' AND NOT a.is_grantable)
+ ) AS acl_ok
+FROM expected
+LEFT JOIN pg_catalog.pg_namespace n ON n.nspname=expected.value->>'schema'
+LEFT JOIN pg_catalog.pg_proc p ON p.pronamespace=n.oid
+ AND p.proname=expected.value->>'name'
+ AND replace(pg_catalog.oidvectortypes(p.proargtypes),', ', ',')=expected.value->>'signature'
+ORDER BY schema_name,name,signature
 """
 
 
-class StoredFunctionParseError(RuntimeError):
-    """``init-db.sql`` could not be parsed into function definitions."""
-
-
 @dataclass(frozen=True)
-class FunctionDefinition:
-    """One ``CREATE [OR REPLACE] FUNCTION`` statement's committed body."""
-
-    function: str
-    #: 1-based line in ``init-db.sql`` where the ``CREATE`` starts.
-    line: int
-    body: str
-
-
-@dataclass(frozen=True)
-class StoredFunctionEntry:
-    """One function's committed-vs-deployed comparison outcome.
-
-    Carries digests, never bodies -- see this module's Redaction note.
-    """
-
+class FunctionAuthorityFact:
     function: str
     status: str
-    committed_lines: tuple[int, ...]
-    committed_digests: tuple[str, ...]
-    deployed_digests: tuple[str, ...]
-    #: ``init-db.sql`` line of the committed variant the deployed body matched,
-    #: or ``None`` when it matched none (or when the function is not deployed).
-    matched_line: int | None
+    expected_digest: str
+    actual_digest: str | None
+    owner_ok: bool
+    settings_ok: bool
+    acl_ok: bool
 
 
 @dataclass(frozen=True)
-class StoredFunctionDriftReport:
-    """Result of one stored-function drift pass."""
-
+class DatabaseAuthorityReport:
     checked_at: datetime
-    entries: tuple[StoredFunctionEntry, ...]
-    #: Non-None when the check itself failed (source unreadable, catalog query
-    #: refused).  A degraded check is never rendered as a truthful all-clear.
+    status: str
+    functions: tuple[FunctionAuthorityFact, ...] = ()
+    objects_ok: bool | None = None
     check_error: str | None = None
-    #: Source used for this comparison, retained so logs can describe the
-    #: configured source rather than prescribing the package-relative default.
-    source_path: Path = INIT_DB_SQL_PATH
 
     @property
     def is_available(self) -> bool:
-        return self.check_error is None
-
-    @property
-    def drifted(self) -> tuple[StoredFunctionEntry, ...]:
-        return tuple(entry for entry in self.entries if entry.status == DRIFTED)
-
-    @property
-    def not_deployed(self) -> tuple[StoredFunctionEntry, ...]:
-        return tuple(entry for entry in self.entries if entry.status == NOT_DEPLOYED)
-
-    @property
-    def matched(self) -> tuple[StoredFunctionEntry, ...]:
-        return tuple(entry for entry in self.entries if entry.status == MATCHED)
-
-    @property
-    def is_drifted(self) -> bool:
-        return bool(self.drifted)
-
-    def entry(self, function: str) -> StoredFunctionEntry | None:
-        """Return the entry for *function*, or ``None`` when it is out of scope."""
-        for candidate in self.entries:
-            if candidate.function == function:
-                return candidate
-        return None
+        return self.status in {"conforming", "mismatch"} and self.check_error is None
 
 
-def parse_function_definitions(sql: str) -> tuple[FunctionDefinition, ...]:
-    """Extract every ``CREATE [OR REPLACE] FUNCTION`` body from *sql*.
-
-    Nested definitions are found too: an installer's own body is one match and
-    each function it emits is another, because dollar-quote tags are unique
-    within ``init-db.sql`` and each ``CREATE`` is located independently.
-
-    Also usable on a single ``pg_get_functiondef()`` statement, which has the
-    same shape.
-    """
-    creates = list(_CREATE_FUNCTION_RE.finditer(sql))
-    definitions: list[FunctionDefinition] = []
-    for index, create in enumerate(creates):
-        name = create.group("name").lower()
-        # A body opener belongs to this CREATE only if it precedes the next one:
-        # an installer's own ``AS $tag$`` comes before the CREATEs it emits, and
-        # each emitted CREATE's opener comes before the one after it.  Bounding
-        # the search this way turns a definition this parser cannot read into a
-        # loud failure instead of a body silently sliced from the wrong span.
-        limit = creates[index + 1].start() if index + 1 < len(creates) else len(sql)
-        opener = _BODY_TAG_RE.search(sql, create.end(), limit)
-        if opener is None:
-            raise StoredFunctionParseError(f"no dollar-quoted body found for {name}")
-        tag = opener.group("tag")
-        end = sql.find(tag, opener.end())
-        if end < 0:
-            raise StoredFunctionParseError(f"unterminated {tag} body for {name}")
-        definitions.append(
-            FunctionDefinition(
-                function=name,
-                line=sql.count("\n", 0, create.start()) + 1,
-                body=sql[opener.end() : end],
+def compare_catalog_functions(expected, observed) -> tuple[FunctionAuthorityFact, ...]:
+    """Require exact population and typed facts; never accept a previous variant."""
+    index = {(row["schema"], row["name"], row["signature"]): row for row in expected}
+    seen = set()
+    facts = []
+    for row in observed:
+        key = (row["schema_name"], row["name"], row["signature"])
+        if key not in index or key in seen:
+            raise ValueError("Catalog observation has an unsupported identity")
+        seen.add(key)
+        source = index[key]
+        present = row["present"]
+        flags = tuple(row[name] for name in ("owner_ok", "settings_ok", "acl_ok"))
+        digest = row["digest"]
+        if type(present) is not bool or any(type(flag) is not bool for flag in flags):
+            raise ValueError("Catalog observation has untyped facts")
+        if digest is not None and (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise ValueError("Catalog observation has an invalid digest")
+        matched = present and all(flags) and digest == source["digest"]
+        facts.append(
+            FunctionAuthorityFact(
+                function=f"{key[0]}.{key[1]}({key[2]})",
+                status="conforming" if matched else "missing" if not present else "mismatch",
+                expected_digest=source["digest"],
+                actual_digest=digest,
+                owner_ok=flags[0],
+                settings_ok=flags[1],
+                acl_ok=flags[2],
             )
         )
-    return tuple(definitions)
+    if seen != set(index):
+        raise ValueError("Catalog observation is incomplete")
+    return tuple(facts)
 
 
-def normalize_function_body(body: str) -> str:
-    """Return *body* with insignificant whitespace removed.
-
-    Four rules, applied in order.  Each is whitespace-only, so none of them can
-    hide a changed literal, statement, or comment:
-
-    1. line endings -- ``\\r\\n`` and bare ``\\r`` become ``\\n``, so a checkout
-       with different line endings is not drift;
-    2. trailing spaces and tabs are dropped from every line;
-    3. uniform indentation is removed, so the same body emitted from a more (or
-       less) deeply nested installer is not drift;
-    4. leading and trailing blank lines are dropped.
-    """
-    unified = body.replace("\r\n", "\n").replace("\r", "\n")
-    trimmed = "\n".join(line.rstrip(" \t") for line in unified.split("\n"))
-    dedented = textwrap.dedent(trimmed)
-    return dedented.strip("\n")
-
-
-def body_digest(body: str) -> str:
-    """Return a short, non-reversible digest of *body*'s normalised form."""
-    normalized = normalize_function_body(body)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
-
-
-def compare_stored_functions(
-    definitions: Sequence[FunctionDefinition],
-    deployed: Mapping[str, Sequence[str]],
-) -> tuple[StoredFunctionEntry, ...]:
-    """Compare committed *definitions* against *deployed* bodies by function name.
-
-    *deployed* maps a qualified function name to every body the catalog holds
-    under it (more than one when the name is overloaded).  A function is
-    ``matched`` only when **every** deployed body normalises to one of that
-    name's committed variants, so an overload the committed source does not
-    describe is reported rather than averaged away.
-    """
-    committed: dict[str, list[FunctionDefinition]] = {}
-    for definition in definitions:
-        committed.setdefault(definition.function, []).append(definition)
-
-    entries: list[StoredFunctionEntry] = []
-    for function in sorted(committed):
-        variants = committed[function]
-        line_by_digest: dict[str, int] = {}
-        for variant in variants:
-            line_by_digest.setdefault(body_digest(variant.body), variant.line)
-        committed_digests = tuple(body_digest(variant.body) for variant in variants)
-        committed_lines = tuple(variant.line for variant in variants)
-
-        bodies = tuple(deployed.get(function) or ())
-        if not bodies:
-            entries.append(
-                StoredFunctionEntry(
-                    function=function,
-                    status=NOT_DEPLOYED,
-                    committed_lines=committed_lines,
-                    committed_digests=committed_digests,
-                    deployed_digests=(),
-                    matched_line=None,
-                )
-            )
-            continue
-
-        deployed_digests = tuple(body_digest(body) for body in bodies)
-        matched_lines = [
-            line_by_digest[digest] for digest in deployed_digests if digest in line_by_digest
-        ]
-        all_matched = len(matched_lines) == len(deployed_digests)
-        entries.append(
-            StoredFunctionEntry(
-                function=function,
-                status=MATCHED if all_matched else DRIFTED,
-                committed_lines=committed_lines,
-                committed_digests=committed_digests,
-                deployed_digests=deployed_digests,
-                matched_line=min(matched_lines) if all_matched else None,
-            )
-        )
-    return tuple(entries)
-
-
-async def compute_stored_function_drift(
-    pool: asyncpg.Pool, *, init_db_path: Path | None = None
-) -> StoredFunctionDriftReport:
-    """Compare every committed stored-function body against its deployed body.
-
-    Never raises: any failure (unreadable source, refused catalog query) is
-    captured into ``check_error`` instead of crashing the caller or producing a
-    false all-clear.
-    """
+async def compute_database_authority(pool, *, database: str = "butlers") -> DatabaseAuthorityReport:
+    """Finite, read-only diagnostics. A diagnostic is not serving admission proof."""
     checked_at = datetime.now(UTC)
-    # Read the environment at comparison time so the live endpoint and the
-    # one-shot startup probe use the same configured source. An explicit
-    # argument remains the narrow test/one-off override.
-    source = init_db_path if init_db_path is not None else _configured_init_db_sql_path()
+    try:
+        expected = serving_catalog_contract(database)
+        encoded = json.dumps(expected)
+        deadline = asyncio.get_running_loop().time() + 5
 
-    def _degraded(reason: str) -> StoredFunctionDriftReport:
-        return StoredFunctionDriftReport(
-            checked_at=checked_at,
-            entries=(),
-            check_error=reason,
-            source_path=source,
+        async def observe():
+            # Query cancellation occurs INSIDE the acquire context. Its full
+            # release runs in the retained child, outside the query deadline.
+            async with pool.acquire(timeout=5) as connection:
+                async with asyncio.timeout_at(deadline):
+                    objects_ok = await connection.fetchval(_CATALOG_OBJECT_SQL, encoded)
+                    if type(objects_ok) is not bool:
+                        raise ValueError("Catalog predicate is unavailable")
+                    observed = await connection.fetch(_FUNCTION_FACTS_SQL, encoded)
+                    functions = compare_catalog_functions(expected["functions"], observed)
+                return objects_ok, functions
+
+        objects_ok, functions = await observe_catalog_owned(pool, observe)
+        status = (
+            "conforming"
+            if objects_ok and all(fact.status == "conforming" for fact in functions)
+            else "mismatch"
         )
-
-    try:
-        sql = source.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        return _degraded(f"cannot read {source.name}: {type(exc).__name__}")
-
-    try:
-        definitions = parse_function_definitions(sql)
-    except StoredFunctionParseError as exc:
-        return _degraded(f"cannot parse {source.name}: {exc}")
-    if not definitions:
-        return _degraded(f"{source.name} defines no stored functions, which cannot be right")
-
-    names = sorted({definition.function for definition in definitions})
-    try:
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(_DEPLOYED_BODIES_SQL, names)
-    except Exception as exc:  # noqa: BLE001 - a degraded check must never crash its caller
-        return _degraded(f"cannot read pg_proc: {type(exc).__name__}")
-
-    deployed: dict[str, list[str]] = {}
-    for row in rows:
-        deployed.setdefault(row["function_name"], []).append(row["body"])
-
-    return StoredFunctionDriftReport(
-        checked_at=checked_at,
-        entries=compare_stored_functions(definitions, deployed),
-        source_path=source,
-    )
+        return DatabaseAuthorityReport(checked_at, status, functions, objects_ok)
+    except Exception as exc:
+        return DatabaseAuthorityReport(checked_at, "unavailable", check_error=type(exc).__name__)
 
 
-def _source_reference(source: Path) -> str:
-    """Describe the source without implying the default when it was overridden."""
-    if source == INIT_DB_SQL_PATH:
-        return "scripts/init-db.sql"
-    return f"the configured source ({source}; via {STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH_ENV})"
-
-
-def log_stored_function_drift(report: StoredFunctionDriftReport) -> None:
-    """Emit one log line summarising *report*.  Source reference and names only."""
-    source_reference = _source_reference(report.source_path)
+def log_database_authority(report: DatabaseAuthorityReport) -> None:
+    """Closed diagnostics only, no body, source path, credential or driver text."""
     if not report.is_available:
-        logger.warning(
-            "Stored-function drift check unavailable: %s. "
-            "Deployed function bodies were NOT compared against %s.",
-            report.check_error,
-            source_reference,
-        )
-        return
-
-    if report.is_drifted:
-        logger.warning(
-            "Stored-function body drift: %d of %d functions defined by %s "
-            "differ from the bodies deployed in this database (%s). "
-            "Re-run %s against this database to converge. "
-            "Bodies are never logged; the digests identify the mismatch.",
-            len(report.drifted),
-            len(report.entries),
-            source_reference,
-            ", ".join(
-                f"{entry.function} committed={'/'.join(entry.committed_digests)} "
-                f"deployed={'/'.join(entry.deployed_digests)}"
-                for entry in report.drifted
-            ),
-            source_reference,
-        )
-        return
-
-    logger.info(
-        "Stored-function bodies match %s (%d matched, %d not deployed).",
-        source_reference,
-        len(report.matched),
-        len(report.not_deployed),
-    )
-
-
-__all__ = [
-    "DRIFTED",
-    "INIT_DB_SQL_PATH",
-    "MATCHED",
-    "NOT_DEPLOYED",
-    "STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH_ENV",
-    "FunctionDefinition",
-    "StoredFunctionDriftReport",
-    "StoredFunctionEntry",
-    "StoredFunctionParseError",
-    "body_digest",
-    "compare_stored_functions",
-    "compute_stored_function_drift",
-    "log_stored_function_drift",
-    "normalize_function_body",
-    "parse_function_definitions",
-]
+        logger.warning("Database authority catalog observation is unavailable")
+    elif report.status != "conforming":
+        logger.warning("Database authority catalog does not conform; controlled migrator required")

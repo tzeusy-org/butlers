@@ -16,6 +16,8 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
+
 
 def _reset_otel_global_state():
     """Fully reset the OpenTelemetry global tracer provider state."""

@@ -197,7 +197,10 @@ export function SystemVerdictBanner() {
   const postureData = posture.data;
   const insecure: string[] = [];
   if (postureData?.security?.insecure_infra_defaults) insecure.push("insecure infra defaults");
-  if (postureData?.security?.role_enforcement_disabled) insecure.push("DB role enforcement disabled");
+  if (postureData?.security?.database_authority !== "admitted") {
+    insecure.push(postureData?.security?.database_authority === "unavailable"
+      ? "database authority unavailable" : "database authority unknown");
+  }
   if (insecure.length > 0) {
     problems.push({ key: "posture", text: insecure.join(", ") });
   }

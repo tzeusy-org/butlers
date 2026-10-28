@@ -41,13 +41,14 @@ from butlers.core.fact_authority import FactSourceContextRegistry, FactWriteCont
 from butlers.daemon import ButlerDaemon
 from butlers.db import register_jsonb_codec
 from butlers.identity import resolve_contact_by_channel, resolve_outbound_channel
-from butlers.migrations import run_migrations
 from butlers.modules._roster_relationship import RelationshipModule
 from butlers.modules.approvals.module import ApprovalsModule
 from butlers.modules.approvals.operations import approve_action
 from butlers.testing.migration import (
     _bootstrap_migration_prerequisites,
+    async_migrate_test_database,
     create_migrated_test_db,
+    create_migration_db,
     migration_bootstrap_db_url,
     migration_db_name,
 )
@@ -114,29 +115,39 @@ def admitted_standing_rule_boundary(monkeypatch):
 async def env(postgres_container):
     # Real lifecycle topology: core in public and both daemons, then their
     # actual module/roster chains. No copied table or foreign grant.
-    url = await asyncio.to_thread(
-        create_migrated_test_db, postgres_container, migration_db_name(), ["core"]
+    url = await asyncio.to_thread(create_migration_db, postgres_container, migration_db_name())
+    plans = (
+        ("core", None, None),
+        ("core", "relationship", None),
+        ("core", "switchboard", None),
+        ("memory", "relationship", None),
+        ("approvals", "relationship", None),
+        ("switchboard", "switchboard", None),
+        ("relationship", "relationship", None),
     )
-    for schema in ("relationship", "switchboard"):
-        await run_migrations(url, chain="core", schema=schema)
-    for chain, schema in (
-        ("memory", "relationship"),
-        ("approvals", "relationship"),
-        ("switchboard", "switchboard"),
-        ("relationship", "relationship"),
-    ):
-        await run_migrations(url, chain=chain, schema=schema)
-    # Replay the genuine privileged bootstrap against this disposable database
-    # after all chains, so its grant loop cannot be mistaken for an ACL boundary.
-    # Domain controls below still execute under the actual runtime SET ROLE pools.
+    # Execute the original actual chains in order, then finalize their complete
+    # declarations once on the same held maintenance session. No fixture grants.
+    await async_migrate_test_database(postgres_container, url, plans=plans)
     parsed = urlparse(url)
+    # Preserve the actual bootstrap-after-tables countercontrol. The current
+    # source bootstrap retains its own closed authority contract; this is not
+    # revival of the retired broad-grant producer or native serving evidence.
     await asyncio.to_thread(
         _bootstrap_migration_prerequisites,
         migration_bootstrap_db_url(postgres_container, parsed.path.lstrip("/")),
         parsed.username,
     )
+    control_url = (
+        urlparse(migration_bootstrap_db_url(postgres_container, parsed.path.lstrip("/")))
+        ._replace(scheme="postgresql")
+        .geturl()
+    )
 
-    async def pool(schema, role=None, *, database_url=url):
+    async def pool(schema, role=None, *, database_url=None):
+        # Explicit raw effective-role transport; normal administrative seed/readback
+        # and auth-denial subjects retain their original normal login.
+        database_url = database_url or (control_url if role else url)
+
         async def setup(conn):
             if role:
                 await conn.execute(f"SET ROLE {role}")
@@ -2109,7 +2120,7 @@ async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_cont
         assert (
             await old_client.post("/api/test-stamp", headers={"X-API-Key": config.api_key})
         ).status_code == 200
-    await run_migrations(core_url, chain="core")
+    await async_migrate_test_database(postgres_container, core_url, plans=(("core", None, None),))
     await core.expire_connections()
     assert await core.fetchval("SELECT to_regnamespace('relationship')") is not None
     for table in feature_tables:

@@ -126,3 +126,56 @@ def test_tracker_isolation_refuses_missing_site_cidrs() -> None:
     with pytest.raises(subprocess.CalledProcessError) as exc:
         _render("dev")
     assert "trackerEgress.deniedCidrs is required" in exc.value.stderr
+
+
+@needs_helm
+@pytest.mark.parametrize("env", ["dev", "prod"])
+def test_database_profiles_are_bound_to_real_workload_purposes(env: str) -> None:
+    names = _by_kind_name(_render(env, *_SITE))
+    api = _pod_spec(names[("Deployment", "dashboard-api")])
+    migration = next(c for c in api["initContainers"] if c["name"] == "migrations")
+    migration_env = {item["name"]: item for item in migration["env"]}
+    assert "BUTLERS_MIGRATOR_DATABASE_URL" in migration_env
+    assert "POSTGRES_PASSWORD" not in migration_env
+    expected = {"dashboard-api": "DASHBOARD_DB_PASSWORD", "butlers-up": "POSTGRES_PASSWORD"}
+    if env == "dev":
+        expected["butlers-control"] = "POSTGRES_PASSWORD"
+    for name, password_key in expected.items():
+        pod = _pod_spec(names[("Deployment", name)])
+        for container in pod["containers"]:
+            variables = {item["name"]: item for item in container.get("env", [])}
+            assert (
+                variables["POSTGRES_PASSWORD"]["valueFrom"]["secretKeyRef"]["key"] == password_key
+            )
+            assert "BUTLERS_MIGRATOR_DATABASE_URL" not in variables
+            assert "BUTLERS_CREDENTIAL_DATABASE_URL" in variables
+    for (kind, name), document in names.items():
+        if kind != "Deployment" or not name.startswith("connector-"):
+            continue
+        for container in _pod_spec(document)["containers"]:
+            variables = {item["name"]: item for item in container.get("env", [])}
+            assert (
+                variables["POSTGRES_PASSWORD"]["valueFrom"]["secretKeyRef"]["key"]
+                == "CONNECTOR_DB_PASSWORD"
+            )
+            assert "BUTLERS_MIGRATOR_DATABASE_URL" not in variables
+
+
+def test_compose_separates_migration_and_serving_credentials() -> None:
+    services = yaml.safe_load((_REPO_ROOT / "docker-compose.yml").read_text())["services"]
+    migration = services["migrations"]["environment"]
+    assert "BUTLERS_MIGRATOR_DATABASE_URL" in migration
+    assert "POSTGRES_PASSWORD" not in migration
+    for name, service in services.items():
+        variables = service.get("environment", {})
+        if "POSTGRES_PASSWORD" not in variables:
+            continue
+        assert "BUTLERS_MIGRATOR_DATABASE_URL" not in variables
+        if name.startswith("dashboard-api"):
+            assert "DASHBOARD_DB_PASSWORD" in variables["POSTGRES_PASSWORD"]
+        elif name.startswith("connector-") or name == "oauth-gate":
+            assert "CONNECTOR_DB_PASSWORD" in variables["POSTGRES_PASSWORD"]
+        elif name == "backup-cron":
+            assert "BACKUP_DB_PASSWORD" in variables["POSTGRES_PASSWORD"]
+        else:
+            assert "RUNTIME_DB_PASSWORD" in variables["POSTGRES_PASSWORD"]

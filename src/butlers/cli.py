@@ -457,6 +457,52 @@ def db() -> None:
 
 
 @db.command()
+@click.option("--migration-role", required=True, help="Existing distinct migration login")
+def bootstrap(migration_role: str) -> None:
+    """Prepare source-owned roles/extensions with an explicit administrative login.
+
+    No application body or blanket future-object grant is installed. This
+    operator action does not run as part of serving startup or migration retry.
+    """
+    from urllib.parse import unquote, urlparse
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import NullPool
+
+    from butlers.bootstrap_prerequisite import prepare_bootstrap_connection
+    from butlers.db_authority.roles import bootstrap_role_manifest
+
+    selected = os.environ.get("BUTLERS_BOOTSTRAP_DATABASE_URL")
+    if not selected:
+        raise click.ClickException("Explicit bootstrap database configuration is required")
+    database = unquote(urlparse(selected).path.lstrip("/"))
+    # Compile before opening a connection, including malformed identity refusal.
+    try:
+        bootstrap_role_manifest(database, migration_role, source_database=database)
+    except Exception as exc:
+        raise click.ClickException("Bootstrap source identity is unavailable") from exc
+    engine = create_engine(
+        selected,
+        poolclass=NullPool,
+        isolation_level="AUTOCOMMIT",
+        connect_args={"connect_timeout": 5, "options": "-c statement_timeout=5000"},
+    )
+    raw = None
+    try:
+        raw = engine.raw_connection()
+        prepare_bootstrap_connection(raw, database, migration_role, source_database=database)
+    except Exception as exc:
+        raise click.ClickException("Selected database bootstrap did not complete") from exc
+    finally:
+        try:
+            if raw is not None:
+                raw.close()
+        finally:
+            engine.dispose()
+    click.echo("Selected database bootstrap preparation complete.")
+
+
+@db.command()
 @click.option(
     "--only",
     callback=_parse_comma_separated,
@@ -479,13 +525,9 @@ def db() -> None:
 def migrate(only: tuple[str, ...], butlers_dir: Path, dry_run: bool) -> None:
     """Run Alembic migrations for all (or selected) butler schemas.
 
-    Mirrors the migration sequence each butler daemon performs on startup:
-    core chain → butler-specific chain → enabled module chains. Safe to run
-    repeatedly — all migrations are idempotent.
-
-    This command is the recommended way to bootstrap a fresh database before
-    starting butler daemons for the first time (breaks the circular dependency
-    between daemon startup and schema existence).
+    Owns core, domain and module upgrades plus final authority verification on
+    one explicit migrator session. Serving daemons only verify installed state.
+    Complete operator bootstrap and ownership prerequisites first.
     """
     configs = _discover_configs(butlers_dir)
     if not configs:
@@ -518,7 +560,8 @@ def migrate(only: tuple[str, ...], butlers_dir: Path, dry_run: bool) -> None:
     default=DEFAULT_BUTLERS_DIR,
     help="Directory containing butler configs",
 )
-def provision(only: tuple[str, ...], butlers_dir: Path) -> None:
+@click.option("--owner-role", required=True, help="Existing nonprivileged normal database owner")
+def provision(only: tuple[str, ...], butlers_dir: Path, owner_role: str) -> None:
     """Provision PostgreSQL databases for all (or selected) butlers."""
     configs = _discover_configs(butlers_dir)
     if not configs:
@@ -532,101 +575,85 @@ def provision(only: tuple[str, ...], butlers_dir: Path) -> None:
             click.echo(f"Butler(s) not found: {', '.join(sorted(missing))}")
             sys.exit(1)
 
-    asyncio.run(_provision_databases(configs))
+    asyncio.run(_provision_databases(configs, owner_role=owner_role))
 
 
 async def _migrate_all(configs: dict[str, Path], *, dry_run: bool = False) -> None:
-    """Run Alembic migrations for each butler config in dependency order.
+    """Run declared chains and authority finalization under one selected session.
 
-    Mirrors exactly what each daemon does on startup:
-      1. core chain (schema-scoped)
-      2. butler-specific chain (if it exists)
-      3. enabled module chains (if they have migrations)
+    Serving credentials are never a migrator fallback. The explicit URL selects
+    one database; every requested roster configuration must belong to it before
+    any connection or DDL is attempted.
     """
-    from urllib.parse import quote, quote_plus
+    from urllib.parse import unquote, urlparse
 
-    from butlers.db import db_params_from_env, schema_search_path
     from butlers.migrations import (
+        finalize_authority,
         get_module_migration_chains,
         has_butler_chain,
+        migration_session,
         run_migrations,
     )
     from butlers.modules.registry import default_registry
 
     registry = default_registry()
-    params = db_params_from_env()
-    failed: list[str] = []
-
-    for name, config_dir in sorted(configs.items()):
-        try:
-            config = load_config(config_dir)
-            db_name = config.db_name or "butlers"
-            schema = config.db_schema
-
-            user = quote(str(params["user"]), safe="")
-            password = quote(str(params["password"]), safe="")
-            host = params["host"]
-            port = params["port"]
-            db_name_enc = quote(db_name, safe="")
-            base_url = f"postgresql://{user}:{password}@{host}:{port}/{db_name_enc}"
-            search_path = schema_search_path(schema)
-            if search_path:
-                db_url = f"{base_url}?options={quote_plus(f'-csearch_path={search_path}')}"
-            else:
-                db_url = base_url
-
-            modules = registry.load_from_config(config.modules)
-            module_chains = get_module_migration_chains(modules, name)
-
-            if dry_run:
-                chains = ["core"]
-                if has_butler_chain(name):
-                    chains.append(name)
-                chains += module_chains.values()
-                click.echo(f"  {name} (schema={schema}): would run chains: {', '.join(chains)}")
-                continue
-
-            click.echo(f"  {name}: core (schema={schema})...", nl=False)
-            await run_migrations(db_url, chain="core", schema=schema)
-            click.echo(" done")
-
-            if has_butler_chain(name):
-                click.echo(f"  {name}: butler chain...", nl=False)
-                await run_migrations(db_url, chain=name, schema=schema)
-                click.echo(" done")
-
-            for module_name, chain in module_chains.items():
-                module_cfg = config.modules.get(module_name) or {}
-                module_migration_schema = module_cfg.get("memory_schema") or schema
-                click.echo(f"  {name}/{chain}: module chain...", nl=False)
-                await run_migrations(db_url, chain=chain, schema=module_migration_schema)
-                click.echo(" done")
-
-        except Exception as exc:
-            click.echo(f"  {name}: FAILED — {exc}")
-            failed.append(name)
-
-    if failed:
-        click.echo(f"\nMigration failed for: {', '.join(failed)}", err=True)
-        sys.exit(1)
-
-    if not dry_run:
-        click.echo("All migrations complete.")
-
-
-async def _provision_databases(configs: dict[str, Path]) -> None:
-    """Provision databases for the given butler configs."""
-    from butlers.db import Database
-
+    plan = []
     for name, config_dir in sorted(configs.items()):
         config = load_config(config_dir)
-        db_name = config.db_name or "butlers"
+        schema = config.db_schema
+        modules = registry.load_from_config(config.modules)
+        chains = [("core", schema)]
+        if has_butler_chain(name):
+            chains.append((name, schema))
+        for module_name, chain in get_module_migration_chains(modules, name).items():
+            module_cfg = config.modules.get(module_name) or {}
+            chains.append((chain, module_cfg.get("memory_schema") or schema))
+        plan.append((name, config.db_name or "butlers", chains))
+    if dry_run:
+        for name, _, chains in plan:
+            click.echo(f"  {name}: would run chains: {', '.join(chain for chain, _ in chains)}")
+        return
+    db_url = os.environ.get("BUTLERS_MIGRATOR_DATABASE_URL")
+    if not db_url:
+        raise click.ClickException("Explicit migrator database configuration is required")
+    selected = unquote(urlparse(db_url).path.lstrip("/"))
+    if not selected or any(database != selected for _, database, _ in plan):
+        raise click.ClickException("Migration plan does not match the selected database")
+    if not plan:
+        return
+    try:
+        with migration_session(db_url) as connection:
+            for name, _, chains in plan:
+                for chain, schema in chains:
+                    click.echo(f"  {name}: {chain} (schema={schema})...", nl=False)
+                    await run_migrations(db_url, chain=chain, schema=schema, connection=connection)
+                    click.echo(" done")
+            finalize_authority(
+                connection,
+                plans=tuple(
+                    (chain, schema, None) for _, _, chains in plan for chain, schema in chains
+                ),
+            )
+    except Exception as exc:
+        raise click.ClickException("Selected database migration did not complete") from exc
+    click.echo("All migrations and authority verification complete.")
+
+
+async def _provision_databases(configs: dict[str, Path], *, owner_role: str) -> None:
+    """Use the selected bootstrap connection, never daemon credentials."""
+    from butlers.db import Database
+
+    dsn = os.environ.get("BUTLERS_BOOTSTRAP_DATABASE_URL")
+    if not dsn:
+        raise click.ClickException("Explicit provisioning database configuration is required")
+    for name, config_dir in sorted(configs.items()):
+        config = load_config(config_dir)
+        database = Database(db_name=config.db_name or "butlers")
         try:
-            database = Database.from_env(db_name)
-            await database.provision()
-            click.echo(f"  {name}: provisioned ({db_name})")
+            await database.provision(administrative_dsn=dsn, owner_role=owner_role)
         except Exception as exc:
-            click.echo(f"  {name}: FAILED ({exc})")
+            raise click.ClickException("Selected database provisioning did not complete") from exc
+        click.echo(f"  {name}: provisioned")
 
 
 def _discover_configs(butlers_dir: Path) -> dict[str, Path]:
@@ -751,7 +778,10 @@ async def _record_deployment_boot(daemons: list, *, configured_count: int) -> No
 
 async def _start_all(configs: dict[str, Path]) -> None:
     """Start all butler daemons in a single event loop."""
+    from butlers.credential_store import credential_purpose_config_from_env
     from butlers.daemon import ButlerDaemon
+
+    credential_purpose = credential_purpose_config_from_env()
 
     daemons: list[ButlerDaemon] = []
     loop = asyncio.get_event_loop()
@@ -775,7 +805,7 @@ async def _start_all(configs: dict[str, Path]) -> None:
         port_attempt = 0
         db_attempt = 0
         while not started:
-            daemon = ButlerDaemon(config_dir)
+            daemon = ButlerDaemon(config_dir, credential_purpose=credential_purpose)
             try:
                 await daemon.start()
                 daemons.append(daemon)
@@ -847,7 +877,10 @@ async def _start_all(configs: dict[str, Path]) -> None:
 
 async def _start_single(config_path: Path) -> None:
     """Start a single butler daemon."""
+    from butlers.credential_store import credential_purpose_config_from_env
     from butlers.daemon import ButlerDaemon
+
+    credential_purpose = credential_purpose_config_from_env()
 
     loop = asyncio.get_event_loop()
     shutdown_event = asyncio.Event()
@@ -859,7 +892,7 @@ async def _start_single(config_path: Path) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _signal_handler)
 
-    daemon = ButlerDaemon(config_path)
+    daemon = ButlerDaemon(config_path, credential_purpose=credential_purpose)
     await daemon.start()
     click.echo(f"Butler {daemon.config.name} running on port {daemon.config.port}")
 
@@ -870,3 +903,152 @@ async def _start_single(config_path: Path) -> None:
 # Host-only commands are deliberately absent from the dashboard HTTP router.
 
 cli.add_command(owner_auth_commands)
+
+
+def _rollback_capsule_path(path: Path) -> Path:
+    """Keep operator catalog artifacts out of the checkout; never follow links."""
+    import stat
+
+    resolved = path.resolve()
+    if path.is_symlink() or any((parent / ".git").exists() for parent in resolved.parents):
+        raise click.ClickException("Rollback catalog must be an owned external file")
+    if path.exists():
+        info = path.stat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_size > 8 * 1024 * 1024
+        ):
+            raise click.ClickException("Rollback catalog ownership/mode/size is unsupported")
+    return resolved
+
+
+def _load_rollback_capsule(path: Path, expected_sha256: str):
+    import hashlib
+    import json
+    import re
+
+    path = _rollback_capsule_path(path)
+    if re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
+        raise click.ClickException("Exact rollback catalog SHA256 is required")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as stream:
+        import stat
+
+        actual = os.fstat(stream.fileno())
+        if (
+            not stat.S_ISREG(actual.st_mode)
+            or actual.st_uid != os.getuid()
+            or stat.S_IMODE(actual.st_mode) != 0o600
+        ):
+            raise click.ClickException("Opened rollback catalog ownership/mode differs")
+        data = stream.read(8 * 1024 * 1024 + 1)
+    if len(data) > 8 * 1024 * 1024 or hashlib.sha256(data).hexdigest() != expected_sha256:
+        raise click.ClickException("Rollback catalog bytes differ from the selected artifact")
+    try:
+        return json.loads(data)
+    except (ValueError, UnicodeError) as exc:
+        raise click.ClickException("Rollback catalog encoding is unsupported") from exc
+
+
+@db.command("rollback-capture")
+@click.option("--migration-role", required=True)
+@click.option("--chart", required=True, help="Pinned predecessor chart artifact identity")
+@click.option("--image", required=True, help="Pinned predecessor image artifact identity")
+@click.option(
+    "--old-secret-key", required=True, help="Retained secret KEY reference, never its value"
+)
+@click.option("--output", type=click.Path(path_type=Path), required=True)
+def rollback_capture(migration_role, chart, image, old_secret_key, output):
+    """Capture nonsecret authority BEFORE cutover, on the explicit admin session."""
+    import hashlib
+    import json
+
+    from butlers.db_authority.apply import capture_rollback_capsule
+    from butlers.migrations import operator_rollback_session
+
+    selected = os.environ.get("BUTLERS_BOOTSTRAP_DATABASE_URL")
+    if not selected:
+        raise click.ClickException("Explicit administrative database configuration is required")
+    output = _rollback_capsule_path(output)
+    try:
+        with operator_rollback_session(selected) as connection:
+            capsule = capture_rollback_capsule(
+                connection,
+                migration_role,
+                {
+                    "chart": chart,
+                    "image": image,
+                    "old_secret": old_secret_key,
+                },
+            )
+        data = (json.dumps(capsule, sort_keys=True, indent=2, default=str) + "\n").encode()
+        descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except BaseException:
+            output.unlink(missing_ok=True)
+            raise
+    except Exception as exc:
+        raise click.ClickException("Predecessor catalog capture did not complete") from exc
+    click.echo("Predecessor catalog captured; SHA256=" + hashlib.sha256(data).hexdigest())
+
+
+@db.command("rollback-catalog")
+@click.option("--transition", type=click.Choice(["R0", "R1"]), required=True)
+@click.option("--capsule", type=click.Path(path_type=Path), required=True)
+@click.option(
+    "--sha256", required=True, help="Independently retained exact catalog artifact SHA256"
+)
+def rollback_catalog(transition, capsule, sha256):
+    """Restore pinned catalog/stamps; deployment/profile restoration stays explicit.
+
+    This operator command never reads or falls back to a serving credential.
+    It returns only after the physical held session is committed and released.
+    """
+    from butlers.migrations import run_preserving_rollback
+
+    selected = os.environ.get("BUTLERS_BOOTSTRAP_DATABASE_URL")
+    if not selected:
+        raise click.ClickException("Explicit administrative database configuration is required")
+    try:
+        document = _load_rollback_capsule(capsule, sha256)
+        run_preserving_rollback(selected, document, transition=transition)
+    except Exception as exc:
+        raise click.ClickException(
+            "Pinned catalog rollback did not complete; retain stopped state"
+        ) from exc
+    click.echo(
+        "Pinned predecessor catalog/stamps restored. Restore the recorded predecessor "
+        "chart/image/key references and verify its actual serving profile before traffic."
+    )
+
+
+@db.command("attention-transition")
+@click.option(
+    "--component",
+    type=click.Choice(["producers", "reissue", "conditions", "marker"]),
+    required=True,
+)
+@click.option("--state", type=click.Choice(["enabled", "disabled"]), required=True)
+def attention_transition(component, state):
+    """Preserve attention evidence while selecting a stopped operator transition."""
+    from butlers.db_authority.apply import transition_runtime_attention
+    from butlers.migrations import migration_session
+
+    selected = os.environ.get("BUTLERS_BOOTSTRAP_DATABASE_URL")
+    if not selected:
+        raise click.ClickException("Explicit administrative database configuration is required")
+    try:
+        with migration_session(selected) as held:
+            transition_runtime_attention(held, component=component, enabled=state == "enabled")
+            held.commit()
+    except Exception as exc:
+        raise click.ClickException(
+            "Attention transition did not complete; retain stopped state"
+        ) from exc
+    click.echo("Attention transition committed and selected maintenance session released.")

@@ -2,13 +2,18 @@
 
 import json
 from contextlib import asynccontextmanager
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 import asyncpg
 import pytest
 
 from butlers.core.goal_admission import GoalAdmission, SourceRef, digest
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
 from tests.switchboard.goal_admission_fixtures import Catalogs, Sources, limits
 
 TABLES = (
@@ -43,7 +48,14 @@ async def codec(connection):
 
 
 @asynccontextmanager
-async def pools(url):
+async def pools(url, *, postgres_container):
+    selected = unquote(urlparse(url).path.lstrip("/"))
+    control_url = (
+        urlparse(migration_bootstrap_db_url(postgres_container, selected))
+        ._replace(scheme="postgresql")
+        .geturl()
+    )
+
     async def role(connection):
         await connection.execute("SET ROLE butler_switchboard_rw")
 
@@ -55,14 +67,14 @@ async def pools(url):
         server_settings={"search_path": "switchboard,public"},
     ) as owner:
         async with asyncpg.create_pool(
-            url, init=codec, setup=role, min_size=1, max_size=4
+            control_url, init=codec, setup=role, min_size=1, max_size=4
         ) as runtime:
             yield owner, runtime
 
 
 @pytest.fixture
-async def ledger(ledger_url):
-    async with pools(ledger_url) as (owner, runtime):
+async def ledger(ledger_url, postgres_container):
+    async with pools(ledger_url, postgres_container=postgres_container) as (owner, runtime):
         await owner.execute("TRUNCATE " + ",".join("switchboard." + t for t in TABLES) + " CASCADE")
         await configure(owner, limits())
         yield owner, runtime

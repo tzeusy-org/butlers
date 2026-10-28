@@ -17,6 +17,8 @@ from unittest.mock import MagicMock, patch
 import asyncpg
 import pytest
 
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
+
 pytestmark = pytest.mark.integration
 
 # ---------------------------------------------------------------------------
@@ -760,14 +762,16 @@ async def legacy_budget_pool(legacy_budget_db):
         await pool.close()
 
 
-async def _budget_revision(db_url, direction, target):
-    import asyncio
+async def _budget_revision(postgres_container, db_url, direction, target):
 
     from alembic import command
     from butlers.migrations import _build_alembic_config
+    from butlers.testing.migration import async_run_test_alembic_command
 
     config = _build_alembic_config(db_url, ["finance"], target_schema="finance")
-    await asyncio.to_thread(getattr(command, direction), config, target)
+    await async_run_test_alembic_command(
+        postgres_container, getattr(command, direction), config, target
+    )
 
 
 async def _budget_schema_state(pool):
@@ -785,7 +789,9 @@ async def _budget_schema_state(pool):
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_budget_period_upgrade_preserves_legacy_rows(legacy_budget_db, legacy_budget_pool):
+async def test_budget_period_upgrade_preserves_legacy_rows(
+    postgres_container, legacy_budget_db, legacy_budget_pool
+):
     """Real old CHECK rejects quarterly; the forward repair keeps legacy history."""
     from decimal import Decimal
 
@@ -807,7 +813,7 @@ async def test_budget_period_upgrade_preserves_legacy_rows(legacy_budget_db, leg
     assert rejected.value.constraint_name == "budgets_period_check"
     assert (await _budget_schema_state(pool))[0] == before
 
-    await _budget_revision(legacy_budget_db, "upgrade", "finance@head")
+    await _budget_revision(postgres_container, legacy_budget_db, "upgrade", "finance@head")
     assert (await _budget_schema_state(pool))[0] == before
     result = await budget_set(pool, category="groceries", amount=300, period="quarterly")
     async with pool.acquire() as conn:
@@ -840,7 +846,7 @@ async def test_budget_period_upgrade_preserves_legacy_rows(legacy_budget_db, leg
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_budget_period_downgrade_refuses_history_and_roundtrips(
-    legacy_budget_db, legacy_budget_pool
+    postgres_container, legacy_budget_db, legacy_budget_pool
 ):
     """Downgrade refuses active/inactive quarterly data and otherwise preserves rows."""
     from sqlalchemy.exc import IntegrityError
@@ -851,7 +857,7 @@ async def test_budget_period_downgrade_refuses_history_and_roundtrips(
             "INSERT INTO budgets(category,period,amount) VALUES('dining',$1,100)", period
         )
     legacy_rows = (await _budget_schema_state(pool))[0]
-    await _budget_revision(legacy_budget_db, "upgrade", "finance@head")
+    await _budget_revision(postgres_container, legacy_budget_db, "upgrade", "finance@head")
     quarter_id = await pool.fetchval(
         "INSERT INTO budgets(category,period,amount) VALUES('dining','quarterly',100) RETURNING id"
     )
@@ -860,7 +866,7 @@ async def test_budget_period_downgrade_refuses_history_and_roundtrips(
         before = await _budget_schema_state(pool)
         with pytest.raises(IntegrityError, match="quarterly") as refused:
             # pinned-revision: rollback only this CHECK repair, not core boundaries.
-            await _budget_revision(legacy_budget_db, "downgrade", "finance_015")
+            await _budget_revision(postgres_container, legacy_budget_db, "downgrade", "finance_015")
         assert refused.value.orig.pgcode == "23514"
         assert await _budget_schema_state(pool) == before
         assert any(r["id"] == quarter_id for r in before[0])
@@ -868,7 +874,7 @@ async def test_budget_period_downgrade_refuses_history_and_roundtrips(
     # Removing this disposable sentinel establishes the safe rollback precondition.
     await pool.execute("DELETE FROM budgets WHERE id=$1", quarter_id)
     # pinned-revision: expected historical constraint and stamp for this repair.
-    await _budget_revision(legacy_budget_db, "downgrade", "finance_015")
+    await _budget_revision(postgres_container, legacy_budget_db, "downgrade", "finance_015")
     rows, _, stamp = await _budget_schema_state(pool)
     assert rows == legacy_rows
     assert stamp == ["finance_015"]  # pinned-revision: owned repair predecessor.
@@ -882,7 +888,7 @@ async def test_budget_period_downgrade_refuses_history_and_roundtrips(
                 "INSERT INTO budgets(category,period,amount) VALUES('groceries',$1,50)", period
             )
     safe = (await _budget_schema_state(pool))[0]
-    await _budget_revision(legacy_budget_db, "upgrade", "finance@head")
+    await _budget_revision(postgres_container, legacy_budget_db, "upgrade", "finance@head")
     assert (await _budget_schema_state(pool))[0] == safe
     assert (
         await pool.fetchval(
@@ -1003,7 +1009,7 @@ async def field_claims_pool(field_claims_db):
     ],
 )
 async def test_actual_field_claim_upgrade_constraints_and_lossless_refusal(
-    field_claims_db, field_claims_pool, case
+    postgres_container, field_claims_db, field_claims_pool, case
 ):
     from datetime import date
 
@@ -1023,7 +1029,7 @@ async def test_actual_field_claim_upgrade_constraints_and_lossless_refusal(
         from sqlalchemy.exc import DBAPIError
 
         with pytest.raises(DBAPIError, match="subscription_identity_ambiguous"):
-            await _budget_revision(field_claims_db, "upgrade", "finance@head")
+            await _budget_revision(postgres_container, field_claims_db, "upgrade", "finance@head")
         async with pool.acquire() as observer:
             assert await observer.fetchval("SELECT count(*) FROM subscriptions") == 2
             assert (
@@ -1038,7 +1044,7 @@ async def test_actual_field_claim_upgrade_constraints_and_lossless_refusal(
                 == 0
             )
         return
-    await _budget_revision(field_claims_db, "upgrade", "finance@head")
+    await _budget_revision(postgres_container, field_claims_db, "upgrade", "finance@head")
     async with pool.acquire() as observer:
         after = dict(await observer.fetchrow("SELECT * FROM subscriptions WHERE id=$1", sid))
         assert all(after[key] == value for key, value in before.items())
@@ -1068,7 +1074,7 @@ async def test_actual_field_claim_upgrade_constraints_and_lossless_refusal(
         from butlers.tools.finance.subscriptions import track_subscription
 
         await pool.execute("DELETE FROM subscriptions WHERE id=$1", sid)
-        await _budget_revision(field_claims_db, "downgrade", "finance_018")
+        await _budget_revision(postgres_container, field_claims_db, "downgrade", "finance_018")
         async with pool.acquire() as observer:
             assert await observer.fetchval("SELECT count(*) FROM subscriptions") == 0
             assert await observer.fetchval("SELECT count(*) FROM bills") == 0
@@ -1081,7 +1087,7 @@ async def test_actual_field_claim_upgrade_constraints_and_lossless_refusal(
                 pool, "Closed predecessor", 10, "USD", "yearly", date(2026, 12, 1)
             )
         assert await pool.fetchval("SELECT count(*) FROM subscriptions") == 0
-        await _budget_revision(field_claims_db, "upgrade", "finance@head")
+        await _budget_revision(postgres_container, field_claims_db, "upgrade", "finance@head")
     elif case == "concurrent-rollback":
         import asyncio
 
@@ -1099,7 +1105,9 @@ async def test_actual_field_claim_upgrade_constraints_and_lossless_refusal(
                     date(2026, 12, 1),
                 )
                 task = asyncio.create_task(
-                    _budget_revision(field_claims_db, "downgrade", "finance_018")
+                    _budget_revision(
+                        postgres_container, field_claims_db, "downgrade", "finance_018"
+                    )
                 )
                 async with asyncio.timeout(5):
                     while not await pool.fetchval(  # noqa: ASYNC110 -- actual independent pg_locks barrier
@@ -1130,7 +1138,7 @@ async def test_actual_field_claim_upgrade_constraints_and_lossless_refusal(
                 date(2026, 12, 1),
             )
         with pytest.raises(DBAPIError, match="finance_field_claims_downgrade_unsafe"):
-            await _budget_revision(field_claims_db, "downgrade", "finance_018")
+            await _budget_revision(postgres_container, field_claims_db, "downgrade", "finance_018")
         if case == "bill-refusal":
             assert await pool.fetchval("SELECT count(*) FROM bills") == 1
             assert await pool.fetchval("SELECT payee_source FROM bills") == "extracted"
@@ -1140,10 +1148,196 @@ async def test_actual_field_claim_upgrade_constraints_and_lossless_refusal(
             )
 
 
+def _observe_finance_sequence_refusal(postgres_container, connection):
+    """Failure-only same-DB sequence binding facts; never change admission."""
+    import hashlib
+    import json
+    import sys
+
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    from butlers.db_authority.grants import compile_relation_manifest
+    from butlers.testing.migration import migration_bootstrap_db_url
+
+    statement = """
+    SELECT seq.oid,seq.relkind,
+      seq.relowner=expected.oid AS sequence_owner_expected,
+      seq.relowner=database.datdba AS sequence_owner_migration,
+      seq.relowner=session_user::regrole AS sequence_owner_maintenance,
+      dependency.deptype,parent_namespace.nspname,parent.relname,parent.relkind,
+      parent.relowner=expected.oid AS parent_owner_expected,
+      parent.relowner=database.datdba AS parent_owner_migration,
+      attribute.attname
+    FROM pg_catalog.pg_class seq
+    JOIN pg_catalog.pg_namespace namespace ON namespace.oid=seq.relnamespace
+    JOIN pg_catalog.pg_database database ON database.datname=current_database()
+    LEFT JOIN pg_catalog.pg_roles expected ON expected.rolname=:owner
+    LEFT JOIN pg_catalog.pg_depend dependency
+      ON dependency.classid='pg_catalog.pg_class'::regclass AND dependency.objid=seq.oid
+      AND dependency.refclassid='pg_catalog.pg_class'::regclass
+    LEFT JOIN pg_catalog.pg_class parent ON parent.oid=dependency.refobjid
+    LEFT JOIN pg_catalog.pg_namespace parent_namespace ON parent_namespace.oid=parent.relnamespace
+    LEFT JOIN pg_catalog.pg_attribute attribute ON attribute.attrelid=parent.oid
+      AND attribute.attnum=dependency.refobjsubid AND NOT attribute.attisdropped
+    WHERE namespace.nspname=:schema AND seq.relname=:name
+    ORDER BY dependency.deptype,dependency.refobjid,dependency.refobjsubid LIMIT 9
+    """
+    identity_sql = (
+        "SELECT d.datname,d.oid,pg_catalog.pg_get_userbyid(d.datdba),session_user "
+        "FROM pg_catalog.pg_database d WHERE d.datname=current_database()"
+    )
+    database, oid, owner, maintenance = connection.exec_driver_sql(identity_sql).one()
+    manifest = compile_relation_manifest(database, owner, maintenance, source_database="butlers")
+    expected = next(
+        row
+        for row in manifest.relations
+        if (row.schema, row.name) == ("switchboard", "connector_heartbeat_log_id_seq")
+    )
+    if expected.sequence_parent != ("switchboard", "connector_heartbeat_log", "id"):
+        raise ValueError("Diagnostic source binding changed")
+    parameters = {"schema": expected.schema, "name": expected.name, "owner": expected.owner}
+    held = connection.execute(text(statement), parameters).all()
+    engine = create_engine(
+        migration_bootstrap_db_url(postgres_container, database),
+        poolclass=NullPool,
+        connect_args={"connect_timeout": 2, "options": "-c statement_timeout=2000"},
+    )
+    try:
+        with engine.begin() as admin:
+            admin.exec_driver_sql("SET TRANSACTION READ ONLY")
+            observed_db, observed_oid, _, _ = admin.exec_driver_sql(identity_sql).one()
+            if observed_db != database or type(oid) is not int or oid <= 0 or observed_oid != oid:
+                raise ValueError("Diagnostic database identity differs")
+            independent = admin.execute(text(statement), parameters).all()
+    finally:
+        engine.dispose()
+
+    def project(rows):
+        facts = []
+        for row in rows[:8]:
+            seq_oid, kind, *tail = row
+            if type(seq_oid) is not int or seq_oid <= 0 or kind != "S":
+                raise ValueError("Diagnostic sequence identity unavailable")
+            (
+                seq_expected,
+                seq_migration,
+                seq_maintenance,
+                dependency,
+                schema,
+                name,
+                parent_kind,
+                parent_expected,
+                parent_migration,
+                column,
+            ) = tail
+            if any(
+                type(value) is not bool for value in (seq_expected, seq_migration, seq_maintenance)
+            ):
+                raise ValueError("Diagnostic owner facts unavailable")
+            if any(
+                value is not None and (type(value) is not str or len(value.encode()) > 1024)
+                for value in (dependency, schema, name, parent_kind, column)
+            ):
+                raise ValueError("Diagnostic dependency facts unavailable")
+            facts.append(
+                {
+                    "sequence_owner_expected": seq_expected,
+                    "sequence_owner_migration": seq_migration,
+                    "sequence_owner_maintenance": seq_maintenance,
+                    "dependency": dependency if dependency in {"a", "i", "n"} else "UNKNOWN",
+                    "declared_parent": (schema, name, column) == expected.sequence_parent,
+                    "parent_kind": parent_kind if parent_kind in {"r", "p", "S"} else "UNKNOWN",
+                    "parent_owner_expected": parent_expected
+                    if type(parent_expected) is bool
+                    else None,
+                    "parent_owner_migration": parent_migration
+                    if type(parent_migration) is bool
+                    else None,
+                    "parent_identity_sha256": hashlib.sha256(
+                        json.dumps([schema, name, column], separators=(",", ":")).encode()
+                    ).hexdigest(),
+                }
+            )
+        return {"rows": facts, "count_observed_capped": len(rows), "truncated": len(rows) > 8}
+
+    payload = {
+        "version": 1,
+        "phase": "finance_preparation_original_refusal",
+        "same_physical_database": True,
+        "independent_snapshot_may_exclude_uncommitted_DDL": True,
+        "source_query_sha256": hashlib.sha256(statement.encode()).hexdigest(),
+        "sequence_identity_sha256": hashlib.sha256(
+            json.dumps([expected.schema, expected.name], separators=(",", ":")).encode()
+        ).hexdigest(),
+        "held": project(held),
+        "independent_admin": project(independent),
+        "same_sequence_oid": bool(held and independent and held[0][0] == independent[0][0]),
+        "original_refusal_preserved": True,
+    }
+    sys.stderr.write("DB_FINANCE_SEQUENCE_DIAGNOSTIC " + json.dumps(payload) + "\n")
+
+
+@pytest.fixture
+async def finance_runtime_deployment(postgres_container, monkeypatch):
+    from butlers.db_authority import apply
+    from butlers.db_authority.roles import AuthorityError
+    from butlers.testing.migration import async_serving_test_deployment
+
+    original = apply.converge_authority
+    observed = False
+
+    def diagnose(connection, *args, **kwargs):
+        nonlocal observed
+        try:
+            return original(connection, *args, **kwargs)
+        except AuthorityError:
+            if not observed:
+                observed = True
+                try:
+                    _observe_finance_sequence_refusal(postgres_container, connection)
+                except BaseException:
+                    try:
+                        import sys
+
+                        sys.stderr.write(
+                            "DB_FINANCE_SEQUENCE_DIAGNOSTIC "
+                            '{"version":1,"observation":"unavailable",'
+                            '"original_refusal_preserved":true}\n'
+                        )
+                    except BaseException:
+                        pass
+            raise
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(apply, "converge_authority", diagnose)
+        async with async_serving_test_deployment(
+            postgres_container, finance_revision="finance_018"
+        ) as deployment:
+            yield deployment
+
+
+@pytest.fixture
+async def finance_runtime_observer(finance_runtime_deployment):
+    from butlers.db import register_jsonb_codec
+
+    observer = await asyncpg.create_pool(
+        finance_runtime_deployment.migration_url,
+        min_size=1,
+        max_size=4,
+        server_settings={"search_path": "finance,public"},
+        init=register_jsonb_codec,
+    )
+    try:
+        yield observer
+    finally:
+        await observer.close()
+
+
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.parametrize("order", ["owner-first", "extracted-first", "concurrent", "rollback"])
 async def test_field_claims_actual_runtime_role_two_writers_and_independent_committed_readback(
-    field_claims_db, field_claims_pool, monkeypatch, order
+    postgres_container, finance_runtime_deployment, finance_runtime_observer, monkeypatch, order
 ):
     import asyncio
     from datetime import date
@@ -1151,21 +1345,70 @@ async def test_field_claims_actual_runtime_role_two_writers_and_independent_comm
     from uuid import UUID, uuid4
 
     from butlers.core import tool_call_capture as capture
-    from butlers.db import register_jsonb_codec
+    from butlers.db import _RuntimeRoleError
+    from butlers.db_authority.grants import deployment_function_plans
+    from butlers.db_authority.roles import AuthorityError, runtime_profiles
+    from butlers.migrations import get_all_chains, get_chain_head
+    from butlers.testing.migration import async_migrate_test_database
     from butlers.tools.finance import subscriptions as subs
 
-    await _budget_revision(field_claims_db, "upgrade", "finance@head")
+    deployment = finance_runtime_deployment
+    field_claims_db = deployment.migration_url
+    field_claims_pool = finance_runtime_observer
+    assert (
+        await field_claims_pool.fetchval("SELECT version_num FROM finance.alembic_version")
+        == "finance_018"
+    )  # pinned-revision: fresh predecessor before the owned runtime upgrade.
+    assert not await field_claims_pool.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE "
+        "table_schema='finance' AND table_name='subscriptions' AND column_name='field_claims')"
+    )
+    assert await field_claims_pool.fetchval("SELECT count(*) FROM subscriptions") == 0
+    assert await field_claims_pool.fetchval("SELECT count(*) FROM bills") == 0
+    normal = await asyncpg.connect(field_claims_db)
+    try:
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await normal.execute("SET ROLE butler_finance_rw")
+    finally:
+        await normal.close()
+    unready = deployment.runtime_database("finance", min_size=1, max_size=1)
+    with pytest.raises(_RuntimeRoleError) as unadmitted:
+        await unready.connect()
+    assert isinstance(unadmitted.value.__cause__, AuthorityError)
+    assert unready.pool is None
+    await unready.close()
+
+    await _budget_revision(postgres_container, field_claims_db, "upgrade", "finance@head")
+    available = frozenset(get_all_chains())
+    complete_plans = tuple(
+        row for row in deployment_function_plans(runtime_profiles("butlers")) if row[0] in available
+    )
+    await async_migrate_test_database(
+        postgres_container,
+        field_claims_db,
+        plans=(("finance", "finance", None),),
+        final_plans=complete_plans,
+    )
+    assert await field_claims_pool.fetchval(
+        "SELECT version_num FROM finance.alembic_version"
+    ) == get_chain_head("finance")
+    assert await field_claims_pool.fetchval("SELECT count(*) FROM subscriptions") == 0
+    assert await field_claims_pool.fetchval("SELECT count(*) FROM bills") == 0
     entity = await field_claims_pool.fetchval(
         "INSERT INTO public.entities(canonical_name,entity_type,roles) "
         "VALUES('Synthetic Finance owner','person',ARRAY['owner']) RETURNING id"
     )
-    runtime = await asyncpg.create_pool(
-        field_claims_db,
-        min_size=2,
-        max_size=3,
-        server_settings={"role": "butler_finance_rw", "search_path": "finance,public"},
-        init=register_jsonb_codec,
-    )
+    runtime_database = deployment.runtime_database("finance", min_size=2, max_size=3)
+    runtime = await runtime_database.connect()
+    async with runtime.acquire() as admitted:
+        assert await admitted.fetchval("SELECT current_database()") == "butlers"
+        assert await admitted.fetchval(
+            "SELECT current_database()"
+        ) == await field_claims_pool.fetchval("SELECT current_database()")
+        assert (
+            await admitted.fetchval("SELECT session_user")
+            == deployment.runtime_logins["finance"].user
+        )
 
     async def write(owner):
         # Genuine server-held invocation context and real entities lookup;
@@ -1253,4 +1496,4 @@ async def test_field_claims_actual_runtime_role_two_writers_and_independent_comm
                     "ALTER TABLE subscriptions ADD COLUMN forbidden_test INTEGER"
                 )
     finally:
-        await runtime.close()
+        await runtime_database.close()

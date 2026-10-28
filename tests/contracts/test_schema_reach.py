@@ -307,6 +307,10 @@ _DYNAMIC_RELATION_RE = re.compile(
 # Dynamic entries are exact normalized relation slots, not whole-file waivers.
 SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
+        "src/butlers/db_authority/interfaces.py",
+        "<dynamic:{identity}>",
+    ): "sanctioned: owner-lookup prestate reads only quoted qualified alembic_version after physical ledger owner/shape/ACL checks; every revision is admitted against the fixed source graph before capability selection, never caller-provided SQL",
+    (
         "roster/finance/tests/test_jobs.py",
         "switchboard.butler_registry_control_plane",
     ): "sanctioned:Finance-warning-currentness: privileged independent test observer reads the committed boot successor; production Finance receives no table read grant",
@@ -598,10 +602,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/api/routers/whatsapp.py",
         "switchboard.connector_registry",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
-    (
-        "src/butlers/bootstrap_prerequisite.py",
-        '<dynamic:"{admin}".bootstrap_configuration>',
-    ): "dynamic-review: frozen baseline relation selector; exact target ownership is unresolved by literal scan and needs inspection, not product cleanup",
     (
         "src/butlers/chronicler/adapters/calendar.py",
         "<dynamic:{quoted}.calendar_event_entities>",
@@ -974,6 +974,223 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/testing/schema_standins.py",
         "<dynamic:{qualified}>",
     ): "dynamic-review: frozen baseline relation selector; exact target ownership is unresolved by literal scan and needs inspection, not product cleanup",
+    # Exact source-owned authority installers and prerequisite reads (REQ017/020/021).
+    (
+        "src/butlers/db_authority/apply.py",
+        "<dynamic:public.{table}>",
+    ): "sanctioned: fixed operator activation selector maps only producer/reissue/condition control tables; scalar state stays bound, no runtime-selected relation",
+    (
+        "src/butlers/db_authority/apply.py",
+        "<dynamic:{grantee}>",
+    ): "sanctioned: scanner FROM slot is a quoted default-ACL grantee in REVOKE, not a foreign relation; complete managed default ACL closure retained",
+    (
+        "src/butlers/db_authority/apply.py",
+        "<dynamic:{namespace}.bootstrap_configuration>",
+    ): "sanctioned: R1 restores only validated captured retired bootstrap metadata via quoted namespace; no application-row repair",
+    (
+        "src/butlers/db_authority/apply.py",
+        "<dynamic:{quote_identifier(schema)}.bootstrap_configuration>",
+    ): "sanctioned: exact retired administrative singleton snapshot with source-owned namespace enumeration and quoted identifier",
+    (
+        "src/butlers/db_authority/apply.py",
+        "<dynamic:{quote_identifier(target)}.alembic_version>",
+    ): "sanctioned: held migrator verifies source-selected chain revision using quoted schema and fixed version table",
+    (
+        "src/butlers/db_authority/apply.py",
+        "<dynamic:{target}>",
+    ): "sanctioned: quoted manifest/captured predecessor targets only for version snapshot, full-row rollback fingerprint and exact captured column-ACL restoration",
+    (
+        "src/butlers/db_authority/grants.py",
+        "education.mind_maps",
+    ): "sanctioned: exact source-fixed function compiler reference education.mind_maps in education/education/serialize_concept_removal; education/education/require_content_after_removal; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "education.require_active_map_content",
+    ): "sanctioned: exact source-fixed function compiler reference education.require_active_map_content in education/education/require_active_map_content; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "education.require_content_after_removal",
+    ): "sanctioned: exact source-fixed function compiler reference education.require_content_after_removal in education/education/require_content_after_removal; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "education.serialize_concept_removal",
+    ): "sanctioned: exact source-fixed function compiler reference education.serialize_concept_removal in education/education/serialize_concept_removal; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "health.facts",
+    ): "sanctioned: exact source-fixed function compiler reference health.facts in core/public/resolve_health_medication_refill; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "relationship.guard_fact_report_authority",
+    ): "sanctioned: exact source-fixed function compiler reference relationship.guard_fact_report_authority in relationship/relationship/guard_fact_report_authority; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "relationship.reject_fact_evidence_update",
+    ): "sanctioned: exact source-fixed function compiler reference relationship.reject_fact_evidence_update in relationship/relationship/reject_fact_evidence_update; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "switchboard.butler_boot_registrations",
+    ): "sanctioned: exact source-fixed function compiler reference switchboard.butler_boot_registrations in switchboard/public/register_butler_boot; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "switchboard.butler_registry",
+    ): "sanctioned: exact source-fixed function compiler reference switchboard.butler_registry in switchboard/public/register_butler_boot; switchboard/public/set_butler_registry_policy; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "switchboard.butler_registry_control_plane",
+    ): "sanctioned: exact source-fixed function compiler reference switchboard.butler_registry_control_plane in switchboard/switchboard/preserve_registry_policy; switchboard/switchboard/ensure_registry_control; switchboard/public/register_butler_boot; switchboard/public/reserve_butler_probe; switchboard/public/record_butler_probe; switchboard/public/set_butler_registry_policy; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "switchboard.email_metadata_refs",
+    ): "sanctioned: exact source-fixed function compiler reference switchboard.email_metadata_refs in switchboard/switchboard/switchboard_prune_email_metadata_refs; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "switchboard.ensure_registry_control",
+    ): "sanctioned: exact source-fixed function compiler reference switchboard.ensure_registry_control in switchboard/switchboard/ensure_registry_control; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "switchboard.goal_invocation_exposure",
+    ): "sanctioned: exact source-fixed function compiler reference switchboard.goal_invocation_exposure in switchboard/switchboard/goal_invocation_exposure; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "switchboard.goal_ledger_immutable",
+    ): "sanctioned: exact source-fixed function compiler reference switchboard.goal_ledger_immutable in switchboard/switchboard/goal_ledger_immutable; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "switchboard.guard_admission_attempt_binding",
+    ): "sanctioned: exact source-fixed function compiler reference switchboard.guard_admission_attempt_binding in switchboard/switchboard/guard_admission_attempt_binding; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "switchboard.preserve_registry_policy",
+    ): "sanctioned: exact source-fixed function compiler reference switchboard.preserve_registry_policy in switchboard/switchboard/preserve_registry_policy; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "switchboard.switchboard_connector_heartbeat_log_drop_expired_partitions",
+    ): "sanctioned: exact source-fixed function compiler reference switchboard.switchboard_connector_heartbeat_log_drop_expired_partitions in switchboard/switchboard/switchboard_connector_heartbeat_log_drop_expired_partitions; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "switchboard.switchboard_connector_heartbeat_log_ensure_partition",
+    ): "sanctioned: exact source-fixed function compiler reference switchboard.switchboard_connector_heartbeat_log_ensure_partition in switchboard/switchboard/switchboard_connector_heartbeat_log_ensure_partition; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "switchboard.switchboard_message_inbox_drop_expired_partitions",
+    ): "sanctioned: exact source-fixed function compiler reference switchboard.switchboard_message_inbox_drop_expired_partitions in switchboard/switchboard/switchboard_message_inbox_drop_expired_partitions; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "switchboard.switchboard_message_inbox_ensure_partition",
+    ): "sanctioned: exact source-fixed function compiler reference switchboard.switchboard_message_inbox_ensure_partition in switchboard/switchboard/switchboard_message_inbox_ensure_partition; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/grants.py",
+        "switchboard.switchboard_prune_email_metadata_refs",
+    ): "sanctioned: exact source-fixed function compiler reference switchboard.switchboard_prune_email_metadata_refs in switchboard/switchboard/switchboard_prune_email_metadata_refs; owner/underlying privileges remain source-qualified, not runtime schema selection",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "<dynamic:{quote_identifier(row[ ])}>",
+    ): "sanctioned: quoted manifest relation name creates owned pg_temp parser clone; exact security comparison and finally cleanup remain mandatory",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "<dynamic:{quote_identifier(schema)}.bootstrap_configuration>",
+    ): "sanctioned: exact retired singleton provenance verification under trusted predecessor qualification and quoted schema",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "<dynamic:{quote_identifier(schema)}.{quote_identifier(name)}>",
+    ): "sanctioned: owner transfer targets come only from fixed protected-group tuples, with both identifiers quoted and actual maintenance guard",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "<dynamic:{quote_identifier(token)}>",
+    ): "sanctioned: fresh internal UUID temporary parser table built from fixed protected shape under maintenance; finally drops exact owned scratch",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "<dynamic:{scratch}>",
+    ): "sanctioned: explicitly pg_temp-qualified owned parser clone trigger setup/drop only; refusal and error-preserving finally cleanup retained",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "<dynamic:{target}.bootstrap_configuration>",
+    ): "sanctioned: exact trusted retired namespaces drop bootstrap singleton with RESTRICT after dependency retirement; no CASCADE or arbitrary schema",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "<dynamic:{target}>",
+    ): "sanctioned: missing attention controls come only from fixed protected table shapes, quoted identifiers and fixed current condition-episode RLS convergence",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "education.mind_maps",
+    ): "sanctioned: exact captured predecessor function reference education.mind_maps in education/serialize_concept_removal/; only trusted pinned body comparison/retirement, never revived runtime authority",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "education.require_active_map_content",
+    ): "sanctioned: exact captured predecessor function reference education.require_active_map_content in education/require_active_map_content/; only trusted pinned body comparison/retirement, never revived runtime authority",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "education.require_content_after_removal",
+    ): "sanctioned: exact captured predecessor function reference education.require_content_after_removal in education/require_content_after_removal/; only trusted pinned body comparison/retirement, never revived runtime authority",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "education.serialize_concept_removal",
+    ): "sanctioned: exact captured predecessor function reference education.serialize_concept_removal in education/serialize_concept_removal/; only trusted pinned body comparison/retirement, never revived runtime authority",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "health.facts",
+    ): "sanctioned: exact captured predecessor function reference health.facts in public/resolve_health_medication_refill/text,numeric,numeric; only trusted pinned body comparison/retirement, never revived runtime authority",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "relationship.guard_fact_report_authority",
+    ): "sanctioned: exact captured predecessor function reference relationship.guard_fact_report_authority in relationship/guard_fact_report_authority/; only trusted pinned body comparison/retirement, never revived runtime authority",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "relationship.reject_fact_evidence_update",
+    ): "sanctioned: exact captured predecessor function reference relationship.reject_fact_evidence_update in relationship/reject_fact_evidence_update/; only trusted pinned body comparison/retirement, never revived runtime authority",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "switchboard.butler_boot_registrations",
+    ): "sanctioned: exact captured predecessor function reference switchboard.butler_boot_registrations in public/register_butler_boot/text,uuid; only trusted pinned body comparison/retirement, never revived runtime authority",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "switchboard.butler_registry",
+    ): "sanctioned: exact captured predecessor function reference switchboard.butler_registry in public/register_butler_boot/text,uuid; public/set_butler_registry_policy/text,text; only trusted pinned body comparison/retirement, never revived runtime authority",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "switchboard.butler_registry_control_plane",
+    ): "sanctioned: exact captured predecessor function reference switchboard.butler_registry_control_plane in switchboard/preserve_registry_policy/; switchboard/ensure_registry_control/; public/register_butler_boot/text,uuid; public/reserve_butler_probe/text; public/record_butler_probe/text,bigint,bigint,boolean,boolean,boolean,text; public/set_butler_registry_policy/text,text; only trusted pinned body comparison/retirement, never revived runtime authority",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "switchboard.ensure_registry_control",
+    ): "sanctioned: exact captured predecessor function reference switchboard.ensure_registry_control in switchboard/ensure_registry_control/; only trusted pinned body comparison/retirement, never revived runtime authority",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "switchboard.goal_invocation_exposure",
+    ): "sanctioned: exact captured predecessor function reference switchboard.goal_invocation_exposure in switchboard/goal_invocation_exposure/; only trusted pinned body comparison/retirement, never revived runtime authority",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "switchboard.goal_ledger_immutable",
+    ): "sanctioned: exact captured predecessor function reference switchboard.goal_ledger_immutable in switchboard/goal_ledger_immutable/; only trusted pinned body comparison/retirement, never revived runtime authority",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "switchboard.guard_admission_attempt_binding",
+    ): "sanctioned: exact captured predecessor function reference switchboard.guard_admission_attempt_binding in switchboard/guard_admission_attempt_binding/; only trusted pinned body comparison/retirement, never revived runtime authority",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "switchboard.preserve_registry_policy",
+    ): "sanctioned: exact captured predecessor function reference switchboard.preserve_registry_policy in switchboard/preserve_registry_policy/; only trusted pinned body comparison/retirement, never revived runtime authority",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "switchboard.switchboard_connector_heartbeat_log_drop_expired_partitions",
+    ): "sanctioned: exact captured predecessor function reference switchboard.switchboard_connector_heartbeat_log_drop_expired_partitions in switchboard/switchboard_connector_heartbeat_log_drop_expired_partitions/interval,timestamp with time zone; only trusted pinned body comparison/retirement, never revived runtime authority",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "switchboard.switchboard_connector_heartbeat_log_ensure_partition",
+    ): "sanctioned: exact captured predecessor function reference switchboard.switchboard_connector_heartbeat_log_ensure_partition in switchboard/switchboard_connector_heartbeat_log_ensure_partition/timestamp with time zone; only trusted pinned body comparison/retirement, never revived runtime authority",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "switchboard.switchboard_message_inbox_drop_expired_partitions",
+    ): "sanctioned: exact captured predecessor function reference switchboard.switchboard_message_inbox_drop_expired_partitions in switchboard/switchboard_message_inbox_drop_expired_partitions/interval,timestamp with time zone; only trusted pinned body comparison/retirement, never revived runtime authority",
+    (
+        "src/butlers/db_authority/interfaces.py",
+        "switchboard.switchboard_message_inbox_ensure_partition",
+    ): "sanctioned: exact captured predecessor function reference switchboard.switchboard_message_inbox_ensure_partition in switchboard/switchboard_message_inbox_ensure_partition/timestamp with time zone; only trusted pinned body comparison/retirement, never revived runtime authority",
+    (
+        "src/butlers/migrations.py",
+        '<dynamic:"{target}".alembic_version>',
+    ): "sanctioned: read-only serving prerequisite uses identifier-normalized own schema and fixed version relation, compares bound source head without installing DDL",
 }
 
 

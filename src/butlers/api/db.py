@@ -11,6 +11,7 @@ import logging
 from typing import Any
 
 import asyncpg
+from fastapi import HTTPException
 
 from butlers.db import (
     pool_sizes_from_env,
@@ -18,6 +19,8 @@ from butlers.db import (
     schema_search_path,
     should_retry_with_ssl_disable,
 )
+from butlers.db_authority.catalog import close_after_catalog_diagnostics, create_purpose_pool
+from butlers.db_authority.roles import purpose_profile
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,7 @@ class DatabaseManager:
         self._max_pool_size = env_max_pool_size if max_pool_size is None else max_pool_size
         self._pools: dict[str, asyncpg.Pool] = {}
         self._shared_pool: asyncpg.Pool | None = None
+        self._shared_pool_configured = False
         self._butler_modules: dict[str, frozenset[str]] = {}
         self._configured_butler_modules: dict[str, frozenset[str] | None] = {}
         # The explicit target schema for each butler pool.  Query paths that
@@ -73,11 +77,6 @@ class DatabaseManager:
         # Optional-schema readers use this lifecycle marker to distinguish a
         # deliberately uninstalled table from one that disappears later.
         self._relation_presence_at_start: dict[str, dict[str, bool]] = {}
-        # role_enforcement_disabled: True when SET ROLE schema-isolation is NOT
-        # active for any butler database managed by this instance.  Starts True
-        # (conservative default — enforcement not yet confirmed) and may be
-        # updated via set_role_enforcement_disabled() during startup.
-        self._role_enforcement_disabled: bool = True
 
     async def _create_pool(
         self,
@@ -103,7 +102,7 @@ class DatabaseManager:
         if self._ssl is not None:
             pool_kwargs["ssl"] = self._ssl
         try:
-            return await asyncpg.create_pool(**pool_kwargs)
+            return await create_purpose_pool(purpose_profile(database, "dashboard"), **pool_kwargs)
         except Exception as exc:
             if not should_retry_with_ssl_disable(exc, self._ssl):
                 raise
@@ -113,7 +112,7 @@ class DatabaseManager:
                 "Retrying DB pool creation with ssl=disable for %s after SSL upgrade loss",
                 log_name,
             )
-            return await asyncpg.create_pool(**retry_kwargs)
+            return await create_purpose_pool(purpose_profile(database, "dashboard"), **retry_kwargs)
 
     async def add_butler(
         self,
@@ -178,9 +177,15 @@ class DatabaseManager:
 
     async def set_credential_shared_pool(self, db_name: str, db_schema: str | None = None) -> None:
         """Set the dedicated shared credential DB pool."""
+        self._shared_pool_configured = True
         if self._shared_pool is not None:
-            await self._shared_pool.close()
-            self._shared_pool = None
+            pool = self._shared_pool
+
+            def closed() -> None:
+                if self._shared_pool is pool:
+                    self._shared_pool = None
+
+            await close_after_catalog_diagnostics(pool, on_closed=closed)
         self._shared_pool = await self._create_pool(
             database=db_name,
             log_name="shared credentials",
@@ -191,15 +196,24 @@ class DatabaseManager:
     def credential_shared_pool(self) -> asyncpg.Pool:
         """Return dedicated shared credential pool or raise KeyError."""
         if self._shared_pool is None:
+            if self._shared_pool_configured:
+                raise HTTPException(
+                    status_code=503, detail="Shared credential source is unavailable"
+                )
             raise KeyError("Shared credential pool is not configured")
         return self._shared_pool
 
     def pool(self, butler_name: str) -> asyncpg.Pool:
         """Get the connection pool for a specific butler.
 
-        Raises KeyError if the butler hasn't been added.
+        Unknown names raise KeyError. A configured source whose admission or
+        connection failed raises 503; it must not look like an absent source.
         """
         if butler_name not in self._pools:
+            if butler_name in self._configured_butler_modules:
+                raise HTTPException(
+                    status_code=503, detail="Configured database source is unavailable"
+                )
             raise KeyError(f"No pool for butler: {butler_name}")
         return self._pools[butler_name]
 
@@ -329,8 +343,13 @@ class DatabaseManager:
 
     @property
     def butler_names(self) -> list[str]:
-        """Return list of all registered butler names."""
-        return list(self._pools.keys())
+        """Registered sources, including configured sources without an admitted pool.
+
+        Reader fan-out must attempt these names so a failed registration cannot
+        masquerade as a complete healthy empty result. Direct lookups of healthy
+        siblings remain usable; no unavailable source receives a partial pool.
+        """
+        return list(dict.fromkeys((*self._configured_butler_modules, *self._pools)))
 
     def register_configured_modules(self, butler_name: str, modules: frozenset[str] | None) -> None:
         """Retain intended sources before provisioning/pool creation can fail."""
@@ -379,26 +398,25 @@ class DatabaseManager:
             return None
         return sorted(name for name, mods in self._butler_modules.items() if module_name in mods)
 
-    @property
-    def role_enforcement_disabled(self) -> bool:
-        """Return True when SET ROLE schema-isolation is NOT active.
+    async def authority_status(self) -> str:
+        """Fresh dashboard-purpose admission of the complete configured pool set.
 
-        True when no DB role has been verified for any butler managed by this
-        instance.  Starts True (conservative — enforcement not yet confirmed)
-        and is updated by ``set_role_enforcement_disabled()`` during startup
-        after role-existence verification.
-
-        Intended for the dashboard health surface.
+        A connected subset cannot certify an unavailable configured domain.
+        No credential, row payload or underlying driver message is returned.
         """
-        return self._role_enforcement_disabled
-
-    def set_role_enforcement_disabled(self, disabled: bool) -> None:
-        """Set the role-enforcement-disabled flag.
-
-        Called during ``init_db_manager()`` after role verification to record
-        whether SET ROLE enforcement is active across the managed databases.
-        """
-        self._role_enforcement_disabled = disabled
+        configured = set(self._configured_butler_modules)
+        if not configured or set(self._pools) != configured or self._shared_pool is None:
+            return "unavailable"
+        try:
+            async with asyncio.timeout(5):
+                for pool in (*self._pools.values(), self._shared_pool):
+                    # Each real pool's setup callback freshly proves the fixed
+                    # purpose before this handoff. Release remains pool-owned.
+                    async with pool.acquire():
+                        pass
+        except Exception:
+            return "unavailable"
+        return "admitted"
 
     async def fan_out_with_status(
         self,
@@ -429,7 +447,7 @@ class DatabaseManager:
 
         async def _query_one(name: str) -> tuple[str, list[asyncpg.Record]]:
             try:
-                p = self._pools[name]
+                p = self.pool(name)
                 rows = await p.fetch(query, *args)
                 return (name, rows)
             except Exception:
@@ -441,22 +459,32 @@ class DatabaseManager:
         return dict(results), failed
 
     async def close(self) -> None:
-        """Close all connection pools."""
+        """Close settled pools; retain every incomplete pool for retry/late close."""
+        targets = list(self._pools.items())
         if self._shared_pool is not None:
-            try:
-                await self._shared_pool.close()
-                logger.info("Closed shared credential pool")
-            except Exception:
-                logger.warning("Error closing shared credential pool", exc_info=True)
-            self._shared_pool = None
+            targets.append((None, self._shared_pool))
 
-        for name, p in self._pools.items():
-            try:
-                await p.close()
-                logger.info("Closed pool for butler: %s", name)
-            except Exception:
-                logger.warning("Error closing pool for butler: %s", name, exc_info=True)
-        self._pools.clear()
-        self._butler_schemas.clear()
-        self._butler_memory_schema_overrides.clear()
-        self._relation_presence_at_start.clear()
+        async def close_one(name, pool):
+            def closed() -> None:
+                if name is None:
+                    if self._shared_pool is pool:
+                        self._shared_pool = None
+                elif self._pools.get(name) is pool:
+                    del self._pools[name]
+                    self._butler_schemas.pop(name, None)
+                    self._butler_memory_schema_overrides.pop(name, None)
+                    self._relation_presence_at_start.pop(name, None)
+
+            await close_after_catalog_diagnostics(pool, on_closed=closed)
+
+        # Start every healthy sibling cleanup before waiting for a pending
+        # release. Each physical close remains owned if this caller is canceled.
+        results = await asyncio.gather(
+            *(close_one(name, pool) for name, pool in targets), return_exceptions=True
+        )
+        errors = [result for result in results if isinstance(result, BaseException)]
+        if errors:
+            logger.warning("Database pool cleanup is incomplete")
+            raise errors[0]
+        self._configured_butler_modules.clear()
+        self._shared_pool_configured = False

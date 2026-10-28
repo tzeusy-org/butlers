@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -26,7 +27,7 @@ from butlers.api.deps import get_db, get_mcp_manager
 from butlers.core.approvals_hooks import DecisionDossier
 from butlers.daemon import ButlerDaemon
 from butlers.db import Database
-from butlers.migrations import run_migrations
+from butlers.db_authority.roles import AuthorityError
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.module import ApprovalsModule
 from butlers.modules.calendar import (
@@ -35,7 +36,7 @@ from butlers.modules.calendar import (
     _google_event_to_calendar_event,
 )
 from butlers.modules.calendar_response import CalendarResponseError, reserve_response_inverse
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import async_serving_test_deployment
 from tests.api.auth_helpers import create_authenticated_domain_app
 
 _THIS_FILE = Path(__file__).resolve()
@@ -44,48 +45,48 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")
 
 
 @pytest.fixture
+def postgres_container():
+    """Own physical butlers on an isolated server for actual source profiles."""
+    from testcontainers.postgres import PostgresContainer
+
+    from conftest import _configure_postgres_container
+
+    with _configure_postgres_container(
+        PostgresContainer("pgvector/pgvector:pg17"), os.environ
+    ) as pg:
+        yield pg
+
+
+@pytest.fixture
 async def response_pool(postgres_container):
-    db_url = await asyncio.to_thread(
-        create_migrated_test_db,
-        postgres_container,
-        migration_db_name(),
-        ["core", "approvals"],
-        {"core": "messenger", "approvals": "messenger"},
-    )
-
-    from urllib.parse import urlparse
-
-    for chain in ("core", "approvals"):
-        await run_migrations(db_url, chain=chain, schema="relationship")
-    parsed = urlparse(db_url)
-    databases = {}
-    fences = []
-    try:
-        for owner in ("messenger", "relationship"):
-            database = Database(
-                db_name=parsed.path.lstrip("/"),
-                schema=owner,
-                role=f"butler_{owner}_rw",
-                host=parsed.hostname,
-                port=parsed.port,
-                user=parsed.username,
-                password=parsed.password,
-                min_pool_size=1,
-                max_pool_size=6,
+    async with async_serving_test_deployment(postgres_container) as deployment:
+        databases, fences = {}, []
+        try:
+            for owner in ("messenger", "relationship"):
+                database = deployment.runtime_database(owner, min_size=1, max_size=6)
+                await database.connect()
+                databases[owner] = database
+                # Each lease authenticates a distinct dedicated source-profile
+                # login and freshly admits its real runtime role/catalog.
+                for _ in range(2):
+                    async with database.pool.acquire() as connection:
+                        identity = await connection.fetchrow(
+                            "SELECT current_user AS role,current_schema() AS schema,session_user"
+                        )
+                        assert (
+                            identity["role"] == f"butler_{owner}_rw" and identity["schema"] == owner
+                        )
+                        assert identity["session_user"] == deployment.runtime_logins[owner].user
+            yield SimpleNamespace(databases=databases, fences=fences)
+        finally:
+            # Fences settle before the retained native Database resources and
+            # creator-owned database/role teardown managed by the outer scope.
+            results = await asyncio.gather(
+                *(fence.close() for fence in fences), return_exceptions=True
             )
-            await database.connect()
-            databases[owner] = database
-            async with database.pool.acquire() as connection:
-                identity = await connection.fetchrow(
-                    "SELECT current_user AS role,current_schema() AS schema"
-                )
-                assert identity["role"] == f"butler_{owner}_rw" and identity["schema"] == owner
-        yield SimpleNamespace(databases=databases, fences=fences)
-    finally:
-        for fence in fences:
-            await fence.close()
-        for database in databases.values():
-            await database.close()
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
 
 
 async def test_migrated_response_atomic_park_committed_attempt_and_guarded_inverse(
@@ -641,14 +642,36 @@ async def test_migrated_response_atomic_park_committed_attempt_and_guarded_inver
         min_pool_size=1,
         max_pool_size=1,
     )
-    await foreign_db.connect()
+    # Current Database must refuse this wrong physical source. The separate
+    # raw native LOGIN carrier below preserves the original foreign-database
+    # protocol/PID contrast; it is explicitly not an admitted serving pool.
+    try:
+        with pytest.raises(AuthorityError):
+            await foreign_db.connect()
+    finally:
+        await foreign_db.close()
+
+    async def foreign_setup(connection):
+        await connection.execute('SET ROLE "butler_relationship_rw"')
+
+    foreign_pool = await asyncpg.create_pool(
+        database="postgres",
+        host=source_db.host,
+        port=source_db.port,
+        user=source_db.user,
+        password=source_db.password,
+        ssl="disable",
+        min_size=1,
+        max_size=1,
+        setup=foreign_setup,
+    )
     try:
         async with module._response_fence.claim(clear_target) as (_, proof):
             with monkeypatch.context() as control:
-                control.setattr(peer._response_fence, "_pool", foreign_db.pool)
+                control.setattr(peer._response_fence, "_pool", foreign_pool)
                 assert await peer._response_fence.status(proof) == {"status": "unavailable"}
     finally:
-        await foreign_db.close()
+        await foreign_pool.close()
 
     # Both owners may hold different target locks and serve each other's probes
     # simultaneously. Normal work-pool exhaustion cannot consume probe capacity.

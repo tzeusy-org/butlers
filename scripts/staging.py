@@ -52,14 +52,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 from testcontainers.postgres import PostgresContainer
 
 from butlers.config import list_butlers
 from butlers.daemon import ButlerDaemon
-from butlers.db import Database
+from butlers.testing.migration import async_serving_test_deployment
 
 # Add project root to path for imports
 project_root = Path(__file__).parent.parent
@@ -80,76 +82,41 @@ async def main() -> None:
     pg.start()
 
     try:
-        host = pg.get_container_host_ip()
-        port = int(pg.get_exposed_port(5432))
-        user = pg.username
-        password = pg.password
+        async with async_serving_test_deployment(pg) as deployment:
+            with patch.dict(
+                os.environ,
+                {"BUTLERS_CREDENTIAL_DATABASE_URL": deployment.purpose_url("credential")},
+            ):
+                # Actual source profiles/full held chains/finalizer are ready.
+                # Every daemon receives its own dedicated native serving login.
+                configs = list_butlers()
+                butler_names = [config.name for config in configs]
+                logger.info("Discovered %d butlers: %s", len(butler_names), butler_names)
+                butlers = {}
+                for config in configs:
+                    db = deployment.runtime_database(config.db_schema, min_size=2, max_size=10)
+                    await db.connect()
+                    daemon = ButlerDaemon(butler_name=config.name, db=db)
+                    daemon.config = config
+                    deployment.retain(daemon, "shutdown")
+                    await daemon.start()
+                    butlers[config.name] = daemon
+                    logger.info("Butler %s started on port %s", config.name, config.port)
 
-        logger.info(
-            "PostgreSQL testcontainer started: host=%s port=%s",
-            host,
-            port,
-        )
-
-        # Discover all roster butlers
-        butler_names = [b.name for b in list_butlers()]
-        logger.info("Discovered %d butlers: %s", len(butler_names), butler_names)
-
-        butlers = {}
-        pools = {}
-
-        # Bootstrap each butler
-        for butler_name in butler_names:
-            logger.info("Bootstrapping butler: %s", butler_name)
-
-            # Create and provision database
-            db = Database(
-                db_name=f"butler_{butler_name}",
-                host=host,
-                port=port,
-                user=user,
-                password=password,
-                min_pool_size=2,
-                max_pool_size=10,
-            )
-            await db.provision()
-            pool = await db.connect()
-            pools[butler_name] = pool
-
-            # Initialize and start daemon
-            daemon = ButlerDaemon(butler_name=butler_name, db=db)
-            await daemon.start()
-            butlers[butler_name] = daemon
-
-            logger.info(
-                "Butler %s started on port %s",
-                butler_name,
-                daemon.config.butler.port,
-            )
-
-        # Print endpoints
-        print("\n" + "=" * 60)
-        print("Ecosystem running. Press Ctrl+C to stop.")
-        print("=" * 60)
-        for butler_name in sorted(butler_names):
-            daemon = butlers[butler_name]
-            port = daemon.config.butler.port
-            print(f"  {butler_name:12} http://localhost:{port}/sse")
-        print("=" * 60 + "\n")
-
-        # Block forever until Ctrl+C
-        try:
-            await asyncio.Event().wait()
-        except KeyboardInterrupt:
-            logger.info("Received interrupt signal, shutting down...")
-
-        # Graceful shutdown in reverse order
-        logger.info("Shutting down ecosystem...")
-        for butler_name in reversed(butler_names):
-            if butler_name in butlers:
-                await butlers[butler_name].shutdown()
-            if butler_name in pools:
-                await pools[butler_name].close()
+                print("\n" + "=" * 60)
+                print("Ecosystem running. Press Ctrl+C to stop.")
+                print("=" * 60)
+                for butler_name in sorted(butler_names):
+                    daemon = butlers[butler_name]
+                    print(f"  {butler_name:12} http://localhost:{daemon.config.port}/sse")
+                print("=" * 60 + "\n")
+                try:
+                    await asyncio.Event().wait()
+                except KeyboardInterrupt:
+                    logger.info("Received interrupt signal, shutting down...")
+                logger.info("Shutting down ecosystem...")
+            # The owned context joins partial startups and every native pool
+            # before revoking disposable memberships or stopping the server.
         logger.info("Ecosystem shutdown complete")
 
     finally:

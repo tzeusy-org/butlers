@@ -95,6 +95,18 @@ def _rendered_compose(*compose_files: str, env_overrides: dict[str, str] | None 
         **os.environ,
         "POSTGRES_HOST": "10.23.4.5",
         "POSTGRES_PASSWORD": "non-secret-test-password",
+        # The bare render must supply every explicit purpose credential; none
+        # may silently fall back to the shared application identity.
+        "RUNTIME_DB_USER": "runtime_test",
+        "RUNTIME_DB_PASSWORD": "runtime-test-password",
+        "CONNECTOR_DB_USER": "connector_test",
+        "CONNECTOR_DB_PASSWORD": "connector-test-password",
+        "DASHBOARD_DB_USER": "dashboard_test",
+        "DASHBOARD_DB_PASSWORD": "dashboard-test-password",
+        "BACKUP_DB_USER": "backup_test",
+        "BACKUP_DB_PASSWORD": "backup-test-password",
+        "BUTLERS_CREDENTIAL_DATABASE_URL": "postgresql://credential_test:synthetic@postgres/butlers",
+        "BUTLERS_MIGRATOR_DATABASE_URL": "postgresql://migration_test:synthetic@postgres/butlers",
         "COMPOSE_PROJECT_NAME": "butlers-test",
         "RESTORE_DRILL_EXECUTOR_DB_HOST": "postgres.example.test",
         "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST": "10.23.4.5",

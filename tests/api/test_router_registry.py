@@ -55,8 +55,35 @@ def test_complete_route_and_openapi_snapshot(tmp_path, monkeypatch):
     }
     encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "9e220d878c65175a2d42244fdedfd37ed9e71a5ddff3ad136ce8d2bfbd92aec7"
+        "743350294520f159e3dc4607881ac54813778320ebd5e235a5b5874b756a7b04"
     )
+    # Exact replacement of the retired bootstrap-body endpoint, independently
+    # inverse-bound to the previous whole snapshot; no route-count relaxation.
+    assert "/api/system/stored-functions" not in snapshot["openapi"]["paths"]
+    authority = snapshot["openapi"]["paths"]["/api/system/database-authority"]["get"]
+    assert authority["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ApiResponse_DatabaseAuthorityFacts_"
+    }
+    assert set(
+        snapshot["openapi"]["components"]["schemas"]["DatabaseAuthorityFacts"]["properties"]
+    ) == {
+        "checked_at",
+        "status",
+        "catalog_check_available",
+        "objects_ok",
+        "functions",
+        "unpinned_definers",
+        "definer_check_available",
+    }
+    # Preserve the published provider-only Calendar freshness contract in the
+    # same complete snapshot as the database-authority replacement.
+    assert snapshot["openapi"]["components"]["schemas"]["CalendarWorkspaceSourceFreshness"][
+        "properties"
+    ]["sync_applicable"] == {
+        "default": True,
+        "title": "Sync Applicable",
+        "type": "boolean",
+    }
     assert "/api/health/baselines" in snapshot["openapi"]["paths"]
     assert len(snapshot["routes"]) == 615
     assert len(snapshot["openapi"]["paths"]) == 524

@@ -1055,3 +1055,40 @@ def test_key_absent_control_workload_and_session_network_contract():
     )
     prod_container = prod_domains["spec"]["template"]["spec"]["containers"][0]
     assert "SWITCHBOARD_MCP_URL" not in {item["name"] for item in prod_container["env"]}
+
+
+@pytest.mark.parametrize("mode", ["missing", "wrong_login", "missing_ledger", "admitted"])
+async def test_deploy_pool_uses_explicit_operator_identity_before_ledger(monkeypatch, mode):
+    """Actual factory owns selection; a serving credential cannot be an ambient fallback."""
+    from butlers.core.deploy import _make_pool
+    from butlers.db_authority.roles import AuthorityError
+
+    monkeypatch.delenv("BUTLERS_DEPLOY_DATABASE_URL", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://ambient@localhost/butlers")
+    if mode != "missing":
+        monkeypatch.setenv(
+            "BUTLERS_DEPLOY_DATABASE_URL", "postgresql://deploy_operator@localhost/butlers"
+        )
+    conn = AsyncMock()
+    conn.fetchval.return_value = mode == "admitted"
+    seen = []
+    pool = object()
+
+    async def construct(**options):
+        seen.append(options)
+        await options["setup"](conn)
+        return pool
+
+    monkeypatch.setattr("butlers.db_authority.catalog.create_owned_pool", construct)
+    monkeypatch.setattr(
+        "butlers.core.deploy.asyncpg.create_pool",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unselected native driver")),
+    )
+    if mode == "admitted":
+        assert await _make_pool() is pool
+        assert conn.fetchval.await_args.args[1:] == ("deploy_operator", "butlers")
+        assert seen[0]["min_size"] == 1 and seen[0]["max_size"] == 2
+    else:
+        with pytest.raises((AuthorityError, DeployError)):
+            await _make_pool()
+        assert bool(seen) == (mode != "missing")

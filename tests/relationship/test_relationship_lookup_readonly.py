@@ -37,6 +37,7 @@ from butlers.tools.relationship.staleness import (
     FRESH_MAX_DAYS,
     staleness_band,
 )
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = [
     pytest.mark.integration,

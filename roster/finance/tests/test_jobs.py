@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, patch
@@ -16,6 +16,7 @@ import pytest
 import butlers.jobs._roster.finance_jobs  # noqa: F401
 from butlers.core.owner_conditions import create_owner_conditions_table, get_active_condition
 from butlers.tools.switchboard.insight.broker import create_insight_tables
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -2750,16 +2751,51 @@ async def test_scan_filters_each_claim_before_selecting_date_and_binds_ledger_pr
         }
 
 
+def _registered_field_deployment_factory(postgres_container):
+    """Sequential fresh full deployments; no normal-login runtime membership.
+
+    The source-owned producer creates the fixed butlers database and dedicated
+    logins, refuses an existing database, and owns OID-fenced cleanup. Each
+    baseline/counterfactual/restored call enters a new context after the prior
+    cleanup joined. A cleanup failure remains a failure, never a fresh lease.
+    """
+    from sqlalchemy.engine import make_url
+
+    from butlers.testing.migration import (
+        async_serving_test_deployment,
+        migration_bootstrap_db_url,
+    )
+
+    active = False
+    previous_logins = set()
+
+    @asynccontextmanager
+    async def open_deployment():
+        nonlocal active
+        if active:
+            raise RuntimeError("Concurrent fixed-database pipeline deployments are forbidden")
+        active = True
+        try:
+            async with async_serving_test_deployment(postgres_container) as deployment:
+                logins = {login.user for login in deployment.runtime_logins.values()}
+                assert logins and not (logins & previous_logins)
+                previous_logins.update(logins)
+                control = make_url(migration_bootstrap_db_url(postgres_container, "butlers"))
+                yield (
+                    deployment,
+                    control.set(drivername="postgresql").render_as_string(hide_password=False),
+                )
+        finally:
+            # Source __aexit__ settles resources and the exact creation worker
+            # through cancellation before this closure allows another entry.
+            active = False
+
+    return open_deployment
+
+
 @pytest.fixture
 def registered_field_pipeline_db(postgres_container):
-    from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "finance", "switchboard"],
-        schemas={"core": "finance", "finance": "finance", "switchboard": "switchboard"},
-    )
+    return _registered_field_deployment_factory(postgres_container)
 
 
 async def _settle_pipeline_sse_watchers(baseline_tasks):
@@ -2806,7 +2842,6 @@ async def test_registered_routed_fields_scan_and_durable_broker_pipeline(
     import asyncio
     import importlib
     from contextlib import AsyncExitStack
-    from types import SimpleNamespace
     from uuid import UUID, uuid4
 
     import asyncpg
@@ -2840,374 +2875,387 @@ async def test_registered_routed_fields_scan_and_durable_broker_pipeline(
     from pathlib import Path
 
     root = Path(__file__).parents[3]
-    url = registered_field_pipeline_db
-    baseline_tasks = set(asyncio.all_tasks())
-    owner = receiver = None
-    actual_http = httpx.AsyncClient
-    # live-clock: the actual fixed MCP reader derives its calendar internally without a now input.
-    now = datetime.now(UTC)
-    today = now.date()
-    selected = today + timedelta(days=3)
-    baseline_date = today + timedelta(days=40)
-    async with AsyncExitStack() as stack:
-        # Registered first, settled last: no client/session or native pool may
-        # still depend on the watcher when the fixture joins it.
-        stack.push_async_callback(_settle_pipeline_sse_watchers, baseline_tasks)
-        admin = await stack.enter_async_context(
-            asyncpg.create_pool(
-                url,
-                min_size=1,
-                max_size=3,
-                init=register_jsonb_codec,
-                server_settings={"search_path": "finance,public"},
-            )
-        )
-
-        boot_fence_state = {"armed": False, "owning_reads": 0, "rotated": False}
-
-        async def runtime(domain):
-            async def initialize(conn):
-                await register_jsonb_codec(conn)
-                if domain == "finance":
-
-                    def record(query):
-                        if boot_fence_state["armed"] and query.query.startswith(
-                            "SELECT next_renewal, date_epoch, field_claims, status, status_source "
-                            "FROM subscriptions WHERE id = $1"
-                        ):
-                            boot_fence_state["owning_reads"] += 1
-
-                    conn.add_query_logger(record)
-
-            async def role(conn):
-                await conn.execute(f'SET ROLE "butler_{domain}_rw"')
-
-            return await stack.enter_async_context(
+    async with registered_field_pipeline_db() as (deployment, control_url):
+        baseline_tasks = set(asyncio.all_tasks())
+        owner = receiver = None
+        actual_http = httpx.AsyncClient
+        # live-clock: the actual fixed MCP reader derives its calendar internally without a now input.
+        now = datetime.now(UTC)
+        today = now.date()
+        selected = today + timedelta(days=3)
+        baseline_date = today + timedelta(days=40)
+        async with AsyncExitStack() as stack:
+            # Registered first, settled last: no client/session or native pool may
+            # still depend on the watcher when the fixture joins it.
+            stack.push_async_callback(_settle_pipeline_sse_watchers, baseline_tasks)
+            admin = await stack.enter_async_context(
                 asyncpg.create_pool(
-                    url,
+                    control_url,
                     min_size=1,
                     max_size=3,
-                    init=initialize,
-                    setup=role,
-                    server_settings={"search_path": f"{domain},public"},
+                    init=register_jsonb_codec,
+                    server_settings={"search_path": "finance,public"},
                 )
             )
 
-        finance_pool, switchboard_pool = await runtime("finance"), await runtime("switchboard")
-        async with finance_pool.acquire() as conn:
-            assert await conn.fetchval("SELECT current_user") == "butler_finance_rw"
-        # Explicit privileged fixture configuration; no runtime grant or authority bypass.
-        await admin.execute(
-            "ALTER TABLE public.capability_catalog_control DISABLE ROW LEVEL SECURITY"
-        )
-        try:
-            await admin.execute("UPDATE public.capability_catalog_control SET enabled=true")
-        finally:
+            boot_fence_state = {"armed": False, "owning_reads": 0, "rotated": False}
+
+            # This owner closes every admitted Database before the original SSE
+            # watcher and final no-task oracle. Its outer context closes an empty
+            # retained list on success and still owns failed startup/cancellation.
+            stack.push_async_callback(deployment.close_resources)
+            runtime_databases = {}
+
+            async def runtime(domain):
+                database = deployment.runtime_database(domain, min_size=1, max_size=3)
+                original_init = database._init_connection
+
+                async def initialize(conn):
+                    await original_init(conn)
+                    if domain == "finance":
+
+                        def record(query):
+                            if boot_fence_state["armed"] and query.query.startswith(
+                                "SELECT next_renewal, date_epoch, field_claims, status, status_source "
+                                "FROM subscriptions WHERE id = $1"
+                            ):
+                                boot_fence_state["owning_reads"] += 1
+
+                        conn.add_query_logger(record)
+
+                # Observe the real init; leave per-handoff setup and the complete
+                # actual role/catalog admission callbacks entirely unchanged.
+                database._init_connection = initialize
+                await database.connect()
+                runtime_databases[domain] = database
+                return database.pool
+
+            finance_pool, switchboard_pool = await runtime("finance"), await runtime("switchboard")
+            async with finance_pool.acquire() as conn:
+                assert await conn.fetchval("SELECT current_user") == "butler_finance_rw"
+            # Explicit privileged fixture configuration; no runtime grant or authority bypass.
             await admin.execute(
-                "ALTER TABLE public.capability_catalog_control ENABLE ROW LEVEL SECURITY"
-            )
-        await admin.execute(
-            "UPDATE public.approvals_policy SET quiet_start_hour=NULL, quiet_end_hour=NULL, "
-            "timezone='UTC' WHERE id=1"
-        )
-        await admin.execute(
-            "INSERT INTO public.insight_settings(id,verbosity) VALUES(1,'normal') "
-            "ON CONFLICT(id) DO UPDATE SET verbosity='normal'"
-        )
-        entity = await admin.fetchval(
-            "INSERT INTO public.entities(canonical_name,entity_type,roles) "
-            "VALUES('Synthetic pipeline owner','person',ARRAY['owner']) RETURNING id"
-        )
-        finance = ButlerDaemon(root / "roster/finance", db=SimpleNamespace(pool=finance_pool))
-        finance.config = load_config(finance.config_dir)
-        finance.mcp = FastMCP("registered-finance-pipeline")
-        finance._modules = [default_registry()._modules["finance"]()]
-        finance._module_configs = finance._validate_module_configs()
-        await finance._register_module_tools()
-        await finance._finalize_tool_catalog()
-        publishers = {}
-        catalogs = {}
-        for domain in DOMAINS:
-            runtime_pool = (
-                finance_pool
-                if domain == "finance"
-                else (switchboard_pool if domain == "switchboard" else await runtime(domain))
-            )
-            catalog = (
-                finance._tool_catalog
-                if domain == "finance"
-                else (await registered_catalog(domain))[1]
-            )
-            publisher = CatalogPublisher(runtime_pool, domain)
-            await publisher.publish(catalog)
-            publishers[domain], catalogs[domain] = publisher, catalog
-        finance._catalog_publication = publishers["finance"]
-        source = ButlerDaemon(
-            root / "roster/switchboard", db=SimpleNamespace(pool=switchboard_pool)
-        )
-        source.config = load_config(source.config_dir)
-        source._tool_catalog = catalogs["switchboard"]
-        source._catalog_publication = publishers["switchboard"]
-        expected = expected_route_target("finance")
-        assert expected is not None
-        # The real registry row must exist before the role-bound boot registration.
-        await register_butler(
-            switchboard_pool, "finance", runtime_mcp_url(expected.port), modules=["finance"]
-        )
-        switchboard_target = expected_route_target("switchboard")
-        assert switchboard_target is not None
-        await register_butler(
-            switchboard_pool,
-            "switchboard",
-            runtime_mcp_url(switchboard_target.port),
-            modules=["switchboard"],
-        )
-        finance._boot_epoch = await register_boot(
-            finance_pool, "finance", finance._boot_instance_id
-        )
-        assert finance._boot_epoch == 1
-        source._boot_epoch = await register_boot(
-            switchboard_pool, "switchboard", source._boot_instance_id
-        )
-        assert finance._boot_instance_id.version == source._boot_instance_id.version == 7
-        assert finance._boot_instance_id != publishers["finance"].instance
-        assert source._boot_instance_id != publishers["switchboard"].instance
-        owner = control.FinanceWarningControlOwner(source, route_call=route.route)
-        source._finance_warning_control_owner = owner
-        receiver = control.FinanceWarningControlOwner(
-            finance, verifier_url="http://controlled.invalid" + control.VERIFY_PATH
-        )
-        finance._finance_warning_control_owner = receiver
-        epoch, sequence = await reserve_probe(switchboard_pool, "finance")
-        assert epoch == finance._boot_epoch
-        assert await record_probe(
-            switchboard_pool,
-            "finance",
-            boot_epoch=epoch,
-            probe_sequence=sequence,
-            healthy=True,
-            compatible=True,
-            accepting=True,
-        )
-        app = ButlerDaemon._build_mcp_http_app(
-            finance.mcp, butler_name="finance", finance_warning_control_owner=receiver
-        )
-        raw = app._app._app
-        await stack.enter_async_context(raw.router.lifespan_context(raw))
-
-        def http_client(**kw):
-            return actual_http(transport=httpx.ASGITransport(app=app), **kw)
-
-        def routing_client(transport, **kw):
-            headers = getattr(transport, "headers", {})
-            return Client(
-                StreamableHttpTransport(
-                    runtime_mcp_url(expected.port),
-                    headers=headers,
-                    httpx_client_factory=http_client,
-                ),
-                **kw,
-            )
-
-        monkeypatch.setattr(route, "MCPClient", routing_client)
-        verifier_app = Starlette(routes=[owner.route()])
-        monkeypatch.setattr(
-            control.httpx,
-            "AsyncClient",
-            lambda **kw: actual_http(transport=httpx.ASGITransport(app=verifier_app), **kw),
-        )
-
-        async def routed_write(*, explicit_owner, renewal, amount, currency):
-            session = str(uuid4())
-            context = (
-                {"source_entity_id": str(entity), "request_context": {}}
-                if explicit_owner
-                else {
-                    "request_context": {
-                        "source_channel": "email",
-                        "source_endpoint_identity": "gmail:synthetic",
-                    }
-                }
-            )
-            capture.set_runtime_session_routing_context(session, context)
-            invocation = await fact_authority.register_invocation(
-                "finance", session, source_endpoint=None, routed=True
+                "ALTER TABLE public.capability_catalog_control DISABLE ROW LEVEL SECURITY"
             )
             try:
-                # The actual HTTP middleware resolves this server-issued binding;
-                # a query/session locator or caller metadata is never substituted.
-                async def wire(endpoint, name, args):
-                    async with Client(
-                        StreamableHttpTransport(
-                            endpoint,
-                            headers={fact_authority.INVOCATION_HEADER: invocation},
-                            httpx_client_factory=http_client,
-                        )
-                    ) as peer:
-                        return (await peer.call_tool(name, args)).data
-
-                result = await route.route(
-                    switchboard_pool,
-                    "finance",
-                    "track_subscription",
-                    {
-                        "service": "Synthetic wire subscription",
-                        "amount": amount,
-                        "currency": currency,
-                        "frequency": "yearly",
-                        "next_renewal": renewal.isoformat(),
-                    },
-                    call_fn=wire,
-                )
-                assert "error" not in result
-                return result["result"]
+                await admin.execute("UPDATE public.capability_catalog_control SET enabled=true")
             finally:
-                fact_authority.settle_invocation(invocation)
-                capture.clear_runtime_session_routing_context(session)
+                await admin.execute(
+                    "ALTER TABLE public.capability_catalog_control ENABLE ROW LEVEL SECURITY"
+                )
+            await admin.execute(
+                "UPDATE public.approvals_policy SET quiet_start_hour=NULL, quiet_end_hour=NULL, "
+                "timezone='UTC' WHERE id=1"
+            )
+            await admin.execute(
+                "INSERT INTO public.insight_settings(id,verbosity) VALUES(1,'normal') "
+                "ON CONFLICT(id) DO UPDATE SET verbosity='normal'"
+            )
+            entity = await admin.fetchval(
+                "INSERT INTO public.entities(canonical_name,entity_type,roles) "
+                "VALUES('Synthetic pipeline owner','person',ARRAY['owner']) RETURNING id"
+            )
+            finance = ButlerDaemon(root / "roster/finance", db=runtime_databases["finance"])
+            finance.config = load_config(finance.config_dir)
+            finance.mcp = FastMCP("registered-finance-pipeline")
+            finance._modules = [default_registry()._modules["finance"]()]
+            finance._module_configs = finance._validate_module_configs()
+            await finance._register_module_tools()
+            await finance._finalize_tool_catalog()
+            publishers = {}
+            catalogs = {}
+            for domain in DOMAINS:
+                runtime_pool = (
+                    finance_pool
+                    if domain == "finance"
+                    else (switchboard_pool if domain == "switchboard" else await runtime(domain))
+                )
+                catalog = (
+                    finance._tool_catalog
+                    if domain == "finance"
+                    else (await registered_catalog(domain))[1]
+                )
+                publisher = CatalogPublisher(runtime_pool, domain)
+                await publisher.publish(catalog)
+                publishers[domain], catalogs[domain] = publisher, catalog
+            finance._catalog_publication = publishers["finance"]
+            source = ButlerDaemon(root / "roster/switchboard", db=runtime_databases["switchboard"])
+            source.config = load_config(source.config_dir)
+            source._tool_catalog = catalogs["switchboard"]
+            source._catalog_publication = publishers["switchboard"]
+            expected = expected_route_target("finance")
+            assert expected is not None
+            # The real registry row must exist before the role-bound boot registration.
+            await register_butler(
+                switchboard_pool, "finance", runtime_mcp_url(expected.port), modules=["finance"]
+            )
+            switchboard_target = expected_route_target("switchboard")
+            assert switchboard_target is not None
+            await register_butler(
+                switchboard_pool,
+                "switchboard",
+                runtime_mcp_url(switchboard_target.port),
+                modules=["switchboard"],
+            )
+            finance._boot_epoch = await register_boot(
+                finance_pool, "finance", finance._boot_instance_id
+            )
+            assert finance._boot_epoch == 1
+            source._boot_epoch = await register_boot(
+                switchboard_pool, "switchboard", source._boot_instance_id
+            )
+            assert finance._boot_instance_id.version == source._boot_instance_id.version == 7
+            assert finance._boot_instance_id != publishers["finance"].instance
+            assert source._boot_instance_id != publishers["switchboard"].instance
+            owner = control.FinanceWarningControlOwner(source, route_call=route.route)
+            source._finance_warning_control_owner = owner
+            receiver = control.FinanceWarningControlOwner(
+                finance, verifier_url="http://controlled.invalid" + control.VERIFY_PATH
+            )
+            finance._finance_warning_control_owner = receiver
+            epoch, sequence = await reserve_probe(switchboard_pool, "finance")
+            assert epoch == finance._boot_epoch
+            assert await record_probe(
+                switchboard_pool,
+                "finance",
+                boot_epoch=epoch,
+                probe_sequence=sequence,
+                healthy=True,
+                compatible=True,
+                accepting=True,
+            )
+            app = ButlerDaemon._build_mcp_http_app(
+                finance.mcp, butler_name="finance", finance_warning_control_owner=receiver
+            )
+            raw = app._app._app
+            await stack.enter_async_context(raw.router.lifespan_context(raw))
 
-        try:
-            initial = await routed_write(
-                explicit_owner=True, renewal=baseline_date, amount=10, currency="USD"
-            )
-            # A real earlier expired extraction must not mask a later in-window date.
-            await routed_write(
-                explicit_owner=False, renewal=today - timedelta(days=1), amount=99, currency="EUR"
-            )
-            extracted = await routed_write(
-                explicit_owner=False, renewal=selected, amount=99, currency="EUR"
-            )
-            await routed_write(explicit_owner=False, renewal=selected, amount=99, currency="EUR")
-            assert extracted["id"] == initial["id"]
-            subject = UUID(extracted["id"])
-            # Independent acquisition observes committed owning fields, never a return DTO oracle.
-            async with admin.acquire() as observer:
-                row = await observer.fetchrow(
-                    "SELECT * FROM finance.subscriptions WHERE id=$1", subject
+            def http_client(**kw):
+                return actual_http(transport=httpx.ASGITransport(app=app), **kw)
+
+            def routing_client(transport, **kw):
+                headers = getattr(transport, "headers", {})
+                return Client(
+                    StreamableHttpTransport(
+                        runtime_mcp_url(expected.port),
+                        headers=headers,
+                        httpx_client_factory=http_client,
+                    ),
+                    **kw,
                 )
-                assert row["value_revision"] >= 3 and len(row["field_claims"]) == 3
-                try:
-                    assert row["next_renewal"] == baseline_date
-                    assert str(row["amount"]) == "10.00" and row["currency"] == "USD"
-                except AssertionError as exc:
-                    if _pipeline_mutation.get() == "field-protection":
-                        raise _FieldProtectionViolation from exc
-                    raise
-                assert row["renewal_source"] == row["price_source"] == "owner"
-                assert {
-                    claim["field"] for claim in row["field_claims"] if not claim["resolved"]
-                } == {"renewal", "price"}
-                assert (
-                    len(row["field_claims"]) == 3
-                )  # two dates + one complete price; replay dedups
-            scan = await run_insight_scan(finance_pool, now=now)
-            assert scan["errors"] == 0
-            async with admin.acquire() as observer:
-                candidate = await observer.fetchrow(
-                    "SELECT * FROM public.insight_candidates WHERE category='subscription-renewal'"
+
+            monkeypatch.setattr(route, "MCPClient", routing_client)
+            verifier_app = Starlette(routes=[owner.route()])
+            monkeypatch.setattr(
+                control.httpx,
+                "AsyncClient",
+                lambda **kw: actual_http(transport=httpx.ASGITransport(app=verifier_app), **kw),
+            )
+
+            async def routed_write(*, explicit_owner, renewal, amount, currency):
+                session = str(uuid4())
+                context = (
+                    {"source_entity_id": str(entity), "request_context": {}}
+                    if explicit_owner
+                    else {
+                        "request_context": {
+                            "source_channel": "email",
+                            "source_endpoint_identity": "gmail:synthetic",
+                        }
+                    }
+                )
+                capture.set_runtime_session_routing_context(session, context)
+                invocation = await fact_authority.register_invocation(
+                    "finance", session, source_endpoint=None, routed=True
                 )
                 try:
-                    assert candidate is not None and candidate["status"] == "pending"
-                except AssertionError as exc:
-                    if _pipeline_mutation.get() == "prefilter-before-min":
-                        raise _RenewalSelectionViolation from exc
-                    raise
-                assert candidate["dedup_key"].endswith(selected.isoformat())
-                assert candidate["metadata"]["event_date"] == selected.isoformat()
-                assert candidate["expires_at"] == datetime.combine(
-                    selected + timedelta(days=1), datetime.min.time(), tzinfo=UTC
-                )
-                assert (
-                    await observer.fetchval(
-                        "SELECT count(*) FROM finance.obligation_ledger WHERE subscription_id=$1 AND period=$2",
-                        subject,
-                        selected,
+                    # The actual HTTP middleware resolves this server-issued binding;
+                    # a query/session locator or caller metadata is never substituted.
+                    async def wire(endpoint, name, args):
+                        async with Client(
+                            StreamableHttpTransport(
+                                endpoint,
+                                headers={fact_authority.INVOCATION_HEADER: invocation},
+                                httpx_client_factory=http_client,
+                            )
+                        ) as peer:
+                            return (await peer.call_tool(name, args)).data
+
+                    result = await route.route(
+                        switchboard_pool,
+                        "finance",
+                        "track_subscription",
+                        {
+                            "service": "Synthetic wire subscription",
+                            "amount": amount,
+                            "currency": currency,
+                            "frequency": "yearly",
+                            "next_renewal": renewal.isoformat(),
+                        },
+                        call_fn=wire,
                     )
-                    == 1
+                    assert "error" not in result
+                    return result["result"]
+                finally:
+                    fact_authority.settle_invocation(invocation)
+                    capture.clear_runtime_session_routing_context(session)
+
+            try:
+                initial = await routed_write(
+                    explicit_owner=True, renewal=baseline_date, amount=10, currency="USD"
                 )
-                premise = candidate["premise"]
-                assert premise["args"] == {
-                    "subject": str(subject),
-                    "selected_date": selected.isoformat(),
-                    "epoch": 0,
-                }
-            assert await owner.read(premise["args"]) is True
-            if after_scan == "owner-confirmed":
-                await routed_write(explicit_owner=True, renewal=selected, amount=99, currency="EUR")
+                # A real earlier expired extraction must not mask a later in-window date.
+                await routed_write(
+                    explicit_owner=False,
+                    renewal=today - timedelta(days=1),
+                    amount=99,
+                    currency="EUR",
+                )
+                extracted = await routed_write(
+                    explicit_owner=False, renewal=selected, amount=99, currency="EUR"
+                )
+                await routed_write(
+                    explicit_owner=False, renewal=selected, amount=99, currency="EUR"
+                )
+                assert extracted["id"] == initial["id"]
+                subject = UUID(extracted["id"])
+                # Independent acquisition observes committed owning fields, never a return DTO oracle.
                 async with admin.acquire() as observer:
-                    confirmed = await observer.fetchrow(
+                    row = await observer.fetchrow(
                         "SELECT * FROM finance.subscriptions WHERE id=$1", subject
                     )
-                    assert confirmed["next_renewal"] == selected and confirmed["date_epoch"] == 1
-                    assert all(claim["resolved"] for claim in confirmed["field_claims"])
-                assert await owner.read(premise["args"]) is False
-            elif after_scan == "unknown":
-                receiver.stop_admission()  # real closed receiver, not a fabricated false/SQL response
-                assert await owner.read(premise["args"]) is None
-            if _pipeline_boot_race.get():
-                from butlers.core.utils import generate_uuid7_string
-
-                original_verify = owner.verify_consume
-                old_local = receiver.identity()
-                old_publication = publishers["finance"].revision
-
-                async def rotate_after_callback(body):
-                    proof = await original_verify(body)
-                    if proof is not None and not boot_fence_state["rotated"]:
-                        successor = UUID(generate_uuid7_string())
-                        successor_epoch = await register_boot(finance_pool, "finance", successor)
-                        assert successor_epoch == finance._boot_epoch + 1
-                        async with admin.acquire() as observer:
-                            observed = await observer.fetchrow(
-                                "SELECT boot_instance_id,boot_epoch FROM "
-                                "switchboard.butler_registry_control_plane WHERE name='finance'"
-                            )
-                            assert tuple(observed) == (successor, successor_epoch)
-                        assert receiver.identity() == old_local
-                        assert publishers["finance"].revision == old_publication
-                        boot_fence_state["rotated"] = boot_fence_state["armed"] = True
-                    return proof
-
-                monkeypatch.setattr(owner, "verify_consume", rotate_after_callback)
-            notify = AsyncMock(return_value={"status": "sent"})
-            result = await broker.delivery_cycle(
-                switchboard_pool, notify_fn=notify, now=now, finance_warning_reader=owner.read
-            )
-            if _pipeline_boot_race.get():
-                await asyncio.sleep(0)  # deliver native query-logger callbacks before the oracle
-                assert boot_fence_state["rotated"]
-                try:
-                    assert boot_fence_state["owning_reads"] == 0
-                    assert "unverified" in notify.call_args.args[0].lower()
-                    assert "as of" in notify.call_args.args[0].lower()
-                except AssertionError as exc:
-                    raise _BootAdmissionViolation from exc
-            async with admin.acquire() as observer:
-                stored = await observer.fetchrow(
-                    "SELECT status FROM public.insight_candidates WHERE id=$1", candidate["id"]
-                )
+                    assert row["value_revision"] >= 3 and len(row["field_claims"]) == 3
+                    try:
+                        assert row["next_renewal"] == baseline_date
+                        assert str(row["amount"]) == "10.00" and row["currency"] == "USD"
+                    except AssertionError as exc:
+                        if _pipeline_mutation.get() == "field-protection":
+                            raise _FieldProtectionViolation from exc
+                        raise
+                    assert row["renewal_source"] == row["price_source"] == "owner"
+                    assert {
+                        claim["field"] for claim in row["field_claims"] if not claim["resolved"]
+                    } == {"renewal", "price"}
+                    assert (
+                        len(row["field_claims"]) == 3
+                    )  # two dates + one complete price; replay dedups
+                scan = await run_insight_scan(finance_pool, now=now)
+                assert scan["errors"] == 0
+                async with admin.acquire() as observer:
+                    candidate = await observer.fetchrow(
+                        "SELECT * FROM public.insight_candidates WHERE category='subscription-renewal'"
+                    )
+                    try:
+                        assert candidate is not None and candidate["status"] == "pending"
+                    except AssertionError as exc:
+                        if _pipeline_mutation.get() == "prefilter-before-min":
+                            raise _RenewalSelectionViolation from exc
+                        raise
+                    assert candidate["dedup_key"].endswith(selected.isoformat())
+                    assert candidate["metadata"]["event_date"] == selected.isoformat()
+                    assert candidate["expires_at"] == datetime.combine(
+                        selected + timedelta(days=1), datetime.min.time(), tzinfo=UTC
+                    )
+                    assert (
+                        await observer.fetchval(
+                            "SELECT count(*) FROM finance.obligation_ledger WHERE subscription_id=$1 AND period=$2",
+                            subject,
+                            selected,
+                        )
+                        == 1
+                    )
+                    premise = candidate["premise"]
+                    assert premise["args"] == {
+                        "subject": str(subject),
+                        "selected_date": selected.isoformat(),
+                        "epoch": 0,
+                    }
+                assert await owner.read(premise["args"]) is True
                 if after_scan == "owner-confirmed":
-                    assert result["withdrawn"] == 1 and stored["status"] == "withdrawn"
-                    notify.assert_not_awaited()
-                else:
-                    assert stored["status"] == "delivered"
-                    assert result["delivered"] == [str(candidate["id"])]
-                    notify.assert_awaited_once()
-                    if after_scan == "unknown":
-                        assert "as of" in notify.call_args.args[0].lower()
+                    await routed_write(
+                        explicit_owner=True, renewal=selected, amount=99, currency="EUR"
+                    )
+                    async with admin.acquire() as observer:
+                        confirmed = await observer.fetchrow(
+                            "SELECT * FROM finance.subscriptions WHERE id=$1", subject
+                        )
+                        assert (
+                            confirmed["next_renewal"] == selected and confirmed["date_epoch"] == 1
+                        )
+                        assert all(claim["resolved"] for claim in confirmed["field_claims"])
+                    assert await owner.read(premise["args"]) is False
+                elif after_scan == "unknown":
+                    receiver.stop_admission()  # real closed receiver, not a fabricated false/SQL response
+                    assert await owner.read(premise["args"]) is None
+                if _pipeline_boot_race.get():
+                    from butlers.core.utils import generate_uuid7_string
+
+                    original_verify = owner.verify_consume
+                    old_local = receiver.identity()
+                    old_publication = publishers["finance"].revision
+
+                    async def rotate_after_callback(body):
+                        proof = await original_verify(body)
+                        if proof is not None and not boot_fence_state["rotated"]:
+                            successor = UUID(generate_uuid7_string())
+                            successor_epoch = await register_boot(
+                                finance_pool, "finance", successor
+                            )
+                            assert successor_epoch == finance._boot_epoch + 1
+                            async with admin.acquire() as observer:
+                                observed = await observer.fetchrow(
+                                    "SELECT boot_instance_id,boot_epoch FROM "
+                                    "switchboard.butler_registry_control_plane WHERE name='finance'"
+                                )
+                                assert tuple(observed) == (successor, successor_epoch)
+                            assert receiver.identity() == old_local
+                            assert publishers["finance"].revision == old_publication
+                            boot_fence_state["rotated"] = boot_fence_state["armed"] = True
+                        return proof
+
+                    monkeypatch.setattr(owner, "verify_consume", rotate_after_callback)
+                notify = AsyncMock(return_value={"status": "sent"})
+                result = await broker.delivery_cycle(
+                    switchboard_pool, notify_fn=notify, now=now, finance_warning_reader=owner.read
+                )
+                if _pipeline_boot_race.get():
+                    await asyncio.sleep(
+                        0
+                    )  # deliver native query-logger callbacks before the oracle
+                    assert boot_fence_state["rotated"]
+                    try:
+                        assert boot_fence_state["owning_reads"] == 0
                         assert "unverified" in notify.call_args.args[0].lower()
-            # The already consumed/withdrawn durable row cannot send again on restart/replay.
-            await broker.delivery_cycle(
-                switchboard_pool, notify_fn=notify, now=now, finance_warning_reader=owner.read
-            )
-            assert notify.await_count == (0 if after_scan == "owner-confirmed" else 1)
-        finally:
-            await route._reset_router_client_cache_for_tests()
-            await owner.close(5)
-            await receiver.close(5)
-            await owner.settle()
-            await receiver.settle()
-    await asyncio.sleep(0)
-    assert not [task for task in asyncio.all_tasks() - baseline_tasks if not task.done()]
+                        assert "as of" in notify.call_args.args[0].lower()
+                    except AssertionError as exc:
+                        raise _BootAdmissionViolation from exc
+                async with admin.acquire() as observer:
+                    stored = await observer.fetchrow(
+                        "SELECT status FROM public.insight_candidates WHERE id=$1", candidate["id"]
+                    )
+                    if after_scan == "owner-confirmed":
+                        assert result["withdrawn"] == 1 and stored["status"] == "withdrawn"
+                        notify.assert_not_awaited()
+                    else:
+                        assert stored["status"] == "delivered"
+                        assert result["delivered"] == [str(candidate["id"])]
+                        notify.assert_awaited_once()
+                        if after_scan == "unknown":
+                            assert "as of" in notify.call_args.args[0].lower()
+                            assert "unverified" in notify.call_args.args[0].lower()
+                # The already consumed/withdrawn durable row cannot send again on restart/replay.
+                await broker.delivery_cycle(
+                    switchboard_pool, notify_fn=notify, now=now, finance_warning_reader=owner.read
+                )
+                assert notify.await_count == (0 if after_scan == "owner-confirmed" else 1)
+            finally:
+                await route._reset_router_client_cache_for_tests()
+                await owner.close(5)
+                await receiver.close(5)
+                await owner.settle()
+                await receiver.settle()
+        await asyncio.sleep(0)
+        assert not [task for task in asyncio.all_tasks() - baseline_tasks if not task.done()]
 
 
 class _FieldProtectionViolation(AssertionError):
@@ -3223,17 +3271,10 @@ _pipeline_mutation = ContextVar("finance_pipeline_product_mutation", default=Non
 
 @pytest.fixture
 def registered_field_mutation_dbs(postgres_container):
-    from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
-    return [
-        create_migrated_test_db(
-            postgres_container,
-            migration_db_name(),
-            chains=["core", "finance", "switchboard"],
-            schemas={"core": "finance", "finance": "finance", "switchboard": "switchboard"},
-        )
-        for _ in range(3)
-    ]
+    factory = _registered_field_deployment_factory(postgres_container)
+    # Preserve three independently created baseline/counterfactual/restored
+    # deployments, sequentially. No three contexts share a live butlers DB.
+    return [factory, factory, factory]
 
 
 def _pipeline_product_mutant(module, name, mutation):

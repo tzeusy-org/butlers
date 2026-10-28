@@ -30,6 +30,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db, get_mcp_manager
 from butlers.core.qa.dispatch import _is_circuit_breaker_tripped
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = pytest.mark.integration
 

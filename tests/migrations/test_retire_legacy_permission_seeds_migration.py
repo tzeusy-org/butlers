@@ -14,6 +14,7 @@ from httpx import ASGITransport, AsyncClient
 from butlers.api.deps import get_db
 from butlers.core.permissions import PERMISSION_DEFAULT_GRANTED
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]

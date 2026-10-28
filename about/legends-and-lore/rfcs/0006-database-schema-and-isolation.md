@@ -6,7 +6,7 @@ Governing doctrine: [security.md, Schema Isolation](../../heart-and-soul/securit
 
 ## Summary
 
-Butlers uses a single PostgreSQL database with per-butler schemas and the public schema for cross-butler identity tables. Each butler's database connection is scoped to its own schema plus `public`, preventing cross-butler data access. Schema migrations use Alembic with a multi-chain branching model: core, module, and butler-specific chains are discovered automatically and executed independently at startup. A DB-first credential store provides layered secret resolution with environment variable fallback.
+Butlers uses a single PostgreSQL database with per-butler schemas and the public schema for cross-butler identity tables. Each butler's database connection is scoped to its own schema plus `public`, preventing cross-butler data access. Schema migrations use Alembic with a multi-chain branching model: core, module, and butler-specific chains are discovered automatically and executed independently by the explicit CLI migrator; runtime startup verifies required revisions read-only. A DB-first credential store provides layered secret resolution with environment variable fallback.
 
 ## Motivation
 
@@ -86,7 +86,7 @@ Module-specific tables are added by module migration chains (see below). Example
 
 ### Cross-Butler Identity Tables (in `public`)
 
-See RFC 0004 for the full identity schema. The public schema is readable by all butler database roles. Writes are controlled by specific modules (primarily the contacts module in the relationship butler).
+See RFC 0004 for the full identity schema. Public identity reads and writes require their exact manifest rows for actual consumers; being in public does not itself grant access. Existing shared identity reads are preserved through explicit rows, and writes remain limited to source-proven producers.
 
 Additional shared infrastructure tables:
 
@@ -149,59 +149,12 @@ the pool, assuming the runtime role created by the `core_001_foundation` migrati
 
 ### Public Schema Write Authorization Matrix
 
-Butler runtime roles have write access to a specific set of `public` tables. The grants are
-applied by the `core_065` migration. All other `public` tables are read-only for butler roles.
+The released db-authority-rebuild successor replaces broad public/default grants with one typed exact manifest. Every managed relation, sequence and function signature has its expected owner, exact runtime/connector/dashboard role operations and columns, PUBLIC/default ACL, RLS and actual producer/selected-pool provenance. Unknown or future objects have neither automatic SELECT nor DML. Deriving roster identities does not derive privileges. The complete scenario matrix is REQ-database-security-017; declared source-proven producers remain operational, dropped contacts/contact_info/public.facts are not recreated, and incomplete current-object classification refuses finalization.
 
-| Public Table | Granted Operations | Used By |
-|---|---|---|
-| `entities` | INSERT, UPDATE, DELETE | identity module, bootstrap, memory, contacts |
-| `contacts` | INSERT, UPDATE | identity module, contacts module |
-| `contact_info` | INSERT, UPDATE, DELETE | identity module, contacts, relationship |
-| `entity_info` | INSERT, UPDATE, DELETE | google/steam credentials, entity management |
-| `google_accounts` | INSERT, UPDATE | google account registry, calendar, drive |
-| `steam_accounts` | INSERT, UPDATE, DELETE | steam account registry |
-| `user_context` | INSERT, UPDATE | context bus (RFC 0009) |
-| `model_round_robin_counters` | INSERT, UPDATE | model routing round-robin |
-| `token_usage_ledger` | INSERT | model routing token tracking |
-| `ingestion_events` | INSERT, UPDATE, DELETE | ingestion pipeline, switchboard |
-| `healing_attempts` | INSERT, UPDATE | QA/healing module |
-| `qa_dismissals` | INSERT, UPDATE, DELETE | QA module |
-| `qa_findings` | INSERT, UPDATE | QA module |
-| `qa_repo_config` | UPDATE | QA module |
-| `qa_patrols` | INSERT, UPDATE (see note below) | QA module |
-| `memory_catalog` | INSERT, UPDATE | memory module |
-| `facts` | INSERT, UPDATE | finance anomaly detection |
-| `insight_candidates` | INSERT, UPDATE, DELETE | insight broker |
-| `insight_cooldowns` | INSERT, DELETE | insight broker |
-| `insight_engagement` | INSERT, UPDATE, DELETE | insight engagement tracking |
-| `insight_settings` | INSERT, UPDATE | insight verbosity and budget settings |
-| `model_dispatch_attempts` | SELECT, INSERT | failover provenance (core_104 migration) |
-| `runtime_attention_outbox` | No raw producer DML; producer roles invoke fixed server-derived append functions. `butler_switchboard_rw` receives SELECT plus a narrow lifecycle/claim UPDATE column set. | durable inert runtime-attention representation (core_198) |
-| `runtime_attention_delivery_lease` | `butler_switchboard_rw` SELECT, INSERT, UPDATE only. | future Switchboard delivery-service lease (core_198) |
-| `expected_signals` | SELECT for all roles; INSERT/UPDATE only for the row's originating runtime role through forced RLS. | liveness-qualified gap detectors (RFC 0029) |
-| `qa_publication_operations` | SELECT for all roles; INSERT/UPDATE only for `butler_qa_rw` through forced RLS; rows cannot be deleted because no DELETE policy exists (the bootstrap re-grants DELETE); the owner/runtime login keeps TRUNCATE and ALTER/DROP POLICY (residual). | QA publication operation ledger and lineage hold (core_266) |
-
-Tables not in this matrix (`model_catalog`, `token_limits`, and any future public tables without
-explicit grants) are SELECT-only for butler roles. When a new public table is added and butlers
-need write access, a subsequent core migration must add the targeted `GRANT` statements and this
-matrix must be updated. The authoritative runtime specification is in
-`openspec/specs/database-security/spec.md`.
-
-**`qa_patrols` trust model (accepted risk).** `public.qa_patrols` keeps the INSERT/UPDATE grant on
-every runtime role, and the broad public baseline in `scripts/init-db.sql` (re-applied on every
-bootstrap rerun and through `ALTER DEFAULT PRIVILEGES`) also leaves DELETE effectively open. Only
-the QA module and the Dashboard synthetic-finding route write it, but the database does not enforce
-that. The owner has explicitly accepted that a compromised or defective runtime role could insert a
-qualifying scheduled row and so mask or resolve the paging QA-patrol-overdue condition, forge a
-recorded handoff mode, or delete patrol rows. Runtime roles are trusted in-process code under the
-`SET ROLE` model, and the grants are a defence against accidental cross-schema writes rather than
-against a hostile runtime role. This decision changes no grant, finalizer, or RLS policy. A
-systematic review of public-table write access (candidate mechanisms: a bootstrap ACL finalizer in
-`scripts/init-db.sql`, or forced RLS keyed to the role as for `expected_signals`) is tracked
-separately; note that a migration `REVOKE` alone would not persist because bootstrap re-grants.
+The previous qa_patrols broad-write accepted risk is superseded under the original .6 release: only QA and the authenticated dashboard synthetic path may INSERT/UPDATE; no runtime/dashboard DELETE history grant is supported. A one-off migration REVOKE remains insufficient because reapply must converge the complete manifest and default ACLs. This changes the earlier accepted-risk contract explicitly; it does not claim current code already narrows it.
 
 `runtime_attention_outbox` is an exception to the legacy broad-public development grant baseline:
-`scripts/init-db.sql` runs its bootstrap-owned ACL finalizer after that baseline on every rerun.
+the controlled final-state migration installer and manifest convergence replace the bootstrap-owned ACL finalizer; every rerun must preserve the exact final ACL. The preceding broad baseline is retired by the same coherent transition.
 The outbox owner is a membership-free NOLOGIN role, its `SECURITY DEFINER` append operations use a
 fixed `pg_catalog, pg_temp` search path, and `PUBLIC` execution is revoked before the
 explicit producer grants are restored. Producer and Switchboard access additionally require the
@@ -266,28 +219,11 @@ Conventions:
 
 #### Reviewed Bootstrap Prerequisite
 
-Every supported database, including ordinary dev, must complete reviewed
-`scripts/init-db.sql` as its distinct configured cluster-superuser bootstrap
-identity before its first online Alembic migration, and rerun it when the managed
-role/schema/interface surface changes. Both online entrypoints inspect the actual
-current catalog before extension, schema or version/revision side effects and
-refuse missing, partial, unreadable or untrusted provenance. This read-only check
-runs no installer, grants no privilege and trusts no writable completion marker.
-Staged and legitimately finalized states both remain supported; consumed installer
-grants are not demanded back on repeat or second-schema migrations. Protected
-point-of-use guards and managed privileged rollback constraints remain independent.
-Fail-closed runtime role establishment does not waive online migration/startup
-admission or the independent DND authorization boundary. The profile is current
-catalog evidence, not script-history attestation. It does not enable the recovery
-executor or provide its secret. See the [operator procedure](../../../docs/data_and_storage/reviewed-bootstrap.md).
+Every supported database must satisfy the reviewed role, ownership and current-catalog prerequisites before online migration side effects. The operator provisions distinct profiles and performs the declared one-time privileged ownership transfer. The CLI validates those actual prerequisites before extension/schema/version/autocommit work, holds one migration owner across all chains and final-state installers, converges the manifest and verifies effective privilege state. It never trusts a writable completion marker or silently repairs a partial/untrusted catalog as superuser. Protected purpose/RLS and downgrade fences remain independent. Serving startup has no migration credentials or installer authority. The three old restore/DND/attention bunkers are replaced only with real final-state catalog/behavior survivors; independent later dashboard security purposes stay intact.
 
 #### Execution Order at Startup
 
-1. Core migrations (`chain="core"`)
-2. Butler-specific migrations (if `has_butler_chain(butler_name)` returns True)
-3. Declared module migration directories, in dependency order, excluding the already-run butler chain
-
-Each chain is upgraded to its head independently. Alembic tracks applied revisions per-chain in the `alembic_version` table within the target schema.
+The explicit CLI applies core, declared butler-domain and declared module chains in dependency order, preserving real private schema targets and per-chain version tracking. One owned physical lock session spans this whole sequence and final authority verification. Daemon startup instead verifies those required revisions/interfaces read-only before enabling consumers; core failure and module dependency cascades retain their existing semantics. Configuration seeding and schedule synchronization remain authorized data operations, not fallback DDL.
 
 #### Schema-Scoped Execution
 
@@ -374,11 +310,11 @@ Butlers is a user-federated platform (each user owns their instance). This shape
 
 ## Integration
 
-- **RFC 0001:** Database provisioning occurs at phase 6, core migrations at phase 7, module migrations at phase 8, credential store creation at phase 8b.
+- **RFC 0001:** The CLI migrator provisions/upgrades before serving. Daemon phase 6 connects under its serving profile, phases 7/8 verify required core/domain/module revisions read-only, and credential store creation remains at phase 8b.
 - **RFC 0002:** CLI and daemon select declared modules' chains from recognized non-empty directories; roster-root aliases and private schemas are preserved.
 - **RFC 0003:** Switchboard-specific tables (`routing_log`, `triage_rules`, `ingestion_events`) live in the switchboard schema.
 - **RFC 0004:** All identity tables reside in the `public` schema with the access model described there.
-- **RFC 0007:** The dashboard reads from all butler schemas (via a privileged connection) to provide cross-butler views.
+- **RFC 0007:** The dashboard uses its fixed constrained capability for declared cross-butler views, with exact recursive role/ownership validation; dedicated owner-auth remains separate and no generic privileged owner connection is deployed.
 - **RFC 0010:** Documents a sanctioned exception to schema isolation: a read-only SQL view (`general.v_briefing_contributions`) with migration-based cross-schema grants for daily briefing aggregation. Defines reuse criteria for future exceptions.
 - **RFC 0011:** Adds `public.insight_candidates`, `public.insight_cooldowns`, `public.insight_engagement`, and `public.insight_settings` tables to the public schema for the proactive insight delivery pipeline.
 - **RFC 0012:** The finance butler uses dedicated typed-column tables (`finance.transactions` and eight supporting tables) instead of SPO facts for high-volume analytical queries, following the per-butler schema isolation model.

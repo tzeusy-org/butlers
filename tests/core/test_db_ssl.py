@@ -2,13 +2,65 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from butlers.db import Database, schema_search_path
+from butlers.db_authority.roles import RuntimeProfile
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _authority_driver_context(monkeypatch):
+    """SSL tests hold a known roster profile; catalog and SET ROLE remain real.
+
+    Existing synthetic database names describe driver wiring, not the deployment
+    roster. New test_db_authority owns actual fixed-source projection and refusal.
+    Only physical driver response facts and that held source profile are doubled.
+    """
+    original_init = Database.__init__
+    original_mock = AsyncMock
+
+    def held_profile(database, schema, role):
+        return RuntimeProfile(
+            database, schema or "general", "butler_general_rw", ("butler_general_rw",)
+        )
+
+    def initialize(database, *args, **kwargs):
+        original_init(database, *args, **kwargs)
+        if database._runtime_role_required():
+            database._runtime_profile = held_profile(
+                database.db_name, database.schema, database.role
+            )
+
+    def driver_mock(*args, **kwargs):
+        value = original_mock(*args, **kwargs)
+
+        @asynccontextmanager
+        async def acquisition():
+            yield value
+
+        value.acquire = Mock(side_effect=acquisition)
+        value.fetchval.return_value = True
+        value.fetchrow.return_value = dict.fromkeys(
+            (
+                "identity_ok",
+                "role_set_ok",
+                "attributes_ok",
+                "ownership_ok",
+                "create_ok",
+                "target_member",
+            ),
+            True,
+        )
+        return value
+
+    monkeypatch.setattr(Database, "__init__", initialize)
+    monkeypatch.setattr("butlers.db.load_runtime_profile", held_profile)
+    monkeypatch.setitem(globals(), "AsyncMock", driver_mock)
 
 
 def test_ssl_env_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -36,7 +88,10 @@ async def test_ssl_forwarded_to_provision_and_connect_and_retry(
     conn.execute = AsyncMock()
     conn.close = AsyncMock()
     mock_connect.return_value = conn
-    await Database(db_name="test_db", ssl="disable").provision()
+    await Database(db_name="test_db", ssl="disable").provision(
+        administrative_dsn="postgresql://admin@localhost/postgres?sslmode=disable",
+        owner_role="migration_owner",
+    )
     assert mock_connect.await_args.kwargs["ssl"] == "disable"
 
     # ssl forwarded to connect
@@ -55,7 +110,9 @@ async def test_ssl_forwarded_to_provision_and_connect_and_retry(
     # SSL retry on connection_lost: provision
     mock_connect.reset_mock()
     mock_connect.side_effect = [ConnectionError("unexpected connection_lost() call"), conn]
-    await Database(db_name="test_db2").provision()
+    await Database(db_name="test_db2").provision(
+        administrative_dsn="postgresql://admin@localhost/postgres", owner_role="migration_owner"
+    )
     assert mock_connect.await_count == 2
     assert mock_connect.await_args_list[1].kwargs["ssl"] == "disable"
 
@@ -82,7 +139,7 @@ async def test_role_verified_setup_callback_registered(
     pool = AsyncMock()
     mock_create_pool.return_value = pool
 
-    db = Database(db_name="test_db", role="butler_general_rw")
+    db = Database(db_name="butlers", role="butler_general_rw")
     assert db._role_verified is False
 
     out = await db.connect()
@@ -100,7 +157,7 @@ async def test_role_missing_refuses_pool(mock_connect, mock_create_pool) -> None
     connection.terminate = Mock()
     connection.fetchval.return_value = False
     mock_connect.return_value = connection
-    db = Database(db_name="test_db", role="nonexistent_role")
+    db = Database(db_name="butlers", role="nonexistent_role")
     with pytest.raises(RuntimeError, match="role establishment failed"):
         await db.connect()
     assert db._role_verified is False
@@ -117,7 +174,7 @@ async def test_role_none_no_verification_no_callback(
     pool = AsyncMock()
     mock_create_pool.return_value = pool
 
-    db = Database(db_name="test_db", role=None)
+    db = Database(db_name="butlers", role=None)
     out = await db.connect()
     assert out is pool
     # asyncpg.connect should NOT be called for role verification (no role set)
@@ -130,7 +187,7 @@ async def test_role_none_no_verification_no_callback(
 async def test_role_verification_error_refuses_pool(mock_connect, mock_create_pool) -> None:
     cause = ConnectionError("synthetic-only")
     mock_connect.side_effect = cause
-    db = Database(db_name="test_db", role="butler_general_rw")
+    db = Database(db_name="butlers", role="butler_general_rw")
     with pytest.raises(RuntimeError) as error:
         await db.connect()
     assert error.value.__cause__ is cause
@@ -153,7 +210,7 @@ async def test_role_verified_setup_callback_in_ssl_retry(
     pool2 = AsyncMock()
     mock_create_pool.side_effect = [ConnectionError("unexpected connection_lost() call"), pool2]
 
-    db = Database(db_name="test_db", role="butler_general_rw")
+    db = Database(db_name="butlers", role="butler_general_rw")
     out = await db.connect()
     assert out is pool2
     assert db._role_verified is True
@@ -179,7 +236,7 @@ async def test_role_verify_connection_retries_with_ssl_disable(
     pool = AsyncMock()
     mock_create_pool.return_value = pool
 
-    db = Database(db_name="test_db", role="butler_general_rw")
+    db = Database(db_name="butlers", role="butler_general_rw")
     out = await db.connect()
     assert out is pool
     assert db._role_verified is True
@@ -194,7 +251,7 @@ async def test_setup_connection_skips_when_role_is_none_despite_verified() -> No
     conn = AsyncMock()
     conn.execute = AsyncMock()
 
-    db = Database(db_name="test_db", role=None)
+    db = Database(db_name="butlers", role=None)
     db._role_verified = True  # Administrative schema-less utility
 
     await db._setup_connection(conn)
@@ -206,7 +263,7 @@ async def test_setup_connection_runs_set_role() -> None:
     conn = AsyncMock()
     conn.execute = AsyncMock()
 
-    db = Database(db_name="test_db", role="butler_general_rw")
+    db = Database(db_name="butlers", role="butler_general_rw")
     db._role_verified = True
     db._verified_role = db.role
 
@@ -216,7 +273,7 @@ async def test_setup_connection_runs_set_role() -> None:
 
 async def test_setup_connection_refuses_when_not_verified() -> None:
     conn = AsyncMock()
-    db = Database(db_name="test_db", role="butler_general_rw")
+    db = Database(db_name="butlers", role="butler_general_rw")
     with pytest.raises(RuntimeError, match="not been established"):
         await db._setup_connection(conn)
     conn.execute.assert_not_awaited()
@@ -227,12 +284,16 @@ async def test_setup_connection_quotes_role_with_double_quotes() -> None:
     conn = AsyncMock()
     conn.execute = AsyncMock()
 
-    db = Database(db_name="test_db", role='role"with"quotes')
+    db = Database(db_name="butlers", role='role"with"quotes')
     db._role_verified = True
     db._verified_role = db.role
 
-    await db._setup_connection(conn)
-    conn.execute.assert_awaited_once_with('SET ROLE "role""with""quotes"')
+    # A quoted, unlisted role cannot become source authority. The unchanged
+    # SET ROLE identifier escaping remains used for valid declared identities;
+    # the stronger successor refuses this identity before any executable SQL.
+    with pytest.raises(RuntimeError):
+        await db._setup_connection(conn)
+    conn.execute.assert_not_awaited()
 
 
 async def test_verify_role_exists_returns_false_when_role_none() -> None:
@@ -240,7 +301,7 @@ async def test_verify_role_exists_returns_false_when_role_none() -> None:
     conn = AsyncMock()
     conn.fetchval = AsyncMock()
 
-    db = Database(db_name="test_db", role=None)
+    db = Database(db_name="butlers", role=None)
     result = await db._verify_role_exists(conn)
     assert result is False
     conn.fetchval.assert_not_awaited()
@@ -258,23 +319,27 @@ async def test_from_env_does_not_set_role(monkeypatch: pytest.MonkeyPatch) -> No
 async def test_provision_collation_refresh(mock_connect: AsyncMock) -> None:
     """provision() refreshes template1 collation before CREATE DATABASE; continues on failure."""
     conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=None)
+    conn.fetchval = AsyncMock(side_effect=[True, None])
     conn.execute = AsyncMock()
     conn.close = AsyncMock()
     mock_connect.return_value = conn
 
-    await Database(db_name="test_db").provision()
+    await Database(db_name="test_db").provision(
+        administrative_dsn="postgresql://admin@localhost/postgres", owner_role="migration_owner"
+    )
     calls = [c.args[0] for c in conn.execute.await_args_list]
     assert calls[0] == "ALTER DATABASE template1 REFRESH COLLATION VERSION"
     assert "CREATE DATABASE" in calls[1]
 
     # Failure in collation refresh does not stop provisioning
     conn2 = AsyncMock()
-    conn2.fetchval = AsyncMock(return_value=1)
+    conn2.fetchval = AsyncMock(side_effect=[True, 1, True])
     conn2.execute = AsyncMock(side_effect=[RuntimeError("permission denied"), None])
     conn2.close = AsyncMock()
     mock_connect.return_value = conn2
-    await Database(db_name="test_db2").provision()  # must not raise
+    await Database(db_name="test_db2").provision(
+        administrative_dsn="postgresql://admin@localhost/postgres", owner_role="migration_owner"
+    )  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +371,7 @@ def test_role_configuration_is_deferred_until_connect() -> None:
     db.set_schema("general")
     db.role = "butler_general_rw"
     db._validate_runtime_role()
-    assert db.role_enforcement_disabled is True
+    assert db.pool is None and db._verified_role is None
 
 
 async def test_mutated_role_is_not_previously_verified() -> None:
@@ -335,7 +400,7 @@ async def test_strict_mode_role_missing_raises(
     pool = AsyncMock()
     mock_create_pool.return_value = pool
 
-    db = Database(db_name="test_db", role="butler_missing_role")
+    db = Database(db_name="butlers", role="butler_missing_role")
     with pytest.raises(RuntimeError, match="role establishment failed"):
         await db.connect()
 
@@ -354,7 +419,7 @@ async def test_strict_mode_role_verify_error_raises(
     pool = AsyncMock()
     mock_create_pool.return_value = pool
 
-    db = Database(db_name="test_db", role="butler_general_rw")
+    db = Database(db_name="butlers", role="butler_general_rw")
     with pytest.raises(RuntimeError, match="role establishment failed"):
         await db.connect()
 
@@ -367,7 +432,7 @@ async def test_missing_role_refuses_without_posture_setting(mock_connect, mock_c
     conn = AsyncMock()
     conn.fetchval.return_value = False
     mock_connect.return_value = conn
-    db = Database(db_name="test_db", role="butler_missing_role")
+    db = Database(db_name="butlers", role="butler_missing_role")
     with pytest.raises(RuntimeError):
         await db.connect()
     assert db.pool is None
@@ -381,7 +446,7 @@ async def test_unreadable_role_refuses_without_posture_setting(
     mock_connect, mock_create_pool
 ) -> None:
     mock_connect.side_effect = ConnectionError("synthetic-only")
-    db = Database(db_name="test_db", role="butler_general_rw")
+    db = Database(db_name="butlers", role="butler_general_rw")
     with pytest.raises(RuntimeError):
         await db.connect()
     assert db.pool is None
@@ -404,7 +469,7 @@ async def test_strict_mode_role_found_proceeds_normally(
     pool = AsyncMock()
     mock_create_pool.return_value = pool
 
-    db = Database(db_name="test_db", role="butler_general_rw")
+    db = Database(db_name="butlers", role="butler_general_rw")
     out = await db.connect()
 
     assert out is pool
@@ -433,7 +498,7 @@ async def test_runtime_role_failure_never_returns_shared_user_pool(failure) -> N
             await db.connect()
         assert "synthetic-private-connection-value" not in str(error.value)
         assert db.pool is None
-        assert db.role_enforcement_disabled is True
+        assert db.pool is None and db._verified_role is None
         create.assert_not_called()
         if failure in {"unreadable", "assumption"}:
             assert error.value.__cause__ is cause
@@ -486,7 +551,7 @@ async def test_real_pool_partial_initialization_is_terminated(monkeypatch, cance
     check.fetchval.return_value = True
     monkeypatch.setattr(asyncpg, "connect", AsyncMock(return_value=check))
     db = Database(
-        db_name="synthetic",
+        db_name="butlers",
         schema="general" if runtime else None,
         role="butler_general_rw" if runtime else None,
         min_pool_size=0,
@@ -519,3 +584,42 @@ async def test_role_verification_cancellation_terminates_owned_connection() -> N
     conn.terminate.assert_called_once()
     assert db.pool is None
     assert db._role_verified is False
+
+
+@pytest.mark.parametrize(
+    "mode", ["missing_selection", "refused", "create", "existing_wrong_owner", "cancel"]
+)
+async def test_provision_requires_selected_admin_and_exact_normal_owner(monkeypatch, mode):
+    import asyncio
+
+    from butlers.db_authority.roles import AuthorityError
+
+    conn = AsyncMock()
+    conn.fetchval.side_effect = (
+        [mode != "refused", None] if mode == "create" else [mode != "refused", True, False]
+    )
+    if mode == "cancel":
+        conn.fetchval.side_effect = asyncio.CancelledError()
+    connect = AsyncMock(return_value=conn)
+    monkeypatch.setattr("butlers.db.asyncpg.connect", connect)
+    db = Database(db_name="butlers")
+    options = (
+        {}
+        if mode == "missing_selection"
+        else dict(
+            administrative_dsn="postgresql://admin@localhost/postgres", owner_role="migration_owner"
+        )
+    )
+    if mode == "create":
+        await db.provision(**options)
+        assert any(
+            'OWNER "migration_owner"' in call.args[0] for call in conn.execute.await_args_list
+        )
+    else:
+        error = asyncio.CancelledError if mode == "cancel" else (AuthorityError, RuntimeError)
+        with pytest.raises(error):
+            await db.provision(**options)
+        assert not any("CREATE DATABASE" in call.args[0] for call in conn.execute.await_args_list)
+    assert connect.await_count == (0 if mode == "missing_selection" else 1)
+    if mode != "missing_selection":
+        conn.close.assert_awaited_once()

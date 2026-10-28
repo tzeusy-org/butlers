@@ -24,13 +24,20 @@ import sys
 import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
+from urllib.parse import urlparse
 
 import asyncpg
 import pytest
+import pytest_asyncio
 
 from butlers.db import register_jsonb_codec
 from butlers.testing.clock import FakeClock
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import (
+    async_serving_test_deployment,
+    create_migrated_test_db,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
 
 _docker_available = shutil.which("docker") is not None
 
@@ -120,35 +127,72 @@ def migrated_db_url(postgres_container) -> str:
     return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
 
 
-@pytest.fixture
-async def insight_pool(migrated_db_url: str):
-    """Reset test-owned Insight state on the migrated core schema."""
-    from butlers.tools.switchboard.insight.broker import create_insight_tables
+@pytest_asyncio.fixture(scope="module", loop_scope="session")
+async def insight_deployment(postgres_container):
+    """Prepare real source authority separately from the broker's login."""
+    async with async_serving_test_deployment(postgres_container) as deployment:
+        yield deployment
 
-    pool = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+
+@pytest_asyncio.fixture(scope="module", loop_scope="session")
+async def _insight_maintenance_pool(postgres_container, insight_deployment):
+    """Own maintenance only for synthetic reset and owner-policy preparation."""
+    selected = urlparse(migration_bootstrap_db_url(postgres_container, "butlers"))
+    pool = asyncpg.create_pool(
+        selected._replace(scheme="postgresql").geturl(),
+        min_size=1,
+        max_size=1,
+        init=register_jsonb_codec,
     )
+    insight_deployment.retain(pool)
+    await pool
+    yield pool
+
+
+@pytest.fixture
+async def insight_admin_pool(_insight_maintenance_pool):
+    """Reset only synthetic rows before the genuine runtime is admitted."""
+    pool = _insight_maintenance_pool
+    await pool.execute("""
+        TRUNCATE public.insight_amendments, public.insight_feedback,
+            public.insight_engagement, public.insight_candidates,
+            public.insight_cooldowns, public.insight_settings,
+            public.attention_daily_rollup
+    """)
+    await pool.execute("""
+        UPDATE public.user_context
+        SET superseded_at = now()
+        WHERE signal_type <> 'dnd' AND superseded_at IS NULL
+    """)
+    await _set_owner_attention_policy(
+        pool,
+        quiet_start_hour=_DEFAULT_QUIET_START_HOUR,
+        quiet_end_hour=_DEFAULT_QUIET_END_HOUR,
+        timezone=_DEFAULT_QUIET_TIMEZONE,
+    )
+    yield pool
+
+
+@pytest.fixture
+async def insight_pool(insight_deployment, insight_admin_pool):
+    """Run every broker operation as the admitted Switchboard database actor."""
+    database = insight_deployment.runtime_database("switchboard")
     try:
-        await create_insight_tables(pool)
-        await pool.execute("""
-            TRUNCATE insight_amendments, insight_feedback, insight_engagement,
-                insight_candidates, insight_cooldowns, insight_settings,
-                attention_daily_rollup
-        """)
-        await pool.execute("""
-            UPDATE public.user_context
-            SET superseded_at = now()
-            WHERE signal_type <> 'dnd' AND superseded_at IS NULL
-        """)
-        await _set_owner_attention_policy(
-            pool,
-            quiet_start_hour=_DEFAULT_QUIET_START_HOUR,
-            quiet_end_hour=_DEFAULT_QUIET_END_HOUR,
-            timezone=_DEFAULT_QUIET_TIMEZONE,
-        )
+        pool = await database.connect()
+        async with pool.acquire() as connection:
+            assert await connection.fetchval("SELECT current_database()") == "butlers"
+            assert await connection.fetchval("SELECT current_user") == "butler_switchboard_rw"
+            assert await connection.fetchval(
+                "SELECT session_user=$1 AND NOT EXISTS ("
+                "SELECT FROM pg_catalog.pg_roles WHERE rolname=session_user "
+                "AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolbypassrls OR rolreplication))",
+                insight_deployment.runtime_logins["switchboard"].user,
+            )
+        # Physical login separation is independent of the effective runtime role.
+        assert await insight_admin_pool.fetchval("SELECT session_user<>$1", database.user)
         yield pool
     finally:
-        await pool.close()
+        await database.close()
 
 
 async def _insert_history_candidate(
@@ -186,14 +230,6 @@ async def _set_owner_attention_policy(
     pool, *, quiet_start_hour: int | None, quiet_end_hour: int | None, timezone: str = "UTC"
 ) -> None:
     """Create the canonical test authority and set its complete/disabled window."""
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS public.approvals_policy (
-            id INTEGER PRIMARY KEY DEFAULT 1,
-            quiet_start_hour INTEGER,
-            quiet_end_hour INTEGER,
-            timezone TEXT NOT NULL DEFAULT 'UTC'
-        )
-    """)
     await pool.execute(
         """
         INSERT INTO public.approvals_policy (id, quiet_start_hour, quiet_end_hour, timezone)
@@ -937,7 +973,9 @@ class TestCooldownEnforcement:
         eligible = await filter_by_cooldown(insight_pool, [cid], now=_PINNED_NOW)
         assert cid in eligible
 
-    async def test_redelivery_across_expired_cooldown_upserts_not_crashes(self, insight_pool):
+    async def test_redelivery_across_expired_cooldown_upserts_not_crashes(
+        self, insight_pool, insight_admin_pool
+    ):
         """Regression (bu-tdd4k.1): a recurring insight redelivered after its
         prior cooldown expired must upsert the existing insight_cooldowns row
         via full delivery_cycle(), not crash on the dedup_key primary key.
@@ -963,7 +1001,9 @@ class TestCooldownEnforcement:
         # quiet hours, so a redelivery assertion needs both halves pinned: the
         # policy (disabled here — this test is about the cooldown upsert, not
         # about suppression) and the instant it is evaluated at.
-        await _set_owner_attention_policy(insight_pool, quiet_start_hour=None, quiet_end_hour=None)
+        await _set_owner_attention_policy(
+            insight_admin_pool, quiet_start_hour=None, quiet_end_hour=None
+        )
 
         dedup_key = "health:bp:user-1:2026"
         t0 = _PINNED_NOW
@@ -1136,7 +1176,7 @@ class TestQuietHours:
 
     @pytest.mark.skipif(not _docker_available, reason="Docker not available")
     @pytest.mark.integration
-    async def test_delivery_cycle_skips_during_quiet_hours(self, insight_pool):
+    async def test_delivery_cycle_skips_during_quiet_hours(self, insight_pool, insight_admin_pool):
         from butlers.tools.switchboard.insight.broker import delivery_cycle
 
         await insight_pool.execute("""
@@ -1144,7 +1184,7 @@ class TestQuietHours:
             VALUES (1, 'normal')
             ON CONFLICT (id) DO UPDATE SET verbosity='normal'
         """)
-        await _set_owner_attention_policy(insight_pool, quiet_start_hour=0, quiet_end_hour=23)
+        await _set_owner_attention_policy(insight_admin_pool, quiet_start_hour=0, quiet_end_hour=23)
         await insight_pool.execute(
             """
             INSERT INTO insight_candidates
@@ -2992,11 +3032,15 @@ class TestInsightDeliveryPathsSpec:
 
 @pytest.mark.integration
 @pytest.mark.skipif(not _docker_available, reason="Docker not available")
-async def test_partial_insight_is_terminal_on_real_committed_candidate(insight_pool):
+async def test_partial_insight_is_terminal_on_real_committed_candidate(
+    insight_pool, insight_admin_pool
+):
     """A partial send consumes no cooldown/engagement and cannot re-enter the next cycle."""
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
-    await _set_owner_attention_policy(insight_pool, quiet_start_hour=None, quiet_end_hour=None)
+    await _set_owner_attention_policy(
+        insight_admin_pool, quiet_start_hour=None, quiet_end_hour=None
+    )
     await insight_pool.execute(
         "INSERT INTO insight_settings(id,verbosity) VALUES(1,'normal') "
         "ON CONFLICT(id) DO UPDATE SET verbosity='normal'"
@@ -3037,3 +3081,29 @@ async def test_partial_insight_is_terminal_on_real_committed_candidate(insight_p
             )
             == 1
         )
+
+
+@pytest.mark.skipif(not _docker_available, reason="Docker not available")
+@pytest.mark.integration
+async def test_insight_core_only_producer_remains_native(migrated_db_url):
+    """Retain actual core-only source provisioning beside serving actor coverage."""
+    from butlers.migrations import get_chain_head
+    from butlers.tools.switchboard.insight.broker import create_insight_tables
+
+    pool = await asyncpg.create_pool(
+        migrated_db_url, min_size=1, max_size=1, init=register_jsonb_codec
+    )
+    try:
+        # The original test helper is retained as a native producer consumer;
+        # it never supplies the broker's serving credentials.
+        await create_insight_tables(pool)
+        assert await pool.fetchval(
+            "SELECT version_num FROM public.alembic_version"
+        ) == get_chain_head("core")
+        assert await pool.fetchval("SELECT to_regclass('public.insight_candidates') IS NOT NULL")
+        assert await pool.fetchval("SELECT to_regclass('public.approvals_policy') IS NOT NULL")
+        assert await pool.fetchval("SELECT to_regclass('public.user_context') IS NOT NULL")
+        assert await pool.fetchval("SELECT to_regclass('switchboard.alembic_version') IS NULL")
+        assert await pool.fetchval("SELECT to_regclass('relationship.alembic_version') IS NULL")
+    finally:
+        await pool.close()

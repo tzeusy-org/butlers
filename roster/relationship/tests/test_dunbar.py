@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from butlers.testing.schema_standins import CONTACT_ENTITY_MAP, ENTITY_GRAPH_EDGES
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 # ---------------------------------------------------------------------------
 # Pure-function tests (no DB required)

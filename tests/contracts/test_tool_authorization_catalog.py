@@ -212,6 +212,17 @@ def _catalog_runtime_databases(monkeypatch: pytest.MonkeyPatch):
         conn = AsyncMock()
         conn.terminate = MagicMock()
         conn.fetchval.return_value = True
+        conn.fetchrow.return_value = dict.fromkeys(
+            (
+                "identity_ok",
+                "role_set_ok",
+                "attributes_ok",
+                "ownership_ok",
+                "create_ok",
+                "target_member",
+            ),
+            True,
+        )
         return conn
 
     async def connect(**kwargs):
@@ -242,7 +253,10 @@ def _catalog_runtime_databases(monkeypatch: pytest.MonkeyPatch):
                 await pool.release(conn)
 
         pool.acquire = MagicMock(side_effect=Acquisition)
-        databases.append(kwargs["init"].__self__)
+        # create_owned_pool owns/wraps init; the actual per-handoff setup is
+        # still this primary or derived Database's bound callback.
+        assert setup is not None and isinstance(setup.__self__, Database)
+        databases.append(setup.__self__)
         return pool
 
     monkeypatch.setattr("butlers.db.asyncpg.connect", AsyncMock(side_effect=connect))

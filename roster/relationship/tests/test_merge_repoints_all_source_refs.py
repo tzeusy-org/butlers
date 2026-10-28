@@ -34,6 +34,7 @@ from butlers.testing.schema_standins import (
     ENTITY_REBIND_LOG,
 )
 from roster.relationship.tests.evidence_schema import apply_evidence_schema
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = [
     pytest.mark.integration,

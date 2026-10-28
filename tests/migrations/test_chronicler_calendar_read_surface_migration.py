@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import shutil
 from pathlib import Path
@@ -15,6 +14,7 @@ from sqlalchemy.exc import ProgrammingError
 from butlers.testing.migration import (
     create_migrated_test_db,
     create_migration_db,
+    migrate_test_database,
     migration_db_name,
 )
 
@@ -142,7 +142,6 @@ def test_fresh_bootstrap_converges_calendar_grants_after_late_core_tables(
     independent-chain ordering that previously left the optional companion
     table without a grant.
     """
-    from butlers.migrations import run_migrations
 
     db_url = create_migrated_test_db(
         postgres_container,
@@ -164,8 +163,8 @@ def test_fresh_bootstrap_converges_calendar_grants_after_late_core_tables(
     finally:
         engine.dispose()
 
-    asyncio.run(run_migrations(db_url, chain="chronicler", schema="chronicler"))
-    asyncio.run(run_migrations(db_url, chain="core", schema="general"))
+    migrate_test_database(postgres_container, db_url, plans=(("chronicler", "chronicler", None),))
+    migrate_test_database(postgres_container, db_url, plans=(("core", "general", None),))
 
     calendar_tables = (
         "calendar_event_instances",
@@ -251,9 +250,7 @@ def test_chronicler_026_grants_effective_select_to_the_runtime_role(postgres_con
     finally:
         engine.dispose()
 
-    from butlers.migrations import run_migrations
-
-    asyncio.run(run_migrations(db_url, chain="chronicler", schema="chronicler"))
+    migrate_test_database(postgres_container, db_url, plans=(("chronicler", "chronicler", None),))
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:

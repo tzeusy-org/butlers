@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from butlers.modules.calendar import CalendarModule
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = [
     pytest.mark.integration,

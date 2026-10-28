@@ -14,6 +14,16 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CHART = _REPO_ROOT / "deploy" / "helm" / "butlers"
 _SCRIPT = _REPO_ROOT / "scripts" / "k8s" / "bootstrap-secrets.sh"
 _FIXTURE_VALUE = "fixture-secret-value-d41d8cd9"
+_DB_PURPOSE_BWS_KEYS = {
+    "MIGRATOR_DATABASE_URL": "BUTLERS_MIGRATOR_DATABASE_URL",
+    "CREDENTIAL_DATABASE_URL": "BUTLERS_CREDENTIAL_DATABASE_URL",
+    "DASHBOARD_DB_USER": "BUTLERS_DASHBOARD_DB_USER",
+    "DASHBOARD_DB_PASSWORD": "BUTLERS_DASHBOARD_DB_PASSWORD",
+    "CONNECTOR_DB_USER": "BUTLERS_CONNECTOR_DB_USER",
+    "CONNECTOR_DB_PASSWORD": "BUTLERS_CONNECTOR_DB_PASSWORD",
+    "BACKUP_DB_USER": "BUTLERS_BACKUP_DB_USER",
+    "BACKUP_DB_PASSWORD": "BUTLERS_BACKUP_DB_PASSWORD",
+}
 
 needs_helm = pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")
 # What site-helm-args.sh supplies for the retained runtime tracker boundary.
@@ -96,7 +106,18 @@ def test_source_bws_leaves_every_workload_manifest_unchanged(env: str) -> None:
 def test_dev_reads_every_secret_from_bws_under_the_butlers_runtime_prefix() -> None:
     stores = _external_secrets(_render("dev"))
     assert len(stores) == 3
-    remote_keys = [e["remoteRef"]["key"] for d in stores.values() for e in d["spec"]["data"]]
+    purpose_keys = {
+        e["secretKey"]: e["remoteRef"]["key"]
+        for e in stores["butlers-bws"]["spec"]["data"]
+        if e["secretKey"] in _DB_PURPOSE_BWS_KEYS
+    }
+    assert purpose_keys == _DB_PURPOSE_BWS_KEYS
+    remote_keys = [
+        e["remoteRef"]["key"]
+        for name, store in stores.items()
+        for e in store["spec"]["data"]
+        if name != "butlers-bws" or e["secretKey"] not in _DB_PURPOSE_BWS_KEYS
+    ]
     assert remote_keys
     assert all(k.startswith("BUTLERS_RUNTIME_") for k in remote_keys), remote_keys
 
@@ -110,6 +131,7 @@ def test_prod_keeps_its_legacy_bws_key_names() -> None:
         "POSTGRES_USER": "BUTLERS_DB_USER",
         "POSTGRES_PASSWORD": "BUTLERS_DB_PASSWORD",
         "DASHBOARD_AUTH_DB_PASSWORD": "DASHBOARD_AUTH_DB_PASSWORD",
+        **_DB_PURPOSE_BWS_KEYS,
     }
 
 

@@ -15,7 +15,7 @@ Drops: trivial Pydantic field tests, router discovery internals,
 from __future__ import annotations
 
 import logging
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -48,29 +48,155 @@ class TestDatabaseAndDeps:
     @patch("butlers.api.db.asyncpg.create_pool", new_callable=AsyncMock)
     async def test_add_butler_creates_accessible_pool(self, mock_create):
         pool = AsyncMock()
-        mock_create.return_value = pool
+        driver = AsyncMock()
+        driver.fetchrow.return_value = dict.fromkeys(
+            (
+                "identity_ok",
+                "role_set_ok",
+                "attributes_ok",
+                "ownership_ok",
+                "create_ok",
+                "target_member",
+            ),
+            True,
+        )
+        driver.fetchval.return_value = True
+
+        async def native_pool(**options):
+            # Only the physical driver is doubled. Actual source purpose
+            # selection, JSONB initialization and fresh admission execute.
+            @asynccontextmanager
+            async def acquire():
+                await options["init"](driver)
+                await options["setup"](driver)
+                yield driver
+
+            pool.acquire = MagicMock(side_effect=acquire)
+            return pool
+
+        mock_create.side_effect = native_pool
         mgr = DatabaseManager(host="localhost", port=5432, user="pg", password="secret")
-        await mgr.add_butler("switchboard")
+        await mgr.add_butler("switchboard", db_name="butlers")
         assert mgr.pool("switchboard") is pool
         assert mgr.memory_schema_for_butler("switchboard") is None
 
-        await mgr.add_butler("general", db_schema="general")
+        await mgr.add_butler("general", db_name="butlers", db_schema="general")
         await mgr.add_butler(
             "chronicler",
+            db_name="butlers",
             db_schema="chronicler",
             memory_schema="chronicler_mem",
         )
 
         assert mgr.memory_schema_for_butler("general") == "general"
         assert mgr.memory_schema_for_butler("chronicler") == "chronicler_mem"
+        # All three real dashboard setup callbacks selected and proved the
+        # declared purpose before publishing any pool.
+        assert driver.execute.await_args_list == [call('SET ROLE "dashboard_api"')] * 3
+        assert driver.fetchrow.await_count == 3
+        assert driver.set_type_codec.await_count == 3
+
+        # An admitted source with no matching rows is still genuinely empty;
+        # an implementation that unconditionally returns 503 cannot pass.
+        from fastapi import HTTPException
+
+        from butlers.api.routers.activity_feed import get_activity_feed
+        from butlers.api.routers.preferences import get_preferences
+        from butlers.api.routers.secrets_v2 import get_system_credential
+        from butlers.db_authority.roles import AuthorityError
+
+        pool.fetch.return_value = []
+        pool.fetchrow.return_value = None
+        assert (await get_preferences(predicate=None, db=mgr)).data == []
+        assert (await get_activity_feed("chronicler", limit=50, db=mgr)).events == []
+
+        # Independently reach both real admission stages using the current
+        # purpose selector/setup/catalog predicate. Only native I/O is doubled.
+        for stage in ("identity", "role", "catalog"):
+            unavailable = DatabaseManager()
+            driver.fetchrow.return_value = dict.fromkeys(
+                (
+                    "identity_ok",
+                    "role_set_ok",
+                    "attributes_ok",
+                    "ownership_ok",
+                    "create_ok",
+                    "target_member",
+                ),
+                True,
+            )
+            driver.fetchval.return_value = stage != "catalog"
+            if stage == "role":
+                driver.fetchrow.return_value["role_set_ok"] = False
+            pool.close.reset_mock()
+            mock_create.reset_mock()
+            with pytest.raises(AuthorityError):
+                await unavailable.add_butler(
+                    "chronicler",
+                    db_name="unknown_deployment" if stage == "identity" else "butlers",
+                    db_schema="chronicler",
+                    memory_schema="chronicler_mem",
+                    modules=frozenset({"memory"}),
+                )
+            assert "chronicler" not in unavailable._pools
+            if stage == "identity":
+                mock_create.assert_not_awaited()
+            else:
+                mock_create.assert_awaited_once()
+                pool.close.assert_awaited_once()
+            for operation in (
+                lambda db=unavailable: get_preferences(predicate=None, db=db),
+                lambda db=unavailable: get_activity_feed("chronicler", limit=50, db=db),
+                lambda db=unavailable: get_system_credential("UNAVAILABLE_SOURCE_WITNESS", db=db),
+            ):
+                with pytest.raises(HTTPException) as refused:
+                    await operation()
+                assert refused.value.status_code == 503
+            assert unavailable.butler_names == ["chronicler"]
+            results, failed = await unavailable.fan_out_with_status("SELECT 1")
+            assert results == {"chronicler": []} and failed == ["chronicler"]
+            assert await unavailable.authority_status() == "unavailable"
+            await unavailable.close()
+
+        driver.fetchval.return_value = True
+        driver.fetchrow.return_value = dict.fromkeys(
+            (
+                "identity_ok",
+                "role_set_ok",
+                "attributes_ok",
+                "ownership_ok",
+                "create_ok",
+                "target_member",
+            ),
+            True,
+        )
 
         # Review admission must retain a configured source whose pool fails.
         mgr.register_configured_modules("messenger", frozenset({"approvals"}))
         mock_create.side_effect = RuntimeError("Synthetic pool unavailable")
         with pytest.raises(RuntimeError, match="Synthetic pool unavailable"):
-            await mgr.add_butler("offline", modules=frozenset({"approvals"}))
+            await mgr.add_butler("offline", db_name="butlers", modules=frozenset({"approvals"}))
         assert "offline" in mgr.configured_butler_names
-        assert "offline" not in mgr.butler_names
+        assert "offline" in mgr.butler_names
+        assert "offline" not in mgr._pools
+        pool.fetch.return_value = []
+        results, failed = await mgr.fan_out_with_status("SELECT 1")
+        assert set(failed) == {"messenger", "offline"}
+        assert results["offline"] == [] and results["messenger"] == []
+        with pytest.raises(HTTPException) as refused:
+            mgr.pool("offline")
+        assert refused.value.status_code == 503
+        with pytest.raises(KeyError):
+            mgr.pool("never_configured")
+        shared = DatabaseManager()
+        with pytest.raises(KeyError):
+            shared.credential_shared_pool()
+        with pytest.raises(RuntimeError, match="Synthetic pool unavailable"):
+            await shared.set_credential_shared_pool("butlers", db_schema="public")
+        with pytest.raises(HTTPException) as refused:
+            shared.credential_shared_pool()
+        assert refused.value.status_code == 503
+        await shared.close()
         # Unknown legacy configuration remains unknown, not a false complete census.
         assert mgr.configured_butlers_with_module("approvals") is None
         complete = DatabaseManager()

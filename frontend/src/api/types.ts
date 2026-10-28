@@ -433,12 +433,8 @@ export interface HealthSecurityPosture {
    * (or posture is dev, where anon is expected).
    */
   insecure_infra_defaults: boolean;
-  /**
-   * True when SET ROLE schema-isolation enforcement is NOT active for the managed database
-   * connections.  In dev posture this is expected (no DB role configured); clears only when
-   * all managed pools have an active, verified DB role enforcing schema isolation.
-   */
-  role_enforcement_disabled: boolean;
+  /** Fresh dashboard-purpose admission; missing/unreadable evidence is never admitted. */
+  database_authority: "unknown" | "unavailable" | "admitted";
 }
 
 export interface HealthResponse {
@@ -7781,58 +7777,35 @@ export interface DriftFacts {
   drift_check_available: boolean;
 }
 
-/**
- * One deployed stored function whose body left the committed definition
- * (bu-bi5an). Digests only -- never a body -- since a stored body can hold
- * operator-supplied literals.
- */
+/** Source-bound function facts. Digests only; no catalog body or driver text. */
 export interface StoredFunctionEntry {
   function: string;
-  /** init-db.sql line(s) of the committed variant(s), for locating the source. */
-  committed_lines: number[];
-  committed_digests: string[];
-  deployed_digests: string[];
+  status: "conforming" | "mismatch" | "missing";
+  expected_digest: string;
+  actual_digest: string | null;
+  owner_ok: boolean;
+  settings_ok: boolean;
+  acl_ok: boolean;
 }
 
-/**
- * Deployed stored-function bodies vs the configured bootstrap source
- * (bu-bi5an, bu-uoctv).
- *
- * `not_deployed` is a legitimate state, not drift: a function only exists
- * once its migration chain has run the bootstrap installer. `is_drifted`
- * reflects `drifted` only -- never treat `not_deployed` as an alarm.
- * `stored_function_check_available: false` means the comparison itself
- * failed -- per the fleet-wide degraded-envelope convention, never render
- * this as a truthful all-clear.
- */
+/** Actual catalog conformance. This diagnostic never authorizes a serving pool. */
 export interface StoredFunctionFacts {
   checked_at: string;
-  is_drifted: boolean;
-  drifted: StoredFunctionEntry[];
-  not_deployed: string[];
-  matched_count: number;
-  stored_function_check_available: boolean;
-  /**
-   * SECURITY DEFINER functions whose search_path is not exactly
-   * `pg_catalog, pg_temp` (bu-hefzis). Independent of `is_drifted`.
-   */
+  status: "conforming" | "mismatch" | "unavailable" | "unknown";
+  catalog_check_available: boolean;
+  objects_ok: boolean | null;
+  functions: StoredFunctionEntry[];
   unpinned_definers: UnpinnedDefinerEntry[];
-  /** `false` means the definer catalog read failed -- never an all-clear. */
   definer_check_available: boolean;
 }
 
-/**
- * One SECURITY DEFINER with an unpinned search_path (bu-hefzis).
- *
- * `remedy` is `migrations` when the migration login owns the function, and
- * `init_db` (re-run scripts/init-db.sql as a cluster superuser) otherwise.
- */
+/** Unpinned SECURITY DEFINER; only controlled maintenance may converge it. */
 export interface UnpinnedDefinerEntry {
   function: string;
   owner: string;
   /** Deployed search_path, or null when none is set. */
   search_path: string | null;
-  remedy: "migrations" | "init_db";
+  remedy: "controlled_migrator";
 }
 
 /**

@@ -30,6 +30,7 @@ import asyncpg
 import pytest
 
 from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 # ---------------------------------------------------------------------------
 # Helper: load the migration module.

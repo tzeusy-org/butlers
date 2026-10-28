@@ -799,7 +799,7 @@ class TestStep8cBlobStorageDegradation:
                     lifecycle, "validate_module_credentials_async", new=AsyncMock(return_value={})
                 )
             )
-            stack.enter_context(patch.object(lifecycle, "run_migrations", new=AsyncMock()))
+            stack.enter_context(patch.object(lifecycle, "require_installed_chain", new=AsyncMock()))
             stack.enter_context(patch.object(lifecycle, "has_butler_chain", return_value=False))
             stack.enter_context(patch.object(lifecycle, "S3BlobStore", UnavailableS3BlobStore))
             stack.enter_context(
@@ -924,7 +924,7 @@ class TestStep8c2CodexAuthorityWiring:
                     lifecycle, "validate_module_credentials_async", new=AsyncMock(return_value={})
                 )
             )
-            stack.enter_context(patch.object(lifecycle, "run_migrations", new=AsyncMock()))
+            stack.enter_context(patch.object(lifecycle, "require_installed_chain", new=AsyncMock()))
             stack.enter_context(patch.object(lifecycle, "has_butler_chain", return_value=False))
             stack.enter_context(
                 patch("butlers.core.butler_logging.ButlerLogger", return_value=MagicMock())

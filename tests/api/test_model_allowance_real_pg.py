@@ -10,6 +10,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.model_settings import observe_model_allowance
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = [pytest.mark.integration, pytest.mark.db]
 

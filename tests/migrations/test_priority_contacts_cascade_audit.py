@@ -53,6 +53,7 @@ from fastapi import FastAPI
 
 from butlers.api.deps import get_db
 from butlers.api.routers.priority_contacts import router as priority_contacts_router
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = pytest.mark.integration
 

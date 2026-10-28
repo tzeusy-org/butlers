@@ -1,8 +1,9 @@
-"""Static source coverage for the canonical DND authority boundary.
+"""Current installer wiring and pinned R0/R1 predecessor compatibility.
 
-These checks deliberately do not execute ``init-db.sql`` or start PostgreSQL.
-The companion integration suite must exercise the catalog/RLS/role contract in
-an explicitly authorized database environment.
+Historical SQL assertions below read the production rollback driver's hash-bound
+predecessor initializer, never the current init-db.sql. They grant no current
+serving authority. Genuine current catalog/role/replay/rollback outcomes belong
+to the companion PostgreSQL tests; source checks cannot earn those outcomes.
 """
 
 from __future__ import annotations
@@ -13,12 +14,27 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sqlalchemy.sql.elements import TextClause
+
+from butlers.db_authority import interfaces
+from butlers.db_authority.apply import pinned_predecessor_initializer
 
 pytestmark = pytest.mark.unit
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_INIT_DB = _REPO_ROOT / "scripts" / "init-db.sql"
+
+
+def _predecessor_source() -> str:
+    # Actual production R0/R1 loader verifies the complete pinned source hash
+    # and exact psql-directive envelope before returning executable SQL.
+    return pinned_predecessor_initializer()
+
+
+def _current_source(function_name: str) -> str:
+    import inspect
+
+    return inspect.getsource(getattr(interfaces, function_name))
+
+
 _MIGRATION = (
     _REPO_ROOT / "alembic" / "versions" / "core" / "core_197_canonical_dnd_generation_guard.py"
 )
@@ -75,9 +91,9 @@ def _catalog_expectation_values(source: str) -> list[bool]:
 
 
 def test_dnd_boundary_uses_trusted_installer_not_migration_owned_ddl() -> None:
-    source = _INIT_DB.read_text(encoding="utf-8")
+    """Historical ownership handoff is retained; current edge uses held maintenance."""
+    source = _predecessor_source()
     migration = _MIGRATION.read_text(encoding="utf-8")
-
     assert "CREATE OR REPLACE FUNCTION dnd_generation_admin.install_interface()" in source
     assert "CREATE OR REPLACE FUNCTION dnd_generation_admin.finalize_interface()" in source
     assert "DND authority interface must be absent before fixed bootstrap installation" in source
@@ -97,10 +113,9 @@ def test_dnd_boundary_uses_trusted_installer_not_migration_owned_ddl() -> None:
     assert "ALTER TABLE public.user_context OWNER TO dnd_generation_owner" in source
     assert "ALTER TABLE public.user_context ENABLE ROW LEVEL SECURITY" in source
     assert "ALTER TABLE public.user_context FORCE ROW LEVEL SECURITY" in source
-
-    assert "_TRUSTED_FINALIZED_INTERFACE_SQL" in migration
-    assert "_TRUSTED_BOOTSTRAP_INSTALLER_SQL" in migration
-    assert 'op.execute(f"SELECT {_ADMIN_INSTALLER}()")' in migration
+    assert 'install_revision_group(op.get_bind(), "dnd")' in migration
+    assert 'require_boundary_absence(op.get_bind(), "dnd")' in migration
+    assert "dnd_generation_admin" not in migration
     assert "CREATE TABLE" not in migration
     assert "CREATE FUNCTION" not in migration
     assert "ALTER TABLE" not in migration
@@ -108,7 +123,7 @@ def test_dnd_boundary_uses_trusted_installer_not_migration_owned_ddl() -> None:
 
 def test_dnd_installer_compares_the_index_catalog_with_int2vector_safe_shape_checks() -> None:
     """The pg_index key vector is not interchangeable with a smallint array."""
-    source = _INIT_DB.read_text(encoding="utf-8")
+    source = _predecessor_source()
     installer_start = source.index(
         "CREATE OR REPLACE FUNCTION dnd_generation_admin.install_interface()"
     )
@@ -122,37 +137,28 @@ def test_dnd_installer_compares_the_index_catalog_with_int2vector_safe_shape_che
 
 
 def test_core_197_catalog_probes_use_sqlalchemy_text_for_literal_like_patterns() -> None:
-    """Migration catalog probes must not hand literal ``%`` patterns to DBAPI directly."""
+    """Current revision delegates; catalog SQL remains SQLAlchemy TextClause based."""
     migration = _load_core_197()
-    finalized = MagicMock()
-    finalized.scalar_one.return_value = False
-    installer = MagicMock()
-    installer.scalar_one.return_value = True
-    bind = MagicMock()
-    bind.execute.side_effect = [finalized, installer]
-    bind.exec_driver_sql.side_effect = AssertionError(
-        "DBAPI-direct SQL is unsafe for LIKE patterns"
-    )
     op = MagicMock()
-    op.get_bind.return_value = bind
-
-    with patch.object(migration, "op", op):
+    bind = op.get_bind.return_value
+    with (
+        patch.object(migration, "op", op),
+        patch.object(migration, "install_revision_group") as install,
+    ):
         migration.upgrade()
-
-    statements = [call.args[0] for call in bind.execute.call_args_list]
-    assert all(isinstance(statement, TextClause) for statement in statements)
-    assert "LIKE '%signal_type%'" in statements[0].text
-    assert len(statements) == 2
-    bind.exec_driver_sql.assert_not_called()
+    install.assert_called_once_with(bind, "dnd")
+    source = _current_source("_protected_group_state")
+    assert "connection.execute(" in source
+    assert "text(" in source
+    assert "exec_driver_sql" not in source
 
 
 def test_dnd_catalog_test_reads_sealed_functions_from_pg_proc_not_regprocedure() -> None:
-    """Catalog assertions must not require USAGE on sealed DND schemas."""
+    """Actual sealed overloads are observed through pg_proc without private USAGE."""
     integration_test = _function_source(
         _POSTGRES_INTEGRATION_TEST.read_text(encoding="utf-8"),
         "test_dnd_final_catalog_has_no_login_owner_force_rls_and_no_public_execute",
     )
-
     assert (
         "dnd_generation_private.mutate(uuid,text,text,timestamptz,text,real,jsonb)'::regprocedure"
         not in integration_test
@@ -162,16 +168,17 @@ def test_dnd_catalog_test_reads_sealed_functions_from_pg_proc_not_regprocedure()
     assert "dnd_generation_admin.finalize_interface()'::regprocedure" not in integration_test
     assert "private_mutation.pronamespace = private_schema.oid" in integration_test
     assert "canonical_json.pronamespace = private_schema.oid" in integration_test
-    assert "installer.pronamespace = admin_schema.oid" in integration_test
-    assert "finalizer.pronamespace = admin_schema.oid" in integration_test
-    assert "admin_function.pronamespace = admin_schema.oid" in integration_test
+    assert "private_mutation.proargtypes" in integration_test
+    assert (
+        "function_matches(conn, definition, inspect_function(conn, definition))" in integration_test
+    )
+    assert "nspname='dnd_generation_admin'" in integration_test
 
 
 def test_dnd_catalog_expectation_includes_the_trusted_bootstrap_owner_proof() -> None:
-    """The catalog tuple must retain the bootstrap owner's superuser assertion."""
+    """The retired bootstrap-owner tuple slot now proves the ordinary owner posture."""
     integration_test = _POSTGRES_INTEGRATION_TEST.read_text(encoding="utf-8")
-
-    assert "bootstrap_owner.rolsuper" in integration_test
+    assert "NOT migration_owner.rolsuper AND NOT migration_owner.rolcreatedb" in integration_test
     expected = _catalog_expectation_values(integration_test)
     assert len(expected) == 27
     assert expected[16] is True
@@ -179,7 +186,7 @@ def test_dnd_catalog_expectation_includes_the_trusted_bootstrap_owner_proof() ->
 
 def test_dnd_mutation_replay_lookup_qualifies_the_receipt_column() -> None:
     """A PL/pgSQL result column must not collide with the receipt lookup column."""
-    source = _INIT_DB.read_text(encoding="utf-8")
+    source = _predecessor_source()
     private_start = source.index("CREATE OR REPLACE FUNCTION dnd_generation_private.mutate(")
     gateway_start = source.index("CREATE FUNCTION public.context_dnd_mutate(", private_start)
     private_mutation = source[private_start:gateway_start]
@@ -193,85 +200,64 @@ def test_dnd_mutation_replay_lookup_qualifies_the_receipt_column() -> None:
 
 
 def test_core_197_downgrade_delegates_to_a_trusted_privileged_bootstrap_rollback() -> None:
-    """A core downgrade must not replace a managed rollback with an unconditional raise."""
+    """Version reversal checks absence; actual R0/R1 is a separate preserving driver."""
     migration = _load_core_197()
-    rollback = MagicMock()
-    rollback.scalar_one.return_value = True
-    bind = MagicMock()
-    bind.execute.return_value = rollback
     op = MagicMock()
-    op.get_bind.return_value = bind
-
-    with patch.object(migration, "op", op):
+    bind = op.get_bind.return_value
+    with (
+        patch.object(migration, "op", op),
+        patch.object(migration, "require_boundary_absence") as absence,
+    ):
         migration.downgrade()
-
-    statements = [call.args[0] for call in bind.execute.call_args_list]
-    assert len(statements) == 1
-    assert isinstance(statements[0], TextClause)
-    assert "dnd_generation_admin" in statements[0].text
-    assert "rollback_interface" in statements[0].text
-    assert "rolsuper" in statements[0].text
-    op.execute.assert_called_once_with(f"SELECT {migration._ADMIN_ROLLBACK}()")
+    absence.assert_called_once_with(bind, "dnd")
+    op.execute.assert_not_called()
+    bind.exec_driver_sql.assert_not_called()
+    assert "run_preserving_rollback" not in _MIGRATION.read_text(encoding="utf-8")
 
 
 def test_core_197_rollback_catalog_proof_requires_exclusive_trusted_admin_control() -> None:
-    """The delegating migration proves the rollback dependency chain before calling it."""
-    migration = _load_core_197()
-    rollback_proof = migration._TRUSTED_BOOTSTRAP_ROLLBACK_SQL
-
-    assert "JOIN pg_roles AS configured_bootstrap_owner" in rollback_proof
-    assert "configured_bootstrap_owner.oid = bootstrap_owner.oid" in rollback_proof
-    assert "JOIN pg_proc AS finalizer" in rollback_proof
-    assert "finalizer.prosecdef" in rollback_proof
-    assert "acl.grantee <> bootstrap_owner.oid" in rollback_proof
+    """Current version downgrade must inspect complete state without granting an installer."""
+    source = _current_source("require_boundary_absence")
+    assert "connection.execute(" in source
+    assert "text(" in source
+    assert "pg_catalog.pg_namespace" in source
+    assert "pg_catalog.pg_proc" in source
+    assert "Protected boundary remains installed" in source
 
 
 def test_core_197_rollback_catalog_proof_reads_roles_from_bootstrap_configuration_row() -> None:
-    """Catalog metadata and stored bootstrap roles must remain distinct."""
-    migration = _load_core_197()
-    rollback_proof = migration._TRUSTED_BOOTSTRAP_ROLLBACK_SQL
-
-    assert "JOIN pg_class AS bootstrap_configuration_relation" in rollback_proof
-    assert (
-        "JOIN dnd_generation_admin.bootstrap_configuration AS bootstrap_configuration"
-        in rollback_proof
-    )
-    assert "ON bootstrap_configuration.singleton" in rollback_proof
-    assert (
-        "configured_bootstrap_owner.rolname = bootstrap_configuration.bootstrap_role"
-        in rollback_proof
-    )
-    assert "migration_role.rolname = bootstrap_configuration.migration_role" in rollback_proof
-    assert "bootstrap_configuration_relation.relowner = bootstrap_owner.oid" in rollback_proof
-    assert "bootstrap_configuration_relation.relacl" in rollback_proof
+    """Current absence proof uses actual owner/RLS/catalog, not a retired metadata row."""
+    source = _current_source("require_boundary_absence")
+    assert "pg_catalog.pg_class" in source
+    assert "pg_catalog.pg_roles owner ON owner.oid=c.relowner" in source
+    assert "owner.rolname='dnd_generation_owner'" in source
+    assert "c.relrowsecurity OR c.relforcerowsecurity" in source
+    assert "pg_catalog.pg_policy" in source
+    assert '"dnd_generation_admin", "dnd_generation_private"' in source
 
 
 def test_core_197_treats_the_privileged_rollback_as_part_of_the_trusted_interface() -> None:
-    """A missing rollback function must not look like a complete DND boundary."""
-    migration = _load_core_197()
-
-    assert "rollback_interface.proname = 'rollback_interface'" in (
-        migration._TRUSTED_FINALIZED_INTERFACE_SQL
-    )
-    assert "rollback_interface.proname = 'rollback_interface'" in (
-        migration._TRUSTED_BOOTSTRAP_INSTALLER_SQL
-    )
+    """No partial group or leftover function is a successful current rollback."""
+    source = _current_source("require_boundary_absence")
+    assert 'row.owner == "dnd_generation_owner"' in source
+    assert "tables = tuple(" in source
+    assert "ANY(:functions)" in source
+    assert "absent is not True" in source
 
 
 def test_core_197_installer_allows_only_catalog_proven_trusted_bootstrap_reapply() -> None:
-    """A managed superuser down/up uses the same fixed installer, not a test exception."""
-    migration = _load_core_197()
-    installer_proof = migration._TRUSTED_BOOTSTRAP_INSTALLER_SQL
-
-    assert "JOIN pg_roles AS installer_operator" in installer_proof
-    assert "installer_operator.rolname = current_user" in installer_proof
-    assert "installer_operator.rolsuper" in installer_proof
-    assert "NOT has_function_privilege(current_user, finalizer.oid, 'EXECUTE')" in installer_proof
+    """Current maintenance requires independent session identity before source DDL."""
+    source = _current_source("install_revision_group")
+    assert "maintenance_profile(connection)" in source
+    assert 'connection.exec_driver_sql("RESET ROLE")' in source
+    assert "install_protected_state(connection, profiles, owner, group=group)" in source
+    assert "SET ROLE" in source
+    assert "finally:" in source
 
 
 def test_dnd_installer_requires_the_known_pre_guard_handoff_for_reversible_rollback() -> None:
     """Rollback can restore only a source-validated owner and ordinary RLS posture."""
-    source = _INIT_DB.read_text(encoding="utf-8")
+    source = _predecessor_source()
     installer_start = source.index(
         "CREATE OR REPLACE FUNCTION dnd_generation_admin.install_interface()"
     )
@@ -289,7 +275,7 @@ def test_dnd_installer_requires_the_known_pre_guard_handoff_for_reversible_rollb
 
 def test_dnd_privileged_rollback_refuses_receipts_and_restores_the_pre_guard_handoff() -> None:
     """Only an unused guard may be removed; receipt-bearing state remains fail-closed."""
-    source = _INIT_DB.read_text(encoding="utf-8")
+    source = _predecessor_source()
     rollback_start = source.index(
         "CREATE OR REPLACE FUNCTION dnd_generation_admin.rollback_interface()"
     )
@@ -323,7 +309,7 @@ def test_dnd_privileged_rollback_refuses_receipts_and_restores_the_pre_guard_han
 
 
 def test_dnd_gateway_checks_active_role_before_private_definer() -> None:
-    source = _INIT_DB.read_text(encoding="utf-8")
+    source = _predecessor_source()
 
     assert "CREATE FUNCTION public.context_dnd_mutate(" in source
     assert "SECURITY INVOKER" in source
@@ -343,8 +329,7 @@ def test_dnd_gateway_checks_active_role_before_private_definer() -> None:
 
 
 def test_dnd_receipt_schema_is_content_minimizing_and_role_catalog_gated() -> None:
-    source = _INIT_DB.read_text(encoding="utf-8")
-    migration = _MIGRATION.read_text(encoding="utf-8")
+    source = _predecessor_source()
 
     audit_start = source.index("CREATE TABLE public.dnd_generation_mutations")
     audit_end = source.index(
@@ -357,22 +342,25 @@ def test_dnd_receipt_schema_is_content_minimizing_and_role_catalog_gated() -> No
     assert "value TEXT" not in audit
     assert "metadata JSONB" not in audit
 
-    assert "relrowsecurity" in migration
-    assert "relforcerowsecurity" in migration
-    assert "NOT dnd_owner.rolcanlogin" in migration
-    assert "NOT dnd_owner.rolbypassrls" in migration
-    assert "migration_role.rolname = current_user" in migration
-    assert "acl.grantee = migration_role.oid" in migration
-    assert "effective inherited gateway" in migration
-    assert "general_runtime.rolname = 'butler_general_rw'" in migration
-    assert "switchboard_runtime.rolname = 'butler_switchboard_rw'" in migration
+    current = _current_source("install_functions")
+    absence = _current_source("require_boundary_absence")
+    assert "c.relrowsecurity" in absence
+    assert "c.relforcerowsecurity" in absence
+    assert "NOT rolcanlogin" in current
+    assert "NOT rolbypassrls" in current
+    assert "session_user=current_user AND rolsuper" in current
+    assert "function_matches(connection, definition, actual)" in current
+    assert "Protected function catalog differs from source authority" in current
+    dnd = tuple(d for d in interfaces.FUNCTIONS if d.owner == "dnd_generation_owner")
+    assert any("butler_general_rw" in d.executors for d in dnd)
+    assert any("butler_switchboard_rw" in d.executors for d in dnd)
     assert "DND authority ACL finalization is incomplete" in source
     assert "REVOKE DELETE ON TABLE public.user_context" in source
 
 
 def test_dnd_correlation_is_derived_from_its_opaque_mutation_identity() -> None:
     """Neither audit nor SQL mutation API may accept free-form correlation text."""
-    source = _INIT_DB.read_text(encoding="utf-8")
+    source = _predecessor_source()
     audit_start = source.index("CREATE TABLE public.dnd_generation_mutations")
     audit_end = source.index(
         "CREATE UNIQUE INDEX dnd_generation_mutations_generation_key", audit_start
@@ -394,7 +382,7 @@ def test_dnd_correlation_is_derived_from_its_opaque_mutation_identity() -> None:
 
 def test_dnd_finalizer_preserves_the_existing_optional_calendar_permission_matrix() -> None:
     """DND finalization must not widen calendar's pre-existing read-only role."""
-    source = _INIT_DB.read_text(encoding="utf-8")
+    source = _predecessor_source()
     finalizer_start = source.index(
         "CREATE OR REPLACE FUNCTION dnd_generation_admin.finalize_interface()"
     )
@@ -512,7 +500,7 @@ def test_dnd_postgres_suite_has_no_inline_result_consumption_after_role_teardown
 def test_context_producer_fixture_resets_only_non_dnd_rows_without_truncate() -> None:
     """Fixture cleanup must respect the DND table-level privilege boundary."""
     source = _CONTEXT_PRODUCERS_INTEGRATION_TEST.read_text(encoding="utf-8")
-    init_db = _INIT_DB.read_text(encoding="utf-8")
+    init_db = _predecessor_source()
     finalizer_start = init_db.index(
         "CREATE OR REPLACE FUNCTION dnd_generation_admin.finalize_interface()"
     )
@@ -534,7 +522,7 @@ def test_context_producer_fixture_resets_only_non_dnd_rows_without_truncate() ->
 def test_context_bus_fixture_resets_only_non_dnd_rows_without_truncate() -> None:
     """A fresh context-bus test DB still must not bypass the finalizer ACL."""
     source = _CONTEXT_BUS_INTEGRATION_TEST.read_text(encoding="utf-8")
-    init_db = _INIT_DB.read_text(encoding="utf-8")
+    init_db = _predecessor_source()
     finalizer_start = init_db.index(
         "CREATE OR REPLACE FUNCTION dnd_generation_admin.finalize_interface()"
     )
@@ -562,7 +550,7 @@ def test_dnd_postgres_suite_treats_a_filtered_direct_update_as_no_effect() -> No
 
     direct_update_start = gateway_test.index("UPDATE public.user_context")
     direct_update_end = gateway_test.index(
-        "\n\n    with pytest.raises(DBAPIError):", direct_update_start
+        "    assert direct_dnd_update_rowcount == 0", direct_update_start
     )
     direct_update = gateway_test[direct_update_start:direct_update_end]
 
@@ -578,7 +566,7 @@ def test_dnd_private_mutation_has_one_pinned_pgcrypto_free_source() -> None:
     rerun must go through the single installer so an upgraded database
     converges on the committed body.
     """
-    source = _INIT_DB.read_text(encoding="utf-8")
+    source = _predecessor_source()
     header = "CREATE OR REPLACE FUNCTION dnd_generation_private.mutate("
     assert source.count(header) == 1
     installer_start = source.index(
@@ -605,3 +593,21 @@ def test_dnd_private_mutation_has_one_pinned_pgcrypto_free_source() -> None:
         "CREATE OR REPLACE FUNCTION dnd_generation_admin.install_interface()"
     )
     assert "PERFORM dnd_generation_admin.install_private_mutation();" in source[install_start:]
+
+    # Current exact definition is checked separately from the hash-bound
+    # historical compatibility assertions above. The genuine catalog/role
+    # execution remains in the companion real-PostgreSQL owner.
+    dnd = tuple(d for d in interfaces.FUNCTIONS if d.owner == "dnd_generation_owner")
+    assert len(dnd) == 3
+    private = next(d for d in dnd if d.name == "mutate")
+    assert private.signature == "uuid,text,text,timestamp with time zone,text,real,jsonb"
+    assert private.security_definer is True
+    assert private.executors == ("butler_general_rw", "butler_switchboard_rw")
+    assert "SET search_path = pg_catalog, pg_temp" in private.header
+    assert "digest(" not in private.body
+    assert "sha256(" in private.body
+    assert "FROM public.dnd_generation_mutations AS receipt" in private.body
+    assert "WHERE receipt.mutation_id = p_mutation_id" in private.body
+    assert "p_correlation" not in private.sql
+    assert "dnd_generation_admin" not in private.sql
+    assert "dnd_generation_admin" in _predecessor_source()

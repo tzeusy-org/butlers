@@ -316,6 +316,7 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 
 | Script | Caller | Purpose |
 | --- | --- | --- |
+| [`db_authority_cutover.sql`](db_authority_cutover.sql) | `butlers.db_authority.apply` pinned predecessor initializer and validated preserving rollback | Frozen source input with a checked SHA pin; not an ordinary `psql` or bootstrap entry point. |
 | [`init-db.sql`](init-db.sql) | `docker-compose.yml`, operators, migrations tests | Privileged bootstrap run before the first migration. |
 | [`pg_restore.sh`](pg_restore.sh) | operators; `pg_verify_restore.sh` | Restores a PostgreSQL backup into the restore-drill target. |
 | [`pg_verify_restore.sh`](pg_verify_restore.sh) | `pg_restore.sh` flow | Verifies schema and data integrity in a restored database. |

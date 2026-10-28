@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import uuid
+from urllib.parse import urlsplit, urlunsplit
 
 import asyncpg
 import pytest
@@ -41,11 +42,19 @@ async def test_provision_connect_pool_close(db_factory, postgres_container, monk
     """provision() creates DB; idempotent; connect() returns usable pool; close releases it."""
     db = db_factory()
 
+    # Provisioning is an explicit operator purpose, separate from serving.
+    owner = "test_owner_" + uuid.uuid4().hex
+    selected = urlsplit(postgres_container.get_connection_url())
+    administrative_dsn = urlunsplit(
+        ("postgresql", selected.netloc, "/postgres", selected.query, "")
+    )
+
     # DB does not exist yet
     conn = await asyncpg.connect(
         host=db.host, port=db.port, user=db.user, password=db.password, database="postgres"
     )
     try:
+        await conn.execute(f'CREATE ROLE "{owner}" NOLOGIN NOINHERIT NOCREATEDB NOCREATEROLE')
         assert (
             await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", db.db_name) is None
         )
@@ -53,8 +62,8 @@ async def test_provision_connect_pool_close(db_factory, postgres_container, monk
         await conn.close()
 
     # provision creates DB; idempotent second call
-    await db.provision()
-    await db.provision()  # must not raise
+    await db.provision(administrative_dsn=administrative_dsn, owner_role=owner)
+    await db.provision(administrative_dsn=administrative_dsn, owner_role=owner)  # idempotent
 
     conn2 = await asyncpg.connect(
         host=db.host, port=db.port, user=db.user, password=db.password, database="postgres"
@@ -92,7 +101,9 @@ async def test_provision_connect_pool_close(db_factory, postgres_container, monk
         await asyncpg.connect(
             dsn="postgresql://unreachable:synthetic@127.0.0.1:1/absent", timeout=1
         )
-    migrated = await create_migrated_test_pool(postgres_container, chains=["core"])
+    migrated = await create_migrated_test_pool(
+        postgres_container, chains=["core"], schemas={"core": "general"}, pool_schema="general"
+    )
     try:
         async with migrated.acquire() as connection, connection.transaction():
             await connection.execute('SET LOCAL ROLE "butler_general_rw"')
@@ -100,13 +111,13 @@ async def test_provision_connect_pool_close(db_factory, postgres_container, monk
             assert int(await connection.fetchval("SHOW server_version_num")) >= 170000
             assert await connection.fetchval("SELECT vector_dims('[1,2,3]'::vector)") == 3
             await connection.execute(
-                "INSERT INTO public.state (key, value) VALUES ('ci_service_retirement', $1::jsonb)",
+                "INSERT INTO general.state (key, value) VALUES ('ci_service_retirement', $1::jsonb)",
                 {"probe": "committed"},
             )
         async with migrated.acquire() as readback, readback.transaction():
             await readback.execute('SET LOCAL ROLE "butler_general_rw"')
             assert await readback.fetchval(
-                "SELECT value FROM public.state WHERE key = 'ci_service_retirement'"
+                "SELECT value FROM general.state WHERE key = 'ci_service_retirement'"
             ) == {"probe": "committed"}
     finally:
         await migrated.close()

@@ -20,8 +20,10 @@ import hashlib
 import importlib.util
 import os
 import shutil
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import asyncpg
@@ -33,7 +35,15 @@ from butlers.core.runtime_probe_control.receipts import (
     nonce_digest,
 )
 from butlers.core.runtime_probe_control.verification import RuntimeProbeVerificationPersistence
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.db_authority.apply import quote_identifier
+from butlers.db_authority.catalog import create_owned_pool, setup_purpose
+from butlers.db_authority.roles import purpose_profile
+from butlers.testing.migration import (
+    async_serving_test_deployment,
+    create_migrated_test_db,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -62,11 +72,67 @@ def _load_migration():
     return module
 
 
+class _FreshStructureCatalog:
+    """Fixed fresh catalog IO; real authority/compiler/guard code still executes."""
+
+    info = {"butlers.source_database": "butlers"}
+
+    def __init__(self):
+        self.calls = []
+
+    def exec_driver_sql(self, statement):
+        self.calls.append(statement)
+        if "actor.rolsuper AND actor.rolname=session_user" in statement:
+            return SimpleNamespace(
+                one=lambda: ("test_receipt_structure", "structural_migration", True)
+            )
+        if statement == "SELECT current_database(), session_user, current_schema(), current_user":
+            return SimpleNamespace(
+                one=lambda: (
+                    "test_receipt_structure",
+                    "structural_maintenance",
+                    "general",
+                    "structural_migration",
+                )
+            )
+        if statement == "SELECT current_database(), session_user":
+            return SimpleNamespace(one=lambda: ("test_receipt_structure", "structural_maintenance"))
+        raise AssertionError(
+            "Unmodeled structural catalog query " + hashlib.sha256(statement.encode()).hexdigest()
+        )
+
+    def execute(self, statement, parameters=None):
+        query = str(statement)
+        self.calls.append(query)
+        if any(
+            marker in query
+            for marker in (
+                "connectors-replay:relations",
+                "connectors-replay:function-population",
+                "runtime-probe-replay:population",
+            )
+        ):
+            return SimpleNamespace(mappings=lambda: ())
+        raise AssertionError(
+            "Unmodeled structural catalog query " + hashlib.sha256(query.encode()).hexdigest()
+        )
+
+
 def _executed_sql(function_name: str) -> str:
     module = _load_migration()
     op = MagicMock()
-    with patch.object(module, "op", op):
+    catalog = _FreshStructureCatalog()
+    op.get_bind.return_value = catalog
+    with (
+        patch.object(module, "op", op),
+        patch(
+            "alembic.op.get_context",
+            return_value=SimpleNamespace(opts={"version_table_schema": "general"}),
+        ),
+    ):
         getattr(module, function_name)()
+    if function_name == "upgrade":
+        assert any("runtime-probe-replay:population" in query for query in catalog.calls)
     return "\n".join(str(call.args[0]) for call in op.execute.call_args_list)
 
 
@@ -167,15 +233,53 @@ def test_downgrade_removes_everything_it_installed() -> None:
 
 
 @pytest.fixture(scope="module")
-def core_db_url(postgres_container) -> str:
+def core_only_db_url(postgres_container) -> str:
     return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
 
 
-async def _connect(db_url: str, *, role: str | None = None) -> asyncpg.Connection:
-    connection = await asyncpg.connect(db_url)
-    if role is not None:
-        await connection.execute(f'SET ROLE "{role}"')
-    return connection
+@pytest.fixture(scope="module")
+async def receipt_deployment(postgres_container):
+    async with async_serving_test_deployment(
+        postgres_container, include_connector=True
+    ) as deployment:
+        yield deployment
+
+
+@pytest.fixture(scope="module")
+def core_db_url(receipt_deployment) -> str:
+    return receipt_deployment.migration_url
+
+
+async def _connect(db_url: str) -> asyncpg.Connection:
+    return await asyncpg.connect(db_url)
+
+
+@asynccontextmanager
+async def _runtime_connection(deployment, role):
+    """Keep authenticated admission separate from the original DML boundary."""
+    if role == _CONNECTOR:
+        selected = deployment.purpose_logins["connector"]
+
+        async def setup(connection):
+            await setup_purpose(connection, purpose_profile("butlers", "connector"))
+
+        pool = await create_owned_pool(
+            dsn=deployment.purpose_url("connector"),
+            min_size=1,
+            max_size=2,
+            setup=setup,
+        )
+        deployment.retain(pool)
+    else:
+        schema = {_SWITCHBOARD: "switchboard", _OTHER_BUTLER: "general"}[role]
+        selected = deployment.runtime_logins[schema]
+        database = deployment.runtime_database(schema, min_size=1, max_size=2)
+        pool = await database.connect()
+    async with pool.acquire() as connection:
+        identity = await connection.fetchrow("SELECT session_user, current_user")
+        assert identity["session_user"] == selected.user
+        assert identity["current_user"] == role
+        yield connection
 
 
 def _synthetic_nonce() -> bytes:
@@ -185,7 +289,8 @@ def _synthetic_nonce() -> bytes:
 
 @_integration
 @_asyncio_session
-async def test_receipt_table_has_exactly_the_five_recorded_columns(core_db_url: str) -> None:
+async def test_receipt_table_has_exactly_the_five_recorded_columns(core_only_db_url: str) -> None:
+    core_db_url = core_only_db_url
     connection = await _connect(core_db_url)
     try:
         rows = await connection.fetch(
@@ -207,15 +312,13 @@ async def test_receipt_table_has_exactly_the_five_recorded_columns(core_db_url: 
 
 @_integration
 @_asyncio_session
-async def test_only_one_claim_per_nonce_survives(core_db_url: str) -> None:
+async def test_only_one_claim_per_nonce_survives(
+    core_db_url: str, receipt_deployment, postgres_container
+) -> None:
     """The second use of a valid capability loses, and loses durably."""
 
-    async def _as_switchboard(connection: asyncpg.Connection) -> None:
-        # Per-connection: a pool hands out different connections, and SET ROLE
-        # is connection state.
-        await connection.execute(f'SET ROLE "{_SWITCHBOARD}"')
-
-    pool = await asyncpg.create_pool(core_db_url, min_size=1, max_size=2, setup=_as_switchboard)
+    database = receipt_deployment.runtime_database("switchboard", min_size=1, max_size=2)
+    pool = await database.connect()
     try:
         receipts = RuntimeProbeControlReceipts(pool)
         nonce = _synthetic_nonce()
@@ -227,16 +330,53 @@ async def test_only_one_claim_per_nonce_survives(core_db_url: str) -> None:
         assert first is True
         assert second is False
         assert await receipts.is_consumed(nonce=nonce)
+        # Observe the committed receipt independently and remove only the
+        # synthetic login's sole capability edge. No object privilege changes.
+        selected = receipt_deployment.runtime_logins["switchboard"]
+        control = await asyncpg.connect(migration_bootstrap_db_url(postgres_container, "butlers"))
+        membership_sql = (
+            "SELECT roleid,member,grantor,admin_option,inherit_option,set_option "
+            "FROM pg_catalog.pg_auth_members "
+            "WHERE roleid=pg_catalog.to_regrole($1) AND member=pg_catalog.to_regrole($2)"
+        )
+        try:
+            async with pool.acquire() as connection:
+                identity = await connection.fetchrow("SELECT session_user,current_user")
+                assert identity["session_user"] == selected.user
+                assert identity["current_user"] == _SWITCHBOARD
+            assert (
+                await control.fetchval(
+                    f"SELECT count(*) FROM {_TABLE} WHERE nonce_digest=$1", nonce_digest(nonce)
+                )
+                == 1
+            )
+            before = await control.fetchrow(membership_sql, _SWITCHBOARD, selected.user)
+            assert before is not None
+            await control.execute(
+                f"REVOKE {quote_identifier(_SWITCHBOARD)} FROM {quote_identifier(selected.user)}"
+            )
+            try:
+                with pytest.raises(RuntimeError):
+                    await receipts.is_consumed(nonce=nonce)
+            finally:
+                await control.execute(
+                    f"GRANT {quote_identifier(_SWITCHBOARD)} TO {quote_identifier(selected.user)}"
+                )
+            assert await control.fetchrow(membership_sql, _SWITCHBOARD, selected.user) == before
+            assert await receipts.is_consumed(nonce=nonce)
+        finally:
+            await control.close()
     finally:
-        await pool.close()
+        await database.close()
 
 
 @_integration
 @_asyncio_session
-async def test_receipt_stores_a_digest_rather_than_the_nonce(core_db_url: str) -> None:
-    connection = await _connect(core_db_url, role=_SWITCHBOARD)
-    nonce = _synthetic_nonce()
-    try:
+async def test_receipt_stores_a_digest_rather_than_the_nonce(
+    core_db_url: str, receipt_deployment
+) -> None:
+    async with _runtime_connection(receipt_deployment, _SWITCHBOARD) as connection:
+        nonce = _synthetic_nonce()
         await connection.execute(
             f"INSERT INTO {_TABLE} (audience, nonce_digest, kid, capability_exp) "
             "VALUES ($1, $2, $3, $4)",
@@ -248,8 +388,6 @@ async def test_receipt_stores_a_digest_rather_than_the_nonce(core_db_url: str) -
         stored = await connection.fetchval(
             f"SELECT nonce_digest FROM {_TABLE} WHERE nonce_digest = $1", nonce_digest(nonce)
         )
-    finally:
-        await connection.close()
 
     assert stored == hashlib.sha256(nonce).digest()
     assert stored != nonce
@@ -257,9 +395,8 @@ async def test_receipt_stores_a_digest_rather_than_the_nonce(core_db_url: str) -
 
 @_integration
 @_asyncio_session
-async def test_a_foreign_audience_cannot_be_recorded(core_db_url: str) -> None:
-    connection = await _connect(core_db_url, role=_SWITCHBOARD)
-    try:
+async def test_a_foreign_audience_cannot_be_recorded(core_db_url: str, receipt_deployment) -> None:
+    async with _runtime_connection(receipt_deployment, _SWITCHBOARD) as connection:
         with pytest.raises(asyncpg.CheckViolationError):
             await connection.execute(
                 f"INSERT INTO {_TABLE} (audience, nonce_digest, kid, capability_exp) "
@@ -269,17 +406,14 @@ async def test_a_foreign_audience_cannot_be_recorded(core_db_url: str) -> None:
                 "probe-2026-05a",
                 datetime.now(UTC) + timedelta(seconds=60),
             )
-    finally:
-        await connection.close()
 
 
 @_integration
 @_asyncio_session
-async def test_a_live_receipt_cannot_be_deleted(core_db_url: str) -> None:
+async def test_a_live_receipt_cannot_be_deleted(core_db_url: str, receipt_deployment) -> None:
     """A cleanup worker with a wrong predicate fails loudly, not silently."""
-    connection = await _connect(core_db_url, role=_SWITCHBOARD)
-    digest = nonce_digest(_synthetic_nonce())
-    try:
+    async with _runtime_connection(receipt_deployment, _SWITCHBOARD) as connection:
+        digest = nonce_digest(_synthetic_nonce())
         await connection.execute(
             f"INSERT INTO {_TABLE} (audience, nonce_digest, kid, capability_exp) "
             "VALUES ($1, $2, $3, $4)",
@@ -291,17 +425,16 @@ async def test_a_live_receipt_cannot_be_deleted(core_db_url: str) -> None:
 
         with pytest.raises(asyncpg.RaiseError):
             await connection.execute(f"DELETE FROM {_TABLE} WHERE nonce_digest = $1", digest)
-    finally:
-        await connection.close()
 
 
 @_integration
 @_asyncio_session
 @pytest.mark.pg_clock
-async def test_a_receipt_past_its_retention_bound_is_removable(core_db_url: str) -> None:
-    connection = await _connect(core_db_url, role=_SWITCHBOARD)
-    expired = datetime.now(UTC) - RECEIPT_RETENTION_SKEW - timedelta(seconds=1)
-    try:
+async def test_a_receipt_past_its_retention_bound_is_removable(
+    core_db_url: str, receipt_deployment
+) -> None:
+    async with _runtime_connection(receipt_deployment, _SWITCHBOARD) as connection:
+        expired = datetime.now(UTC) - RECEIPT_RETENTION_SKEW - timedelta(seconds=1)
         await connection.execute(
             f"INSERT INTO {_TABLE} (audience, nonce_digest, kid, capability_exp) "
             "VALUES ($1, $2, $3, $4)",
@@ -312,8 +445,6 @@ async def test_a_receipt_past_its_retention_bound_is_removable(core_db_url: str)
         )
 
         purged = await RuntimeProbeControlReceipts(connection).purge_expired()
-    finally:
-        await connection.close()
 
     assert purged >= 1
 
@@ -321,11 +452,12 @@ async def test_a_receipt_past_its_retention_bound_is_removable(core_db_url: str)
 @_integration
 @_asyncio_session
 @pytest.mark.parametrize("role", [_OTHER_BUTLER, _CONNECTOR])
-async def test_no_other_runtime_role_can_touch_receipts(core_db_url: str, role: str) -> None:
+async def test_no_other_runtime_role_can_touch_receipts(
+    core_db_url: str, role: str, receipt_deployment
+) -> None:
     """Not a read, not a write, not a delete --- and init-db's broad public-schema
     grant does not change that."""
-    connection = await _connect(core_db_url, role=role)
-    try:
+    async with _runtime_connection(receipt_deployment, role) as connection:
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             await connection.fetch(f"SELECT 1 FROM {_TABLE}")
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
@@ -339,19 +471,17 @@ async def test_no_other_runtime_role_can_touch_receipts(core_db_url: str, role: 
             )
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             await connection.execute(f"DELETE FROM {_TABLE}")
-    finally:
-        await connection.close()
 
 
 @_integration
 @_asyncio_session
-async def test_the_owner_is_fenced_once_core_212_has_also_run(core_db_url: str) -> None:
+async def test_the_owner_is_fenced_once_core_212_has_also_run(core_only_db_url: str) -> None:
     """``core_db_url`` migrates the whole ``core`` chain, so this is the live shape.
 
     core_201 alone leaves the table OWNER exempt from row security; core_212
-    (bu-jcym4) FORCEs the policy so the owner -- the same identity the
-    Dashboard API pool connects as, per ``src/butlers/api/deps.py``'s ``SET
-    ROLE``-disabled comment -- is fenced too.  ``pg_dump`` issues ``SET
+    (bu-jcym4) FORCEs the policy so the ordinary migration owner is fenced
+    too. That owner remains an administrative negative, never a supported
+    Dashboard or Switchboard serving identity.  ``pg_dump`` issues ``SET
     row_security = off`` before it copies anything, and in that mode
     PostgreSQL raises rather than silently returning a filtered result
     whenever a policy would apply to the reader; asserting on that setting
@@ -366,8 +496,13 @@ async def test_the_owner_is_fenced_once_core_212_has_also_run(core_db_url: str) 
     ``tests/scripts/test_pg_dump_backup.py::test_exclusion_set_matches_the_fenced_objects_exactly``
     proves the exclusion set covers exactly what this test proves is fenced.
     """
+    core_db_url = core_only_db_url
     owner = await _connect(core_db_url)
     try:
+        before = await owner.fetchval("SELECT current_user")
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await owner.execute(f'SET ROLE "{_SWITCHBOARD}"')
+        assert await owner.fetchval("SELECT current_user") == before
         await owner.execute("SET row_security = off")
         with pytest.raises(asyncpg.PostgresError) as raised:
             await owner.fetchval(f"SELECT count(*) FROM {_TABLE}")
@@ -378,17 +513,12 @@ async def test_the_owner_is_fenced_once_core_212_has_also_run(core_db_url: str) 
 
 @_integration
 @_asyncio_session
-async def test_row_security_survives_an_init_db_regrant(core_db_url: str) -> None:
-    """This is what row security buys, and why the revokes alone are not enough.
-
-    ``scripts/init-db.sql`` re-runs ``GRANT ... ON ALL TABLES IN SCHEMA public``
-    for every runtime role on every invocation, so the migration's per-role
-    REVOKEs are undone the next time an operator bootstraps.  The policy is not
-    a grant and is not re-granted away.
-    """
-    switchboard = await _connect(core_db_url, role=_SWITCHBOARD)
+async def test_row_security_survives_an_init_db_regrant(
+    core_db_url: str, receipt_deployment
+) -> None:
+    """Hold an admitted actor through the original bootstrap-like ACL fault."""
     digest = nonce_digest(_synthetic_nonce())
-    try:
+    async with _runtime_connection(receipt_deployment, _SWITCHBOARD) as switchboard:
         await switchboard.execute(
             f"INSERT INTO {_TABLE} (audience, nonce_digest, kid, capability_exp) "
             "VALUES ($1, $2, $3, $4)",
@@ -397,17 +527,12 @@ async def test_row_security_survives_an_init_db_regrant(core_db_url: str) -> Non
             "probe-2026-05a",
             datetime.now(UTC) + timedelta(seconds=60),
         )
-    finally:
-        await switchboard.close()
-
-    owner = await _connect(core_db_url)
-    try:
-        # Exactly what init-db does, narrowed to one role.
-        await owner.execute(
-            f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {_TABLE} TO {_OTHER_BUTLER}"
-        )
-        regranted = await _connect(core_db_url, role=_OTHER_BUTLER)
+    async with _runtime_connection(receipt_deployment, _OTHER_BUTLER) as regranted:
+        owner = await _connect(core_db_url)
         try:
+            await owner.execute(
+                f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {_TABLE} TO {_OTHER_BUTLER}"
+            )
             visible = await regranted.fetchval(
                 f"SELECT count(*) FROM {_TABLE} WHERE nonce_digest = $1", digest
             )
@@ -421,11 +546,10 @@ async def test_row_security_survives_an_init_db_regrant(core_db_url: str) -> Non
                     datetime.now(UTC) + timedelta(seconds=60),
                 )
         finally:
-            await regranted.close()
-            await owner.execute(f"REVOKE ALL PRIVILEGES ON TABLE {_TABLE} FROM {_OTHER_BUTLER}")
-    finally:
-        await owner.close()
-
+            try:
+                await owner.execute(f"REVOKE ALL PRIVILEGES ON TABLE {_TABLE} FROM {_OTHER_BUTLER}")
+            finally:
+                await owner.close()
     assert visible == 0
 
 
@@ -451,15 +575,14 @@ async def _seed_catalog_entry(db_url: str) -> str:
 
 @_integration
 @_asyncio_session
-async def test_a_probe_writes_verification_evidence_and_nothing_else(core_db_url: str) -> None:
+async def test_a_probe_writes_verification_evidence_and_nothing_else(
+    core_db_url: str, receipt_deployment
+) -> None:
     entry_id = await _seed_catalog_entry(core_db_url)
-    connection = await _connect(core_db_url, role=_SWITCHBOARD)
-    try:
+    async with _runtime_connection(receipt_deployment, _SWITCHBOARD) as connection:
         recorded = await RuntimeProbeVerificationPersistence(connection).record(
             catalog_entry_id=entry_id, ok=True, latency_ms=42
         )
-    finally:
-        await connection.close()
 
     owner = await _connect(core_db_url)
     try:
@@ -483,32 +606,30 @@ async def test_a_probe_writes_verification_evidence_and_nothing_else(core_db_url
 
 @_integration
 @_asyncio_session
-async def test_verification_persistence_is_switchboard_only(core_db_url: str) -> None:
+async def test_verification_persistence_is_switchboard_only(
+    core_db_url: str, receipt_deployment
+) -> None:
     entry_id = await _seed_catalog_entry(core_db_url)
-    connection = await _connect(core_db_url, role=_OTHER_BUTLER)
-    try:
+    async with _runtime_connection(receipt_deployment, _OTHER_BUTLER) as connection:
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             await connection.fetchval(
                 "SELECT public.record_runtime_probe_verification($1, true, 1, NULL)", entry_id
             )
-    finally:
-        await connection.close()
 
 
 @_integration
 @_asyncio_session
-async def test_a_probe_cannot_update_the_catalog_directly(core_db_url: str) -> None:
+async def test_a_probe_cannot_update_the_catalog_directly(
+    core_db_url: str, receipt_deployment
+) -> None:
     """The definer function is the only path, so its narrowness is the boundary."""
     entry_id = await _seed_catalog_entry(core_db_url)
-    connection = await _connect(core_db_url, role=_SWITCHBOARD)
-    try:
+    async with _runtime_connection(receipt_deployment, _SWITCHBOARD) as connection:
         recorded = await connection.fetchval(
             "SELECT public.record_runtime_probe_verification($1, false, NULL, $2)",
             entry_id,
             "synthetic failure detail",
         )
-    finally:
-        await connection.close()
 
     owner = await _connect(core_db_url)
     try:

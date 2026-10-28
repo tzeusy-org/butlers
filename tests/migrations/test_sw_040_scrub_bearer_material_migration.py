@@ -5,7 +5,6 @@ bu-q7vx1q.2.  Real PostgreSQL; seeded rows use synthetic codes only.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import shutil
 
@@ -13,8 +12,13 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from alembic import command
-from butlers.migrations import _build_alembic_config, run_migrations
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.migrations import _build_alembic_config
+from butlers.testing.migration import (
+    create_migration_db,
+    migrate_test_database,
+    migration_db_name,
+    run_test_alembic_command,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -61,9 +65,9 @@ def _snapshot(engine) -> dict[str, tuple[str, str]]:
 
 def test_sw_040_scrubs_history_once_and_rerun_is_a_noop(postgres_container) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(db_url, chain="core"))
+    migrate_test_database(postgres_container, db_url, plans=(("core", None, None),))
     config = _build_alembic_config(db_url, ["switchboard"], target_schema="switchboard")
-    command.upgrade(config, "switchboard@sw_039")
+    run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_039")
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
@@ -98,7 +102,7 @@ def test_sw_040_scrubs_history_once_and_rerun_is_a_noop(postgres_container) -> N
                 },
             )
 
-        command.upgrade(config, "switchboard@sw_040")
+        run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_040")
         after = _snapshot(engine)
         blob = json.dumps(after)
         assert "482913" not in blob
@@ -112,8 +116,10 @@ def test_sw_040_scrubs_history_once_and_rerun_is_a_noop(postgres_container) -> N
         assert service["source"]["provider"] == "telegram"
 
         # Second run: irreversible downgrade is a no-op, re-upgrade changes nothing.
-        command.downgrade(config, "switchboard@sw_039")
-        command.upgrade(config, "switchboard@sw_040")
+        run_test_alembic_command(
+            postgres_container, command.downgrade, config, "switchboard@sw_039"
+        )
+        run_test_alembic_command(postgres_container, command.upgrade, config, "switchboard@sw_040")
         assert _snapshot(engine) == after
     finally:
         engine.dispose()

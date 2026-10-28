@@ -379,9 +379,11 @@ class TestStartAllReleasesFailedDaemon:
         probe.close()
 
         bound_sockets: list[socket.socket] = []
+        received_configs = []
 
         class FakeDaemon:
-            def __init__(self, config_dir):
+            def __init__(self, config_dir, *, credential_purpose=None):
+                received_configs.append((config_dir, credential_purpose))
                 self.config_dir = config_dir
                 self._mcp_socket: socket.socket | None = None
 
@@ -410,6 +412,9 @@ class TestStartAllReleasesFailedDaemon:
 
                 with patch.object(loop, "add_signal_handler"):
                     await _start_all(configs)
+
+        assert received_configs == [(configs["test_butler"], None)]
+        assert len(bound_sockets) == 1
 
         # The port must now be free: a fresh bind without SO_REUSEADDR succeeds
         # only if _start_all closed the leaked listening socket via shutdown().

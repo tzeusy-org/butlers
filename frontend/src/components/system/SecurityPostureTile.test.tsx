@@ -12,8 +12,8 @@
 //   - Infra defaults: insecure_infra_defaults=true shows "Insecure defaults active"
 //   - Infra defaults: insecure_infra_defaults=false shows "Hardened"
 //   - Infra defaults: absent security field defaults to insecure (honest default)
-//   - DB role enforcement: role_enforcement_disabled=true shows "Disabled (dev posture)"
-//   - DB role enforcement: role_enforcement_disabled=false shows "Active"
+//   - DB role enforcement: database_authority=unavailable shows "Unavailable"
+//   - DB role enforcement: database_authority=admitted shows "Admitted"
 //   - DB role enforcement: absent field defaults to insecure (honest default)
 //   - No secret material rendered (invariant)
 // ---------------------------------------------------------------------------
@@ -65,7 +65,7 @@ function makeHealthResponse(
     },
     security: {
       insecure_infra_defaults: false,
-      role_enforcement_disabled: false,
+      database_authority: "admitted",
       ...securityOverrides,
     },
   }
@@ -228,20 +228,20 @@ describe("SecurityPostureTile -- infra defaults indicator", () => {
 // ---------------------------------------------------------------------------
 
 describe("SecurityPostureTile -- DB role enforcement indicator", () => {
-  it("shows 'Disabled (dev posture)' when role_enforcement_disabled=true", () => {
+  it("shows 'Unavailable' when database_authority=unavailable", () => {
     mockResult = {
       isPending: false,
-      data: makeHealthResponse({}, { role_enforcement_disabled: true }),
+      data: makeHealthResponse({}, { database_authority: "unavailable" }),
     }
-    expect(render()).toContain("Disabled (dev posture)")
+    expect(render()).toContain("Unavailable")
   })
 
-  it("shows 'Active' when role_enforcement_disabled=false", () => {
+  it("shows 'Admitted' when database_authority=admitted", () => {
     mockResult = {
       isPending: false,
-      data: makeHealthResponse({}, { role_enforcement_disabled: false }),
+      data: makeHealthResponse({}, { database_authority: "admitted" }),
     }
-    expect(render()).toContain("Active")
+    expect(render()).toContain("Admitted")
   })
 
   it("defaults to insecure when security field is absent (honest default)", () => {
@@ -249,26 +249,26 @@ describe("SecurityPostureTile -- DB role enforcement indicator", () => {
       isPending: false,
       data: { status: "ok", auth: { api_key_auth_enabled: true, export_secret_insecure_default: false } },
     }
-    // When security is absent, role_enforcement_disabled defaults to true → shows insecure label
-    expect(render()).toContain("Disabled (dev posture)")
+    // Missing diagnostics cannot render an admitted state.
+    expect(render()).toContain("Unknown")
   })
 
   it("renders the role enforcement row with correct testId", () => {
     mockResult = {
       isPending: false,
-      data: makeHealthResponse({}, { role_enforcement_disabled: false }),
+      data: makeHealthResponse({}, { database_authority: "admitted" }),
     }
     expect(render()).toContain("posture-role-enforcement")
   })
 
-  it("shows 'Active' badge when role enforcement is active", () => {
+  it("shows 'Admitted' badge when role enforcement is active", () => {
     mockResult = {
       isPending: false,
-      data: makeHealthResponse({}, { role_enforcement_disabled: false }),
+      data: makeHealthResponse({}, { database_authority: "admitted" }),
     }
     const html = render()
     expect(html).toContain("posture-role-enforcement")
-    expect(html).toContain("Active")
+    expect(html).toContain("Admitted")
   })
 })
 
@@ -289,7 +289,7 @@ describe("SecurityPostureTile -- no secret material", () => {
         // auth and security fields are booleans; no path for the canary to sneak in
         auth: { api_key_auth_enabled: true, export_secret_insecure_default: false,
           ...{ api_key: CANARY_SECRET } },
-        security: { insecure_infra_defaults: false, role_enforcement_disabled: false },
+        security: { insecure_infra_defaults: false, database_authority: "admitted" },
       },
     }
     expect(JSON.stringify(mockResult.data)).toContain(CANARY_SECRET)

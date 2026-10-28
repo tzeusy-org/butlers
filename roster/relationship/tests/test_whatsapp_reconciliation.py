@@ -35,6 +35,7 @@ from butlers.tools.relationship.whatsapp_reconciliation import (
     validate_empty_shell_locked,
 )
 from roster.relationship.tests.evidence_schema import apply_evidence_schema
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = [
     pytest.mark.integration,

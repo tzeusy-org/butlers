@@ -924,3 +924,87 @@ async def test_response_fence_resolves_switchboard_client_at_claim_time(tmp_path
     daemon.switchboard_client = second
     await fence.check_peers(request)
     assert (first.calls, second.calls) == (1, 1)
+
+
+@pytest.mark.parametrize(
+    "fault", [None, "unverified", "closed", "wrong-owner", "missing-profile", "stale-profile"]
+)
+async def test_fence_pool_uses_actual_held_primary_factory(monkeypatch, fault):
+    """The real child factory and native setup execute; only physical IO is doubled."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    import asyncpg
+
+    from butlers.db import Database
+    from butlers.db_authority.roles import load_runtime_profile
+    from butlers.modules.calendar_response_fence import (
+        CalendarResponseFence,
+        ResponseFenceUnavailable,
+    )
+
+    source = Database("butlers", schema="messenger", role="butler_messenger_rw")
+    source.pool = Mock(spec=asyncpg.Pool)
+    source.pool.is_closing.return_value = fault == "closed"
+    source._role_verified = fault != "unverified"
+    source._verified_role = source.role
+    source._runtime_profile = load_runtime_profile("butlers", source.schema, source.role)
+    if fault == "wrong-owner":
+        source.schema, source.role = "relationship", "butler_relationship_rw"
+    elif fault == "missing-profile":
+        source._runtime_profile = None
+    elif fault == "stale-profile":
+        source._runtime_profile = load_runtime_profile("butlers", "general", "butler_general_rw")
+
+    driver = AsyncMock()
+    driver.fetchval.return_value = True
+    driver.fetchrow.return_value = dict.fromkeys(
+        (
+            "identity_ok",
+            "role_set_ok",
+            "attributes_ok",
+            "ownership_ok",
+            "create_ok",
+            "target_member",
+        ),
+        True,
+    )
+    pool = Mock(spec=asyncpg.Pool)
+    pool.is_closing.return_value = False
+    pool.close = AsyncMock()
+    created = []
+
+    async def create_pool(**options):
+        created.append(options)
+
+        @asynccontextmanager
+        async def acquire():
+            await options["init"](driver)
+            await options["setup"](driver)
+            yield driver
+
+        pool.acquire.side_effect = acquire
+        return pool
+
+    connect = AsyncMock(return_value=driver)
+    monkeypatch.setattr(asyncpg, "connect", connect)
+    monkeypatch.setattr(asyncpg, "create_pool", create_pool)
+    fence = CalendarResponseFence(SimpleNamespace(_db=source, _butler_name="messenger"))
+    if fault:
+        with pytest.raises(ResponseFenceUnavailable, match="response_fence_unavailable"):
+            await fence._get_pool()
+        assert created == []
+    else:
+        assert await fence._get_pool() is pool
+        assert fence._database._owner_database is source
+        assert fence._database._owner_pool is source.pool
+        assert created[0]["min_size"] == 0 and created[0]["max_size"] == 2
+        before = driver.fetchrow.await_count
+        async with pool.acquire():
+            pass
+        assert driver.fetchrow.await_count == before + 1
+        assert await fence._get_pool() is pool
+        assert len(created) == 1
+        await fence.close()
+        pool.close.assert_awaited_once()

@@ -8,6 +8,7 @@ import shutil
 import pytest
 
 from butlers.tools.switchboard.identity.inject import _claim_unknown_sender_notification
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = [
     pytest.mark.integration,

@@ -22,8 +22,8 @@ The five RFC 0010 guardrails are encoded structurally:
   3. Key-filtered — each term filters ``key LIKE 'calendar/overlay/%'``, bounding
      access to overlay keys only rather than the whole ``state`` table.
   4. Health-checkable — the read path validates view accessibility and fails open.
-  5. Migration-tracked grants — cross-schema SELECT grants to ``butler_calendar_rw``
-     are created here, in a versioned migration, and reversed on downgrade.
+  5. Migration-tracked grants — filtered-view SELECT grants to ``dashboard_api``
+     are created here; underlying specialist state is never exposed to the reader.
 
 Columns exposed:
   butler  TEXT   — string literal identifying the source schema
@@ -54,30 +54,14 @@ _SPECIALIST_SCHEMAS: tuple[str, ...] = (
 
 # Schema that hosts the read-only view and the calendar reader role that may
 # query it.  Neither is created by core_001 (calendar is a module, not a
-# stand-alone butler schema), so both are provisioned best-effort here.
+# stand-alone butler schema). The reader is independently bootstrapped NOLOGIN.
 _CALENDAR_SCHEMA = "calendar"
-_CALENDAR_ROLE = "butler_calendar_rw"
+_CALENDAR_ROLE = "dashboard_api"
 
 _VIEW_FQN = f"{_CALENDAR_SCHEMA}.v_overlay_contributions"
 
 # Key prefix bounding cross-schema access to overlay contributions only.
 _KEY_PREFIX = "calendar/overlay/%"
-
-
-def _ensure_role_exists(role_name: str) -> None:
-    """Create role if it doesn't exist (best-effort, matches core_063 pattern)."""
-    op.execute(f"""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role_name}') THEN
-                EXECUTE 'CREATE ROLE {role_name} LOGIN';
-            END IF;
-        EXCEPTION
-            WHEN insufficient_privilege THEN
-                NULL;
-        END
-        $$;
-    """)
 
 
 def _state_table_exists(schema_name: str) -> bool:
@@ -87,46 +71,6 @@ def _state_table_exists(schema_name: str) -> bool:
         bind.execute(sa.text("SELECT to_regclass(:relname)"), {"relname": relname}).scalar()
         is not None
     )
-
-
-def _grant_cross_schema_select(schema: str, role: str) -> None:
-    """Grant SELECT on <schema>.state to role; tolerates missing role/table."""
-    op.execute(f"""
-        DO $$
-        BEGIN
-            IF to_regclass('{schema}.state') IS NOT NULL
-               AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}')
-            THEN
-                EXECUTE 'GRANT SELECT ON TABLE {schema}.state TO "{role}"';
-            END IF;
-        EXCEPTION
-            WHEN insufficient_privilege THEN NULL;
-            WHEN undefined_object THEN NULL;
-            WHEN undefined_table THEN NULL;
-            WHEN invalid_schema_name THEN NULL;
-        END
-        $$;
-    """)
-
-
-def _revoke_cross_schema_select(schema: str, role: str) -> None:
-    """Revoke SELECT on <schema>.state from role; tolerates errors."""
-    op.execute(f"""
-        DO $$
-        BEGIN
-            IF to_regclass('{schema}.state') IS NOT NULL
-               AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}')
-            THEN
-                EXECUTE 'REVOKE SELECT ON TABLE {schema}.state FROM "{role}"';
-            END IF;
-        EXCEPTION
-            WHEN insufficient_privilege THEN NULL;
-            WHEN undefined_object THEN NULL;
-            WHEN undefined_table THEN NULL;
-            WHEN invalid_schema_name THEN NULL;
-        END
-        $$;
-    """)
 
 
 def _grant_object_best_effort(object_fqn: str, privilege: str, role: str) -> None:
@@ -186,8 +130,7 @@ def _revoke_schema_usage_best_effort(schema: str, role: str) -> None:
 def upgrade() -> None:
     # -- Step 0: Ensure the calendar reader role + schema exist ---------------
     # Neither is provisioned by core_001 (calendar is a module surface, not a
-    # stand-alone butler schema), so create them best-effort here.
-    _ensure_role_exists(_CALENDAR_ROLE)
+    # stand-alone butler schema). The reader is supplied by controlled bootstrap.
     op.execute(f'CREATE SCHEMA IF NOT EXISTS "{_CALENDAR_SCHEMA}"')
     _grant_schema_usage_best_effort(_CALENDAR_SCHEMA, _CALENDAR_ROLE)
 
@@ -197,8 +140,6 @@ def upgrade() -> None:
 
     # -- Step 1: Grant SELECT on each specialist schema's state table ---------
     #    RFC 0010 guardrail 5: grants are migration-tracked and reversible.
-    for schema in available_schemas:
-        _grant_cross_schema_select(schema, _CALENDAR_ROLE)
 
     # -- Step 2: Create the cross-schema view ---------------------------------
     #    RFC 0010 guardrail 1: UNION view — structurally read-only.
@@ -230,8 +171,5 @@ def downgrade() -> None:
     op.execute(f"DROP VIEW IF EXISTS {_VIEW_FQN}")
 
     # -- Step 2: Revoke cross-schema grants -----------------------------------
-    for schema in _SPECIALIST_SCHEMAS:
-        _revoke_cross_schema_select(schema, _CALENDAR_ROLE)
 
     # -- Step 3: Revoke calendar schema USAGE granted during upgrade ----------
-    _revoke_schema_usage_best_effort(_CALENDAR_SCHEMA, _CALENDAR_ROLE)

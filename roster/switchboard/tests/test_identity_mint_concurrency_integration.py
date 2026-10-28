@@ -12,6 +12,7 @@ import pytest
 
 from butlers.core.routing_context import _routing_ctx_var
 from butlers.modules.pipeline import MessagePipeline
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = [
     pytest.mark.integration,

@@ -860,17 +860,25 @@ async def test_inverse_delivery_crash_repeats_only_at_the_adopted_post_commit_bo
 @pytest.fixture(scope="module")
 def private_gap_db(postgres_container):
     """Actual bootstrap/runtime roles and both private, fully migrated Memory schemas."""
-    from butlers.migrations import run_migrations
-    from butlers.testing.migration import create_migrated_test_db, migration_db_name
+    from urllib.parse import urlparse
 
-    db = create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory"],
-        schemas={"memory": "general"},
+    from butlers.testing.migration import (
+        create_migration_db,
+        migrate_test_database,
+        migration_bootstrap_db_url,
+        migration_db_name,
     )
-    asyncio.run(run_migrations(db, chain="memory", schema="health"))
-    return db
+
+    db = create_migration_db(postgres_container, migration_db_name())
+    migrate_test_database(
+        postgres_container,
+        db,
+        plans=(("core", None, None), ("memory", "general", None), ("memory", "health", None)),
+    )
+    # Administrative transport only; each actual pool below independently SETs
+    # its real General/Health role on every checkout and proves foreign refusal.
+    control = migration_bootstrap_db_url(postgres_container, urlparse(db).path.lstrip("/"))
+    return urlparse(control)._replace(scheme="postgresql").geturl()
 
 
 async def test_inverse_closure_uses_only_the_runtime_roles_own_private_memory_schema(

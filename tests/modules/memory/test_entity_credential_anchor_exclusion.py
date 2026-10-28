@@ -30,6 +30,7 @@ import pytest
 from butlers.api.deps import get_db
 from butlers.modules.memory.tools.entities import entity_neighbors, entity_resolve
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
+from tests.postgres_fixtures import provisioned_postgres_pool as provisioned_postgres_pool
 
 pytestmark = [
     pytest.mark.integration,
