@@ -200,6 +200,16 @@ psql -h localhost -U butlers -d butlers -c \
   lifts and does not trigger catch-up. Work that was already launched keeps running.
   `asyncio.CancelledError` propagates and does not authorize anything. Other butlers keep the
   `src/butlers/core/scheduler.py::_butler_dispatch_gated()` path.
+- `sw_053` generalises that projection as `public.butler_local_schedule_policy()` for every other
+  butler. It takes no arguments, derives the butler name from the effective
+  `SET ROLE butler_<name>_rw` (anything else is refused with `42501`) and returns `butler_name`,
+  `policy_state` and `policy_provenance` (`P0002` when no row exists). EXECUTE is granted only to
+  `butler_*_rw` roles. Under the receiver cutover `_butler_dispatch_gated()` calls it through the
+  butler's own role-verified pool (the daemon wires `eligibility_pool` to `daemon.db.pool` for every
+  butler under the cutover, and for the switchboard always). A missing row or any state other than
+  `active` holds dispatch; a refusal, an absent function or a row naming another butler fails open,
+  like other gate errors. Without the cutover only the switchboard gates, because the legacy
+  resolver reads switchboard tables that runtime roles cannot see. Downgrade keeps the function.
 
 - `job_args` JSONB can round-trip through asyncpg as a JSON string: serialize dicts explicitly on
   write and normalize back to dicts before diffing, validation merges, list responses or dispatch.

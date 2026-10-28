@@ -1911,6 +1911,8 @@ class QaSchedulePolicy(StrEnum):
 
 
 _QA_BUTLER_NAME = "qa"
+# sw_053's role-derived projection of the caller's own control-plane policy.
+_BUTLER_POLICY_QUERY = "SELECT butler_name, policy_state FROM public.butler_local_schedule_policy()"
 # sw_038's fixed projection: no caller-supplied name, and it raises 42501
 # unless the connection's effective role is butler_qa_rw.
 _QA_POLICY_QUERY = "SELECT policy_state, policy_provenance FROM public.qa_local_schedule_policy()"
@@ -1978,10 +1980,12 @@ async def _butler_dispatch_gated(
     receiver-derived routing, remote observation staleness is not an authority
     to stop a healthy local scheduler.
 
-    With the receiver cutover enabled, the administrative policy row gates
-    local dispatch; a missing row or non-active policy suppresses the tick.
-    With the flag disabled, the legacy route resolver also gates stale
-    heartbeat state.
+    With the receiver cutover enabled, the butler's own administrative policy
+    (read through ``public.butler_local_schedule_policy()`` on its own runtime
+    role, so *eligibility_pool* is the butler's own pool) gates local dispatch;
+    a missing row or non-active policy suppresses the tick. With the flag
+    disabled, the legacy route resolver also gates stale heartbeat state; that
+    reads switchboard tables, so only the switchboard passes a pool then.
 
     Returns ``None`` when dispatch should proceed (eligible, or no gating
     context available), or a human-readable reason string when dispatch must be
@@ -1999,11 +2003,16 @@ async def _butler_dispatch_gated(
         )
 
         if receiver_route_cutover_enabled():
-            row = await eligibility_pool.fetchrow(
-                "SELECT policy_state FROM switchboard.butler_registry_control_plane"
-                " WHERE name = $1",
-                butler_name,
-            )
+            # sw_053: the butler's own runtime role reads only its own policy;
+            # the function derives the butler from that role, not from input.
+            try:
+                row = await eligibility_pool.fetchrow(_BUTLER_POLICY_QUERY)
+            except asyncpg.PostgresError as exc:
+                if exc.sqlstate != "P0002":  # anything but "no policy row" fails open
+                    raise
+                row = None
+            if row is not None and row["butler_name"] != butler_name:
+                raise RuntimeError("eligibility pool belongs to another butler")
             if row is None or row["policy_state"] != "active":
                 return f"Butler {butler_name!r} is held by administrative policy"
             return None
