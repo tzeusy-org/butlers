@@ -337,3 +337,26 @@ Cause receipts contain a fixed classification plus an opaque reference; they
 never copy message content, bearer material or a sender address. A missing,
 expired, revoked, edited or unreadable cause remains routine. This is the
 pre-switch boundary; RFC0038 first-switch delivery remains separate work.
+
+## Informational confirm admission
+
+`notify(intent="confirm")` accepts 2-4 unique `{value,label}` options, an expiry
+of 30-86400 seconds (default 600), and an optional `on_timeout_value` matching an
+offered value. The answer is information and grants no approval authority.
+The Telegram path returns `confirm_runtime_unavailable` unless trusted host
+composition has explicitly installed its authenticated producer. A disabled
+path creates neither a prompt nor an approval presentation.
+
+An installed path retains notify permission, recipient posture, identifier and
+non-owner approval checks, including the complete options in any parked call.
+It submits only normalized content and diagnostic runtime-session correlation
+to the producer. The owning source must reload approved effect and recipient
+authority; caller content, request context and a session locator cannot supply
+goal or sink authority. Messenger applies attention policy when delivering the
+stored prompt. Prompt acceptance returns `status="ok"` and `confirm_id`; it does
+not claim an answer or domain application. An unknown acceptance response is
+`confirm_acceptance_unconfirmed` and must reconcile the same source-owned key.
+
+Email confirms render the question and numbered option labels as an ordinary
+send through the existing recipient, approval and attention checks. They have
+no callback capture, pending-confirm row or resolvable `confirm_id`.

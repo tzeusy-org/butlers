@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 
 import type { NotificationParams } from "@/api/types";
+import { ConfirmRequests } from "@/components/notifications/confirm-requests";
 import { NotificationFeed } from "@/components/notifications/notification-feed";
 import { NotificationStatsBar } from "@/components/notifications/notification-stats-bar";
 import {
@@ -474,6 +475,7 @@ export default function NotificationsPage() {
           ) : undefined
         }
       >
+        <ConfirmRequests />
         {/* Verdict opener — windowed failed-notification count + dominant
             butler, composed from by_butler (fetched but discarded until now,
             JARVIS pursuit move 9 slice 3). */}

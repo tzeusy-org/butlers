@@ -143,6 +143,10 @@ while IFS= read -r line; do
           printf '3\\n' > "${output_file}"
           printf '%s\\n' 'snapshot-policy-verified' >> "${log}"
           ;;
+        */confirm-policy-count)
+          printf '1\\n' > "${output_file}"
+          printf '%s\\n' 'snapshot-confirm-policy-verified' >> "${log}"
+          ;;
       esac
       output_file=""
       ;;
@@ -233,6 +237,9 @@ def test_policy_proof_is_snapshot_bound_before_the_scoped_export(backup_dir: Pat
     assert (backup_dir / ".fake-psql-events").read_text(encoding="utf-8").splitlines() == [
         "snapshot-exported",
         "snapshot-policy-verified",
+        "snapshot-confirm-policy-verified",
+        "scoped-export",
+        "restore-authorization",
         "scoped-export",
         "restore-authorization",
     ]

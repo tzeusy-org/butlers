@@ -16,6 +16,7 @@ from butlers.api.router_discovery import discover_butler_routers
 
 _CORE_EXPORTS = (
     ("butlers.api.routers.approvals", "router"),
+    ("butlers.api.routers.confirms", "router"),
     ("butlers.api.routers.attention_ledger", "router"),
     ("butlers.api.routers.events", "router"),
     ("butlers.api.routers.butler_logs", "router"),

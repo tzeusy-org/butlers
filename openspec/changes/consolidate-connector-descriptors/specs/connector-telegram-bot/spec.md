@@ -3,7 +3,7 @@
 ### Requirement: Environment Variables
 The connector SHALL take operational configuration from base and Telegram-specific environment variables, and static identity from its canonical descriptor.
 
-ID: REQ-connector-telegram-bot-003
+ID: REQ-connector-telegram-bot-004
 Source: bu-dss7he.9 released S3; openspec/specs/connector-telegram-bot/spec.md requirement Environment Variables
 Scope: v1-mandatory
 
