@@ -30,7 +30,12 @@ secrets-%:
 image-%:
 	../../../scripts/k8s/build-push.sh $*
 
-deploy-%:
+# Online migrations check the privileged bootstrap but never create it, so
+# rerun the deployed tag's scripts/init-db.sql before the rollout (dev only).
+bootstrap-%:
+	../../../scripts/k8s/bootstrap-db.sh $* $(TAG)
+
+deploy-%: bootstrap-%
 	helm upgrade --install $(RELEASE_NAME) . --create-namespace $(call helm_args,$*)
 	kubectl -n $(NAMESPACE_$*) rollout status deploy/dashboard-api --timeout=10m
 	kubectl -n $(NAMESPACE_$*) rollout status deploy/butlers-up --timeout=10m

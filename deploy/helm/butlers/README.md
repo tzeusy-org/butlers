@@ -4,8 +4,11 @@ Runs Butlers on k3s in namespace `butlers-dev` (`values.dev.yaml`) or `butlers`
 (`values.prod.yaml`). Operator guide: [docs/operations/kubernetes-deployment.md](../../../docs/operations/kubernetes-deployment.md).
 
 ```bash
-scripts/k8s/deploy-dev.sh   # from the repo root: build + push HEAD, helm upgrade, status
+scripts/k8s/deploy-dev.sh   # from the repo root: build + push HEAD, bootstrap, helm upgrade, status
 ```
+
+`make deploy-dev` reruns the deployed tag's `scripts/init-db.sql` (`make bootstrap-dev`) before
+`helm upgrade`. Online migrations only check that privileged bootstrap; they never create it.
 
 `localSecrets.source` (chart default `local`, dev `bws`) chooses whether `make secrets-*` or
 External Secrets owns `butlers-runtime-probe-control` and `butlers-local-env`; see the operator
