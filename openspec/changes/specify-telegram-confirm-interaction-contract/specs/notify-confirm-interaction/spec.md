@@ -167,7 +167,10 @@ Scope: v1-mandatory
 
 Resolving a confirm SHALL include a single atomic conditional update
 (`status='pending' -> status='answered'`, or the equivalent for expiry) that succeeds for
-at most one caller per `confirm_id`. A resolution attempt against a row that is no longer
+at most one caller per `confirm_id`. After acquiring the row lock, acceptance SHALL recheck
+`expires_at > clock_timestamp()` using authoritative database time. An expired row still
+marked pending cannot accept a choice even if the sweep has not run.
+A resolution attempt against a row that is no longer
 `pending` MUST NOT change the recorded choice or create another dispatch obligation.
 Recovery may advance the existing application/rendering receipt under its own idempotent fence.
 
@@ -186,6 +189,13 @@ Recovery may advance the existing application/rendering receipt under its own id
 - **THEN** the callback is answered with a non-destructive "already handled" notice
   reflecting the row's current terminal state, the message is edited to show that state,
   and no duplicate dispatch obligation is created
+
+#### Scenario: Late tap before the expiry sweep is refused
+
+- **WHEN** a valid tap locks a still-pending prompt whose deadline has already passed
+- **THEN** no choice is accepted or applied; the service records the single expiry outcome
+  and its timeout obligation and returns an expired toast
+- **AND** a later expiry sweep cannot create a second outcome or timeout obligation
 
 ### Requirement: Expiry Semantics and Timeout Reentry
 

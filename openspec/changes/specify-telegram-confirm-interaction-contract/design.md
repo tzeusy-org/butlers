@@ -64,7 +64,10 @@ No new secret or third cryptographic implementation is needed.
 Lock/conditionally transition the pending prompt once; record its first choice and a durable
 dispatch obligation atomically. Concurrent choices cannot both win. A retry never changes
 the accepted choice. Expiry competes under the same lock and cannot override an answer;
-expiry is a system outcome, not fabricated recipient speech.
+expiry is a system outcome, not fabricated recipient speech. Acceptance rechecks
+`expires_at > clock_timestamp()` after acquiring the row lock, so a late tap cannot win
+merely because the sweep is delayed. Such a tap records the single expiry obligation and
+returns an expired toast without accepting or applying a choice.
 
 Goal dispatch uses a stable source identity and admission's existing attempt/source dedupe.
 Domain dispatch uses a closed registration and stable confirm ID. The domain endpoint
