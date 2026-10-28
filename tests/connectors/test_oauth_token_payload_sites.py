@@ -604,21 +604,45 @@ async def test_every_refresh_adapter_uses_one_fake_endpoint_and_keeps_error_auth
     from butlers.google_credentials import GOOGLE_TOKEN_URL
 
     client_type = httpx.AsyncClient
-    for status in (200, 400, 401, 503):
+    responses = [(status, False) for status in (200, 400, 401, 503)]
+    if site in {"credential_probe", "capability_probe", "health_probe"}:
+        responses.append((200, True))
+    for status, malformed in responses:
         calls = []
+        api_calls = []
+        malformed_token = "synthetic-malformed-token-not-real"
         refresh = f"synthetic-{site}-{status}"
         revoked = AsyncMock()
         pool = MagicMock()
         pool.execute = AsyncMock()
         pool.fetchrow = AsyncMock(return_value=None)
 
-        async def endpoint(request, *, calls=calls, status=status):
+        async def endpoint(
+            request,
+            *,
+            calls=calls,
+            status=status,
+            api_calls=api_calls,
+            malformed=malformed,
+            malformed_token=malformed_token,
+        ):
             if request.method != "POST":
+                api_calls.append(request)
                 return httpx.Response(200, json={})
             data = parse_qs(request.content.decode())
             calls.append((request, data))
             # Reach the separate down-scope exchange even when its response fails.
             result_status = 200 if site == "health_probe" and "scope" not in data else status
+            invalid_mint = malformed and (site != "health_probe" or "scope" in data)
+            if invalid_mint:
+                return httpx.Response(
+                    200,
+                    json={
+                        "access_token": malformed_token,
+                        "expires_in": True,
+                        "scope": "https://www.googleapis.com/auth/googlehealth.activity.read",
+                    },
+                )
             return httpx.Response(
                 result_status,
                 json=(
@@ -687,7 +711,16 @@ async def test_every_refresh_adapter_uses_one_fake_endpoint_and_keeps_error_auth
                     result = await secrets_v2._verify_oauth_credential(
                         "google", "google_oauth_refresh", refresh, pool
                     )
-                    assert result[0] == ("live_ok" if status == 200 else f"live_failed:{status}")
+                    if malformed:
+                        assert result == (
+                            "live_failed:invalid_token_payload",
+                            None,
+                            "token_exchange: invalid token payload",
+                        )
+                    else:
+                        assert result[0] == (
+                            "live_ok" if status == 200 else f"live_failed:{status}"
+                        )
                 else:
                     result = await secrets_v2._verify_google_capabilities(
                         refresh, pool, entity_id=None
@@ -697,7 +730,26 @@ async def test_every_refresh_adapter_uses_one_fake_endpoint_and_keeps_error_auth
                         if site == "capability_probe"
                         else [row for row in result if row.capability == "health"]
                     )
-                    assert all(row.ok is (status == 200) for row in affected)
+                    if malformed:
+                        assert affected
+                        assert all(
+                            row.ok is False
+                            and row.code is None
+                            and row.probe_status == "live_failed:invalid_token_payload"
+                            and row.message
+                            == (
+                                "health token down-scope exchange: invalid token payload"
+                                if site == "health_probe"
+                                else "token_exchange: invalid token payload"
+                            )
+                            for row in affected
+                        )
+                        if site == "health_probe":
+                            assert all(
+                                row.ok is True for row in result if row.capability != "health"
+                            )
+                    else:
+                        assert all(row.ok is (status == 200) for row in affected)
                 if site in {
                     "gmail",
                     "calendar",
@@ -722,5 +774,21 @@ async def test_every_refresh_adapter_uses_one_fake_endpoint_and_keeps_error_auth
                 assert all(data["refresh_token"] == [refresh] for _, data in calls)
                 if site in {"health", "health_probe"}:
                     assert any("googlehealth" in data.get("scope", [""])[0] for _, data in calls)
+                if malformed:
+                    assert all(
+                        request.headers.get("Authorization") != f"Bearer {malformed_token}"
+                        for request in api_calls
+                    )
+                    if site != "health_probe":
+                        assert not api_calls
+                    else:
+                        assert api_calls  # Other capabilities use the valid initial union mint.
+                        assert all(
+                            str(request.url) != secrets_v2._GOOGLE_CAPABILITY_ENDPOINTS["health"]
+                            for request in api_calls
+                        )
+                        assert len(calls) == 2
+                    revoked.assert_not_awaited()
+                    store.store.assert_not_called()
                 # Scope/probe verdicts never gain persistent revocation authority.
                 pool.execute.assert_not_awaited()
