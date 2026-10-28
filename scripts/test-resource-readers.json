@@ -177,6 +177,7 @@
     "tests/contracts/test_client_openapi_contract.py",
     "tests/contracts/test_codex_auth_generation_plan_contract.py",
     "tests/contracts/test_commitment_grace_rfc_contract.py",
+    "tests/contracts/test_connector_catalog.py",
     "tests/contracts/test_connector_no_fact_writes.py",
     "tests/contracts/test_contacts_schema_retired.py",
     "tests/contracts/test_doctrine_drift.py",
@@ -200,6 +201,7 @@
     "tests/core/test_approval_delivery_worker.py",
     "tests/core/test_asyncio_marker_hygiene.py",
     "tests/core/test_attachment_view.py",
+    "tests/core/test_confirm_authority.py",
     "tests/core/test_dispatch_intent.py",
     "tests/core/test_logging.py",
     "tests/core/test_mcp_wrappers.py",
@@ -284,8 +286,8 @@
     "tests/tools/test_beads_dependency_timestamps.py",
     "tests/tools/test_beads_worktree_sync.py"
   ],
-  "declarations_digest": "0b51dc3443168e5ad6b788884863078015fd494f60a70096e0aa3abd866eafdd",
-  "digest": "8dda9e24772cb0b10035f5a81127efe75c311154a69c852e9150226223575d9d",
+  "declarations_digest": "2022a329b80afaaff08cee64df5e24b356f4a956bdac75e1235b8105fe5be906",
+  "digest": "94f85e879f8b5556d2b28d2f3181df0d634f9323a0a2249245526d082a0fb096",
   "global_patterns": [
     "*.md",
     ".claude/skills/*",
@@ -326,7 +328,7 @@
     "tool-call-scorecard.md"
   ],
   "no_readers": [],
-  "producer_sha256": "378ab305c4dc44833cb21b948b14073afdf464f897a32abfe06d4ce5022b2e99",
+  "producer_sha256": "eaccea8c56ec6e88f2789912d95fecbcde49862bf0e543f2b213e0275817fe80",
   "readers": {
     "*-tracker-host-beads-projection-exporter.md": [
       "tests/contracts/test_beads_projection_jsonl_consumer_inventory.py"
@@ -3247,7 +3249,7 @@
       "sha256": "479d001b0cea6d0564fefc50c97de10947d50eac8da940e4e7a80572a953f971"
     },
     "src/butlers/api/owner_auth/http.py": {
-      "sha256": "c52584517b28b7bf334e36e837ef87a43c72439e014c8487fe150d6efc194cdb"
+      "sha256": "06f38653a4e07f2bf80d1cc409c4347455a503fa7fc1bc4728234bdde4732332"
     },
     "src/butlers/api/owner_auth/service.py": {
       "sha256": "512079f23ad7604900cf6603d76e87b8255bcca5be1cc2dd45efc96c8c09dc55"
@@ -3295,7 +3297,7 @@
       "sha256": "9993398dc3fd43475b89c65fd0f9deb8c6d23b5dbdd8169fbfff89c18e5f36b6"
     },
     "src/butlers/api/router_registry.py": {
-      "sha256": "cba84aafb1b188a8d230bea762269794deae892a2e8585799bda23bf3fc0b97f"
+      "sha256": "ea66cefebcc5e5cdb5726ae315235b5718fa1c1256fc35e285af5b16094ebff3"
     },
     "src/butlers/api/routers/__init__.py": {
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -3332,6 +3334,9 @@
     },
     "src/butlers/api/routers/cli_auth.py": {
       "sha256": "945feb556aef8f6731e4fd4e5f2d9072038b93e7daa97d17ff0f686dc2131186"
+    },
+    "src/butlers/api/routers/confirms.py": {
+      "sha256": "7ab15b656068ef4cb363f50c097406fcfa89bb82fa6f74d28334fa2cda36b061"
     },
     "src/butlers/api/routers/contacts.py": {
       "sha256": "d7cb76c416eda636703c1873ecd1c5afa93ace64a271ca6a741337f54ba8c82f"
@@ -3376,7 +3381,7 @@
       "sha256": "6881199cf7fd8eeb61d1cb8e448873f7aa262dd4babd56277b07fba8c7d6a309"
     },
     "src/butlers/api/routers/ingestion_connectors.py": {
-      "sha256": "f19ff4625c7d0a40f23b8733eef637f726bacd74ba73d2215dfde55291b083d8"
+      "sha256": "353eb75ae19d2847c03e20b37236cdc78ef1adf7716bcaabee84f7127cc45161"
     },
     "src/butlers/api/routers/ingestion_events.py": {
       "sha256": "e5546191940704a371c4a1e6c4de7a47e627c695fca31ca12e923e86456ecd07"
@@ -3592,7 +3597,7 @@
       "sha256": "805a5c821c9e8871e218cd7ea9eb67e5d0df948543a462b1e633d9daf7051aab"
     },
     "src/butlers/chronicler/day_close_writer.py": {
-      "sha256": "4331bec8bca9312a8c412ffcee75cd36b3e38abf9720d032437abc8ed128f6ef"
+      "sha256": "f2796d03d78dfcbfee5bee2a8bf998d6603cb62e456a996f9ca109ad4d686344"
     },
     "src/butlers/chronicler/editorial.py": {
       "sha256": "71ee1e78fdf9fd8b4dd91c032ee2ddc8550dde2430b870164d45686c02a31392"
@@ -3674,6 +3679,9 @@
     },
     "src/butlers/connectors/bridge_manager.py": {
       "sha256": "e5e8935d7b02bbbb896fdbec5674714bd547a6bb21069cd4e28711bcbc7d0975"
+    },
+    "src/butlers/connectors/catalog.py": {
+      "sha256": "e2624bc3f41a90c117c2f4e85449c7c30cc075346db5c0a6d9edd4feb11d9991"
     },
     "src/butlers/connectors/cursor_store.py": {
       "sha256": "d58669f477f8f3c58c287c89d9193763d923fde4f071641b786e9d7bc840d9b0"
@@ -3808,7 +3816,7 @@
       "sha256": "c9537fdfe5938faa17a69aa4655d2964a81abcc62fbd54e7fc59acbf62f1fab4"
     },
     "src/butlers/connectors/telegram_bot.py": {
-      "sha256": "d4a809985da00294209ffe1f9ec57e699dfe687aa7b0c281646769aa775188c3"
+      "sha256": "742de6e128137baf1c696ca4aa0b92b84dd9847b9119bc8f76fc11ad1d932816"
     },
     "src/butlers/connectors/telegram_spans.py": {
       "sha256": "a1262629de3eefe9d27dd21abced79dab87fca9c495d754ff3fb3f50cbdab540"
@@ -3908,6 +3916,24 @@
     },
     "src/butlers/core/condition_ledger.py": {
       "sha256": "165f7b07bf4e42fbb752da262638ceb086e5d3d037a48d52c8261ea471b95489"
+    },
+    "src/butlers/core/confirm_admission.py": {
+      "sha256": "a5ee6edb912b1bf2c270756d619d236ee66c0e9f3a12a58d4d5bc0e74a72ab73"
+    },
+    "src/butlers/core/confirm_authority.py": {
+      "sha256": "8040dc8764e2347b296ca248a406436b426aebfeafe548d883cc9c34ee73c2d7"
+    },
+    "src/butlers/core/confirm_delivery.py": {
+      "sha256": "3ace7c7876a8267a69e1ec8117ee3d9959ef10fba69e8e98946e1ec2db3f7743"
+    },
+    "src/butlers/core/confirm_models.py": {
+      "sha256": "410795b4e4284121cce13ca9ece16b7c4126029236e1c26606fc8cdcfa293047"
+    },
+    "src/butlers/core/confirm_service.py": {
+      "sha256": "1cee3498d6e30bc91caf23639778e6cebdab25caa33fd38508a52c168f19ea45"
+    },
+    "src/butlers/core/confirm_tokens.py": {
+      "sha256": "9360a5fda2ec6f1c5a6fa0d383bcafe61af83532472615d0979090a6ebf6984a"
     },
     "src/butlers/core/control_plane_identity.py": {
       "sha256": "8188fca77ad829c7858f9ca4aaca263b956b751a4723e246966e3e808b868e93"
@@ -4402,7 +4428,7 @@
       "sha256": "3ecc8c13536028a7ab10299402be12025db84a28be900555805dcb8a62757186"
     },
     "src/butlers/core_tools/_notifications.py": {
-      "sha256": "6d2a00afb6672fe7e9db9036f00082bedc7a3852f0b803e3bb21f992b77da6e9"
+      "sha256": "399b539d54323a0e75a8b4a9a79948a14baa35b5c56ed5b39f906ae413dcb9bc"
     },
     "src/butlers/core_tools/_qa.py": {
       "sha256": "90472406f486b8d4b6ae8d904b3325695a69bc5c2cacd567bab3b1b4066ea8a6"
@@ -4480,7 +4506,7 @@
       "sha256": "cdc7158c6a68ead1eb0437cbe517f6d237fe16bdb34cb04c3d3173fe2d648597"
     },
     "src/butlers/ingestion_bearer_scrub.py": {
-      "sha256": "5fe4480c237030dee390448132f93c9e82b9a484421f401d5d2c556f16aa12c6"
+      "sha256": "dba63d3354e0c635f6d5bfb1666478741be790222067685a4c146a98e50c1097"
     },
     "src/butlers/ingestion_policy.py": {
       "sha256": "672aca782a55dbf16472c39146a4032616a2600bce5187a5140a51cf55807711"
@@ -5004,6 +5030,9 @@
     "src/butlers/modules/telegram.py": {
       "sha256": "541e38c30266681ae2d2e94d43fdf0cc924fbaa054396d8dd79345165312512e"
     },
+    "src/butlers/modules/telegram_confirms.py": {
+      "sha256": "09641907908d9f711701ff69db5a6ce191a2116ad73204a2e829601717e3c5c0"
+    },
     "src/butlers/modules/whatsapp/__init__.py": {
       "sha256": "b46b8d499e7416988f5c5d7785e81ac7d532bba2753befbf329a030a29a924f2"
     },
@@ -5101,7 +5130,7 @@
       "sha256": "b30f6cf638373ec3d91b2918fb1752b35f1656f74e12d46ab799cb321c240200"
     },
     "src/butlers/testing/resource_readers.py": {
-      "sha256": "378ab305c4dc44833cb21b948b14073afdf464f897a32abfe06d4ce5022b2e99"
+      "sha256": "eaccea8c56ec6e88f2789912d95fecbcde49862bf0e543f2b213e0275817fe80"
     },
     "src/butlers/testing/runtime_probe_control.py": {
       "sha256": "5b264ba5fd47085942ae54eca79cfb2aed5c85ecf649f5f761e44689d4e914ee"
@@ -5394,6 +5423,9 @@
     "tests/api/test_chat_stream.py": {
       "sha256": "cddc6e0225b1269ccc892272292be6225001d1da87461b0fac017fdd0ccd20ea"
     },
+    "tests/api/test_confirms.py": {
+      "sha256": "463c52a4f9f74cf1014f2d6862348ab77139050f2f625ace7c856802b11026a6"
+    },
     "tests/api/test_connector_archive_candidates.py": {
       "sha256": "b13f5b75ca2a4f8fe882a47f1b293d6f43793309706e70d4a1789a4f2e994718"
     },
@@ -5539,7 +5571,7 @@
       "sha256": "3800d3819f3442e08d1410bf81c9233500a6c51b135b5b725c62d8be346ecf55"
     },
     "tests/api/test_ingestion_connectors_available.py": {
-      "sha256": "e983259df26c799bf363b2711af21e30217fa149f8c76cfca07d9b1faf87765b"
+      "sha256": "88cdaa86a7d436a7dff43df3be4ee85ac132805d9ec619ef7252ed326dd33e29"
     },
     "tests/api/test_ingestion_events.py": {
       "sha256": "d6063d6faa62d057e339c362aad92525545d11d03bc2904a218e650d57fa9f3e"
@@ -5788,7 +5820,7 @@
       "sha256": "0d9c5fa327f6df08748ca1202929c30b68d39455fc8e205fdb48af88b51cd5c8"
     },
     "tests/api/test_router_registry.py": {
-      "sha256": "1608d9108348f3ca4f084b37662c60e6956cfe82d6b192fc64dda76c0d436000"
+      "sha256": "ce355501e85a1253e47b205a9e1118debbf238b44f4d04488bfe4347a5f8fc6f"
     },
     "tests/api/test_runtime_config.py": {
       "sha256": "709d4f9f80088da77e42df2bee888c3f9c4686387f7cef1fc2b72ee17fa50149"
@@ -6600,6 +6632,9 @@
     "tests/connectors/test_telegram_bot_approval_callbacks.py": {
       "sha256": "6ab66ecd785f2cfb892be50ff28d49980016defee0963b430cb7b43b148821e7"
     },
+    "tests/connectors/test_telegram_bot_confirms.py": {
+      "sha256": "29ab2a00bce1c5ce8babfb348d64bfb763832536e12323c5188b7395d111a30e"
+    },
     "tests/connectors/test_telegram_bot_connector.py": {
       "sha256": "01d36275f6f6dd7643277401475b4b7a49f2fd19006b7219615f6853d70bbe50"
     },
@@ -6646,7 +6681,7 @@
       "sha256": "810e5ed8d5d7ca3aff098ffe30fb9038d2aa376d75b2b2ea27a1c3d0cbc91200"
     },
     "tests/contracts/test_catalog_publication.py": {
-      "sha256": "d1cf58825a6ba5e136d3562a71662c475b213bcec2a56cb0273e2f1bd29ef2ec"
+      "sha256": "5aad07bcc64dceb80328b8cfafb1b3c7d43df9bba605dab09f345a171e087d2f"
     },
     "tests/contracts/test_channel_egress_ownership.py": {
       "sha256": "4ec8c58b3ff429c450eb6eb6ef123abfaa66cd747d55e8af53637b01aa0d0c40"
@@ -6664,7 +6699,7 @@
       "sha256": "2a43db03723780439c5d438a87c5c6f063cabb21d57ec5c97c62b530a4ba4e7b"
     },
     "tests/contracts/test_ci_test_targets.py": {
-      "sha256": "89eb35b62ad6b82f09332f3aa05755721c4e744e5aba4694fb4fa6d98cbbec85"
+      "sha256": "a9bec9acf05f4b40ea8bdf5832c035a0d9797e6d3f73c2cecb493d8eb303da83"
     },
     "tests/contracts/test_ci_uv_installer.py": {
       "sha256": "88f02eb0fde1711743b79e0df2f9a9e6b5748b4214ab8c2ddea6c8039f0fc1c7"
@@ -6683,6 +6718,9 @@
     },
     "tests/contracts/test_connector_as_transport.py": {
       "sha256": "27d13a554b84092d187b825648e2654d2f1424e4b2c3355cb14115b92698921b"
+    },
+    "tests/contracts/test_connector_catalog.py": {
+      "sha256": "4006fbe4b8786360142c77f211669c8d9645e3ca72fc39000136c242bfc067a7"
     },
     "tests/contracts/test_connector_no_fact_writes.py": {
       "sha256": "53c94bb525e5bc34746fb981dad1dc12f26822ec4cbceb9cbf460f34696ccb55"
@@ -6787,7 +6825,7 @@
       "sha256": "0ed6181434cebe16c5296ad987c586ee116e2b9167db762bf54affccff8bb3fd"
     },
     "tests/contracts/test_schema_reach.py": {
-      "sha256": "2756d8c8e9d64d5bc38608d05d48a8edd534c5e86dc85287fb29bf9ae561f180"
+      "sha256": "0df6c91435f9bf51bff9a9108d47668d6313071d907a4600b5052543f6477a6d"
     },
     "tests/contracts/test_session_lifecycle.py": {
       "sha256": "3f987ec600946af134f6da3718f361d798509ffe4395bab62f89e5d82d28004a"
@@ -6998,6 +7036,15 @@
     },
     "tests/core/test_compute_session_cost_usd.py": {
       "sha256": "31681a024fe9fba663c287324a72ab467e2165bd02a5627eb00e872bd8677484"
+    },
+    "tests/core/test_confirm_authority.py": {
+      "sha256": "188fb5b41ec833414357d6037d273aa87dcc891fd32a475bcec54d657d76f10b"
+    },
+    "tests/core/test_confirm_models.py": {
+      "sha256": "db68e099dc416d24e2cecd58178d7e8a07f5c4c5b699f55fc257a17e1ce609a7"
+    },
+    "tests/core/test_confirm_tokens.py": {
+      "sha256": "39ec76aec82a87e68c76846c230bf965b07d95dd6e1348045992c576b4b4dcb3"
     },
     "tests/core/test_connector_liveness.py": {
       "sha256": "dfae082284b560c360f6211c3ecd2f06e1a432d7d1fa8656f6d2ed51c85f8bfa"
@@ -7511,6 +7558,9 @@
     },
     "tests/daemon/test_notify_attention_ledger.py": {
       "sha256": "9eaa7097bde7acb82e1a7a2bd77f73e66a161a3b4c5c51a168e730dfbd1afb91"
+    },
+    "tests/daemon/test_notify_confirm.py": {
+      "sha256": "33f8dfec36011d8d525eb76be8138adeb0ee4b0c84ee685fd4876489ff7a0b48"
     },
     "tests/daemon/test_notify_entity_id.py": {
       "sha256": "b096252fc59d5492be8d4e6de59523ea001beada0b2d5fbdead212df03ad18e9"
@@ -8042,6 +8092,9 @@
     },
     "tests/integration/test_sessions_degraded_meta_db.py": {
       "sha256": "cd8151530e2e84f2c565dbad6113b768b5cf87a5944b9e1cc559437c9daa9eda"
+    },
+    "tests/integration/test_signed_confirms.py": {
+      "sha256": "a53991adade78794e5e6741aad8ed30657db7725fe05c37ed28237dee76b87aa"
     },
     "tests/integration/test_switchboard_dropped_known_watch_job.py": {
       "sha256": "34704fcc9601a591bb915e5ef5d4be292ccec256333c8c6c54cf15b386edcf8c"
@@ -8928,6 +8981,9 @@
     "tests/modules/test_switchboard_module_tools.py": {
       "sha256": "1c3a8d11a628cb12d8fd842fd021d825555fa3f1445be0a9f4bf0ae77a777724"
     },
+    "tests/modules/test_telegram_confirms.py": {
+      "sha256": "a8ddc2c036dc343b3c7e6708b7ecbd68f0b094b20f517de1bb8288ef9c444f27"
+    },
     "tests/polling.py": {
       "sha256": "cd4267e63840e567f1c27db9f6291970dc8ff9df965e52d9b11b2ad6cf75ebe5"
     },
@@ -9121,13 +9177,13 @@
       "sha256": "dfdaef63eaf7360de40e2879844a823859e18617cc4984b77058e54818517b2d"
     },
     "tests/scripts/test_pg_dump_backup.py": {
-      "sha256": "cb5c3d1f70cea356a74fe576c6fe482f29d6a2179f337c5d9d4938f8d18c273d"
+      "sha256": "da5c30f98a18dfb9593469792d88a381a8c45b90df5dbd07f686b7ac6158f373"
     },
     "tests/scripts/test_pg_dump_run_sentinel.py": {
-      "sha256": "d266d85a9cf64002778a4f0a228d6c497a65d62296e1d96fd9958d74be5fcbde"
+      "sha256": "fa7ae3d31ef5db6c2b7daca94b32cc39d5c4dd8ef3e2335d7bc667f43adcc3e3"
     },
     "tests/scripts/test_pg_restore_definer_ownership.py": {
-      "sha256": "16c1c142a6f84c46ab7a79ca66d6cf54fca8ea7dc33aa95b8a433fb28040f81f"
+      "sha256": "cf3fc43f2262c09c3819e1a4dac6b591b086b97df24278c3a1c90a938266dda7"
     },
     "tests/scripts/test_pre_push.py": {
       "sha256": "673068edaf12993d9f3be2f8425b4d5002f06148d0667f72dce13420b7cdef24"
@@ -9202,13 +9258,16 @@
       "sha256": "e74cfc97a6da9797791aa604b04f48dd6d23d4bd993a87b7c5eb256d96d8bcfc"
     },
     "tests/switchboard/goal_ledger_fixtures.py": {
-      "sha256": "1fa53a0abec8a4dc398c159d5038a21b2c317dda3b3d6f99122ded64c9482a15"
+      "sha256": "454099dac9a63f61b6b53a62b823a1c90157ff7bb2376afaefb4343a3abaf3f3"
     },
     "tests/switchboard/insight/__init__.py": {
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "tests/switchboard/insight/test_prepared_action_door.py": {
       "sha256": "99c7387c12a4e4e358639acc7044cbaa96b3dfb9648d34486a542ed275bf660b"
+    },
+    "tests/switchboard/test_confirm_admission.py": {
+      "sha256": "d63c2ee9051f79fcc9e618ec08bba021fe73377234ccdbe08b758f18bf7946e2"
     },
     "tests/switchboard/test_goal_admission.py": {
       "sha256": "afd1820f4172da106fb4138a8c769a00a423cae31b7133bea890c47f30aa0bb4"
@@ -9262,7 +9321,7 @@
       "sha256": "5232e7548e5261769634717199cea54488352b511cf6303c8c040dab32d0f7bc"
     },
     "tests/test_ingestion_bearer_scrub.py": {
-      "sha256": "81a856a5054edbbb40152f2439505d8cc1e3f76fbfb846dc3e44df21cfe860a9"
+      "sha256": "d2c26009d54847efb0b0f338e2e3fddbfa26a605c646161600acb64ce0cf3e7e"
     },
     "tests/test_passive_interaction_sender_identity.py": {
       "sha256": "286f670e1d7643b15dc980a1fe8cef36859a4a2e923a785a87c8e257762076b5"
@@ -9295,7 +9354,7 @@
       "sha256": "0c64c0ee40b350c2bdfd37a29fb11669a822cd20a1f0ddf9f432e89a26058204"
     },
     "tests/testing/test_scoped_runner.py": {
-      "sha256": "8a88ffd90f22007bd56f30824a7ef32e9c39770f088ff844c5acd7b6218b2dd1"
+      "sha256": "7260f169bcd4b2a79f4799688844cb39bae1e32a2cbece22114159c62c107b04"
     },
     "tests/testing/test_source_test_map.py": {
       "sha256": "03b9aea86ccda8ffefdbfd00996017a8d054bb2c32e0a176a76e6c2cc7714fbb"
@@ -9645,6 +9704,7 @@
     "tests/api/test_callback_route_allowlist.py",
     "tests/api/test_channel_defaults.py",
     "tests/api/test_chat_stream.py",
+    "tests/api/test_confirms.py",
     "tests/api/test_connector_archive_candidates.py",
     "tests/api/test_connector_detail_sections.py",
     "tests/api/test_connector_device_liveness.py",
@@ -10024,6 +10084,7 @@
     "tests/connectors/test_steam_config_store.py",
     "tests/connectors/test_steam_connector.py",
     "tests/connectors/test_telegram_bot_approval_callbacks.py",
+    "tests/connectors/test_telegram_bot_confirms.py",
     "tests/connectors/test_telegram_bot_connector.py",
     "tests/connectors/test_telegram_bot_gap_interview.py",
     "tests/connectors/test_telegram_bot_untrusted_spans.py",
@@ -10051,6 +10112,7 @@
     "tests/contracts/test_codex_auth_generation_plan_contract.py",
     "tests/contracts/test_commitment_grace_rfc_contract.py",
     "tests/contracts/test_connector_as_transport.py",
+    "tests/contracts/test_connector_catalog.py",
     "tests/contracts/test_connector_no_fact_writes.py",
     "tests/contracts/test_contacts_schema_retired.py",
     "tests/contracts/test_context_bus.py",
@@ -10152,6 +10214,9 @@
     "tests/core/test_chronicler_day_close_refresh_tool.py",
     "tests/core/test_commitments.py",
     "tests/core/test_compute_session_cost_usd.py",
+    "tests/core/test_confirm_authority.py",
+    "tests/core/test_confirm_models.py",
+    "tests/core/test_confirm_tokens.py",
     "tests/core/test_connector_liveness.py",
     "tests/core/test_connector_liveness_threshold_contract.py",
     "tests/core/test_context_bus.py",
@@ -10322,6 +10387,7 @@
     "tests/daemon/test_module_state.py",
     "tests/daemon/test_non_messenger_approval_command_contracts.py",
     "tests/daemon/test_notify_attention_ledger.py",
+    "tests/daemon/test_notify_confirm.py",
     "tests/daemon/test_notify_entity_id.py",
     "tests/daemon/test_notify_msg_context.py",
     "tests/daemon/test_notify_react.py",
@@ -10484,6 +10550,7 @@
     "tests/integration/test_schema_isolation.py",
     "tests/integration/test_sender_authentication_roundtrip.py",
     "tests/integration/test_sessions_degraded_meta_db.py",
+    "tests/integration/test_signed_confirms.py",
     "tests/integration/test_switchboard_dropped_known_watch_job.py",
     "tests/integration/test_switchboard_routing_tools_search_path.py",
     "tests/integration/test_switchboard_routing_verdict_log_migration.py",
@@ -10771,6 +10838,7 @@
     "tests/modules/test_sensitivity.py",
     "tests/modules/test_steam_client.py",
     "tests/modules/test_switchboard_module_tools.py",
+    "tests/modules/test_telegram_confirms.py",
     "tests/reconciliation/test_incident_2026_04_21_replay.py",
     "tests/relationship/test_contact_info_write_block.py",
     "tests/relationship/test_contact_search_by_label.py",
@@ -10852,6 +10920,7 @@
     "tests/smoke/test_route_inbox_recovery.py",
     "tests/smoke/test_scaffolding.py",
     "tests/switchboard/insight/test_prepared_action_door.py",
+    "tests/switchboard/test_confirm_admission.py",
     "tests/switchboard/test_goal_admission.py",
     "tests/switchboard/test_goal_attempt_binding.py",
     "tests/switchboard/test_goal_ingest_postgres.py",

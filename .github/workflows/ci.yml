@@ -37,13 +37,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Match the actual affected/measurement interpreter before observing
-      # planner resources; stdlib-only routing still installs no dependencies.
+      # The single composite owns pinned Python and uv for every role.
+      # Route skips dependency/cache preparation; its classifier is stdlib only.
       - name: Set up the source-pinned planner Python
         if: github.event_name == 'pull_request'
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.UV_PYTHON }}
+        uses: ./.github/actions/ci-python-environment
 
       - name: Filter changed paths
         id: filter

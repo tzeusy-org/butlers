@@ -13,7 +13,7 @@
   "literal_data": {
     "src/butlers/testing/resource_readers.py": {
       "witness": {
-        "sha256": "378ab305c4dc44833cb21b948b14073afdf464f897a32abfe06d4ce5022b2e99"
+        "sha256": "eaccea8c56ec6e88f2789912d95fecbcde49862bf0e543f2b213e0275817fe80"
       },
       "patterns": [
         "*.md",

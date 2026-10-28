@@ -247,9 +247,9 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
         for step in environment["runs"]["steps"]
         if step.get("uses") == "actions/setup-python@v6"
     )
-    assert planner_python["uses"] == "actions/setup-python@v6"
+    assert planner_python["uses"] == PYTHON_ENVIRONMENT_ACTION
     assert planner_python["if"] == "github.event_name == 'pull_request'"
-    assert planner_python["with"] == {"python-version": "${{ env.UV_PYTHON }}"}
+    assert not planner_python.get("with")
     assert workflow["env"]["UV_PYTHON"] == runtime_python["with"]["python-version"]
     assert (
         route_steps.index(planner_python)
@@ -257,6 +257,77 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
         < next(index for index, step in enumerate(route_steps) if step.get("id") == "classify")
     )
     assert jobs["route"]["timeout-minutes"] == 2
+    assert "inputs" not in environment
+    assert not runtime_python.get("if")
+    # Execute the composite's real shell bodies against a command-boundary spy.
+    # This proves invocation/role policy, not a hosted Python/uv installation.
+    command_log = tmp_path / "composite-calls.jsonl"
+    fake_bin = tmp_path / "composite-bin"
+    fake_bin.mkdir()
+    python_spy = fake_bin / "python3"
+    python_spy.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "with open(os.environ['COMPOSITE_CALLS'], 'a') as stream:\n"
+        "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "if sys.argv[1:] == ['scripts/ci_environment.py', 'key']:\n"
+        "    print('synthetic-environment-key')\n"
+    )
+    python_spy.chmod(0o755)
+    roles = {
+        name
+        for name, job in jobs.items()
+        if any(step.get("uses") == PYTHON_ENVIRONMENT_ACTION for step in job.get("steps", []))
+    }
+    assert "route" in roles
+    for role in sorted(roles | {"route-extra"}):
+        command_log.write_text("")
+        for step in environment["runs"]["steps"]:
+            condition = step.get("if")
+            if condition:
+                decisions = {
+                    "github.job != 'route'": role != "route",
+                    "github.job == 'route'": role == "route",
+                }
+                assert condition in decisions, "unknown composite role condition"
+                if not decisions[condition]:
+                    continue
+            if "run" in step:
+                subprocess.run(
+                    ["bash", "-euo", "pipefail", "-c", step["run"]],
+                    cwd=REPO_ROOT,
+                    env={
+                        **os.environ,
+                        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                        "COMPOSITE_CALLS": str(command_log),
+                        "GITHUB_OUTPUT": str(tmp_path / "composite-output"),
+                    },
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+        calls = [json.loads(line) for line in command_log.read_text().splitlines()]
+        expected = [["scripts/install_ci_uv.py"]]
+        if role != "route":
+            expected += [
+                ["scripts/ci_environment.py", "key"],
+                ["scripts/ci_environment.py", "prepare"],
+            ]
+        assert calls == expected, (role, calls)
+    dependency_steps = {
+        "Compute exact environment cache key",
+        "Restore advisory environment cache",
+        "Install dependencies",
+    }
+    assert {
+        step["name"] for step in environment["runs"]["steps"] if step.get("if")
+    } == dependency_steps
+    assert all(
+        step.get("if") == "github.job != 'route'"
+        for step in environment["runs"]["steps"]
+        if step["name"] in dependency_steps
+    )
     gate = next(step for step in jobs["check"]["steps"] if step.get("id") == "gate")
     heavy = {name for name in jobs if name.startswith(("check-unit-", "check-integration-"))}
     full = {

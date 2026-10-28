@@ -291,6 +291,22 @@ def _consumer_frontier(bodies: dict[str, bytes], tests: list[str], source: str) 
                         "run_module",
                     }
                 )
+        direct_calls = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
+        if any(
+            id(node) not in direct_calls
+            and (
+                isinstance(node, ast.Attribute)
+                and node.attr
+                in {"import_module", "spec_from_file_location", "run_path", "run_module"}
+                or isinstance(node, ast.Name)
+                and isinstance(node.ctx, ast.Load)
+                and node.id in loader_aliases
+            )
+            for node in ast.walk(tree)
+        ):
+            # An assigned, passed or container-held loader can escape the
+            # finite direct-call analysis. Never certify a smaller frontier.
+            opaque.add(path)
         package = path.removeprefix("src/").removesuffix(".py").replace("/", ".")
         if Path(path).name != "__init__.py":
             package = package.rpartition(".")[0]

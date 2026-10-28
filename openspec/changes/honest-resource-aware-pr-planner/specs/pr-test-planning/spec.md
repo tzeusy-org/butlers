@@ -169,4 +169,3 @@ Scope: v1-mandatory
 - **WHEN** a checker or planner integration moves
 - **THEN** its actual enforcing survivor and old-to-new behavior mapping are recorded and the full terminal gate remains required
 - **AND** all S1/S2/S3 and folded slices remain accounted for; implementation landing does not close unavailable future observation obligations
-

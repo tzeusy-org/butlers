@@ -899,6 +899,8 @@ class TelegramBotConnector:
                 # Approval callbacks are control-plane decisions, never
                 # ingest.v1 events. Keep the older chronicler ``cgi:`` callback
                 # path additive, then benignly acknowledge all other buttons.
+                if await self._maybe_handle_confirm_callback(update):
+                    return
                 if await self._maybe_handle_approval_callback(update):
                     return
                 if await self._maybe_handle_gap_interview_callback(update):
@@ -1038,6 +1040,55 @@ class TelegramBotConnector:
                     status="error",
                     error_detail=str(exc),
                 )
+
+    async def _maybe_handle_confirm_callback(self, update: dict[str, Any]) -> bool:
+        """Forward authenticated informational taps; never call a domain or approval sink."""
+        from butlers.core.confirm_tokens import verify_confirm_token
+
+        callback = update.get("callback_query")
+        if not isinstance(callback, dict):
+            return False
+        token = callback.get("data")
+        if not isinstance(token, str) or not token.startswith("cfm1:"):
+            return False
+        callback_id = str(callback.get("id", ""))
+        sender = callback.get("from")
+        message = callback.get("message")
+        chat = message.get("chat") if isinstance(message, dict) else None
+        sender_id = sender.get("id") if isinstance(sender, dict) else None
+        chat_id = chat.get("id") if isinstance(chat, dict) else None
+        secret = self._config.approval_callback_secret
+        credential = self._config.approval_callback_connector_token
+        toast = ""
+        if (
+            sender_id is not None
+            and chat_id is not None
+            and secret
+            and credential
+            and self._config.internal_api_url
+            and verify_confirm_token(token, chat_id=str(chat_id), secret=secret) is not None
+        ):
+            toast = "Couldn't record that right now. Please try again."
+            try:
+                response = await self._http_client.post(
+                    f"{self._config.internal_api_url.rstrip('/')}/api/confirms/callback",
+                    headers={"X-Butlers-Confirm-Callback-Token": credential},
+                    json={"token": token, "sender_id": str(sender_id), "chat_id": str(chat_id)},
+                )
+                if response.status_code == 200:
+                    data = response.json().get("data", {})
+                    status = data.get("status")
+                    toast = {
+                        "answered": "Answer recorded. Applying it now.",
+                        "expired": "This question has expired.",
+                        "already_handled": "Already handled.",
+                        "refused": "",
+                    }.get(status, toast)
+            except Exception:  # No callback data/credentials in exception logs.
+                logger.warning("Confirm callback service unavailable")
+        if callback_id:
+            await self._answer_callback_query(callback_id, toast)
+        return True
 
     async def _maybe_handle_approval_callback(self, update: dict[str, Any]) -> bool:
         """Apply one signed owner approval callback without entering ingestion.

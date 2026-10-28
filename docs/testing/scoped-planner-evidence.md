@@ -38,6 +38,10 @@ unobserved consumer is absent; empty or stale consumer claims never authorize
 NONE. Current helper frontiers remain unproved unless those independent
 obligations are actually met.
 
+A loader assigned to another name, passed as a value or held in a container
+escapes finite direct-call analysis. That source remains opaque even with a
+fresh source-set witness, so a declared list cannot omit its real consumers.
+
 Every static test target must exist. Only an actual Git deletion may select its
 surviving parent; an unrelated missing static target must not widen into a
 single-runner full job. Root-wide parents, unsupported helpers, contacts backfill,
@@ -54,6 +58,13 @@ over current marker selection and `.test_durations`. Fresh group totals and lane
 budgets, dedicated smoke, guards, frontend, go-bridge and protected merge_group
 are retained. Retired computed full opaque topology and live manifests are not
 restored. Count reconciliation is not per-item execution evidence.
+
+Route obtains its pinned Python and uv from the same no-input composite as
+execution jobs, before the changed-path filter. Only the exact route role skips
+environment cache/key preparation and dependency installation; all execution
+roles retain frozen checkout-owned repair. The classifier still uses only the
+standard library. Its unchanged two-minute bound is not measured setup or cost
+evidence, and this wiring does not admit a profile or enable SCOPED execution.
 
 The affected job additionally collects all configured roots and selected files
 before and after execution. Complete references must agree; projecting their

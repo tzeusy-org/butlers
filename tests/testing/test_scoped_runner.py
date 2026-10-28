@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -647,6 +648,48 @@ def test_resource_reader_guard_and_actual_selected_child(tmp_path: Path) -> None
     )
     assert restored.returncode == 0 and "3 passed" in restored.stdout
 
+    # A freshly witnessed consumer list cannot omit a real importer merely
+    # because its importlib loader travelled through an ordinary assignment.
+    alias_consumer = "tests/api/test_helper_alias.py"
+    for loader in (
+        "import importlib\nloader = importlib.import_module\n",
+        "from importlib import import_module as original\nloader = original\n",
+        "import importlib\nloaders = {'chosen': importlib.import_module}\n"
+        "loader = loaders['chosen']\n",
+    ):
+        _write(
+            repo,
+            alias_consumer,
+            "from pathlib import Path\n"
+            + loader
+            + "module = loader('tests.' + 'resource_helper')\n"
+            "ROOT = Path(__file__).resolve().parents[2]\n"
+            "def test_alias_reader():\n"
+            "    assert module.read_from(ROOT / 'docs/guide.md') == 'ready', "
+            "'alias-reader-reached'\n",
+        )
+        entry["source_set_digest"] = resource_readers.digest(
+            {
+                path: {"sha256": hashlib.sha256((repo / path).read_bytes()).hexdigest()}
+                for path in resource_readers.sources(repo)
+            }
+        )
+        _write(repo, resource_readers.DECLARATIONS, json.dumps(declarations))
+        assert build_test_resource_map.main(["--root", str(repo)]) == 2
+    _write(repo, "docs/guide.md", "broken")
+    alias_command = [sys.executable, "-m", "pytest", *helper_consumers, alias_consumer, "-q"]
+    alias_failed = subprocess.run(
+        alias_command, cwd=repo, capture_output=True, text=True, env=environment, timeout=30
+    )
+    assert alias_failed.returncode == 1 and "4 failed" in alias_failed.stdout
+    assert "alias-reader-reached" in alias_failed.stdout
+    _write(repo, "docs/guide.md", "ready")
+    alias_restored = subprocess.run(
+        alias_command, cwd=repo, capture_output=True, text=True, env=environment, timeout=30
+    )
+    assert alias_restored.returncode == 0 and "4 passed" in alias_restored.stdout
+    (repo / alias_consumer).unlink()
+
     # A direct reader cannot be relabelled as literal data, nor can a fresh
     # importer be hidden behind the previous complete-source witness.
     declarations["literal_data"]["tests/api/test_reader.py"] = {
@@ -658,8 +701,6 @@ def test_resource_reader_guard_and_actual_selected_child(tmp_path: Path) -> None
     assert build_test_resource_map.main(["--root", str(repo)]) == 2
     declarations["literal_data"].pop("tests/api/test_reader.py")
     _write(repo, resource_readers.DECLARATIONS, json.dumps(declarations))
-    import hashlib
-
     for code in (
         "import importlib\ndef test_dynamic_reader(name):\n    importlib.import_module(name)\n",
         "from importlib import import_module as load\n"
