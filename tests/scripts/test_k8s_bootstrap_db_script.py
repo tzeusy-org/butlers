@@ -102,4 +102,4 @@ def test_deploy_target_bootstraps_the_deployed_tag_before_helm(fake_repo: Path) 
     assert lines[1].startswith(
         '../../../scripts/k8s/record-deploy.sh "butlers-dev" "abc123def456" "butlers" -- '
     )
-    assert '--set image.tag=abc123def456 --set frontendImage.tag=abc123def456-dev' in lines[1]
+    assert "--set image.tag=abc123def456 --set frontendImage.tag=abc123def456-dev" in lines[1]
