@@ -117,6 +117,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import partial as bind_call
 from typing import Any
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -438,15 +439,10 @@ async def _supersede_pending_retries(
         return await cancel_pending_notifications_matching_line(
             pool, butler_name="switchboard", line_token=dedup_marker
         )
-    except Exception:
+    except Exception as exc:
         if required:
             raise
-        logger.warning(
-            "secrets_lifecycle_check: failed to supersede prior pending retry "
-            "envelopes for marker=%s",
-            dedup_marker,
-            exc_info=True,
-        )
+        logger.warning("secrets_lifecycle_check: retry supersede failed: %s", type(exc).__name__)
         return 0
 
 
@@ -573,11 +569,8 @@ async def _enqueue_deferred_envelope(
             envelope=envelope,
             deliver_at=deliver_at,
         )
-    except Exception:
-        logger.warning(
-            "secrets_lifecycle_check: failed to enqueue deferred envelope",
-            exc_info=True,
-        )
+    except Exception as exc:
+        logger.warning("secrets_lifecycle_check: retry enqueue failed: %s", type(exc).__name__)
         return None
 
 
@@ -874,16 +867,22 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
             # the only place in this module that needs the live dispatch
             # path — mirrors the same local-import pattern used by
             # butlers.scheduled_jobs._build_switchboard_insight_notify_fn.
+            from butlers.jobs.owner_notify import deliver_notification
             from butlers.tools.switchboard.notification.deliver import deliver
 
-            deliver_result = await deliver(
-                shared_pool,
-                channel="telegram",
-                message=message,
-                recipient=recipient,
-                source_butler="switchboard",
-                metadata={"origin": _LIFECYCLE_ACTOR, "credential_key": snapshot.key},
+            attempt = await deliver_notification(
+                bind_call(
+                    deliver,
+                    shared_pool,
+                    channel="telegram",
+                    message=message,
+                    recipient=recipient,
+                    source_butler="switchboard",
+                    metadata={"origin": _LIFECYCLE_ACTOR, "credential_key": snapshot.key},
+                ),
+                propagate_errors=True,
             )
+            deliver_result = attempt.data
 
             if terminal := terminal_telegram_metadata(deliver_result):
                 partial = True
@@ -911,7 +910,7 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                     metadata=terminal,
                 )
                 continue
-            if deliver_result.get("status") == "failed":
+            if not attempt.delivered:
                 errors += 1
                 # Retryable: recipient + message are already resolved above,
                 # so (unlike no_recipient_configured) a later retry can
@@ -996,9 +995,7 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                     )
         except Exception as exc:
             errors += 1
-            logger.exception(
-                "secrets_lifecycle_check: unexpected error notifying for key=%s", snapshot.key
-            )
+            logger.warning("secrets_lifecycle_check: notification failed: %s", type(exc).__name__)
             # A genuine terminal failure — must be recorded, not silent, or an
             # exception deep in the dispatch path (e.g. a DB error) reads
             # identically to quiet-hours discipline in the ledger.

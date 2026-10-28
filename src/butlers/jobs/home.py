@@ -57,7 +57,6 @@ Design reference: openspec/changes/archive/home-butler-enhancements/
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -296,7 +295,6 @@ async def _read_entity_snapshot(
 
 
 _HOME_NOTIFY_ORIGIN = "home"
-_HOME_NOTIFY_TIMEOUT_S = 30
 
 
 async def _check_owner_notify_suppression(pool: asyncpg.Pool) -> str | None:
@@ -351,126 +349,24 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
             here reach the owner as literal ``&lt;b&gt;``, and pre-escaping
             here double-escapes ``&`` and ``<``.
     """
-    suppress_reason = await _check_owner_notify_suppression(pool)
-    if suppress_reason is not None:
-        logger.info("_send_notify: suppressed (%s)", suppress_reason)
-        await record_attention_event(
-            pool,
-            origin_butler=_HOME_NOTIFY_ORIGIN,
-            source="notify",
-            outcome="suppressed",
-            channel="telegram",
-            intent="send",
-            priority="medium",
-            reason=suppress_reason,
-        )
-        return
+    from butlers.jobs.owner_notify import OwnerNotifyBoundary, send_owner_telegram
 
-    recipient = await resolve_owner_telegram_recipient(pool)
-    if not recipient:
-        logger.warning(
-            "_send_notify: no telegram_chat_id configured for owner — skipping notification"
-        )
-        await record_attention_event(
-            pool,
-            origin_butler=_HOME_NOTIFY_ORIGIN,
-            source="notify",
-            outcome="failed",
-            channel="telegram",
-            intent="send",
-            priority="medium",
-            reason="no_recipient_configured",
-        )
-        return
-
-    client = get_current_switchboard_client()
-    if client is None:
-        logger.warning("_send_notify: switchboard client unavailable — skipping notification")
-        await record_attention_event(
-            pool,
-            origin_butler=_HOME_NOTIFY_ORIGIN,
-            source="notify",
-            outcome="failed",
-            channel="telegram",
-            intent="send",
-            priority="medium",
-            reason="switchboard_client_unavailable",
-        )
-        return
-
-    notify_request = {
-        "schema_version": "notify.v1",
-        "origin_butler": _HOME_NOTIFY_ORIGIN,
-        "delivery": {
-            "intent": "send",
-            "channel": "telegram",
-            "message": message,
-            "recipient": recipient,
-        },
-    }
-    try:
-        result = await asyncio.wait_for(
-            client.call_tool(
-                "deliver",
-                {"source_butler": _HOME_NOTIFY_ORIGIN, "notify_request": notify_request},
-            ),
-            timeout=_HOME_NOTIFY_TIMEOUT_S,
-        )
-    except Exception as exc:
-        logger.warning("_send_notify: deliver() call failed: %s", exc, exc_info=True)
-        await record_attention_event(
-            pool,
-            origin_butler=_HOME_NOTIFY_ORIGIN,
-            source="notify",
-            outcome="failed",
-            channel="telegram",
-            intent="send",
-            priority="medium",
-            reason=f"delivery_error:{exc}",
-        )
-        return
-
-    if result.is_error:
-        error_text = str(result.content[0].text) if result.content else "Unknown error"
-        logger.warning("_send_notify: deliver() returned an error: %s", error_text)
-        await record_attention_event(
-            pool,
-            origin_butler=_HOME_NOTIFY_ORIGIN,
-            source="notify",
-            outcome="failed",
-            channel="telegram",
-            intent="send",
-            priority="medium",
-            reason=f"delivery_error:{error_text}",
-        )
-        return
-
-    data = result.data
-    if isinstance(data, dict) and data.get("status") == "failed":
-        error_text = str(data.get("error", "Delivery failed"))
-        logger.warning("_send_notify: deliver() reported failure: %s", error_text)
-        await record_attention_event(
-            pool,
-            origin_butler=_HOME_NOTIFY_ORIGIN,
-            source="notify",
-            outcome="failed",
-            channel="telegram",
-            intent="send",
-            priority="medium",
-            reason=f"delivery_error:{error_text}",
-        )
-        return
-
-    logger.info("_send_notify: notification delivered to chat_id=%r", recipient)
-    await record_attention_event(
+    await send_owner_telegram(
         pool,
         origin_butler=_HOME_NOTIFY_ORIGIN,
-        source="notify",
-        outcome="delivered",
-        channel="telegram",
-        intent="send",
-        priority="medium",
-        notification_ref=data.get("notification_id") if isinstance(data, dict) else None,
+        message=message,
+        log_context="_send_notify",
+        boundary=OwnerNotifyBoundary(
+            lambda pool, **_: _check_owner_notify_suppression(pool),
+            resolve_owner_telegram_recipient,
+            get_current_switchboard_client,
+            record_attention_event,
+            lambda result: (
+                f"delivery_error:{result.error}"
+                if result.reason == "delivery_error"
+                else result.reason
+            ),
+        ),
     )
 
 

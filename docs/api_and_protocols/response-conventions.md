@@ -208,6 +208,14 @@ prove that normalization. Historical repair remains blocked by the separate
 [serving-writer evidence procedure](../operations/notification-metadata-repair.md); a green API or
 writer regression is not serving-deployment evidence.
 
+### Notification delivery failures
+
+The common owner-notify adapter preserves structured Switchboard error fields and public notify
+status/error/retryability contracts. Raised exceptions are represented by their type and safe
+classification, without their message, owner identity, recipient or notification body in logs.
+Partial/uncertain Telegram outcomes remain terminal failures for durable success bookkeeping;
+the helper performs no retry or fallback.
+
 ## Implementation Notes
 
 - Connector summaries are owned by `ApiResponse[ConnectorSummaryResponse]` and its explicit nested

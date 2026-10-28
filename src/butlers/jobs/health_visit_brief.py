@@ -29,7 +29,6 @@ and is retried on the next run while the appointment is still inside the lead wi
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import statistics
@@ -47,7 +46,6 @@ from butlers.core.state import decode_jsonb
 from butlers.core.tool_call_capture import get_current_switchboard_client
 from butlers.credential_store import resolve_owner_telegram_recipient
 from butlers.jobs.briefing import owner_briefing_zone
-from butlers.telegram_api import terminal_telegram_metadata
 from butlers.telegram_text import PartialDeliveryLatch
 
 logger = logging.getLogger(__name__)
@@ -61,7 +59,6 @@ DEFAULT_LOOKBACK_DAYS = 90
 _RUN_LOCK_KEY = 7_411_550_015
 
 _ORIGIN = "health"
-_NOTIFY_TIMEOUT_S = 30
 _MAX_TITLE_CHARS = 80
 
 DISCLAIMER = (
@@ -572,62 +569,20 @@ async def send_owner_brief(pool: asyncpg.Pool, message: str) -> str:
     ``notify.v1`` send to that one recipient: there is no communicate effect.
     """
 
-    async def _record(outcome: str, reason: str | None = None, ref: Any = None) -> None:
-        await record_attention_event(
-            pool,
-            origin_butler=_ORIGIN,
-            source="notify",
-            outcome=outcome,
-            channel="telegram",
-            intent="send",
-            priority="medium",
-            reason=reason,
-            notification_ref=ref,
-        )
+    from butlers.jobs.owner_notify import OwnerNotifyBoundary, send_owner_telegram
 
-    reason = await check_owner_notify_suppression(pool, log_context="health_visit_brief")
-    if reason is not None:
-        await _record("suppressed", reason)
-        return SUPPRESSED
-    recipient = await resolve_owner_telegram_recipient(pool)
-    if not recipient:
-        await _record("failed", "no_recipient_configured")
-        return FAILED
-    client = get_current_switchboard_client()
-    if client is None:
-        await _record("failed", "switchboard_client_unavailable")
-        return FAILED
-    notify_request = {
-        "schema_version": "notify.v1",
-        "origin_butler": _ORIGIN,
-        "delivery": {
-            "intent": "send",
-            "channel": "telegram",
-            "message": message,
-            "recipient": recipient,
-        },
-    }
-    try:
-        result = await asyncio.wait_for(
-            client.call_tool(
-                "deliver", {"source_butler": _ORIGIN, "notify_request": notify_request}
-            ),
-            timeout=_NOTIFY_TIMEOUT_S,
-        )
-    except Exception as exc:
-        logger.warning("health_visit_brief: deliver() call failed: %s", type(exc).__name__)
-        await _record("failed", f"delivery_error:{type(exc).__name__}")
-        return FAILED
-    data = result.data
-    if terminal := terminal_telegram_metadata(data):
-        outcome = PARTIAL if terminal.get("partial_delivery") else UNCERTAIN
-        await _record("failed", "telegram_" + outcome)
-        return outcome
-    if result.is_error or (isinstance(data, dict) and data.get("status") == "failed"):
-        await _record("failed", "delivery_error")
-        return FAILED
-    await _record("delivered", ref=data.get("notification_id") if isinstance(data, dict) else None)
-    return DELIVERED
+    return await send_owner_telegram(
+        pool,
+        origin_butler=_ORIGIN,
+        message=message,
+        log_context="health_visit_brief",
+        boundary=OwnerNotifyBoundary(
+            check_owner_notify_suppression,
+            resolve_owner_telegram_recipient,
+            get_current_switchboard_client,
+            record_attention_event,
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -1253,48 +1253,36 @@ class WhatsAppUserClientConnector:
         ``butlers.background``). Never raises — an alerting failure must
         never affect ingestion.
         """
-        notify_request = {
-            "schema_version": "notify.v1",
-            "origin_butler": _CONNECTOR_TYPE,
-            "delivery": {
-                "intent": "send",
-                "channel": "telegram",
-                "message": (
-                    "WhatsApp appears to have been unlinked (remote unlink or "
-                    "long-offline expiry) and cannot reconnect on its own. "
-                    "Ingestion is paused until you re-pair — open the dashboard "
-                    "WhatsApp settings and use 'Pair device' to scan a new QR code."
-                ),
-            },
-        }
-        delivered = False
-        try:
-            result = await self._mcp_client.call_tool(
+        from butlers.jobs.owner_notify import deliver_notification, owner_notify_request
+
+        notify_request = owner_notify_request(
+            origin_butler=_CONNECTOR_TYPE,
+            message=(
+                "WhatsApp appears to have been unlinked (remote unlink or "
+                "long-offline expiry) and cannot reconnect on its own. "
+                "Ingestion is paused until you re-pair — open the dashboard "
+                "WhatsApp settings and use 'Pair device' to scan a new QR code."
+            ),
+        )
+        result = await deliver_notification(
+            lambda: self._mcp_client.call_tool(
                 "deliver",
                 {"source_butler": _CONNECTOR_TYPE, "notify_request": notify_request},
             )
-            if isinstance(result, dict) and result.get("status") == "failed":
-                logger.warning(
-                    "WhatsApp invalidated-session alert was not delivered: %s",
-                    result.get("error"),
-                )
-            else:
-                delivered = True
-        except Exception:
-            logger.exception("WhatsApp invalidated-session alert failed to send")
-
-        if delivered and self._db_pool is not None:
+        )
+        if self._db_pool is not None:
             from butlers.core.attention_ledger import record_attention_event
 
             await record_attention_event(
                 self._db_pool,
                 origin_butler=_CONNECTOR_TYPE,
                 source="notify",
-                outcome="delivered",
+                outcome="delivered" if result.delivered else "failed",
                 channel="telegram",
                 intent="send",
                 priority="high",
-                reason="whatsapp_invalidated_session",
+                reason="whatsapp_invalidated_session" if result.delivered else result.reason,
+                notification_ref=result.notification_ref,
             )
 
     async def _maybe_perform_pair_reset(self) -> None:

@@ -5,7 +5,6 @@ notify is only registered for non-STAFFER butlers.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import uuid
@@ -975,15 +974,14 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         }
 
             delivery_message = message if message is not None else ""
-            notify_request: dict[str, Any] = {
-                "schema_version": "notify.v1",
-                "origin_butler": butler_name,
-                "delivery": {
-                    "intent": intent,
-                    "channel": channel,
-                    "message": delivery_message,
-                },
-            }
+            from butlers.jobs.owner_notify import owner_notify_request
+
+            notify_request = owner_notify_request(
+                origin_butler=butler_name,
+                channel=channel,
+                message=delivery_message,
+            )
+            notify_request["delivery"]["intent"] = intent
             if emoji is not None:
                 notify_request["delivery"]["emoji"] = emoji
             if resolved_recipient is not None:
@@ -1022,10 +1020,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
 
                 try:
                     _prefs = await get_delivery_preferences(_notify_pool, butler_name)
-                except Exception:
-                    # Table may not exist yet or pool unavailable; deliver immediately.
-                    logger.exception(
-                        "notify() failed to fetch delivery preferences; delivering immediately"
+                except Exception as exc:
+                    # Preserve the existing preference fallback, without private DB text.
+                    logger.warning(
+                        "notify() delivery preferences unavailable: %s", type(exc).__name__
                     )
                     _prefs = None
                 if _prefs is not None:
@@ -1080,10 +1078,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                                 "channel": channel,
                                 "priority": priority,
                             }
-                        except Exception:
-                            # If we cannot persist, fall through to immediate delivery.
-                            logger.exception(
-                                "notify() failed to defer notification; delivering immediately"
+                        except Exception as exc:
+                            # Preserve this existing preference-queue fallback.
+                            logger.warning(
+                                "notify() preference deferral failed: %s", type(exc).__name__
                             )
 
             # Every owner-directed routine send uses the same quiet/sleep
@@ -1175,12 +1173,8 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         # classified for a durable hold, an unavailable queue is
                         # retryable.  Do not turn a failed persistence boundary
                         # into immediate delivery or destructive suppression.
-                        logger.exception(
-                            "notify() could not persist owner-default deferred notification "
-                            "(reason=%s channel=%s butler=%s)",
-                            _defer_reason,
-                            channel,
-                            butler_name,
+                        logger.warning(
+                            "notify() could not persist owner-default deferred notification"
                         )
                         try:
                             await _record_cause_event(
@@ -1197,7 +1191,6 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         except Exception:
                             logger.warning(
                                 "notify() could not record deferred persistence failure",
-                                exc_info=True,
                             )
                         return {
                             "status": "error",
@@ -1240,7 +1233,6 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         logger.warning(
                             "notify() deferred notification %s but could not record its ledger row",
                             _notif_id,
-                            exc_info=True,
                         )
 
                     _deferred_result: dict[str, Any] = {
@@ -1264,6 +1256,17 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     return _deferred_result
 
             if client is None and butler_name != "switchboard":
+                await _record_cause_event(
+                    _notify_pool,
+                    origin_butler=butler_name,
+                    source="notify",
+                    outcome="failed",
+                    channel=channel,
+                    intent=intent,
+                    priority=priority,
+                    reason="switchboard_client_unavailable",
+                    session_id=_ledger_session_id,
+                )
                 return {
                     "status": "error",
                     "error": (
@@ -1325,7 +1328,6 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     except Exception:
                         logger.debug(
                             "publish_fleet_event('notification') failed (non-fatal)",
-                            exc_info=True,
                         )
 
             async def _record_failed_attention(
@@ -1368,11 +1370,14 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     session_id=_ledger_session_id,
                 )
 
-            # Switchboard self-delivery: call deliver() directly instead of
-            # proxying through switchboard_client (which is None on switchboard).
-            if client is None and butler_name == "switchboard":
+            from butlers.jobs.owner_notify import deliver_notification
+            from butlers.telegram_api import terminal_telegram_metadata
+
+            direct = client is None and butler_name == "switchboard"
+            if direct:
                 pool = daemon.db.pool if daemon.db is not None else None
                 if pool is None:
+                    await _record_failed_attention("database_unavailable")
                     return {
                         "status": "error",
                         "error": "Database not available for direct delivery.",
@@ -1381,145 +1386,77 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     deliver as switchboard_deliver,
                 )
 
-                try:
-                    result = await switchboard_deliver(
+                attempt = await deliver_notification(
+                    lambda: switchboard_deliver(
                         pool,
                         source_butler=butler_name,
                         notify_request=notify_request,
                     )
-                    status = result.get("status", "sent")
-                    if status == "failed":
-                        await _record_failed_attention(
-                            f"delivery_error:{result.get('error', 'unknown')}",
-                            retryable=bool(result.get("retryable", False)),
-                            notification_ref=(
-                                result.get("notification_id") if isinstance(result, dict) else None
-                            ),
-                        )
-                        return {
-                            "status": "error",
-                            "error": result.get("error", "Delivery failed"),
-                        }
-                    await _emit_notification_event()
-                    await _record_cause_event(
-                        pool,
-                        origin_butler=butler_name,
-                        source="notify",
-                        outcome="delivered",
-                        channel=channel,
-                        intent=intent,
-                        priority=priority,
-                        notification_ref=result.get("notification_id")
-                        if isinstance(result, dict)
-                        else None,
-                        session_id=_ledger_session_id,
-                    )
-                    return {"status": "ok", "result": result}
-                except Exception as exc:
-                    logger.warning(
-                        "notify() direct deliver failed for switchboard: %s",
-                        exc,
-                        exc_info=True,
-                    )
-                    await _record_failed_attention(f"unexpected_error:{type(exc).__name__}")
-                    return {"status": "error", "error": f"Direct delivery failed: {exc}"}
+                )
+            else:
+                attempt = await deliver_notification(
+                    lambda: client.call_tool("deliver", deliver_args)
+                )
 
-            _NOTIFY_TIMEOUT_S = 30
-            try:
-                result = await asyncio.wait_for(
-                    client.call_tool("deliver", deliver_args),
-                    timeout=_NOTIFY_TIMEOUT_S,
-                )
-                # FastMCP call_tool returns a CallToolResult
-                if result.is_error:
-                    # Extract error text from the result content
-                    error_text = str(result.content[0].text) if result.content else "Unknown error"
-                    await _record_failed_attention(f"delivery_error:{error_text}")
-                    return {"status": "error", "error": error_text}
-                # Check inner payload for delivery-level failures (e.g. validation
-                # errors from Switchboard/Messenger that don't raise MCP errors).
-                data = result.data
-                if isinstance(data, dict) and data.get("status") == "failed":
-                    await _record_failed_attention(
-                        f"delivery_error:{data.get('error', 'unknown')}",
-                        retryable=bool(data.get("retryable", False)),
-                        notification_ref=data.get("notification_id"),
+            if not attempt.delivered:
+                kind = attempt.exception_type
+                if kind is not None:
+                    if direct:
+                        reason = f"unexpected_error:{kind}"
+                        error = f"Direct delivery failed: {kind}"
+                    elif kind == "TimeoutError":
+                        reason = "delivery_error:switchboard_timeout_30s"
+                        error = (
+                            "Switchboard call timed out after 30s. "
+                            "The Switchboard may be overloaded or unresponsive. "
+                            "This is a transient error — retry after a brief delay."
+                        )
+                    elif attempt.retryable:
+                        reason = f"delivery_error:switchboard_unreachable:{kind}"
+                        error = (
+                            f"Switchboard unreachable: {kind}. "
+                            "The Switchboard process may have stopped or restarted. "
+                            "This is a transient error — retry after a brief delay."
+                        )
+                    else:
+                        reason = f"unexpected_error:{kind}"
+                        error = (
+                            f"Switchboard call failed: {kind}. "
+                            "If this persists, check that all required parameters "
+                            "(channel, message, intent) are correct."
+                        )
+                else:
+                    reason = (
+                        attempt.reason
+                        if attempt.outcome != "failed"
+                        else f"delivery_error:{attempt.error}"
                     )
-                    return {
-                        "status": "error",
-                        "error": data.get("error", "Delivery failed"),
-                        "error_class": data.get("error_class", "delivery_error"),
-                        "retryable": data.get("retryable", False),
-                        "notification_id": data.get("notification_id"),
-                    }
-                await _emit_notification_event()
-                await _record_cause_event(
-                    daemon.db.pool if daemon.db is not None else None,
-                    origin_butler=butler_name,
-                    source="notify",
-                    outcome="delivered",
-                    channel=channel,
-                    intent=intent,
-                    priority=priority,
-                    notification_ref=(
-                        data.get("notification_id") if isinstance(data, dict) else None
-                    ),
-                    session_id=_ledger_session_id,
-                )
-                return {"status": "ok", "result": data}
-            except TimeoutError:
-                logger.warning(
-                    "notify() timed out after %ds for butler %s",
-                    _NOTIFY_TIMEOUT_S,
-                    butler_name,
-                )
+                    error = attempt.error
                 await _record_failed_attention(
-                    f"delivery_error:switchboard_timeout_{_NOTIFY_TIMEOUT_S}s",
-                    retryable=True,
+                    reason,
+                    retryable=attempt.retryable,
+                    notification_ref=attempt.notification_ref,
                 )
-                return {
-                    "status": "error",
-                    "error": (
-                        f"Switchboard call timed out after {_NOTIFY_TIMEOUT_S}s. "
-                        "The Switchboard may be overloaded or unresponsive. "
-                        "This is a transient error — retry after a brief delay."
-                    ),
-                    "retryable": True,
-                }
-            except (ConnectionError, OSError) as exc:
-                logger.warning(
-                    "notify() could not reach Switchboard for butler %s: %s",
-                    butler_name,
-                    exc,
-                    exc_info=True,
-                )
-                await _record_failed_attention(
-                    f"delivery_error:switchboard_unreachable:{type(exc).__name__}",
-                    retryable=True,
-                )
-                return {
-                    "status": "error",
-                    "error": (
-                        f"Switchboard unreachable: {exc}. "
-                        "The Switchboard process may have stopped or restarted. "
-                        "This is a transient error — retry after a brief delay."
-                    ),
-                    "retryable": True,
-                }
-            except Exception as exc:
-                logger.warning(
-                    "notify() failed for butler %s: %s",
-                    butler_name,
-                    exc,
-                    exc_info=True,
-                )
-                await _record_failed_attention(f"unexpected_error:{type(exc).__name__}")
-                return {
-                    "status": "error",
-                    "error": (
-                        f"Switchboard call failed: {exc}. "
-                        "If this persists, check that all required parameters "
-                        "(channel, message, intent) are correct."
-                    ),
-                    "retryable": False,
-                }
+                response = {"status": "error", "error": error}
+                if not direct or kind is None:
+                    response.update(
+                        error_class=attempt.data.get("error_class", "delivery_error"),
+                        retryable=attempt.retryable,
+                        notification_id=attempt.notification_ref,
+                    )
+                response.update(terminal_telegram_metadata(attempt.data))
+                return response
+
+            await _emit_notification_event()
+            await _record_cause_event(
+                _notify_pool,
+                origin_butler=butler_name,
+                source="notify",
+                outcome="delivered",
+                channel=channel,
+                intent=intent,
+                priority=priority,
+                notification_ref=attempt.notification_ref,
+                session_id=_ledger_session_id,
+            )
+            return {"status": "ok", "result": attempt.data}
