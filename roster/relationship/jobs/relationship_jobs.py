@@ -1117,6 +1117,10 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
               AND sender.identity IS NOT NULL
               AND sender.identity NOT IN ('unknown', 'multiple')
               AND COALESCE(request_context ->> 'interaction_eligible', 'true') != 'false'
+              -- Out-of-office replies, bounces and other automated mail are not the
+              -- contact reaching out.  Ingest classifies them and persists only
+              -- raw_payload.control.automated_kind, so read it from there.
+              AND COALESCE(raw_payload -> 'control' ->> 'automated_kind', '') = ''
             GROUP BY
                 COALESCE(
                     request_context ->> 'external_conversation_id',
@@ -3150,7 +3154,7 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
         )
 
     exact_pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for name_key, group in name_groups.items():
+    for _name_key, group in name_groups.items():
         if len(group) < 2:
             continue
         stats["exact_groups_found"] += 1
@@ -3484,8 +3488,8 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
     also drains the historical backlog on each run.
 
     Only a *clean orphan* is touched -- provenance-tagged, not already tombstoned, and with
-    no references acquired since creation (mirrors the safety gate in
-    ``scripts/cleanup_bulk_email_identity_proposals.py``): no ``entity_facts`` as subject or
+    no references acquired since creation (the safety gate of the retired one-shot
+    ``cleanup_bulk_email_identity_proposals`` script): no ``entity_facts`` as subject or
     object-entity (an approved has-email
     proposal writes such a fact, so approved/graduated entities are excluded and left
     intact) and no live (pending/approved/executed) ``pending_actions`` subject. (Contact

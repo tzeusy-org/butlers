@@ -84,6 +84,7 @@ function ResearchRow({
 }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const deleteMutation = useDeleteResearch();
+  const displayTitle = note.title.trim() ? note.title : "Untitled note";
 
   async function handleDelete() {
     try {
@@ -103,6 +104,7 @@ function ResearchRow({
           type="button"
           onClick={onToggleExpand}
           aria-expanded={expanded}
+          aria-label={`${expanded ? "Collapse" : "Expand"} ${displayTitle}`}
           className="group focus-visible:ring-focus w-full min-w-0 text-left focus-visible:outline-none focus-visible:ring-1"
         >
           <span className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
@@ -113,7 +115,7 @@ function ResearchRow({
               )}
               aria-hidden="true"
             />
-            <span className="text-foreground text-sm font-medium">{note.title}</span>
+            <span className="text-foreground text-sm font-medium">{displayTitle}</span>
             {note.tags.map((tag) => (
               <span
                 key={tag}
@@ -148,7 +150,7 @@ function ResearchRow({
             variant="outline"
             size="sm"
             onClick={() => onEdit(note)}
-            aria-label={`Edit ${note.title}`}
+            aria-label={`Edit ${displayTitle}`}
           >
             Edit
           </Button>
@@ -157,7 +159,7 @@ function ResearchRow({
             size="sm"
             className="text-destructive hover:text-destructive"
             onClick={() => setConfirmingDelete(true)}
-            aria-label={`Delete ${note.title}`}
+            aria-label={`Delete ${displayTitle}`}
           >
             Delete
           </Button>
@@ -185,9 +187,9 @@ function ResearchRow({
       <AlertDialog open={confirmingDelete} onOpenChange={setConfirmingDelete}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete {note.title}?</AlertDialogTitle>
+            <AlertDialogTitle>Delete {displayTitle}?</AlertDialogTitle>
             <AlertDialogDescription>
-              This removes {note.title} from your research list. The record is
+              This removes {displayTitle} from your research list. The record is
               retained for history but will no longer appear here.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -213,7 +215,7 @@ function ResearchRow({
 // ResearchTracker
 // ---------------------------------------------------------------------------
 
-export default function ResearchTracker() {
+export default function ResearchTracker({ draftPersistence = false }: { draftPersistence?: boolean }) {
   const [search, setSearch] = useState("");
   const [tagFilter, setTagFilter] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -391,6 +393,7 @@ export default function ResearchTracker() {
             </DialogDescription>
           </DialogHeader>
           <ResearchForm
+            draftPersistence={draftPersistence}
             research={editing ? formTarget : undefined}
             onDone={() => setFormTarget(null)}
             onCancel={() => setFormTarget(null)}

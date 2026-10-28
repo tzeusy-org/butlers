@@ -33,6 +33,18 @@ def _ambient_dnd_action_identity(ctx: Context | None) -> uuid.UUID | None:
     return uuid.uuid5(_DND_ACTION_NAMESPACE, f"general.context.dnd.v1:{normalized_request_id}")
 
 
+async def _require_bound_owner(pool: Any) -> None:
+    """Resolve the actual invocation; neither tool text nor a locator is authority."""
+    from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
+    from butlers.modules.memory.content_authority import is_owner_class, resolve_content_authority
+
+    if not get_current_runtime_session_routing_context():
+        raise PermissionError("Context mutation requires a verified bound owner invocation")
+    authority = await resolve_content_authority(pool)
+    if not is_owner_class(authority.authority):
+        raise PermissionError("Context mutation requires a verified bound owner invocation")
+
+
 def _dnd_receipt_payload(receipt: Any) -> dict[str, Any]:
     """Expose durable DND ordering evidence without raw DND audit content."""
     return {
@@ -119,6 +131,7 @@ def register_tools(mcp: Any, module: Any) -> None:
         callers cannot put user text into its receipt/audit. Raises on an
         invalid or unauthorized signal type.
         """
+        await _require_bound_owner(module._get_pool())
         if signal_type == "dnd":
             if hours is not None:
                 raise ValueError(
@@ -163,6 +176,7 @@ def register_tools(mcp: Any, module: Any) -> None:
         is omitted, it is derived from the injected MCP request context. The
         durable correlation is always derived from that UUID.
         """
+        await _require_bound_owner(module._get_pool())
         clear_kwargs: dict[str, Any] = {
             "butler_name": "general",
             "signal_type": signal_type,

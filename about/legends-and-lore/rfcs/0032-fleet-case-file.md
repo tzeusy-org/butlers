@@ -3,6 +3,7 @@
 **Status:** Decision record; seven source slices landed, runtime conformance partial.
 **Date:** 2026-09-05
 **Canonical contract:** [Fleet case file](../../../openspec/specs/fleet-case-file/spec.md)
+Governing doctrine: [vision.md rule 3, Switchboard remains the broker for cross-domain capabilities, with no direct schema access](../../heart-and-soul/vision.md#non-negotiable-rules) and [architecture.md, The Core Loop](../../heart-and-soul/architecture.md#the-core-loop) (persist the goal and evidence outside model context).
 
 ## Context
 

@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-03-24
+Governing doctrine: [v1.md, What v1 Is](../../heart-and-soul/v1.md#what-v1-is) (OpenTelemetry observability is a named v1 capability) and [vision.md rule 4, the daemon must be testable, debuggable and predictable](../../heart-and-soul/vision.md#non-negotiable-rules).
 
 ## Summary
 

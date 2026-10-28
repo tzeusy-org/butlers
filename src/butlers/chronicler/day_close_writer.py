@@ -43,20 +43,25 @@ prose still persists — provenance is best-effort).
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from functools import lru_cache
 from typing import Any
+from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import asyncpg
 
 from butlers.chronicler.day_close_cache import day_close_cache_key, lock_day_close_cache_tuple
 from butlers.chronicler.editorial import record_coverage_witness
-from butlers.chronicler.prose_admission import classify_day_close_candidate
+from butlers.chronicler.prose_admission import INADMISSIBLE_PROSE, classify_day_close_candidate
 from butlers.chronicler.storage import upsert_tier2_cache
+from butlers.core.tool_call_capture import fingerprint_tool_call_payload
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +75,222 @@ class DayCloseCacheWriteOutcome:
 
     invalid_reason: str | None = None
     quiet: bool = False
+    coverage_recorded: bool = False
+
+
+@dataclass(frozen=True)
+class DayCloseNarration:
+    """Selected prose, never an assertion that notification delivery occurred."""
+
+    prose: str | None
+    invalid: bool = False
+    notification_id: str | None = None
+    channel: str | None = None
+    deferred: bool = False
+
+
+@lru_cache(maxsize=1)
+def _notify_signature() -> inspect.Signature | None:
+    """Read the actual registered schema without invoking or registering MCP.
+
+    The recorder only receives Python function objects. No handler body, pool,
+    transport or model is invoked. Unsupported registration/schema changes
+    refuse narration selection; no guessed historical defaults are substituted.
+    """
+    from butlers.core_tools._base import ToolContext
+    from butlers.core_tools._notifications import register_notification_tools
+
+    handlers = {}
+
+    def decorate(_group, **tool_kwargs):
+        def record(fn):
+            if fn.__name__ == "notify" and tool_kwargs != {"exclude_args": ["priority"]}:
+                raise ValueError("unsupported notify registration policy")
+            handlers[fn.__name__] = fn
+            return fn
+
+        return record
+
+    context = ToolContext(
+        daemon=None,
+        pool=None,
+        spawner=None,
+        butler_name="chronicler",
+        butler_type="butler",
+        is_switchboard=False,
+        is_messenger=False,
+        route_metrics=None,
+    )
+    try:
+        register_notification_tools(context, None, decorate)
+        signature = inspect.signature(handlers["notify"])
+    except Exception:
+        # Registration is inspected, never used as a live traffic fallback.
+        return None
+    supported = {
+        "channel",
+        "message",
+        "recipient",
+        "subject",
+        "intent",
+        "options",
+        "timeout_seconds",
+        "on_timeout_value",
+        "emoji",
+        "request_context",
+        "entity_id",
+        "priority",
+        "msg_context",
+        "_why",
+        "_evidence",
+        "_blast_radius",
+        "_reversibility",
+    }
+    if set(signature.parameters) != supported or any(
+        p.kind not in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        for p in signature.parameters.values()
+    ):
+        return None
+    return signature
+
+
+def _bound_notify_input(calls: list[dict[str, Any]], fingerprint: Any) -> dict[str, Any] | None:
+    """Match one value carrier to the owning execution's full-input hash.
+
+    Merged input may come from the parser, even beside a captured outcome.
+    Neither its own hash nor its mere presence proves capture provenance.
+    Recompute with the real handler's defaults and the capture algorithm; no
+    fallback encoding or arbitrary parser-only execution authority is accepted.
+    """
+    if not isinstance(fingerprint, str) or re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
+        return None
+    signature = _notify_signature()
+    if signature is None:
+        return None
+    matches = []
+    for call in calls:
+        # Same first-payload convention as the existing capture/parser merge.
+        payload = next(
+            (
+                call[k]
+                for k in ("input", "args", "arguments", "parameters")
+                if call.get(k) is not None
+            ),
+            None,
+        )
+        if isinstance(payload, str):
+
+            def unique_keys(pairs):
+                value = {}
+                for key, item in pairs:
+                    if key in value:
+                        raise ValueError("duplicate argument")
+                    value[key] = item
+                return value
+
+            try:
+                payload = json.loads(payload, object_pairs_hook=unique_keys)
+            except (ValueError, TypeError):
+                continue
+        if not isinstance(payload, dict):
+            continue
+        try:
+            bound = signature.bind(**payload)
+            bound.apply_defaults()
+        except TypeError:
+            continue
+        candidate = dict(bound.arguments)
+        if fingerprint_tool_call_payload(candidate) == fingerprint:
+            matches.append(candidate)
+    return matches[0] if len(matches) == 1 else None
+
+
+def select_day_close_narration(
+    tool_calls: list[dict[str, Any]],
+    *,
+    output: str | None,
+    session_id: str | None,
+    target_date: str,
+    timezone: str,
+) -> DayCloseNarration:
+    """Prefer one executed owner-default notify in this owning session result.
+
+    ``tool_calls`` must be the owning SpawnerResult's executed capture, not
+    arbitrary records assembled from another session. Parser records have no
+    outcome and cannot prove execution. Their values are usable only when
+    default-expanded against the real registered handler and matched to the
+    trusted executed full-input fingerprint. Multiple executions remain ambiguous,
+    even if their messages are identical: input equality is not execution ID.
+    Explicit recipient/entity/reply targets cannot prove owner-default intent.
+    Without notify, genuine direct/silent output retains its existing contract.
+    A deferred message is intended narration, never delivery evidence.
+    """
+    calls = [c for c in tool_calls if isinstance(c, dict) and c.get("name") == "notify"]
+    if not calls:
+        return DayCloseNarration(output)
+    executed = [c for c in calls if "outcome" in c]
+    if (
+        len(executed) != 1
+        or _validated_canonical_bundle_capture(
+            tool_calls, target_date_iso=target_date, target_timezone=timezone
+        )
+        is None
+    ):
+        return DayCloseNarration(output, invalid=True)
+    call = executed[0]
+    args = _bound_notify_input(calls, call.get("input_fingerprint"))
+    result = call.get("result")
+    if (
+        call.get("outcome") != "success"
+        or not isinstance(args, dict)
+        or not isinstance(result, dict)
+        or result.get("status") not in ("ok", "deferred")
+        or args.get("intent", "send") != "send"
+        or args.get("channel") not in (None, "telegram", "email")
+        or args.get("recipient") is not None
+        or args.get("entity_id") is not None
+        or args.get("request_context") is not None
+        or ("session_id" in call and call["session_id"] != session_id)
+        or not isinstance(args.get("message"), str)
+    ):
+        return DayCloseNarration(output, invalid=True)
+    message = args["message"]
+    if (
+        classify_day_close_candidate(message, date_label=target_date, expected_date_iso=target_date)
+        is not None
+    ):
+        return DayCloseNarration(output, invalid=True)
+    deferred = result["status"] == "deferred"
+    if deferred:
+        notification_id = result.get("notification_id")
+        channel = result.get("channel")
+        if channel not in ("telegram", "email") or (
+            args.get("channel") is not None and channel != args["channel"]
+        ):
+            return DayCloseNarration(output, invalid=True)
+    else:
+        channel = args.get("channel")
+        delivered = result.get("result")
+        if not isinstance(delivered, dict) or delivered.get("status") != "sent":
+            return DayCloseNarration(output, invalid=True)
+        # The delivery log is best-effort; absent ID is not evidence of no send.
+        notification_id = delivered.get("notification_id")
+    required_ids = [session_id]
+    if deferred or notification_id is not None:
+        required_ids.append(notification_id)
+    for identity in required_ids:
+        if not isinstance(identity, str):
+            return DayCloseNarration(output, invalid=True)
+        try:
+            UUID(identity)
+        except ValueError:
+            return DayCloseNarration(output, invalid=True)
+    return DayCloseNarration(
+        message,
+        notification_id=notification_id,
+        channel=channel,
+        deferred=deferred,
+    )
 
 
 def _coerce_zone(tz: str | ZoneInfo | None) -> ZoneInfo:
@@ -372,6 +593,13 @@ async def write_day_close_cache(
 
     Called by the scheduler tick after ``chronicler_day_close`` dispatches.
 
+    One executed owner-default notify narration bound to this session and its
+    canonical day/timezone bundle takes precedence over the assistant's status
+    tail. Deferred narration is intended text, not delivery proof. Without a
+    notify call, genuine direct and silent/manual prose keeps its established
+    admission path. Ambiguous or unproven notify records cannot authorize a
+    fallback retrospective or replace an existing admissible cache.
+
     Records a covered-local-day witness (``editorial.record_coverage_witness``)
     only after exactly one successful canonical ``chronicler_day_close_bundle``
     capture binds dict input/result values to the target date and timezone and
@@ -446,9 +674,11 @@ async def write_day_close_cache(
         target_timezone=tz_name,
     )
 
+    coverage_recorded = False
     if validated_capture is not None and _has_list_shaped_bundle_evidence(validated_capture):
         try:
             await record_coverage_witness(pool, day_date, tz_name)
+            coverage_recorded = True
         except Exception:
             logger.exception(
                 "day_close_writer: failed to record coverage witness for %s", day_date.isoformat()
@@ -460,10 +690,20 @@ async def write_day_close_cache(
             day_date.isoformat(),
         )
 
-    if not output or not output.strip():
+    selection = select_day_close_narration(
+        tool_calls,
+        output=output,
+        session_id=str(getattr(result, "session_id", ""))
+        if not isinstance(result, dict)
+        else str(result.get("session_id", "")),
+        target_date=day_date.isoformat(),
+        timezone=tz_name,
+    )
+    output = selection.prose
+    if not selection.invalid and (not output or not output.strip()):
         if validated_capture is not None and _is_empty_bundle_result(validated_capture):
             logger.debug("day_close_writer: validated empty bundle closed a quiet day")
-            return DayCloseCacheWriteOutcome(quiet=True)
+            return DayCloseCacheWriteOutcome(quiet=True, coverage_recorded=coverage_recorded)
         logger.debug("day_close_writer: output is empty without a valid quiet bundle")
         return
 
@@ -474,9 +714,13 @@ async def write_day_close_cache(
         target_date_iso=day_date.isoformat(),
         target_timezone=tz_name,
     )
-    prose = output.strip()
-    invalid_reason = classify_day_close_candidate(
-        prose, date_label=date_label, expected_date_iso=day_date.isoformat()
+    prose = (output or "").strip()
+    invalid_reason = (
+        INADMISSIBLE_PROSE
+        if selection.invalid
+        else classify_day_close_candidate(
+            prose, date_label=date_label, expected_date_iso=day_date.isoformat()
+        )
     )
 
     try:
@@ -516,7 +760,9 @@ async def write_day_close_cache(
                             cache_key,
                             invalid_reason,
                         )
-                        return DayCloseCacheWriteOutcome(invalid_reason=invalid_reason)
+                        return DayCloseCacheWriteOutcome(
+                            invalid_reason=invalid_reason, coverage_recorded=coverage_recorded
+                        )
                     # No existing admissible row: persist the invalid candidate
                     # for audit/recovery. The reader never returns its prose.
                     await upsert_tier2_cache(
@@ -534,7 +780,9 @@ async def write_day_close_cache(
                         cache_key,
                         invalid_reason,
                     )
-                    return DayCloseCacheWriteOutcome(invalid_reason=invalid_reason)
+                    return DayCloseCacheWriteOutcome(
+                        invalid_reason=invalid_reason, coverage_recorded=coverage_recorded
+                    )
 
                 await upsert_tier2_cache(
                     conn,
@@ -551,7 +799,7 @@ async def write_day_close_cache(
             cache_key,
             len(provenance_refs),
         )
-        return DayCloseCacheWriteOutcome()
+        return DayCloseCacheWriteOutcome(coverage_recorded=coverage_recorded)
     except Exception:
         logger.exception(
             "day_close_writer: failed to write tier2_cache[%s] — cache miss will occur",

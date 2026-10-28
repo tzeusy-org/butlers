@@ -107,9 +107,14 @@ commitment only when the owner declares it. The next calendar prep envelope for 
 carries the commitment.
 
 Three consecutive unanswered batches drop the cadence to once a week (the batch that crosses the
-threshold says so); any answer restores the daily cadence. Not built yet: the dashboard Debrief
-card with a pinned reply (replies go through ordinary routing today), a "work commitments" filter
-on the condition ledger, and deriving `sphere` from endpoint custody.
+threshold says so); any answer restores the daily cadence.
+
+The Calendar page shows a Debrief card fed by `GET /api/relationship/meeting-debriefs/pending`,
+which returns what `meeting_debrief_pending` returns (a failed read is `debriefs_available: false`,
+never an empty list). A reply from the card is sent as `"<number>: <text>"` to the Relationship
+pinned dashboard conversation, so it reaches the `meeting-debrief` skill without classification.
+Not built yet: a "work commitments" filter on the condition ledger, and deriving `sphere` from
+endpoint custody.
 
 ## Implementation Notes
 
@@ -143,8 +148,8 @@ gate remain required; source inspection and collection alone are not runtime pro
   flood approvals. Cardinality cannot be read from `entity_predicate_registry`, which covers only
   the `entity_facts` store.
 - `run_interaction_sync_job` reads `switchboard.message_inbox` directly, so `scripts/init-db.sql`
-  grants `butler_relationship_rw` `USAGE` on schema `switchboard`, and migration `core_269` (with
-  `sw_047` on a fresh database) grants it `SELECT` on `switchboard.message_inbox` alone, with no
+  grants `butler_relationship_rw` `USAGE` on schema `switchboard`, and migration `core_283` (with
+  `sw_054` on a fresh database) grants it `SELECT` on `switchboard.message_inbox` alone, with no
   schema-wide read or default privilege.
 - Calendar interaction sync reads `relationship.calendar_events` explicitly through the
   Relationship role. It consumes the local Calendar module projection, including its attendee
@@ -176,10 +181,10 @@ gate remain required; source inspection and collection alone are not runtime pro
 The registered `upcoming_dates` tool selects only `public.entities.posture = 'active'`
 in both contact-anchored and contactless entity-anchored UNION arms. Existing listed/archive
 mapping, ordering, anniversaries and year wrapping remain in effect. The 08:00
-`upcoming-dates-check` prompt calls `upcoming_dates(days_ahead=7)`: an empty successful read
-is silent, and a failed read must not become a reminder or an all-clear via a fallback query.
-This is a read-time selection contract; prompt registration does not prove an LLM obeyed it,
-a notification was delivered, or a deployed fleet was exercised.
+`upcoming-dates-check` job calls `upcoming_dates(days_ahead=7)`: an empty successful read
+is silent, and a failed read raises, so it never becomes a reminder or an all-clear. A
+successful read with dates sends one templated message through the owner-notify boundary
+(`roster/relationship/tools/reminders.py`).
 
 Memorial, quiet and no_contact people remain available to appropriate history/display readers.
 Reactivation makes the date eligible again. The separately adopted calendar remembrance overlay

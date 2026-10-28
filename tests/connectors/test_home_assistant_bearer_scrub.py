@@ -35,6 +35,7 @@ from butlers.connectors.home_assistant_rest import (
     build_rest_state_changed_event,
 )
 from butlers.connectors.home_assistant_wellness import WellnessClassifier
+from butlers.testing.clock import FakeClock
 
 pytestmark = pytest.mark.unit
 
@@ -126,10 +127,12 @@ async def _ordinary_consumer_outputs():
         _wire as wire_original,
     )
 
+    clock = FakeClock(datetime(2026, 10, 15, 9, tzinfo=UTC))
+
     class FixedClock(datetime):
         @classmethod
         def now(cls, tz=None):
-            return cls(2026, 10, 15, 9, tzinfo=UTC).astimezone(tz)
+            return cls.fromtimestamp(clock.now().timestamp(), tz=UTC).astimezone(tz)
 
     cases = {
         "decimal": _make_binary_sensor_event(
@@ -225,7 +228,7 @@ async def test_ha_content_is_withheld_at_submission_and_history_consumers():
 
         queued = []
 
-        async def capture_split(event_type, event, transport):
+        async def capture_split(event_type, event, transport, *, queued=queued):
             queued.append(event)
 
         reorder = HAEventReorderBuffer(submit=capture_split, window_s=0, max_size=100)

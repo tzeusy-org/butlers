@@ -47,7 +47,7 @@ def _compute_mastery_score(qualities: list[int]) -> float:
     # Use the last n weights from _WEIGHTS_5 (newest-biased)
     weights = _WEIGHTS_5[-n:]
     total_weight = sum(weights)
-    weighted_sum = sum(q * w for q, w in zip(recent, weights))
+    weighted_sum = sum(q * w for q, w in zip(recent, weights, strict=True))
     score = weighted_sum / (total_weight * 5.0)
     return max(0.0, min(1.0, score))
 

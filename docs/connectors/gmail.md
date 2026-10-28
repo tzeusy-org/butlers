@@ -173,6 +173,22 @@ The Gmail connector implements the optional backfill polling protocol for dashbo
 - Switchboard enforces the job's `daily_cost_cap_cents` and transitions it to `cost_capped` when
   exceeded (`roster/switchboard/tools/backfill/connector.py`).
 
+### Lifecycle Controls
+
+HTTP and MCP pause/cancel/resume delegate to
+`roster/switchboard/tools/backfill/controls.py`. Each transition compares the
+observed status atomically, so a concurrent terminal transition cannot be overwritten.
+
+| Action | Allowed current states | Result | Idempotent current state |
+| --- | --- | --- | --- |
+| Pause | pending, active | paused | paused |
+| Cancel | pending, active, paused, error, cost_capped | cancelled (sets completed_at) | cancelled |
+| Resume | paused | pending | none |
+
+Resume refuses cost-capped jobs on both surfaces; it cannot bypass the cost cap.
+HTTP malformed IDs return 422, missing jobs 404, state conflicts 409 and database
+failures 503. Successful HTTP lifecycle requests retain dashboard audit events.
+
 ### Backfill Modes
 
 - **Selective batch** (primary): Category-targeted windows (e.g., finance last 7 years, health all history).
@@ -282,12 +298,12 @@ curl -s "http://localhost:9090/api/v1/query?query=butlers_connector_gmail_priori
 
 ## Implementation Notes
 
-- `run_gmail_connector` is DB-only for Google OAuth credentials: it reads `butler_secrets` and never
-  falls back to credential env vars; `GmailConnectorConfig.from_env(...)` takes the DB credentials
-  as arguments and reads only non-secret env. The DB lookup
-  (`src/butlers/connectors/gmail.py::_resolve_gmail_credentials_from_db`) tries the
-  local schema, then the shared schema (`BUTLER_SHARED_DB_SCHEMA`, default `public`), each pool with
-  a schema-scoped `search_path`; without it `butler_secrets` does not resolve in the one-DB topology.
+- `run_gmail_connector` discovers accounts from `public.google_accounts` and resolves each account's
+  Google OAuth credentials through `GmailConnectorManager._resolve_credentials_for_account` and
+  `load_google_credentials`. App credentials come from `butler_secrets` through `CredentialStore`;
+  the refresh token comes from the account's companion entity in `public.entity_info`. OAuth
+  credentials never fall back to environment variables. `_create_shared_db_pool` keeps the
+  schema-scoped `search_path` needed to resolve the credential store in the one-DB topology.
 - `src/butlers/connectors/gmail.py::_format_google_error` is the connector's one parser for Google
   API and OAuth error payloads. Log its compact
   `code/status/reason/message` for `history.list` 404 cursor resets, other non-2xx `history.list`
@@ -312,3 +328,13 @@ When heartbeat is enabled, startup attempts an unloaded publication with a two-s
 - [Attachment Handling](attachment-handling.md) -- Attachment fetch policy
 - [Heartbeat Protocol](heartbeat.md) -- Liveness reporting
 - [Metrics](metrics.md) -- Prometheus instrumentation
+
+### Shared configuration parsing
+
+The process manager and legacy runtime loader share parser stages for their
+fifteen common non-secret settings. Each keeps its original boolean spellings
+and validation order. Four runtime-only settings and the process-only account
+rescan interval remain separate. Account metadata overrides process defaults;
+OAuth credentials still come from the injected DB-backed resolver, and account
+workers keep health port zero. Static provider `gmail` and channel `email` come
+from the canonical descriptor, not identity environment variables.

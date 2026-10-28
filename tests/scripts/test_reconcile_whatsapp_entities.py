@@ -298,6 +298,8 @@ def test_script_has_pep_723_metadata_and_no_automatic_runtime_imports() -> None:
     assert "migrations" not in source
 
 
+# uv fetches from PyPI: TLS certificate checks fail under the faketime legs' shifted clock.
+@pytest.mark.faketime_fragile
 def test_pep_723_command_can_import_the_repository_package(tmp_path: Path) -> None:
     """The documented uv invocation must not isolate the script from Butlers."""
     result = subprocess.run(
@@ -315,6 +317,7 @@ def test_pep_723_command_can_import_the_repository_package(tmp_path: Path) -> No
 
 
 @pytest.mark.integration
+@pytest.mark.faketime_fragile
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_pep_723_apply_path_runs_with_only_declared_dependencies(
     postgres_container,

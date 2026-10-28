@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
@@ -26,6 +25,7 @@ from butlers.modules.memory.catalog_measurement import (
     measure_catalog_ivfflat,
     resolve_measurement_sensitivities,
 )
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -80,7 +80,7 @@ class _Connection:
         self.transaction_kwargs.append({"isolation": isolation, "readonly": readonly})
         return _Transaction(self.events)
 
-    async def fetchval(self, sql: str, *args: object, timeout: float | None = None) -> Any:
+    async def fetchval(self, sql: str, *args: object, timeout: float | None = None) -> Any:  # noqa: ASYNC109 - asyncpg signature
         self.calls.append((sql, args, timeout))
         if "COUNT(*)" in sql:
             self.events.append("candidate_count")
@@ -100,7 +100,10 @@ class _Connection:
         raise AssertionError(f"unexpected fetchval SQL: {sql}")
 
     async def fetch(
-        self, sql: str, *args: object, timeout: float | None = None
+        self,
+        sql: str,
+        *args: object,
+        timeout: float | None = None,  # noqa: ASYNC109 - asyncpg signature
     ) -> list[dict[str, object]]:
         self.calls.append((sql, args, timeout))
         if "WITH candidates AS MATERIALIZED" in sql:
@@ -124,9 +127,8 @@ class _Pool:
     def __init__(self, connection: _Connection) -> None:
         self.connection = connection
 
-    @asynccontextmanager
-    async def acquire(self):
-        yield self.connection
+    def acquire(self):
+        return AsyncCtx(self.connection)
 
 
 class _ObservabilityConnection:
@@ -139,7 +141,10 @@ class _ObservabilityConnection:
         return _Transaction()
 
     async def fetch(
-        self, sql: str, *args: object, timeout: float | None = None
+        self,
+        sql: str,
+        *args: object,
+        timeout: float | None = None,  # noqa: ASYNC109 - asyncpg signature
     ) -> list[dict[str, object]]:
         self.calls.append((sql, args, timeout))
         if "GROUP BY" in sql:
@@ -154,7 +159,10 @@ class _ObservabilityConnection:
         raise AssertionError(f"unexpected fetch SQL: {sql}")
 
     async def fetchrow(
-        self, sql: str, *args: object, timeout: float | None = None
+        self,
+        sql: str,
+        *args: object,
+        timeout: float | None = None,  # noqa: ASYNC109 - asyncpg signature
     ) -> dict[str, object]:
         self.calls.append((sql, args, timeout))
         if "pg_stat_user_tables" in sql:

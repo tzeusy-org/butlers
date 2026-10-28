@@ -47,7 +47,7 @@ After finalization consumes one-shot installer privileges, repeat migrations,
 second-schema replay and mixed-chain tracking do not demand those grants back.
 The stable prerequisite profile excludes the ordinary Relationship SELECT default
 on Switchboard: immutable `core_001` revokes cross-schema defaults during bounded
-replay. `core_077` used to restore it; head (`core_269`) now leaves the relationship,
+replay. `core_077` used to restore it; head (`core_283`) now leaves the relationship,
 messenger and travel roles with SELECT on `switchboard.message_inbox` only and no
 Switchboard default, so there is no read default to require. Rerunning the bootstrap grants
 the relationship role `USAGE` on the schema only and does not restore either. This exclusion grants no

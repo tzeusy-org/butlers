@@ -124,7 +124,7 @@ export function useOptimisticMutation<TData, TVariables, TSnapshot>(
 // List-cache convenience layer
 // ---------------------------------------------------------------------------
 
-/** The common `{ data: T[], meta }` envelope shared by ApiResponse<T[]>, PaginatedResponse<T>, KeysetResponse<T>, and CursorPaginatedResponse<T>. */
+/** The common `{ data: T[], meta }` envelope shared by ApiResponse<T[]>, PaginatedResponse<T>, and KeysetResponse<T>. */
 interface ListEnvelope<TItem> {
   data: TItem[];
   [key: string]: unknown;

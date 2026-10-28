@@ -1,0 +1,83 @@
+# Reviewed gitleaks configuration for `make secrets-scan` (bu-28av8x.4).
+#
+# The default rule set applies unchanged. Every allowance below is a reviewed false positive:
+# it names exact paths AND exact rules (condition = "AND") and pins the allowed values, either
+# as exact anchored literals or as a fixed nonsecret shape (a digest, a model id, a timezone)
+# that a real credential cannot meet, so a real credential in the same file still fails.
+# `make lint-tools-self-test` plants random real-shaped values in every allowed path and
+# fails if any goes undetected. Add an entry only with the reason beside it; never allow a
+# whole directory, all tests, or a baseline report. Paths are exact anchored literals,
+# relative to the repository root.
+title = "butlers"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Content digests: generated maps from a test path or requirement to its SHA-256"
+condition = "AND"
+targetRules = ["generic-api-key", "discord-api-token"]
+paths = ['''^\.github/ci-test-weights\.json$''', '''^scripts/requirement-trace-baseline\.json$''']
+# The match is the tail of a JSON key plus its 64-hex digest value.
+regexTarget = "match"
+regexes = ['''^[\w./ -]*": "[0-9a-f]{64}"$''']
+
+[[allowlists]]
+description = "Vendored ncc bundle of npm dependencies: the public Azurite emulator account key and one embedded WebAssembly base64 segment, pinned as exact values"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^\.github/actions/ci-shard-watchdog-capture/dist/index\.js$''']
+regexes = ['''^Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==$''', '''^sgByAFNgIMIAUgBzYCCAsgACADQQNyNgIEIAAgA2oiByAEQQN0IgQgA2siBUEBcjYCBCAAIARqIAU2AgACQ$''']
+
+[[allowlists]]
+description = "Model ids in runtime catalog fixtures, matched because an 'api' runtime type precedes them"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = [
+  '''^tests/adapters/test_api_adapter\.py$''',
+  '''^tests/connectors/test_discretion_dispatcher\.py$''',
+  '''^tests/connectors/test_discretion_dispatcher_auth_health\.py$''',
+  '''^tests/connectors/test_discretion_dispatcher_failover\.py$''',
+]
+regexes = ['''^claude-[a-z0-9]+(-[a-z0-9]+)*$''']
+
+[[allowlists]]
+description = "Synthetic credential-shaped fixtures for redaction and scrub tests (abc/123 sequences, never issued), pinned as exact values"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = [
+  '''^tests/config/test_credentials\.py$''',
+  '''^tests/core/healing/test_anonymizer\.py$''',
+  '''^tests/connectors/test_home_assistant_bearer_scrub\.py$''',
+  '''^tests/test_ingestion_bearer_scrub\.py$''',
+]
+regexes = ['''^1234567890abcdef1234567890$''', '''^AKIA1234567890ABCDEF$''', '''^abc123def456$''', '''^ghp_1234567890abcdefghij$''', '''^sk\-1234567890abcdef$''']
+
+[[allowlists]]
+description = "IANA timezone names next to an 'api' or 'key' token"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^frontend/src/lib/memory-housekeeping\.test\.ts$''', '''^roster/finance/tests/test_budgets\.py$''']
+regexes = ['''^[A-Z][a-z]+/[A-Z][a-z]+$''']
+
+[[allowlists]]
+description = "Code identifiers next to a key/token/api word: a type annotation, a CSS token family, a keyword argument"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = [
+  '''^src/butlers/core/runtime_probe_control/keys\.py$''',
+  '''^frontend/src/lib/visual-token-roles\.ts$''',
+  '''^tests/core/test_resolve_dispatch\.py$''',
+]
+regexes = ['''^ed25519\.Ed25519PrivateKey$''', '''^--categorical-1\.\.12$''', '''^complexity_tier=$''']
+
+[[allowlists]]
+description = "Three snake_case identifiers in prose specs and audits, pinned as exact values"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = [
+  '''^docs/connectors/bearer-material-custody-audit\.md$''',
+  '''^openspec/changes/archive/2026-10-07-relationship-fact-content-authority/proposal\.md$''',
+  '''^openspec/changes/specify-host-authorized-dashboard-enrollment/design\.md$''',
+]
+regexes = ['''^cancellation/expiry$''', '''^histories/prep/correction/approval$''', '''^missing/forged/revoked$''']

@@ -25,6 +25,30 @@ origin_frozen_subset_count)` entries. The
 origin its own locally provable frozen-subset commitment while preserving one
 global all-cohort commitment without peer-schema access.
 
+Cancellation admission, coordination and receipt recovery SHALL remain
+deterministic service-plane operations under RFC 0038 D1/D2/D7. They SHALL NOT
+admit a reasoning goal, invoke an LLM, start a session or delegate reasoning.
+Any generic route-proxy mediation SHALL become named control-plane
+service-listener endpoints, each fixing its payload schema, one recipient
+service-plane operation and a calling-daemon allowlist authenticated on every
+request. Unknown endpoints, unauthenticated/unlisted callers, invalid schemas
+and mismatched targets SHALL fail closed before recipient contact; payload
+source/origin claims SHALL NOT confer caller identity or choose arbitrary tools.
+The relay and recipient operations SHALL NOT be LLM-presentable or reachable
+through the session listener and SHALL create no subscription, goal or grant.
+
+`cancel_admit.v1` SHALL retain Messenger as its fixed recipient; each frozen
+origin's finalization, publication and parent DND-abort delivery SHALL retain
+that origin as its endpoint's fixed recipient. A missing endpoint SHALL leave
+the full snapshot cohort retained under the existing same-action retry rules,
+not remove a participant. Endpoint authentication SHALL NOT replace any
+run/fence/global/local-subset, idempotency, no-egress, DND or durable-receipt
+predicate defined below.
+
+ID: REQ-wake-recovery-cancellation-admission-001
+Source: proposal.md; design.md D0–D7; RFC 0038 D1/D2/D7
+Scope: v1-mandatory
+
 #### Scenario: Complete current-fence request reaches Messenger
 - **WHEN** an authorized local decision matches the coordinator's persisted
   prepared run, participant set, cohort digest, and release action

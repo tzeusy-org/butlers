@@ -84,7 +84,8 @@ def cli() -> None:
     default=DEFAULT_BUTLERS_DIR,
     help="Directory containing butler configs",
 )
-def up(only: tuple[str, ...], butlers_dir: Path) -> None:
+@click.option("--exclude", multiple=True, help="Exclude butlers (repeatable or comma-separated)")
+def up(only: tuple[str, ...], butlers_dir: Path, exclude: tuple[str, ...]) -> None:
     """Start all butler daemons (or filtered by --only)."""
     # Flatten: support both --only a --only b and --only a,b
     only = tuple(name.strip() for entry in only for name in entry.split(",") if name.strip())
@@ -100,6 +101,11 @@ def up(only: tuple[str, ...], butlers_dir: Path) -> None:
         if missing:
             click.echo(f"Butler(s) not found: {', '.join(sorted(missing))}")
             sys.exit(1)
+
+    excluded = {name.strip() for entry in exclude for name in entry.split(",") if name.strip()}
+    configs = {name: path for name, path in configs.items() if name not in excluded}
+    if not configs:
+        raise click.ClickException("No butlers remain after exclusions")
 
     # Check for port conflicts before starting any butler
     conflicts = _check_port_conflicts(configs)
@@ -127,6 +133,24 @@ def run(config_path: Path) -> None:
     """Start a single butler daemon from a config directory."""
     click.echo(f"Starting butler from {config_path}")
     asyncio.run(_start_single(config_path))
+
+
+@cli.command()
+@click.option("--profile", type=click.Choice(["KEY_ABSENT_STAGE"]), required=True)
+@click.option(
+    "--config", "config_path", type=click.Path(exists=True, path_type=Path), required=True
+)
+@click.option(
+    "--session-host",
+    default="127.0.0.1",
+    show_default=True,
+    help="Bind session refusal port to this operator/deployment-selected interface",
+)
+def control(profile: str, config_path: Path, session_host: str) -> None:
+    """Run Switchboard separately, without any goal signing key or broker."""
+    from butlers.control import run_control
+
+    asyncio.run(run_control(config_path, profile=profile, session_host=session_host))
 
 
 @cli.command("list")
@@ -366,6 +390,68 @@ def deploy(
 
 
 @cli.group()
+def deployments() -> None:
+    """Deployment ledger commands."""
+
+
+@deployments.command("record")
+@click.option(
+    "--source",
+    type=click.Choice(["deploy"]),
+    required=True,
+    help="Ledger source; only 'deploy' (a Helm release) is recorded by this verb",
+)
+@click.option(
+    "--result",
+    type=click.Choice(["success", "failed"]),
+    required=True,
+    help="Outcome of the release (success only after all required rollouts finished)",
+)
+@click.option(
+    "--git-sha",
+    default=None,
+    help="Released git SHA; defaults to this process's GIT_SHA (the pod's image tag)",
+)
+def deployments_record(source: str, result: str, git_sha: str | None) -> None:
+    """Append one deploy row to public.deployments.
+
+    Run inside the dashboard-api pod (``kubectl exec``), which already holds the
+    database credentials, so none leave the cluster. Exits non-zero when the row
+    could not be written.
+    """
+    try:
+        row_id = asyncio.run(_record_deploy_row(source=source, result=result, git_sha=git_sha))
+    except Exception as exc:
+        click.echo(f"Failed to record deployment: {type(exc).__name__}: {exc}", err=True)
+        sys.exit(1)
+    click.echo(f"Recorded deployment {row_id} (source={source}, result={result})")
+
+
+async def _record_deploy_row(*, source: str, result: str, git_sha: str | None) -> str:
+    """Write one image-served ``source='deploy'`` ledger row and return its id."""
+    from butlers.core.deploy import _make_pool
+    from butlers.core.deployments import (
+        record_deployment,
+        resolve_core_migration_head,
+        resolve_git_sha,
+    )
+
+    pool = await _make_pool()
+    try:
+        return await record_deployment(
+            pool,
+            git_sha=git_sha or resolve_git_sha(),
+            migration_head=await resolve_core_migration_head(pool),
+            result=result,
+            source=source,
+            serving_mode="image",
+            serving_worktree=None,
+        )
+    finally:
+        await pool.close()
+
+
+@cli.group()
 def db() -> None:
     """Database management commands."""
 
@@ -461,13 +547,13 @@ async def _migrate_all(configs: dict[str, Path], *, dry_run: bool = False) -> No
 
     from butlers.db import db_params_from_env, schema_search_path
     from butlers.migrations import (
-        _resolve_chain_dir,
-        get_all_chains,
+        get_module_migration_chains,
         has_butler_chain,
         run_migrations,
     )
+    from butlers.modules.registry import default_registry
 
-    all_chains = set(get_all_chains())
+    registry = default_registry()
     params = db_params_from_env()
     failed: list[str] = []
 
@@ -489,19 +575,14 @@ async def _migrate_all(configs: dict[str, Path], *, dry_run: bool = False) -> No
             else:
                 db_url = base_url
 
-            # Module chains to run: enabled modules that have migrations,
-            # excluding the butler's own name (already covered by butler chain).
-            module_chains = [
-                m
-                for m in config.modules
-                if m != name and m in all_chains and _resolve_chain_dir(m) is not None
-            ]
+            modules = registry.load_from_config(config.modules)
+            module_chains = get_module_migration_chains(modules, name)
 
             if dry_run:
                 chains = ["core"]
                 if has_butler_chain(name):
                     chains.append(name)
-                chains += module_chains
+                chains += module_chains.values()
                 click.echo(f"  {name} (schema={schema}): would run chains: {', '.join(chains)}")
                 continue
 
@@ -514,11 +595,11 @@ async def _migrate_all(configs: dict[str, Path], *, dry_run: bool = False) -> No
                 await run_migrations(db_url, chain=name, schema=schema)
                 click.echo(" done")
 
-            for module_name in module_chains:
+            for module_name, chain in module_chains.items():
                 module_cfg = config.modules.get(module_name) or {}
                 module_migration_schema = module_cfg.get("memory_schema") or schema
-                click.echo(f"  {name}/{module_name}: module chain...", nl=False)
-                await run_migrations(db_url, chain=module_name, schema=module_migration_schema)
+                click.echo(f"  {name}/{chain}: module chain...", nl=False)
+                await run_migrations(db_url, chain=chain, schema=module_migration_schema)
                 click.echo(" done")
 
         except Exception as exc:

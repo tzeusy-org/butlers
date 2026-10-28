@@ -32,9 +32,10 @@ concurrency caps) are owned by `roster/chronicler/butler.toml` per
 
 The Chronicler butler SHALL reconstruct past time from already-captured
 evidence and SHALL NOT plan, schedule, dispatch, ingest externally, or send
-proactive notifications. The single sanctioned owner-facing message is the
-existing once-daily retrospective day-close summary: a scheduled recap, not a
-proactive notification, and no other owner-facing messages are permitted.
+proactive notifications. The sanctioned owner-facing messages are the
+existing once-daily retrospective day-close summary (a scheduled recap, not a
+proactive notification) and the opted-in correction prompts in the amendment
+below. No other owner-facing messages are permitted.
 
 **Amendment (memory write-back):** the Chronicler MAY synthesize durable
 insights into a private memory schema it owns (`chronicler_mem`) via the memory
@@ -44,6 +45,22 @@ constitute ingestion or scheduler authority, and never write another butler's
 schema directly. `chronicler_mem` is a bounded, module-private schema owned by
 the Chronicler, kept distinct from the domain `chronicler.episodes` table; it
 is not generic cross-schema access.
+
+**Amendment (opted-in correction prompts, owner decision bu-idc5mx.8 = A):**
+opted-in correction prompts are the second sanctioned owner-facing surface.
+Today the only one is the day-close gap interview ask
+(`REQ-butler-chronicler-008`). It sends at most one prompt per closed day, passes
+the owner's delivery-preferences and quiet-hours gate, and takes its answer
+through the Chronicler corrections contract. "Opted-in" means it runs only
+while its schedule is enabled and the owner's Telegram delivery is configured,
+and only when the owner's delivery preferences allow it. It is a retrospective correction
+request, not a plan, schedule or nudge. Any other owner-facing message,
+including a new kind of correction prompt, remains forbidden unless its own
+requirement sanctions it.
+
+ID: REQ-butler-chronicler-011
+Source: owner decision bu-idc5mx.8 (2026-10-24); bu-whhll.12; REQ-butler-chronicler-008
+Scope: v1-mandatory
 
 #### Scenario: No ingestion ownership
 
@@ -73,6 +90,13 @@ is not generic cross-schema access.
 - **WHEN** the Chronicler has a candidate entity fact worth sharing
 - **THEN** it is proposed to `relationship` over MCP
 - **AND** the Chronicler does not write `entity_facts` directly
+
+#### Scenario: Only the sanctioned surfaces reach the owner
+
+- **WHEN** the Chronicler sends anything to the owner
+- **THEN** it SHALL be either the once-daily day-close summary or the opted-in
+  gap interview ask, which sends at most one prompt per closed day
+- **AND** no other proactive, coaching or correction message SHALL be sent
 
 ### Requirement: Storage Shape
 
@@ -620,6 +644,30 @@ exact, case-sensitive JSON object mapping SSID names to the canonical places
 - **AND** projections made invalid by a removed or relabelled mapping SHALL be
   tombstoned before valid retained evidence is re-projected
 - **AND** raw SSID names SHALL NOT appear in episode payloads or source refs
+
+### Requirement: Day-Close Gap Interview Ask Job
+
+The Chronicler SHALL run the once-daily day-close gap interview ask as a deterministic job-mode schedule. The job and the `chronicler_gap_interview` MCP tool SHALL share one ask service, which evaluates the closed day, enforces the max-one-per-day dedupe, applies the low-priority delivery-preferences gate and delivers the one-tap prompt. The answer contracts stay those of chronicler-api "Chronicler Corrections" and connector-telegram-bot gap-interview callback routing, unchanged.
+
+ID: REQ-butler-chronicler-008
+Source: RFC 0038 D2; bu-whhll.12; bu-idc5mx.4
+Scope: v1-mandatory
+
+#### Scenario: Ask job runs for yesterday in the owner's timezone
+- **WHEN** the `chronicler_gap_interview` schedule fires (0 9 * * *, job, owner-local)
+- **THEN** the job SHALL compute yesterday as the local calendar day before the dispatch instant in the owner's general timezone, correct across DST changes
+- **AND** it SHALL call the shared ask service with that date and timezone and return its status unchanged: `asked`, `already_asked`, `no_gap`, `deferred_quiet_hours`, `delivery_failed` or `not_configured`
+- **AND** it SHALL reject unsupported job arguments
+
+#### Scenario: Ask job spawns no session and sends nothing else
+- **WHEN** the `chronicler_gap_interview` job runs
+- **THEN** it SHALL spawn no session and call no model
+- **AND** it SHALL send no message beyond the single prompt the ask service delivers
+
+#### Scenario: Tool and job share the per-day dedupe
+- **WHEN** the owner calls the `chronicler_gap_interview` tool for a day the job already asked
+- **THEN** the shared ask service SHALL return `already_asked` without delivering again
+- **AND** the tool SHALL keep its signature and return statuses
 
 ## Source References
 

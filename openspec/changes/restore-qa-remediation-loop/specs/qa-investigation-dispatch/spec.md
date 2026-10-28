@@ -4,7 +4,7 @@
 The QA dispatcher SHALL create investigations for novel findings, using the existing `healing_attempts` table with a QA-specific source marker and incident linkage. The original finding source remains distinct from the executing QA runtime owner. Journal-event and notes IDs SHALL be UUIDv7 for time-ordered sortability; the reused `healing_attempts.id` and `qa_findings.id` primary keys retain their legacy `gen_random_uuid()` (UUIDv4) defaults.
 
 ID: REQ-qa-investigation-dispatch-004
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Create investigation from finding
@@ -30,7 +30,7 @@ Scope: v1-mandatory
 The QA investigation agent SHALL receive a prompt that includes the error context from the discovery source, not from a live session. No raw logs or user data are included.
 
 ID: REQ-qa-investigation-dispatch-005
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Agent prompt composition
@@ -59,7 +59,7 @@ Scope: v1-mandatory
 The QA investigation infrastructure SHALL support phase-session tracking for investigations. Phase sessions are recorded and tracked via `record_phase_session` and `update_phase_session_status`. The v1 implementation uses a single combined `investigate` phase; separate diagnose, implement, and verify phases are a future extension enabled by this infrastructure.
 
 ID: REQ-qa-investigation-dispatch-006
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Diagnose, implement, and verify use separate sessions
@@ -85,7 +85,7 @@ Scope: v1-mandatory
 All investigation outcomes SHALL be recorded for dashboard reporting, PR tracking, and trend analysis. Journal-event and notes record IDs SHALL be UUIDv7; the reused `healing_attempts.id` and `qa_findings.id` primary keys retain their legacy `gen_random_uuid()` (UUIDv4) defaults.
 
 ID: REQ-qa-investigation-dispatch-007
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Successful investigation with PR
@@ -147,7 +147,7 @@ Scope: v1-mandatory
 QA SHALL accept investigation notes only from a fresh output channel bound by trusted dispatch metadata to the exact invocation, attempt, source evidence revision and checkout base/head. Notes remain a portable JSON artifact; runtime-specific final-response schemas are not required.
 
 ID: REQ-qa-investigation-dispatch-008
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Agent emits investigation notes JSON
@@ -184,7 +184,7 @@ Scope: v1-mandatory
 The dispatcher SHALL capture a unified diff of the entire proposed change against the dispatcher-pinned base at proposal finalization and persist it as a structured line-kind sequence inside `investigation_notes.diff_snapshot`.
 
 ID: REQ-qa-investigation-dispatch-009
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Diff captured before worktree teardown
@@ -212,7 +212,7 @@ Scope: v1-mandatory
 The dispatcher SHALL emit structured journal events into `public.qa_investigation_events` for every dispatch-owned step in a case's lifecycle.
 
 ID: REQ-qa-investigation-dispatch-010
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: drafted event on PR creation
@@ -246,7 +246,7 @@ atomic claim only after normal eligibility and active-infrastructure-condition
 suppression have both been evaluated.
 
 ID: REQ-qa-investigation-dispatch-013
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Gates applied per-finding after triage
@@ -287,7 +287,7 @@ Scope: v1-mandatory
 Initial and follow-up QA investigations SHALL execute under a core-owned dispatch capability bound to the QA daemon identity and lifecycle generation, with explicit model resolution, budget ownership and launch lineage.
 
 ID: REQ-qa-investigation-dispatch-011
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Multiple daemons start in any order
@@ -306,7 +306,7 @@ Scope: v1-mandatory
 QA SHALL observe PR state, exact head, required-check state and all unresolved feedback through a deterministic complete provider projection, then lease at most one bounded follow-up for each new actionable feedback/head state.
 
 ID: REQ-qa-investigation-dispatch-012
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Inline-only feedback and duplicate pollers

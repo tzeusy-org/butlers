@@ -23,8 +23,6 @@ WebSocket is unavailable.
 
 Environment variables:
 - SWITCHBOARD_MCP_URL (required): Switchboard MCP SSE endpoint
-- CONNECTOR_PROVIDER (default: home_assistant)
-- CONNECTOR_CHANNEL (default: home_assistant)
 - CONNECTOR_HEALTH_PORT (default: 40087)
 - HA_BASE_URL: HA instance base URL (overrides entity_info)
 - HA_ACCESS_TOKEN: HA long-lived access token (overrides entity_info)
@@ -72,6 +70,7 @@ from urllib.parse import urlparse
 
 from prometheus_client import Counter, Gauge, Histogram, generate_latest
 
+from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.health_socket import make_health_socket
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
@@ -92,6 +91,9 @@ from butlers.connectors.home_assistant_wellness import (
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import CHANNEL_KIND_FEED
+
+_DESCRIPTOR = connector_descriptor("home_assistant")
 
 if TYPE_CHECKING:
     pass
@@ -102,9 +104,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_CONNECTOR_TYPE = "home_assistant"
-_CONNECTOR_CHANNEL = "home_assistant"
-_CONNECTOR_PROVIDER = "home_assistant"
+_CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 
 _DEFAULT_HEALTH_PORT = 40087
 _DEFAULT_POLL_INTERVAL_S = 60
@@ -614,7 +614,7 @@ class HAWebSocketClient:
     async def _ws_command(
         self,
         command: dict[str, Any],
-        timeout: float = 10.0,
+        timeout: float = 10.0,  # noqa: ASYNC109 - command_sender keyword; rename deferred (#4816)
     ) -> dict[str, Any]:
         """Send a WebSocket command and await the correlated result.
 
@@ -1178,8 +1178,8 @@ class HAConnectorConfig:
     """
 
     switchboard_mcp_url: str
-    provider: str = _CONNECTOR_PROVIDER
-    channel: str = _CONNECTOR_CHANNEL
+    provider: str = _DESCRIPTOR.provider
+    channel: str = _DESCRIPTOR.channel
     health_port: int = _DEFAULT_HEALTH_PORT
     poll_interval_s: int = _DEFAULT_POLL_INTERVAL_S
     checkpoint_overlap_s: int = _DEFAULT_CHECKPOINT_OVERLAP_S
@@ -1239,8 +1239,8 @@ class HAConnectorConfig:
 
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
-            provider=os.environ.get("CONNECTOR_PROVIDER", _CONNECTOR_PROVIDER),
-            channel=os.environ.get("CONNECTOR_CHANNEL", _CONNECTOR_CHANNEL),
+            provider=_DESCRIPTOR.provider,
+            channel=_DESCRIPTOR.channel,
             health_port=_int("CONNECTOR_HEALTH_PORT", _DEFAULT_HEALTH_PORT),
             poll_interval_s=_int("HA_POLL_INTERVAL_S", _DEFAULT_POLL_INTERVAL_S),
             checkpoint_overlap_s=_int("HA_CHECKPOINT_OVERLAP_S", _DEFAULT_CHECKPOINT_OVERLAP_S),
@@ -1437,6 +1437,7 @@ class HAConnector:
             mcp_client=self._mcp_client,
             metrics=self._base_metrics,
             get_health_state=self._get_health_state,
+            channel_kind=CHANNEL_KIND_FEED,
         )
 
         logger.info(
@@ -2470,7 +2471,7 @@ def _make_event_dispatcher(
         # global policy.
         if domain != "person" and global_ingestion_policy is not None:
             policy_envelope = IngestionEnvelope(
-                source_channel=_CONNECTOR_CHANNEL,
+                source_channel=_DESCRIPTOR.channel,
                 raw_key=entity_id,
             )
             try:

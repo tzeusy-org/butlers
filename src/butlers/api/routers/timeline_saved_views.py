@@ -29,20 +29,16 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/timeline/saved-views", tags=["timeline"])
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +130,8 @@ _LIST_SQL = """
 
 @router.get("", response_model=ApiResponse[list[SavedViewEntry]])
 async def list_saved_views(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[SavedViewEntry]]:
     """Return all persisted saved views, newest first.
 
@@ -161,7 +158,8 @@ _INSERT_SQL = """
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=SavedViewEntry)
 async def create_saved_view(
     body: SavedViewCreateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> SavedViewEntry:
     """Create a new saved view.
 
@@ -187,7 +185,8 @@ async def create_saved_view(
 async def update_saved_view(
     view_id: UUID,
     body: SavedViewUpdateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> SavedViewEntry:
     """Update a saved view's name and/or filter_spec.
 
@@ -249,7 +248,8 @@ _DELETE_SQL = "DELETE FROM public.timeline_saved_views WHERE id = $1"
 @router.delete("/{view_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_saved_view(
     view_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> None:
     """Delete a saved view.
 

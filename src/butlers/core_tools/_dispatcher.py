@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from butlers.core_tools._base import ToolContext
+from butlers.core_tools._baselines import register_baseline_tools
 from butlers.core_tools._chronicler import register_chronicler_tools
 from butlers.core_tools._continuity import register_continuity_tools
 from butlers.core_tools._conversation_recall import register_conversation_recall_tool
@@ -22,6 +23,7 @@ from butlers.core_tools._memory_catalog import register_memory_catalog_tools
 from butlers.core_tools._messenger import register_messenger_tools
 from butlers.core_tools._module_mgmt import register_module_mgmt_tools
 from butlers.core_tools._notifications import register_notification_tools
+from butlers.core_tools._qa import register_qa_tools
 from butlers.core_tools._routing import register_routing_tools
 from butlers.core_tools._scheduling import register_scheduling_tools
 from butlers.core_tools._sessions import register_session_tools
@@ -64,7 +66,9 @@ def register_all_core_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
           public.entity_graph_edges
       20. Shutdown tool (shutdown)
     """
+    register_qa_tools(ctx, mcp)
     register_state_tools(ctx, mcp, _core_tool)
+    register_baseline_tools(ctx, mcp, _core_tool)
     register_infra_tools(ctx, mcp, _core_tool)
     register_chronicler_tools(ctx, mcp, _core_tool)
     register_continuity_tools(ctx, mcp, _core_tool)

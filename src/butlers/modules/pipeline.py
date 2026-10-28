@@ -23,6 +23,7 @@ from uuid import UUID
 from opentelemetry import metrics, trace
 from pydantic import BaseModel, ConfigDict, Field
 
+from butlers.connectors.catalog import conversation_history_strategies
 from butlers.core.approval_recovery_exclusion import message_inbox_recovery_exclusion_sql
 from butlers.core.fact_authority import accepted_source_scope
 from butlers.core.model_routing import Complexity
@@ -104,26 +105,9 @@ class HistoryConfig:
 
 
 # Channel strategy mapping
-HISTORY_STRATEGY: dict[str, Literal["realtime", "email", "none"]] = {
-    # Real-time messaging channels
-    "telegram_bot": "realtime",
-    "telegram_user_client": "realtime",
-    "whatsapp": "realtime",
-    "whatsapp_user_client": "realtime",
-    "slack": "realtime",
-    "discord": "realtime",
-    # Email
-    "email": "email",
-    # Google Calendar connector
-    "google_calendar": "realtime",
-    # Spotify connector
-    "spotify_user_client": "realtime",
-    # OwnTracks connector
-    "owntracks": "realtime",
-    # No history for other channels
-    "api": "none",
-    "mcp": "none",
-}
+HISTORY_STRATEGY: dict[str, Literal["realtime", "email", "none"]] = (
+    conversation_history_strategies()
+)
 
 
 async def _load_realtime_history(
@@ -1761,7 +1745,7 @@ class MessagePipeline:
                 "explicitly what you'd like recorded or reported."
             )
             try:
-                from butlers.api.conversations import conversation_reply_create
+                from butlers.conversation_messages import conversation_reply_create
 
                 await conversation_reply_create(
                     self._pool,
@@ -2136,13 +2120,6 @@ class MessagePipeline:
 
         content_blind_observability = self._uses_content_blind_observability(source, args)
         received_at = datetime.now(UTC)
-        dedupe_key, dedupe_strategy, idempotency_key = self._build_dedupe_record(
-            args=args,
-            source_metadata=source_metadata,
-            message_text=message_text,
-            received_at=received_at,
-        )
-
         raw_metadata = args.get("raw_metadata")
         if isinstance(raw_metadata, dict):
             raw_metadata_payload: dict[str, Any] = dict(raw_metadata)
@@ -2155,16 +2132,6 @@ class MessagePipeline:
         external_conversation_id = self._external_conversation_id(args)
         source_endpoint_identity = self._source_endpoint_identity(args, source_metadata)
 
-        request_context = {
-            "source_channel": source,
-            "source_endpoint_identity": source_endpoint_identity,
-            "source_sender_identity": source_sender_identity,
-            "source_thread_identity": source_thread_identity,
-            "external_conversation_id": external_conversation_id,
-            "idempotency_key": idempotency_key,
-            "dedupe_key": dedupe_key,
-            "dedupe_strategy": dedupe_strategy,
-        }
         # Scrub before any write; a detector failure raises, so no raw text is stored.
         scrubbed, message_text, _ = scrub_stored_record(
             {
@@ -2177,6 +2144,25 @@ class MessagePipeline:
         raw_payload = {
             "content": scrubbed["content"],
             "metadata": raw_metadata_payload,
+        }
+
+        # Keys are stored beside the scrubbed text, so they derive from it: hashing the raw
+        # text would let a reader of message_inbox brute-force a withheld code.
+        dedupe_key, dedupe_strategy, idempotency_key = self._build_dedupe_record(
+            args=args,
+            source_metadata=source_metadata,
+            message_text=message_text,
+            received_at=received_at,
+        )
+        request_context = {
+            "source_channel": source,
+            "source_endpoint_identity": source_endpoint_identity,
+            "source_sender_identity": source_sender_identity,
+            "source_thread_identity": source_thread_identity,
+            "external_conversation_id": external_conversation_id,
+            "idempotency_key": idempotency_key,
+            "dedupe_key": dedupe_key,
+            "dedupe_strategy": dedupe_strategy,
         }
 
         # Ensure the partition exists for received_at — committed immediately,
@@ -2434,8 +2420,8 @@ class MessagePipeline:
         raw_chat_id = args.get("chat_id")
         chat_id = str(raw_chat_id) if raw_chat_id not in (None, "") else None
         # Everything downstream (routing prompt, preview, response summary, dead-letter
-        # cc_output) uses the scrubbed text. The ingress dedupe record keeps hashing
-        # the text as received, and scrubs it itself before any write.
+        # cc_output) uses the scrubbed text. The ingress dedupe record scrubs the text as
+        # received itself and derives its key from the scrubbed result.
         raw_message_text = message_text
         try:
             message_text = scrub_message_text(
@@ -2585,45 +2571,19 @@ class MessagePipeline:
                 )
 
                 # --- Engagement detection ---
-                # On each ingress request FROM THE OWNER, mark unengaged
-                # insight_engagement rows delivered within the last 60 minutes
-                # as engaged=TRUE, and record the owner-ingress day in the
-                # durable daily rollup (bu-tdd4k.5). Connector/automated/
-                # non-owner ingress must NOT count as engagement — the
-                # disengagement ratchet (check_total_disengagement_auto_off)
-                # is a vision success marker and can never fire if noise
-                # impersonates owner attention. Gated on a direct, read-only
-                # identity lookup rather than the full resolve_and_inject_
-                # identity() preamble machinery (no temp-contact creation or
-                # owner-notify side effects belong in a best-effort gate).
-                # This is a best-effort side effect — failures must not block routing.
-                try:
-                    from butlers.core.attention_ledger import record_owner_ingress_rollup
-                    from butlers.identity import resolve_contact_by_channel
-                    from butlers.tools.switchboard.insight.broker import (
-                        check_and_update_engagement,
-                    )
+                # Owner-authored ingress marks recent insight deliveries engaged;
+                # best-effort, so failures never block routing.
+                from butlers.tools.switchboard.insight.engagement import (
+                    record_owner_ingress_engagement,
+                )
 
-                    sender_value = source_metadata.get("source_id") or source_metadata.get(
-                        "identity"
-                    )
-                    is_owner_ingress = False
-                    if sender_value and source:
-                        resolved_sender = await resolve_contact_by_channel(
-                            self._pool, source, sender_value
-                        )
-                        is_owner_ingress = (
-                            resolved_sender is not None and "owner" in resolved_sender.roles
-                        )
-
-                    if is_owner_ingress:
-                        await check_and_update_engagement(self._pool)
-                        await record_owner_ingress_rollup(self._pool, occurred_at=received_at)
-                except Exception:
-                    logger.debug(
-                        "Engagement detection failed; proceeding without update",
-                        exc_info=True,
-                    )
+                await record_owner_ingress_engagement(
+                    self._pool,
+                    source=source,
+                    sender_value=source_metadata.get("source_id")
+                    or source_metadata.get("identity"),
+                    received_at=received_at,
+                )
 
                 # --- Mark as processing so the scanner does not re-enqueue ---
                 if message_inbox_id is not None:
@@ -3203,9 +3163,9 @@ class MessagePipeline:
                                         },
                                     )
                                 else:
-                                    logger.debug(
-                                        "Identity resolution failed; proceeding without preamble",
-                                        exc_info=True,
+                                    logger.warning(
+                                        "pipeline.identity_resolution_failed",
+                                        extra={"failure_class": type(exc).__name__},
                                     )
 
                     if _decomp_messages is not None:
@@ -4497,21 +4457,11 @@ class PipelineModule(Module):
         self._pipeline: MessagePipeline | None = None
         self._pool: Any = None
 
-    @property
-    def name(self) -> str:
-        return "pipeline"
+    name = "pipeline"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return PipelineConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        # No module-specific tables; pipeline uses shared switchboard schema.
-        return None
 
     def set_pipeline(self, pipeline: MessagePipeline) -> None:
         """Attach a pre-constructed ``MessagePipeline`` instance.

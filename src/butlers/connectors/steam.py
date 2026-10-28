@@ -57,12 +57,16 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from prometheus_client import Counter, Histogram, generate_latest
 
+from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
+from butlers.ingestion_spans import CHANNEL_KIND_FEED
 from butlers.steam.client import SteamAPIClient, SteamAPIError, SteamRateLimitError
+
+_DESCRIPTOR = connector_descriptor("steam")
 
 if TYPE_CHECKING:
     import asyncpg
@@ -73,9 +77,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_CONNECTOR_TYPE = "steam"
-_CONNECTOR_CHANNEL = "gaming"
-_CONNECTOR_PROVIDER = "steam"
+_CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 
 _DEFAULT_HEALTH_PORT = 40089
 _DEFAULT_ACCOUNT_RESCAN_S = 300
@@ -517,8 +519,8 @@ def build_play_session_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -567,8 +569,8 @@ def build_achievement_unlock_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -628,8 +630,8 @@ def build_status_change_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -669,8 +671,8 @@ def build_game_purchase_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -721,8 +723,8 @@ def build_friend_change_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -780,7 +782,7 @@ def _make_ingestion_envelope_for_filter(
         raw_key += f",app_id:{app_id_str}"
 
     return IngestionEnvelope(
-        source_channel=_CONNECTOR_CHANNEL,
+        source_channel=_DESCRIPTOR.channel,
         sender_address=sender_identity,
         raw_key=raw_key,
     )
@@ -795,7 +797,7 @@ def _to_wire_envelope(envelope: dict[str, Any]) -> dict[str, Any]:
     ``_make_ingestion_envelope_for_filter`` (ingestion-policy raw_key) — can
     read the event type without re-deriving it. That field is internal to
     this connector: the ``ingest.v1`` wire contract (``IngestEventV1`` in
-    ``routing/contracts.py``, ``extra="forbid"``) only defines
+    ``tools/contracts.py``, ``extra="forbid"``) only defines
     ``external_event_id``, ``external_thread_id``, and ``observed_at`` on
     ``event``. Submitting ``event.type`` verbatim causes the Switchboard to
     reject the envelope with a Pydantic ``extra_forbidden`` error on every
@@ -878,7 +880,7 @@ class SteamAccountPoller:
         """Signal shutdown and wait for all polling tasks to finish."""
         self._state.shutdown_event.set()
 
-        for data_type, task in list(self._state.tasks.items()):
+        for _data_type, task in list(self._state.tasks.items()):
             task.cancel()
             try:
                 await task
@@ -991,13 +993,13 @@ class SteamAccountPoller:
                     buf = self._filtered_bufs[data_type]
                     buf.record(
                         external_message_id=f"error:{self._state.steam_id}:{data_type}:{_now_iso()}",
-                        source_channel=_CONNECTOR_CHANNEL,
+                        source_channel=_DESCRIPTOR.channel,
                         sender_identity=f"steam:{self._state.steam_id}",
                         subject_or_preview=None,
                         filter_reason=FilteredEventBuffer.reason_source_poll_error(),
                         full_payload=FilteredEventBuffer.full_payload(
-                            channel=_CONNECTOR_CHANNEL,
-                            provider=_CONNECTOR_PROVIDER,
+                            channel=_DESCRIPTOR.channel,
+                            provider=_DESCRIPTOR.provider,
                             endpoint_identity=self._state.endpoint_identity,
                             external_event_id=f"error:{self._state.steam_id}:{data_type}:{_now_iso()}",
                             external_thread_id=None,
@@ -1053,13 +1055,13 @@ class SteamAccountPoller:
                     buf = self._filtered_bufs[data_type]
                     buf.record(
                         external_message_id=f"error:{self._state.steam_id}:{data_type}:{_now_iso()}",
-                        source_channel=_CONNECTOR_CHANNEL,
+                        source_channel=_DESCRIPTOR.channel,
                         sender_identity=f"steam:{self._state.steam_id}",
                         subject_or_preview=None,
                         filter_reason=FilteredEventBuffer.reason_submission_error(),
                         full_payload=FilteredEventBuffer.full_payload(
-                            channel=_CONNECTOR_CHANNEL,
-                            provider=_CONNECTOR_PROVIDER,
+                            channel=_DESCRIPTOR.channel,
+                            provider=_DESCRIPTOR.provider,
                             endpoint_identity=self._state.endpoint_identity,
                             external_event_id=f"error:{self._state.steam_id}:{data_type}:{_now_iso()}",
                             external_thread_id=None,
@@ -1598,13 +1600,13 @@ class SteamAccountPoller:
                     if buf:
                         buf.record(
                             external_message_id=envelope["event"]["external_event_id"],
-                            source_channel=_CONNECTOR_CHANNEL,
+                            source_channel=_DESCRIPTOR.channel,
                             sender_identity=envelope["sender"]["identity"],
                             subject_or_preview=envelope["payload"].get("normalized_text"),
                             filter_reason=filter_reason,
                             full_payload=FilteredEventBuffer.full_payload(
-                                channel=_CONNECTOR_CHANNEL,
-                                provider=_CONNECTOR_PROVIDER,
+                                channel=_DESCRIPTOR.channel,
+                                provider=_DESCRIPTOR.provider,
                                 endpoint_identity=self._state.endpoint_identity,
                                 external_event_id=envelope["event"]["external_event_id"],
                                 external_thread_id=envelope["event"].get("external_thread_id"),
@@ -1756,6 +1758,7 @@ class SteamConnector:
             mcp_client=self._mcp_client,
             metrics=self._metrics,
             get_health_state=self._get_health_state,
+            channel_kind=CHANNEL_KIND_FEED,
         )
         self._heartbeat.start()
 

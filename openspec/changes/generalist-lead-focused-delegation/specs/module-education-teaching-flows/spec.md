@@ -129,7 +129,19 @@ Scope: v1-mandatory
 
 ### Requirement: Flow Initialization — PENDING and DIAGNOSING
 
-`teaching_flow_start(pool, topic, goal?)` creates a new mind map record, writes initial flow state at `pending`, immediately transitions to `diagnosing`, and returns the flow state dict. The goal invocation that advances a flow in `diagnosing` phase MUST generate 3–7 adaptive probe questions using a binary-search strategy targeting the topic's concept inventory. Each probe is sent by one goal, and the owner's answer is admitted as an owner goal that evaluates it and sends the next probe; no Spawner session is started.
+`teaching_flow_start(pool, topic, goal?)` creates a new mind map record and writes initial flow state at `pending` **as one atomic operation**, then immediately transitions to `diagnosing`, and returns the flow state dict. The goal invocation that advances a flow in `diagnosing` phase MUST generate 3–7 adaptive probe questions using a binary-search strategy targeting the topic's concept inventory. Each probe is sent by one goal, and the owner's answer is admitted as an owner goal that evaluates it and sends the next probe; no Spawner session is started.
+
+The mind map row insert and the `flow:{mind_map_id}` state write MUST occur in
+a single database transaction. Both `education.mind_maps` and the butler
+`state` table live in the same PostgreSQL pool, so this is one commit, not a
+compensating cleanup path. If either write fails, neither MUST be visible: no
+mind map row and no flow state. A mind map with no flow state MUST NOT be a
+reachable outcome of `teaching_flow_start()`.
+
+The mind map is created with `status = 'draft'`. It MUST NOT be created
+`active`: at creation it has zero nodes, and an `active` zero-node map is
+forbidden by the mind map content invariant. The map becomes `active` only
+when `curriculum_generate()` activates it at the end of the `planning` phase.
 
 Source: RFC 0038 D2 and D5
 Scope: v1-mandatory
@@ -137,10 +149,30 @@ Scope: v1-mandatory
 #### Scenario: Flow created at PENDING then immediately advances to DIAGNOSING
 
 - **WHEN** `teaching_flow_start(pool, topic="Python", goal=None)` is called
-- **THEN** a new mind map row is inserted with `title = "Python"` and `status = 'active'`
+- **THEN** a new mind map row is inserted with `title = "Python"` and `status = 'draft'`
 - **AND** the KV store entry `flow:{mind_map_id}` is written with `status = 'pending'`
+- **AND** the mind map row and the flow state entry are committed in the same transaction
 - **AND** `teaching_flow_advance()` is called immediately, transitioning the state to `diagnosing`
 - **AND** the returned dict reflects `status = 'diagnosing'`
+
+#### Scenario: Failure to write flow state leaves no orphan mind map
+
+- **WHEN** `teaching_flow_start()` inserts the mind map row and the `flow:{mind_map_id}` state write then fails
+- **THEN** the transaction MUST roll back
+- **AND** no row MUST exist in `education.mind_maps` for that topic
+- **AND** the caller MUST receive an error rather than a mind map id
+
+#### Scenario: Failure to insert the mind map leaves no orphan flow state
+
+- **WHEN** the mind map insert in `teaching_flow_start()` fails
+- **THEN** no `flow:{mind_map_id}` entry MUST exist in the KV store
+- **AND** the caller MUST receive an error
+
+#### Scenario: A started flow never yields an active zero-node map
+
+- **WHEN** `teaching_flow_start()` completes successfully and the diagnostic phase has not yet created any nodes
+- **THEN** the mind map's `status` MUST be `'draft'`
+- **AND** no mind map MUST exist with `status = 'active'` and zero nodes
 
 #### Scenario: User receives first diagnostic probe question
 

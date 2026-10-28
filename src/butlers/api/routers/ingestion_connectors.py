@@ -44,11 +44,12 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, field_validator
+from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, Field, field_validator
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiMeta, ApiResponse
 from butlers.api.oauth_scope_registry import (
     build_scope_rows,
@@ -58,6 +59,7 @@ from butlers.api.oauth_scope_registry import (
 )
 from butlers.api.routers.audit import append as _audit_append
 from butlers.api.routers.ingestion_pipeline import prometheus_aggregates_available
+from butlers.connectors.catalog import discovery_connectors
 from butlers.connectors.registry_roles import (
     CHECKPOINT as _ROLE_CHECKPOINT,
 )
@@ -94,6 +96,73 @@ _DB_INTERVAL: dict[PeriodLiteral, str] = {
     "7d": "7 days",
     "30d": "30 days",
 }
+
+
+class ConnectorSummaryToday(BaseModel):
+    """Existing last-24h ingestion total and reported failure counter."""
+
+    messages_ingested: int
+    messages_failed: int
+
+
+class ConnectorDeviceLiveness(BaseModel):
+    """Event-derived device evidence, independent of process heartbeats."""
+
+    sender_identity: str
+    last_seen_at: str
+    stale: bool
+
+
+class ConnectorCheckpointRecord(BaseModel):
+    """Storage-only cursor projection; it has no runtime health authority."""
+
+    connector_type: str
+    endpoint_identity: str
+    parent_endpoint_identity: str | None
+    label: str
+    checkpoint_cursor: str | None
+    checkpoint_updated_at: str | None
+    archived: bool
+
+
+class ConnectorSummary(BaseModel):
+    """Canonical summary wire data; policy stays in the existing derivation helpers."""
+
+    connector_type: str
+    endpoint_identity: str
+    operational_role: str
+    liveness: str
+    state: str
+    error_message: str | None
+    version: str | None
+    uptime_s: int | None
+    last_heartbeat_at: str | None
+    first_seen_at: str
+    archived: bool
+    archived_at: str | None
+    archive_candidate: bool
+    operational_warnings: list[str]
+    today: ConnectorSummaryToday | None = None
+    hourly_events: list[int]
+    hourly_filtered_events: list[int]
+    devices: list[ConnectorDeviceLiveness] | None
+    checkpoints: list[ConnectorCheckpointRecord]
+
+
+class ConnectorSummaryResponse(BaseModel):
+    """Summary data envelope, preserving the minimal registry-unavailable wire shape.
+
+    The route excludes unset fields: secondary-source defaults must not turn
+    primary-source failure into fabricated availability or an empty roster.
+    """
+
+    connectors: list[ConnectorSummary]
+    connector_registry_available: bool
+    unparented_checkpoints: list[ConnectorCheckpointRecord] = Field(default_factory=list)
+    unclassified_count: int = 0
+    device_liveness_available: bool = True
+    hourly_events_available: bool = True
+    owntracks_cadence_available: bool = True
 
 
 class ConnectorScopeRow(BaseModel):
@@ -411,11 +480,6 @@ def _is_archive_candidate(
     return any(identity != endpoint_identity for identity in siblings)
 
 
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
-
-
 def _pool(db: DatabaseManager):
     """Retrieve the switchboard butler's connection pool.
 
@@ -425,11 +489,11 @@ def _pool(db: DatabaseManager):
     """
     try:
         return db.pool(_SWITCHBOARD_BUTLER)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Connector registry database is not available",
-        )
+        ) from exc
 
 
 def _build_connector_auth_blocks(
@@ -675,10 +739,15 @@ def _build_dashboard_approval_push_runtime(db: DatabaseManager) -> Any | None:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/summaries", response_model=ApiResponse[dict])
+@router.get(
+    "/summaries",
+    response_model=ApiResponse[ConnectorSummaryResponse],
+    response_model_exclude_unset=True,
+)
 async def list_connector_summaries_with_aggregates(
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[dict]:
+    *,
+    db: Db,
+) -> ApiResponse[ConnectorSummaryResponse]:
     """Return the connector list. Every field is DB-sourced.
 
     Fetches connector registry rows from the switchboard database. This
@@ -820,7 +889,10 @@ async def list_connector_summaries_with_aggregates(
         )
     except Exception:
         logger.warning("connector summaries: failed to fetch from registry", exc_info=True)
-        return ApiResponse[dict](data={"connectors": [], "connector_registry_available": False})
+        return ApiResponse[ConnectorSummaryResponse](
+            data=ConnectorSummaryResponse(connectors=[], connector_registry_available=False),
+            meta=ApiMeta(),
+        )
 
     # Split runtime authority from storage state (bu-6jv4m.11). Only
     # `runtime_instance` rows (plus `unknown` rows, kept visible as explicitly
@@ -1178,7 +1250,7 @@ async def list_connector_summaries_with_aggregates(
             }
         )
 
-    return ApiResponse[dict](
+    return ApiResponse[ConnectorSummaryResponse](
         data={
             "connectors": connectors,
             # The registry is the primary roster source. This explicit true
@@ -1205,7 +1277,9 @@ async def list_connector_summaries_with_aggregates(
             # raised. The connector warnings stay empty in that case and the
             # frontend names the degraded source explicitly.
             "owntracks_cadence_available": owntracks_cadence_available,
-        }
+        },
+        # Keep the existing empty meta object when excluding unset data fields.
+        meta=ApiMeta(),
     )
 
 
@@ -1216,7 +1290,8 @@ async def list_connector_summaries_with_aggregates(
 
 @router.get("/cross-summary", response_model=ApiResponse[dict])
 async def get_cross_connector_summary_with_aggregates(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Return cross-connector aggregate summary with ``aggregates_available`` flag.
 
@@ -1348,7 +1423,8 @@ async def get_cross_connector_summary_with_aggregates(
 async def get_connector_detail(
     connector_type: str,
     endpoint_identity: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ConnectorDetailEntry]:
     """Return the full dashboard detail projection for one connector identity.
 
@@ -1392,14 +1468,14 @@ async def get_connector_detail(
             connector_type,
             endpoint_identity,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "connector detail lookup failed for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
+        raise HTTPException(status_code=503, detail="Connector registry is not available") from exc
 
     if row is None:
         raise HTTPException(
@@ -1418,7 +1494,8 @@ async def get_connector_stats(
     connector_type: str,
     endpoint_identity: str,
     period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]]:
     """Return a durable, filtered-aware time series for a live registry identity."""
     pool = _pool(db)
@@ -1442,14 +1519,14 @@ async def get_connector_stats(
                         db,
                         connection=connection,
                     )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "connector stats registry lookup failed for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
+        raise HTTPException(status_code=503, detail="Connector registry is not available") from exc
 
     if existing is None:
         raise HTTPException(
@@ -1470,7 +1547,8 @@ async def update_connector_settings(
     endpoint_identity: str,
     request: Request,
     body: ConnectorSettingsUpdateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ConnectorDetailEntry]:
     """Shallow-merge dashboard settings and audit only the setting names.
 
@@ -1490,14 +1568,14 @@ async def update_connector_settings(
             endpoint_identity,
             body.settings,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "connector settings update failed for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
+        raise HTTPException(status_code=503, detail="Connector registry is not available") from exc
 
     if row is None:
         raise HTTPException(
@@ -1538,7 +1616,8 @@ async def pause_connector(
     connector_type: str,
     endpoint_identity: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Pause a connector — audit-only, no Approvals gate.
 
@@ -1565,14 +1644,16 @@ async def pause_connector(
                     connector_type,
                     endpoint_identity,
                 )
-            except Exception:
+            except Exception as exc:
                 logger.warning(
                     "Failed to pause connector %s/%s",
                     connector_type,
                     endpoint_identity,
                     exc_info=True,
                 )
-                raise HTTPException(status_code=503, detail="Connector registry is not available")
+                raise HTTPException(
+                    status_code=503, detail="Connector registry is not available"
+                ) from exc
 
             if row is None:
                 raise HTTPException(
@@ -1631,7 +1712,8 @@ async def run_now_connector(
     connector_type: str,
     endpoint_identity: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Resume a paused connector and trigger the next poll cycle — audit-only, no Approvals gate.
 
@@ -1664,14 +1746,16 @@ async def run_now_connector(
                     connector_type,
                     endpoint_identity,
                 )
-            except Exception:
+            except Exception as exc:
                 logger.warning(
                     "Failed to fetch connector state for run-now %s/%s",
                     connector_type,
                     endpoint_identity,
                     exc_info=True,
                 )
-                raise HTTPException(status_code=503, detail="Connector registry is not available")
+                raise HTTPException(
+                    status_code=503, detail="Connector registry is not available"
+                ) from exc
 
             if current_row is None:
                 raise HTTPException(
@@ -1702,14 +1786,16 @@ async def run_now_connector(
                     connector_type,
                     endpoint_identity,
                 )
-            except Exception:
+            except Exception as exc:
                 logger.warning(
                     "Failed to clear pause for connector %s/%s",
                     connector_type,
                     endpoint_identity,
                     exc_info=True,
                 )
-                raise HTTPException(status_code=503, detail="Connector registry is not available")
+                raise HTTPException(
+                    status_code=503, detail="Connector registry is not available"
+                ) from exc
 
         # Emit the audit entry AFTER the state change has committed (outside the
         # transaction block, matching the disconnect/rotate-token/archive audit
@@ -1763,7 +1849,8 @@ async def archive_connector(
     connector_type: str,
     endpoint_identity: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Archive a superseded connector identity — audit-only, no Approvals gate (bu-33dm2).
 
@@ -1804,7 +1891,8 @@ async def unarchive_connector(
     connector_type: str,
     endpoint_identity: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Restore an archived connector identity to the active roster (bu-33dm2).
 
@@ -1869,7 +1957,7 @@ async def _set_archived(
                         connector_type,
                         endpoint_identity,
                     )
-            except Exception:
+            except Exception as exc:
                 logger.warning(
                     "Failed to %s connector %s/%s",
                     "archive" if archive else "unarchive",
@@ -1877,7 +1965,9 @@ async def _set_archived(
                     endpoint_identity,
                     exc_info=True,
                 )
-                raise HTTPException(status_code=503, detail="Connector registry is not available")
+                raise HTTPException(
+                    status_code=503, detail="Connector registry is not available"
+                ) from exc
 
             if row is None:
                 raise HTTPException(
@@ -1948,7 +2038,8 @@ async def disconnect_connector(
     connector_type: str,
     endpoint_identity: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Disconnect a connector — Approvals-gated; soft-deletes via ``deleted_at`` (§4.4).
 
@@ -1979,14 +2070,14 @@ async def disconnect_connector(
             connector_type,
             endpoint_identity,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "disconnect: failed to fetch connector %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
+        raise HTTPException(status_code=503, detail="Connector registry is not available") from exc
 
     if existing is None:
         raise HTTPException(
@@ -2026,14 +2117,14 @@ async def disconnect_connector(
             origin_butler=_SWITCHBOARD_BUTLER,
             approval_push_runtime=_build_dashboard_approval_push_runtime(db),
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "disconnect: failed to insert pending_action for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Approvals subsystem is not available")
+        raise HTTPException(status_code=503, detail="Approvals subsystem is not available") from exc
 
     # Emit audit entry for the disconnect submission
     try:
@@ -2091,7 +2182,8 @@ async def rotate_connector_token(
     connector_type: str,
     endpoint_identity: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> NoReturn:
     """Reject token rotation until it has a safe replayable command.
 
@@ -2111,14 +2203,14 @@ async def rotate_connector_token(
             connector_type,
             endpoint_identity,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "rotate-token: failed to fetch connector %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
+        raise HTTPException(status_code=503, detail="Connector registry is not available") from exc
 
     if existing is None:
         raise HTTPException(
@@ -2145,7 +2237,7 @@ async def rotate_connector_token(
             result="error",
             error="safe replayable command unavailable",
         )
-    except Exception:
+    except Exception as exc:
         logger.error(
             "rotate-token: failed to append unreplayable-command audit for %s/%s",
             connector_type,
@@ -2155,7 +2247,7 @@ async def rotate_connector_token(
         raise HTTPException(
             status_code=503,
             detail="Token rotation is unavailable because its refusal audit could not be recorded",
-        )
+        ) from exc
 
     logger.warning(
         "rotate-token: rejected unreplayable request for connector %s/%s",
@@ -2218,87 +2310,6 @@ async def reauth_connector(
 # Fields: connector_type, channel, provider, display_name
 # ---------------------------------------------------------------------------
 
-_CONNECTOR_CATALOG: list[dict[str, Any]] = [
-    {
-        "connector_type": "gmail",
-        "channel": "email",
-        "provider": "google",
-        "display_name": "Gmail",
-    },
-    {
-        "connector_type": "telegram_bot",
-        "channel": "telegram",
-        "provider": "telegram",
-        "display_name": "Telegram Bot",
-    },
-    {
-        "connector_type": "telegram_user_client",
-        "channel": "telegram",
-        "provider": "telegram",
-        "display_name": "Telegram User Client",
-    },
-    {
-        "connector_type": "home_assistant",
-        "channel": "home-assistant",
-        "provider": "home_assistant",
-        "display_name": "Home Assistant",
-    },
-    {
-        "connector_type": "discord_user",
-        "channel": "discord",
-        "provider": "discord",
-        "display_name": "Discord User Client",
-    },
-    {
-        "connector_type": "spotify",
-        "channel": "spotify",
-        "provider": "spotify",
-        "display_name": "Spotify",
-    },
-    {
-        "connector_type": "owntracks",
-        "channel": "owntracks",
-        "provider": "owntracks",
-        "display_name": "OwnTracks",
-    },
-    {
-        "connector_type": "whatsapp_user_client",
-        "channel": "whatsapp",
-        "provider": "whatsapp",
-        "display_name": "WhatsApp User Client",
-    },
-    {
-        "connector_type": "steam",
-        "channel": "steam",
-        "provider": "steam",
-        "display_name": "Steam",
-    },
-    {
-        "connector_type": "google_calendar",
-        "channel": "google_calendar",
-        "provider": "google",
-        "display_name": "Google Calendar",
-    },
-    {
-        "connector_type": "google_drive",
-        "channel": "google_drive",
-        "provider": "google",
-        "display_name": "Google Drive",
-    },
-    {
-        "connector_type": "google_health",
-        "channel": "google_health",
-        "provider": "google",
-        "display_name": "Google Health",
-    },
-    {
-        "connector_type": "activitywatch",
-        "channel": "activitywatch",
-        "provider": "activitywatch",
-        "display_name": "ActivityWatch",
-    },
-]
-
 
 class ConnectorProfile(BaseModel):
     """A single connector profile entry from the discovery catalog."""
@@ -2331,7 +2342,7 @@ async def list_available_connectors() -> ConnectorAvailableResponse:
     Used by the dashboard "add connector" affordance and the
     ConnectorsListPage dormant/available section (§3.5).
     """
-    profiles = [ConnectorProfile(**p) for p in _CONNECTOR_CATALOG]
+    profiles = [ConnectorProfile(**row.discovery_profile()) for row in discovery_connectors()]
     return ConnectorAvailableResponse(data=profiles)
 
 
@@ -2434,7 +2445,8 @@ async def list_connector_events(
         le=_MAX_CONNECTOR_EVENTS,
         description="Max events to return (default 20, max 100)",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConnectorEventsResponse:
     """Return the most recent events for a specific connector.
 
@@ -2459,14 +2471,14 @@ async def list_connector_events(
             connector_type,
             endpoint_identity,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "connector-events: registry lookup failed for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
+        raise HTTPException(status_code=503, detail="Connector registry is not available") from exc
 
     if existing is None:
         raise HTTPException(
@@ -2511,14 +2523,14 @@ async def list_connector_events(
             endpoint_identity,
             limit,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "connector-events: failed to query events for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Event query failed")
+        raise HTTPException(status_code=503, detail="Event query failed") from exc
 
     events = [
         ConnectorEventSummary(
@@ -2559,7 +2571,8 @@ async def list_connector_incidents(
         le=_MAX_CONNECTOR_INCIDENTS,
         description="Max incidents to return (default 10, max 50)",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConnectorIncidentsResponse:
     """Return recent incident events (failures and errors) for a specific connector.
 
@@ -2584,14 +2597,14 @@ async def list_connector_incidents(
             connector_type,
             endpoint_identity,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "connector-incidents: registry lookup failed for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
+        raise HTTPException(status_code=503, detail="Connector registry is not available") from exc
 
     if existing is None:
         raise HTTPException(
@@ -2636,14 +2649,14 @@ async def list_connector_incidents(
             incident_statuses,
             limit,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "connector-incidents: failed to query incidents for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Incident query failed")
+        raise HTTPException(status_code=503, detail="Incident query failed") from exc
 
     incidents = [
         ConnectorIncidentSummary(
@@ -2677,7 +2690,8 @@ async def list_connector_incidents(
 async def list_connector_routing_rules(
     connector_type: str,
     endpoint_identity: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConnectorRoutingRulesResponse:
     """Return ingestion rules referencing this connector.
 
@@ -2704,14 +2718,14 @@ async def list_connector_routing_rules(
             connector_type,
             endpoint_identity,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "connector-routing-rules: registry lookup failed for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
+        raise HTTPException(status_code=503, detail="Connector registry is not available") from exc
 
     if existing is None:
         raise HTTPException(
@@ -2745,14 +2759,14 @@ async def list_connector_routing_rules(
             """,
             connector_scope,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "connector-routing-rules: failed to query rules for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
-        raise HTTPException(status_code=503, detail="Routing rules query failed")
+        raise HTTPException(status_code=503, detail="Routing rules query failed") from exc
 
     rules = []
     for r in rows:

@@ -29,6 +29,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
+from butlers.api.deps import get_db_optional
 from butlers.api.routers.oauth import (
     _PROVIDER_REGISTRY,
     _clear_toml_scope_cache,
@@ -291,15 +292,18 @@ def _make_app_with_mocked_creds(app):
     async def _acquire():
         yield conn
 
+    async def _fetchval(query, *args):
+        if query.startswith("INSERT INTO public.audit_log ") and query.endswith("RETURNING id"):
+            return 1
+        return None
+
     pool = MagicMock()
     pool.acquire = _acquire
-    pool.fetchval = AsyncMock(return_value=None)
+    pool.fetchval = AsyncMock(side_effect=_fetchval)
     db_manager = MagicMock()
     db_manager.credential_shared_pool.return_value = pool
 
-    from butlers.api.routers import oauth as oauth_module
-
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
+    app.dependency_overrides[get_db_optional] = lambda: db_manager
     return app
 
 

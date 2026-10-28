@@ -27,7 +27,7 @@ from fastapi import FastAPI
 
 from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.channel_defaults import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -50,7 +50,7 @@ def _app_with_mock_db(
             shared_pool.fetchrow = AsyncMock(return_value=None)
             shared_pool.execute = AsyncMock(return_value=None)
         mock_db.credential_shared_pool.return_value = shared_pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return mock_db
 
 
@@ -283,3 +283,36 @@ async def test_delete_channel_default_405(app):
         resp = await client.delete("/api/ingestion/channel-defaults/email")
 
     assert resp.status_code == 405
+
+
+def test_complete_policy_selector_compatibility_without_alias_inference() -> None:
+    from butlers.api.routers.channel_defaults import _REQUIRED_KEYS, _validate_policy_for_channel
+
+    expected = {
+        "email",
+        "telegram",
+        "telegram_bot",
+        "telegram_user_client",
+        "home-assistant",
+        "home_assistant",
+        "spotify",
+        "owntracks",
+        "whatsapp",
+        "steam",
+        "google_calendar",
+        "google_drive",
+        "google_health",
+    }
+    assert set(_REQUIRED_KEYS) == expected
+    for channel in expected:
+        keys = {"priority_action", "max_age_days"} if channel == "email" else {"priority_action"}
+        assert _REQUIRED_KEYS[channel] == keys
+        policy = {"priority_action": "pass_through"}
+        if channel == "email":
+            assert _validate_policy_for_channel(channel, policy) is not None
+            policy["max_age_days"] = 30
+        assert _validate_policy_for_channel(channel, policy) is None
+    for selector in ("gmail", "whatsapp_user_client", "activitywatch", "live_listener", "discord"):
+        assert (
+            _validate_policy_for_channel(selector, {"priority_action": "pass_through"}) is not None
+        )

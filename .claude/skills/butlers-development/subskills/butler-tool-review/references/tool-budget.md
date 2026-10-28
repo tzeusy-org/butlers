@@ -70,18 +70,15 @@ groups = ["core", "entity"]  # only these groups registered
 
 ### Implementation Pattern
 
-Each module uses `ToolGroupMixin` on its config class and `_tool(group)` in `register_tools()`:
+Each module uses `ToolGroupMixin` on its config class and `tool_registrar` in `register_tools()`:
 
 ```python
-from butlers.modules.base import ToolGroupMixin, group_enabled
+from butlers.modules.base import ToolGroupMixin, tool_registrar
 
 class MyConfig(ToolGroupMixin, BaseModel): ...
 
 def register_tools(mcp, module, config=None):
-    def _tool(group):
-        if group_enabled(config, group):
-            return mcp.tool()
-        return lambda fn: fn
+    _tool = tool_registrar(mcp, config)
 
     @_tool("core")
     async def my_tool(...): ...
@@ -100,7 +97,7 @@ maintain a package-wide taxonomy here.
 ## Adding Group Support to a New Module
 
 1. Add `ToolGroupMixin` to the module's config class
-2. Define `_tool(group)` helper inside `register_tools()`
+2. Build `_tool = tool_registrar(mcp, config)` inside `register_tools()`
 3. Replace `@mcp.tool()` with `@_tool("group_name")` — zero re-indentation
 4. Document group taxonomy in config class docstring
 5. Update butler.toml files that use this module with appropriate `groups`

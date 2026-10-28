@@ -30,11 +30,11 @@ from butlers.connectors.steam import (
     build_status_change_envelope,
 )
 from butlers.ingestion_policy import IngestionPolicyEvaluator
+from butlers.tools.switchboard.contracts import parse_ingest_envelope
 from butlers.tools.switchboard.ingestion.ingest import (
     _make_ingestion_envelope,
     _run_policy_evaluation,
 )
-from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
 
 pytestmark = pytest.mark.unit
 

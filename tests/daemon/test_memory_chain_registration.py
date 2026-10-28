@@ -88,6 +88,45 @@ class TestMigrationsModuleLoader:
 class TestMemoryChainRegistration:
     """Verify that the memory chain is registered and discoverable."""
 
+    @pytest.mark.parametrize("target_schema", [None, "", "public", "general", "chronicler_mem"])
+    @pytest.mark.parametrize("direction", ["upgrade", "downgrade"])
+    def test_private_acl_revision_respects_actual_runner_target(
+        self, target_schema: str | None, direction: str
+    ) -> None:
+        """Default/public runs emit no private grants; only explicit private opts in."""
+        from io import StringIO
+
+        from alembic.migration import MigrationContext
+        from alembic.operations import Operations
+        from alembic.runtime.environment import EnvironmentContext
+
+        config = _mod._build_alembic_config(
+            "postgresql://unused@127.0.0.1:1/unused", ["memory"], target_schema=target_schema
+        )
+        revision = _load_module(
+            MEMORY_MIGRATIONS_DIR / "015_grant_chronicler_private_memory.py",
+            "memory_private_acl_control",
+        )
+        output = StringIO()
+        with EnvironmentContext(config, None) as environment:
+            context = MigrationContext.configure(
+                dialect_name="postgresql",
+                environment_context=environment,
+                opts={"as_sql": True, "output_buffer": output},
+            )
+            with Operations.context(context):
+                getattr(revision, direction)()
+
+        sql = output.getvalue()
+        if target_schema != "chronicler_mem":
+            assert sql == ""
+        elif direction == "upgrade":
+            assert "GRANT USAGE ON SCHEMA chronicler_mem TO butler_chronicler_rw" in sql
+            assert "IF current_schema() IS DISTINCT FROM 'chronicler_mem'" in sql
+        else:
+            assert "mem_015 has no lossless automatic private ACL downgrade" in sql
+            assert "GRANT" not in sql and "REVOKE" not in sql
+
     def test_memory_chain_registration_ordering_and_metadata(self) -> None:
         """memory not in shared; in get_all_chains; shared come first; chain dir + files correct; linear."""
         assert "memory" not in _SHARED_CHAINS
@@ -120,6 +159,7 @@ class TestMemoryChainRegistration:
             "012_rule_retirement.py",
             "013_content_authority.py",
             "014_knowledge_gaps.py",
+            "015_grant_chronicler_private_memory.py",
         ]
         assert has_butler_chain("memory") is False
         assert has_butler_chain("nonexistent_butler_xyz") is False
@@ -139,6 +179,7 @@ class TestMemoryChainRegistration:
             ("012_rule_retirement.py", "mem_012", "mem_011"),
             ("013_content_authority.py", "mem_013", "mem_012"),
             ("014_knowledge_gaps.py", "mem_014", "mem_013"),
+            ("015_grant_chronicler_private_memory.py", "mem_015", "mem_014"),
         ]
 
         def _load_migration(filename: str):
@@ -164,7 +205,7 @@ class TestMemoryChainRegistration:
         root = _load_migration(_EXPECTED_CHAIN[0][0])
         assert root.branch_labels == ("memory",)
         assert len(revisions) == len(set(revisions))
-        current = "mem_014"
+        current = "mem_015"
         path = [current]
         while chain_map.get(current) is not None:
             current = chain_map[current]
@@ -185,6 +226,7 @@ class TestMemoryChainRegistration:
             "mem_012",
             "mem_013",
             "mem_014",
+            "mem_015",
         ]
 
 

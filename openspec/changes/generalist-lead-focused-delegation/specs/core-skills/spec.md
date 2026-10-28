@@ -56,7 +56,10 @@ Scope: v1-mandatory
 The implementation SHALL provide the behavior described by this requirement.
 `read_agents_md(config_dir)` reads the AGENTS.md file, returning empty string if absent. `write_agents_md(config_dir, content)` writes/overwrites. `append_agents_md(config_dir, content)` appends to existing content. These SHALL be used only by developer and deployment tooling: a goal invocation has no filesystem access and no capability that reaches these functions, so runtime instances do not write agent notes to AGENTS.md. Runtime notes reach domain guidance only through the domain's `owner_authority` notes `record` capability (`REQ-core-skills-003`, RFC 0038 D2), which exposed invocations cannot write.
 
-Source: RFC 0038 D2, D3, D4
+Neither `write_agents_md` nor `append_agents_md` SHALL be reachable from any runtime-facing MCP tool, directly or through a thin wrapper. Importable developer/deployment helpers do not confer a model capability. Any future capability that proposes changes to git-tracked roster `AGENTS.md` content MUST submit the proposal through `propose_amendment` and the corresponding roster target adapter; the tracked file changes only after an explicit owner accept act. This conditional proposal path grants no tool or automatic adoption authority and does not govern writes to the separate D2 guidance-notes store, whose `record` capability remains defined by `REQ-core-skills-003`.
+
+ID: REQ-core-skills-004
+Source: RFC 0038 D2, D3, D4, D15; specify-improvement-proposal-spine design D13 fold-in
 Scope: v1-mandatory
 
 #### Scenario: Read existing AGENTS.md
@@ -85,6 +88,16 @@ Scope: v1-mandatory
 - **WHEN** the capability catalog presented to any lead or child invocation is enumerated
 - **THEN** no capability resolves to `write_agents_md` or `append_agents_md`
 - **AND** the invocation's sandbox holds no roster file it could write
+
+#### Scenario: [TARGET-STATE] No runtime MCP tool reaches either write function directly
+- **WHEN** the registered MCP tool surface for any butler is enumerated
+- **THEN** no tool resolves, directly or through a thin wrapper, to `write_agents_md` or `append_agents_md`
+
+#### Scenario: [TARGET-STATE] A future runtime-notes tool routes through propose_amendment
+- **WHEN** a future capability lets a goal invocation suggest changes to git-tracked roster `AGENTS.md` agent-notes content
+- **THEN** that capability calls `propose_amendment` with `target_kind="roster_prompt"` (or the appropriate roster target kind) rather than calling `write_agents_md`/`append_agents_md` directly
+- **AND** the content only reaches `AGENTS.md` after an explicit owner accept act through the corresponding target adapter
+- **AND** this tracked-file proposal path neither replaces nor adds an approval gate to the separate D2 guidance-notes `record` capability
 
 ## ADDED Requirements
 

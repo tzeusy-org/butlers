@@ -48,14 +48,14 @@ def _load_education_router():
     The router is discovered dynamically at app startup rather than imported by
     path, so a direct unit-level import needs the same importlib dance.
     """
-    if "education_receipt_router_under_test" in sys.modules:
-        return sys.modules["education_receipt_router_under_test"]
+    if "_education_receipt_router_under_test" in sys.modules:
+        return sys.modules["_education_receipt_router_under_test"]
     spec = importlib.util.spec_from_file_location(
-        "education_receipt_router_under_test", _ROUTER_PATH
+        "_education_receipt_router_under_test", _ROUTER_PATH
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    sys.modules["education_receipt_router_under_test"] = module
+    sys.modules["_education_receipt_router_under_test"] = module
     spec.loader.exec_module(module)
     return module
 

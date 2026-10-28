@@ -14,8 +14,8 @@ Five-second fleet verification with earned calm: nothing fabricated, failure nev
 | 02 | 2026-07-04 | 15 | bu-qvnce | [2026-07-04-jarvis-pursuit.md](2026-07-04-jarvis-pursuit.md) |
 | 03 | 2026-07-10 | 15 | one epic per move (no umbrella) | [2026-07-10-jarvis-pursuit.md](2026-07-10-jarvis-pursuit.md) |
 | 04 | 2026-07-12 | 15 | bu-hmdqz | [2026-07-12-jarvis-pursuit.md](2026-07-12-jarvis-pursuit.md) |
-| 05 | 2026-07-17 | 15 | bu-kqnum | [2026-07-17-jarvis-pursuit.md](2026-07-17-jarvis-pursuit.md) |
-| 06 | 2026-07-22 | 15 | bu-27dxl | [2026-07-22-jarvis-pursuit.md](2026-07-22-jarvis-pursuit.md) |
+| 05 | 2026-07-17 | 15 | bu-kqnum | `git show 7cfd3b301:docs/redesigns/2026-07-17-jarvis-pursuit.md` |
+| 06 | 2026-07-22 | 15 | bu-27dxl | `git show 7cfd3b301:docs/redesigns/2026-07-22-jarvis-pursuit.md` |
 | 07 | 2026-07-25 | 16 | bu-ep4ks | [2026-07-25-jarvis-pursuit.md](2026-07-25-jarvis-pursuit.md) |
 |: (talk-to-butlers) | 2026-07-28 | (see dossier) |: | [2026-07-28-talk-to-butlers-maturity-pursuit.md](2026-07-28-talk-to-butlers-maturity-pursuit.md) |
 | 08 | 2026-08-09 | 15 | bu-6jv4m | [2026-08-09-jarvis-pursuit.md](2026-08-09-jarvis-pursuit.md) |
@@ -23,16 +23,17 @@ Five-second fleet verification with earned calm: nothing fabricated, failure nev
 | 10 (dashboard chat) | 2026-09-02 | 15 | bu-0ynlk | [2026-09-02-dashboard-chat-pursuit.md](2026-09-02-dashboard-chat-pursuit.md) |
 | 11 | 2026-09-03 | 15 | bu-8cdl1 | [2026-09-03-jarvis-pursuit.md](2026-09-03-jarvis-pursuit.md) |
 | 12 | 2026-09-05 | 15 | bu-2jtfw | [2026-09-05-jarvis-pursuit.md](2026-09-05-jarvis-pursuit.md) |
-| 13 | 2026-09-12 | 15 | bu-h40h2b | [2026-09-12-jarvis-pursuit.md](2026-09-12-jarvis-pursuit.md) |
-| 14 | 2026-09-22 | 4 | bu-p5umi2 | [2026-09-22-jarvis-pursuit.md](2026-09-22-jarvis-pursuit.md) |
+| 13 | 2026-09-12 | 15 | bu-h40h2b | `git show 7cfd3b301:docs/redesigns/2026-09-12-jarvis-pursuit.md` |
+| 14 | 2026-09-22 | 4 | bu-p5umi2 | `git show 7cfd3b301:docs/redesigns/2026-09-22-jarvis-pursuit.md` |
 | 15 | 2026-10-03 | 15 | bu-q7vx1q | [2026-10-03-jarvis-pursuit.md](2026-10-03-jarvis-pursuit.md) |
-| 16 | 2026-10-06 | 15 | bu-s11n0s | [2026-10-06-jarvis-pursuit.md](2026-10-06-jarvis-pursuit.md) |
+| 16 | 2026-10-06 | 15 | bu-s11n0s | `git show 7cfd3b301:docs/redesigns/2026-10-06-jarvis-pursuit.md` |
 | 17 (SDLC velocity) | 2026-10-06 | 15 | bu-ly3lv5 | [2026-10-06-sdlc-velocity-pursuit.md](2026-10-06-sdlc-velocity-pursuit.md) |
 | 18 (platform simplification) | 2026-10-13 | 15 | bu-dss7he | [2026-10-13-simplification-pursuit.md](2026-10-13-simplification-pursuit.md) |
 | 19 (QA remediation direction) | 2026-10-14 | 6 + reconciliation | bu-6a9xxw | [2026-10-14-qa-remediation-pursuit.md](2026-10-14-qa-remediation-pursuit.md) |
 | 20 (Dots superset) | 2026-10-15 | 15 | bu-jv1moa | [2026-10-15-dots-superset-pursuit.md](2026-10-15-dots-superset-pursuit.md) |
 | 21 (JARVIS architecture) | 2026-10-16 | 15 | bu-dhloi1 | [2026-10-16-jarvis-arch-pursuit.md](2026-10-16-jarvis-arch-pursuit.md) |
 | 22 (backlog optimization) | 2026-10-16 | 2 + reconciliation | bu-1mbyoa | [2026-10-16-backlog-pursuit.md](2026-10-16-backlog-pursuit.md) |
+| 23 (realtime outcomes) | 2026-10-28 | 3 + reconciliation | bu-okh0fw | [2026-10-28-jarvis-pursuit.md](2026-10-28-jarvis-pursuit.md) |
 
 ## Tier history
 
@@ -57,7 +58,8 @@ Verdicts per surface key across runs (blank: not tiered that run; keys were norm
 
 ## Ranked moves by run
 
-Titles only; packets live in the epic's child beads and in the run's data file (`jq '.synthesis.ranked_moves'`).
+Titles only; current packets and observations live in the epic's structured child fields.
+Older runs retain their existing pinned historical data-file references.
 
 ### 01 (audit) (2026-07-03) · epic bu-86c4c
 
@@ -456,3 +458,21 @@ Backlog lens, run concurrently with run 21 (working files and bead labels call i
 1. Backlog graph lint: a read-only check for graph states that hide or strand work (bu-1mbyoa.1)
 2. Weekly decision digest raises one attention row when the graph lint finds defects (bu-1mbyoa.2)
 3. Reconcile graph hygiene against the live backlog (gen-1) (bu-1mbyoa.3)
+
+
+### 23 (realtime outcomes) (2026-10-28) · epic bu-okh0fw
+
+Focused feature exploration with the owner's approved native-agent execution override: three
+concurrent research lanes covered the five standing lenses plus Home/environment, mobility,
+commerce and Travel. Three new domain extensions survived deduplication; no UI tier movement
+is claimed. Gate `bu-69cc1o` remains owner-held and releases specification work only.
+
+1. Appliance completion through the owner handoff, using explicit device states and a separate human obligation (`bu-okh0fw.1`).
+2. Trip disruption review over owner-confirmed linked plans, with stale-choice rejection and exact recovery options (`bu-okh0fw.2`).
+3. Bounded room comfort sessions whose outcomes use observed temperature, with expiry and control relinquishment (`bu-okh0fw.3`).
+4. Reconcile specification coverage and adoption prerequisites (gen-1) (`bu-okh0fw.4`).
+
+Purchase aftercare, shipment feeds, general event/condition infrastructure, streaming and new
+latency lanes were prior art, not refiled. The detailed dispositions and source-confirmed
+surface snapshots are in [the dossier](2026-10-28-jarvis-pursuit.md). No tracked data JSON or
+separately published artifact was created; complete structured Beads fields hold the packets.
