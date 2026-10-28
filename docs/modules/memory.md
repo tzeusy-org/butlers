@@ -217,7 +217,28 @@ retired design from maintained requirements and outstanding delivery work.
 
 ## Consolidation
 
-A background worker consumes unconsolidated episodes in deterministic batches and emits new facts, rules, supersessions, confirmations, and provenance links. Every episode reaches exactly one terminal state: `consolidated`, `failed`, or `dead_letter`. Consolidation output is schema-validated before persistence.
+A background worker consumes eligible episodes in deterministic batches and emits
+new facts, rules, supersessions, confirmations, and provenance links. Successful
+episodes become `consolidated`; failures are retried after bounded backoff or
+become `dead_letter` when the retry budget is exhausted. Consolidation output is
+schema-validated before persistence.
+
+The dashboard owner can recover an eligible dead-letter episode with
+`POST /api/memory/episodes/{episode_id}/requeue`. The owner guard and Origin/CSRF
+checks run before target resolution. Recovery is confined to the owning source's
+memory schema; Chronicler's private `chronicler_mem` schema is excluded. One
+conditional transaction changes `dead_letter` to `pending`, resets
+`consolidation_attempts` to `0`, clears error, retry, terminal-reason and lease
+fields, and records one sanitized lifecycle event. A competing request or a
+non-dead-letter episode receives a conflict without a second recovery event.
+The response means queued for a later ordinary schedule: it does not execute
+consolidation, run a schedule immediately, or expose bulk replay or an MCP
+recovery tool.
+
+The active [memory honesty change](../../openspec/changes/memory-honesty-last-mile/tasks.md)
+also requires a future partitioned obligation-goal implementation. That conversion
+and its switch remain open; the recovery and dashboard changes do not establish
+goal-runtime delivery.
 
 ## Decay and Hygiene
 
