@@ -14,7 +14,6 @@ Verifies:
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -40,6 +39,7 @@ from butlers.connectors.spotify import (
     persist_session_summary,
     persist_spoken_session,
 )
+from butlers.testing.fake_pool import AsyncCtx
 
 _ENDPOINT = "spotify_user_client:spotify:user123"
 _SPOTIFY_USER_ID = "user123"
@@ -54,17 +54,9 @@ async def test_connector_refresh_persists_only_secured_owner_oauth_rows() -> Non
     )
     conn = MagicMock()
 
-    @asynccontextmanager
-    async def _transaction():
-        yield
-
-    @asynccontextmanager
-    async def _acquire():
-        yield conn
-
-    conn.transaction = MagicMock(side_effect=_transaction)
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     pool = MagicMock()
-    pool.acquire = _acquire
+    pool.acquire = lambda: AsyncCtx(conn)
     connector._db_pool = pool
     connector._access_token = "rotated-access"
     connector._refresh_token = "rotated-refresh"
