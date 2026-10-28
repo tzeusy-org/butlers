@@ -77,8 +77,11 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.home_assistant_scrub import HABearerScrubError, scrub_ha_envelope
+
+_DESCRIPTOR = connector_descriptor("home_assistant")
 
 if TYPE_CHECKING:
     import asyncpg
@@ -89,13 +92,11 @@ logger = logging.getLogger(__name__)
 # Connector constants
 # ---------------------------------------------------------------------------
 
-CONNECTOR_TYPE = "home_assistant"
+CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 # NOTE: When the HA connector wires up replay via drain_replay_pending → submit_fn →
 # Switchboard ingest, "home_assistant" must be added to SourceChannel and SourceProvider
 # in roster/switchboard/tools/contracts.py, and _ALLOWED_PROVIDERS_BY_CHANNEL
 # updated accordingly, otherwise ingest.v1 Pydantic validation will reject replayed rows.
-CONNECTOR_CHANNEL = "home_assistant"
-CONNECTOR_PROVIDER = "home_assistant"
 
 
 # ---------------------------------------------------------------------------
@@ -228,8 +229,8 @@ def ha_full_payload(
     external_event_id = f"ha:{entity_id}:{time_ms}"
 
     payload = FilteredEventBuffer.full_payload(
-        channel=CONNECTOR_CHANNEL,
-        provider=CONNECTOR_PROVIDER,
+        channel=_DESCRIPTOR.channel,
+        provider=_DESCRIPTOR.provider,
         endpoint_identity=endpoint_identity,
         external_event_id=external_event_id,
         external_thread_id=f"ha:entity:{entity_id}",
@@ -303,7 +304,7 @@ class HAFilterPersistence:
         """
         self._buffer.record(
             external_message_id=f"ha:{entity_id}:{time_fired}",
-            source_channel=CONNECTOR_CHANNEL,
+            source_channel=_DESCRIPTOR.channel,
             sender_identity=entity_id,
             subject_or_preview=f"HA domain excluded: {entity_id}",
             filter_reason=reason_domain_excluded(domain),
@@ -346,7 +347,7 @@ class HAFilterPersistence:
         """
         self._buffer.record(
             external_message_id=f"ha:{entity_id}:{time_fired}",
-            source_channel=CONNECTOR_CHANNEL,
+            source_channel=_DESCRIPTOR.channel,
             sender_identity=entity_id,
             subject_or_preview=f"HA insignificant delta: {entity_id} ({device_class})",
             filter_reason=reason_insignificant_delta(device_class, delta),
@@ -391,7 +392,7 @@ class HAFilterPersistence:
         """
         self._buffer.record(
             external_message_id=f"ha:{entity_id}:{time_fired}",
-            source_channel=CONNECTOR_CHANNEL,
+            source_channel=_DESCRIPTOR.channel,
             sender_identity=entity_id,
             subject_or_preview=f"HA discretion ignore: {entity_id}",
             filter_reason=reason_discretion_ignore(),
@@ -445,7 +446,7 @@ class HAFilterPersistence:
         """
         self._buffer.record(
             external_message_id=f"ha:{entity_id}:{time_fired}",
-            source_channel=CONNECTOR_CHANNEL,
+            source_channel=_DESCRIPTOR.channel,
             sender_identity=entity_id,
             subject_or_preview=f"HA global policy skip: {entity_id}",
             filter_reason=reason_global_skip(rule_type),

@@ -307,6 +307,10 @@ _DYNAMIC_RELATION_RE = re.compile(
 # Dynamic entries are exact normalized relation slots, not whole-file waivers.
 SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
+        "src/butlers/core/confirm_admission.py",
+        "switchboard.effects",
+    ): "sanctioned:RFC-0038: Switchboard-owned confirm admission verifies the exact dispatched effect digest and immutable recipient/deadline; no originating-butler schema access (bu-ow5a4)",
+    (
         "roster/finance/tests/test_jobs.py",
         "switchboard.butler_registry_control_plane",
     ): "sanctioned:Finance-warning-currentness: privileged independent test observer reads the committed boot successor; production Finance receives no table read grant",

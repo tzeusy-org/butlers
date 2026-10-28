@@ -14,6 +14,6 @@ export function putHomeSafetyWatch(input: HomeSafetyWatchInput) {
 }
 export function deleteHomeSafetyWatch(entityId: string, role: HomeSafetyRole) {
   return apiFetch("/home/safety-watch/{entity_id}/{role}", {
-    method: "DELETE", path: { entity_id: entityId, role },
+    method: "DELETE", path: { entity_id: String(entityId), role: String(role) },
   });
 }

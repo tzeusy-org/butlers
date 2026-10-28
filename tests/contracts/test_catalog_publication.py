@@ -26,6 +26,7 @@ from butlers.core.catalog_reader import DOMAINS, EXCLUSIONS, PublishedCatalogPro
 from butlers.core.goal_admission import Evidence, EvidenceRefused, GoalAdmission, derive_admission
 from butlers.core.tool_catalog import RecipientParameters, build_tool_catalog
 from butlers.modules.base import ToolMeta
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.contract
 
@@ -225,9 +226,8 @@ class Pool:
     async def fetchval(self, sql, *args):
         return await self.connection.fetchval(sql, *args)
 
-    @asynccontextmanager
-    async def acquire(self):
-        yield self.connection
+    def acquire(self):
+        return AsyncCtx(self.connection)
 
 
 async def test_publisher_accepts_maintenance_posture_and_refuses_runtime_bypass():

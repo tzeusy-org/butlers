@@ -11,8 +11,6 @@ downstream responsibilities of the Switchboard after ingest acceptance.
 
 Environment Variables (from docs/connectors/telegram_bot.md):
     SWITCHBOARD_MCP_URL: SSE endpoint URL for Switchboard MCP server (required)
-    CONNECTOR_PROVIDER: "telegram" (required)
-    CONNECTOR_CHANNEL: "telegram_bot" (required)
     CONNECTOR_POLL_INTERVAL_S: Poll interval in seconds (required for polling)
     CONNECTOR_MAX_INFLIGHT: Max concurrent ingest submissions (optional, default 8)
     CONNECTOR_HEALTH_PORT: HTTP port for health endpoint (optional, default 40081)
@@ -43,6 +41,7 @@ from fastapi import FastAPI
 from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel
 
+from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
@@ -71,6 +70,8 @@ from butlers.identity import resolve_owner_channel_via_definer
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.storage import BlobStorageStartupError, BlobStore, S3BlobStore
 from butlers.telegram_api import edit_telegram_message_text, remove_telegram_inline_keyboard
+
+_DESCRIPTOR = connector_descriptor("telegram_bot")
 
 logger = logging.getLogger(__name__)
 
@@ -232,8 +233,8 @@ class TelegramBotConnectorConfig:
     switchboard_mcp_url: str
 
     # Connector identity
-    provider: str = "telegram"
-    channel: str = "telegram_bot"
+    provider: str = _DESCRIPTOR.provider
+    channel: str = _DESCRIPTOR.channel
     endpoint_identity: str = field(default="")
 
     # Telegram credentials
@@ -274,8 +275,8 @@ class TelegramBotConnectorConfig:
         if not switchboard_mcp_url:
             raise ValueError("SWITCHBOARD_MCP_URL environment variable is required")
 
-        provider = os.environ.get("CONNECTOR_PROVIDER", "telegram")
-        channel = os.environ.get("CONNECTOR_CHANNEL", "telegram_bot")
+        provider = _DESCRIPTOR.provider
+        channel = _DESCRIPTOR.channel
 
         telegram_token = os.environ.get("BUTLER_TELEGRAM_TOKEN") or None
 
@@ -362,7 +363,7 @@ class TelegramBotConnector:
 
         # Metrics
         self._metrics = ConnectorMetrics(
-            connector_type="telegram_bot",
+            connector_type=_DESCRIPTOR.connector_type,
             endpoint_identity=config.endpoint_identity,
         )
 
@@ -493,7 +494,7 @@ class TelegramBotConnector:
     def _start_heartbeat(self) -> None:
         """Initialize and start heartbeat background task."""
         heartbeat_config = HeartbeatConfig.from_env(
-            connector_type="telegram_bot",
+            connector_type=_DESCRIPTOR.connector_type,
             endpoint_identity=self._config.endpoint_identity,
             version=None,  # Could be set from env or git sha
         )
@@ -899,6 +900,8 @@ class TelegramBotConnector:
                 # Approval callbacks are control-plane decisions, never
                 # ingest.v1 events. Keep the older chronicler ``cgi:`` callback
                 # path additive, then benignly acknowledge all other buttons.
+                if await self._maybe_handle_confirm_callback(update):
+                    return
                 if await self._maybe_handle_approval_callback(update):
                     return
                 if await self._maybe_handle_gap_interview_callback(update):
@@ -1038,6 +1041,55 @@ class TelegramBotConnector:
                     status="error",
                     error_detail=str(exc),
                 )
+
+    async def _maybe_handle_confirm_callback(self, update: dict[str, Any]) -> bool:
+        """Forward authenticated informational taps; never call a domain or approval sink."""
+        from butlers.core.confirm_tokens import verify_confirm_token
+
+        callback = update.get("callback_query")
+        if not isinstance(callback, dict):
+            return False
+        token = callback.get("data")
+        if not isinstance(token, str) or not token.startswith("cfm1:"):
+            return False
+        callback_id = str(callback.get("id", ""))
+        sender = callback.get("from")
+        message = callback.get("message")
+        chat = message.get("chat") if isinstance(message, dict) else None
+        sender_id = sender.get("id") if isinstance(sender, dict) else None
+        chat_id = chat.get("id") if isinstance(chat, dict) else None
+        secret = self._config.approval_callback_secret
+        credential = self._config.approval_callback_connector_token
+        toast = ""
+        if (
+            sender_id is not None
+            and chat_id is not None
+            and secret
+            and credential
+            and self._config.internal_api_url
+            and verify_confirm_token(token, chat_id=str(chat_id), secret=secret) is not None
+        ):
+            toast = "Couldn't record that right now. Please try again."
+            try:
+                response = await self._http_client.post(
+                    f"{self._config.internal_api_url.rstrip('/')}/api/confirms/callback",
+                    headers={"X-Butlers-Confirm-Callback-Token": credential},
+                    json={"token": token, "sender_id": str(sender_id), "chat_id": str(chat_id)},
+                )
+                if response.status_code == 200:
+                    data = response.json().get("data", {})
+                    status = data.get("status")
+                    toast = {
+                        "answered": "Answer recorded. Applying it now.",
+                        "expired": "This question has expired.",
+                        "already_handled": "Already handled.",
+                        "refused": "",
+                    }.get(status, toast)
+            except Exception:  # No callback data/credentials in exception logs.
+                logger.warning("Confirm callback service unavailable")
+        if callback_id:
+            await self._answer_callback_query(callback_id, toast)
+        return True
 
     async def _maybe_handle_approval_callback(self, update: dict[str, Any]) -> bool:
         """Apply one signed owner approval callback without entering ingestion.
@@ -1375,7 +1427,7 @@ class TelegramBotConnector:
                     chat_id = str(chat["id"])
                     break
         return IngestionEnvelope(
-            source_channel="telegram_bot",
+            source_channel=_DESCRIPTOR.channel,
             raw_key=chat_id,
         )
 

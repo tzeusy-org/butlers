@@ -4,5 +4,5 @@ import type { components } from "./schema.gen";
 export type EntityDossier = components["schemas"]["EntityDossier"];
 
 export function getEntityDossier(entityId: string) {
-  return apiFetch("/entities/{entity_id}/dossier", { path: { entity_id: entityId } });
+  return apiFetch("/entities/{entity_id}/dossier", { path: { entity_id: String(entityId) } });
 }

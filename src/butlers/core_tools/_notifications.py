@@ -305,11 +305,21 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 Field(description="Optional subject line (email channel)."),
             ] = None,
             intent: Annotated[
-                Literal["send", "reply", "react", "insight"],
-                Field(
-                    description=("Delivery intent. Allowed values: send | reply | react | insight.")
-                ),
+                Literal["send", "reply", "react", "insight", "confirm"],
+                Field(description=("Delivery intent: send | reply | react | insight | confirm.")),
             ] = "send",
+            options: Annotated[
+                list[dict[str, str]] | None,
+                Field(description="Required for confirm: 2-4 unique {value, label} choices."),
+            ] = None,
+            timeout_seconds: Annotated[
+                int,
+                Field(description="Confirm expiry in seconds, 30-86400; default 600."),
+            ] = 600,
+            on_timeout_value: Annotated[
+                str | None,
+                Field(description="Optional confirm timeout value; must match an offered value."),
+            ] = None,
             emoji: Annotated[
                 str | None,
                 Field(description="Required when intent=react."),
@@ -421,7 +431,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
               be read), notify() returns `{"status": "error", "code": "recipient_posture"}`
               before any identifier lookup, approval parking or delivery.
             - `subject` (string)
-            - `intent` (string enum): `send` | `reply` | `react` | `insight`
+            - `intent` (string enum): `send` | `reply` | `react` | `insight` | `confirm`
+            - `options` (list): required for `confirm`, 2-4 unique `{value,label}` choices
+            - `timeout_seconds` (integer): confirm expiry, 30-86400 seconds (default 600)
+            - `on_timeout_value` (string): optional offered value applied on expiry
             - `emoji` (string): required when `intent="react"`
             - `_why` (string): required for a non-owner recipient that enters approval gating;
               owner-directed notifications may omit it
@@ -560,11 +573,47 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     ),
                 }
 
-            if intent not in {"send", "reply", "react", "insight"}:
+            if intent not in {"send", "reply", "react", "insight", "confirm"}:
                 return {
                     "status": "error",
-                    "error": "Unsupported notify intent. Supported intents: send, reply, react, insight",  # noqa: E501
+                    "error": "Unsupported notify intent. Supported intents: send, reply, react, insight, confirm",  # noqa: E501
                 }
+
+            confirm_options = None
+            if intent == "confirm":
+                from butlers.core.confirm_models import ConfirmOption
+
+                try:
+                    if not isinstance(options, list) or not 2 <= len(options) <= 4:
+                        raise ValueError("confirm requires 2-4 options")
+                    if not all(
+                        isinstance(o, dict) and set(o) == {"value", "label"} for o in options
+                    ):
+                        raise ValueError("each confirm option requires exactly value and label")
+                    typed = tuple(ConfirmOption(**option) for option in options)
+                    if len({option.value for option in typed}) != len(typed):
+                        raise ValueError("confirm option values must be unique")
+                    if type(timeout_seconds) is not int or not 30 <= timeout_seconds <= 86400:
+                        raise ValueError("confirm timeout_seconds must be between 30 and 86400")
+                    if on_timeout_value is not None and on_timeout_value not in {
+                        option.value for option in typed
+                    }:
+                        raise ValueError("confirm on_timeout_value must match an offered value")
+                    if len(message) > 512:
+                        raise ValueError("confirm message must contain at most 512 characters")
+                except (TypeError, ValueError) as exc:
+                    return {"status": "error", "code": "confirm_validation", "error": str(exc)}
+                confirm_options = [{"value": o.value, "label": o.label} for o in typed]
+                if channel == "telegram" and not callable(getattr(daemon, "_confirm_notify", None)):
+                    # Dark means no prompt or approval-presentation side effects.
+                    return {"status": "error", "code": "confirm_runtime_unavailable"}
+                if channel != "telegram":
+                    # A noninteractive confirm is an ordinary guarded send. It has
+                    # no callback, answer-capture record or automatic resolution.
+                    message += "\n\n" + "\n".join(
+                        f"{index}. {option.label}" for index, option in enumerate(typed, 1)
+                    )
+                    intent = "send"
 
             # React intent validation
             if intent == "react":
@@ -758,6 +807,15 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                                 "message": message,
                                 "entity_id": str(entity_id),
                                 "intent": intent,
+                                **(
+                                    {
+                                        "options": confirm_options,
+                                        "timeout_seconds": timeout_seconds,
+                                        "on_timeout_value": on_timeout_value,
+                                    }
+                                    if intent == "confirm"
+                                    else {}
+                                ),
                             },
                             default=str,
                         )
@@ -815,14 +873,14 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             else:
                 resolved_recipient = await daemon._resolve_default_notify_recipient(
                     channel=channel,
-                    intent=intent,
+                    intent="send" if intent == "confirm" else intent,
                     recipient=recipient,
                     request_context=request_context,
                 )
 
             if (
                 channel == "telegram"
-                and intent in {"send", "insight"}
+                and intent in {"send", "insight", "confirm"}
                 and resolved_recipient is None
             ):
                 return {
@@ -912,7 +970,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             if (
                 channel != "email"
                 and resolved_recipient is not None
-                and intent in {"send", "insight"}
+                and intent in {"send", "insight", "confirm"}
             ):
                 pool = daemon.db.pool if daemon.db is not None else None
                 if pool is not None:
@@ -924,6 +982,12 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         "recipient": resolved_recipient,
                         "intent": intent,
                     }
+                    if intent == "confirm":
+                        _notify_args.update(
+                            options=confirm_options,
+                            timeout_seconds=timeout_seconds,
+                            on_timeout_value=on_timeout_value,
+                        )
                     _decision = await check_recipient(
                         pool,
                         channel=channel,
@@ -973,6 +1037,40 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             ),
                             "pending_action_id": str(_decision.action_id),
                         }
+
+            if intent == "confirm":
+                # Installed only by trusted host composition: this creates a durable
+                # prompt through an authenticated producer and never sends here.
+                # The source reloads active effect/recipient authority; these values
+                # (including session correlation) are input, not authority evidence.
+                # Messenger enforces attention policy at eventual provider delivery.
+                producer = getattr(daemon, "_confirm_notify", None)
+                if not callable(producer):
+                    return {"status": "error", "code": "confirm_runtime_unavailable"}
+                try:
+                    async with asyncio.timeout(15):
+                        receipt = await producer(
+                            {
+                                "message": message,
+                                "options": confirm_options,
+                                "timeout_seconds": timeout_seconds,
+                                "on_timeout_value": on_timeout_value,
+                                "channel": channel,
+                                "recipient": resolved_recipient,
+                                "runtime_session_id": _ledger_session_id,
+                            }
+                        )
+                except Exception:
+                    # Unknown acceptance cannot authorize a new prompt/key. The
+                    # owning source must reconcile its stable producer identity.
+                    return {"status": "error", "code": "confirm_acceptance_unconfirmed"}
+                if (
+                    isinstance(receipt, dict)
+                    and receipt.get("status") == "accepted"
+                    and isinstance(receipt.get("confirm_id"), str)
+                ):
+                    return {"status": "ok", "confirm_id": receipt["confirm_id"]}
+                return {"status": "error", "code": "confirm_acceptance_unconfirmed"}
 
             delivery_message = message if message is not None else ""
             notify_request: dict[str, Any] = {

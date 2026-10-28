@@ -79,6 +79,13 @@ Key requirements:
 
 ### Phase 4: Connector Spec
 
+Give each connector one canonical frozen row in `src/butlers/connectors/catalog.py`
+and obtain runtime identity through `connector_descriptor()`. Keep aliases,
+secondary pairs and stored-event spellings explicit; do not add configurable
+identity environment variables or duplicate connector lists. A descriptor row
+does not authorize a new wire pair, credential store or registration. Follow the
+existing RFC/spec change process for any genuinely new contract.
+
 Implement the connector base contract from `openspec/specs/connector-base-spec/spec.md`. **This is the most complex component.** See [references/connector-base-obligations.md](references/connector-base-obligations.md) for the full checklist.
 
 Critical obligations that are easy to miss:

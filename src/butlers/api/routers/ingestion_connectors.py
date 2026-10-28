@@ -61,6 +61,7 @@ from butlers.api.oauth_scope_registry import (
 )
 from butlers.api.routers.audit import append as _audit_append
 from butlers.api.routers.ingestion_pipeline import prometheus_aggregates_available
+from butlers.connectors.catalog import discovery_connectors
 from butlers.connectors.registry_roles import (
     CHECKPOINT as _ROLE_CHECKPOINT,
 )
@@ -2329,81 +2330,6 @@ async def reauth_connector(
 # Fields: connector_type, channel, provider, display_name
 # ---------------------------------------------------------------------------
 
-_CONNECTOR_CATALOG: list[dict[str, Any]] = [
-    {
-        "connector_type": "gmail",
-        "channel": "email",
-        "provider": "google",
-        "display_name": "Gmail",
-    },
-    {
-        "connector_type": "telegram_bot",
-        "channel": "telegram",
-        "provider": "telegram",
-        "display_name": "Telegram Bot",
-    },
-    {
-        "connector_type": "telegram_user_client",
-        "channel": "telegram",
-        "provider": "telegram",
-        "display_name": "Telegram User Client",
-    },
-    {
-        "connector_type": "home_assistant",
-        "channel": "home-assistant",
-        "provider": "home_assistant",
-        "display_name": "Home Assistant",
-    },
-    {
-        "connector_type": "spotify",
-        "channel": "spotify",
-        "provider": "spotify",
-        "display_name": "Spotify",
-    },
-    {
-        "connector_type": "owntracks",
-        "channel": "owntracks",
-        "provider": "owntracks",
-        "display_name": "OwnTracks",
-    },
-    {
-        "connector_type": "whatsapp_user_client",
-        "channel": "whatsapp",
-        "provider": "whatsapp",
-        "display_name": "WhatsApp User Client",
-    },
-    {
-        "connector_type": "steam",
-        "channel": "steam",
-        "provider": "steam",
-        "display_name": "Steam",
-    },
-    {
-        "connector_type": "google_calendar",
-        "channel": "google_calendar",
-        "provider": "google",
-        "display_name": "Google Calendar",
-    },
-    {
-        "connector_type": "google_drive",
-        "channel": "google_drive",
-        "provider": "google",
-        "display_name": "Google Drive",
-    },
-    {
-        "connector_type": "google_health",
-        "channel": "google_health",
-        "provider": "google",
-        "display_name": "Google Health",
-    },
-    {
-        "connector_type": "activitywatch",
-        "channel": "activitywatch",
-        "provider": "activitywatch",
-        "display_name": "ActivityWatch",
-    },
-]
-
 
 class ConnectorProfile(ResponseSchemaModel):
     """A single connector profile entry from the discovery catalog."""
@@ -2436,7 +2362,7 @@ async def list_available_connectors() -> ConnectorAvailableResponse:
     Used by the dashboard "add connector" affordance and the
     ConnectorsListPage dormant/available section (§3.5).
     """
-    profiles = [ConnectorProfile(**p) for p in _CONNECTOR_CATALOG]
+    profiles = [ConnectorProfile(**row.discovery_profile()) for row in discovery_connectors()]
     return ConnectorAvailableResponse(data=profiles)
 
 

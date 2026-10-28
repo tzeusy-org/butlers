@@ -3408,6 +3408,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/confirms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Cards */
+        get: operations["cards_api_confirms_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/confirms/{confirm_id}/answer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Answer */
+        post: operations["answer_api_confirms__confirm_id__answer_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/confirms/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Callback */
+        post: operations["callback_api_confirms_callback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/connectors/google-health/disconnect": {
         parameters: {
             query?: never;
@@ -15542,6 +15593,11 @@ export interface components {
              */
             trend: components["schemas"]["AnalyticsTrendEntry"][];
         };
+        /** Answer */
+        Answer: {
+            /** Option Index */
+            option_index: number;
+        };
         /**
          * ApiMeta
          * @description Extensible metadata bag attached to every API response.
@@ -20119,6 +20175,15 @@ export interface components {
             /** Source Key */
             source_key: string;
         };
+        /** Callback */
+        Callback: {
+            /** Chat Id */
+            chat_id: string;
+            /** Sender Id */
+            sender_id: string;
+            /** Token */
+            token: string;
+        };
         /** CandidateFact */
         CandidateFact: {
             /** Conf */
@@ -21435,6 +21500,99 @@ export interface components {
             notes?: string | null;
             /** Status */
             status?: ("active" | "managed" | "resolved") | null;
+        };
+        /** ConfirmAlreadyHandledOutput */
+        ConfirmAlreadyHandledOutput: {
+            /**
+             * Application Status
+             * @enum {string}
+             */
+            application_status: "idle" | "pending" | "applied" | "error";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "pending" | "answered" | "expired";
+            /**
+             * Status
+             * @constant
+             */
+            status: "already_handled";
+        };
+        /** ConfirmAnswerOutput */
+        ConfirmAnswerOutput: {
+            /** Data */
+            data: components["schemas"]["ConfirmHandledOutput"] | components["schemas"]["ConfirmAlreadyHandledOutput"] | components["schemas"]["ConfirmRefusedOutput"];
+        };
+        /** ConfirmCardOutput */
+        ConfirmCardOutput: {
+            /** Answer Index */
+            answer_index: number | null;
+            /**
+             * Application Status
+             * @enum {string}
+             */
+            application_status: "idle" | "pending" | "applied" | "error";
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Id */
+            id: string;
+            /** Options */
+            options: components["schemas"]["ConfirmOptionOutput"][];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "answered" | "expired";
+            /** Text */
+            text: string;
+        };
+        /** ConfirmHandledOutput */
+        ConfirmHandledOutput: {
+            /**
+             * Application Status
+             * @enum {string}
+             */
+            application_status: "idle" | "pending" | "applied" | "error";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "answered" | "expired";
+        };
+        /** ConfirmOptionOutput */
+        ConfirmOptionOutput: {
+            /** Label */
+            label: string;
+            /** Value */
+            value: string;
+        };
+        /** ConfirmPageMeta */
+        ConfirmPageMeta: {
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /** ConfirmPageOutput */
+        ConfirmPageOutput: {
+            /** Data */
+            data: components["schemas"]["ConfirmCardOutput"][];
+            meta: components["schemas"]["ConfirmPageMeta"];
+        };
+        /** ConfirmRefusedOutput */
+        ConfirmRefusedOutput: {
+            /**
+             * Status
+             * @constant
+             */
+            status: "refused";
         };
         /**
          * ConflictEventRef
@@ -43380,6 +43538,132 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    cards_api_confirms_get: {
+        parameters: {
+            query?: {
+                before?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfirmPageOutput"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    answer_api_confirms__confirm_id__answer_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                confirm_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Answer"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfirmAnswerOutput"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    callback_api_confirms_callback_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Callback"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfirmAnswerOutput"];
                 };
             };
             /** @description Validation Error */

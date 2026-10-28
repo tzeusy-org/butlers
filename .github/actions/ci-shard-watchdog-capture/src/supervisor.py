@@ -38,6 +38,25 @@ def count_refusal(diagnostics, key):
             diagnostics["counts_saturated"] = True
 
 
+def first_scan_refusal(diagnostics, site, operation, error, before, after):
+    """Retain one closed classification, never an identity or exception value."""
+    if diagnostics is None or diagnostics["first_scan_refusal"] is not None:
+        return
+    kind = (
+        {errno.ENOENT: 1, errno.ESRCH: 2, errno.EACCES: 3, errno.EPERM: 4}.get(error.errno, 5)
+        if isinstance(error, OSError)
+        else 6
+    )
+    bits = int(before is not None) | (int(after is not None) << 1)
+    if before is not None and after is not None and before[0] == after[0]:
+        bits |= 4
+    if after is not None and after[1] in ("Z", "X"):
+        bits |= 8
+    if before is not None and before[1] in ("Z", "X"):
+        bits |= 16
+    diagnostics["first_scan_refusal"] = {"s": site, "k": kind, "o": operation, "b": bits}
+
+
 def emit(value):
     wire = json.dumps(value, separators=(",", ":")) + "\n"
     if len(wire) > MAX_CONTROL_BYTES:
@@ -59,9 +78,10 @@ def process(pid):
         return None
 
 
-def children(pid, diagnostics=None):
+def children(pid, diagnostics=None, site=0):
     identity = process(pid)
     truncated = False
+    operation = 1  # task list
     try:
         # The supervisor is single-threaded. Other owned processes may not be.
         result = set()
@@ -71,7 +91,9 @@ def children(pid, diagnostics=None):
             count_refusal(diagnostics, "task_overflow")
         for task in tasks[:MAX_PROCESSES]:
             if task.isdecimal():
+                operation = 2  # child-file open/context
                 with open(f"/proc/{pid}/task/{task}/children") as stream:
+                    operation = 3  # child-file read
                     raw = stream.read(65536)
                     truncated = truncated or len(raw) == 65536
                     if len(raw) == 65536:
@@ -80,7 +102,9 @@ def children(pid, diagnostics=None):
                         if len(result) >= MAX_PROCESSES:
                             count_refusal(diagnostics, "children_overflow")
                             return result, True
+                        operation = 4  # child PID conversion
                         result.add(int(n))
+                    operation = 2  # child-file context exit
         return result, truncated
     except (OSError, ValueError) as error:
         current = process(pid)
@@ -100,6 +124,7 @@ def children(pid, diagnostics=None):
         # Permission, malformed data, unknown/reused identity and live actors
         # remain unobserved/truncated; never turn them into a positive scan.
         count_refusal(diagnostics, "scan_refused")
+        first_scan_refusal(diagnostics, site, operation, error, identity, current)
         return set(), True
 
 
@@ -149,7 +174,11 @@ def main():
     if ipc == "3":
         os.close(3)
     owned = {}
-    diagnostics = {"counts": dict.fromkeys(REFUSAL_KEYS, 0), "counts_saturated": False}
+    diagnostics = {
+        "counts": dict.fromkeys(REFUSAL_KEYS, 0),
+        "counts_saturated": False,
+        "first_scan_refusal": None,
+    }
 
     def diagnostic(reason, direct, no_children):
         # Closed categories and saturated numeric counts only. This explains
@@ -197,7 +226,7 @@ def main():
             current = process(pid)
             if not current or current[0] != start or current[1] in ("Z", "X"):
                 owned.pop(pid, None)
-        direct, truncated = children(os.getpid(), diagnostics)
+        direct, truncated = children(os.getpid(), diagnostics, site=1)
         overflow = overflow or truncated
         todo = list(direct)
         seen = set()
@@ -213,7 +242,7 @@ def main():
                 else:
                     overflow = True
                     count_refusal(diagnostics, "owned_overflow")
-                descendants, truncated = children(pid, diagnostics)
+                descendants, truncated = children(pid, diagnostics, site=2)
                 overflow = overflow or truncated
                 room = max(0, MAX_PROCESSES - len(todo))
                 remaining = descendants - seen
@@ -274,7 +303,7 @@ def main():
                             cancel(signal.SIGTERM, None)
             except ChildProcessError:
                 no_children = True
-            direct, truncated = children(os.getpid(), diagnostics)
+            direct, truncated = children(os.getpid(), diagnostics, site=3)
             overflow = overflow or truncated
             if outcome is not None and no_children and not direct and not owned:
                 diagnostic("latched_refusal" if overflow else "settled", direct, no_children)

@@ -487,3 +487,35 @@ def test_telegram_health_reports_auth_failure_as_error_and_api_failure_as_degrad
     connector._record_source_api_failure(_telegram_http_error(401, "Unauthorized"))
 
     assert connector._get_health_state() == ("error", "HTTP 401: Unauthorized")
+
+
+async def test_static_identity_env_cannot_relabel_real_bot_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Operator identity settings cannot relabel the actual ingest producer."""
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    config = TelegramBotConnectorConfig.from_env()
+    config.endpoint_identity = _ENDPOINT
+    runtime = TelegramBotConnector(config, cursor_pool=MagicMock())
+    update = {
+        "update_id": 123,
+        "message": {
+            "message_id": 1,
+            "from": {"id": 987},
+            "chat": {"id": 100},
+            "text": "Hello Bot!",
+        },
+    }
+    first = await runtime._normalize_to_ingest_v1(update)
+    replay = await runtime._normalize_to_ingest_v1(update)
+    assert first is not None and replay is not None
+    assert first["source"] == {
+        "channel": "telegram_bot",
+        "provider": "telegram",
+        "endpoint_identity": _ENDPOINT,
+    }
+    assert first["event"]["external_event_id"] == "123"
+    assert first["control"]["idempotency_key"] == replay["control"]["idempotency_key"]
+    assert first["event"]["external_conversation_id"] == "telegram:100"
