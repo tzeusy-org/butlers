@@ -35,6 +35,7 @@ from butlers.connectors.activitywatch import (
     persist_activity_event,
 )
 from butlers.ingestion_policy import PolicyDecision
+from butlers.testing.fake_pool import AsyncCtx
 
 _MACHINE_ID = "desktop"
 _ENDPOINT = f"activitywatch:{_MACHINE_ID}"
@@ -604,23 +605,12 @@ class _PurgeConnection:
         return outcome
 
 
-class _PurgeAcquire:
-    def __init__(self, connection: _PurgeConnection) -> None:
-        self._connection = connection
-
-    async def __aenter__(self) -> _PurgeConnection:
-        return self._connection
-
-    async def __aexit__(self, *_args: object) -> None:
-        return None
-
-
 class _PurgePool:
     def __init__(self, outcomes: list[str | Exception]) -> None:
         self.connection = _PurgeConnection(outcomes)
 
-    def acquire(self) -> _PurgeAcquire:
-        return _PurgeAcquire(self.connection)
+    def acquire(self) -> AsyncCtx:
+        return AsyncCtx(self.connection)
 
 
 def _make_retention(*outcomes: str | Exception, retention_days: int = 14) -> ActivityWatchRetention:

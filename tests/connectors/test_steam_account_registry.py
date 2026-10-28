@@ -30,6 +30,7 @@ from butlers.steam_account_registry import (
     resolve_steam_account,
     set_primary_account,
 )
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -85,22 +86,14 @@ def _make_id_row(id: uuid.UUID) -> MagicMock:
     return row
 
 
-class _FakeTx:
-    async def __aenter__(self) -> _FakeTx:
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
-
-
 class _FakeConn:
     def __init__(self) -> None:
         self.fetchrow = AsyncMock(return_value=None)
         self.fetch = AsyncMock(return_value=[])
         self.execute = AsyncMock(return_value="")
-        self._tx = _FakeTx()
+        self._tx = AsyncCtx(None)
 
-    def transaction(self) -> _FakeTx:
+    def transaction(self) -> AsyncCtx:
         return self._tx
 
 

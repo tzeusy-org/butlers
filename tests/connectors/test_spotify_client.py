@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,6 +15,7 @@ from butlers.connectors.spotify_client import (
     SpotifyClient,
     SpotifyTokenRefreshUnavailableError,
 )
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -195,16 +195,8 @@ async def test_token_refresh_rejects_malformed_success_payload_before_persisting
     store = _credential_store()
     conn = MagicMock()
 
-    @asynccontextmanager
-    async def _transaction():
-        yield
-
-    @asynccontextmanager
-    async def _acquire():
-        yield conn
-
-    conn.transaction = MagicMock(side_effect=_transaction)
-    store.pool.acquire = _acquire
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
+    store.pool.acquire = lambda: AsyncCtx(conn)
     http_client = AsyncMock(spec=httpx.AsyncClient)
     http_client.post = AsyncMock(return_value=_response(200, payload))
     client = SpotifyClient(credential_store=store, http_client=http_client)
@@ -241,16 +233,8 @@ async def test_successful_refresh_persists_owner_rows_in_one_transaction() -> No
     store = _credential_store()
     conn = MagicMock()
 
-    @asynccontextmanager
-    async def _transaction():
-        yield
-
-    @asynccontextmanager
-    async def _acquire():
-        yield conn
-
-    conn.transaction = MagicMock(side_effect=_transaction)
-    store.pool.acquire = _acquire
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
+    store.pool.acquire = lambda: AsyncCtx(conn)
     http_client = AsyncMock(spec=httpx.AsyncClient)
     http_client.post = AsyncMock(
         return_value=_response(

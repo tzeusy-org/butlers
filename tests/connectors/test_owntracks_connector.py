@@ -32,6 +32,7 @@ from butlers.connectors.owntracks import (
     build_waypoints_envelope,
     persist_location_point,
 )
+from butlers.testing.fake_pool import AsyncCtx
 
 _ENDPOINT = "owntracks:device:phone1"
 _OBSERVED = "2026-03-26T10:00:00+00:00"
@@ -71,23 +72,12 @@ class _PurgeConnection:
         return outcome
 
 
-class _PurgeAcquire:
-    def __init__(self, connection: _PurgeConnection) -> None:
-        self._connection = connection
-
-    async def __aenter__(self) -> _PurgeConnection:
-        return self._connection
-
-    async def __aexit__(self, *_args: object) -> None:
-        return None
-
-
 class _PurgePool:
     def __init__(self, outcomes: list[str | Exception]) -> None:
         self._connection = _PurgeConnection(outcomes)
 
-    def acquire(self) -> _PurgeAcquire:
-        return _PurgeAcquire(self._connection)
+    def acquire(self) -> AsyncCtx:
+        return AsyncCtx(self._connection)
 
 
 class _ChangingFailureStreakRetention(OwnTracksRetention):
