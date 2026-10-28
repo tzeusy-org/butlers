@@ -328,3 +328,13 @@ When heartbeat is enabled, startup attempts an unloaded publication with a two-s
 - [Attachment Handling](attachment-handling.md) -- Attachment fetch policy
 - [Heartbeat Protocol](heartbeat.md) -- Liveness reporting
 - [Metrics](metrics.md) -- Prometheus instrumentation
+
+### Shared configuration parsing
+
+The process manager and legacy runtime loader share parser stages for their
+fifteen common non-secret settings. Each keeps its original boolean spellings
+and validation order. Four runtime-only settings and the process-only account
+rescan interval remain separate. Account metadata overrides process defaults;
+OAuth credentials still come from the injected DB-backed resolver, and account
+workers keep health port zero. Static provider `gmail` and channel `email` come
+from the canonical descriptor, not identity environment variables.

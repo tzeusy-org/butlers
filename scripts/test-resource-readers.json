@@ -287,7 +287,7 @@
     "tests/tools/test_beads_worktree_sync.py"
   ],
   "declarations_digest": "2022a329b80afaaff08cee64df5e24b356f4a956bdac75e1235b8105fe5be906",
-  "digest": "94f85e879f8b5556d2b28d2f3181df0d634f9323a0a2249245526d082a0fb096",
+  "digest": "01b4ae061b8a62420e92974248f3729f33015229bb8d1e67e4d4fdf4c3fcf325",
   "global_patterns": [
     "*.md",
     ".claude/skills/*",
@@ -316,6 +316,7 @@
     "frontend/package-lock.json",
     "frontend/src",
     "frontend/src/components",
+    "frontend/src/components/ingestion/connectors/connector-catalog.gen.ts",
     "frontend/src/pages",
     "no tasks.md",
     "openspec/*",
@@ -799,6 +800,9 @@
       "tests/contracts/test_client_openapi_contract.py"
     ],
     "frontend/src/components": [
+      "@all-tests"
+    ],
+    "frontend/src/components/ingestion/connectors/connector-catalog.gen.ts": [
       "@all-tests"
     ],
     "frontend/src/components/memory/MemoryOverture.test.tsx": [
@@ -2535,13 +2539,13 @@
       "sha256": "4dfa5b1b4b447c15b20576c9671b53155d7db3bf1fe20484c3a4bd197b86d34b"
     },
     "roster/switchboard/tests/test_connector_heartbeat.py": {
-      "sha256": "603eb772ef3a87d040b4787466e3bd38be2635fb0fa2dfde3108f5e3b75283d5"
+      "sha256": "0a7346d0c6df5c99f0634d3b6dcc05273f1e1280e8c81275c6dc38b057d12f3d"
     },
     "roster/switchboard/tests/test_connector_stats_prometheus.py": {
       "sha256": "a93ff262366d0c31da55b248285b4efa2b0974f8a36faa626b4ef0022eb99b0c"
     },
     "roster/switchboard/tests/test_contract_models.py": {
-      "sha256": "d3a07a148d70f56deae32b238514ad70843a677e299666e7f9ac5cf93f854179"
+      "sha256": "b62769ed0d5a426d99f2e4b1f1b19b03e72db272da593226e82cc4ba384acb66"
     },
     "roster/switchboard/tests/test_correct_route.py": {
       "sha256": "8621f541bc274762ea858447b9ff4cadee0c32f3c0e111aa4f7b0adb89eb9287"
@@ -2661,13 +2665,13 @@
       "sha256": "66ee86f2e7d95d4613628327b69f2d4c024383c482254f0d1f8957b125f1f0af"
     },
     "roster/switchboard/tools/connector/heartbeat.py": {
-      "sha256": "ec7b5396340c21ec8e4b4d0beaa1da930681c191014337613a1a350a0a3084fc"
+      "sha256": "87797b8908967f4d6c9a1e327418a74442a9a27e7e57d6d2494d24d938686814"
     },
     "roster/switchboard/tools/connector/lifecycle.py": {
       "sha256": "536f3ad263237d7e90c685dca6ce54aa7bfa7ae8d59d562ebe39c96d93de0e57"
     },
     "roster/switchboard/tools/contracts.py": {
-      "sha256": "752f04a9d2a404b44a664f1a2dfb771bb9a7b1d9db9cf40f14cb84257dd8d0d5"
+      "sha256": "dc6872179a66c4d7bbd6d381bb760c6ffd1960d1cfce332133e4e109dac4d258"
     },
     "roster/switchboard/tools/dead_letter/__init__.py": {
       "sha256": "dfbd268f5352e65919bda433687d241aaed0d2e44f52a610e2f779f0fc7506db"
@@ -3044,6 +3048,9 @@
     "scripts/release_tag.py": {
       "sha256": "33c8cde709a61a5443f6dfa0c8689eb46327b7eba3293dde2c78411f36c4ba0c"
     },
+    "scripts/render_connector_catalog.py": {
+      "sha256": "5c3b414a01260d5325158145c6d796603ba9e5e82fe9fa3792bbd0fec3af05eb"
+    },
     "scripts/repair_attention_ledger_metadata.py": {
       "sha256": "605e3661ea9f10f21ff04697b65fe8464f5c47251381ccee9088ee8b5282a3f7"
     },
@@ -3237,7 +3244,7 @@
       "sha256": "49eed5053a4010c90c882ccebd224d678e0c8ae717f08285342560fcb77ee8c2"
     },
     "src/butlers/api/oauth_scope_registry.py": {
-      "sha256": "b6c3ded276f67cc4298fba09250f065c84cb473008963bfc6b5ae33203c8b8f0"
+      "sha256": "da0cb5339a521299b4dbc3b4ff94dad5c6a18bf461fff973375c474d107ed1aa"
     },
     "src/butlers/api/owner_auth/__init__.py": {
       "sha256": "72c0cc0d0ff3364b4e7c0b90a8fac85e3bbaa189eab37bfda22f5cdce5d55158"
@@ -3330,7 +3337,7 @@
       "sha256": "ab50495f3948d52e95064a807e48e38a189d5f248b57f35af4e2f7f9c4ccfd42"
     },
     "src/butlers/api/routers/channel_defaults.py": {
-      "sha256": "ce92af804d1a2ace0eba3cd6bf35d35886a396cea9c85b2d1455a886f00c6897"
+      "sha256": "9f4c1f35bd184be6fbd2aadb580ba141660723b7db82758b80b94c661218c0b1"
     },
     "src/butlers/api/routers/cli_auth.py": {
       "sha256": "945feb556aef8f6731e4fd4e5f2d9072038b93e7daa97d17ff0f686dc2131186"
@@ -3405,7 +3412,7 @@
       "sha256": "6b1ce84e2fb656c8d7743584c78d90fc76d1f343808210114f213f2fc7c39bdb"
     },
     "src/butlers/api/routers/oauth.py": {
-      "sha256": "9f0103b145900a525ca42df34c96981bccd414676e4068a2d67ae97cfee4049f"
+      "sha256": "be190e335fc37b4dd0703d5e10c3ac87a5110cafdbce78ce7de625c6ac2c9e40"
     },
     "src/butlers/api/routers/owntracks.py": {
       "sha256": "0db718eddae2624672171e8fbc1e9ece89f9cb7b4995c9d76554b8a7ddda2e3c"
@@ -3675,13 +3682,13 @@
       "sha256": "17d1e93de08b9b98ee271847990c4fd5c003cf53ed4497b510ff1f440e46c769"
     },
     "src/butlers/connectors/activitywatch.py": {
-      "sha256": "b55fa24466786b5fb08cafee3633768b71e147a08cf5dd11600db0e88c3fe7af"
+      "sha256": "ca60ca722cc745cb289d8d8cb1f20a4f44ee93389ef152805508b0c73b08550a"
     },
     "src/butlers/connectors/bridge_manager.py": {
       "sha256": "e5e8935d7b02bbbb896fdbec5674714bd547a6bb21069cd4e28711bcbc7d0975"
     },
     "src/butlers/connectors/catalog.py": {
-      "sha256": "e2624bc3f41a90c117c2f4e85449c7c30cc075346db5c0a6d9edd4feb11d9991"
+      "sha256": "f20b49d2d0bc61896b6734434a7df49b0004fa548c6d98155cdf860497bc7811"
     },
     "src/butlers/connectors/cursor_store.py": {
       "sha256": "d58669f477f8f3c58c287c89d9193763d923fde4f071641b786e9d7bc840d9b0"
@@ -3702,19 +3709,19 @@
       "sha256": "e7d12fe10b108c9f68e89039d3841ea4def86328b5b64f0ebbdd3c49b9a08f7d"
     },
     "src/butlers/connectors/gmail.py": {
-      "sha256": "9b671f11694fd73993fa3dc97975e60d01bb057c746a91ffc810c5c07280f0c7"
+      "sha256": "cbff73f91818d00b035b24f17865213d89df7073445eaca3ccba5e99b5366677"
     },
     "src/butlers/connectors/gmail_policy.py": {
       "sha256": "02f31941e6e10d227efb3598254212a86d4103240952673bb9e74cc96cb7f868"
     },
     "src/butlers/connectors/google_calendar.py": {
-      "sha256": "62c31dff3f957671184ca88841965ce3239eab39c1e8646c8e318bd4e3bf77f5"
+      "sha256": "1f24fc7c98b5cb46f32f907c2d305688d1ca2640de3a4193377b22c625370aa7"
     },
     "src/butlers/connectors/google_drive.py": {
-      "sha256": "8b4805fcad256080fdd82e6cf41bc09d1b9fe95fd4ef3a48ae56fa200e19ba95"
+      "sha256": "38888488ff81438b2f465bc1931465821fe27c816a12ff198448172200b8b590"
     },
     "src/butlers/connectors/google_health.py": {
-      "sha256": "68a7170e7a8a14d0c55b769b5b761c826e77b4fa45fccc1848cb5fd488d105cf"
+      "sha256": "c71e32e1f85f5f8d5f2f4b2fb89bfb9e2bcb14c7b9d89772449d87a0546fc1ad"
     },
     "src/butlers/connectors/google_health_client.py": {
       "sha256": "e3b9c5c45a001d6a01a03f871460ce155c4f2395ef005d7b474c1f07d431c555"
@@ -3726,16 +3733,16 @@
       "sha256": "e236fd7ac0186c18bff3a1fb0f3c1329f02ca0eb5034202cb8963e8f51a75191"
     },
     "src/butlers/connectors/home_assistant.py": {
-      "sha256": "917fa5e79cf49890e1a0834db9e0084ca97a008e69697f6f9d4b3298642391e8"
+      "sha256": "ec03c135abd1a77eb1c03f242ff605fcb0f8afbbb8b3222d161940773a211e39"
     },
     "src/butlers/connectors/home_assistant_checkpoint.py": {
       "sha256": "c8fad4e0b879dbf9a8148fe04cbe067443ba4e05c5a630c5f719074fe49479fd"
     },
     "src/butlers/connectors/home_assistant_envelope.py": {
-      "sha256": "6bce14d084b410839a4d44b8e92cc4746bd10d23fe620f47ed23ae3d57e917c7"
+      "sha256": "87c42aa17020d2793ac18d21df7392cd832da002296eda00b8ead78b8954a218"
     },
     "src/butlers/connectors/home_assistant_filter.py": {
-      "sha256": "a5cb1e7c30a2d6c5cf51e7700e209ce264ebcd36f0d7d1a6fb96cab8976f16af"
+      "sha256": "1a55f34846c43445f6a5d141e46a385974d3fdc3f27b798168e1efdece3282a5"
     },
     "src/butlers/connectors/home_assistant_pipeline.py": {
       "sha256": "f51d4b86cfdf668eafc3850bdc29e25295add05288cc78eca30e4ba586d935fd"
@@ -3765,13 +3772,13 @@
       "sha256": "fba8c135e7f31cef9c8989e746364efc6671ab845891a7406d1029770856641f"
     },
     "src/butlers/connectors/live_listener/config.py": {
-      "sha256": "e8bad58e6179c03e72cea6be8ed575ad2f8165e2ef0d2d908770a61a5772954a"
+      "sha256": "58670e332a9f5ad2e4794fdae48b8e4ef94ea0d5e8af46d829ead817f95748d6"
     },
     "src/butlers/connectors/live_listener/connector.py": {
-      "sha256": "d8a360a136eab5f022b4f590cffda43d852a3eb6fd713ce0393b7d1f797e3586"
+      "sha256": "fd86cac913b6380d9047df3d9c18aadb5a55ecbc005fccb35c5c0a01969654d1"
     },
     "src/butlers/connectors/live_listener/envelope.py": {
-      "sha256": "023de742bec1747edd4a898029caab4a5b8a4c6e42b20576be426372d1dca2a0"
+      "sha256": "e5f0069bb7bb244d82cf57d86535ec26feb088dd4db9025e2cf29428233a9757"
     },
     "src/butlers/connectors/live_listener/filter_gate.py": {
       "sha256": "f2ef5ea2fc7f657fa78359b807b1b5c26b83d0b6488a3ca9763491552ea8c0ec"
@@ -3801,34 +3808,34 @@
       "sha256": "5d2feabe2466abff042e67ca94b1550143f18ac2728b5eaad426fbf47210b99f"
     },
     "src/butlers/connectors/owntracks.py": {
-      "sha256": "a6d63ce9c502619fb2c5b120da0ad5441e7be64ef59cb006c6a4b5a71584f3a4"
+      "sha256": "9d13086205b6a2c618f3495130cf8c6835c524e78e485758b3cacc808e798a2d"
     },
     "src/butlers/connectors/registry_roles.py": {
       "sha256": "9b01505beacf700c1167bbb533b4835f0fef5870837497c172bbb6c974cea97c"
     },
     "src/butlers/connectors/spotify.py": {
-      "sha256": "758d5f70e2e2e35ff27132df57a8431a5443085f609b68cf2f17bed41576ca4c"
+      "sha256": "ca65b33958c1cbb7d874086e8e94582823f29481fb58aeaa6202b26ea1b247c5"
     },
     "src/butlers/connectors/spotify_client.py": {
       "sha256": "cf73cf263d98dcf5e84abc2ec567d0062f4261c67d49e7251b80ab078ab35f32"
     },
     "src/butlers/connectors/steam.py": {
-      "sha256": "c9537fdfe5938faa17a69aa4655d2964a81abcc62fbd54e7fc59acbf62f1fab4"
+      "sha256": "d0daf26fdd191b5b00647a8baa5a78457ae212278d7907f47721923653ef8658"
     },
     "src/butlers/connectors/telegram_bot.py": {
-      "sha256": "742de6e128137baf1c696ca4aa0b92b84dd9847b9119bc8f76fc11ad1d932816"
+      "sha256": "365ec237d96965a9a4fabcdbedeb6cfcaf12ed0db90ef7e15b35a73063c8ac53"
     },
     "src/butlers/connectors/telegram_spans.py": {
       "sha256": "a1262629de3eefe9d27dd21abced79dab87fca9c495d754ff3fb3f50cbdab540"
     },
     "src/butlers/connectors/telegram_user_client.py": {
-      "sha256": "791eca586e78086cc5efd7c21cc8de15d1d9d145e2d2cdd487da2811f9ff0a66"
+      "sha256": "4a6de416f52e0df8a602b61859f58a26d7f0e0c97005746b6c34bf2ab1e561a5"
     },
     "src/butlers/connectors/telegram_user_client_consent.py": {
       "sha256": "74e8765964f302253d9ea47cc683c4385c46e8b309e000a1ce375321be224186"
     },
     "src/butlers/connectors/whatsapp_user_client.py": {
-      "sha256": "a9219ee9cf4519d8778171905a6408780f78361ce748ead0be98062fdb8fdcbf"
+      "sha256": "93b922e26aa2a9540efe4b44c0b1909028772f65be853be9426cbb9702d2cf3f"
     },
     "src/butlers/context_bus.py": {
       "sha256": "de0a845f0ea21687297082add1c8f75f7eb2ca4fcaf6d5110692fedd829bf9b6"
@@ -5013,7 +5020,7 @@
       "sha256": "eba5a5f902dc49f5be4fb940f1d834d48cceb35cf84d4614045e53ed3d0596c3"
     },
     "src/butlers/modules/pipeline.py": {
-      "sha256": "46907b2075b8e3837eb1389396ed4afad87eca2e4fdb828154237871bf849068"
+      "sha256": "6169d4564a1b05a25d55961e43b3495e6eb4d9b2bcf0d2f2345777c2a0dfc319"
     },
     "src/butlers/modules/qa/__init__.py": {
       "sha256": "301dd31028dab38d5ddea4dbcdb11e0f33f90320a8e9c799220df6a883ec437b"
@@ -5418,7 +5425,7 @@
       "sha256": "8c352a3ab1ad08a1dbcb6a129ebe01b4b9632c3339b2540d8d9d477fc377aab8"
     },
     "tests/api/test_channel_defaults.py": {
-      "sha256": "634647b91f232ddb649e9fd7ed8465af97f9655d5403222e8f4da70802e8dae3"
+      "sha256": "1699aef60f50a562b6ed4a4eb8cdd4d410c86aa71f71752f25647ca6408acee6"
     },
     "tests/api/test_chat_stream.py": {
       "sha256": "cddc6e0225b1269ccc892272292be6225001d1da87461b0fac017fdd0ccd20ea"
@@ -5439,7 +5446,7 @@
       "sha256": "431bbefe938fe5aeaf205d9ef8d66988d3c47fc1c6a27f160fda321c66b686b9"
     },
     "tests/api/test_connector_oauth_scope_surface.py": {
-      "sha256": "73cfeb7d89a49d516295315e01fcca517e08cba17bd3862092377c9b60f868b1"
+      "sha256": "ab85c245ca84b3a85b44d74d3a9b2f76ac08c2623f9c21bf4a466e89eca1cc17"
     },
     "tests/api/test_connector_operational_role.py": {
       "sha256": "bed3f9ee7067f2eae4fb8ab47ff1ceea4a0f7c883e894f13fc3236bd22e613cb"
@@ -6468,7 +6475,7 @@
       "sha256": "de4d840f62b36118c7c16a0abd5ca3c3a4620db6c3b88d041c52197501825aec"
     },
     "tests/connectors/test_activitywatch_connector.py": {
-      "sha256": "2152c8a75aa11763a632e3e63de2dd31d06bfd796e2c5cf8e3489d6ad66d7fb4"
+      "sha256": "d0483ac8e3cde7b3de436e2862b248c837b766c97d51eb8bfab153f61748dd83"
     },
     "tests/connectors/test_bridge_manager.py": {
       "sha256": "579d5d9c8c53c87a43cc18a1dcd7b41dc5cd57727239a51ca0bb4e59bae3608b"
@@ -6531,7 +6538,7 @@
       "sha256": "504f8d433bf6a5da1b7ffec09afcfb9ddf8a31258811b1d40188ed750d9e1edd"
     },
     "tests/connectors/test_gmail_connector.py": {
-      "sha256": "948847331ddb88789b4698750eefe824d44f67ef758034974d9df069e146be0d"
+      "sha256": "894da60cf0d48040a41ab66f830e7cadf3267f2e94c4c2d6d49281f6d3b77ed7"
     },
     "tests/connectors/test_gmail_except_known_contacts.py": {
       "sha256": "299e9d93c0ee05c00d116310654e4b3043522939977423eec758cdebb9b7f8c0"
@@ -6555,7 +6562,7 @@
       "sha256": "5e3edd14df1cb16b518170a951fdbb788765a61706ea4b76f4762f39dbe27dec"
     },
     "tests/connectors/test_google_health_connector.py": {
-      "sha256": "9745c6ba605ae890cef7e4f7c2b8f49a85913f753109e0176679644e6293b827"
+      "sha256": "023e4203023741f5cb36d01d7db738740d697fc1ef3a8409c0c2cc67c6676a26"
     },
     "tests/connectors/test_heartbeat_counters.py": {
       "sha256": "ca35790b0165c603c901f0695b362cf3a128533f77bbf8762f36de69b486d297"
@@ -6564,7 +6571,7 @@
       "sha256": "971c743715910a2f67d037f9989d67982dc6bda2ab16c562a5ad5d673e7b8555"
     },
     "tests/connectors/test_home_assistant_connector.py": {
-      "sha256": "9b18541e9da5eee51abc0ec3be0154f493cef6de246f1cd2d01bc8be12b0cc07"
+      "sha256": "a2d0f538dcf69c4b56e06af9e16bbafbe65e70981416dffc121461316c82fb7a"
     },
     "tests/connectors/test_home_assistant_global_skip.py": {
       "sha256": "985d670ec91c6e38b3ff6f643d340bafa0d8451cc89a6c80d309797efbafb474"
@@ -6588,7 +6595,7 @@
       "sha256": "d89f16a9778c71d40ee8b1fd3ad69087336008194e59159cea18a20270792579"
     },
     "tests/connectors/test_live_listener_connector.py": {
-      "sha256": "e808228b33c64f6d58498de14e615c2bd2cf017d523f97519f76a0d2923d929c"
+      "sha256": "7bc598890a34618186ff5275c0945592a9019ad69320b9bde631b5e7981a0dae"
     },
     "tests/connectors/test_live_listener_idempotency_scrub.py": {
       "sha256": "72581f3a3df6d94be1531d3672f74e00a8d6ccfd544557306ebabf0dfa8b6a9f"
@@ -6603,7 +6610,7 @@
       "sha256": "3735f8c2be665ca407b09598ffd7aff04d367ae644a7b053e04e1f624f518ad2"
     },
     "tests/connectors/test_owntracks_connector.py": {
-      "sha256": "a0bb6a063556183da19c754bd35b86eb59ec5bd4c624f522335a269292ef2b05"
+      "sha256": "e39ae38fc40003525d0330d117016136dd960f9137cd64a97857376a27468bef"
     },
     "tests/connectors/test_owntracks_device_identity.py": {
       "sha256": "83c86bff0ea682e5c6dacad08a9383f3c2cf0c98d128a78fa58d2fd76faaa42b"
@@ -6612,7 +6619,7 @@
       "sha256": "526262ff5100052eee434fc6598c41655e7a0c7fcf4f4399af342bb912b4710a"
     },
     "tests/connectors/test_spotify_connector.py": {
-      "sha256": "947481f5c94b0c8c2fdff5d94d1aaa7bcf44ebab8edd95c23308da3cd6fbd87a"
+      "sha256": "986629da17675b44265847df007976d20d4dff495d38692dba5c195d0d146b7d"
     },
     "tests/connectors/test_spotify_listening_digest_due.py": {
       "sha256": "f0125d02dedcf51ea8250b32d1b20573d95adf64c17a668d05a78051ef7574e2"
@@ -6627,7 +6634,7 @@
       "sha256": "c76f062724f669cf9a3028ddfa327530906e495de81881afdcdf034474c1bbc7"
     },
     "tests/connectors/test_steam_connector.py": {
-      "sha256": "bc15a7d7210c8acbf2a2e7dba36762caf4fdbe3625c4e27c0951fc110b62aa8d"
+      "sha256": "0bb070887734f581d65a7cc98d3d526f233b5802571cc00a947341937e2a665c"
     },
     "tests/connectors/test_telegram_bot_approval_callbacks.py": {
       "sha256": "6ab66ecd785f2cfb892be50ff28d49980016defee0963b430cb7b43b148821e7"
@@ -6636,7 +6643,7 @@
       "sha256": "29ab2a00bce1c5ce8babfb348d64bfb763832536e12323c5188b7395d111a30e"
     },
     "tests/connectors/test_telegram_bot_connector.py": {
-      "sha256": "01d36275f6f6dd7643277401475b4b7a49f2fd19006b7219615f6853d70bbe50"
+      "sha256": "958e55081406991a8524f8c39b524f4e14699a75be1d4bc2ca8f99a58e1a729a"
     },
     "tests/connectors/test_telegram_bot_gap_interview.py": {
       "sha256": "f335ad4b1b13e7580e034cc09e5429e92ac8d244cd6c59e2975f359bd9d413ac"
@@ -6645,7 +6652,7 @@
       "sha256": "02d238b4fe0b280de07bc829736b1c2dd1e2e9fc50726018a176324c1332b5fa"
     },
     "tests/connectors/test_telegram_user_client.py": {
-      "sha256": "e9f2c5242e475c0a44e3b3991740ea29f253717aafc6b4bdc6788f5ca97e1273"
+      "sha256": "0817bf2273d9aa6456886863f24afa18c3d93e837b800b311ad4ec0a0a77fa03"
     },
     "tests/connectors/test_telegram_user_client_batch_scrub.py": {
       "sha256": "eea0520ccde39331a929318ab26be3f9718a7417637f17762acd836412ac4a71"
@@ -6663,7 +6670,7 @@
       "sha256": "7b51234e8b5b4f09caf2e21e9630433b6a073f68b8772490cb1d7bad26817f62"
     },
     "tests/connectors/test_whatsapp_user_client.py": {
-      "sha256": "0980ea31739fe4688e5763396aedf543f33faeecbffd3a501c2568379ef43ed9"
+      "sha256": "600b1702a05c9f3d5dc502006558770d5bb9847a3734f566e98d5a0e47d04b59"
     },
     "tests/contracts/__init__.py": {
       "sha256": "7a8b5e16668a6770a639f6f509e2150c380f924c8034def5b6ea357d3c679123"
@@ -6699,7 +6706,7 @@
       "sha256": "2a43db03723780439c5d438a87c5c6f063cabb21d57ec5c97c62b530a4ba4e7b"
     },
     "tests/contracts/test_ci_test_targets.py": {
-      "sha256": "a9bec9acf05f4b40ea8bdf5832c035a0d9797e6d3f73c2cecb493d8eb303da83"
+      "sha256": "9c5bf49afcab8ae9b3671f15082590ae6e284f733cd1f6bf73c38823b571222d"
     },
     "tests/contracts/test_ci_uv_installer.py": {
       "sha256": "88f02eb0fde1711743b79e0df2f9a9e6b5748b4214ab8c2ddea6c8039f0fc1c7"
@@ -6720,7 +6727,7 @@
       "sha256": "27d13a554b84092d187b825648e2654d2f1424e4b2c3355cb14115b92698921b"
     },
     "tests/contracts/test_connector_catalog.py": {
-      "sha256": "4006fbe4b8786360142c77f211669c8d9645e3ca72fc39000136c242bfc067a7"
+      "sha256": "db28767719c66c8c95487fcbc0cc1ad1045e815a9e4037df02759c2e9a5957c2"
     },
     "tests/contracts/test_connector_no_fact_writes.py": {
       "sha256": "53c94bb525e5bc34746fb981dad1dc12f26822ec4cbceb9cbf460f34696ccb55"
@@ -8856,7 +8863,7 @@
       "sha256": "05b808f1e04190deb403e43569d54a95ebf131720ef27a31f1206667de32e19a"
     },
     "tests/modules/test_conversation_history.py": {
-      "sha256": "8e12ec55bc207581f6640171036abda12d224fc21be0c64d7e99da9db60db436"
+      "sha256": "5cb09b7e8e0cff45c83bced1dd55fbe72924f42aad857179e87d2e8756768b2d"
     },
     "tests/modules/test_decision_memory_writeback.py": {
       "sha256": "8709b1c0451ce814917b8232010c4912b4a6ca3cf30afbd32580632c142fe698"

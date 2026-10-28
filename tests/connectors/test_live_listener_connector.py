@@ -237,3 +237,22 @@ async def test_voice_known_quote_markers_and_benign_unmarked_transcript():
         {"kind": "quoted", "start": 0, "end": len("[no text]")}
     ]
     buffer.flush.assert_awaited_once()
+
+
+def test_audio_config_keeps_device_and_transport_inputs_with_fixed_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from butlers.connectors.live_listener.config import LiveListenerConfig
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    monkeypatch.setenv("LIVE_LISTENER_DEVICES", '[{"name":"desk-mic","device":1}]')
+    monkeypatch.setenv("LIVE_LISTENER_TRANSCRIPTION_URL", "tcp://transcription.test:10300")
+    monkeypatch.setenv("LIVE_LISTENER_VAD_MODEL_PATH", "/synthetic/vad.onnx")
+    monkeypatch.setenv("LIVE_LISTENER_SESSION_GAP_S", "17")
+    config = LiveListenerConfig.from_env()
+    assert (config.channel, config.provider) == ("voice", "live-listener")
+    assert [(d.name, d.device) for d in config.devices] == [("desk-mic", 1)]
+    assert config.transcription_url == "tcp://transcription.test:10300"
+    assert config.session_gap_s == 17

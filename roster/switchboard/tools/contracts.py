@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
 from pydantic import (
@@ -19,6 +19,7 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 
+from butlers.connectors.catalog import ingress_providers_by_channel
 from butlers.ingestion_spans import SpanKind, normalize_spans
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -63,25 +64,9 @@ NotifyChannel = Literal["telegram", "email", "sms", "chat", "whatsapp"]
 NotifyIntent = Literal["send", "reply", "react", "insight", "approval_request"]
 PolicyTier = Literal["default", "interactive", "passive", "high_priority"]
 IngestionTier = Literal["full", "metadata"]
-_ALLOWED_PROVIDERS_BY_CHANNEL: dict[SourceChannel, frozenset[SourceProvider]] = {
-    "telegram_bot": frozenset({"telegram"}),
-    "telegram_user_client": frozenset({"telegram"}),
-    "slack": frozenset({"slack"}),
-    "email": frozenset({"gmail", "imap"}),
-    "api": frozenset({"internal"}),
-    "mcp": frozenset({"internal"}),
-    "voice": frozenset({"live-listener"}),
-    "whatsapp_user_client": frozenset({"whatsapp"}),
-    "google_calendar": frozenset({"google_calendar"}),
-    "spotify_user_client": frozenset({"spotify"}),
-    "owntracks": frozenset({"owntracks"}),
-    "dashboard": frozenset({"internal"}),
-    "home_assistant": frozenset({"home_assistant"}),
-    "gaming": frozenset({"steam"}),
-    "google_drive": frozenset({"google_drive"}),
-    "wellness": frozenset({"google_health", "home_assistant"}),
-    "activitywatch": frozenset({"activitywatch"}),
-}
+_ALLOWED_PROVIDERS_BY_CHANNEL: dict[SourceChannel, frozenset[SourceProvider]] = cast(
+    "dict[SourceChannel, frozenset[SourceProvider]]", ingress_providers_by_channel()
+)
 _THREAD_TARGET_REQUIRED_NOTIFY_CHANNELS: frozenset[NotifyChannel] = frozenset({"telegram", "chat"})
 _RFC3339_WITH_TZ_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$"

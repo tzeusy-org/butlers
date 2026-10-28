@@ -319,9 +319,7 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
         "Restore advisory environment cache",
         "Install dependencies",
     }
-    assert not {
-        step["name"] for step in environment["runs"]["steps"] if step.get("if")
-    }
+    assert not {step["name"] for step in environment["runs"]["steps"] if step.get("if")}
     assert all(
         not step.get("if")
         for step in environment["runs"]["steps"]

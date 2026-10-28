@@ -2482,3 +2482,15 @@ def test_poll_workout_scope_is_already_requested() -> None:
         GOOGLE_HEALTH_SCOPES
     )
     assert len(GOOGLE_HEALTH_SCOPES) == 3
+
+
+def test_descriptor_identity_preserves_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    from butlers.connectors import google_health as module
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "17")
+    config = module.GoogleHealthConnectorConfig.from_env()
+    assert (config.channel, config.provider) == ("wellness", "google_health")
+    assert config.max_inflight == 17

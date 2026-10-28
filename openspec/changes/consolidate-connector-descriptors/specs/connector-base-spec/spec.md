@@ -2,7 +2,7 @@
 
 ### Requirement: Static connector identity projections
 
-The framework SHALL keep canonical connector identity and its S1 surface projections
+The framework SHALL keep canonical connector identity and its static consumer projections
 in one frozen, pure-data catalog. The catalog SHALL contain no credential values,
 read no environment or database, and SHALL NOT confer registration or authentication
 authority through an alias or deployment flag.
@@ -31,6 +31,31 @@ Scope: v1-mandatory
 - **WHEN** a new hardcoded connector-type collection contains six or more current connector identities
 - **THEN** a source contract check SHALL reject that duplicate mechanism
 - **AND** temporary later-slice consumers and wire vocabularies SHALL be bound to their exact existing owner and literal population rather than exempting a whole file
+
+#### Scenario: Consumer projections preserve policy and stored history
+
+- **WHEN** ingress, heartbeat, policy or conversation-history consumers read catalog projections
+- **THEN** the existing nineteen wire pairs, thirteen heartbeat identities, thirteen policy selectors and twelve stored-history strategies SHALL remain unchanged
+- **AND** each API validator, unknown-selector refusal and audit-attribution rule SHALL retain its authority
+- **AND** Discord history SHALL remain readable without granting registration or ingress authority
+
+#### Scenario: Scope and auth projections preserve authority boundaries
+
+- **WHEN** the API adapts catalog metadata into its existing auth and scope response types
+- **THEN** all five ordered manifests, versions, scope categories, notes and approval reasons SHALL remain unchanged
+- **AND** six Google scope groups, default ordering, TOML precedence and explicit Health consent SHALL remain unchanged
+- **AND** provider and channel selectors SHALL preserve every shared or unsupported alternative without inferring a canonical connector or auth flow
+- **AND** canonical and legacy WhatsApp SHALL use managed-session classification and the existing Passport pairing route without exposing session material
+- **AND** ActivityWatch SHALL identify local environment configuration without claiming remote enrollment or observed credential validity
+- **AND** retired or unknown selectors SHALL remain unsupported
+
+#### Scenario: Public recovery data stays closed and reproducible
+
+- **WHEN** the small public recovery projection is generated or checked
+- **THEN** deterministic generation SHALL contain only closed recovery capabilities and explicit Health opt-in metadata
+- **AND** the existing recovery consumer SHALL preserve literal provider, origin, return-context and consent behavior
+- **AND** stale generated output SHALL fail its check and prototype/unknown selectors SHALL yield no OAuth or Passport destination
+- **AND** API DTO generation, connector-owned Spotify consent and runtime health/status algorithms SHALL remain independent
 
 ## MODIFIED Requirements
 
@@ -71,3 +96,22 @@ Scope: v1-mandatory
   `backfill.progress` MCP tools defined by the connector protocol
 - **AND** the available-connector discovery response SHALL not advertise
   backfill support or infer backfill behavior for any connector type
+
+### Requirement: Environment Variables (Base)
+All connectors SHALL derive static connector type, channel and provider from their canonical descriptor. Transport and operational parameters SHALL remain environment-configurable.
+
+ID: REQ-connector-base-spec-011
+Source: bu-dss7he.9 released S3; openspec/specs/connector-base-spec/spec.md requirement Environment Variables (Base)
+Scope: v1-mandatory
+
+#### Scenario: Required base environment variables
+- **WHEN** a connector starts
+- **THEN** `SWITCHBOARD_MCP_URL` (Switchboard SSE endpoint) must be set; channel and provider SHALL come from the canonical descriptor and SHALL NOT be overridden by `CONNECTOR_PROVIDER` or `CONNECTOR_CHANNEL`
+- **AND** each connector auto-resolves its `endpoint_identity` at startup (e.g., by calling the provider's "get me" API) rather than requiring it as an env var
+- **AND** checkpoint persistence is DB-backed via `cursor_store` (no file path env var needed)
+
+#### Scenario: Optional environment variables
+- **WHEN** a connector starts
+- **THEN** `CONNECTOR_MAX_INFLIGHT` (default 8), `CONNECTOR_HEALTH_PORT`, `CONNECTOR_POLL_INTERVAL_S`, `CONNECTOR_HEARTBEAT_INTERVAL_S` (default 120), and `CONNECTOR_HEARTBEAT_ENABLED` (default true) are optionally configurable
+
+---

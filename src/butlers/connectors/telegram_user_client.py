@@ -18,8 +18,6 @@ Key behaviors:
 
 Environment variables (see `docs/connectors/telegram-user-client.md`, "Environment Variables"):
 - SWITCHBOARD_MCP_URL (required)
-- CONNECTOR_PROVIDER=telegram (required)
-- CONNECTOR_CHANNEL=telegram_user_client (required)
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
 - CONNECTOR_HEALTH_PORT (optional, default 40080)
 - CONNECTOR_BACKFILL_WINDOW_H (optional, bounded startup replay in hours)
@@ -62,6 +60,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.discretion import (
     ContactWeightResolver,
@@ -98,6 +97,8 @@ from butlers.ingestion_bearer_scrub import (
 )
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.ingestion_spans import span_in_text
+
+_DESCRIPTOR = connector_descriptor("telegram_user_client")
 
 # Telethon is marked as optional dependency - handle import gracefully
 try:
@@ -203,8 +204,8 @@ class TelegramUserClientConnectorConfig:
     switchboard_mcp_url: str
 
     # Connector identity
-    provider: str = "telegram"
-    channel: str = "telegram_user_client"
+    provider: str = _DESCRIPTOR.provider
+    channel: str = _DESCRIPTOR.channel
     endpoint_identity: str = field(default="")
 
     # Telegram user-client credentials (MTProto)
@@ -261,8 +262,8 @@ class TelegramUserClientConnectorConfig:
         if not switchboard_mcp_url:
             raise ValueError("SWITCHBOARD_MCP_URL environment variable is required")
 
-        provider = os.environ.get("CONNECTOR_PROVIDER", "telegram")
-        channel = os.environ.get("CONNECTOR_CHANNEL", "telegram_user_client")
+        provider = _DESCRIPTOR.provider
+        channel = _DESCRIPTOR.channel
 
         backfill_window_str = os.environ.get("CONNECTOR_BACKFILL_WINDOW_H")
         backfill_window_h = int(backfill_window_str) if backfill_window_str else None
@@ -376,7 +377,7 @@ class TelegramUserClientConnector:
 
         # Metrics
         self._metrics = ConnectorMetrics(
-            connector_type="telegram_user_client",
+            connector_type=_DESCRIPTOR.connector_type,
             endpoint_identity=config.endpoint_identity,
         )
 
@@ -618,7 +619,7 @@ class TelegramUserClientConnector:
     def _start_heartbeat(self) -> None:
         """Initialize and start heartbeat background task."""
         heartbeat_config = HeartbeatConfig.from_env(
-            connector_type="telegram_user_client",
+            connector_type=_DESCRIPTOR.connector_type,
             endpoint_identity=self._config.endpoint_identity,
             version=None,
         )
@@ -989,7 +990,7 @@ class TelegramUserClientConnector:
 
             # e. Evaluate ingestion policy (connector scope — block/pass_through).
             _ip_envelope = IngestionEnvelope(
-                source_channel="telegram_user_client",
+                source_channel=_DESCRIPTOR.channel,
                 raw_key=chat_id,
             )
             _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
@@ -1601,7 +1602,7 @@ class TelegramUserClientConnector:
                         chat_id = str(val)
                         break
         return IngestionEnvelope(
-            source_channel="telegram_user_client",
+            source_channel=_DESCRIPTOR.channel,
             raw_key=chat_id,
         )
 
@@ -2673,7 +2674,7 @@ async def _run_health_server(
                 state, error_message = connector._get_health_state()
                 body_dict: dict[str, Any] = {
                     "status": state,
-                    "connector_type": "telegram_user_client",
+                    "connector_type": _DESCRIPTOR.connector_type,
                     "endpoint_identity": connector._config.endpoint_identity,
                 }
                 if error_message:
