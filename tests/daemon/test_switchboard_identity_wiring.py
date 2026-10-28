@@ -73,7 +73,7 @@ async def test_wiring_enables_identity_and_uses_notify_v1_messenger_boundary():
     }
 
 
-async def test_wired_owner_callback_surfaces_failed_delivery_to_identity_helper():
+async def test_wired_owner_callback_surfaces_failed_delivery_to_identity_helper(caplog):
     """The callback must reject a failed delivery so the helper can log-and-seal it."""
     daemon = _switchboard_daemon()
     pool = MagicMock()
@@ -87,10 +87,16 @@ async def test_wired_owner_callback_surfaces_failed_delivery_to_identity_helper(
     notify_owner_fn = pipeline_cls.call_args.kwargs["notify_owner_fn"]
     with patch(
         "butlers.tools.switchboard.notification.deliver.deliver",
-        new=AsyncMock(return_value={"status": "failed", "error": "messenger unavailable"}),
-    ):
-        with pytest.raises(RuntimeError, match="messenger unavailable"):
+        new=AsyncMock(
+            return_value={"status": "failed", "error": "sentinel-private-messenger-unavailable"}
+        ),
+    ) as deliver:
+        with pytest.raises(RuntimeError, match="^delivery_error$") as raised:
             await notify_owner_fn("Review unknown sender")
+    deliver.assert_awaited_once()
+    assert str(raised.value) == "delivery_error"
+    assert "sentinel-private-messenger-unavailable" not in caplog.text
+    assert "sentinel-private-messenger-unavailable" not in str(raised.value)
 
 
 async def test_buffer_pipeline_failure_persists_content_blind_category() -> None:

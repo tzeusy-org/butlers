@@ -119,6 +119,7 @@ retry, or write an extra attention row. Caller policy and its one outcome writer
 | Secrets lifecycle | Existing quiet-window queue, dedup marker and explicit retry owner remain; failure never advances success state. |
 | Deferred scheduler | Re-read attention state; keep the existing pending row on failure; terminal Telegram effects cannot replay. |
 | Unknown-sender review, WhatsApp session alert | Keep the existing single-claim/best-effort policy and record one outcome. |
+| Insight daily/urgent broker | Existing owner/channel resolution (including its channel fallback), quiet/dedup/budget/amend policy and delivery references stay at the broker; one `source="insight"` outcome per candidate, no helper-written row. |
 | Runtime-attention outbox | Keep its fenced lease, typed transport outcome and terminal transition; no second helper-written outcome. |
 | Calendar reminders | Build the shared wire envelope with reminder lineage; its callback still owns delivery and raises for an unsent notification. |
 
@@ -126,6 +127,11 @@ retry, or write an extra attention row. Caller policy and its one outcome writer
 responses, partial delivery and uncertain Telegram effects are never success. Exception logs carry
 only the exception type; structured public delivery-error vocabulary remains unchanged. RFC 0023
 approval delivery is a separate transport and is excluded from this adapter.
+
+Dashboard manual retry/escalation is a separate, explicitly claimed stored-row replay, not a new
+unsolicited owner producer. It excludes approval-recovery rows, validates failed status (and the
+alternate owner endpoint for escalation), then atomically claims before calling `deliver()` once.
+Its original-row forward links and single manual attention outcome remain owned by those endpoints.
 
 ## Definer search path
 

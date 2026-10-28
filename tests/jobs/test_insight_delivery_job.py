@@ -97,6 +97,7 @@ class TestBuildSwitchboardInsightNotifyFn:
         assert call_kwargs.kwargs["message"] == "Test insight"
         assert call_kwargs.kwargs["recipient"] == "12345678"
         assert call_kwargs.kwargs["source_butler"] == "switchboard"
+        assert call_kwargs.kwargs["metadata"] == {"channel": "telegram", "intent": "insight"}
 
     @pytest.mark.asyncio
     async def test_failed_status_translated_to_error(self):
@@ -125,10 +126,28 @@ class TestBuildSwitchboardInsightNotifyFn:
             result = await notify_fn("msg", {"channel": "telegram"})
 
         assert result["status"] == "error"
-        assert "Telegram unavailable" in result["error"]
+        assert result["error"] == "delivery_error"
+        assert deliver_failed["error"] == "Telegram unavailable"
+
+        # The broker treats only status=error as failure: an empty/missing
+        # acknowledgement must not escape as a successful candidate delivery.
+        for unconfirmed in ({}, None):
+            with (
+                patch(
+                    "butlers.credential_store.resolve_owner_entity_info",
+                    AsyncMock(return_value="12345"),
+                ),
+                patch(
+                    "butlers.tools.switchboard.notification.deliver.deliver",
+                    AsyncMock(return_value=unconfirmed),
+                ) as send,
+            ):
+                result = await notify_fn("msg", {"channel": "telegram"})
+            assert result["status"] == "error"
+            send.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_no_telegram_chat_id_returns_error(self):
+    async def test_no_telegram_chat_id_returns_error(self, caplog):
         """When no telegram_chat_id is configured, notify_fn returns status='error'."""
         from butlers.scheduled_jobs import _build_switchboard_insight_notify_fn
 
@@ -150,6 +169,19 @@ class TestBuildSwitchboardInsightNotifyFn:
         ]
         assert result["status"] == "error"
         assert "telegram" in result["error"].lower()
+
+        with (
+            patch(
+                "butlers.credential_store.resolve_owner_entity_info",
+                AsyncMock(side_effect=ValueError("sentinel-private-owner-lookup")),
+            ),
+            patch("butlers.tools.switchboard.notification.deliver.deliver", AsyncMock()) as send,
+        ):
+            unavailable = await notify_fn("msg", {"channel": "telegram"})
+        assert unavailable["status"] == "error"
+        assert "ValueError" in unavailable["error"]
+        assert "sentinel-private-owner-lookup" not in str(unavailable) + caplog.text
+        send.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_email_channel_resolves_email_recipient(self):
@@ -451,7 +483,7 @@ class TestBrokerChannelSelectionInNotifyMetadata:
         ],
     )
     @pytest.mark.asyncio
-    async def test_majority_channel_for_digest(self, channels, expected_channel):
+    async def test_majority_channel_for_digest(self, channels, expected_channel, caplog):
         """The broker computes meta['channel'] from candidate channels:
         majority vote when present, None when no candidate specifies one.
         """
@@ -461,11 +493,14 @@ class TestBrokerChannelSelectionInNotifyMetadata:
 
         async def _capture_notify(message: str, metadata: dict) -> dict:
             captured_metadata.append(dict(metadata))
-            return {"status": "sent"}
+            return await actual_notify(message, metadata)
 
         import asyncpg  # noqa: PLC0415
 
         mock_pool = AsyncMock(spec=asyncpg.Pool)
+        from butlers.scheduled_jobs import _build_switchboard_insight_notify_fn
+
+        actual_notify = _build_switchboard_insight_notify_fn(mock_pool)
 
         cid1 = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         cid2 = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
@@ -515,6 +550,17 @@ class TestBrokerChannelSelectionInNotifyMetadata:
         all_ids = [cid1, cid2, cid3]
 
         with (
+            patch(
+                "butlers.credential_store.resolve_owner_entity_info",
+                AsyncMock(return_value="owner"),
+            ),
+            patch(
+                "butlers.tools.switchboard.notification.deliver.deliver",
+                AsyncMock(return_value={"status": "sent", "notification_id": "sent-1"}),
+            ) as send,
+            patch(
+                "butlers.tools.switchboard.insight.broker.record_attention_event", AsyncMock()
+            ) as ledger,
             patch(
                 "butlers.tools.switchboard.insight.broker.get_insight_settings",
                 new=AsyncMock(
@@ -571,6 +617,11 @@ class TestBrokerChannelSelectionInNotifyMetadata:
         ):
 
             async def mock_fetch(query: str, *args: Any) -> list:
+                if "status, delivery_attempt_count" in query:
+                    return [
+                        row(**{**c, "status": "pending", "delivery_attempt_count": 1})
+                        for c in candidates
+                    ]
                 if "SELECT id, origin_butler" in query:
                     return [row(**c) for c in candidates]
                 if "insight_candidates" in query:
@@ -583,6 +634,29 @@ class TestBrokerChannelSelectionInNotifyMetadata:
             mock_pool.acquire = lambda: AsyncCtx(_FakeConn())
 
             await delivery_cycle(mock_pool, notify_fn=_capture_notify, now=_PINNED_NOW)
+            send.assert_awaited_once()
+            assert ledger.await_count == len(candidates)
+            assert all(c.kwargs["source"] == "insight" for c in ledger.await_args_list)
+            assert all(c.kwargs["outcome"] == "coalesced" for c in ledger.await_args_list)
+
+            # Use the real production callback at the actual broker logger, not
+            # a synthetic error result that bypasses the omitted transport.
+            for failure in (
+                RuntimeError("sentinel-private-insight-owner-message-recipient"),
+                {"status": "failed", "error": "sentinel-private-insight-owner-message-recipient"},
+            ):
+                send.reset_mock(side_effect=True)
+                send.side_effect = failure if isinstance(failure, Exception) else None
+                send.return_value = failure
+                ledger.reset_mock()
+                failed = await delivery_cycle(mock_pool, notify_fn=_capture_notify, now=_PINNED_NOW)
+                send.assert_awaited_once()
+                assert failed["delivered"] == []
+                assert ledger.await_count == len(candidates)
+                assert all(c.kwargs["outcome"] == "failed" for c in ledger.await_args_list)
+                assert "sentinel-private-insight-owner-message-recipient" not in caplog.text
+                assert all(r.exc_info is None for r in caplog.records)
+            assert "RuntimeError" in caplog.text
 
         assert len(captured_metadata) >= 1, "notify_fn should have been called"
         meta = captured_metadata[0]
@@ -607,12 +681,27 @@ async def test_actual_insight_notifier_preserves_terminal_partial_flag():
                     "retryable": False,
                 }
             ),
-        ),
+        ) as send,
     ):
         result = await notify("x" * 5000, {"channel": "telegram"})
+        send.assert_awaited_once()
+        send.reset_mock()
+        send.return_value = {
+            "status": "failed",
+            "telegram_effect_uncertain": True,
+            "retryable": False,
+            "error": "sentinel-private-uncertain-provider-detail",
+        }
+        uncertain = await notify("second insight", {"channel": "telegram"})
+        send.assert_awaited_once()
     assert result["status"] == "error"
     assert result["partial_delivery"] is True
     assert result["retryable"] is False
+
+    assert uncertain["status"] == "error"
+    assert uncertain["telegram_effect_uncertain"] is True
+    assert uncertain["retryable"] is False
+    assert "sentinel-private-uncertain-provider-detail" not in uncertain["error"]
 
 
 @pytest.mark.parametrize("terminal_field", ["partial_delivery", "telegram_effect_uncertain"])
