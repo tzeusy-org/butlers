@@ -11,6 +11,7 @@ import pytest
 from butlers.config import ButlerType
 from butlers.core_tools._base import ToolContext
 from butlers.core_tools._memory_catalog import register_memory_catalog_tools
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
 
@@ -25,9 +26,7 @@ def _register(*, held_ceiling: str, pointer: dict, switchboard_client=None):
 
         return decorator
 
-    pool = AsyncMock()
-    pool.fetchval = AsyncMock(return_value=held_ceiling)
-    pool.fetchrow = AsyncMock(return_value=pointer)
+    pool = fake_pool(fetchval=held_ceiling, fetchrow=pointer)
     daemon = SimpleNamespace(switchboard_client=switchboard_client)
     ctx = ToolContext(
         daemon=daemon,

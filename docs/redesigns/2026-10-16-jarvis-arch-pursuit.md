@@ -4,7 +4,7 @@
 
 The owner asked for the JARVIS pursuit to start from the Dots diff matrix (the 2026-10-15 ChatGPT Dots gap study, rows R1-R47, A1-I6, J1-J50, K1-K6) and find the feature enhancements and the architectural changes Butlers needs to become a true JARVIS. Run 20 had already mined the matrix for features, so this run's centre of gravity is architecture, with features as each change's first consumers. Twenty-five read-only agents ran in twelve batches, never more than three at once: matrix and RFC 0038 readiness readers, two use-case walks, eleven architecture lenses, four feature lenses, three deep designs, a target-architecture synthesizer and an adversarial critic. 81 candidate moves and 96 owner questions reduce to fifteen ranked moves, five verified bugs, sixteen grouped owner decisions and 16 vetted follow-ups.
 
-[Structured evidence](2026-10-16-jarvis-arch-pursuit-data.json)
+Structured evidence (archived): `git show 218607d8e75b7f9bd465335360a87d62b141a30a:docs/redesigns/2026-10-16-jarvis-arch-pursuit-data.json`
 
 ## Decision in view
 
@@ -181,5 +181,5 @@ The lenses left 162 notes on existing beads. Grouped per bead, with each agent's
 
 - Orchestration: 25 agents in 12 batches about 55 minutes apart over the requested 16-hour window, never more than three in flight; later briefs were written from the durable harvest mid-run. Zero agent errors. Models: opus/high; target-architecture and critic on fable/high.
 - Agents were read-only (scratch files outside the tree). No test suite, DB or live stack was run, so costs and payoffs are estimates.
-- Access: `jq '.audits["<lens>"]' docs/redesigns/2026-10-16-jarvis-arch-pursuit-data.json` (lens keys in `orchestration.batch_plan`); `jq '.synthesis.ranked_moves[] | {rank, title, bead}'` lists the moves; `.synthesis.owner_decisions[].questions` holds every sub-question. Long strings in `audits` are capped for size; the harvest file was not committed.
+- Access: `git show 218607d8e75b7f9bd465335360a87d62b141a30a:docs/redesigns/2026-10-16-jarvis-arch-pursuit-data.json | jq '.audits["<lens>"]'` (lens keys in `orchestration.batch_plan`); `jq '.synthesis.ranked_moves[] | {rank, title, bead}'` lists the moves; `.synthesis.owner_decisions[].questions` holds every sub-question. Long strings in `audits` are capped for size; the harvest file was not committed.
 - Retention: this PR removes `2026-10-14-qa-remediation-pursuit-data.json` from the tree per the two-newest-runs rule; read it with `git show 25983009a9fbdeb82db8743c384fdae6a49fc8d8:docs/redesigns/2026-10-14-qa-remediation-pursuit-data.json`.

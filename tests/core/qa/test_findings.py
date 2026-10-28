@@ -27,12 +27,10 @@ from butlers.core.qa.findings import (
     update_finding_dispatch_queued,
 )
 from butlers.core.qa.models import QaFinding
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
-
-
-class FakeRecord(dict):
-    pass
 
 
 def _make_finding(**kwargs) -> QaFinding:
@@ -107,8 +105,8 @@ async def test_update_finding_attempt():
 @pytest.mark.asyncio
 async def test_get_findings_by_patrol():
     """Returns list of dicts; empty list when no rows."""
-    row1 = FakeRecord({"id": uuid.uuid4(), "severity": 0})
-    row2 = FakeRecord({"id": uuid.uuid4(), "severity": 2})
+    row1 = Record({"id": uuid.uuid4(), "severity": 0})
+    row2 = Record({"id": uuid.uuid4(), "severity": 2})
     patrol_id = uuid.uuid4()
 
     pool = _pool(fetch=[row1, row2])
@@ -123,7 +121,7 @@ async def test_get_findings_by_patrol():
 async def test_get_findings_by_fingerprint():
     """Passes limit; default limit=20; returns list of dicts."""
     fp = "b" * 64
-    row = FakeRecord({"id": uuid.uuid4(), "fingerprint": fp})
+    row = Record({"id": uuid.uuid4(), "fingerprint": fp})
 
     pool = _pool(fetch=[row])
     result = await get_findings_by_fingerprint(pool, fp)
@@ -161,12 +159,12 @@ async def test_get_dispatch_queued_findings_empty():
     mock_conn = MagicMock()
     mock_conn.fetch = AsyncMock(return_value=[])
     mock_conn.execute = AsyncMock()
-    mock_conn.transaction = MagicMock(return_value=_AsyncCM(None))
+    mock_conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
     mock_conn.__aexit__ = AsyncMock(return_value=False)
 
     pool = MagicMock()
-    pool.acquire = MagicMock(return_value=_AsyncCM(mock_conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(mock_conn))
 
     result = await get_dispatch_queued_findings(pool)
     assert result == []
@@ -177,18 +175,18 @@ async def test_get_dispatch_queued_findings_empty():
 async def test_get_dispatch_queued_findings_clears_flag():
     """Returns rows as dicts and runs UPDATE to clear dispatch_queued on returned IDs."""
     id1, id2 = uuid.uuid4(), uuid.uuid4()
-    row1 = FakeRecord({"id": id1, "severity": 0, "fingerprint": "a" * 64})
-    row2 = FakeRecord({"id": id2, "severity": 1, "fingerprint": "b" * 64})
+    row1 = Record({"id": id1, "severity": 0, "fingerprint": "a" * 64})
+    row2 = Record({"id": id2, "severity": 1, "fingerprint": "b" * 64})
 
     mock_conn = MagicMock()
     mock_conn.fetch = AsyncMock(return_value=[row1, row2])
     mock_conn.execute = AsyncMock()
-    mock_conn.transaction = MagicMock(return_value=_AsyncCM(None))
+    mock_conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
     mock_conn.__aexit__ = AsyncMock(return_value=False)
 
     pool = MagicMock()
-    pool.acquire = MagicMock(return_value=_AsyncCM(mock_conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(mock_conn))
 
     result = await get_dispatch_queued_findings(pool)
     assert len(result) == 2
@@ -201,16 +199,3 @@ async def test_get_dispatch_queued_findings_clears_flag():
     assert "dispatch_queued = FALSE" in update_sql
     assert id1 in ids_arg
     assert id2 in ids_arg
-
-
-class _AsyncCM:
-    """Minimal async context manager that yields a fixed value."""
-
-    def __init__(self, value):
-        self._value = value
-
-    async def __aenter__(self):
-        return self._value
-
-    async def __aexit__(self, *args):
-        return False

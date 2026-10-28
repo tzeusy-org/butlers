@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import abc
+import functools
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import BaseModel
+
+from butlers.core.tool_catalog import (
+    EffectClass,
+    Idempotency,
+    OutputSensitivity,
+    OutputTrust,
+    RecipientParameters,
+)
 
 
 class ToolGroupMixin(BaseModel):
@@ -45,6 +55,63 @@ def group_enabled(config: Any, group: str) -> bool:
     return group in groups
 
 
+def tool_registrar(mcp: Any, groups: Any) -> Callable[[str], Callable[[Any], Any]]:
+    """Return the group-aware ``@tool("group")`` decorator every module registers tools with.
+
+    *groups* is the enabled group list, or a module config carrying a ``groups`` field (or
+    ``None``): no groups means every group is enabled.  ``@tool("g")`` registers the function
+    on *mcp* when group ``g`` is enabled; otherwise the function is returned unregistered.
+    """
+    if not isinstance(groups, (list, tuple, set, frozenset)):
+        groups = getattr(groups, "groups", None)
+
+    def tool(group: str) -> Callable[[Any], Any]:
+        if not groups or group in groups:
+            return mcp.tool()
+        return lambda fn: fn  # defined, not registered
+
+    return tool
+
+
+def guarded_tool(
+    *,
+    credential: Callable[[], bool] | None = None,
+    missing: Callable[[], Any] | None = None,
+    errors: Callable[[Exception], Any] | None = None,
+) -> Callable[[Callable[..., Awaitable[Any]]], Callable[..., Awaitable[Any]]]:
+    """Wrap an async tool with the credential check and error mapping modules repeat per tool.
+
+    - *credential*: returns True when the tool can run.  Evaluated per call, so a credential
+      that appears after registration is honoured.  Omit it for tools that need none.
+    - *missing*: builds the response returned instead of running when *credential* is False;
+      required with *credential*.
+    - *errors*: maps an exception raised by the tool to its response.  Without it, exceptions
+      propagate.
+
+    The wrapper keeps the tool's name, docstring and signature, which FastMCP reads to build
+    the tool schema.  Apply it under ``mcp.tool()`` / the group registrar.
+    """
+
+    if (credential is None) != (missing is None):
+        raise TypeError("guarded_tool needs credential and missing together")
+
+    def decorate(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+        @functools.wraps(fn)
+        async def guarded(*args: Any, **kwargs: Any) -> Any:
+            if credential is not None and missing is not None and not credential():
+                return missing()
+            if errors is None:
+                return await fn(*args, **kwargs)
+            try:
+                return await fn(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001
+                return errors(exc)
+
+        return guarded
+
+    return decorate
+
+
 @dataclass
 class ToolMeta:
     """Metadata for a single MCP tool registered by a module.
@@ -62,7 +129,10 @@ class ToolMeta:
 
     Presentation fields are optional so an unclassified legacy module keeps
     its eager, presentable compatibility behavior while native classification
-    remains incomplete.
+    remains incomplete. Optional RFC0038 authorization fields describe future
+    broker eligibility only. The central inventory supplies them, while the
+    daemon binds owner_domain and the existing approval_policy. Sensitivity
+    declarations still control current approvals; authorization adds no gate.
     """
 
     arg_sensitivities: dict[str, bool] = field(default_factory=dict)
@@ -72,20 +142,36 @@ class ToolMeta:
     namespace: str | None = None
     llm_presentable: bool | None = None
     load_posture: Literal["eager", "deferred"] | None = None
+    owner_domain: str | None = None
+    effect_class: EffectClass | None = None
+    output_trust: OutputTrust | None = None
+    output_sensitivity: OutputSensitivity | None = None
+    resource_params: tuple[str, ...] | None = None
+    selection_bound: Mapping[str, bool] | None = None
+    safety_args: tuple[str, ...] | None = None
+    approval_policy: Mapping[str, Any] | None = None
+    idempotency: Idempotency | None = None
+    owner_authority: bool | None = None
+    recipient_params: RecipientParameters | None = None
+    read_stores: tuple[str, ...] = ()
+    write_stores: tuple[str, ...] = ()
+    unknown_output_source: bool = True
 
 
 class Module(abc.ABC):
     """Abstract base class for butler modules.
 
-    Every pluggable module must subclass Module and implement all abstract
-    members. Modules add domain-specific MCP tools to a butler but never
-    touch core infrastructure.
+    Every pluggable module must subclass Module and implement the three
+    abstract members: ``name``, ``config_schema`` and ``register_tools``.
+    Every other hook has a default and is overridden only when needed.
+    Modules add domain-specific MCP tools to a butler but never touch core
+    infrastructure.
     """
 
     @property
     @abc.abstractmethod
     def name(self) -> str:
-        """Unique module name (e.g., 'email', 'telegram')."""
+        """Unique name, implemented as a class-level string for discovery."""
         ...
 
     @property
@@ -95,10 +181,9 @@ class Module(abc.ABC):
         ...
 
     @property
-    @abc.abstractmethod
     def dependencies(self) -> list[str]:
-        """Names of modules this module depends on."""
-        ...
+        """Names of modules this module depends on; none by default."""
+        return []
 
     @abc.abstractmethod
     async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
@@ -120,12 +205,10 @@ class Module(abc.ABC):
         """
         ...
 
-    @abc.abstractmethod
     def migration_revisions(self) -> str | None:
-        """Return Alembic branch label for module migrations, or None."""
-        ...
+        """Return Alembic branch label for module migrations, or None (the default)."""
+        return None
 
-    @abc.abstractmethod
     async def on_startup(
         self,
         config: Any,
@@ -150,13 +233,26 @@ class Module(abc.ABC):
             Optional :class:`~butlers.storage.BlobStore` for reading and
             writing blobs (e.g. CSV attachments for import tools).
             May be ``None`` when blob storage is not configured.
-        """
-        ...
 
-    @abc.abstractmethod
+        The default does nothing.
+        """
+        return None
+
     async def on_shutdown(self) -> None:
-        """Called during butler shutdown."""
-        ...
+        """Called during butler shutdown.  The default does nothing."""
+        return None
+
+    @property
+    def credentials_env(self) -> list[str]:
+        """Daemon-side credential requirements; not forwarded to runtime children."""
+        return []
+
+    def on_all_modules_ready(self, module_map: dict[str, Module]) -> None:
+        """Called once every active module has registered its tools, to cross-wire modules.
+
+        The default does nothing.  A failure is logged by the daemon and does not stop startup.
+        """
+        return None
 
     def wire_audit_pool(self, audit_pool: Any) -> None:
         """Wire the switchboard audit pool for egress audit logging.
@@ -177,6 +273,7 @@ class Module(abc.ABC):
             asyncpg connection pool scoped to the switchboard schema, or
             ``None`` when the audit pool could not be created.
         """
+        return None
 
     def tool_metadata(self) -> dict[str, ToolMeta]:
         """Return sensitivity and optional presentation metadata for tools.

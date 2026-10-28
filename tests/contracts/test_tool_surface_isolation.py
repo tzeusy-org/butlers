@@ -20,6 +20,8 @@ import pytest
 from butlers.config import ButlerType, load_config
 from butlers.core_tools import ToolContext, register_all_core_tools
 
+_THIS_FILE = Path(__file__).resolve()
+
 pytestmark = pytest.mark.contract
 
 
@@ -94,9 +96,10 @@ class TestEphemeralMcpConfig:
         # This is derived from decorator calls in the dispatcher, rather than
         # duplicating its production catalog.  Keep the total as a regression
         # guard for accidental registration loss.
-        assert len(inventory) == 87
-        assert sum(group is not None for group in inventory.values()) == 79
+        assert len(inventory) == 90
+        assert sum(group is not None for group in inventory.values()) == 80
         assert inventory["schedule_toggle"] == "scheduling"
+        assert inventory["metric_baseline_get"] == "infra"
         assert {
             "state",
             "infra",
@@ -117,6 +120,8 @@ class TestEphemeralMcpConfig:
         } == {group for group in inventory.values() if group is not None}
         assert {
             "cancel_session",
+            "report_error",
+            "get_healing_status",
             "route.execute",
             "delivery_preferences_set",
             "delivery_preferences_get",
@@ -148,7 +153,7 @@ class TestEphemeralMcpConfig:
 
     async def test_roster_authority_registers_cross_butler_and_fleet_case_tools(self):
         """The three affected roster declarations reach the real dispatcher seam."""
-        roster = Path(__file__).resolve().parents[2] / "roster"
+        roster = _THIS_FILE.parents[2] / "roster"
         for butler_name in ("finance", "relationship"):
             config = load_config(roster / butler_name)
             registrations = await _record_core_registrations(
@@ -409,9 +414,7 @@ class TestEphemeralMcpConfig:
         from butlers.modules.base import Module
 
         class MinimalModule(Module):
-            @property
-            def name(self) -> str:
-                return "minimal"
+            name = "minimal"
 
             @property
             def config_schema(self):
@@ -586,4 +589,6 @@ class TestToolBudgetDiscipline:
 
         # route.execute is a direct infrastructure registration, so an empty
         # group allowlist does not suppress it.
-        assert {"route.execute", "cancel_session"} == {name for name, _ in registrations}
+        assert {"route.execute", "cancel_session", "report_error", "get_healing_status"} == {
+            name for name, _ in registrations
+        }

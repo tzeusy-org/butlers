@@ -4,7 +4,10 @@
 
 The deployment-and-drift capability is the deploy spine: it keeps a running
 production deployment's database schema honest against the codebase, and gives
-operators one idempotent verb to ship a deploy safely. It covers the three-way
+operators the idempotent `butlers deploy` verb for the retained pre-cutover
+Compose host. Helm releases on k3s are the production deployment path;
+Helm deployment-ledger integration is separate work (bu-viat6h.5).
+This capability covers the three-way
 migration-drift sentinel (codebase Alembic head vs. each butler schema's
 applied revisions, hourly-checked, escalating to QA after 24h of sustained
 drift, surfaced as a red clause on the `/system` page) and the `butlers deploy`
@@ -238,9 +241,9 @@ re-run at any point in the pipeline.
   "deploy"` and `serving_mode: "image"`, written by `butlers deployments
   record` inside the `dashboard-api` pod so no database credential leaves the
   cluster
-- **AND** the row has `result: "success"` only after both `dashboard-api` and
-  `butlers-up` rollouts finished, and `result: "failed"` when `helm upgrade`
-  or either rollout failed
+- **AND** the row has `result: "success"` only after `dashboard-api`, `butlers-up` and
+  the optional enabled `butlers-control` rollouts finished, and `result: "failed"` when `helm upgrade`
+  or any required rollout or its discovery failed
 - **AND** the target exits with the release's own status; an unreachable pod
   prints that no row was recorded and a failed write after a successful release
   only warns, so a failed release is never reported as success

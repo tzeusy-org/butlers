@@ -40,30 +40,15 @@ import os
 import time
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_db_manager
+from butlers.api.deps import OptionalDb
 from butlers.core.prometheus import async_query, async_query_range
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ingestion/pipeline", tags=["ingestion"])
-
-
-def _get_db_manager_optional() -> DatabaseManager | None:
-    """Return the DatabaseManager singleton, or None when not yet initialized.
-
-    Mirrors ``_get_pricing_optional`` in ``ingestion_events.py``: the backlog
-    fields below are best-effort (degraded-envelope pattern, see CLAUDE.md).
-    A daemon or test harness that hasn't wired the DatabaseManager yet must
-    not turn this endpoint into a 500 — the funnel stats above already
-    tolerate a missing ``PROMETHEUS_URL`` the same way.
-    """
-    try:
-        return get_db_manager()
-    except RuntimeError:
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -574,7 +559,8 @@ async def get_pipeline_stats(
         "24h",
         description="Time window for aggregate counters. One of: 1h, 24h, 7d.",
     ),
-    db: DatabaseManager | None = Depends(_get_db_manager_optional),
+    *,
+    db: OptionalDb,
 ) -> dict:
     """Return aggregate pipeline funnel statistics.
 

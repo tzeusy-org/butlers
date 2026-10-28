@@ -99,6 +99,8 @@ class WhatsAppConfig(BaseModel):
 
 
 class WhatsAppModule(Module):
+    # The connector bridge has no preview-control contract. Do not advertise
+    # support by adding an ignored preview_url key to its /send request.
     """WhatsApp module providing send/reply MCP tools over the connector's bridge.
 
     Uses a two-layer gating model: ``send_tools`` controls tool registration,
@@ -111,24 +113,16 @@ class WhatsAppModule(Module):
     requests to that connector-owned Unix socket. It owns no database tables.
     """
 
+    supports_inert_link_delivery = False
+
     def __init__(self) -> None:
         self._config: WhatsAppConfig = WhatsAppConfig()
 
-    @property
-    def name(self) -> str:
-        return "whatsapp"
+    name = "whatsapp"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return WhatsAppConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        """No custom tables — bridge manages sessions, connector manages messages."""
-        return None
 
     async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         """Register WhatsApp MCP tools.
@@ -191,10 +185,6 @@ class WhatsAppModule(Module):
                 self._config.bridge_socket,
                 self._config.send_enabled,
             )
-
-    async def on_shutdown(self) -> None:
-        """No-op: this module owns no bridge subprocess to tear down."""
-        return None
 
     # ------------------------------------------------------------------
     # Implementation helpers

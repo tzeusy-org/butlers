@@ -327,10 +327,10 @@ class CLIAuthSession:
         except Exception:
             logger.warning("CLI auth session %s: sandbox termination failed safely", self.id)
 
-    async def wait(self, timeout: float = 5.0) -> None:
+    async def wait(self, timeout_s: float = 5.0) -> None:
         """Wait for the session to reach a terminal state."""
         try:
-            await asyncio.wait_for(self._done_event.wait(), timeout=timeout)
+            await asyncio.wait_for(self._done_event.wait(), timeout=timeout_s)
         except TimeoutError:
             pass
 

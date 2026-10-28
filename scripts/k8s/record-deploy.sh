@@ -3,7 +3,7 @@
 #
 # Usage (from deploy/helm/butlers): record-deploy.sh <namespace> <tag> <release> -- <helm args...>
 #
-# Runs `helm upgrade --install <release> .` then waits for both rollouts. Once
+# Runs `helm upgrade --install <release> .` then waits for the required rollouts. Once
 # they have finished it records result=success; if helm or a rollout failed it
 # records result=failed with --git-sha <tag>. The row is written by
 # `butlers deployments record` inside the dashboard-api pod (kubectl exec), so no
@@ -34,6 +34,14 @@ status=0
 helm upgrade --install "$release" . --create-namespace "$@" || status=$?
 [ "$status" -eq 0 ] && { kubectl -n "$ns" rollout status deploy/dashboard-api --timeout=10m || status=$?; }
 [ "$status" -eq 0 ] && { kubectl -n "$ns" rollout status deploy/butlers-up --timeout=10m || status=$?; }
+# The split control workload is optional in the chart. Do not confuse an API
+# error with absence, and do not record success before an enabled control rolls.
+if [ "$status" -eq 0 ]; then
+  control="$(kubectl -n "$ns" get deployment butlers-control --ignore-not-found -o name)" || status=$?
+  if [ "$status" -eq 0 ] && [ -n "$control" ]; then
+    kubectl -n "$ns" rollout status deploy/butlers-control --timeout=10m || status=$?
+  fi
+fi
 
 if [ "$status" -eq 0 ]; then
   record success || echo "warning: release succeeded but no deployment row was recorded" >&2

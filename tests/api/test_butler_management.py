@@ -25,8 +25,7 @@ from httpx import ASGITransport, AsyncClient
 from butlers.api.app import create_app as create_guarded_app
 from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerConnectionInfo, get_butler_configs
-from butlers.api.routers.butler_management import _get_db_manager
+from butlers.api.deps import ButlerConnectionInfo, get_butler_configs, get_db
 from butlers.core.skills import read_system_prompt_with_sources
 from butlers.core.spawner_context import compose_effective_system_prompt_receipt
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
@@ -133,7 +132,7 @@ async def test_get_prompt_no_history_returns_empty_version_zero(app):
     """When no history exists, returns version 0 with empty prompt."""
     pool = _make_pool(fetchrow_return=None)
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -160,7 +159,7 @@ async def test_get_prompt_returns_latest_version(app):
         )
     )
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -176,7 +175,7 @@ async def test_get_prompt_404_unknown_butler(app):
     """Returns 404 for unknown butler names."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -218,7 +217,7 @@ async def test_effective_prompt_preview_detects_changed_roster_source(
     session_pool = _make_pool(fetchrow_return=latest)
     db = _make_db(shared_pool)
     db.pool = MagicMock(return_value=session_pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
     monkeypatch.setattr(
         "butlers.api.routers.butler_management._ROSTER_ROOT",
@@ -263,7 +262,7 @@ async def test_effective_prompt_query_failure_is_unavailable_not_static_preview(
     session_pool.fetchrow = AsyncMock(side_effect=RuntimeError("synthetic query failure"))
     db = _make_db(shared_pool)
     db.pool = MagicMock(return_value=session_pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
     monkeypatch.setattr(
         "butlers.api.routers.butler_management._ROSTER_ROOT",
@@ -313,7 +312,7 @@ async def test_effective_prompt_verified_absence_remains_a_roster_preview(
     session_pool = _make_pool(fetchrow_return=None)
     db = _make_db(shared_pool)
     db.pool = MagicMock(return_value=session_pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
     monkeypatch.setattr(
         "butlers.api.routers.butler_management._ROSTER_ROOT",
@@ -340,7 +339,7 @@ async def test_effective_prompt_requires_owner_control_before_prompt_access(
     app = create_guarded_app(api_key="")
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -368,7 +367,7 @@ async def test_put_prompt_inserts_new_version(app):
     )
     pool = _make_pool(fetchrow_return=inserted_row, fetchval_return=3)
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
 
     with patch(
@@ -405,7 +404,7 @@ async def test_put_prompt_version_increments_monotonically(app):
     )
     pool = _make_pool(fetchrow_return=inserted_row, fetchval_return=0)
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
 
     with patch("butlers.api.routers.butler_management.audit_append", new_callable=AsyncMock):
@@ -451,7 +450,7 @@ async def test_get_prompt_history_ordered_desc(app):
     ]
     pool = _make_pool(fetch_return=rows, fetchval_return=3)
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -479,7 +478,7 @@ async def test_get_prompt_history_ordered_desc(app):
 async def test_retired_tool_grant_routes_return_404(app, method, path, payload):
     """The unenforced per-butler tool-grant routes are gone and touch no state."""
     pool = _make_pool()
-    app.dependency_overrides[_get_db_manager] = lambda: _make_db(pool)
+    app.dependency_overrides[get_db] = lambda: _make_db(pool)
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
 
     with patch(
@@ -573,7 +572,7 @@ async def test_kill_butler_audits_and_returns_shutdown_initiated(app):
     mock_manager = MagicMock()
     mock_manager.get_client = AsyncMock(return_value=mock_client)
 
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_manager
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
 
@@ -609,7 +608,7 @@ async def test_kill_butler_503_when_unreachable(app):
     mock_manager = MagicMock()
     mock_manager.get_client = AsyncMock(side_effect=ButlerUnreachableError("qa"))
 
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_manager
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
 
@@ -630,7 +629,7 @@ async def test_kill_butler_invalid_grace_seconds(app):
     pool = _make_pool()
     db = _make_db(pool)
     mock_manager = MagicMock()
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_manager
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
 
@@ -661,7 +660,7 @@ async def test_put_prompt_ignores_caller_supplied_actor(app):
     )
     pool = _make_pool(fetchrow_return=inserted_row, fetchval_return=3)
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
 
     with patch(
@@ -700,7 +699,7 @@ async def test_kill_ignores_caller_supplied_actor(app):
     mock_manager = MagicMock()
     mock_manager.get_client = AsyncMock(return_value=mock_client)
 
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_manager
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
 

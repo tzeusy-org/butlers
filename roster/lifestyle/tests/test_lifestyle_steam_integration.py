@@ -20,11 +20,13 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastmcp import FastMCP
 
 from butlers.modules.steam import (
     SteamModule,
     _no_credentials_error,
 )
+from butlers.testing.mcp import registered_tools, tool_fn
 
 # ---------------------------------------------------------------------------
 # Auto-override: these tests are pure unit tests — no Docker required.
@@ -62,25 +64,6 @@ _EXPECTED_STEAM_TOOLS = {
 # ---------------------------------------------------------------------------
 
 
-def _make_mock_mcp() -> MagicMock:
-    """Build a mock FastMCP server that captures registered tool functions."""
-    mcp = MagicMock()
-    tools: dict[str, Any] = {}
-
-    def tool_decorator(*_decorator_args, **decorator_kwargs):
-        declared_name = decorator_kwargs.get("name")
-
-        def decorator(fn):
-            tools[declared_name or fn.__name__] = fn
-            return fn
-
-        return decorator
-
-    mcp.tool = tool_decorator
-    mcp._registered_tools = tools
-    return mcp
-
-
 def _make_mock_steam_client(
     *,
     player_summaries: list[dict[str, Any]] | None = None,
@@ -109,6 +92,8 @@ def _make_mock_steam_client(
 # ===========================================================================
 # Test Category 1: butler.toml Config Validation
 # Verify both butler.toml files declare [modules.steam].
+# Superseded for General by bu-ys9hdx.7: Lifestyle is the sole Steam butler, so the General
+# tests below assert exclusion instead.
 # ===========================================================================
 
 
@@ -125,14 +110,13 @@ class TestButlerTomlSteamConfig:
             "steam module is missing from [modules] section in roster/lifestyle/butler.toml"
         )
 
-    def test_general_butler_toml_has_steam_module(self) -> None:
-        """roster/general/butler.toml declares [modules.steam]."""
+    def test_general_butler_toml_excludes_steam_module(self) -> None:
+        """General keeps its ordinary modules without the specialist Steam module."""
         from butlers.config import load_config
 
         cfg = load_config(_GENERAL_ROSTER_DIR)
-        assert "steam" in cfg.modules, (
-            "steam module is missing from [modules] section in roster/general/butler.toml"
-        )
+        assert "steam" not in cfg.modules
+        assert {"general", "calendar", "contacts", "memory"} == set(cfg.modules)
 
     def test_lifestyle_steam_config_is_empty_dict(self) -> None:
         """Steam module config in lifestyle butler.toml is an empty dict (no required fields)."""
@@ -143,14 +127,22 @@ class TestButlerTomlSteamConfig:
         assert steam_cfg is not None
         assert isinstance(steam_cfg, dict)
 
-    def test_general_steam_config_is_empty_dict(self) -> None:
-        """Steam module config in general butler.toml is an empty dict (no required fields)."""
+    def test_lifestyle_is_the_only_roster_that_loads_steam(self) -> None:
+        """Real module discovery loads Steam for Lifestyle and no other roster profile."""
         from butlers.config import load_config
+        from butlers.modules.registry import default_registry
 
-        cfg = load_config(_GENERAL_ROSTER_DIR)
-        steam_cfg = cfg.modules.get("steam", None)
-        assert steam_cfg is not None
-        assert isinstance(steam_cfg, dict)
+        registry = default_registry()
+        steam_butlers = set()
+        for config_path in sorted((_REPO_ROOT / "roster").glob("*/butler.toml")):
+            cfg = load_config(config_path.parent)
+            if "steam" in cfg.modules:
+                steam_butlers.add(cfg.name)
+        assert steam_butlers == {"lifestyle"}
+        general_modules = registry.load_from_config(load_config(_GENERAL_ROSTER_DIR).modules)
+        lifestyle_modules = registry.load_from_config(load_config(_LIFESTYLE_ROSTER_DIR).modules)
+        assert "steam" not in {module.name for module in general_modules}
+        assert "steam" in {module.name for module in lifestyle_modules}
 
 
 # ===========================================================================
@@ -166,23 +158,23 @@ class TestSteamModuleRegistration:
     async def test_registers_all_9_tools(self) -> None:
         """SteamModule.register_tools() registers exactly 9 tools."""
         module = SteamModule()
-        mcp = _make_mock_mcp()
+        mcp = FastMCP()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
-        assert len(mcp._registered_tools) == 9
+        assert len(await registered_tools(mcp)) == 9
 
     async def test_all_expected_tool_names_present(self) -> None:
         """The registered tool names match exactly the expected 9-tool set."""
         module = SteamModule()
-        mcp = _make_mock_mcp()
+        mcp = FastMCP()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
-        assert set(mcp._registered_tools.keys()) == _EXPECTED_STEAM_TOOLS
+        assert set((await registered_tools(mcp)).keys()) == _EXPECTED_STEAM_TOOLS
 
     async def test_all_tools_are_callable(self) -> None:
         """Every registered tool is a callable (async function)."""
         module = SteamModule()
-        mcp = _make_mock_mcp()
+        mcp = FastMCP()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
-        for name, fn in mcp._registered_tools.items():
+        for name, fn in (await registered_tools(mcp)).items():
             assert callable(fn), f"{name} should be callable"
 
     async def test_module_name_is_steam(self) -> None:
@@ -218,7 +210,7 @@ class TestSteamModuleRegistration:
 class TestDegradedMode:
     """AC2: Steam connector starts without errors; private tools return actionable errors."""
 
-    async def _build_degraded_module(self) -> tuple[SteamModule, MagicMock]:
+    async def _build_degraded_module(self) -> tuple[SteamModule, FastMCP]:
         """Build a module in degraded mode (no credentials, public client available)."""
         from unittest.mock import patch
 
@@ -226,7 +218,7 @@ class TestDegradedMode:
         module = SteamModule()
         with patch("butlers.modules.steam.SteamAPIClient", return_value=mock_client):
             await module.on_startup(config={}, db=None)
-        mcp = _make_mock_mcp()
+        mcp = FastMCP()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         return module, mcp
 
@@ -238,61 +230,61 @@ class TestDegradedMode:
     async def test_9_tools_still_registered_in_degraded_mode(self) -> None:
         """All 9 tools are still registered even without credentials."""
         _, mcp = await self._build_degraded_module()
-        assert len(mcp._registered_tools) == 9
+        assert len(await registered_tools(mcp)) == 9
 
     async def test_player_summary_returns_no_credentials_error(self) -> None:
         """steam_get_player_summary returns the no-credentials error in degraded mode."""
         _, mcp = await self._build_degraded_module()
-        result = await mcp._registered_tools["steam_get_player_summary"]()
+        result = await (await tool_fn(mcp, "steam_get_player_summary"))()
         assert "error" in result
         assert result["error"] == "no_steam_account"
 
     async def test_owned_games_returns_no_credentials_error(self) -> None:
         """steam_get_owned_games returns the no-credentials error in degraded mode."""
         _, mcp = await self._build_degraded_module()
-        result = await mcp._registered_tools["steam_get_owned_games"]()
+        result = await (await tool_fn(mcp, "steam_get_owned_games"))()
         assert "error" in result
         assert result["error"] == "no_steam_account"
 
     async def test_recently_played_returns_no_credentials_error(self) -> None:
         """steam_get_recently_played returns the no-credentials error in degraded mode."""
         _, mcp = await self._build_degraded_module()
-        result = await mcp._registered_tools["steam_get_recently_played"]()
+        result = await (await tool_fn(mcp, "steam_get_recently_played"))()
         assert "error" in result
         assert result["error"] == "no_steam_account"
 
     async def test_achievements_returns_no_credentials_error(self) -> None:
         """steam_get_achievements returns the no-credentials error in degraded mode."""
         _, mcp = await self._build_degraded_module()
-        result = await mcp._registered_tools["steam_get_achievements"](app_id=730)
+        result = await (await tool_fn(mcp, "steam_get_achievements"))(app_id=730)
         assert "error" in result
         assert result["error"] == "no_steam_account"
 
     async def test_friend_list_returns_no_credentials_error(self) -> None:
         """steam_get_friend_list returns the no-credentials error in degraded mode."""
         _, mcp = await self._build_degraded_module()
-        result = await mcp._registered_tools["steam_get_friend_list"]()
+        result = await (await tool_fn(mcp, "steam_get_friend_list"))()
         assert "error" in result
         assert result["error"] == "no_steam_account"
 
     async def test_player_level_returns_no_credentials_error(self) -> None:
         """steam_get_player_level returns the no-credentials error in degraded mode."""
         _, mcp = await self._build_degraded_module()
-        result = await mcp._registered_tools["steam_get_player_level"]()
+        result = await (await tool_fn(mcp, "steam_get_player_level"))()
         assert "error" in result
         assert result["error"] == "no_steam_account"
 
     async def test_resolve_vanity_url_returns_no_credentials_error(self) -> None:
         """steam_resolve_vanity_url returns the no-credentials error in degraded mode."""
         _, mcp = await self._build_degraded_module()
-        result = await mcp._registered_tools["steam_resolve_vanity_url"](vanity_url="gaben")
+        result = await (await tool_fn(mcp, "steam_resolve_vanity_url"))(vanity_url="gaben")
         assert "error" in result
         assert result["error"] == "no_steam_account"
 
     async def test_no_credentials_error_includes_hint(self) -> None:
         """The no-credentials error message includes a hint directing to dashboard settings."""
         _, mcp = await self._build_degraded_module()
-        result = await mcp._registered_tools["steam_get_player_summary"]()
+        result = await (await tool_fn(mcp, "steam_get_player_summary"))()
         expected = _no_credentials_error()
         assert result == expected
         assert "hint" in result
@@ -311,7 +303,7 @@ class TestPublicEndpointsWithoutAuth:
 
     async def _build_module_with_public_client(
         self, public_request_return: dict[str, Any]
-    ) -> tuple[SteamModule, MagicMock]:
+    ) -> tuple[SteamModule, FastMCP]:
         """Build a degraded module with a public client returning a specific response."""
         from unittest.mock import patch
 
@@ -319,7 +311,7 @@ class TestPublicEndpointsWithoutAuth:
         module = SteamModule()
         with patch("butlers.modules.steam.SteamAPIClient", return_value=mock_client):
             await module.on_startup(config={}, db=None)
-        mcp = _make_mock_mcp()
+        mcp = FastMCP()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         return module, mcp
 
@@ -327,7 +319,7 @@ class TestPublicEndpointsWithoutAuth:
         """steam_get_game_news returns news using the public client (no credentials needed)."""
         news_response = {"appnews": {"appid": 730, "newsitems": [{"title": "CS2 Update"}]}}
         _, mcp = await self._build_module_with_public_client(news_response)
-        result = await mcp._registered_tools["steam_get_game_news"](app_id=730)
+        result = await (await tool_fn(mcp, "steam_get_game_news"))(app_id=730)
         assert "appnews" in result
         assert result["appnews"]["appid"] == 730
 
@@ -335,7 +327,7 @@ class TestPublicEndpointsWithoutAuth:
         """steam_get_current_players returns player count using the public client."""
         players_response = {"player_count": 99999, "result": 1}
         _, mcp = await self._build_module_with_public_client(players_response)
-        result = await mcp._registered_tools["steam_get_current_players"](app_id=730)
+        result = await (await tool_fn(mcp, "steam_get_current_players"))(app_id=730)
         assert result["player_count"] == 99999
 
 
@@ -350,7 +342,7 @@ class TestFullQueryFlow:
     """AC3: Module tools return data with mocked Steam API responses."""
 
     @pytest.fixture
-    async def connected_module_and_mcp(self) -> tuple[SteamModule, MagicMock]:
+    async def connected_module_and_mcp(self) -> tuple[SteamModule, FastMCP]:
         """SteamModule with mocked credentials in connected state."""
         import uuid
         from datetime import UTC, datetime
@@ -393,12 +385,12 @@ class TestFullQueryFlow:
             db.pool = MagicMock()
             await module.on_startup(config={}, db=db)
 
-        mcp = _make_mock_mcp()
+        mcp = FastMCP()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         return module, mcp
 
     async def test_credentials_ok_after_successful_startup(
-        self, connected_module_and_mcp: tuple[SteamModule, MagicMock]
+        self, connected_module_and_mcp: tuple[SteamModule, FastMCP]
     ) -> None:
         """After successful startup, _credentials_ok is True."""
         module, _ = connected_module_and_mcp
@@ -406,7 +398,7 @@ class TestFullQueryFlow:
         assert module._primary_steam_id == _STEAM_ID
 
     async def test_player_summary_returns_profile(
-        self, connected_module_and_mcp: tuple[SteamModule, MagicMock]
+        self, connected_module_and_mcp: tuple[SteamModule, FastMCP]
     ) -> None:
         """steam_get_player_summary returns the player's profile data."""
         module, mcp = connected_module_and_mcp
@@ -421,13 +413,13 @@ class TestFullQueryFlow:
                 }
             ]
         )
-        result = await mcp._registered_tools["steam_get_player_summary"]()
+        result = await (await tool_fn(mcp, "steam_get_player_summary"))()
         assert "player" in result
         assert result["player"]["steamid"] == _STEAM_ID
         assert result["player"]["personaname"] == _DISPLAY_NAME
 
     async def test_owned_games_returns_library(
-        self, connected_module_and_mcp: tuple[SteamModule, MagicMock]
+        self, connected_module_and_mcp: tuple[SteamModule, FastMCP]
     ) -> None:
         """steam_get_owned_games returns the game library."""
         module, mcp = connected_module_and_mcp
@@ -441,13 +433,13 @@ class TestFullQueryFlow:
                 ],
             }
         )
-        result = await mcp._registered_tools["steam_get_owned_games"]()
+        result = await (await tool_fn(mcp, "steam_get_owned_games"))()
         assert "game_count" in result
         assert result["game_count"] == 3
         assert len(result["games"]) == 3
 
     async def test_recently_played_returns_games(
-        self, connected_module_and_mcp: tuple[SteamModule, MagicMock]
+        self, connected_module_and_mcp: tuple[SteamModule, FastMCP]
     ) -> None:
         """steam_get_recently_played returns games played in the last 2 weeks."""
         module, mcp = connected_module_and_mcp
@@ -464,13 +456,13 @@ class TestFullQueryFlow:
                 ],
             }
         )
-        result = await mcp._registered_tools["steam_get_recently_played"]()
+        result = await (await tool_fn(mcp, "steam_get_recently_played"))()
         assert "total_count" in result
         assert result["total_count"] == 1
         assert result["games"][0]["appid"] == 730
 
     async def test_achievements_returns_data(
-        self, connected_module_and_mcp: tuple[SteamModule, MagicMock]
+        self, connected_module_and_mcp: tuple[SteamModule, FastMCP]
     ) -> None:
         """steam_get_achievements returns achievement data for a given game."""
         module, mcp = connected_module_and_mcp
@@ -486,21 +478,21 @@ class TestFullQueryFlow:
                 }
             }
         )
-        result = await mcp._registered_tools["steam_get_achievements"](app_id=730)
+        result = await (await tool_fn(mcp, "steam_get_achievements"))(app_id=730)
         assert "playerstats" in result
         assert result["playerstats"]["gameName"] == "Counter-Strike 2"
 
     async def test_player_level_returns_level(
-        self, connected_module_and_mcp: tuple[SteamModule, MagicMock]
+        self, connected_module_and_mcp: tuple[SteamModule, FastMCP]
     ) -> None:
         """steam_get_player_level returns the Steam Experience Level."""
         module, mcp = connected_module_and_mcp
         module._client.request = AsyncMock(return_value={"player_level": 42})
-        result = await mcp._registered_tools["steam_get_player_level"]()
+        result = await (await tool_fn(mcp, "steam_get_player_level"))()
         assert result["player_level"] == 42
 
     async def test_full_profile_to_games_flow(
-        self, connected_module_and_mcp: tuple[SteamModule, MagicMock]
+        self, connected_module_and_mcp: tuple[SteamModule, FastMCP]
     ) -> None:
         """Full flow: get player summary → verify SteamID → query owned games."""
         module, mcp = connected_module_and_mcp
@@ -509,7 +501,7 @@ class TestFullQueryFlow:
         module._client.get_player_summaries = AsyncMock(
             return_value=[{"steamid": _STEAM_ID, "personaname": _DISPLAY_NAME}]
         )
-        summary = await mcp._registered_tools["steam_get_player_summary"]()
+        summary = await (await tool_fn(mcp, "steam_get_player_summary"))()
         assert summary["player"]["steamid"] == _STEAM_ID
 
         # Step 2: Query the game library for the confirmed SteamID
@@ -522,26 +514,26 @@ class TestFullQueryFlow:
                 ],
             }
         )
-        games = await mcp._registered_tools["steam_get_owned_games"](
+        games = await (await tool_fn(mcp, "steam_get_owned_games"))(
             steam_id=summary["player"]["steamid"]
         )
         assert games["game_count"] == 2
         assert any(g["appid"] == 730 for g in games["games"])
 
     async def test_vanity_url_resolution(
-        self, connected_module_and_mcp: tuple[SteamModule, MagicMock]
+        self, connected_module_and_mcp: tuple[SteamModule, FastMCP]
     ) -> None:
         """steam_resolve_vanity_url resolves a vanity name to a SteamID64."""
         module, mcp = connected_module_and_mcp
         module._client.request = AsyncMock(
             return_value={"steamid": "76561197960287930", "success": 1}
         )
-        result = await mcp._registered_tools["steam_resolve_vanity_url"](vanity_url="gaben")
+        result = await (await tool_fn(mcp, "steam_resolve_vanity_url"))(vanity_url="gaben")
         assert result["steamid"] == "76561197960287930"
         assert result["vanity_url"] == "gaben"
 
     async def test_friend_list_returns_friends(
-        self, connected_module_and_mcp: tuple[SteamModule, MagicMock]
+        self, connected_module_and_mcp: tuple[SteamModule, FastMCP]
     ) -> None:
         """steam_get_friend_list returns the friend list with count."""
         module, mcp = connected_module_and_mcp
@@ -555,6 +547,6 @@ class TestFullQueryFlow:
                 }
             }
         )
-        result = await mcp._registered_tools["steam_get_friend_list"]()
+        result = await (await tool_fn(mcp, "steam_get_friend_list"))()
         assert result["count"] == 2
         assert len(result["friends"]) == 2

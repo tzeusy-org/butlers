@@ -15,14 +15,15 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp import FastMCP
 from pydantic import ValidationError
 
 from butlers.modules.base import Module
 from butlers.modules.email import EmailConfig, EmailModule
+from butlers.testing.mcp import registered_tools
 
 # The retained historical permission-test narratives describe the original enforcement.
 # Effects now refuse unavailable state; the real-lookup availability test below covers
@@ -46,28 +47,40 @@ EXPECTED_EMAIL_READ_TOOLS = {
 }
 
 
+async def test_inert_delivery_defangs_plain_text_mail_and_subject():
+    from email import message_from_string
+
+    module = EmailModule()
+    smtp = MagicMock()
+    with (
+        patch("butlers.modules.email.write_audit_entry", new_callable=AsyncMock),
+        patch.object(module, "_get_credentials", return_value=("owner@test.invalid", "synthetic")),
+        patch("butlers.modules.email.smtplib.SMTP", return_value=smtp),
+    ):
+        await module._reply_to_thread(
+            "recipient@test.invalid",
+            "thread-1",
+            "https://example.test bare.test user@test.test",
+            "See https://example.test",
+            render_links_inert=True,
+        )
+    message = message_from_string(smtp.sendmail.call_args.args[2])
+    assert message.get_content_type() == "text/plain"
+    assert message["Subject"] == "See https[:]//example[.]test"
+    assert message.get_payload(decode=True).decode() == (
+        "https[:]//example[.]test bare[.]test user[@]test[.]test"
+    )
+    assert smtp.sendmail.call_args.args[1] == ["recipient@test.invalid"]
+
+
 @pytest.fixture
 def email_module() -> EmailModule:
     return EmailModule()
 
 
 @pytest.fixture
-def mock_mcp() -> MagicMock:
-    mcp = MagicMock()
-    tools: dict[str, Any] = {}
-
-    def tool_decorator(*_args, **kwargs):
-        name = kwargs.get("name")
-
-        def decorator(fn):
-            tools[name or fn.__name__] = fn
-            return fn
-
-        return decorator
-
-    mcp.tool = tool_decorator
-    mcp._registered_tools = tools
-    return mcp
+def mock_mcp() -> FastMCP:
+    return FastMCP("providers8-email-tools")
 
 
 class TestModuleABCCompliance:
@@ -100,7 +113,7 @@ class TestToolRegistration:
         await email_module.register_tools(
             mcp=mock_mcp, config={}, db=None, butler_name="test-butler"
         )
-        registered = set(mock_mcp._registered_tools.keys())
+        registered = set((await registered_tools(mock_mcp)).keys())
         assert EXPECTED_EMAIL_READ_TOOLS.issubset(registered)
         # Send tools NOT registered by default
         assert "email_send_message" not in registered
@@ -165,7 +178,7 @@ class TestSendEmailBehavior:
         )
         # No credentials resolved → raises RuntimeError with actionable message
         with pytest.raises(RuntimeError, match="email credentials"):
-            await mock_mcp._registered_tools["email_send_message"](
+            await (await registered_tools(mock_mcp))["email_send_message"](
                 to="alice@example.com",
                 subject="Test",
                 body="Hello",

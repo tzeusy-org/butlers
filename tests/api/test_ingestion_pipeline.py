@@ -16,9 +16,8 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.ingestion_connectors import (
-    _get_db_manager as _connectors_get_db_manager,
-)
+from butlers.api.deps import get_db as _connectors_get_db_manager
+from butlers.api.deps import get_db_optional
 
 pytestmark = pytest.mark.unit
 
@@ -248,7 +247,7 @@ async def test_pipeline_stats_backlog_counts_healthy(app):
     pool = _make_shared_pool(rows=rows)
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
-    app.dependency_overrides[_pip_mod._get_db_manager_optional] = lambda: mock_db
+    app.dependency_overrides[get_db_optional] = lambda: mock_db
 
     with patch.dict("os.environ", {"PROMETHEUS_URL": ""}, clear=False):
         async with httpx.AsyncClient(
@@ -277,7 +276,7 @@ async def test_pipeline_stats_backlog_counts_query_error(app):
     pool.fetch = AsyncMock(side_effect=RuntimeError("connection lost"))
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
-    app.dependency_overrides[_pip_mod._get_db_manager_optional] = lambda: mock_db
+    app.dependency_overrides[get_db_optional] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1172,7 +1171,7 @@ async def test_pipeline_bearer_scrub_projection(
     pool = _make_shared_pool(rows=[_backlog_row("failed", 7, is_written_off=False)])
     db = MagicMock(spec=DatabaseManager)
     db.credential_shared_pool.return_value = pool
-    app.dependency_overrides[pipeline._get_db_manager_optional] = lambda: db
+    app.dependency_overrides[get_db_optional] = lambda: db
     queries = []
 
     async def query(url, promql):
@@ -1231,7 +1230,7 @@ async def test_pipeline_bearer_scrub_cache_windows_concurrent_retry(app):
     pool = _make_shared_pool(rows=[])
     db = MagicMock(spec=DatabaseManager)
     db.credential_shared_pool.return_value = pool
-    app.dependency_overrides[pipeline._get_db_manager_optional] = lambda: db
+    app.dependency_overrides[get_db_optional] = lambda: db
 
     async def query(url, promql):
         await asyncio.sleep(0)

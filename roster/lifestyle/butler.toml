@@ -63,11 +63,9 @@ policy = "suggest"
 provider = "google"
 include_other_contacts = false
 
+# Relationship is the only butler that syncs contacts (it owns entities).
 [modules.contacts.sync]
-enabled = true
-run_on_startup = true
-interval_minutes = 15
-full_sync_interval_days = 6
+enabled = false
 
 [modules.spotify]
 
@@ -82,5 +80,4 @@ full_sync_interval_days = 6
 # max_read_size_bytes = 10485760  # 10 MB cap for drive_read_file
 # butler_folder_name = "butlers"  # root folder name at Drive root for butler outputs
 
-# RFC 0015: report errors to QA; this module never dispatches locally.
-[modules.self_healing]
+# RFC 0015: core always registers the error relay; no module opt-in is required.

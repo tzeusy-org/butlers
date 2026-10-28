@@ -454,6 +454,10 @@ fixed-width advisory-lock hash. The public OpenAPI contract SHALL describe
 omitted or null runtime value remains eligible for the structured `400`
 validation envelope below.
 
+ID: REQ-chronicler-api-017
+Source: bu-4mfhdq (CE authorization); existing Chronicler Day-Close Cache Surface contract
+Scope: v1-mandatory
+
 #### Scenario: Admissible cache hit returns prose with provenance
 
 - **WHEN** a client requests `GET /api/chronicler/aggregate/day-close` for a

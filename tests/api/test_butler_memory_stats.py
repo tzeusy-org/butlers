@@ -16,7 +16,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.memory import _get_db_manager
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -72,7 +72,7 @@ def _make_app_with_butler(butler_name: str, pool: AsyncMock) -> object:
     mock_db.pool.return_value = pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app
 
 
@@ -82,7 +82,7 @@ def _make_app_missing_butler(butler_names: list[str]) -> object:
     mock_db.butler_names = butler_names
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app
 
 
@@ -97,7 +97,7 @@ def _make_app_no_memory_tables(butler_name: str) -> object:
     mock_db.relation_observed_since_start.return_value = False
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app
 
 
@@ -150,7 +150,7 @@ async def test_memory_stats_per_butler_scoping() -> None:
     mock_db.pool.side_effect = _pool_selector
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

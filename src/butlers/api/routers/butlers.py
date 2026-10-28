@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,6 +26,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
+    Db,
     MCPClientManager,
     get_butler_configs,
     get_mcp_manager,
@@ -50,7 +50,7 @@ from butlers.api.models import (
     TriggerRequest,
     TriggerResponse,
 )
-from butlers.api.read_models.butlers_v1 import query_sessions_24h
+from butlers.api.read_models.butlers import query_sessions_24h
 from butlers.api.routers.audit import log_audit_entry
 from butlers.config import ConfigError, load_config
 from butlers.core.pricing import PricingConfig, estimate_session_cost
@@ -76,11 +76,6 @@ _DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[4] / "roster"
 def _get_roster_dir() -> Path:
     """Return the roster directory path. Override in tests."""
     return _DEFAULT_ROSTER_DIR
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub -- overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +146,7 @@ async def _fetch_sessions_24h(
 ) -> dict[str, int]:
     """Return a mapping of butler_name -> session count for the last 24 hours.
 
-    Delegates to :func:`~butlers.api.read_models.butlers_v1.query_sessions_24h`
+    Delegates to :func:`~butlers.api.read_models.butlers.query_sessions_24h`
     from the versioned read-model boundary.  This call is best-effort: any DB
     or query failure returns an empty mapping so the list endpoint stays
     available when the DB is unhealthy.
@@ -168,7 +163,8 @@ async def _fetch_sessions_24h(
 async def list_butlers(
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ButlerSummary]]:
     """Return all discovered butlers with live status and 24h session counts."""
     config_names = [info.name for info in configs]
@@ -302,14 +298,15 @@ def _build_process_facts(
 ) -> ProcessFacts:
     """Assemble process facts from stable topology sources.
 
-    - ``container_name``: derived from the ``BUTLERS_HOST`` env var (the MCP
-      host the dashboard uses to reach butler daemons). Absent when unset or
-      resolves to ``localhost``.
+    - ``container_name``: the resolved MCP endpoint host, including the
+      separate Switchboard service. Absent for local loopback.
     - ``port``: from ``ButlerConnectionInfo.port``.
     - ``registered_duration_seconds``: seconds since switchboard registration.
     - ``config_path``: roster-relative path, e.g. ``roster/general/butler.toml``.
     """
-    host = os.environ.get("BUTLERS_HOST", "localhost")
+    from urllib.parse import urlparse
+
+    host = urlparse(connection_info.sse_url).hostname
     container_name: str | None = host if host and host != "localhost" else None
 
     toml_path = roster_dir / connection_info.name / "butler.toml"
@@ -882,7 +879,8 @@ def _compute_board_aggregates(
 async def get_butlers_board(
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     pricing: PricingConfig = Depends(get_pricing),
 ) -> ApiResponse[BoardResponse]:
     """Return the consolidated fleet status board in one round trip.
@@ -951,7 +949,8 @@ async def get_butler_detail(
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
     roster_dir: Path = Depends(_get_roster_dir),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ButlerDetail]:
     """Return detailed information for a single butler.
 
@@ -970,8 +969,8 @@ async def get_butler_detail(
     butler_dir = roster_dir / name
     try:
         config = load_config(butler_dir)
-    except ConfigError:
-        raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
+    except ConfigError as exc:
+        raise HTTPException(status_code=404, detail=f"Butler not found: {name}") from exc
 
     modules = [
         ModuleInfo(name=mod_name, enabled=True, config=mod_cfg or None)
@@ -1098,7 +1097,9 @@ async def get_butler_config(
         butler_toml = tomllib.loads(toml_path.read_bytes().decode())
     except (tomllib.TOMLDecodeError, OSError) as exc:
         logger.error("Failed to read butler.toml for %s: %s", name, exc)
-        raise HTTPException(status_code=500, detail=f"Failed to read config for butler: {name}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to read config for butler: {name}"
+        ) from exc
 
     config_response = ButlerConfigResponse(
         butler_toml=butler_toml,
@@ -1214,19 +1215,19 @@ async def list_butler_mcp_tools(
             client.list_tools(),
             timeout=_MCP_LIST_TOOLS_TIMEOUT_S,
         )
-    except ButlerUnreachableError:
-        raise HTTPException(status_code=503, detail=f"Butler '{name}' is unreachable")
-    except TimeoutError:
+    except ButlerUnreachableError as exc:
+        raise HTTPException(status_code=503, detail=f"Butler '{name}' is unreachable") from exc
+    except TimeoutError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"MCP tool listing for butler '{name}' timed out",
-        )
+        ) from exc
     except Exception as exc:
         logger.warning("Unexpected MCP list_tools failure for %s", name, exc_info=True)
         raise HTTPException(
             status_code=502,
             detail=f"Failed to list MCP tools for butler '{name}': {exc}",
-        )
+        ) from exc
 
     if not isinstance(raw_tools, list):
         logger.warning(
@@ -1269,13 +1270,13 @@ async def call_butler_mcp_tool(
             client.call_tool(tool_name, request.arguments),
             timeout=_MCP_CALL_TIMEOUT_S,
         )
-    except ButlerUnreachableError:
-        raise HTTPException(status_code=503, detail=f"Butler '{name}' is unreachable")
-    except TimeoutError:
+    except ButlerUnreachableError as exc:
+        raise HTTPException(status_code=503, detail=f"Butler '{name}' is unreachable") from exc
+    except TimeoutError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"MCP tool call '{tool_name}' to butler '{name}' timed out",
-        )
+        ) from exc
     except Exception as exc:
         logger.warning(
             "Unexpected MCP tool call failure for %s.%s",
@@ -1286,7 +1287,7 @@ async def call_butler_mcp_tool(
         raise HTTPException(
             status_code=502,
             detail=f"MCP tool call '{tool_name}' failed for butler '{name}': {exc}",
-        )
+        ) from exc
 
     raw_text = _extract_mcp_result_text(result)
     parsed_result = _parse_mcp_result_payload(raw_text)
@@ -1490,8 +1491,8 @@ async def get_butler_modules(
     butler_dir = roster_dir / name
     try:
         config = load_config(butler_dir)
-    except ConfigError:
-        raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
+    except ConfigError as exc:
+        raise HTTPException(status_code=404, detail=f"Butler not found: {name}") from exc
 
     module_names = list(config.modules.keys())
 
@@ -1517,7 +1518,8 @@ async def trigger_butler(
     request: TriggerRequest,
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TriggerResponse]:
     """Trigger a runtime session on the named butler with the provided prompt.
 
@@ -1543,22 +1545,22 @@ async def trigger_butler(
             client.call_tool("trigger", trigger_args),
             timeout=_TRIGGER_TIMEOUT_S,
         )
-    except ButlerUnreachableError:
+    except ButlerUnreachableError as exc:
         await log_audit_entry(
             db, name, "trigger", summary, result="error", error="Butler unreachable"
         )
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' is unreachable",
-        )
-    except TimeoutError:
+        ) from exc
+    except TimeoutError as exc:
         await log_audit_entry(
             db, name, "trigger", summary, result="error", error="Request timed out"
         )
         raise HTTPException(
             status_code=503,
             detail=f"Trigger request to butler '{name}' timed out",
-        )
+        ) from exc
 
     # Parse the MCP tool result
     session_id: str | None = None
@@ -1605,7 +1607,8 @@ async def force_butler_tick(
     name: str,
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TickResponse] | JSONResponse:
     """Force a scheduler tick on the specified butler.
 

@@ -19,13 +19,13 @@ configured timezone (``Asia/Singapore``, UTC+8).
 from __future__ import annotations
 
 import shutil
-import sys
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 import httpx
 import pytest
 
+from butlers.api.deps import get_db
 from butlers.core.general_settings import save_general_settings
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -38,7 +38,7 @@ pytestmark = [
 # Trigger router discovery so the health dependency fn is importable from
 # sys.modules (FastAPI dependency_overrides keys on object identity).
 _APP_SEED = create_app(api_key="")
-_health_get_db_manager = sys.modules["health_api_router"]._get_db_manager
+_health_get_db_manager = get_db
 
 OWNER_TZ = "Asia/Singapore"  # UTC+8, no DST
 

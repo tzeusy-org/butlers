@@ -27,9 +27,9 @@ from types import ModuleType
 
 import asyncpg
 
-_REL_035_PATH = (
-    Path(__file__).resolve().parents[1] / "migrations" / "035_entity_fact_effective_time_expand.py"
-)
+_THIS_FILE = Path(__file__).resolve()
+
+_REL_035_PATH = _THIS_FILE.parents[1] / "migrations" / "035_entity_fact_effective_time_expand.py"
 
 #: Mirrors ``fact_evidence.py::_MAX_TEXT_CHARS`` / the migration's CHECK bound.
 MAX_TEXT_CHARS = 512
@@ -167,7 +167,7 @@ async def apply_evidence_schema(pool: asyncpg.Pool | asyncpg.Connection) -> None
         "table_schema='relationship' AND table_name='entity_facts' "
         "AND column_name='content_authority')"
     ):
-        path = Path(__file__).resolve().parents[1] / "migrations" / "037_fact_content_authority.py"
+        path = _THIS_FILE.parents[1] / "migrations" / "037_fact_content_authority.py"
         spec = importlib.util.spec_from_file_location("_migration_rel_037", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)

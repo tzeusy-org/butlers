@@ -16,19 +16,14 @@ from typing import Any
 import pytest
 
 from butlers.connectors.home_assistant import HAEventReorderBuffer
+from butlers.testing.clock import FakeClock
 
 
-class _Clock:
-    """Deterministic monotonic clock stand-in for the buffer's time_source."""
-
-    def __init__(self) -> None:
-        self.t = 0.0
+class _Clock(FakeClock):
+    """Callable adapter at the buffer's existing monotonic time_source seam."""
 
     def __call__(self) -> float:
-        return self.t
-
-    def advance(self, dt: float) -> None:
-        self.t += dt
+        return self.monotonic()
 
 
 def _event(time_fired: str, entity_id: str = "sensor.temp") -> dict[str, Any]:

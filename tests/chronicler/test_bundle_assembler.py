@@ -585,3 +585,109 @@ def test_high_volume_all_sensitive_stays_within_budget() -> None:
     bundle.assert_within_budget(max_bytes=MAX_TIER_2_INPUT_BYTES)
     assert bundle.bundle["episodes"] == []
     assert bundle.bundle["events"] == []
+
+
+@pytest.mark.parametrize("privacy", ["sensitive", "restricted", None, "unrecognized"])
+def test_effective_privacy_cannot_fall_back_to_normal_payload(privacy) -> None:
+    row = _episode(
+        source_name="google_health.measurements",
+        source_ref="PRIVATE_REF_CANARY",
+        title="PRIVATE_TITLE_CANARY",
+        payload={"context_name": "PRIVATE_CONTEXT_CANARY", "category": "PRIVATE_CATEGORY_CANARY"},
+    )
+    row.update(privacy=privacy, episode_type="workout_episode", lat=1, lon=2)
+    bundle = assemble_day_close_bundle(date_label="2026-04-25", episodes=[row], events=[])
+    assert bundle.bundle["episodes"] == []
+    assert bundle.citations == []
+    if privacy == "sensitive":
+        assert bundle.bundle["sensitive_envelopes"] == [
+            {
+                "start_at": "2026-04-25T09:00:00+00:00",
+                "end_at": "2026-04-25T10:00:00+00:00",
+                "category": "workout",
+                "duration": 3600.0,
+            }
+        ]
+    else:
+        assert bundle.bundle["sensitive_envelopes"] == []
+    assert "CANARY" not in json.dumps(bundle.bundle)
+
+
+def test_sensitive_envelope_uses_corrected_window_and_elapsed_dst_duration() -> None:
+    from zoneinfo import ZoneInfo
+
+    zone = ZoneInfo("America/New_York")
+    row = _episode(privacy="sensitive")
+    row.update(
+        start_at=datetime(2026, 3, 8, 1, 30, tzinfo=zone),
+        end_at=datetime(2026, 3, 8, 3, 30, tzinfo=zone),
+    )
+    bundle = assemble_day_close_bundle(
+        date_label="2026-03-08", timezone="America/New_York", episodes=[row], events=[]
+    )
+    assert bundle.bundle["sensitive_envelopes"] == [
+        {
+            "start_at": "2026-03-08T01:30:00-05:00",
+            "end_at": "2026-03-08T03:30:00-04:00",
+            "category": "tasks",
+            "duration": 3600.0,
+        }
+    ]
+    assert bundle.citations == []
+
+
+@pytest.mark.parametrize("invalid", ["open", "reversed", "naive", "missing", "string"])
+def test_sensitive_envelope_never_invents_an_unknown_window(invalid) -> None:
+    row = _episode(privacy="sensitive")
+    if invalid == "open":
+        row["end_at"] = None
+    elif invalid == "reversed":
+        row["end_at"] = row["start_at"] - timedelta(seconds=1)
+    elif invalid == "naive":
+        row["start_at"] = row["start_at"].replace(tzinfo=None)
+    elif invalid == "missing":
+        del row["start_at"]
+    else:
+        row["start_at"] = row["start_at"].isoformat()
+    bundle = assemble_day_close_bundle(date_label="2026-04-25", episodes=[row], events=[])
+    assert bundle.bundle["sensitive_envelopes"] == []
+    assert bundle.bundle["episodes"] == []
+    assert bundle.citations == []
+
+
+def test_sensitive_envelopes_share_existing_caps_and_complete_tier_two_budget() -> None:
+    from butlers.chronicler.interpretation import MAX_TIER_2_INPUT_BYTES
+
+    episodes = [_episode()] + [_episode(privacy="sensitive") for _ in range(20)]
+    events = [_event()] + [_event(privacy="sensitive") for _ in range(20)]
+    bundle = assemble_day_close_bundle(
+        date_label="2026-04-25",
+        episodes=episodes,
+        events=events,
+        config=BundleConfig(max_episodes=2, max_events=3),
+    )
+    assert len(bundle.bundle["episodes"]) == 1
+    assert len(bundle.bundle["events"]) == 1
+    assert len(bundle.bundle["sensitive_envelopes"]) == 3
+    assert bundle.bundle["sensitive_envelopes_truncated"] is True
+    assert bundle.citations == ["core.sessions:ep-1", "owntracks.points:pt-1"]
+    oversized = assemble_day_close_bundle(
+        date_label="2026-04-25",
+        episodes=[_episode(privacy="sensitive") for _ in range(200)],
+        events=[_event(privacy="sensitive") for _ in range(500)],
+    )
+    assert 0 < len(oversized.bundle["sensitive_envelopes"]) < 150
+    assert oversized.bundle["sensitive_envelopes_truncated"] is True
+    assert len(json.dumps(oversized.bundle)) <= BundleConfig().max_total_chars
+    oversized.assert_within_budget(max_bytes=MAX_TIER_2_INPUT_BYTES)
+    assert oversized.citations == []
+
+
+def test_impossible_day_close_budget_refuses_instead_of_exceeding_the_bound() -> None:
+    with pytest.raises(ValueError, match="configured input budget"):
+        assemble_day_close_bundle(
+            date_label="2026-04-25",
+            episodes=[_episode(privacy="sensitive")],
+            events=[],
+            config=BundleConfig(max_total_chars=1),
+        )

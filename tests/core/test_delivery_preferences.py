@@ -56,7 +56,7 @@ async def _capture_scheduler_notify_fn(pool, client):
             butler_name="health",
             tick_fn=capture_tick,
             get_switchboard_client=lambda: client,
-            get_db=lambda: None,
+            get_db=lambda: SimpleNamespace(pool=pool),
         )
     )
     await asyncio.wait_for(notify_fn_ready.wait(), timeout=1)
@@ -139,6 +139,18 @@ class TestDeliveryPreferencesDB:
             migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
         )
         await p.execute("TRUNCATE deferred_notifications, delivery_preferences CASCADE")
+        await p.execute("""
+            UPDATE public.user_context
+            SET superseded_at = now()
+            WHERE signal_type <> 'dnd' AND superseded_at IS NULL
+        """)
+        await p.execute("""
+            INSERT INTO public.approvals_policy
+                (id, quiet_start_hour, quiet_end_hour, timezone)
+            VALUES (1, NULL, NULL, 'UTC')
+            ON CONFLICT (id) DO UPDATE
+                SET quiet_start_hour = NULL, quiet_end_hour = NULL, timezone = 'UTC'
+        """)
         yield p
         await p.close()
 
@@ -527,3 +539,195 @@ class TestDeliveryPreferencesDB:
         )
         assert drained == 1
         assert await _pending_count() == 0
+
+    @pytest.mark.parametrize("count", [1, 2])
+    async def test_terminal_telegram_flush_commits_failed_tail_without_replay(self, pool, count):
+        from butlers.core.scheduler import _tick_deferred_notification_pass
+        from butlers.core.temporal.delivery_db import insert_deferred_notification
+
+        now = datetime.now(UTC)
+        ids = []
+        for _ in range(count):
+            ids.append(
+                await insert_deferred_notification(
+                    pool,
+                    butler_name="health",
+                    channel="telegram",
+                    message="x" * 5000,
+                    priority="medium",
+                    deliver_at=now - timedelta(seconds=1),
+                    envelope={
+                        "schema_version": "notify.v1",
+                        "origin_butler": "health",
+                        "delivery": {
+                            "intent": "send",
+                            "channel": "telegram",
+                            "message": "x" * 5000,
+                            "recipient": "123",
+                        },
+                    },
+                )
+            )
+        notify = AsyncMock(
+            return_value={"status": "failed", "partial_delivery": True, "retryable": False}
+        )
+        assert await _tick_deferred_notification_pass(pool, now, notify_fn=notify) == 0
+        assert await _tick_deferred_notification_pass(pool, now, notify_fn=notify) == 0
+        notify.assert_awaited_once()
+        async with pool.acquire() as independent:
+            rows = await independent.fetch(
+                "SELECT status, delivered_at FROM deferred_notifications WHERE id=ANY($1::uuid[])",
+                [uuid.UUID(str(item)) for item in ids],
+            )
+            assert len(rows) == count
+            assert all(row["status"] == "cancelled" and row["delivered_at"] is None for row in rows)
+            assert (
+                await independent.fetchval(
+                    "SELECT count(*) FROM attention_ledger WHERE notification_ref=ANY($1::text[]) "
+                    "AND outcome='failed' AND metadata->>'partial_delivery'='true'",
+                    list(map(str, ids)),
+                )
+                == count
+            )
+
+
+@pytest.mark.parametrize("terminal_field", ["partial_delivery", "telegram_effect_uncertain"])
+async def test_real_deferred_wrapper_terminal_partial_keeps_failed_tail_across_bookkeeping_fault(
+    monkeypatch, terminal_field
+):
+    from butlers.core.scheduler import _tick_deferred_notification_pass
+
+    for count in (1, 2):
+        now = datetime.now(UTC)
+        rows = [
+            {
+                "id": uuid.uuid4(),
+                "butler_name": "health",
+                "channel": "telegram",
+                "priority": "medium",
+                "message": "x" * 5000,
+                "envelope": {
+                    "schema_version": "notify.v1",
+                    "origin_butler": "health",
+                    "delivery": {
+                        "intent": "send",
+                        "channel": "telegram",
+                        "message": "x" * 5000,
+                        "recipient": "123",
+                    },
+                },
+            }
+            for _ in range(count)
+        ]
+        state = {str(row["id"]): "pending" for row in rows}
+        fail_once = True
+
+        async def execute(sql, *args, state=state):
+            nonlocal fail_once
+            if "status = 'cancelled'" in sql:
+                if fail_once:
+                    fail_once = False
+                    raise RuntimeError("controlled terminal write failure")
+                for row_id in args[0]:
+                    state[str(row_id)] = "cancelled"
+            assert "SET status = 'delivered'" not in sql
+
+        pool = SimpleNamespace(
+            fetchval=AsyncMock(return_value=True),
+            execute=execute,
+            fetch=AsyncMock(
+                side_effect=lambda *_, rows=rows, state=state: [
+                    row for row in rows if state[str(row["id"])] == "pending"
+                ]
+            ),
+        )
+        client = SimpleNamespace(
+            call_tool=AsyncMock(
+                return_value=SimpleNamespace(
+                    is_error=False,
+                    data={"status": "failed", terminal_field: True, "retryable": False},
+                    content=[],
+                )
+            )
+        )
+        ledger = AsyncMock()
+        monkeypatch.setattr("butlers.core.attention_ledger.record_attention_event", ledger)
+        monkeypatch.setattr(
+            "butlers.core.attention_ledger.check_owner_notify_suppression",
+            AsyncMock(return_value=None),
+        )
+        notify, task, release = await _capture_scheduler_notify_fn(pool, client)
+        try:
+            assert await _tick_deferred_notification_pass(pool, now, notify_fn=notify) == 0
+            assert await _tick_deferred_notification_pass(pool, now, notify_fn=notify) == 0
+            assert await _tick_deferred_notification_pass(pool, now, notify_fn=notify) == 0
+        finally:
+            await _stop_scheduler_notify_capture(task, release)
+        assert client.call_tool.await_count == 1
+        assert set(state.values()) == {"cancelled"}
+        assert ledger.await_count == count
+        assert all(c.kwargs["outcome"] == "failed" for c in ledger.await_args_list)
+        assert all(c.kwargs["metadata"][terminal_field] is True for c in ledger.await_args_list)
+
+
+@pytest.mark.parametrize("terminal_field", ["partial_delivery", "telegram_effect_uncertain"])
+async def test_terminal_reconciliation_does_not_cancel_a_new_same_recipient_send(
+    monkeypatch, terminal_field
+):
+    from butlers.core import scheduler
+
+    now = datetime.now(UTC)
+    old_id, fresh_id = uuid.uuid4(), uuid.uuid4()
+    states = {old_id: "pending"}
+    failed_write = True
+
+    def row(item):
+        return {
+            "id": item,
+            "butler_name": "health",
+            "channel": "telegram",
+            "priority": "medium",
+            "message": "controlled",
+            "envelope": {
+                "schema_version": "notify.v1",
+                "origin_butler": "health",
+                "delivery": {
+                    "intent": "send",
+                    "channel": "telegram",
+                    "message": str(item),
+                    "recipient": "123",
+                },
+            },
+        }
+
+    async def fetch(sql, *args):
+        if "id = ANY" in sql:
+            return [row(item) for item in states if str(item) in args[0]]
+        return [row(item) for item, state in states.items() if state == "pending"]
+
+    async def execute(sql, *args):
+        nonlocal failed_write
+        if "status = 'cancelled'" in sql:
+            if failed_write:
+                failed_write = False
+                raise RuntimeError("controlled terminal store fault")
+            for item in args[0]:
+                states[item] = "cancelled"
+        elif "status = 'delivered'" in sql:
+            states[args[0]] = "delivered"
+
+    pool = SimpleNamespace(fetch=fetch, execute=execute, fetchval=AsyncMock(return_value=True))
+    notify = AsyncMock(side_effect=[{terminal_field: True, "retryable": False}, None])
+    ledger = AsyncMock()
+    monkeypatch.setattr("butlers.core.attention_ledger.record_attention_event", ledger)
+    assert await scheduler._tick_deferred_notification_pass(pool, now, notify_fn=notify) == 0
+    assert scheduler._PARTIAL_DEFERRED.contains(pool, str(old_id))
+    states[fresh_id] = "pending"
+    assert await scheduler._tick_deferred_notification_pass(pool, now, notify_fn=notify) == 1
+    assert await scheduler._tick_deferred_notification_pass(pool, now, notify_fn=notify) == 0
+    assert states == {old_id: "cancelled", fresh_id: "delivered"}
+    assert [c.args[0]["delivery"]["message"] for c in notify.await_args_list] == [
+        str(old_id),
+        str(fresh_id),
+    ]
+    assert [c.kwargs["outcome"] for c in ledger.await_args_list] == ["failed", "delivered"]

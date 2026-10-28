@@ -18,6 +18,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from fastmcp import FastMCP
 from pydantic import ValidationError
 
 import butlers.connectors.bridge_manager as bridge_manager
@@ -28,29 +29,82 @@ from butlers.modules.whatsapp import (
     WhatsAppConfig,
     WhatsAppModule,
 )
+from butlers.testing.mcp import registered_tools
 
 pytestmark = pytest.mark.unit
+
+
+async def test_inert_whatsapp_delivery_parks_without_using_unsupported_preview_api(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from butlers.core_tools._routing import _check_routed_delivery_approval
+    from butlers.modules.approvals.module import ApprovalsModule
+
+    pool = object()
+    import uuid
+
+    park = AsyncMock(return_value=SimpleNamespace(action_id=uuid.uuid4()))
+    monkeypatch.setattr("butlers.modules.approvals.park.park_pending_action", park)
+    module = WhatsAppModule()
+    module._send_message_with_policy = AsyncMock()
+    assert module.supports_inert_link_delivery is False
+    approval = ApprovalsModule()
+    await approval.on_startup({}, pool)
+    raw = {
+        "schema_version": "route.v1",
+        "input": {
+            "context": {
+                "notify_request": {
+                    "render_links_inert": True,
+                    "delivery": {"channel": "whatsapp", "message": "https://example.test"},
+                }
+            }
+        },
+    }
+    try:
+        decision = await _check_routed_delivery_approval(
+            daemon=SimpleNamespace(
+                db=SimpleNamespace(pool=pool),
+                config=SimpleNamespace(name="messenger"),
+                _approval_push_runtime=None,
+            ),
+            command=None,
+            route_payload=raw,
+            notify_request=SimpleNamespace(
+                render_links_inert=True, delivery=SimpleNamespace(channel="whatsapp")
+            ),
+            modules_by_name={"whatsapp": module},
+            dossier={},
+        )
+        assert not decision.allowed and decision.reason == "parked"
+        assert park.await_args.kwargs["tool_name"] == "route.execute"
+        assert park.await_args.kwargs["tool_args"] == raw
+        module._send_message_with_policy.assert_not_awaited()
+        park.side_effect = RuntimeError("Synthetic storage refusal")
+        with pytest.raises(RuntimeError, match="storage refusal"):
+            await _check_routed_delivery_approval(
+                daemon=SimpleNamespace(
+                    db=SimpleNamespace(pool=pool),
+                    config=SimpleNamespace(name="messenger"),
+                    _approval_push_runtime=None,
+                ),
+                command=None,
+                route_payload=raw,
+                notify_request=SimpleNamespace(
+                    render_links_inert=True, delivery=SimpleNamespace(channel="whatsapp")
+                ),
+                modules_by_name={"whatsapp": module},
+                dossier={},
+            )
+        module._send_message_with_policy.assert_not_awaited()
+    finally:
+        await approval.on_shutdown()
 
 
 @pytest.fixture
 def whatsapp_module() -> WhatsAppModule:
     return WhatsAppModule()
-
-
-def _make_mcp() -> tuple[dict[str, Any], MagicMock]:
-    """Build a mock MCP whose ``@mcp.tool()`` captures registered tools by name."""
-    registered: dict[str, Any] = {}
-    mcp = MagicMock()
-
-    def _tool_decorator(*args: Any, **kw: Any):
-        def _wrap(fn):
-            registered[kw.get("name") or fn.__name__] = fn
-            return fn
-
-        return _wrap
-
-    mcp.tool = _tool_decorator
-    return registered, mcp
 
 
 class TestModuleABCCompliance:
@@ -96,9 +150,10 @@ class TestToolRegistration:
     async def test_tool_registration_gated_by_send_tools(
         self, whatsapp_module: WhatsAppModule
     ) -> None:
-        registered, mcp = _make_mcp()
+        mcp = FastMCP("providers8-whatsapp-tools")
         # Default: send_tools=False → no tools registered
         await whatsapp_module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-butler")
+        registered = await registered_tools(mcp)
         assert len(registered) == 0
         # With send_tools=True → tools registered
         registered.clear()
@@ -108,6 +163,7 @@ class TestToolRegistration:
             db=None,
             butler_name="test-butler",
         )
+        registered = await registered_tools(mcp)
         assert len(registered) >= 1
 
 
@@ -154,13 +210,14 @@ class TestBridgeOwnership:
         monkeypatch.setattr(bridge_manager, "_http_post_unix_with_body", _fake_post)
 
         module = WhatsAppModule()
-        registered, mcp = _make_mcp()
+        mcp = FastMCP("providers8-whatsapp-tools")
         await module.register_tools(
             mcp=mcp,
             config={"send_tools": True, "send_enabled": False},
             db=None,
             butler_name="messenger",
         )
+        registered = await registered_tools(mcp)
         result = await registered["whatsapp_send_message"](recipient="+123", text="hi")
 
         assert result == {"error": _SEND_DISABLED_ERROR}
@@ -185,13 +242,14 @@ class TestBridgeOwnership:
         monkeypatch.setattr(bridge_manager, "_http_post_unix_with_body", _fake_post)
 
         module = WhatsAppModule()
-        registered, mcp = _make_mcp()
+        mcp = FastMCP("providers8-whatsapp-tools")
         await module.register_tools(
             mcp=mcp,
             config={"send_tools": True, "send_enabled": True},
             db=None,
             butler_name="messenger",
         )
+        registered = await registered_tools(mcp)
 
         send_result = await registered["whatsapp_send_message"](recipient="+123", text="hi")
         reply_result = await registered["whatsapp_reply_to_message"](
@@ -228,13 +286,14 @@ class TestBridgeOwnership:
         monkeypatch.setattr(bridge_manager, "_http_post_unix_with_body", _fake_post)
 
         module = WhatsAppModule()
-        registered, mcp = _make_mcp()
+        mcp = FastMCP("providers8-whatsapp-tools")
         await module.register_tools(
             mcp=mcp,
             config={"send_tools": True, "send_enabled": True},
             db=None,
             butler_name="messenger",
         )
+        registered = await registered_tools(mcp)
         result = await registered["whatsapp_send_message"](recipient="+123", text="hi")
 
         assert "not connected" in result["error"]
@@ -249,13 +308,14 @@ class TestBridgeOwnership:
         monkeypatch.setattr(bridge_manager, "_http_get_unix", _fake_get)
 
         module = WhatsAppModule()
-        registered, mcp = _make_mcp()
+        mcp = FastMCP("providers8-whatsapp-tools")
         await module.register_tools(
             mcp=mcp,
             config={"send_tools": True, "send_enabled": True},
             db=None,
             butler_name="messenger",
         )
+        registered = await registered_tools(mcp)
         result = await registered["whatsapp_send_message"](recipient="+123", text="hi")
 
         assert "not reachable" in result["error"]

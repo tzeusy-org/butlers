@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.router_discovery import discover_butler_routers
 
 pytestmark = pytest.mark.unit
@@ -43,7 +44,7 @@ def _get_db_dep():
             f"Router module '{_MODULE_NAME}' not found after discovery. "
             "Ensure roster/general/api/router.py is present."
         )
-    return sys.modules[_MODULE_NAME]._get_db_manager
+    return get_db
 
 
 def _make_app(app, *, fetchval_seq=None, fetch_seq=None):

@@ -29,11 +29,9 @@ groups = ["core", "preferences", "entity"]
 provider = "google"
 include_other_contacts = false
 
+# Relationship is the only butler that syncs contacts (it owns entities).
 [modules.contacts.sync]
-enabled = true
-run_on_startup = true
-interval_minutes = 15
-full_sync_interval_days = 6
+enabled = false
 
 [modules.approvals]
 enabled = true
@@ -106,5 +104,4 @@ job_name = "home_safety_sentinel"
 
 [modules.google_drive]
 
-# RFC 0015: report errors to QA; this module never dispatches locally.
-[modules.self_healing]
+# RFC 0015: core always registers the error relay; no module opt-in is required.

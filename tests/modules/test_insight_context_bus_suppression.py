@@ -177,20 +177,25 @@ class TestPrecedence:
         assert await _get_signal([*both, dnd]) == "dnd"
 
 
-class TestFailOpen:
+class TestUnavailableReads:
     async def test_pool_none_returns_none(self):
+        from butlers.core.approvals_policy import AttentionReadUnavailable
         from butlers.tools.switchboard.insight.broker import get_suppressing_context_signal
 
-        assert await get_suppressing_context_signal(None, now=_NOW) is None
+        with pytest.raises(AttentionReadUnavailable):
+            await get_suppressing_context_signal(None, now=_NOW)
 
-    async def test_context_bus_error_fails_open(self):
+    async def test_context_bus_error_is_unavailable(self):
         from butlers.tools.switchboard.insight.broker import get_suppressing_context_signal
 
         with patch(
             "butlers.context_bus.get_active_context",
             new=AsyncMock(side_effect=RuntimeError("context bus down")),
         ):
-            assert await get_suppressing_context_signal(object(), now=_NOW) is None
+            from butlers.core.approvals_policy import AttentionReadUnavailable
+
+            with pytest.raises(AttentionReadUnavailable):
+                await get_suppressing_context_signal(object(), now=_NOW)
 
     async def test_now_defaults_to_current_time_when_omitted(self):
         """Callers that don't pass `now` still get a working suppression
@@ -246,11 +251,13 @@ class TestSuppressingContextSignalDetail:
         assert result is None
 
     async def test_pool_none_returns_none(self):
+        from butlers.core.approvals_policy import AttentionReadUnavailable
         from butlers.tools.switchboard.insight.broker import (
             _get_suppressing_context_signal_detail,
         )
 
-        assert await _get_suppressing_context_signal_detail(None, now=_NOW) is None
+        with pytest.raises(AttentionReadUnavailable):
+            await _get_suppressing_context_signal_detail(None, now=_NOW)
 
     async def test_get_suppressing_context_signal_delegates_to_the_detail_helper(self):
         """The public str-only function must keep returning exactly the type,
@@ -361,3 +368,45 @@ class TestComputeCatchupDeliverAt:
         )
 
         assert result is None
+
+
+@pytest.mark.parametrize("failed_read", ["policy", "context"])
+async def test_unavailable_cycle_never_promotes_model_ranked_work(monkeypatch, failed_read):
+    """REQ-context-bus-016: no caller priority promotion or routine destructive transition."""
+    from unittest.mock import MagicMock
+
+    from butlers.core.approvals_policy import AttentionReadUnavailable
+    from butlers.tools.switchboard.insight import broker
+
+    monkeypatch.setattr(
+        broker, "get_insight_settings", AsyncMock(return_value={"verbosity": "normal"})
+    )
+    monkeypatch.setattr(
+        broker,
+        "get_approvals_policy_quiet_hours",
+        AsyncMock(
+            side_effect=AttentionReadUnavailable() if failed_read == "policy" else None,
+            return_value=None,
+        ),
+    )
+    monkeypatch.setattr(
+        broker,
+        "get_suppressing_context_signal",
+        AsyncMock(
+            side_effect=AttentionReadUnavailable() if failed_read == "context" else None,
+            return_value=None,
+        ),
+    )
+    monkeypatch.setattr(broker, "expire_candidates", AsyncMock(return_value=0))
+    revalidate = AsyncMock(return_value=({}, 0))
+    monkeypatch.setattr(broker, "_revalidate_premises", revalidate)
+    pool = MagicMock(fetch=AsyncMock(return_value=[]), execute=AsyncMock())
+    notify = AsyncMock()
+    result = await broker.delivery_cycle(pool, notify_fn=notify, now=_NOW)
+    assert result["reason"] == "attention_store_unavailable"
+    assert result["skipped"] is True
+    assert result["delivered"] == []
+    revalidate.assert_not_awaited()
+    pool.fetch.assert_not_awaited()
+    pool.execute.assert_not_awaited()
+    notify.assert_not_awaited()

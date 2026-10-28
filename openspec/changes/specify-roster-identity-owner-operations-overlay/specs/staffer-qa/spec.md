@@ -3,8 +3,11 @@
 ### Requirement: QA Shared-Instruction Exception
 The QA Staffer's infrastructure contract SHALL explicitly opt out of composing
 `roster/shared/AGENTS.md` because those domain-facing instructions can conflict with QA's isolated
-investigation and infrastructure responsibilities. QA's `CLAUDE.md` SHALL continue to resolve its
-QA-specific `AGENTS.md`; the approved opt-out SHALL require no prompt-byte change.
+investigation and infrastructure responsibilities. QA's versioned guidance entry point `CLAUDE.md` SHALL continue to resolve its
+QA-specific `AGENTS.md`; the approved opt-out SHALL require no prompt-byte change. QA triage SHALL
+remain an exposed staffer goal under RFC0038. Its investigation agents SHALL remain the separate
+D18/RFC0015 engineering executors with isolated shell/worktree and anonymized payload, not domain
+daemon reasoning sessions or an exception to the lead/child prompt contract.
 The opt-out SHALL be represented consistently in QA's infrastructure-contract MANIFESTO and this
 capability. It SHALL NOT exempt QA from its own identity, sandbox, privacy, MCP isolation, or
 human-in-the-merge-seat obligations, and SHALL NOT establish an opt-out for another staffer or any
@@ -15,7 +18,7 @@ Source: [Observed] PR #3110 and roster/qa; specify-roster-identity-owner-operati
 Scope: v1-mandatory
 
 #### Scenario: QA keeps its approved opt-out
-- **WHEN** QA's roster identity is resolved
+- **WHEN** QA's versioned guidance is resolved
 - **THEN** `CLAUDE.md` resolves the QA-specific `AGENTS.md` without composing `roster/shared/AGENTS.md`
 - **AND** QA's existing `CLAUDE.md` and `AGENTS.md` bytes remain unchanged by adoption of this contract
 
@@ -27,6 +30,7 @@ Scope: v1-mandatory
 #### Scenario: QA-specific safeguards remain binding
 - **WHEN** QA operates under the shared-instruction opt-out
 - **THEN** its existing investigation sandbox, privacy, credential-isolation, MCP-isolation, and no-merge guarantees remain unchanged
+- **AND** the engineering-executor exception does not exempt exposed QA triage goals from RFC0038
 - **AND** the opt-out grants no new prompt, database, deployment, or repository-write authority
 
 #### Scenario: QA exception does not spread

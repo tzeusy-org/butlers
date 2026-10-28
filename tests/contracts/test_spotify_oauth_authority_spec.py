@@ -1,10 +1,10 @@
 """Specification consistency checks for Spotify OAuth authority (bu-27dxl.7.6.3).
 
 These checks deliberately inspect the normative artifacts rather than the
-currently transitional implementation.  The active OAuth scope-surface change
-and the canonical dashboard/credential contracts must agree before its two
-serialized implementation beads can safely remove the generic OAuth Spotify
-exemplar and add the Passport projection.
+currently transitional implementation. The canonical OAuth scope surface and
+dashboard/credential contracts retain the adopted authority after archive;
+proposal, design, tasks and the original lifecycle delta remain historical
+handoff evidence rather than proof of runtime implementation.
 """
 
 from __future__ import annotations
@@ -17,32 +17,15 @@ import pytest
 pytestmark = pytest.mark.contract
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_CARRIER_SPEC = (
-    _REPO_ROOT
-    / "openspec"
-    / "changes"
-    / "add-connector-oauth-scope-surface"
-    / "specs"
-    / "connector-oauth-scope-surface"
-    / "spec.md"
+_ARCHIVED_CARRIER = (
+    _REPO_ROOT / "openspec" / "changes" / "archive" / "2026-10-24-add-connector-oauth-scope-surface"
 )
-_CARRIER_TASKS = (
-    _REPO_ROOT / "openspec" / "changes" / "add-connector-oauth-scope-surface" / "tasks.md"
-)
-_CARRIER_DESIGN = (
-    _REPO_ROOT / "openspec" / "changes" / "add-connector-oauth-scope-surface" / "design.md"
-)
-_CARRIER_PROPOSAL = (
-    _REPO_ROOT / "openspec" / "changes" / "add-connector-oauth-scope-surface" / "proposal.md"
-)
+_OAUTH_SPEC = _REPO_ROOT / "openspec" / "specs" / "connector-oauth-scope-surface" / "spec.md"
+_CARRIER_TASKS = _ARCHIVED_CARRIER / "tasks.md"
+_CARRIER_DESIGN = _ARCHIVED_CARRIER / "design.md"
+_CARRIER_PROPOSAL = _ARCHIVED_CARRIER / "proposal.md"
 _DASHBOARD_INGESTION_LIFECYCLE_DELTA = (
-    _REPO_ROOT
-    / "openspec"
-    / "changes"
-    / "add-connector-oauth-scope-surface"
-    / "specs"
-    / "dashboard-ingestion-dispatch-console"
-    / "spec.md"
+    _ARCHIVED_CARRIER / "specs" / "dashboard-ingestion-dispatch-console" / "spec.md"
 )
 _INGESTION_SPEC = (
     _REPO_ROOT / "openspec" / "specs" / "dashboard-ingestion-dispatch-console" / "spec.md"
@@ -72,15 +55,7 @@ _PASSPORT_PAGES = (
 )
 _SECRETS_ROUTER = _REPO_ROOT / "src" / "butlers" / "api" / "routers" / "secrets_v2.py"
 _RELATIONSHIP_ROUTER = _REPO_ROOT / "roster" / "relationship" / "api" / "router.py"
-_CONNECTOR_BASE_DELTA = (
-    _REPO_ROOT
-    / "openspec"
-    / "changes"
-    / "add-connector-oauth-scope-surface"
-    / "specs"
-    / "connector-base-spec"
-    / "spec.md"
-)
+_CONNECTOR_BASE_SPEC = _REPO_ROOT / "openspec" / "specs" / "connector-base-spec" / "spec.md"
 _RFC_0006 = (
     _REPO_ROOT / "about" / "legends-and-lore" / "rfcs" / "0006-database-schema-and-isolation.md"
 )
@@ -134,8 +109,8 @@ def _router_seams(path: Path) -> set[tuple[str, str, str]]:
 
 
 def test_active_carrier_declares_spotify_connector_and_passport_boundaries() -> None:
-    """The active carrier must make the authority decision implementation-ready."""
-    carrier = _read(_CARRIER_SPEC)
+    """The canonical scope contract retains the adopted Spotify authority."""
+    carrier = _read(_OAUTH_SPEC)
 
     assert "### Requirement: Spotify connector authority and Passport projection" in carrier
     assert "Spotify connector PKCE is the only production Spotify authorization flow." in carrier
@@ -191,7 +166,7 @@ def test_dashboard_api_excludes_spotify_from_generic_oauth_and_user_credential_a
 
 def test_carrier_serializes_the_two_downstream_implementation_lanes() -> None:
     """The cleanup must depend on the projection in artifacts and tracker handoff."""
-    carrier = _collapse_whitespace(_read(_CARRIER_SPEC))
+    carrier = _collapse_whitespace(_read(_OAUTH_SPEC))
     tasks = _collapse_whitespace(_read(_CARRIER_TASKS))
     design = _collapse_whitespace(_read(_CARRIER_DESIGN))
 
@@ -225,23 +200,30 @@ def test_reauth_lifecycle_authority_has_a_live_canonical_archive_target() -> Non
     assert "### Requirement: Ingestion-Originated OAuth page_of_origin Contract" in canonical
     assert "## ADDED Requirements" in _read(_DASHBOARD_INGESTION_LIFECYCLE_DELTA)
 
-    assert "#### Scenario: Generic OAuth reauth is Approvals-gated" in lifecycle
-    assert "`connector-oauth-scope-surface/spec`" in lifecycle
-    assert "#### Scenario: Spotify reauth stays connector-owned" in lifecycle
-    assert "`/secrets?focus=u:spotify`" in lifecycle
-    assert "`POST /api/connectors/spotify/oauth/start`" in lifecycle
-    assert "RFC 0006 Tier 2" in lifecycle
-    assert "`public.entity_info` on the owner entity" in lifecycle
-    assert "`resolve_owner_entity_info()`" in lifecycle
-    assert "SHALL NOT submit the recovery to the Approvals module" in lifecycle
-    assert "#### Scenario: Non-OAuth reauth is rejected before approval" in lifecycle
-    assert "SHALL NOT pass through the Approvals module" in lifecycle
+    canonical_lifecycle = _requirement(canonical, "OAuth reauth lifecycle authority")
+    # Source-reference footers belong to their documents, not the requirement body.
+    assert _collapse_whitespace(canonical_lifecycle.split("\n## ", 1)[0]) == (
+        _collapse_whitespace(lifecycle.split("\n## ", 1)[0])
+    )
+    lifecycle_documents = (lifecycle, canonical_lifecycle)
+    for lifecycle in lifecycle_documents:
+        assert "#### Scenario: Generic OAuth reauth is Approvals-gated" in lifecycle
+        assert "`connector-oauth-scope-surface/spec`" in lifecycle
+        assert "#### Scenario: Spotify reauth stays connector-owned" in lifecycle
+        assert "`/secrets?focus=u:spotify`" in lifecycle
+        assert "`POST /api/connectors/spotify/oauth/start`" in lifecycle
+        assert "RFC 0006 Tier 2" in lifecycle
+        assert "`public.entity_info` on the owner entity" in lifecycle
+        assert "`resolve_owner_entity_info()`" in lifecycle
+        assert "SHALL NOT submit the recovery to the Approvals module" in lifecycle
+        assert "#### Scenario: Non-OAuth reauth is rejected before approval" in lifecycle
+        assert "SHALL NOT pass through the Approvals module" in lifecycle
 
 
 def test_active_carrier_limits_generic_approval_and_audit_to_generic_oauth() -> None:
-    """The active carrier must not turn Spotify or non-OAuth reauth into generic approval flow."""
+    """The canonical contract keeps Spotify and non-OAuth outside generic approval."""
     proposal = _collapse_whitespace(_read(_CARRIER_PROPOSAL))
-    carrier = _collapse_whitespace(_read(_CARRIER_SPEC))
+    carrier = _collapse_whitespace(_read(_OAUTH_SPEC))
     design = _collapse_whitespace(_read(_CARRIER_DESIGN))
 
     assert (
@@ -289,7 +271,7 @@ def test_rfc_0006_tier2_authority_projects_into_spotify_specs() -> None:
 
     tier2_sections = {
         "active OAuth carrier": _requirement(
-            _read(_CARRIER_SPEC), "Spotify connector authority and Passport projection"
+            _read(_OAUTH_SPEC), "Spotify connector authority and Passport projection"
         ),
         "archive-surviving dashboard delta": _requirement(
             _read(_DASHBOARD_INGESTION_LIFECYCLE_DELTA), "OAuth reauth lifecycle authority"
@@ -371,7 +353,7 @@ def test_spotify_tier2_tokens_are_connector_managed_passport_exceptions() -> Non
 
     spotify_sections = {
         "active OAuth carrier": _requirement(
-            _read(_CARRIER_SPEC), "Spotify connector authority and Passport projection"
+            _read(_OAUTH_SPEC), "Spotify connector authority and Passport projection"
         ),
         "canonical credential storage": _requirement(
             _read(_CREDENTIALS_SPEC), "Spotify OAuth Token Storage"
@@ -419,7 +401,7 @@ def test_generic_secrets_api_requires_a_server_side_spotify_fence_at_every_seam(
     )
     passport = _requirement(_read(_PASSPORT_SPEC), "Connector-owned Passport projections")
     carrier = _requirement(
-        _read(_CARRIER_SPEC), "Spotify connector authority and Passport projection"
+        _read(_OAUTH_SPEC), "Spotify connector authority and Passport projection"
     )
     tasks = _collapse_whitespace(_read(_CARRIER_TASKS))
 
@@ -485,7 +467,7 @@ def test_generic_relationship_entity_info_surfaces_are_fenced_and_allocated() ->
     )
     passport = _requirement(_read(_PASSPORT_SPEC), "Connector-owned Passport projections")
     carrier = _requirement(
-        _read(_CARRIER_SPEC), "Spotify connector authority and Passport projection"
+        _read(_OAUTH_SPEC), "Spotify connector authority and Passport projection"
     )
     tasks = _collapse_whitespace(_read(_CARRIER_TASKS))
 
@@ -548,7 +530,7 @@ def test_generic_relationship_entity_info_surfaces_are_fenced_and_allocated() ->
 def test_spotify_lifecycle_authority_rejects_callback_only_writer_language() -> None:
     """Initial creation, refresh updates, and disconnect deletion have distinct writers."""
     authority_artifacts = {
-        "active carrier": _read(_CARRIER_SPEC),
+        "active carrier": _read(_OAUTH_SPEC),
         "carrier design": _read(_CARRIER_DESIGN),
         "carrier tasks": _read(_CARRIER_TASKS),
         "dashboard-api": _read(_DASHBOARD_API_SPEC),
@@ -623,9 +605,9 @@ def test_spotify_lifecycle_authority_rejects_callback_only_writer_language() -> 
 
 def test_scope_status_converges_to_the_canonical_recovery_state_before_ui_resolution() -> None:
     """Carrier detail statuses must map into the canonical typed recovery resolver."""
-    carrier = _requirement(_read(_CARRIER_SPEC), "Auth status computation")
+    carrier = _requirement(_read(_OAUTH_SPEC), "Auth status computation")
     connector_base = _requirement(
-        _read(_CONNECTOR_BASE_DELTA), "ConnectorDetailEntry Pydantic auth and scopes blocks"
+        _read(_CONNECTOR_BASE_SPEC), "ConnectorDetailEntry Pydantic auth and scopes blocks"
     )
     ingestion = _requirement(
         _read(_INGESTION_SPEC), "Ingestion-Originated OAuth page_of_origin Contract"

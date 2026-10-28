@@ -622,7 +622,7 @@ async def detect_duplicates(
 
     duplicates: list[dict[str, Any]] = []
 
-    for (merchant_lower, amount), txns in groups.items():
+    for txns in groups.values():
         if len(txns) < 2:
             continue
 

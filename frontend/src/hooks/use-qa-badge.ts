@@ -15,12 +15,20 @@ import {
   pendingApprovalMetricSourcesDegraded,
   useApprovalMetrics,
 } from './use-approvals'
-import { useDecisions } from './use-decisions'
 
 /** A sidebar badge with an explicit unavailable state. */
-export type AvailabilityBadgeState =
+export type AvailabilityBadgeState = (
   | { kind: 'count'; count: number }
   | { kind: 'unavailable' }
+) & {
+  /** Optional presentation detail for a consumer that can offer source retry. */
+  qaSource?: {
+    source: 'discovery' | 'summary'
+    stale: boolean
+    retrying: boolean
+    retry: () => Promise<boolean>
+  }
+}
 
 /**
  * Returns the count of open QA escalations for the sidebar badge.
@@ -32,13 +40,34 @@ export type AvailabilityBadgeState =
  * act on, and entries age out once resolved. See `escalated_open_cases_sql`
  * (src/butlers/core/qa/severity.py).
  */
-export function useQaEscalationsBadge(): AvailabilityBadgeState {
-  const { data: butlersResponse } = useButlers()
-  const hasQa = butlersResponse?.data.some((b) => b.name === 'qa') ?? false
-  const { data, isError } = useQaSummary({ enabled: hasQa })
-  // A failed summary fetch must not read as zero open escalations.
-  if (isError) return { kind: 'unavailable' }
-  return { kind: 'count', count: data?.data.active_breakdown.escalated_open_cases ?? 0 }
+export function useQaEscalationsBadge(options?: { sourceDetails?: boolean }): AvailabilityBadgeState {
+  const discovery = useButlers()
+  const hasQa = discovery.data?.data.some((b) => b.name === 'qa') ?? false
+  const summary = useQaSummary({ enabled: hasQa })
+  // A healthy absence must win over any old summary cache (including errors).
+  if (!discovery.isError && !hasQa) return { kind: 'count', count: 0 }
+
+  // Discovery is the prerequisite. If both sources fail, repair it first; a
+  // remaining summary error then offers its own retry rather than claiming
+  // complete recovery from a successful roster read alone.
+  const source = discovery.isError ? 'discovery' : summary.isError ? 'summary' : undefined
+  if (source) {
+    if (!options?.sourceDetails) return { kind: 'unavailable' }
+    const query = source === 'discovery' ? discovery : summary
+    const cachedCount = hasQa ? summary.data?.data.active_breakdown.escalated_open_cases : undefined
+    return {
+      ...(cachedCount === undefined
+        ? { kind: 'unavailable' as const }
+        : { kind: 'count' as const, count: cachedCount }),
+      qaSource: {
+        source,
+        stale: query.data !== undefined,
+        retrying: query.isFetching,
+        retry: async () => (await query.refetch()).isSuccess,
+      },
+    }
+  }
+  return { kind: 'count', count: summary.data?.data.active_breakdown.escalated_open_cases ?? 0 }
 }
 
 /** Returns the pending-approval badge state without inventing a zero on partial metrics. */
@@ -50,26 +79,12 @@ export function useApprovalsPendingBadge(): AvailabilityBadgeState {
   return { kind: 'count', count: data?.data.total_pending ?? 0 }
 }
 
-/**
- * Decisions uses the same explicit availability shape as approvals so a
- * readable empty digest remains distinct from an unavailable one.
- */
-export type DecisionsBadgeState = AvailabilityBadgeState
-
-export function useDecisionsOpenBadge(): DecisionsBadgeState {
-  const { data, isError } = useDecisions()
-  if (isError || data?.meta?.decisions_available === false) return { kind: 'unavailable' }
-  return { kind: 'count', count: data?.data.length ?? 0 }
-}
-
-/** Badge registry — approval and decision badges carry explicit availability. */
-export function useBadgeCounts(): Record<string, number | AvailabilityBadgeState> {
-  const qaEscalations = useQaEscalationsBadge()
+/** Badge registry — approval badges carry explicit availability. */
+export function useBadgeCounts(options?: { qaSourceDetails?: boolean }): Record<string, number | AvailabilityBadgeState> {
+  const qaEscalations = useQaEscalationsBadge({ sourceDetails: options?.qaSourceDetails })
   const approvalsPending = useApprovalsPendingBadge()
-  const decisionsOpen = useDecisionsOpenBadge()
   return {
     'qa-escalations': qaEscalations,
     'approvals-pending': approvalsPending,
-    'decisions-open': decisionsOpen,
   }
 }

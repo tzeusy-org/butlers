@@ -74,6 +74,7 @@ from butlers.api.briefing.prompts import elaborate_llm
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
+    Db,
     MCPClientManager,
     get_butler_configs,
     get_mcp_manager,
@@ -111,11 +112,6 @@ class Briefing(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub -- overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
-
-
 # ---------------------------------------------------------------------------
 # Owner-contact assertion (mirrors system.py pattern)
 # ---------------------------------------------------------------------------
@@ -148,7 +144,7 @@ async def _assert_owner_contact(pool: Any) -> Any:
         raise HTTPException(
             status_code=403,
             detail={"code": "forbidden", "message": "Owner contact assertion failed"},
-        )
+        ) from exc
 
     if row is None:
         raise HTTPException(
@@ -839,7 +835,8 @@ async def _compose_briefing(
 
 @router.get("/briefing", response_model=ApiResponse[Briefing])
 async def get_dashboard_briefing(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     cache: BriefingCache = Depends(get_cache),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mgr: MCPClientManager = Depends(get_mcp_manager),
@@ -855,8 +852,10 @@ async def get_dashboard_briefing(
     """
     try:
         sw_pool = db.pool("switchboard")
-    except KeyError:
-        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Switchboard database is not available"
+        ) from exc
     codex_auth_authority: CredentialStore | None = None
     try:
         settings_pool = db.credential_shared_pool()

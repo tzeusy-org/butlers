@@ -76,7 +76,7 @@ graph TB
 
 **Endpoint**: Switchboard's `ingest()` MCP tool
 
-**Envelope schema** (`ingest.v1`, defined in `roster/switchboard/tools/routing/contracts.py`):
+**Envelope schema** (`ingest.v1`, defined in `roster/switchboard/tools/contracts.py`):
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -226,9 +226,12 @@ not proxy through butler MCP servers. This means:
 - Dashboard writes are limited to admin operations (secrets, model catalog,
   provider settings).
 
-**Auto-wiring**: `wire_db_dependencies()` patches FastAPI dependency injection
-so butler-specific routers (from `roster/{butler}/api/router.py`) receive the
-correct DatabaseManager instance.
+**Shared dependency**: Core and discovered butler routers import `Db` (or use
+`Depends(get_db)`) from `src/butlers/api/deps.py`. Both resolve the same
+DatabaseManager singleton, initialized by `init_db_manager()` and closed by
+`shutdown_db_manager()` in the `src/butlers/api/app.py` lifespan. Existing
+best-effort reads use `OptionalDb`/`get_db_optional()` to return `None` before
+initialization; pool, query and authorization errors retain their normal handling.
 
 ---
 

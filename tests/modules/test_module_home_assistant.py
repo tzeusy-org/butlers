@@ -30,6 +30,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp import FastMCP
 from pydantic import BaseModel, ValidationError
 
 import butlers.modules._roster_home.actuation as ha_actuation
@@ -50,6 +51,7 @@ from butlers.modules.approvals.execution_context import (
     set_approval_execution_context,
 )
 from butlers.modules.base import Module, ToolMeta
+from butlers.testing.mcp import registered_tools
 
 pytestmark = pytest.mark.unit
 
@@ -92,22 +94,8 @@ def ha_module() -> HomeAssistantModule:
 
 
 @pytest.fixture
-def mock_mcp() -> MagicMock:
-    mcp = MagicMock()
-    tools: dict[str, Any] = {}
-
-    def tool_decorator(*_args, **kwargs):
-        declared_name = kwargs.get("name")
-
-        def decorator(fn):
-            tools[declared_name or fn.__name__] = fn
-            return fn
-
-        return decorator
-
-    mcp.tool = tool_decorator
-    mcp._registered_tools = tools
-    return mcp
+def mock_mcp() -> FastMCP:
+    return FastMCP("providers8-home_assistant-tools")
 
 
 # ---------------------------------------------------------------------------
@@ -214,14 +202,14 @@ class TestToolRegistration:
         await ha_module.register_tools(
             mcp=mock_mcp, config={"url": "http://ha.local"}, db=None, butler_name="test-butler"
         )
-        assert set(mock_mcp._registered_tools.keys()) == EXPECTED_HA_TOOLS
+        assert set((await registered_tools(mock_mcp)).keys()) == EXPECTED_HA_TOOLS
 
     async def test_read_only_registers_only_query_tools(self, mock_mcp: MagicMock) -> None:
         module = HomeAssistantModule()
         await module.register_tools(
             mcp=mock_mcp, config={"read_only": True}, db=None, butler_name="test-butler"
         )
-        assert set(mock_mcp._registered_tools.keys()) == EXPECTED_HA_READ_ONLY_TOOLS
+        assert set((await registered_tools(mock_mcp)).keys()) == EXPECTED_HA_READ_ONLY_TOOLS
 
     def test_default_registry_includes_home_assistant(self) -> None:
         from butlers.modules.registry import default_registry
@@ -918,7 +906,7 @@ async def _registered_actuation(mock_mcp, monkeypatch, args, *, units=None):
     monkeypatch.setattr(module, "_emit_actuation_event", event)
     return SimpleNamespace(
         module=module,
-        tool=mock_mcp._registered_tools["ha_call_service"],
+        tool=(await registered_tools(mock_mcp))["ha_call_service"],
         client=client,
         pool=pool,
         park=park,

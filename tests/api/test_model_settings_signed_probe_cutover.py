@@ -33,6 +33,7 @@ signs or needs a signer at all.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -42,7 +43,7 @@ import pytest
 
 from butlers.api.app import create_app as create_production_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.model_settings import _get_db_manager
+from butlers.api.deps import get_db
 from butlers.core.runtime_probe_control.coordinator import ProbeResult, ProbeStatus
 from tests.api.auth_helpers import _DomainOwnerState, create_authenticated_domain_app
 
@@ -97,7 +98,7 @@ def _record(row: dict[str, Any]) -> MagicMock:
 def _mount(app, pool: AsyncMock):
     db = MagicMock(spec=DatabaseManager)
     db.credential_shared_pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     return app
 
 
@@ -363,7 +364,7 @@ async def test_no_statement_in_the_module_writes_a_verification_column() -> None
 
     import butlers.api.routers.model_settings as module
 
-    tree = ast.parse(_Path(module.__file__).read_text(encoding="utf-8"))
+    tree = ast.parse(await asyncio.to_thread(_Path(module.__file__).read_text, encoding="utf-8"))
     assignments = [
         node.value.partition("RETURNING")[0]
         for node in ast.walk(tree)

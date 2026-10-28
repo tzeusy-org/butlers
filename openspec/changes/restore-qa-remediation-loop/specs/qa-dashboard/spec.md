@@ -4,7 +4,7 @@
 The dashboard API SHALL expose case-shaped resources under `/api/qa/cases` for the dossier renderer. The resources join `qa_findings`, `healing_attempts`, and `qa_investigation_events` into a per-case shape; they do not replace `/api/qa/investigations` (which retains its existing semantics).
 
 ID: REQ-qa-dashboard-001
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: GET /api/qa/cases
@@ -38,7 +38,7 @@ Scope: v1-mandatory
 The QA summary SHALL expose an evidence-qualified, time-windowed incident funnel that distinguishes observations, admitted investigations, proposals, published PRs, merges, deployment and verified recovery; it SHALL not label merge time as repair time.
 
 ID: REQ-qa-dashboard-002
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Summary KPI block
@@ -79,7 +79,7 @@ Scope: v1-mandatory
 The dashboard SHALL have a top-level QA page at route `/qa` that presents the QA staffer's work as a per-case dossier in the Dispatch design language. The page narrates what the staff caught and what it fixed; it is not a pipeline dashboard.
 
 ID: REQ-qa-dashboard-003
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Overview page layout
@@ -167,14 +167,14 @@ Scope: v1-mandatory
 The dashboard SHALL have a drill-down page at `/qa/investigations/:attemptId` that renders the same case dossier as `/qa?case=:attemptId`. The two routes mount the same `CaseDossier` component with no UX divergence.
 
 ID: REQ-qa-dashboard-004
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Investigation detail layout matches Case Dossier
 - **WHEN** a user navigates to `/qa/investigations/:attemptId`
 - **THEN** the page renders the Case Dossier layout (header + two-column diagnosis/PR + patrol journal) as defined by the Case Dossier Layout requirement
 - **AND** the page includes a top eyebrow "QA Investigation · #<short_id>" and a back-link to `/qa`
-- **AND** only actions supported by the current authorized backend are shown in the dossier header; this change consumes the dead-Retry removal owned by bu-dss7he.1 and does not reintroduce its endpoint
+- **AND** Dismiss and remove-dismissal remain available in their eligible states; no Retry action, client helper or mutation hook is exposed
 
 #### Scenario: Investigation not found
 - **WHEN** the attempt ID does not exist or has no `qa_patrol_id`
@@ -184,7 +184,7 @@ Scope: v1-mandatory
 The QA dashboard SHALL render any single case (either as the right-pane on `/qa?case=` or as the full body of `/qa/investigations/:attemptId`) using a shared Case Dossier component composed of a header, a two-column diagnosis/PR body, and a full-width patrol journal.
 
 ID: REQ-qa-dashboard-005
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Dossier header
@@ -197,13 +197,14 @@ Scope: v1-mandatory
 #### Scenario: Active dismissal display
 - **WHEN** the Case Dossier renders a case whose fingerprint has an active dismissal record (`qa_dismissals` row with `dismissed_until > now()`)
 - **THEN** the header renders a mono caption "dismissed until <dismissed_until>" beneath the sev/id/butler row
-- **AND** a "remove dismissal" pill action is rendered alongside other currently authorized actions
+- **AND** a "remove dismissal" pill action is rendered alongside the eligible Dismiss action, without a Retry control
 - **AND** clicking "remove dismissal" calls `DELETE /api/qa/dismissals/{fingerprint}` and triggers a re-fetch of the case so the caption and pill disappear
 
-#### Scenario: Terminal states offer Retry, never Dismiss
-- **WHEN** the Case Dossier renders a case whose `state_track_stage` is `landed`, `escalated`, or `failed`
-- **THEN** the dead Retry control remains removed under bu-dss7he.1, and the Dismiss pill is withheld; any future retry needs a separately approved admission contract
-- **AND** every other stage (`detect`, `diagnose`, `pr`) offers Dismiss (when a fingerprint is linked and no dismissal is active) and withholds Retry, since the investigation is still active
+#### Scenario: Terminal history has neither Retry nor Dismiss
+- **WHEN** the case's derived `stage` is terminal (`landed`, `escalated`, or `failed`)
+- **THEN** neither Retry nor Dismiss is rendered; terminal history is not a false-positive dismissal candidate
+- **AND** every other stage (`detect`, `diagnose`, `pr`) offers Dismiss when a fingerprint is linked and no dismissal is active
+- **AND** every stage withholds Retry, while existing dismissal removal and history remain available
 
 #### Scenario: Failure banner quotes the crash
 - **WHEN** the Case Dossier renders a case whose `state_track_stage` is `failed`

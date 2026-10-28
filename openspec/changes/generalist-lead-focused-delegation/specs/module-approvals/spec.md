@@ -2,9 +2,10 @@
 
 ### Requirement: Gate Wrapper Interception
 
-The module MUST wrap configured MCP tools at FastMCP registration time so that gated tool calls are serialized into pending actions before the original handler executes. Unknown configured gated tools MUST be skipped during wrapping with warning logs. A pending action created for a goal invocation's call, whether parked by this wrapper or by the control-plane broker through this module, SHALL record the goal lineage of the call's verified broker assertion and never lineage supplied in tool arguments. A park-only effect SHALL never be approved by a standing rule and SHALL always wait for the owner's per-event approval tap. For other parked effects, this module SHALL match standing rules at park time within the exposure limits below. For a non-park-only call whose assertion is exposed, a standing rule SHALL auto-approve only a `communicate` call whose rule pins the recipient to the owner or is template-pinned (`REQ-capability-authorization-006`: every content-bearing argument fixed to an exact value or to an owner-authored template with only typed slots); every other approval-gated call from an exposed invocation SHALL be parked for per-event owner approval.
+The module MUST wrap configured MCP tools at FastMCP registration time so that gated tool calls are serialized into pending actions before the original handler executes. Unknown configured gated tools MUST be skipped during wrapping with warning logs. A pending action created for a goal invocation's call, whether parked by this wrapper or by the control-plane broker through this module, SHALL record the goal lineage of the call's verified broker assertion and never lineage supplied in tool arguments. A park-only effect SHALL never be approved by a standing rule and SHALL always wait for the owner's per-event approval tap. For other parked effects, this module SHALL match standing rules at park time within the exposure limits below. For a non-park-only call whose assertion is exposed, a standing rule SHALL auto-approve only a `communicate` call whose rule pins the recipient to the owner or is template-pinned (`REQ-capability-authorization-006`: every content-bearing argument fixed to an exact value or to an owner-authored template with only typed slots); every other approval-gated call from an exposed invocation SHALL be parked for per-event owner approval. A call to a tool whose catalog entry declares the approval mode `always_per_event` (`REQ-capability-authorization-017`) SHALL never match a standing rule, whether it arrives through a goal invocation's assertion or names no goal, and SHALL NOT take the owner-directed auto-approve path; it SHALL always be parked for the owner's per-event approval.
 
-Source: RFC 0038 D4, D6, D7 and D13; RFC 0021
+ID: REQ-module-approvals-005
+Source: RFC 0038 D4, D6, D7 and D13; RFC 0021; bu-p5umi2.4 = A (always-per-event approval mode)
 Scope: v1-mandatory
 
 #### Scenario: Gated tool is called with no matching standing rule
@@ -48,6 +49,18 @@ Scope: v1-mandatory
 - **WHEN** an exposed invocation calls a gated `administer` tool and a standing rule matches it
 - **THEN** the action is parked as `pending` for per-event owner approval
 - **AND** the original handler does not run
+
+#### Scenario: An always-per-event goal call ignores a matching standing rule
+
+- **WHEN** an unexposed invocation's verified assertion calls a gated tool that declares `always_per_event` and a standing rule matches the tool name and arguments
+- **THEN** the action remains `pending` for the owner's per-event approval and the original handler does not run
+- **AND** no rule is recorded as its approval and the rule's `use_count` is unchanged
+
+#### Scenario: An always-per-event call that names no goal still parks
+
+- **WHEN** a deterministic caller that names no goal calls a gated tool that declares `always_per_event`, whether a standing rule matches or its target resolves to the owner
+- **THEN** the action is persisted as `pending` for the owner's per-event approval
+- **AND** neither the standing-rule path nor the owner-directed auto-approve path executes the handler
 
 ### Requirement: Pending Actions Queue
 The `pending_actions` table MUST provide a durable queue and audit log for approval-gated tool invocations. It stores `id`, `tool_name`, `tool_args` (JSONB), `status`, `requested_at`, and optional fields `agent_summary`, `session_id`, `expires_at`, `decided_by`, `decided_at`, `execution_result`, `approval_rule_id`, `why`, `evidence`, and producer-opt-in `deduplication_key`. An action requested by a goal invocation SHALL also record its goal lineage: the goal, goal origin, invocation, depth, exposure and effect reference of the verified broker assertion that requested it. An action created before the cutover SHALL record goal origin `legacy` and no goal, and its historic `session_id` stays readable; an action from a non-goal producer names no goal. Goal lineage SHALL be server-derived, SHALL NOT be settable from tool arguments, and is distinct from the producer `origin` value (`prepared`). When durable admission is enabled under the canonical additive rollout contract, every newly admitted `pending` row SHALL commit in the same transaction as one unique, schema-local approval delivery-intent root whose immutable logical action key and admission classification are safe for end-to-end notification recovery. The first three ordinary actions receive direct presentations; the fourth `cohort_anchor` joins and creates the cohort-owned digest; later ordinary `collapsed` actions record a terminal non-sendable local presentation and join that cohort. A digest-only `origin='prepared'` action uses the same durable representation with one standalone terminal `collapsed` action presentation, no cohort membership, no burst-count effect, and no provider or defer activation.
@@ -229,6 +242,147 @@ Scope: v1-mandatory
 - **WHEN** `approve_action` targets a `cancelled` action
 - **THEN** the caller receives a transition error with the current status
 - **AND** nothing executes
+
+### Requirement: Standing Rules CRUD and Matching
+Standing approval rules MUST enable auto-approval of repeatable safe invocations. Each rule has `id`, `tool_name`, `arg_constraints` (JSONB), `description`, `created_at`, `active`, and optional `created_from`, `expires_at`, `max_uses`, `use_count`. A rule's `created_from` is historical action provenance rather than a deletion-blocking foreign key, so action retention does not mutate or delete a retained rule. No rule SHALL be created for a tool whose catalog entry declares the approval mode `always_per_event` (`REQ-capability-authorization-017`), and rule matching SHALL never consider such a tool.
+Standing-rule creation and promotion SHALL require RFC 0038 D13's dashboard
+step-up using the authenticated owner session and an independent passkey factor
+on a different device from the Telegram phone. Ordinary approve/reject/edit/
+dispatch SHALL remain one tap; this requirement SHALL NOT extend step-up to all
+owner-only actions. A nonce SHALL bind owner/session, action kind/identity,
+exact digest including recipients/arguments, current action/policy version and
+expiry. Verification of those bindings, revocation and unconsumed state,
+nonce consumption, the authorized transition and audit receipt SHALL commit
+atomically. Missing/invalid/expired/revoked/wrong-owner/wrong-session/stale or
+changed-digest confirmation SHALL refuse without mutation; rollback SHALL
+consume nothing. Concurrent decisions SHALL have one winner, and retry of the
+same completed action SHALL read back its outcome without a second rule or
+effect. A Telegram request without confirmation SHALL offer the dashboard
+without creating/promoting a rule. No callback token or presentation ACK SHALL
+substitute for step-up or revive stopped/revoked authority.
+Rule matching SHALL enforce RFC 0038 D4's exact slot supplier and sensitive
+category boundaries: owner/device/code, or the rule's own recipient only for
+the exact slot explicitly permitted on its creation card; no arbitrary third
+party or unknown supplier. Non-owner communication after sensitive reads SHALL
+name every applicable invocation category (`health`, `finance`, `location`,
+`routine`, `relationship_notes`, `credentials`); unknown labels retain S1's
+all-category restriction. Missing supplier/category evidence SHALL make the
+rule ineligible and park only an otherwise-permitted call; independently
+refused calls SHALL stay refused. These conditions SHALL NOT bypass exposure,
+template pins, current grants, selections, park-only, always-per-event or
+atomic bounded-use claims. A goal rule match SHALL still follow central PARK
+and owning approval, and SHALL NOT execute the handler before the broker's
+stored-call forwarding fence.
+
+
+ID: REQ-module-approvals-003
+Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses; RFC 0038 D4/D13; bu-p5umi2.4 = A (always-per-event approval mode); bu-k3wfma; bu-o3638f; bu-dhloi1.18
+Scope: v1-mandatory
+
+#### Scenario: Create a standing rule
+
+- **WHEN** `create_approval_rule` is called with authenticated human actor, tool name, constraints, and description
+- **AND** the owner confirms that exact current rule through the action-bound dashboard step-up
+- **THEN** a new active rule is persisted
+- **AND** a `rule_created` audit event is recorded
+- **AND** high-risk tools require at least one `exact` or `pattern` constraint and bounded scope
+
+#### Scenario: Create rule from pending action
+
+- **WHEN** `create_rule_from_action` is called with an action_id
+- **AND** the owner confirms the resulting exact current rule through the action-bound dashboard step-up
+- **THEN** sensitivity classification generates suggested constraints (sensitive args get `exact`, others get `any`)
+- **AND** optional `constraint_overrides` are merged on top
+- **AND** the rule is persisted with `created_from` linking to the source action
+
+#### Scenario: Rule matching precedence
+
+- **WHEN** multiple standing rules match a tool invocation
+- **THEN** the most specific rule wins using deterministic precedence: (1) higher constraint specificity, (2) bounded scope before unbounded, (3) newer rule before older, (4) lexical rule ID tie-breaker
+
+#### Scenario: Rule constraint evaluation
+
+- **WHEN** a rule's `arg_constraints` are checked against tool args
+- **THEN** typed constraints (`exact`, `pattern`, `any`) are evaluated
+- **AND** legacy formats (`"*"` wildcard, plain exact values) remain supported
+- **AND** empty constraints `{}` match any invocation of the tool at argument matching only, without satisfying independent supplier/category, currentness, exposure or approval eligibility checks
+- **AND** `pattern` type uses fnmatch-style glob matching
+
+#### Scenario: Rule eligibility filtering
+
+- **WHEN** rules are fetched for matching
+- **THEN** only active rules are considered
+- **AND** expired rules (`expires_at < now`) are excluded
+- **AND** exhausted rules (`use_count >= max_uses`) are excluded
+
+#### Scenario: Concurrent use of a bounded rule
+
+- **WHEN** several gated invocations race for a rule that has fewer remaining uses than callers (`max_uses` minus `use_count`)
+- **THEN** each use is claimed atomically with the insert of its `approved` action, so exactly the remaining uses are admitted
+- **AND** the remaining invocations are parked as `pending` actions
+- **AND** `use_count` never exceeds `max_uses`
+- **AND** an inactive, expired, or exhausted rule claims nothing and parks the invocation
+
+#### Scenario: A rule use is consumed at admission
+
+- **WHEN** a rule-matched invocation is admitted
+- **THEN** the rule's `use_count` is incremented by the admission claim, before the tool executes
+- **AND** the executor does not increment `use_count` again
+- **AND** a failed execution leaves the use consumed, because an approved action was issued
+- **AND** the email recipient guard claims its rule use through the same helper and parks when the rule cannot be claimed
+
+#### Scenario: Dashboard rule creation names its butler and is validated like the MCP tool
+
+- **WHEN** `POST /api/approvals/rules` is called
+- **AND** the authenticated owner supplies valid action-bound dashboard step-up for the exact current rule
+- **THEN** `butler` is required (missing returns 422), an unknown butler returns 404, and a butler whose approvals pool is unavailable returns 503
+- **AND** the rule is written into that butler's schema
+- **AND** the same risk-tier validation as `create_approval_rule` runs first, so a high-risk tool without an `exact` or `pattern` constraint, or without `expires_at` or `max_uses`, returns 400 with the same message
+
+#### Scenario: Revoke a standing rule
+
+- **WHEN** `revoke_approval_rule` is called with authenticated human actor
+- **THEN** the rule's `active` flag is set to `false`
+- **AND** a `rule_revoked` audit event is recorded
+- **AND** already-revoked rules return an error
+
+#### Scenario: Suggest rule constraints
+
+- **WHEN** `suggest_rule_constraints` is called for a pending action
+- **THEN** the sensitivity classifier returns per-arg constraints without creating a rule
+- **AND** sensitive args (heuristic or module-declared) suggest `exact` pinned to current value
+- **AND** non-sensitive args suggest `any`
+
+#### Scenario: A rule cannot target an always-per-event tool
+
+- **WHEN** `create_approval_rule`, `create_rule_from_action` or `POST /api/approvals/rules` names a tool that declares `always_per_event`
+- **THEN** the request is refused with a typed reason before any rule is persisted
+- **AND** no `rule_created` audit event is recorded
+
+#### Scenario: Missing or invalid step-up does not create a rule
+- **WHEN** creation/promotion has no valid independent owner session/nonce, or the nonce is expired, revoked, wrong-owner, wrong-session, wrong-action or stale-version
+- **THEN** no rule or mutation commits and Telegram receives only a dashboard handoff
+- **AND** an ordinary current approve/reject/edit/dispatch action still uses its existing one-tap path
+
+#### Scenario: Nonce consumption and rule mutation have one winner
+- **WHEN** two surfaces race the same confirmed rule action or retry it after an ambiguous reply
+- **THEN** one current-version transition, nonce consumption and audit receipt commit together, and completed-action readback cannot create a second rule/effect
+- **AND** rollback leaves no consumed nonce or successful mutation, while a competing approve/reject decision cannot overwrite the winning action version
+
+#### Scenario: Editing a confirmed action invalidates its old rule nonce
+- **WHEN** the action, recipient, arguments or current version changes after a rule nonce is issued
+- **THEN** the old nonce cannot create/promote the changed rule and fresh confirmation binds the exact new digest
+- **AND** the edit itself retains ordinary one-tap semantics and cannot widen a grant or revive a stopped action
+
+#### Scenario: Slot permission is principal and slot specific
+- **WHEN** a recipient fills a typed slot explicitly permitted to that rule's own recipient on its owner creation card
+- **THEN** that slot passes the supplier check only, without changing labels or any other gate
+- **AND** a different third party, unknown supplier or unpermitted slot makes the rule ineligible and parks the call
+
+#### Scenario: Category coverage never replaces the other rule gates
+- **WHEN** a non-owner send follows reads labeled health and finance but the matching rule names health alone
+- **THEN** the action parks and no bounded rule use is consumed
+- **AND** a rule naming both still cannot approve a park-only/always-per-event call or evade template, selection, currentness or Stop checks
 
 ### Requirement: Shared Executor Path
 
