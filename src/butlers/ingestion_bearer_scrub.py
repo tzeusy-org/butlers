@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
+from butlers.connectors.catalog import scrub_connector_labels
 from butlers.ingestion_spans import collapse_spans
 
 #: Telegram's service account that delivers login codes.
@@ -319,29 +320,7 @@ def scrub_filtered_preview(
     try:
         # This fallback is a fixed display label, not a caller-controlled string
         # or a new connector registration/authority decision.
-        fallback = (
-            connector_type
-            if connector_type
-            in {
-                "gmail",
-                "telegram",
-                "telegram_bot",
-                "telegram_user",
-                "telegram_user_client",
-                "whatsapp_user_client",
-                "google_drive",
-                "google_calendar",
-                "google_health",
-                "spotify",
-                "owntracks",
-                "steam",
-                "activitywatch",
-                "home_assistant",
-                "live-listener",
-                "live_listener",
-            }
-            else "unknown"
-        )
+        fallback = connector_type if connector_type in scrub_connector_labels() else "unknown"
         # Keep the shared detector's classification unchanged. These values are
         # used only to prevent a label from reintroducing detected bearer text.
         forbidden = set()

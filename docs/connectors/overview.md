@@ -183,6 +183,21 @@ Connector authentication uses bearer tokens issued by the Switchboard. Token sco
 
 ## Available Connectors
 
+Static discovery and buffered-preview fallback labels derive from the frozen data
+in `src/butlers/connectors/catalog.py`. `GET /api/ingestion/connectors/available`
+returns exactly `connector_type`, `channel`, `provider` and `display_name` for each
+framework-deployable connector, independently of registered instances. Its
+channel/provider fields use the connector's canonical emitted identity, including
+local/Compose Live Listener even though the Helm chart has no Live Listener entry.
+
+Canonical connector identities, legacy safe display labels, accepted ingress
+pairs and deployment targets are distinct projections. A display alias does not
+register a connector or authorize OAuth. The catalog contains no credentials.
+This is the first consolidation slice: connector configuration, OAuth/default
+registries and health/deployment wiring retain their existing mechanisms until
+their own verified slices land. The environment table above still describes the
+current runtime configuration.
+
 - [Telegram Bot](telegram-bot.md) -- Bot API polling/webhook connector
 - [Telegram User Client](telegram-user-client.md) -- MTProto user-client live stream
 - [Gmail](gmail.md) -- Gmail API history polling and Pub/Sub push
