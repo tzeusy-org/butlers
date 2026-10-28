@@ -494,12 +494,16 @@ BEGIN
         );
     END LOOP;
 
-    -- Relationship follow-up jobs read switchboard.message_inbox, so the relationship runtime
-    -- role needs USAGE on the switchboard schema.  The table-level SELECT is not granted here:
+    -- Relationship, Messenger and Travel jobs read switchboard.message_inbox, so their runtime
+    -- roles need USAGE on the switchboard schema. The table-level SELECT is not granted here:
     -- core_283 and sw_054 grant it on message_inbox alone.  A schema-wide SELECT or default
     -- privilege here would re-widen reads (butler_secrets, future tables) on every bootstrap
     -- rerun, so the bootstrap never grants either (bu-svqpzo.13).
-    EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I', _switchboard_schema, 'butler_relationship_rw');
+    FOREACH _role IN ARRAY ARRAY[
+        'butler_relationship_rw', 'butler_messenger_rw', 'butler_travel_rw'
+    ] LOOP
+        EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I', _switchboard_schema, _role);
+    END LOOP;
 
     -- Chronicler reads only the specific evidence surfaces declared in RFC 0014
     -- source compatibility contracts (butler_chronicler_rw = read-only role).

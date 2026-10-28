@@ -411,6 +411,19 @@ def test_rerunning_the_bootstrap_after_head_does_not_rewiden_relationship_reads(
     try:
         with engine.connect() as connection:
             connection.execute(text("CREATE TABLE switchboard.later_table (id int)"))
+            for role in _ROLES:
+                assert (
+                    connection.execute(
+                        text(
+                            "SELECT has_schema_privilege(CAST(:role AS name), 'switchboard', 'USAGE')"
+                        ),
+                        {"role": role},
+                    ).scalar_one()
+                    is True
+                )
     finally:
         engine.dispose()
     assert _select_grants(db_url, "butler_relationship_rw")["later_table"] is False
+    for role in _ROLES:
+        assert _readable(db_url, role) == {"message_inbox"}, role
+        assert _select_grants(db_url, role)["later_table"] is False, role

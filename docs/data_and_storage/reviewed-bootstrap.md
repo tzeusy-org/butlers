@@ -50,7 +50,7 @@ on Switchboard: immutable `core_001` revokes cross-schema defaults during bounde
 replay. `core_077` used to restore it; head (`core_283`) now leaves the relationship,
 messenger and travel roles with SELECT on `switchboard.message_inbox` only and no
 Switchboard default, so there is no read default to require. Rerunning the bootstrap grants
-the relationship role `USAGE` on the schema only and does not restore either. This exclusion grants no
+these three roles `USAGE` on the schema only and does not restore either. This exclusion grants no
 runtime access and does not waive required own-schema/base ACLs or protected
 authority. Its absence is not a bootstrap failure, nor proof of working Relationship
 reads: actual catalog and effective `SET ROLE` readback separately witness the
