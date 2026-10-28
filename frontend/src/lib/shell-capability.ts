@@ -10,7 +10,7 @@
 
 import type { ComponentType } from "react";
 
-import * as api from "@/api/index.ts";
+import * as api from "@/api/client.ts";
 import { ENTITY_DETAIL_INITIAL_PARAMS } from "@/lib/entity-detail-query";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 import { fetchSpendForecast } from "@/lib/spend-forecast";

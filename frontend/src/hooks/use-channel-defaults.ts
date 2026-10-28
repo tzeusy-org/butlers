@@ -8,8 +8,8 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import { getChannelDefault, updateChannelDefault } from "@/api/index.ts";
-import type { ChannelDefaultUpdate } from "@/api/index.ts";
+import { getChannelDefault, updateChannelDefault } from "@/api/client.ts";
+import type { ChannelDefaultUpdate } from "@/api/types.ts";
 import type { ChannelDefaultEntry } from "@/api/types.ts";
 import { ingestionRuleKeys } from "@/hooks/use-ingestion-rules";
 import {

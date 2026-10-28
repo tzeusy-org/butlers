@@ -137,6 +137,7 @@ const ENTITY: EntityDetail = {
   recent_facts_offset: 0,
   recent_facts_limit: 20,
   recent_facts_has_more: false,
+  rebind_receipts: [],
   entity_info: [],
 };
 

@@ -41,7 +41,7 @@ function totalConversationCost(
 
 export interface ConversationHeaderProps {
   butlerName: string;
-  conversation: ConversationSummary | null;
+  conversation: (Pick<ConversationSummary, "title"> & Partial<Omit<ConversationSummary, "title">>) | null;
   messages: Message[];
   pricingMap: PricingMap | null;
   /** Durable route for the currently pending turn, if its stream proved one. */

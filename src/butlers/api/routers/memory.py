@@ -17,10 +17,12 @@ import re
 import uuid as _uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, NotRequired
 
 from asyncpg.exceptions import UndefinedTableError
 from fastapi import APIRouter, Body, HTTPException, Query
+from pydantic import ConfigDict, with_config
+from typing_extensions import TypedDict
 
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
@@ -28,6 +30,7 @@ from butlers.api.deps import Db
 from butlers.api.models import (
     ApiMeta,
     ApiResponse,
+    ApiResponseWithMeta,
     PaginatedResponse,
     PaginationMeta,
 )
@@ -67,6 +70,20 @@ from butlers.core.owner import fetch_owner_entity_id
 from butlers.modules.memory import knowledge_gaps
 from butlers.modules.memory.content_authority import is_rule_admitted
 from butlers.modules.memory.storage import RuleNotEndorsableError, endorse_rule, get_links
+
+
+@with_config(ConfigDict(extra="allow"))
+class MemoryStatsMeta(TypedDict):
+    catalog_live: int
+    catalog_stale: int
+    catalog_drifted: int
+    retention_status: Literal["unknown", "degraded", "healthy"]
+    retention_sources: list[RetentionSourceObservation]
+    graph_health: GraphHealthCoverage
+    pools_failed: NotRequired[list[str]]
+    catalog_pools_failed: NotRequired[list[str]]
+    retention_pools_failed: NotRequired[list[str]]
+
 
 logger = logging.getLogger(__name__)
 
@@ -382,7 +399,7 @@ async def _resolve_rule_provenance(db: DatabaseManager, rule: Rule) -> Rule:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/stats", response_model=ApiResponse[MemoryStats])
+@router.get("/stats", response_model=ApiResponseWithMeta[MemoryStats, MemoryStatsMeta])
 async def get_memory_stats(
     *,
     db: Db,

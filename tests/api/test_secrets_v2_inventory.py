@@ -1571,6 +1571,60 @@ def test_inventory_envelope_has_data_and_meta():
     assert "unverified_count" in body["meta"]
     assert isinstance(body["meta"]["unverified_count"], int)
 
+    # The actual optional metadata keys remain absent, while the source-owned
+    # contract admits extensions without dropping or normalizing their values.
+    from pydantic import TypeAdapter
+
+    from butlers.api.models import ApiResponse, ApiResponseWithMeta
+    from butlers.api.routers.secrets_v2 import InventoryData, InventoryMeta
+
+    schema = TypeAdapter(InventoryMeta).json_schema()
+    assert schema["additionalProperties"] is True
+    assert "sources_degraded" not in schema["required"]
+    assert set(schema["required"]) == {
+        "failing_count",
+        "unverified_count",
+        "failing_count_by_family",
+        "unverified_count_by_family",
+        "severity",
+    }
+    assert "sources_degraded" not in body["meta"]
+    for extension in (None, {"nested": None, "zero": 0, "flag": False}):
+        original = ApiResponse[InventoryData].model_validate(body)
+        extended = body | {"meta": body["meta"] | {"future_extension": extension}}
+        typed = ApiResponseWithMeta[InventoryData, InventoryMeta].model_validate(extended)
+        assert typed.model_dump() == original.model_dump() | {"meta": extended["meta"]}
+        assert typed.meta["future_extension"] == extension
+
+    # Native response serialization must retain nested model aliases in the
+    # extensible bag, including the actual route's default by_alias=True.
+    import asyncio
+
+    from fastapi.routing import serialize_response
+    from fastapi.utils import create_model_field
+    from pydantic import BaseModel, Field
+
+    class Extension(BaseModel):
+        value: int = Field(serialization_alias="wire_value")
+
+    async def serialized(model, response_type, by_alias):
+        return await serialize_response(
+            field=create_model_field(name="inventory", type_=response_type, mode="serialization"),
+            response_content=model,
+            by_alias=by_alias,
+        )
+
+    original = ApiResponse[InventoryData].model_validate(body)
+    original.meta.future_extension = Extension(value=7)
+    original.meta.nested_extension = {"model": Extension(value=8)}
+    typed = ApiResponseWithMeta[InventoryData, InventoryMeta](
+        data=original.data, meta=original.meta
+    )
+    for by_alias in (False, True):
+        assert asyncio.run(serialized(typed, type(typed), by_alias)) == asyncio.run(
+            serialized(original, type(original), by_alias)
+        )
+
 
 def test_inventory_response_does_not_include_raw_values():
     """Raw credential values MUST NOT appear in any field of the response."""

@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { IngestionEventStatus } from "@/api/index.ts";
+import type { IngestionEventStatus } from "@/api/types.ts";
 import {
   isBulkEligible,
   bulkIneligibleReason,

@@ -20,7 +20,7 @@
  * field is validated here rather than trusted.
  */
 
-import type { EducationSourceMaterial } from "@/api/index.ts";
+import type { EducationSourceMaterial } from "@/api/types.ts";
 
 /**
  * The concept-type vocabulary, mirroring `CONCEPT_TYPES` in

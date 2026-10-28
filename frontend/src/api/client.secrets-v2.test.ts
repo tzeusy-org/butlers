@@ -397,7 +397,7 @@ describe("API-base resolution for backend export paths", () => {
     const exportPath = "/data/export/download/export-123?scope=all&issued_at=1&token=signed";
 
     mockApiResponse({});
-    await isolatedApiFetch("/data/export", { method: "POST" });
+    await isolatedApiFetch("/data/export", { method: "POST", body: { scope: "all" } });
 
     expect(mockFetch).toHaveBeenCalledWith(
       `${apiBase}/data/export`,

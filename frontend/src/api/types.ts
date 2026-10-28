@@ -1,53 +1,30 @@
-/**
- * TypeScript interfaces matching the backend Pydantic models
- * defined in src/butlers/api/models/__init__.py.
- */
+import type { components } from "./schema.gen";
+import type { ApiResult, ApiQuery, ApiOptions } from "./request-types";
+
+/** Generated native contract aliases and explicit frontend query/view types. */
 
 // ---------------------------------------------------------------------------
 // Base response wrappers
 // ---------------------------------------------------------------------------
 
 /** Extensible metadata bag attached to every API response. */
-export interface ApiMeta {
-  [key: string]: unknown;
-}
+export type ApiMeta = components["schemas"]["ApiMeta"];
 
 /** Generic API response wrapper: { data: T, meta: {...} } */
-export interface ApiResponse<T> {
-  data: T;
-  meta: ApiMeta;
-}
-
-/** Structured error payload. */
-export interface ErrorDetail {
-  code: string;
-  message: string;
-  butler?: string | null;
-  details?: Record<string, unknown> | null;
-}
+export type ApiResponse<T> = Omit<components["schemas"]["ApiResponse"], "data"> & { data: T };
 
 /** Standard error response envelope. */
-export interface ErrorResponse {
-  error: ErrorDetail;
-}
+export type ErrorResponse = components["schemas"]["ErrorResponse"];
 
 // ---------------------------------------------------------------------------
 // Pagination
 // ---------------------------------------------------------------------------
 
 /** Pagination metadata for list endpoints. */
-export interface PaginationMeta {
-  total: number;
-  offset: number;
-  limit: number;
-  has_more: boolean;
-}
+export type PaginationMeta = components["schemas"]["PaginationMeta"];
 
 /** API response wrapper for paginated list endpoints. */
-export interface PaginatedResponse<T> {
-  data: T[];
-  meta: PaginationMeta;
-}
+export type PaginatedResponse<T> = Omit<components["schemas"]["PaginatedResponse_ApprovalAction_"], "data"> & { data: T[] };
 
 /**
  * The one cursor-paginated list envelope (`Page[T]` in `src/butlers/api/pagination.py`).
@@ -55,12 +32,7 @@ export interface PaginatedResponse<T> {
  * `next_cursor !== null`. `sources_degraded` names fan-out sources that failed
  * for this page (absent when every source answered).
  */
-export interface CursorPage<T> {
-  items: T[];
-  next_cursor: string | null;
-  limit: number;
-  sources_degraded?: string[] | null;
-}
+export type CursorPage<T> = Omit<components["schemas"]["Page_EntityFactEntry_"], "items"> & { items: T[] };
 
 /**
  * Keyset (cursor) pagination metadata for the cross-butler session list, the
@@ -69,44 +41,17 @@ export interface CursorPage<T> {
  * `next_cursor` is base64url-encoded and opaque to the client; pass it back as
  * the `cursor` query param to fetch the next (older) page.
  */
-export interface KeysetMeta {
-  limit: number;
-  next_cursor: string | null;
-  has_more: boolean;
-  /**
-   * Butler pools dropped from the fan-out that produced this page (a genuine
-   * query error, not a legitimately-empty source). Absent/omitted when every
-   * queried pool answered. Mirrors the fleet-wide `meta.sources_degraded`
-   * convention (see CLAUDE.md API Conventions — Degraded-Mode Response
-   * Envelope) so a partial page never reads as the whole list.
-   */
-  sources_degraded?: string[];
-}
+export type KeysetMeta = components["schemas"]["KeysetMeta"];
 
 /** API response wrapper for keyset-paginated list endpoints. */
-export interface KeysetResponse<T> {
-  data: T[];
-  meta: KeysetMeta;
-}
+export type KeysetResponse<T> = Omit<components["schemas"]["KeysetResponse_SessionSummary_"], "data"> & { data: T[] };
 
 // ---------------------------------------------------------------------------
 // Domain summaries
 // ---------------------------------------------------------------------------
 
 /** Lightweight butler representation for list views. */
-export interface ButlerSummary {
-  name: string;
-  status: string;
-  port: number;
-  /** Agent type: "butler" (user-facing) or "staffer" (infrastructure). */
-  type: "butler" | "staffer";
-  /** Short description from the butler's config. Absent when not configured. */
-  description?: string | null;
-  /** Number of sessions started in the last 24 hours. Always present; 0 when none. */
-  sessions_24h: number;
-  /** ISO-8601 timestamp of the most recent session start. Null when no sessions exist. */
-  last_session_started_at?: string | null;
-}
+export type ButlerSummary = components["schemas"]["ButlerSummary"];
 
 /**
  * One butler's row on the consolidated fleet status board (bu-86c4c.17).
@@ -116,241 +61,33 @@ export interface ButlerSummary {
  * topology graph, /system heartbeat list) -- do not re-derive them
  * client-side.
  */
-export interface BoardRow {
-  name: string;
-  type: "butler" | "staffer";
-  description: string | null;
-  status: string;
-  activity:
-    "running" | "idle" | "overdue" | "offline" | "quarantined" | "unknown";
-  cell_tone: "green" | "amber" | "red" | "neutral";
-  eligibility: "active" | "quarantined" | "stale" | "unavailable";
-  quarantine_reason: string | null;
-  quarantined_at: string | null;
-  sessions_24h: number;
-  cost_today: number | null;
-  load_pct: number | null;
-  max_concurrent: number | null;
-  /** 0 whenever heartbeat_unavailable is true -- never a stale confident count during an outage. */
-  active_session_count: number;
-  last_session_at: string | null;
-  last_heartbeat_at: string | null;
-  heartbeat_age_seconds: number | null;
-  heartbeat_unavailable: boolean;
-  schema_unreachable: boolean;
-  hourly_stripe: number[];
-  hourly_total: number;
-  /** True when this row's hourly-activity query failed -- hourly_stripe/hourly_total are a fabricated zero-fill in that case. */
-  stripe_source_error?: boolean;
-  cadence_seconds: number | null;
-  cadence_label: "hourly" | "daily" | "weekly" | "custom" | null;
-  silence_seconds: number | null;
-  cadence_status: "on_schedule" | "overdue" | "unknown";
-}
+export type BoardRow = components["schemas"]["BoardRow"];
 
 /** Fleet-wide aggregates for GET /api/butlers/board. */
-export interface BoardAggregates {
-  total: number;
-  butler_count: number;
-  staffer_count: number;
-  active: number;
-  offline: number;
-  quarantined: number;
-  overdue: number;
-  total_sessions_24h: number;
-  total_spend_today: number;
-  avg_load_pct: number | null;
-  heartbeat_source_error: boolean;
-  registry_source_error: boolean;
-  cost_source_error: boolean;
-  /** True when any row's hourly-activity query failed -- total_sessions_24h is a partial sum in that case. */
-  sessions_source_error?: boolean;
-  has_per_entry_errors: boolean;
-  sources_partially_degraded: boolean;
-}
+export type BoardAggregates = components["schemas"]["BoardAggregates"];
 
 /** Response envelope for GET /api/butlers/board. */
-export interface BoardResponse {
-  rows: BoardRow[];
-  aggregates: BoardAggregates;
-  generated_at: string;
-}
+export type BoardResponse = components["schemas"]["BoardResponse"];
 
 /**
  * Container-boundary-safe process facts for the butler Overview tab.
  * `pid` is intentionally absent.
  */
-export interface ProcessFacts {
-  /** Docker service or container name derived from BUTLERS_HOST. Null when running locally. */
-  container_name: string | null;
-  /** Butler MCP port. */
-  port: number;
-  /** Seconds elapsed since the butler first registered in the switchboard. Null when unavailable. */
-  registered_duration_seconds: number | null;
-  /** Roster-relative config path, e.g. "roster/general/butler.toml". */
-  config_path: string;
-}
+export type ProcessFacts = components["schemas"]["ProcessFacts"];
 
 /** Per-module health status returned by GET /api/butlers/:name/modules. */
-export interface ModuleStatus {
-  name: string;
-  enabled: boolean;
-  status: string;
-  phase?: string | null;
-  error?: string | null;
-  /** OAuth authorization status added by bu-iuol4.11. Present when the module has OAuth. */
-  oauth_status?: "granted" | "reauth_needed" | "not_configured" | null;
-  /** ISO-8601 expiry of the OAuth token, if applicable. */
-  oauth_expires_at?: string | null;
-}
+export type ModuleStatus = components["schemas"]["ModuleStatus"];
 
 /** Extended butler representation returned by GET /api/butlers/:name. */
-export interface ButlerDetail extends ButlerSummary {
-  db_name?: string | null;
-  db_schema?: string | null;
-  modules: {
-    name: string;
-    enabled: boolean;
-    config?: Record<string, unknown> | null;
-  }[];
-  schedules: { name: string; cron: string; prompt?: string | null }[];
-  skills: string[];
-  /** Process facts card data for the Overview tab. Null when detail extension is unavailable. */
-  process_facts?: ProcessFacts | null;
-}
-
-/** Butler configuration files returned by GET /api/butlers/:name/config. */
-export interface ButlerConfigResponse {
-  butler_toml: Record<string, unknown>;
-  claude_md: string | null;
-  agents_md: string | null;
-  manifesto_md: string | null;
-}
+export type ButlerDetail = components["schemas"]["ButlerDetail"];
 
 /** Lightweight session representation for list views. */
-export interface SessionSummary {
-  id: string;
-  butler?: string;
-  prompt: string;
-  trigger_source: string;
-  request_id?: string | null;
-  success: boolean | null;
-  started_at: string;
-  completed_at: string | null;
-  duration_ms: number | null;
-  input_tokens: number | null;
-  output_tokens: number | null;
-  /** True only when the backend recognized the canonical owner cancellation. */
-  cancelled_by_owner: boolean;
-  model?: string | null;
-  complexity?: string | null;
-  purpose_lane?: "standard" | "private_content" | null;
-  /**
-   * Best-effort per-session USD cost, estimated server-side from model +
-   * token counts (bu-ptaub — sessions pinning + dollar column). Optional so
-   * older fixtures/mocks that predate this field keep compiling; treat a
-   * missing key the same as `null` ("no cost data available"), never as $0.
-   */
-  cost_usd?: number | null;
-}
+export type SessionSummary = components["schemas"]["SessionSummary"];
 
 /** Full session detail returned by the single-session endpoint. */
-export interface SessionDetail {
-  id: string;
-  butler: string;
-  prompt: string;
-  trigger_source: string;
-  result: string | null;
-  tool_calls: unknown[];
-  duration_ms: number | null;
-  trace_id: string | null;
-  request_id: string | null;
-  cost: Record<string, unknown> | null;
-  started_at: string;
-  completed_at: string | null;
-  success: boolean | null;
-  error: string | null;
-  model: string | null;
-  input_tokens: number | null;
-  output_tokens: number | null;
-  parent_session_id: string | null;
-  complexity?: string | null;
-  resolution_source?: string | null;
-  purpose_lane?: "standard" | "private_content" | null;
-  /** Durable, prompt-free explanation of the model selected for this attempt. */
-  resolution_receipt?: ModelResolutionReceipt | null;
-  /** The dashboard chat message this session was invoked from, if any. */
-  linked_message?: {
-    conversation_id: string;
-    message_id: string;
-  } | null;
-  process_log?: {
-    pid?: number | null;
-    exit_code?: number | null;
-    command?: string | null;
-    stderr?: string | null;
-    runtime_type?: string | null;
-    created_at?: string | null;
-    expires_at?: string | null;
-  } | null;
-}
+export type SessionDetail = components["schemas"]["SessionDetail"];
 
-export interface ModelResolutionCandidate {
-  catalog_entry_id: string;
-  runtime_type: string;
-  model_id: string;
-  effective_tier: string;
-  outcome: string;
-  exclusion?: string | null;
-}
-
-export interface ModelResolutionReceipt {
-  policy_version?: string;
-  winner?: {
-    catalog_entry_id: string;
-    runtime_type: string;
-    model_id: string;
-    effective_tier: string | null;
-    reason: string | null;
-  } | null;
-  candidates?: ModelResolutionCandidate[];
-  attempt_index?: number;
-  failover?: {
-    from_attempt_index: number;
-    failure_class: string;
-  };
-  truncated?: boolean;
-  candidate_count?: number;
-}
-
-export interface PromptProvenanceEntry {
-  source: string;
-  status: "present" | "shadowed" | "unavailable";
-  bytes: number;
-  sha: string | null;
-}
-
-export interface SessionPromptReceipt {
-  id: string;
-  butler: string;
-  status: "captured" | "legacy_unavailable" | "corrupt";
-  effective_prompt: string | null;
-  prompt_digest: string | null;
-  prompt_provenance: PromptProvenanceEntry[];
-  total_bytes: number | null;
-}
-
-/** One per-butler count bucket in a session aggregate, sorted by count desc. */
-export interface SessionAggregateButler {
-  butler: string;
-  count: number;
-}
-
-/** One per-trigger_source count bucket (opt-in, see SessionParams.include_trigger_breakdown). */
-export interface SessionAggregateTriggerSource {
-  trigger_source: string;
-  count: number;
-}
+export type SessionPromptReceipt = components["schemas"]["SessionPromptReceipt"];
 
 /**
  * Window-scoped, filter-aware rollup returned by GET /api/sessions/aggregate.
@@ -364,18 +101,7 @@ export interface SessionAggregateTriggerSource {
  * `trigger_breakdown_degraded_sources` names pools that failed only that
  * optional fan-out; it is distinct from scalar `meta.sources_degraded`.
  */
-export interface SessionAggregate {
-  total: number;
-  success_count: number;
-  failed_count: number;
-  running_count: number;
-  success_rate: number | null;
-  input_tokens: number;
-  output_tokens: number;
-  by_butler: SessionAggregateButler[];
-  by_trigger_source: SessionAggregateTriggerSource[];
-  trigger_breakdown_degraded_sources: string[];
-}
+export type SessionAggregate = components["schemas"]["SessionAggregate"];
 
 /** Query parameters for session list endpoints. */
 export interface SessionParams {
@@ -386,94 +112,26 @@ export interface SessionParams {
   butler?: string;
   trigger_source?: string;
   request_id?: string;
-  status?: string; // "all" | "success" | "failed" | "running"
+  status?: ApiQuery<"/sessions">["status"];
   since?: string;
   until?: string;
   /** Aggregate-only: also compute by_trigger_source (see SessionAggregate). */
   include_trigger_breakdown?: boolean;
 }
 
+export type ButlerSessionParams = Omit<SessionParams, "status"> & Pick<ApiQuery<"/butlers/{name}/sessions">, "status">;
+
 /** Lightweight notification representation for list views. */
-export interface NotificationSummary {
-  id: string;
-  source_butler: string;
-  channel: string;
-  recipient: string | null;
-  message: string;
-  metadata: Record<string, unknown> | null;
-  status: string;
-  effective_status: string | null;
-  error: string | null;
-  session_id: string | null;
-  trace_id: string | null;
-  created_at: string;
-  approval_review?: { action_id: string; butler: "messenger" } | null;
-  approval_review_state?: "available" | "none" | "unavailable";
-}
+export type NotificationSummary = components["schemas"]["NotificationSummary"];
 
-/** Health-check response. */
-/** Security-posture booleans from GET /api/health. Values are NEVER secret material. */
-export interface HealthAuthPosture {
-  /** Missing legacy fields are treated as unavailable, never as verified protection. */
-  owner_auth_enabled?: boolean;
-  owner_auth_available?: boolean;
-  /** True when configured-key automation mode is selected. */
-  api_key_auth_enabled: boolean;
-  /** True when DASHBOARD_EXPORT_SECRET is absent (export signer uses insecure fallback or refuses). */
-  export_secret_insecure_default: boolean;
-}
-
-/** Infra-defaults security indicator from GET /api/health. Values are NEVER secret material. */
-export interface HealthSecurityPosture {
-  /**
-   * True when any known-default infra credential is active (absent env var = docker-compose
-   * default applies, or explicit known default is set) OR when Grafana anonymous access is
-   * enabled outside dev posture.
-   * False only when all infra credentials are overridden AND Grafana anon access is disabled
-   * (or posture is dev, where anon is expected).
-   */
-  insecure_infra_defaults: boolean;
-  /**
-   * True when SET ROLE schema-isolation enforcement is NOT active for the managed database
-   * connections.  In dev posture this is expected (no DB role configured); clears only when
-   * all managed pools have an active, verified DB role enforcing schema isolation.
-   */
-  role_enforcement_disabled: boolean;
-}
-
-export interface HealthResponse {
-  status: string;
-  /** Auth-posture indicators. Present in successful (200) responses. */
-  auth?: HealthAuthPosture;
-  /** Infra-defaults security indicator. Present in successful (200) responses. */
-  security?: HealthSecurityPosture;
-}
+export type HealthResponse = components["schemas"]["HealthResponse"];
 
 // ---------------------------------------------------------------------------
 // Notifications
 // ---------------------------------------------------------------------------
 
 /** Aggregate notification statistics. */
-export interface NotificationStats {
-  total: number;
-  sent: number;
-  failed: number;
-  by_channel: Record<string, number>;
-  /** FAILED notifications only, grouped by source_butler (unlike by_channel, which spans every status) -- powers the notifications verdict opener's "M from <butler>" clause. */
-  by_butler: Record<string, number>;
-  /** False when the Switchboard notifications source was unreachable -- all counts above are zeros in that case. */
-  source_available?: boolean;
-}
-
-/**
- * Paginated notification list, plus a source-availability flag.
- * `source_available === false` means the Switchboard notifications source
- * was unreachable -- an empty/short page in that case is NOT a truthful
- * "no notifications match" result.
- */
-export interface NotificationListResponse extends PaginatedResponse<NotificationSummary> {
-  source_available?: boolean;
-}
+export type NotificationStats = components["schemas"]["NotificationStats"];
 
 /** Query parameters for notification list endpoints. */
 export interface NotificationParams {
@@ -499,27 +157,13 @@ export interface NotificationStatsParams {
   until?: string;
 }
 
-/** Result of a bulk acknowledge-failed-notifications operation. */
-export interface AckFailedResult {
-  /** Number of notifications flipped from failed to read. */
-  acknowledged: number;
-}
-
 /**
  * Result of a manual retry or escalate action on a failed notification
  * (POST /api/notifications/{id}/retry or .../escalate). The original
  * notification is flipped to `read`; this describes the new attempt, which
  * has its own real `sent`/`failed` outcome.
  */
-export interface NotificationActionResult {
-  original_notification_id: string;
-  new_notification_id: string | null;
-  /** Channel the retry/escalate attempt was delivered on. */
-  channel: string;
-  /** Outcome of the new attempt: "sent" or "failed". */
-  status: string;
-  error: string | null;
-}
+export type NotificationActionResult = components["schemas"]["NotificationActionResult"];
 
 // ---------------------------------------------------------------------------
 // Attention ledger (bu-tdd4k.4) -- the ledger's first reader.
@@ -533,34 +177,10 @@ export interface NotificationActionResult {
  * the exact live failure bu-tdd4k.2 fixed for secrets_lifecycle (120
  * suppressed / 0 delivered).
  */
-export interface AttentionSourceSummary {
-  origin_butler: string;
-  delivered: number;
-  coalesced: number;
-  deferred: number;
-  suppressed: number;
-  /**
-   * Genuine terminal failures (no recipient, transport/delivery error, an
-   * unexpected exception) -- bu-hmdqz.3. Distinct from `deferred`, which is
-   * a benign hold that resolves on its own.
-   */
-  failed: number;
-  /** Candidates that expired before ever being delivered. */
-  expired_unseen: number;
-  total: number;
-  suppressed_never_delivered: boolean;
-}
+export type AttentionSourceSummary = components["schemas"]["AttentionSourceSummary"];
 
 /** Response for GET /api/attention/ledger/summary. */
-export interface AttentionLedgerSummaryResponse {
-  since: string | null;
-  until: string | null;
-  by_source: AttentionSourceSummary[];
-  /** Convenience projection of by_source's flagged origin_butler names. */
-  flagged_sources: string[];
-  /** False when the ledger's DB pool was unreachable -- all counts above are empty in that case. */
-  source_available?: boolean;
-}
+export type AttentionLedgerSummaryResponse = components["schemas"]["AttentionLedgerSummaryResponse"];
 
 /** Query parameters for GET /api/attention/ledger/summary. */
 export interface AttentionLedgerSummaryParams {
@@ -576,65 +196,7 @@ export interface AttentionLedgerSummaryParams {
 // ---------------------------------------------------------------------------
 
 /** Active issue detected across butler infrastructure. */
-export interface Issue {
-  severity: string;
-  type: string;
-  butler: string;
-  description: string;
-  link: string | null;
-  error_message?: string | null;
-  occurrences?: number;
-  first_seen_at?: string | null;
-  last_seen_at?: string | null;
-  /**
-   * The epoch an acknowledgement of this issue is held against (bu-6jv4m.3).
-   *
-   * For audit-derived groups this equals `last_seen_at` -- a new occurrence IS
-   * the recurrence. For reachability issues the two differ on purpose:
-   * `last_seen_at` is when we last *probed* (it advances every poll), while
-   * `recurrence_at` is the ONSET of the current outage episode and stays fixed
-   * for as long as the outage is uninterrupted. Acking against `last_seen_at`
-   * there was structurally impossible to make stick, since the watermark was
-   * outrun on the very next poll.
-   *
-   * Absent on an older backend; consumers fall back to `last_seen_at`.
-   */
-  recurrence_at?: string | null;
-  butlers?: string[];
-  /** Stable, server-computed key identifying this issue group (ack key). */
-  issue_key: string;
-  /** True when this issue has been dismissed (acked) server-side. */
-  dismissed?: boolean;
-}
-
-/**
- * Metadata for the issues feed (GET /api/issues). Extends the base bag with
- * the degraded-envelope flag the backend emits when one of the feed's
- * DB-backed sources (audit-groups or acks) fails a genuine query
- * (issues.py::list_issues -> `ApiMeta(sources_degraded=...)` via
- * `DegradedSources`, bu-tpudw.3). Mirrors the fleet-wide
- * `meta.sources_degraded` convention (see CLAUDE.md API Conventions). Absent
- * or empty means every source answered; a non-empty list means the feed is
- * incomplete and MUST NOT render as an all-clear "no issues".
- *
- * The audit-derived lane is separately capped at 500 groups. When an
- * overflow sentinel exists, `truncated` is true and the UI must name that
- * incomplete history rather than treating the rendered groups as exhaustive.
- * The field stays absent when the result is complete, including exactly 500
- * groups.
- */
-export interface IssuesListMeta extends ApiMeta {
-  /** Names of the feed sources whose query failed and were dropped. */
-  sources_degraded?: string[];
-  /** More than 500 audit-derived issue groups matched this feed window. */
-  truncated?: boolean;
-}
-
-/** GET /api/issues response: grouped issues + degraded-source meta. */
-export interface IssuesListResponse {
-  data: Issue[];
-  meta: IssuesListMeta;
-}
+export type Issue = components["schemas"]["Issue"];
 
 /**
  * Server-computed resolution of ONE `public.audit_log` failure row to the
@@ -653,42 +215,7 @@ export interface IssuesListResponse {
  * NOT `found: false` -- the UI must never render an unavailable lookup as a
  * confident absence.
  */
-export interface AuditIssueGroupRef {
-  /** The audit_log row id this answer is about. */
-  audit_id: number;
-  /** Window the answer was computed in ("24h" | "7d" | "30d" | "all"). */
-  window: string;
-  /** True when a current group exists for this row in `window`. */
-  found: boolean;
-  /**
-   * Why no group exists, when `found` is false:
-   * - `"not-a-failure"` -- the row did not fail, so it has no error group.
-   * - `"no-current-group"` -- it failed, but no group covers it in `window`.
-   */
-  reason?: string | null;
-  /** Exact ack key of the group; null when `found` is false. */
-  issue_key?: string | null;
-  severity?: string | null;
-  error_message?: string | null;
-  occurrences?: number | null;
-  first_seen_at?: string | null;
-  last_seen_at?: string | null;
-  butlers?: string[];
-  /** Ready-made `/issues?window=...&group=...` link; null when not found. */
-  issues_href?: string | null;
-}
-
-/** Result of dismissing (acking) an issue group. */
-export interface DismissIssueResult {
-  issue_key: string;
-  dismissed: boolean;
-}
-
-/** Result of undismissing (restoring) a previously-dismissed issue group. */
-export interface UndismissIssueResult {
-  issue_key: string;
-  deleted: boolean;
-}
+export type AuditIssueGroupRef = components["schemas"]["AuditIssueGroupRef"];
 
 // ---------------------------------------------------------------------------
 // Activity / Timeline
@@ -698,62 +225,16 @@ export interface UndismissIssueResult {
 export type TimelineMachineClass = "owner" | "heartbeat" | "maintenance";
 
 /** A unified timeline event from GET /api/timeline. */
-export interface TimelineEvent {
-  id: string;
-  type: string; // "session", "error", "notification", etc.
-  butler: string;
-  timestamp: string; // ISO 8601
-  summary: string;
-  /**
-   * Additive presentation classification derived by the API from exact
-   * structured trigger metadata. Optional so a client can safely render an
-   * older server response during a rolling deploy.
-   */
-  machine_class?: TimelineMachineClass;
-  /**
-   * True when this event's trigger_source is a heartbeat/tick source ("tick"
-   * or "heartbeat"), classified server-side (bu-86c4c.9). Use this instead of
-   * sniffing `summary`/`data.trigger_source` client-side — the old substring
-   * sniff folded real owner events (e.g. "Buy concert tickets") into the
-   * collapsed heartbeat group.
-   */
-  is_heartbeat: boolean;
-  data: Record<string, unknown>;
-}
+/** Timeline view accepts the existing rolling-deploy omission handled by timelineMachineClass.
+ * The generated current wire schema retains its required machine_class. */
+export type TimelineEvent = Omit<components["schemas"]["TimelineEvent"], "machine_class">
+  & Partial<Pick<components["schemas"]["TimelineEvent"], "machine_class">>;
 
 /** Aggregate counts over the heartbeat events in the current page (bu-86c4c.9). */
-export interface TimelineHeartbeatRollup {
-  ticks: number;
-  butlers: number;
-  failed: number;
-}
-
-/** Cursor-based pagination metadata for the timeline endpoint. */
-export interface TimelineMeta {
-  cursor: string | null;
-  has_more: boolean;
-  /** Correct rollup copy source — "{ticks} ticks · {butlers} butlers · {failed} failed". */
-  heartbeat_rollup: TimelineHeartbeatRollup;
-  /**
-   * Names of event sources ("sessions", "notifications") whose query failed
-   * for this request. Non-empty means the returned page is a partial view of
-   * that source, not a truthful empty result (mirrors the aggregates_available
-   * degraded-mode convention — see CLAUDE.md — applied per-source).
-   */
-  degraded_sources: string[];
-  /**
-   * Additive names of session fan-out pools that failed for this request.
-   * Kept optional for rolling deploys against an older Timeline API; readers
-   * must preserve the generic degraded_sources state either way.
-   */
-  degraded_butlers?: string[];
-}
+export type TimelineHeartbeatRollup = components["schemas"]["TimelineHeartbeatRollup"];
 
 /** Response shape from GET /api/timeline. */
-export interface TimelineResponse {
-  data: TimelineEvent[];
-  meta: TimelineMeta;
-}
+export type TimelineResponse = components["schemas"]["TimelineResponse"];
 
 /** Query parameters for the timeline endpoint. */
 export interface TimelineParams {
@@ -771,27 +252,7 @@ export interface TimelineParams {
   until?: string;
 }
 
-export interface TimelineHistogramBucket {
-  start: string;
-  end: string;
-  count: number;
-}
-
-export interface TimelineHistogramMeta {
-  since: string;
-  until: string;
-  bucket_seconds: 60;
-  availability: "complete" | "partial" | "unavailable";
-  expected_sources: number;
-  healthy_sources: number;
-  degraded_sources: string[];
-  degraded_butlers: string[];
-}
-
-export interface TimelineHistogramResponse {
-  data: TimelineHistogramBucket[];
-  meta: TimelineHistogramMeta;
-}
+export type TimelineHistogramResponse = components["schemas"]["TimelineHistogramResponse"];
 
 export interface TimelineHistogramParams {
   since: string;
@@ -802,31 +263,9 @@ export interface TimelineHistogramParams {
 }
 
 /** A content-blind recent record currently marked failed. */
-export interface TimelineAttentionItem {
-  id: string;
-  kind: "session" | "notification";
-  butler: string;
-  timestamp: string;
-}
+export type TimelineAttentionItem = components["schemas"]["TimelineAttentionItem"];
 
-export interface TimelineAttentionMeta {
-  since: string;
-  until: string;
-  failed_sessions: number;
-  failed_notifications: number;
-  total: number;
-  has_more: boolean;
-  availability: "complete" | "partial" | "unavailable";
-  expected_sources: number;
-  healthy_sources: number;
-  degraded_sources: string[];
-  degraded_butlers: string[];
-}
-
-export interface TimelineAttentionResponse {
-  data: TimelineAttentionItem[];
-  meta: TimelineAttentionMeta;
-}
+export type TimelineAttentionResponse = components["schemas"]["TimelineAttentionResponse"];
 
 export interface TimelineAttentionParams {
   butler?: string[];
@@ -838,173 +277,16 @@ export interface TimelineAttentionParams {
 // ---------------------------------------------------------------------------
 
 /** Executed-model ledger usage excluded because the model has no price entry. */
-export interface UnpricedModelUsage {
-  model: string;
-  calls: number;
-  input_tokens: number;
-  output_tokens: number;
-  cached_input_tokens: number;
-  cache_creation_tokens: number;
-}
+export type UnpricedModelUsage = components["schemas"]["UnpricedModelUsage"];
 
 /** Material token disagreement between sessions and the executed ledger. */
-export interface SpendDivergence {
-  date: string;
-  butler: string;
-  ledger_tokens: number;
-  session_tokens: number;
-  difference_ratio: number;
-}
-
-/** Aggregate spend summary across all butlers. */
-export interface SpendSummary {
-  total_cost_usd: number;
-  /** Priced subtotal from attempts with parseable provider usage. */
-  measured_usd?: number;
-  /** Invoked attempts whose provider usage could not be parsed. */
-  unmeasurable_attempts?: number;
-  total_sessions: number;
-  /** Uncached input tokens only -- see `total_cached_input_tokens`. */
-  total_input_tokens: number;
-  total_output_tokens: number;
-  /**
-   * Prompt-cache reads. Previously computed and discarded (bu-2jtfw.4): a
-   * heavily-cached model showed as a small fraction of its true token
-   * volume. Add to `total_input_tokens` for the true total tokens bought.
-   */
-  total_cached_input_tokens?: number;
-  /** Prompt-cache writes. */
-  total_cache_creation_tokens?: number;
-  /** Dollar cost of just the cache-read bucket, isolated from `total_cost_usd`. */
-  cache_read_cost_usd?: number;
-  /**
-   * Fraction of input tokens served from cache. `null` (never `0`) when
-   * `total_cached_input_tokens + total_input_tokens` is zero -- a zero
-   * denominator is "no data", not "no cache hits".
-   */
-  cache_hit_rate?: number | null;
-  by_butler: Record<string, number>;
-  by_model: Record<string, number>;
-  /** Models excluded from dollar subtotals; never silently folded into $0. */
-  unpriced_models?: UnpricedModelUsage[];
-  /**
-   * Priced models whose cache reads this window billed at the full input
-   * rate because no confirmed cache-read price is configured -- their
-   * dollar figures are real but not cache-discounted.
-   */
-  no_cache_price_models?: string[];
-  divergences?: SpendDivergence[];
-  divergence_source_error?: boolean;
-  historical_attribution_note?: string | null;
-  source_error?: boolean;
-  /** Butlers whose cost data could not be fetched -- totals above are a partial sum, never a confident fleet-wide total when non-empty. */
-  unavailable_butlers?: string[];
-}
+export type SpendDivergence = components["schemas"]["SpendDivergence"];
 
 /** Spend data for a single day. */
-export interface DailySpend {
-  date: string;
-  cost_usd: number;
-  sessions: number;
-  input_tokens: number;
-  output_tokens: number;
-  /** See `SpendSummary.total_cached_input_tokens` -- same semantics, scoped to one day. */
-  cached_input_tokens?: number;
-  cache_creation_tokens?: number;
-  cache_read_cost_usd?: number;
-  cache_hit_rate?: number | null;
-  /**
-   * Real per-butler cost contributions for this day (bu-86c4c.11 — extends
-   * GET /api/spend/daily to preserve the butler identity it previously
-   * discarded at the merge step). Only butlers that spent >0 that day are
-   * present; absent/empty means no per-butler data (e.g. all butlers were
-   * unreachable). Sums to `cost_usd`.
-   */
-  by_butler?: Record<string, number>;
-  unpriced_models?: UnpricedModelUsage[];
-}
+export type DailySpend = components["schemas"]["DailySpend"];
 
 /** A session ranked by cost. */
-export interface TopSession {
-  session_id: string;
-  butler: string;
-  cost_usd: number;
-  input_tokens: number;
-  output_tokens: number;
-  model: string;
-  started_at: string;
-  purpose_lane?: "standard" | "private_content" | null;
-}
-
-/**
- * Metadata shared by spend evidence and ledger aggregate endpoints. Historical
- * evidence routes may name butlers dropped from a fan-out; ledger aggregate
- * routes instead surface `source_error` and structured unpriced/divergence
- * evidence. Either form must never read as a complete all-clear.
- */
-export interface SpendFanoutMeta extends ApiMeta {
-  /** Names of butlers whose legacy evidence source failed and was omitted. */
-  unavailable_butlers?: string[];
-  /**
-   * By-schedule only: prose statement of what `projected_monthly_*` was
-   * computed on. A constant of the estimator, so it is stated once here rather
-   * than copied onto every row.
-   */
-  forecast_basis?: string;
-  /** Ledger-first daily attribution truthfulness metadata. */
-  unpriced_models?: UnpricedModelUsage[];
-  divergences?: SpendDivergence[];
-  divergence_source_error?: boolean;
-  historical_attribution_note?: string | null;
-  source_error?: boolean;
-}
-
-/** GET /api/spend/daily response: per-day series + degraded-butler meta. */
-export interface DailySpendResponse {
-  data: DailySpend[];
-  meta: SpendFanoutMeta;
-}
-
-/** GET /api/spend/top-sessions response: ranked sessions + degraded-butler meta. */
-export interface TopSessionsResponse {
-  data: TopSession[];
-  meta: SpendFanoutMeta;
-}
-
-/**
- * Cost analysis for a single scheduled task (GET /api/spend/by-schedule).
- *
- * Two groups that must never be rendered as one (bu-6jv4m.2): `total_runs`,
- * `total_cost_usd` and `avg_cost_per_run` are MEASURED over the queried range;
- * `projected_monthly_runs` and `projected_monthly_usd` are a FORECAST from the
- * cron cadence, computed on the basis stated verbatim once per response in
- * `meta.forecast_basis` (it is a constant, so it is not repeated on each row).
- * `projected_monthly_runs === 0` means the cadence could not be established --
- * there is no forecast, which is not the same claim as "this costs nothing".
- *
- * `retired` is true when the underlying schedule has been disabled (removed
- * from TOML config rather than deleted). Its measured history above stays
- * real, but it cannot recur -- `projected_monthly_runs` is always `0` and
- * `projected_monthly_usd` is always `null` for a retired schedule, so it can
- * never occupy the head of a projected-cost ranking (bu-2jtfw.4).
- */
-export interface ScheduleCost {
-  schedule_name: string;
-  butler: string;
-  cron: string;
-  retired?: boolean;
-  total_runs: number;
-  total_cost_usd: number;
-  avg_cost_per_run: number;
-  projected_monthly_runs: number;
-  projected_monthly_usd: number | null;
-}
-
-/** GET /api/spend/by-schedule response: per-schedule ranking + degraded-butler meta. */
-export interface ScheduleCostsResponse {
-  data: ScheduleCost[];
-  meta: SpendFanoutMeta;
-}
+export type TopSession = components["schemas"]["TopSession"];
 
 // ---------------------------------------------------------------------------
 // Dispatch attempts (model-failover provenance) — GET /api/dispatch/attempts
@@ -1018,20 +300,7 @@ export interface ScheduleCostsResponse {
  * (provider plan usage-limit; the breaker ignores it), `suppressed`,
  * `exhausted`, or `success`.
  */
-export interface DispatchAttemptEntry {
-  ts: string;
-  butler: string;
-  outcome: string;
-  attempt_index: number;
-  failure_reason: string | null;
-  error_code: string | null;
-  error_message: string | null;
-  tool_call_count: number | null;
-  /** Null for pre-session denials (e.g. a ceiling quota_skip before any session row exists). */
-  session_id: string | null;
-  logical_session_id: string | null;
-  resolution_receipt?: ModelResolutionReceipt | null;
-}
+export type DispatchAttemptEntry = components["schemas"]["DispatchAttemptEntry"];
 
 /** Identifies one logical dispatch cycle by either or both session selectors. */
 type DispatchAttemptsSessionSelector =
@@ -1091,79 +360,19 @@ export type ScheduleDispatchMode = "prompt" | "job";
 export type ScheduleJobArgs = Record<string, unknown>;
 
 /** A scheduled task belonging to a butler. */
-export interface Schedule {
-  id: string;
-  name: string;
-  cron: string;
-  prompt: string | null;
-  dispatch_mode?: ScheduleDispatchMode | null;
-  job_name?: string | null;
-  job_args?: ScheduleJobArgs | null;
-  complexity?: string | null;
-  source: string;
-  enabled: boolean;
-  next_run_at: string | null;
-  last_run_at: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-/** Payload for creating a new schedule. */
-export interface PromptScheduleCreate {
-  name: string;
-  cron: string;
-  dispatch_mode?: "prompt";
-  prompt: string;
-  complexity?: string;
-}
-
-/** Payload for creating a new deterministic job schedule. */
-export interface JobScheduleCreate {
-  name: string;
-  cron: string;
-  dispatch_mode: "job";
-  job_name: string;
-  job_args?: ScheduleJobArgs;
-  complexity?: string;
-}
+export type Schedule = components["schemas"]["Schedule"];
 
 /** Payload for creating a schedule (prompt or deterministic job mode). */
-export type ScheduleCreate = PromptScheduleCreate | JobScheduleCreate;
+export type ScheduleCreate = components["schemas"]["ScheduleCreate"];
 
 /** Payload for updating an existing schedule (all fields optional). */
-export interface ScheduleUpdate {
-  name?: string;
-  cron?: string;
-  prompt?: string | null;
-  dispatch_mode?: ScheduleDispatchMode;
-  job_name?: string | null;
-  job_args?: ScheduleJobArgs | null;
-  complexity?: string | null;
-  enabled?: boolean;
-}
+export type ScheduleUpdate = components["schemas"]["ScheduleUpdate"];
 
 /** Explicit desired state sent to the idempotent schedule-toggle action. */
-export interface ScheduleToggleRequest {
-  enabled: boolean;
-}
+export type ScheduleToggleRequest = components["schemas"]["ScheduleToggleRequest"];
 
 /** Server-observed receipt returned by a successful schedule toggle. */
-export interface ScheduleToggleResult {
-  id: string;
-  name: string;
-  source: string;
-  status: "updated" | "unchanged";
-  outcome: "applied" | "already_requested";
-  requested_enabled: boolean;
-  observed_enabled: boolean;
-  changed: boolean;
-  next_run_at: string | null;
-  audit: {
-    action: "schedule.toggle";
-    result: "success";
-    target: string;
-  };
-}
+export type ScheduleToggleResult = components["schemas"]["ScheduleToggleResult"];
 
 // ---------------------------------------------------------------------------
 // Calendar workspace
@@ -1190,10 +399,6 @@ export type UnifiedCalendarSourceType =
   | "proposed_event"
   | "overlay_contribution";
 
-/** Freshness state returned by workspace source metadata. */
-export type CalendarWorkspaceSyncState =
-  "fresh" | "stale" | "syncing" | "failed";
-
 /** Normalized event row returned by GET /api/calendar/workspace. */
 /**
  * A person linked to a calendar event via `calendar_event_entities`, resolved
@@ -1202,53 +407,9 @@ export type CalendarWorkspaceSyncState =
  * the persistence counterpart to the creation-time `ContactPeoplePicker` chips.
  * Mirrors backend `CalendarLinkedPerson`.
  */
-export interface CalendarLinkedPerson {
-  entity_id: string;
-  display_label: string;
-}
+export type CalendarLinkedPerson = components["schemas"]["CalendarLinkedPerson"];
 
-export interface UnifiedCalendarEntry {
-  entry_id: string;
-  /**
-   * `calendar_events.id` for entries backed by a stored calendar event; `null`
-   * for entries with no underlying event row (pending proposals, overlay
-   * contributions). This is the id the meeting-prep rail
-   * (`GET /api/calendar/workspace/prep/{event_id}`) keys on — distinct from
-   * `entry_id`, which is the per-instance id.
-   */
-  event_id: string | null;
-  view: CalendarWorkspaceQueryView;
-  source_type: UnifiedCalendarSourceType;
-  source_key: string;
-  title: string;
-  start_at: string;
-  end_at: string;
-  timezone: string;
-  all_day: boolean;
-  calendar_id: string | null;
-  provider_event_id: string | null;
-  butler_name: string | null;
-  schedule_id: string | null;
-  reminder_id: string | null;
-  rrule: string | null;
-  cron: string | null;
-  until_at: string | null;
-  status: string;
-  sync_state: CalendarWorkspaceSyncState | null;
-  editable: boolean;
-  metadata: Record<string, unknown>;
-  /** core_076 provenance: which butler wrote this event (null for pre-migration rows). */
-  source_butler?: string | null;
-  /** core_076 provenance: session that triggered the write (null when unknown). */
-  source_session_id?: string | null;
-  /**
-   * People linked to this event via `calendar_event_entities` (bu-qs64f),
-   * resolved to `entity_id` + `display_label`. Additive and optional (defaults
-   * to `[]` server-side); populated only on the user/butler views so existing
-   * event pills/detail panel can render linked-people avatars.
-   */
-  linked_people?: CalendarLinkedPerson[];
-}
+export type UnifiedCalendarEntry = components["schemas"]["UnifiedCalendarEntry"];
 
 /**
  * Optional inline overrides applied when accepting a calendar proposal.
@@ -1257,64 +418,10 @@ export interface UnifiedCalendarEntry {
  * accepts the proposal exactly as stored.
  * Mirrors backend `CalendarProposalAcceptRequest`.
  */
-export interface CalendarProposalAcceptRequest {
-  title?: string;
-  start_at?: string;
-  end_at?: string;
-  timezone?: string;
-  description?: string;
-  location?: string;
-}
-
-/**
- * Result of an accept/dismiss action on a calendar proposal.
- * Mirrors backend `CalendarProposalActionResponse`.
- */
-export interface CalendarProposalActionResponse {
-  proposal_id: string;
-  status: string;
-  accepted_event_id?: string | null;
-  butler_name?: string | null;
-}
-
-/** Allowed status values for a calendar action log entry. */
-export type CalendarActionStatus = "pending" | "applied" | "failed" | "noop";
+export type CalendarProposalAcceptRequest = components["schemas"]["CalendarProposalAcceptRequest"];
 
 /** One row from calendar_action_log, enriched with source provenance. */
-export interface CalendarAuditEntry {
-  id: string;
-  idempotency_key: string;
-  request_id: string | null;
-  action_type: string;
-  action_status: CalendarActionStatus;
-  origin_ref: string | null;
-  payload_summary: Record<string, unknown>;
-  error: string | null;
-  created_at: string;
-  updated_at: string;
-  applied_at: string | null;
-  /** Butler that owns the schema containing this log row. */
-  source_butler: string | null;
-  /** Session ID that triggered the write (deep-links to /sessions/:id). */
-  source_session_id: string | null;
-}
-
-/** Response payload for GET /api/calendar/workspace/audit. */
-export interface CalendarAuditResponse {
-  entries: CalendarAuditEntry[];
-  total: number;
-  offset: number;
-  limit: number;
-  /**
-   * Audit fan-out honesty flag. `true` (or absent) when every targeted calendar
-   * schema's `calendar_action_log` fan-out ran cleanly; `false` when at least
-   * one schema FAILED — a partial failure silently drops that schema's
-   * mutations and undercounts `total`, so the UI must render a "some sources
-   * unavailable" note rather than let the log read as a complete, shorter
-   * history.
-   */
-  sources_available?: boolean;
-}
+export type CalendarAuditEntry = components["schemas"]["CalendarAuditEntry"];
 
 /** Query parameters for GET /api/calendar/workspace/audit. */
 export interface CalendarAuditParams {
@@ -1324,121 +431,13 @@ export interface CalendarAuditParams {
 }
 
 /** Source-level freshness metadata for workspace rendering. */
-export interface CalendarWorkspaceSourceFreshness {
-  source_id: string;
-  source_key: string;
-  source_kind: string;
-  lane: CalendarWorkspaceView;
-  provider: string | null;
-  calendar_id: string | null;
-  butler_name: string | null;
-  display_name: string | null;
-  writable: boolean;
-  metadata: Record<string, unknown>;
-  cursor_name: string | null;
-  last_synced_at: string | null;
-  last_success_at: string | null;
-  last_error_at: string | null;
-  last_error: string | null;
-  full_sync_required: boolean;
-  sync_state: CalendarWorkspaceSyncState;
-  staleness_ms: number | null;
-  /**
-   * Coarse classification of `last_error` so the workspace can pick the right
-   * recovery CTA (Recover vs Reconnect). `none` means the source is healthy.
-   */
-  error_kind: CalendarWorkspaceErrorKind;
-  /**
-   * Whether this calendar is enabled as a sync source. Toggled via
-   * POST /api/calendar/sources. A disabled source is rendered "off" (not
-   * failed) and is skipped by the sync loop. Defaults to `true`.
-   */
-  sync_enabled: boolean;
-  /**
-   * Whether a sync verdict applies. Only provider sources sync; internal
-   * sources (schedules, reminders) are projected locally and never get a
-   * cursor, so their null `last_synced_at` is normal, not "never synced".
-   */
-  sync_applicable: boolean;
-}
-
-/** Coarse per-source sync error classification surfaced alongside `last_error`. */
-export type CalendarWorkspaceErrorKind =
-  "none" | "token_expired" | "auth" | "not_found" | "transient";
-
-/** Butler lane descriptor used by butler-view layouts. */
-export interface CalendarWorkspaceLaneDefinition {
-  lane_id: string;
-  butler_name: string;
-  title: string;
-  source_keys: string[];
-}
+export type CalendarWorkspaceSourceFreshness = components["schemas"]["CalendarWorkspaceSourceFreshness"];
 
 /** Response payload for GET /api/calendar/workspace. */
-export interface CalendarWorkspaceReadResponse {
-  entries: UnifiedCalendarEntry[];
-  source_freshness: CalendarWorkspaceSourceFreshness[];
-  lanes: CalendarWorkspaceLaneDefinition[];
-  /**
-   * Opaque keyset cursor encoding the last `(starts_at, id)` returned. Pass it
-   * back as `cursor` to fetch the next page; `null` on the final page.
-   */
-  next_cursor: string | null;
-  /** `true` while more pages remain for the requested window. */
-  has_more: boolean;
-  /**
-   * Overlays lane (`view=overlays`) honest empty-state flag. `true` when at
-   * least one valid precomputed overlay contribution exists for the range;
-   * `false` when the cached view is absent/unreadable or no specialist has
-   * contributed. Always `false`/absent for the user/butler/proposals views.
-   */
-  has_domain_context?: boolean;
-  /**
-   * Linked-people resolution honesty flag (bu-qs64f). `true` (or absent) when
-   * the `calendar_event_entities` → `public.entities` resolution ran cleanly
-   * (including genuinely "no links"); `false` only when at least one schema's
-   * resolution query FAILED — so the UI shows a "people unavailable" indicator
-   * instead of reading empty `linked_people` as "no one is linked".
-   */
-  people_source_available?: boolean;
-  /**
-   * Events fan-out honesty flag. `true` (or absent) when every targeted butler
-   * schema's workspace query ran cleanly; `false` when at least one schema
-   * FAILED — a partial fan-out failure silently drops that schema's entries, so
-   * the UI must show a "some sources unavailable" note instead of reading a
-   * short grid as "nothing scheduled". Always `true` for the proposals/overlays
-   * lanes (they do not fan out the events read).
-   */
-  entries_source_available?: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// Conflict & overcommitment radar — GET /api/calendar/workspace/conflicts
-// ---------------------------------------------------------------------------
-
-export type ConflictKind = "overlap" | "back_to_back" | "overloaded_day";
-export type ConflictSeverity = "info" | "warning";
-
-/** An event contributing to a detected conflict/overcommitment issue. */
-export interface ConflictEventRef {
-  entry_id: string;
-  title: string;
-  start_at: string;
-  end_at: string;
-  timezone: string;
-  status: string;
-}
+export type CalendarWorkspaceReadResponse = components["schemas"]["CalendarWorkspaceReadResponse"];
 
 /** A single scheduling problem detected in the scanned window. */
-export interface ConflictIssue {
-  kind: ConflictKind;
-  date: string; // YYYY-MM-DD in the display timezone
-  summary: string;
-  severity: ConflictSeverity;
-  events: ConflictEventRef[];
-  /** UUIDs of pending fix proposals (empty until the fix-proposal session runs). */
-  proposal_ids: string[];
-}
+export type ConflictIssue = components["schemas"]["ConflictIssue"];
 
 /**
  * Response payload for GET /api/calendar/workspace/conflicts.
@@ -1447,11 +446,7 @@ export interface ConflictIssue {
  * the FE renders no banner and adds no amber edges in that silent mode. An empty
  * `issues` list with `issues_available=true` genuinely means a clean window.
  */
-export interface ConflictScanResponse {
-  issues: ConflictIssue[];
-  scan_window: { start: string; end: string };
-  issues_available: boolean;
-}
+export type ConflictScanResponse = components["schemas"]["ConflictScanResponse"];
 
 /** Query params for GET /api/calendar/workspace/conflicts. */
 export interface ConflictScanParams {
@@ -1463,43 +458,11 @@ export interface ConflictScanParams {
   overloaded_day_hours?: number;
 }
 
-export interface CalendarInvitationEntry {
-  entry_id: string;
-  title: string;
-  start_at: string;
-  end_at: string;
-  timezone: string;
-  organizer: string | null;
-  organizer_source: "event" | "attendee" | "unknown";
-  butler_name: string | null;
-  conflict_issues: ConflictIssue[];
-  response_configured?: boolean;
-}
+export type CalendarInvitationEntry = components["schemas"]["CalendarInvitationEntry"];
 
-export interface CalendarResponseRequest {
-  entry_id: string;
-  request_id: string;
-  response_status: "accepted" | "declined" | "tentative";
-  send_updates: "none" | "all" | "externalOnly";
-}
+export type CalendarResponseRequest = components["schemas"]["CalendarRespondRequest"];
 
-export interface CalendarResponseReceipt {
-  status: "pending_approval" | "approved" | "rejected" | "uncertain" | "noop" | "applied" | "failed";
-  command_id: string | null;
-  approval_id: string | null;
-  source_butler: string;
-  projection_available: boolean;
-  reason: string | null;
-}
-
-export interface CalendarInvitationsResponse {
-  entries: CalendarInvitationEntry[];
-  issues_available: boolean;
-  conflicts_available: boolean;
-  sources_degraded: string[];
-  has_more: boolean;
-  next_cursor: string | null;
-}
+export type CalendarResponseReceipt = components["schemas"]["CalendarRespondResponse"];
 
 export interface CalendarInvitationsParams {
   start: string;
@@ -1509,50 +472,8 @@ export interface CalendarInvitationsParams {
   cursor?: string;
 }
 
-/** One `kind` bucket inside a day-briefing butler group (e.g. `bill_due`). */
-export interface DayBriefingKindGroup {
-  kind: string;
-  entries: UnifiedCalendarEntry[];
-}
-
 /** All of one specialist butler's overlay entries for the day, bucketed by kind. */
-export interface DayBriefingButlerGroup {
-  source_butler: string;
-  /** Total entries across this butler's kinds. */
-  count: number;
-  kinds: DayBriefingKindGroup[];
-}
-
-/**
- * Response payload for GET /api/calendar/workspace/day-briefing — the structured
- * "tomorrow at a glance" card assembled from the cached overlay view for a
- * single target date. No per-open LLM call, no generated prose.
- *
- * Honest empty-state: `has_domain_context` is `true` when at least one
- * specialist wrote a contribution for the date (even with zero entries), so the
- * card renders; `false` when no specialist contributed (or the view is
- * absent/unreadable) so the FE renders "No domain context for this day". The
- * read is fail-open and does NOT use the `aggregates_available` envelope.
- */
-export interface CalendarDayBriefingResponse {
-  /** Target date (ISO `yyyy-MM-dd`). */
-  date: string;
-  /** IANA timezone the day window was anchored in. */
-  timezone: string;
-  has_domain_context: boolean;
-  /** `true` when at least one overlay entry exists for the date. */
-  has_entries: boolean;
-  groups: DayBriefingButlerGroup[];
-  /** Flat, chip-ready list of every overlay entry on the date. */
-  entries: UnifiedCalendarEntry[];
-}
-
-/** A single durable relationship note surfaced on the meeting-prep rail. */
-export interface CalendarPrepNote {
-  /** Note category (e.g. `preference`, `context`). */
-  kind: string;
-  text: string;
-}
+export type DayBriefingButlerGroup = components["schemas"]["DayBriefingButlerGroup"];
 
 /** Kind of an active owner commitment surfaced on the meeting-prep rail. */
 export type CalendarPrepCommitmentKind =
@@ -1565,21 +486,8 @@ export type CalendarPrepCommitmentKind =
 /** Direction of the obligation represented by a prep-rail commitment. */
 export type CalendarPrepCommitmentDirection = "owner_to_other" | "other_to_owner" | "self";
 
-/** Condition-ledger escalation label accepted by the meeting-prep contract. */
-export type CalendarPrepCommitmentEscalationLevel = "L0" | "L1" | "L2" | "L3";
-
 /** An active owner commitment contributed to a meeting-prep attendee. */
-export interface CalendarPrepCommitment {
-  kind: CalendarPrepCommitmentKind;
-  direction: CalendarPrepCommitmentDirection;
-  summary: string;
-  /** ISO-8601 deadline, or `null` when this commitment has no deadline. */
-  deadline: string | null;
-  /** Condition-ledger escalation label. */
-  escalation_level: CalendarPrepCommitmentEscalationLevel;
-  /** Stable commitment identity, useful to future interactive surfaces. */
-  fingerprint: string;
-}
+export type CalendarPrepCommitment = components["schemas"]["CalendarPrepCommitment"];
 
 /**
  * Precomputed prep context for one resolved attendee of a selected event.
@@ -1594,161 +502,25 @@ export interface CalendarPrepCommitment {
  * `commitments` are active owner-condition commitments contributed by the
  * relationship butler (empty for legacy envelopes).
  */
-export interface CalendarPrepAttendee {
-  entity_id: string;
-  name: string;
-  dunbar_tier: number | null;
-  notes: CalendarPrepNote[];
-  last_met: string | null;
-  last_met_event: string | null;
-  /** Recent message/email threads each attendee wrote, contributed by the
-   * email-owning butlers' deterministic prep job (gracefully empty if absent). */
-  message_context: CalendarPrepMessageContext[];
-  /** Active owner commitments for this attendee (empty for legacy envelopes). */
-  commitments: CalendarPrepCommitment[];
-}
-
-/**
- * One recent message/email thread surfaced in an attendee's prep panel.
- *
- * Concrete envelope written by the email-owning butlers' `calendar_prep`
- * contribution job (bu-tmtpb) under `calendar/prep/<event_id>` and merged by
- * the prep-rail read endpoint. `subject` always carries a value (the job falls
- * back to a snippet prefix or `"(no subject)"`); `snippet` may be empty and
- * `last_message_at` may be `null`.
- */
-export interface CalendarPrepMessageContext {
-  /** Source channel for the thread (currently always `"email"`). */
-  channel: string;
-  /** Stable identifier for the message thread. */
-  thread_id: string;
-  /** Thread subject (non-empty: falls back to a snippet prefix / "(no subject)"). */
-  subject: string;
-  /** One-line preview of the most recent message body (may be empty). */
-  snippet: string;
-  /** ISO timestamp of the most recent message in the thread, or `null`. */
-  last_message_at: string | null;
-  /** Number of messages in the thread. */
-  message_count: number;
-}
-
-/**
- * Response payload for GET /api/calendar/workspace/prep/{event_id} — the
- * meeting-prep rail context for a selected entity-linked event, assembled
- * exclusively from the cached `calendar.v_prep_contributions` view (no direct
- * `relationship.*` / `health.*` read, no per-open LLM call).
- *
- * Honest empty-state: `has_prep_context` is `true` when at least one
- * contributing specialist wrote a prep contribution for the event;
- * `false` when none exists (co-attended / contact-link coverage not yet
- * populated, jobs not run, or the view is absent) — the expected state for most
- * events today, rendered as "No prep context yet" rather than an error. The
- * read is fail-open and does NOT use the `aggregates_available` envelope.
- */
-export interface CalendarPrepResponse {
-  event_id: string;
-  has_prep_context: boolean;
-  attendees: CalendarPrepAttendee[];
-  /** Butlers that contributed prep context for this event. */
-  source_butlers: string[];
-}
-
-/** Sync capability flags in workspace metadata. */
-export interface CalendarWorkspaceCapabilitiesSync {
-  global: boolean;
-  by_source: boolean;
-}
-
-/** Workspace capability switches. */
-export interface CalendarWorkspaceCapabilities {
-  views: CalendarWorkspaceView[];
-  filters: Record<string, boolean>;
-  sync: CalendarWorkspaceCapabilitiesSync;
-}
+export type CalendarPrepAttendee = components["schemas"]["CalendarPrepAttendee"];
 
 /** Writable user-lane calendar descriptor. */
-export interface CalendarWorkspaceWritableCalendar {
-  source_key: string;
-  provider: string | null;
-  calendar_id: string;
-  display_name: string | null;
-  butler_name: string | null;
-}
+export type CalendarWorkspaceWritableCalendar = components["schemas"]["CalendarWorkspaceWritableCalendar"];
 
 /** Response payload for GET /api/calendar/workspace/meta. */
-export interface CalendarWorkspaceMetaResponse {
-  capabilities: CalendarWorkspaceCapabilities;
-  connected_sources: CalendarWorkspaceSourceFreshness[];
-  writable_calendars: CalendarWorkspaceWritableCalendar[];
-  lane_definitions: CalendarWorkspaceLaneDefinition[];
-  default_timezone: string;
-  primary_calendar_id: string | null;
-  // Sources fan-out honesty flag (bu-sn71y). false when a targeted schema's
-  // calendar_sources fan-out FAILED, so connected_sources is incomplete and the
-  // freshness plaque must not read "fresh". Optional/default-healthy: read as
-  // `sources_available !== false` so older payloads observe the prior shape.
-  sources_available?: boolean;
-}
-
-/** Per-account Google Calendar connector health state. */
-export type CalendarAccountHealthState =
-  "healthy" | "degraded" | "error" | "unknown";
-
-/** Per-account Google Calendar connector health. */
-export interface CalendarAccountHealth {
-  state: CalendarAccountHealthState;
-  error_kind: CalendarWorkspaceErrorKind;
-  error_message: string | null;
-  last_heartbeat_at: string | null;
-  last_ingest_at: string | null;
-}
+export type CalendarWorkspaceMetaResponse = components["schemas"]["CalendarWorkspaceMetaResponse"];
 
 /** One connected Google account with its calendar connector health. */
-export interface CalendarAccountEntry {
-  account_id: string;
-  email: string | null;
-  display_name: string | null;
-  is_primary: boolean;
-  status: string;
-  health: CalendarAccountHealth;
-}
-
-/** Response payload for GET /api/calendar/accounts. */
-export interface CalendarAccountsResponse {
-  accounts: CalendarAccountEntry[];
-  /** `false` when the connector health surface could not be reached. */
-  health_available: boolean;
-}
+export type CalendarAccountEntry = components["schemas"]["CalendarAccountEntry"];
 
 /** Request payload for POST /api/calendar/sources. */
-export interface CalendarSourceToggleRequest {
-  butler: string;
-  source_key?: string;
-  source_id?: string;
-  enabled: boolean;
-}
+export type CalendarSourceToggleRequest = components["schemas"]["CalendarSourceToggleRequest"];
 
 /** Response payload for POST /api/calendar/sources. */
-export interface CalendarSourceToggleResponse {
-  butler: string;
-  source_key: string;
-  source_id: string;
-  calendar_id: string | null;
-  enabled: boolean;
-}
+export type CalendarSourceToggleResponse = components["schemas"]["CalendarSourceToggleResponse"];
 
 /** Request payload for PUT /api/calendar/workspace/primary. */
-export interface SetPrimaryCalendarRequest {
-  butler_name: string;
-  calendar_id: string;
-}
-
-/** Response payload for PUT /api/calendar/workspace/primary. */
-export interface SetPrimaryCalendarResponse {
-  old_calendar_id: string | null;
-  new_calendar_id: string;
-  persisted: boolean;
-}
+export type SetPrimaryCalendarRequest = components["schemas"]["SetPrimaryCalendarRequest"];
 
 /** Computed-status facet values accepted by GET /api/calendar/workspace. */
 export type CalendarWorkspaceStatusFacet =
@@ -1784,148 +556,25 @@ export interface CalendarWorkspaceSearchParams {
   limit?: number;
 }
 
-/** Response payload for GET /api/calendar/workspace/search. */
-export interface CalendarWorkspaceSearchResponse {
-  entries: UnifiedCalendarEntry[];
-  /**
-   * Honest degraded signal (fail-open). `false` only when every calendar schema
-   * failed to respond, so `entries` is empty because the search could not run —
-   * NOT because nothing matched. Render "search unavailable", not "no results".
-   */
-  available: boolean;
-}
-
 /** Request payload for POST /api/calendar/workspace/sync. */
-export interface CalendarWorkspaceSyncRequest {
-  all?: boolean;
-  source_key?: string;
-  source_id?: string;
-  butler?: string;
-  /**
-   * Operator-driven cursor recovery. When true, the targeted source(s) run a
-   * full re-sync ignoring the stored incremental token. Default false.
-   */
-  full?: boolean;
-}
-
-/** One durable sync-command acknowledgement/result. */
-export interface CalendarWorkspaceSyncTarget {
-  butler_name: string;
-  source_key: string | null;
-  calendar_id: string | null;
-  status: string;
-  detail: string | null;
-  error: string | null;
-  /** False for a queued acknowledgement; observe action/freshness telemetry for completion. */
-  recovery: boolean;
-  /** Correlation id of the durable action-log command. */
-  request_id: string | null;
-  /** True when this acknowledgement joined an existing queued command. */
-  coalesced: boolean;
-}
-
-/** Response payload for POST /api/calendar/workspace/sync. */
-export interface CalendarWorkspaceSyncResponse {
-  scope: "all" | "source";
-  requested_source_key: string | null;
-  requested_source_id: string | null;
-  /** Correlation id generated for this dashboard/API request. */
-  request_id: string;
-  /** Echoes whether the request asked for a full recovery sync. */
-  full: boolean;
-  targets: CalendarWorkspaceSyncTarget[];
-  triggered_count: number;
-}
+export type CalendarWorkspaceSyncRequest = components["schemas"]["CalendarWorkspaceSyncRequest"];
 
 /** The only user-view calendar mutation the dashboard issues (operator view). */
 export type CalendarWorkspaceUserMutationAction = "create";
 
-/** Allowed actions for butler-lane event mutations. */
-export type CalendarWorkspaceButlerMutationAction =
-  "create" | "update" | "delete" | "toggle" | "dismiss" | "snooze";
-
 /**
  * Request payload for POST /api/calendar/workspace/user-events (create only).
  */
-export interface CalendarWorkspaceUserMutationRequest {
-  butler_name: string;
-  action: CalendarWorkspaceUserMutationAction;
-  request_id?: string;
-  payload: Record<string, unknown>;
-}
-
-/** A conflicting calendar event returned alongside a mutation conflict response. */
-export interface CalendarConflictEntry {
-  event_id: string;
-  title: string;
-  start_at: string; // ISO 8601
-  end_at: string; // ISO 8601
-  timezone: string;
-}
-
-/** A suggested alternative time slot returned alongside a mutation conflict response. */
-export interface CalendarSuggestedSlot {
-  start_at: string; // ISO 8601
-  end_at: string; // ISO 8601
-  timezone: string;
-}
-
-/** Response payload for calendar workspace mutation endpoints. */
-export interface CalendarWorkspaceMutationResponse {
-  action:
-    CalendarWorkspaceUserMutationAction | CalendarWorkspaceButlerMutationAction;
-  tool_name: string;
-  request_id: string | null;
-  result: Record<string, unknown>;
-  /** Conflicting events surfaced when the mutation triggers a conflict check. Empty on success. */
-  conflicts: CalendarConflictEntry[];
-  /** Suggested alternative slots surfaced with a 'suggest' policy conflict. Empty on success. */
-  suggested_slots: CalendarSuggestedSlot[];
-  projection_version: string | null;
-  staleness_ms: number | null;
-  projection_freshness: Record<string, unknown> | null;
-}
+export type CalendarWorkspaceUserMutationRequest = components["schemas"]["CalendarWorkspaceUserMutationRequest"];
 
 /** Request payload for POST /api/calendar/workspace/butler-events. */
-export interface CalendarWorkspaceButlerMutationRequest {
-  butler_name: string;
-  action: CalendarWorkspaceButlerMutationAction;
-  request_id?: string;
-  payload: Record<string, unknown>;
-}
+export type CalendarWorkspaceButlerMutationRequest = components["schemas"]["CalendarWorkspaceButlerMutationRequest"];
 
 /** Request payload for POST /api/calendar/workspace/parse-quick-add. */
-export interface QuickAddParseRequest {
-  /** Free-text phrase, e.g. "lunch with Sarah Fri 1pm at Tartine". */
-  text: string;
-  /** IANA timezone anchoring relative phrases like "Fri 1pm". */
-  timezone?: string;
-  /** Butler whose catalog model overrides apply for resolution. */
-  butler_name?: string;
-}
+export type QuickAddParseRequest = components["schemas"]["QuickAddParseRequest"];
 
 /** A parsed draft event — advisory only, never auto-written. */
-export interface QuickAddDraft {
-  title: string;
-  start_at: string | null;
-  end_at: string | null;
-  all_day: boolean;
-  location: string | null;
-  description: string | null;
-}
-
-/**
- * Response payload for POST /api/calendar/workspace/parse-quick-add.
- *
- * ``parse_available`` is false when no cheap-tier model is configured or the
- * output could not be interpreted as a single event draft; ``draft`` is then
- * null and ``reason`` explains why. The endpoint never writes.
- */
-export interface QuickAddParseResponse {
-  parse_available: boolean;
-  draft: QuickAddDraft | null;
-  reason: string | null;
-}
+export type QuickAddDraft = components["schemas"]["QuickAddDraft"];
 
 /**
  * Request payload for POST /api/calendar/workspace/butler-events/preview.
@@ -1933,31 +582,7 @@ export interface QuickAddParseResponse {
  * Dry-runs a draft butler event's recurrence expansion. Exactly one of
  * ``rrule`` or ``cron`` must be supplied; nothing is persisted.
  */
-export interface CalendarWorkspaceButlerEventPreviewRequest {
-  rrule?: string | null;
-  cron?: string | null;
-  start_at?: string | null; // ISO 8601
-  until_at?: string | null; // ISO 8601
-  timezone?: string | null;
-  duration_minutes?: number;
-  limit?: number;
-}
-
-/** Response payload for the recurrence dry-run preview. */
-export interface CalendarWorkspaceButlerEventPreviewResponse {
-  /** Capped list (<= limit) of projected start datetimes within the window. */
-  occurrences: string[]; // ISO 8601
-  /** Total occurrences inside the 90-day window (before the cap). */
-  total_in_window: number;
-  /** Occurrences beyond the cap — the "+N more in 90 days" sentinel. */
-  more_count: number;
-  window_start: string; // ISO 8601
-  window_end: string; // ISO 8601
-  /** The effective cron the scheduler would run, after any RRULE conversion. */
-  effective_cron: string | null;
-  /** Quiet warnings about lossy RRULE->cron degradations. */
-  notes: string[];
-}
+export type CalendarWorkspaceButlerEventPreviewRequest = components["schemas"]["CalendarButlerEventPreviewRequest"];
 
 // ---------------------------------------------------------------------------
 // State
@@ -1969,43 +594,14 @@ export interface CalendarWorkspaceButlerEventPreviewResponse {
  * because the underlying JSONB column places no shape restrictions on stored
  * values.
  */
-export interface StateEntry {
-  key: string;
-  value: unknown;
-  updated_at: string; // ISO 8601
-}
+export type StateEntry = components["schemas"]["StateEntry"];
 
 /** Request body for setting a state value.
  *
  * ``value`` accepts any JSON-serialisable type, matching the same contract as
  * ``StateEntry.value``.
  */
-export interface StateSetRequest {
-  value: unknown;
-}
-
-// ---------------------------------------------------------------------------
-// Search
-// ---------------------------------------------------------------------------
-
-/** A single search result from the global search endpoint. */
-export interface SearchResult {
-  id: string;
-  butler: string;
-  type: string;
-  title: string;
-  snippet: string;
-  url: string;
-}
-
-/** Grouped search results keyed by category. */
-export interface SearchResults {
-  entities: SearchResult[];
-  contacts: SearchResult[];
-  sessions: SearchResult[];
-  state: SearchResult[];
-  [key: string]: SearchResult[];
-}
+export type StateSetRequest = components["schemas"]["StateSetRequest"];
 
 // ---------------------------------------------------------------------------
 // Audit Log
@@ -2015,39 +611,7 @@ export interface SearchResults {
  * A single entry from the ``public.audit_log`` primitive table (core_092).
  * Matches the backend ``AuditLogEntry`` Pydantic model exactly.
  */
-export interface AuditLogEntry {
-  id: number;
-  ts: string; // ISO 8601
-  actor: string;
-  action: string;
-  target: string | null;
-  note: string | null;
-  ip: string | null;
-  request_id: string | null;
-  /**
-   * Structured context persisted alongside the write (core_122). Optional on
-   * this type (not just nullable) so existing fixtures/call-sites built
-   * before core_122 was projected keep compiling unchanged; a real backend
-   * response always includes the key (with a value of `null` for rows
-   * written before the audit-writer unification).
-   */
-  metadata?: Record<string, unknown> | null;
-  /**
-   * Outcome label persisted since core_122, e.g. "success" | "error".
-   * `null`/absent for rows written before the unification (outcome unknown).
-   */
-  result?: string | null;
-  /** Error message persisted since core_122; only meaningful when `result` denotes a failure. */
-  error?: string | null;
-  /**
-   * True when this row targets a credential (`u:` / `s:` / `c:`) and its
-   * free-text `note` / `error` / `metadata` were withheld on read (bu-ove06).
-   * A blank Note on such a row means "withheld", not "never recorded" — the
-   * text is still persisted server-side for operator forensics. Optional on
-   * this type so fixtures built before the flag existed keep compiling.
-   */
-  redacted?: boolean;
-}
+export type AuditLogEntry = components["schemas"]["AuditLogEntry"];
 
 /** Query parameters for the audit log endpoint (GET /api/audit-log). */
 export interface AuditLogParams {
@@ -2076,158 +640,39 @@ export interface AuditLogParams {
 // ---------------------------------------------------------------------------
 
 /** A skill available to a butler. */
-export interface ButlerSkill {
-  name: string;
-  content: string;
-}
-
-// ---------------------------------------------------------------------------
-// Trigger
-// ---------------------------------------------------------------------------
-
-/** Response from triggering a butler CC session. */
-export interface TriggerResponse {
-  session_id: string;
-  success: boolean;
-  output: string;
-}
-
-/** Response from forcing a scheduler tick (`POST /api/butlers/{name}/tick`). */
-export interface TickResponse {
-  success: boolean;
-  message: string | null;
-}
+export type ButlerSkill = components["schemas"]["SkillInfo"];
 
 // ---------------------------------------------------------------------------
 // MCP debugging
 // ---------------------------------------------------------------------------
 
 /** A tool exposed by a butler's MCP server. */
-export interface ButlerMcpTool {
-  name: string;
-  description: string | null;
-  input_schema: Record<string, unknown> | null;
-}
+export type ButlerMcpTool = components["schemas"]["MCPToolInfo"];
 
 /** Request body for calling an MCP tool. */
-export interface ButlerMcpToolCallRequest {
-  tool_name: string;
-  arguments?: Record<string, unknown>;
-}
+export type ButlerMcpToolCallRequest = components["schemas"]["MCPToolCallRequest"];
 
 /** Response from calling an MCP tool. */
-export interface ButlerMcpToolCallResponse {
-  tool_name: string;
-  arguments: Record<string, unknown>;
-  result: unknown;
-  raw_text: string | null;
-  is_error: boolean;
-}
+export type ButlerMcpToolCallResponse = components["schemas"]["MCPToolCallResponse"];
 
 // ---------------------------------------------------------------------------
 // Relationship / CRM
 // ---------------------------------------------------------------------------
 
 /** A label that can be attached to contacts or groups. */
-export interface Label {
-  id: string;
-  name: string;
-  color: string | null;
-}
+export type Label = components["schemas"]["Label"];
 
 /** A single contact_info entry (phone, email, address, etc.).
  * When secured=true and value is null, the value is masked.
  * Use GET /relationship/entities/{entityId}/secrets/{infoId} to retrieve the real value.
  */
-export interface ContactInfoEntry extends FactAttribution {
-  id: string;
-  type: string;
-  value: string | null; // null when secured=true and not yet revealed
-  is_primary: boolean;
-  secured: boolean;
-  parent_id: string | null;
-  context: string | null; // personal | work | other | null (unclassified)
-  /** Backing store discriminator. Absent/null → legacy public.contact_info row.
-   * "entity_facts" → synthesised from relationship.entity_facts has-* triple. */
-  source?: "entity_facts" | null;
-  /** Populated only when source="entity_facts". The contact predicate (e.g. "has-email").
-   * Used by the delete mutation: DELETE /entities/{id}/contacts/{predicate}/{value_hash}. */
-  predicate?: string | null;
-  /** Populated only when source="entity_facts". SHA-256[:16] of the object value.
-   * Used as the stable URL segment in the entity-keyed delete endpoint. */
-  value_hash?: string | null;
-  /** Owner-confirmed flag from relationship.entity_facts.verified.
-   * False until the owner explicitly marks the channel verified via
-   * POST /entities/{id}/contacts/{predicate}/{value_hash}/verify.
-   * Drives the amber unverified-dot in ContactChannelCard. */
-  verified?: boolean;
-}
-
-/** Response for GET /owner/setup-status. */
-export interface OwnerSetupStatus {
-  entity_id: string | null;
-}
+export type ContactInfoEntry = components["schemas"]["ContactInfoEntry"];
 
 /** A contact group. */
-export interface Group {
-  id: string;
-  name: string;
-  description: string | null;
-  member_count: number;
-  labels: Label[];
-  created_at: string;
-  updated_at: string;
-}
-
-/** Response for creating a label. */
-export interface CreateLabelResponse {
-  id: string;
-  name: string;
-  color: string | null;
-}
-
-/** Response for assigning a label to a group. */
-export interface AssignGroupLabelResponse {
-  group_id: string;
-  label_id: string;
-  assigned: boolean;
-}
-
-/** Response for removing a label from a group. */
-export interface RemoveGroupLabelResponse {
-  group_id: string;
-  label_id: string;
-  removed: boolean;
-}
+export type Group = components["schemas"]["Group"];
 
 /** One member entity of a group, for the Circles lens roster (bu-5umz4). */
-export interface GroupMember {
-  id: string;
-  entity_id: string;
-  name: string;
-  entity_type: string;
-}
-
-/** Response for GET /groups/{group_id}/members. */
-export interface GroupMembersResponse {
-  group_id: string;
-  members: GroupMember[];
-}
-
-/** An upcoming date (birthday, anniversary, etc.). */
-export interface UpcomingDate {
-  contact_id: string;
-  contact_name: string;
-  date_type: string;
-  date: string;
-  days_until: number;
-}
-
-/** Paginated group list response. */
-export interface GroupListResponse {
-  groups: Group[];
-  total: number;
-}
+export type GroupMember = components["schemas"]["GroupMember"];
 
 /** Query parameters for the groups list endpoint. */
 export interface GroupParams {
@@ -2240,41 +685,10 @@ export interface GroupParams {
 // ---------------------------------------------------------------------------
 
 /** A health measurement record. */
-export interface Measurement {
-  id: string;
-  type: string;
-  value: Record<string, unknown>; // JSONB
-  measured_at: string;
-  notes: string | null;
-  created_at: string;
-}
+export type Measurement = components["schemas"]["Measurement"];
 
 /** A medication record. */
-export interface Medication {
-  id: string;
-  name: string;
-  dosage: string;
-  frequency: string;
-  schedule: unknown[];
-  active: boolean;
-  notes: string | null;
-  /** Owner-recorded count in the current supply; null means unknown. */
-  quantity: number | null;
-  /** When the current quantity was recorded (initial fill or refill). */
-  quantity_updated_at: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-/** A dose log entry for a medication. */
-export interface Dose {
-  id: string;
-  medication_id: string;
-  taken_at: string;
-  skipped: boolean;
-  notes: string | null;
-  created_at: string;
-}
+export type Medication = components["schemas"]["Medication"];
 
 /**
  * Aggregated dose-adherence stats for a medication
@@ -2285,107 +699,35 @@ export interface Dose {
  * authoritative adherence figure — never recompute it as a naive client-side
  * taken/total ratio.
  */
-export interface MedicationAdherence {
-  medication_id: string;
-  total_doses: number;
-  taken_doses: number;
-  skipped_doses: number;
-  adherence_rate: number | null;
-}
+export type MedicationAdherence = components["schemas"]["MedicationAdherenceResponse"];
 
 /**
  * Request body for logging a dose (POST /health/medications/{id}/doses).
  * `taken_at` defaults to now when omitted; set `skipped` to record a miss.
  */
-export interface DoseLogRequest {
-  taken_at?: string | null;
-  skipped?: boolean;
-  notes?: string | null;
-}
+export type DoseLogRequest = components["schemas"]["DoseLogRequest"];
 
 /** A health condition record. */
-export interface HealthCondition {
-  id: string;
-  name: string;
-  status: string;
-  diagnosed_at: string | null;
-  notes: string | null;
-  created_at: string;
-  updated_at: string;
-}
+export type HealthCondition = components["schemas"]["Condition"];
 
 /** A symptom record. */
-export interface Symptom {
-  id: string;
-  name: string;
-  severity: number;
-  condition_id: string | null;
-  occurred_at: string;
-  notes: string | null;
-  created_at: string;
-}
+export type Symptom = components["schemas"]["Symptom"];
 
 /** A meal record. */
-export interface Meal {
-  id: string;
-  type: string;
-  description: string;
-  nutrition: Record<string, unknown> | null;
-  eaten_at: string;
-  notes: string | null;
-  created_at: string;
-}
+export type Meal = components["schemas"]["Meal"];
 
 /** A health research note. */
-export interface HealthResearch {
-  id: string;
-  title: string;
-  content: string;
-  tags: string[];
-  source_url: string | null;
-  condition_id: string | null;
-  created_at: string;
-  updated_at: string;
-}
+export type HealthResearch = components["schemas"]["Research"];
 
 // ---------------------------------------------------------------------------
 // General / Switchboard
 // ---------------------------------------------------------------------------
 
 /** A collection in the General butler entity store. */
-export interface GeneralCollection {
-  id: string;
-  name: string;
-  description: string | null;
-  entity_count: number;
-  created_at: string;
-}
+export type GeneralCollection = components["schemas"]["Collection"];
 
 /** An entity in the General butler entity store. */
-export interface GeneralEntity {
-  id: string;
-  collection_id: string;
-  collection_name: string | null;
-  tags: string[];
-  data: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-}
-
-/** A bucket in the collection size distribution histogram. */
-export interface GeneralSizeHistogramBucket {
-  bracket: string; // e.g. "0", "1-10", "11-100", "101+"
-  count: number;
-}
-
-/** Aggregated statistics from GET /api/general/stats (bu-iuol4.31). */
-export interface GeneralStats {
-  total_collections: number;
-  total_entities: number;
-  last_modified_collection: string | null;
-  largest_collection_size: number;
-  size_histogram: GeneralSizeHistogramBucket[];
-}
+export type GeneralEntity = components["schemas"]["Entity"];
 
 // ---------------------------------------------------------------------------
 // Health — new endpoints (bu-iuol4.24)
@@ -2396,28 +738,19 @@ export interface GeneralStats {
  * GET /api/health/measurements/latest?types=X,Y.
  * `null` means no measurement of that type has been recorded yet.
  */
-export interface LatestMeasurementEntry {
-  measured_at: string;
-  value: Record<string, unknown>;
-  unit: string | null;
-  metadata: Record<string, unknown> | null;
-}
+export type LatestMeasurementEntry = components["schemas"]["LatestMeasurementEntry"];
 
 /**
  * Response shape for GET /api/health/measurements/latest?types=X,Y,Z.
  * Keys are measurement type slugs; values are the latest entry or null.
  */
 /** @public knip mis-traces this type's import (used by a live consumer); remove when bu-9jvhm fixes the tracing gap. */
-export interface MeasurementsLatestResponse {
-  measurements: Record<string, LatestMeasurementEntry | null>;
-}
+export type MeasurementsLatestResponse = components["schemas"]["LatestMeasurementsResponse"];
 
 /** A single stage within a sleep session. */
-export interface SleepStage {
-  stage: string; // "awake" | "light" | "deep" | "rem"
-  duration_minutes: number;
-  start_time: string | null;
-}
+type SleepStageWire = components["schemas"]["SleepStage"];
+/** Existing chart projection; the wire carries kind/minutes and no stage timestamp. */
+export type SleepStage = { stage: SleepStageWire["kind"]; duration_minutes: SleepStageWire["minutes"]; start_time: null };
 
 /**
  * Response shape for GET /api/health/measurements/sleep/latest.
@@ -2431,28 +764,10 @@ export interface SleepLatestResponse {
 }
 
 /** A single data source as returned by GET /api/health/measurements/sources. */
-export interface MeasurementSource {
-  name: string;
-  last_sample_at: string | null;
-  sample_count: number;
-}
+export type MeasurementSource = components["schemas"]["MeasurementSource"];
 
 /** A data-derived measurement predicate the Health API has observed. */
-export interface MeasurementTypeInfo {
-  type: string;
-  label: string;
-  sample_count: number;
-  latest_at: string;
-  unit: string | null;
-  value_shape: "scalar" | "compound" | "unknown";
-  chart_eligible: boolean;
-  kpi_eligible: boolean;
-}
-
-/** Response for GET /api/health/measurements/types. */
-export interface MeasurementTypesResponse {
-  types: MeasurementTypeInfo[];
-}
+export type MeasurementTypeInfo = components["schemas"]["MeasurementTypeInfo"];
 
 /** Query parameters for measurement endpoints. */
 export interface MeasurementParams {
@@ -2476,70 +791,20 @@ export interface MeasurementTrendParams {
   bucket?: "hourly" | "daily";
 }
 
-/**
- * A single time bucket in a measurement trend response.
- *
- * Backed by a `date_trunc('day' | 'hour', valid_at)` aggregation over the fact
- * store. `bucket_start` is an ISO-8601 timestamp (UTC) for the start of the bucket.
- */
-export interface MeasurementTrendBucket {
-  bucket_start: string;
-  value_mean: number;
-  value_min: number;
-  value_max: number;
-  sample_count: number;
-}
-
 /** Response shape for GET /health/measurements/trend. */
 
 /** @public knip mis-traces this type's inline import() usage (used by a live consumer); remove when bu-9jvhm fixes the tracing gap. */
-export interface MeasurementSourcesResponse {
-  sources: MeasurementSource[];
-}
+export type MeasurementSourcesResponse = components["schemas"]["MeasurementSourcesResponse"];
 
-export interface ExpectedSignal {
-  signal_key: string;
-  producer: string;
-  producer_endpoint_identity: string | null;
-  expected_cadence_seconds: number;
-  last_observed_at: string | null;
-  measurability: "present" | "absent" | "unmeasurable";
-  unmeasurable_reason: string | null;
-  evaluated_at: string;
-}
+export type ExpectedSignal = components["schemas"]["ExpectedSignalResponse"];
 
-export interface HealthBaseline {
-  metric_key: string;
-  state: "ready" | "insufficient_history" | "unmeasurable" | "stale" | "no_baseline";
-  band: { low: number; high: number } | null;
-  center: number | null;
-  unit: string | null;
-  n_observed: number;
-  n_expected: number;
-  coverage: number;
-  computed_at: string | null;
-  stale: boolean;
-  method_version: string | null;
-}
+export type HealthBaseline = components["schemas"]["BaselineResponse"];
 
-export interface HealthBaselinesResponse {
-  baselines: HealthBaseline[] | null;
-  available: boolean;
-  degraded_reason: string | null;
-}
+export type HealthBaselinesResponse = components["schemas"]["BaselinesResponse"];
 
-export interface ExpectedSignalsResponse {
-  signals: ExpectedSignal[] | null;
-  available: boolean;
-  degraded_reason: string | null;
-}
+export type ExpectedSignalsResponse = components["schemas"]["ExpectedSignalsResponse"];
 /** @public knip mis-traces this type's import (used by a live consumer); remove when bu-9jvhm fixes the tracing gap. */
-export interface MeasurementTrendResponse {
-  type: string;
-  window_days: number;
-  bucket: "hourly" | "daily";
-  buckets: MeasurementTrendBucket[];
-}
+export type MeasurementTrendResponse = components["schemas"]["TrendResponse"];
 
 /** The five measurement types the Health butler recognizes for direct CRUD. */
 export type MeasurementType =
@@ -2553,25 +818,14 @@ export type MeasurementType =
  * may be a scalar wrapped as `{ value: 165 }` or a compound dict such as
  * `{ systolic: 120, diastolic: 80 }`.
  */
-export interface MeasurementCreateRequest {
-  type: MeasurementType;
-  value: Record<string, unknown>;
-  /** Reading timestamp (ISO-8601). Defaults to now when omitted. */
-  measured_at?: string | null;
-  notes?: string | null;
-}
+export type MeasurementCreateRequest = components["schemas"]["MeasurementCreateRequest"];
 
 /**
  * Request body for updating a measurement (PUT /health/measurements/{id}).
  * All fields optional; only supplied fields are applied to the existing entry.
  * Changing `type` rewrites the underlying `measurement_{type}` predicate.
  */
-export interface MeasurementUpdateRequest {
-  type?: MeasurementType;
-  value?: Record<string, unknown>;
-  measured_at?: string | null;
-  notes?: string | null;
-}
+export type MeasurementUpdateRequest = components["schemas"]["MeasurementUpdateRequest"];
 
 /** Query parameters for medication endpoints. */
 export interface MedicationParams {
@@ -2581,50 +835,22 @@ export interface MedicationParams {
 }
 
 /** Request body for creating a medication (POST /health/medications). */
-export interface MedicationCreateRequest {
-  name: string;
-  dosage: string;
-  frequency: string;
-  schedule?: string[];
-  notes?: string | null;
-  /** Positive whole-number supply count; omit when the supply is unknown. */
-  quantity?: number;
-}
+export type MedicationCreateRequest = components["schemas"]["MedicationCreateRequest"];
 
 /**
  * Request body for updating a medication (PUT /health/medications/{id}).
  * All fields optional; only supplied fields are merged into the existing record.
  */
-export interface MedicationUpdateRequest {
-  name?: string;
-  dosage?: string;
-  frequency?: string;
-  schedule?: string[];
-  active?: boolean;
-  notes?: string | null;
-  /** Positive whole-number current supply/refill count; omit to preserve it. */
-  quantity?: number;
-}
+export type MedicationUpdateRequest = components["schemas"]["MedicationUpdateRequest"];
 
 /** Request body for creating a condition (POST /health/conditions). */
-export interface ConditionCreateRequest {
-  name: string;
-  status?: "active" | "managed" | "resolved";
-  /** Onset / diagnosis timestamp (ISO-8601). */
-  diagnosed_at?: string | null;
-  notes?: string | null;
-}
+export type ConditionCreateRequest = components["schemas"]["ConditionCreateRequest"];
 
 /**
  * Request body for updating a condition (PUT /health/conditions/{id}).
  * All fields optional; only supplied fields are merged into the existing record.
  */
-export interface ConditionUpdateRequest {
-  name?: string;
-  status?: "active" | "managed" | "resolved";
-  diagnosed_at?: string | null;
-  notes?: string | null;
-}
+export type ConditionUpdateRequest = components["schemas"]["ConditionUpdateRequest"];
 
 /** Query parameters for symptom endpoints. */
 export interface SymptomParams {
@@ -2641,26 +867,13 @@ export interface SymptomParams {
  * Symptoms are temporal facts: `occurred_at` is the occurrence time and
  * multiple entries coexist by design (no supersession). `severity` is 1-10.
  */
-export interface SymptomCreateRequest {
-  name: string;
-  severity: number;
-  condition_id?: string | null;
-  /** Occurrence timestamp (ISO-8601). Defaults to now when omitted. */
-  occurred_at?: string | null;
-  notes?: string | null;
-}
+export type SymptomCreateRequest = components["schemas"]["SymptomCreateRequest"];
 
 /**
  * Request body for updating a symptom (PUT /health/symptoms/{id}).
  * All fields optional; only supplied fields are applied to the existing entry.
  */
-export interface SymptomUpdateRequest {
-  name?: string;
-  severity?: number;
-  condition_id?: string | null;
-  occurred_at?: string | null;
-  notes?: string | null;
-}
+export type SymptomUpdateRequest = components["schemas"]["SymptomUpdateRequest"];
 
 /** Query parameters for meal endpoints. */
 export interface MealParams {
@@ -2671,14 +884,6 @@ export interface MealParams {
   limit?: number;
 }
 
-/** Nutrition payload shared by the meal create/update request bodies. */
-export interface MealNutrition {
-  calories?: number | null;
-  protein_g?: number | null;
-  carbs_g?: number | null;
-  fat_g?: number | null;
-}
-
 /**
  * Request body for logging a meal (POST /health/meals).
  *
@@ -2686,26 +891,13 @@ export interface MealNutrition {
  * coexist by design (no supersession). `type` is one of breakfast/lunch/
  * dinner/snack.
  */
-export interface MealCreateRequest {
-  type: string;
-  description: string;
-  /** Eating timestamp (ISO-8601). Required. */
-  eaten_at: string;
-  nutrition?: MealNutrition | null;
-  notes?: string | null;
-}
+export type MealCreateRequest = components["schemas"]["MealCreateRequest"];
 
 /**
  * Request body for updating a meal (PUT /health/meals/{id}).
  * All fields optional; only supplied fields are applied to the existing entry.
  */
-export interface MealUpdateRequest {
-  type?: string;
-  description?: string;
-  eaten_at?: string | null;
-  nutrition?: MealNutrition | null;
-  notes?: string | null;
-}
+export type MealUpdateRequest = components["schemas"]["MealUpdateRequest"];
 
 /** Query parameters for GET /health/nutrition/summary. */
 export interface NutritionSummaryParams {
@@ -2713,14 +905,6 @@ export interface NutritionSummaryParams {
   start: string;
   /** Window end (ISO-8601 date or datetime, inclusive). */
   end: string;
-}
-
-/** Daily average breakdown inside NutritionSummary. */
-export interface NutritionDailyAverage {
-  calories: number;
-  protein_g: number;
-  carbs_g: number;
-  fat_g: number;
 }
 
 /**
@@ -2731,15 +915,7 @@ export interface NutritionDailyAverage {
  * to compute daily averages (minimum 1).
  */
 /** @public knip mis-traces this type's import (used by a live consumer); remove when bu-9jvhm fixes the tracing gap. */
-export interface NutritionSummary {
-  total_calories: number;
-  total_protein_g: number;
-  total_carbs_g: number;
-  total_fat_g: number;
-  daily_avg: NutritionDailyAverage;
-  meal_count: number;
-  days: number;
-}
+export type NutritionSummary = components["schemas"]["NutritionSummaryResponse"];
 
 /** Query parameters for research endpoints. */
 export interface ResearchParams {
@@ -2756,37 +932,16 @@ export interface ResearchParams {
  * the same title supersedes its predecessor. `condition_id`, when supplied, must
  * reference an existing condition.
  */
-export interface ResearchCreateRequest {
-  title: string;
-  content: string;
-  tags?: string[];
-  source_url?: string | null;
-  condition_id?: string | null;
-}
+export type ResearchCreateRequest = components["schemas"]["ResearchCreateRequest"];
 
 /**
  * Request body for updating a research note (PUT /health/research/{id}).
  * All fields optional; only supplied fields are merged into the existing record.
  */
-export interface ResearchUpdateRequest {
-  title?: string;
-  content?: string;
-  tags?: string[];
-  source_url?: string | null;
-  condition_id?: string | null;
-}
+export type ResearchUpdateRequest = components["schemas"]["ResearchUpdateRequest"];
 
 /** A routing log entry from the Switchboard. */
-export interface RoutingEntry {
-  id: string;
-  source_butler: string;
-  target_butler: string;
-  tool_name: string;
-  success: boolean;
-  duration_ms: number | null;
-  error: string | null;
-  created_at: string;
-}
+export type RoutingEntry = components["schemas"]["RoutingEntry"];
 
 /**
  * A butler registry entry from the Switchboard.
@@ -2801,32 +956,10 @@ export interface RoutingEntry {
  * should read `derived_eligibility_state`; only the immediate-write quarantine
  * case (e.g. pause/resume state) should read `eligibility_state`.
  */
-export interface RegistryEntry {
-  name: string;
-  endpoint_url: string;
-  description: string | null;
-  modules: unknown[];
-  capabilities: string[];
-  last_seen_at: string | null;
-  eligibility_state: string;
-  derived_eligibility_state: "active" | "stale" | "quarantined";
-  liveness_ttl_seconds: number;
-  quarantined_at: string | null;
-  quarantine_reason: string | null;
-  route_contract_min: number;
-  route_contract_max: number;
-  eligibility_updated_at: string | null;
-  registered_at: string;
-  /** Agent type: "butler" (user-facing) or "staffer" (infrastructure). */
-  agent_type: "butler" | "staffer";
-}
+export type RegistryEntry = components["schemas"]["RegistryEntry"];
 
 /** Response from setting a butler's eligibility state. */
-export interface SetEligibilityResponse {
-  name: string;
-  previous_state: string;
-  new_state: string;
-}
+export type SetEligibilityResponse = components["schemas"]["SetEligibilityResponse"];
 
 /** Query parameters for routing log. */
 export interface RoutingLogParams {
@@ -2843,167 +976,19 @@ export interface RoutingLogParams {
 // ---------------------------------------------------------------------------
 
 /** An episode from the Eden memory tier. */
-export interface Episode {
-  id: string;
-  butler: string;
-  session_id: string | null;
-  content: string;
-  importance: number;
-  reference_count: number;
-  consolidated: boolean;
-  /**
-   * Consolidation lifecycle status: pending | consolidated | failed |
-   * dead_letter. The daybook glyph and status filter read this (the legacy
-   * `consolidated` bool is retained for back-compat). Backend always returns it
-   * (defaults to "pending").
-   */
-  consolidation_status: string;
-  created_at: string;
-  last_referenced_at: string | null;
-  expires_at: string | null;
-  metadata: Record<string, unknown>;
-  /**
-   * Recovery-safe lifecycle dossier (bu-kqnum.14.3). The error and reason strings are the
-   * sanitized category summaries the consolidator stores; worker lease internals are never
-   * exposed. The API always returns all four.
-   */
-  consolidation_attempts: number;
-  last_consolidation_error: string | null;
-  dead_letter_reason: string | null;
-  next_consolidation_retry_at: string | null;
-}
-
-/** Availability of a durable reference to an episode source. */
-export type EpisodeSourceStatus = "available" | "expired" | "unresolved";
+export type Episode = components["schemas"]["Episode"];
 
 /** A consolidated fact from the mid-term memory tier. */
-export interface Fact {
-  id: string;
-  subject: string;
-  predicate: string;
-  content: string;
-  importance: number;
-  confidence: number;
-  decay_rate: number;
-  permanence: string;
-  source_butler: string | null;
-  source_episode_id: string | null;
-  /** Whether a source episode is still available, expired, or cannot be resolved. */
-  source_episode_status?: EpisodeSourceStatus | null;
-  session_id: string | null;
-  supersedes_id: string | null;
-  /** Reverse supersession lookup (bu-awo8k.8): id of the fact that supersedes this one. */
-  superseded_by?: string | null;
-  content_authority?: "owner" | "owner_device" | "third_party" | "system" | "mixed" | null;
-  authority_entity_id?: string | null;
-  authority_entity_name?: string | null;
-  entity_id: string | null;
-  entity_name: string | null;
-  object_entity_id: string | null;
-  object_entity_name: string | null;
-  validity: string;
-  scope: string;
-  reference_count: number;
-  created_at: string;
-  last_referenced_at: string | null;
-  last_confirmed_at: string | null;
-  tags: string[];
-  metadata: Record<string, unknown>;
-}
+export type Fact = components["schemas"]["Fact"];
 
 /** A behavioral rule from the long-term memory tier. */
-export interface MemoryRule {
-  id: string;
-  content: string;
-  scope: string;
-  maturity: string;
-  confidence: number;
-  decay_rate: number;
-  permanence: string;
-  effectiveness_score: number;
-  applied_count: number;
-  success_count: number;
-  harmful_count: number;
-  source_episode_id: string | null;
-  /** Whether a source episode is still available, expired, or cannot be resolved. */
-  source_episode_status?: EpisodeSourceStatus | null;
-  source_butler: string | null;
-  created_at: string;
-  last_applied_at: string | null;
-  last_evaluated_at: string | null;
-  tags: string[];
-  metadata: Record<string, unknown>;
-  /** Set when the rule has been retired (stops firing, kept for reference). */
-  retired_at: string | null;
-  /** Server-derived authorship of the content this rule came from (null on legacy rows). */
-  content_authority?: "owner" | "owner_device" | "third_party" | "system" | "mixed" | null;
-  authority_entity_id?: string | null;
-  authority_entity_name?: string | null;
-  endorsed_by?: string | null;
-  endorsed_by_name?: string | null;
-  /** Set when the owner endorsed a held rule. */
-  endorsed_at?: string | null;
-  /** True while the rule is invisible to sessions, awaiting owner endorsement. */
-  held?: boolean;
-}
+export type MemoryRule = components["schemas"]["Rule"];
 
 /** Aggregated statistics across all memory tiers. */
-export interface MemoryStats {
-  total_episodes: number;
-  unconsolidated_episodes: number;
-  total_facts: number;
-  active_facts: number;
-  fading_facts: number;
-  total_rules: number;
-  candidate_rules: number;
-  established_rules: number;
-  proven_rules: number;
-  anti_pattern_rules: number;
-  /** Retired rules (bu-6t8ix.3), excluded from the maturity buckets above. */
-  retired_rules: number;
-  /**
-   * Consolidation lifecycle (memory redesign, additive — null/0 when unknown).
-   * Mirrors src/butlers/api/models/memory.py::MemoryStats.
-   */
-  last_consolidation_at: string | null;
-  last_consolidation_facts_produced: number | null;
-  dead_letter_episodes: number;
-  /** Null when expired-retention coverage is incomplete. */
-  expired_retained_episodes: number | null;
-  /** Null when expired-retention coverage is incomplete. */
-  retention_eligible_episodes: number | null;
-  /** Null for incomplete coverage or a zero eligible denominator. */
-  expired_retained_ratio: number | null;
-}
-
-/** Read-only expired-retention observation for one completed memory source. */
-export interface RetentionSourceObservation {
-  source_butler: string;
-  source_schema: string | null;
-  expired_retained_episodes: number;
-  retention_eligible_episodes: number;
-  expired_retained_ratio: number | null;
-}
-
-/**
- * Read-only evidence for one relevant memory pool in the additive graph-health
- * compatibility view. This is coverage of the consolidation-aware cleanup-lag
- * population, not a provenance-link metric or graph repair verdict.
- */
-export interface GraphHealthPoolCoverage {
-  source_butler: string;
-  source_schema: string | null;
-  coverage: "complete" | "unknown";
-  reapable_expired_episodes: number | null;
-  retention_eligible_episodes: number | null;
-  reapable_expired_ratio: number | null;
-}
+export type MemoryStats = components["schemas"]["MemoryStats"];
 
 /** Fleet coverage state for the additive graph-health read model. */
-export interface GraphHealthCoverage {
-  coverage: "complete" | "incomplete" | "unknown";
-  pools: GraphHealthPoolCoverage[];
-}
+export type GraphHealthCoverage = components["schemas"]["GraphHealthCoverage"];
 
 /**
  * Pagination metadata for the memory list routes (episodes, facts, rules,
@@ -3031,102 +1016,22 @@ export interface MemoryPaginatedResponse<T> {
  * Conventions). Absent or empty means every queried pool answered; a non-empty
  * list means the aggregate totals undercount and must NOT read as an all-clear.
  */
-export interface MemoryStatsMeta extends ApiMeta {
-  /** Names of memory pools whose stats query failed and were dropped from the totals. */
-  pools_failed?: string[];
-  /**
-   * Catalog-drift gauge (bu-5ud8p.4): live / stale / drifted discovery-catalog
-   * row counts summed across butler pools. Present on any successful stats read.
-   * `catalog_drifted` is the leading indicator: non-zero means the shared
-   * catalog is serving memories the owning butler has since disowned, and should
-   * trend to zero as the backfill reconciliation runs.
-   */
-  catalog_live?: number;
-  catalog_stale?: number;
-  catalog_drifted?: number;
-  /**
-   * Names of butler pools whose catalog-drift query failed and were dropped from
-   * the catalog counts (memory.py `catalog_tracker`). Present only on failure; a
-   * non-empty list means the catalog counts undercount and must NOT read as a
-   * clean gauge.
-   */
-  catalog_pools_failed?: string[];
-  /** Fleet verdict for the complete-or-unknown expired-retention observation. */
-  retention_status?: "healthy" | "degraded" | "unknown";
-  /** Completed sources only; rows remain useful lower-bound diagnostics on failure. */
-  retention_sources?: RetentionSourceObservation[];
-  /** Sources whose retention query failed, distinct from ordinary stats failures. */
-  retention_pools_failed?: string[];
-  /**
-   * Per-memory-pool graph-health coverage. Absent on an older server; when
-   * present, complete/unknown evidence must not be read as graph health.
-   */
-  graph_health?: GraphHealthCoverage;
-}
-
-/** GET /api/memory/stats response: aggregate totals + degraded-pool meta. */
-export interface MemoryStatsResponse {
-  data: MemoryStats;
-  meta: MemoryStatsMeta;
-}
-
-/** A recent memory activity event. */
-export interface MemoryActivity {
-  id: string;
-  type: string;
-  summary: string;
-  butler: string | null;
-  created_at: string;
-}
+export type MemoryStatsMeta = components["schemas"]["MemoryStatsMeta"];
 
 /** A memory retention policy row. */
-export interface MemoryRetentionPolicy {
-  kind: string;
-  ttl_days: number | null;
-  max_rows: number | null;
-  updated_at: string;
-  updated_by: string | null;
-}
+export type MemoryRetentionPolicy = components["schemas"]["MemoryRetentionPolicy"];
 
 /** One entry in a bulk PUT retention policy request. */
-export interface UpdateRetentionPolicyEntry {
-  kind: string;
-  ttl_days: number | null;
-  max_rows: number | null;
-}
+export type UpdateRetentionPolicyEntry = components["schemas"]["UpdateRetentionPolicyEntry"];
 
 /** Bulk update request body for PUT /api/memory/retention-policies. */
-export interface UpdateRetentionPoliciesRequest {
-  policies: UpdateRetentionPolicyEntry[];
-}
+export type UpdateRetentionPoliciesRequest = components["schemas"]["UpdateRetentionPoliciesRequest"];
 
 /** A compaction log entry. */
-export interface CompactionLogEntry {
-  id: number;
-  ts: string;
-  kind: string;
-  rows_removed: number;
-  bytes_freed: number | null;
-}
+export type CompactionLogEntry = components["schemas"]["CompactionLogEntry"];
 
 /** A single memory inspect search result. */
-export interface MemoryInspectResult {
-  id: string;
-  kind: string;
-  content: string;
-  butler: string | null;
-  created_at: string;
-  metadata: Record<string, unknown>;
-  /**
-   * Full register-shaped row for the matching kind. Exactly one of
-   * fact/rule/episode is populated server-side (matching `kind`), so search
-   * results render belief/maturity/importance identical to browse mode.
-   * Mirrors src/butlers/api/models/memory.py::MemoryInspectResult.
-   */
-  fact?: Fact | null;
-  rule?: MemoryRule | null;
-  episode?: Episode | null;
-}
+export type MemoryInspectResult = components["schemas"]["MemoryInspectResult"];
 
 /** Query parameters for GET /api/memory/inspect. */
 export interface MemoryInspectParams {
@@ -3145,7 +1050,7 @@ export interface EpisodeParams {
    * Maps to the GET /memory/episodes `status` enum filter; takes precedence
    * over the legacy `consolidated` bool. Drives the daybook filter pills.
    */
-  status?: string;
+  status?: "pending" | "failed" | "consolidated" | "dead_letter";
   since?: string;
   until?: string;
   offset?: number;
@@ -3192,87 +1097,19 @@ export interface RuleParams {
   limit?: number;
 }
 
-// ---------------------------------------------------------------------------
-// Entities (Knowledge Graph)
-// ---------------------------------------------------------------------------
-
-/** Lightweight entity representation for list views. */
-export interface EntitySummary {
-  id: string;
-  canonical_name: string;
-  entity_type: string;
-  aliases: string[];
-  roles: string[];
-  fact_count: number;
-  unidentified: boolean;
-  source_butler: string | null;
-  source_scope: string | null;
-  archived: boolean;
-  created_at: string;
-  updated_at: string;
-  dunbar_tier: number | null;
-  dunbar_score: number | null;
-}
-
 /** A single entity_info row (credentials, identifiers, etc.). */
-export interface EntityInfoEntry {
-  id: string;
-  type: string;
-  value: string | null; // null when secured=true and not revealed
-  label: string | null;
-  is_primary: boolean;
-  secured: boolean;
-}
+export type EntityInfoEntry = components["schemas"]["butlers__api__models__memory__EntityInfoEntry"];
 
 /** Request body for creating an entity_info entry. */
-export interface CreateEntityInfoRequest {
-  type: string;
-  value: string;
-  label?: string | null;
-  is_primary?: boolean;
-  secured?: boolean;
-}
-
-/** Response from creating an entity_info entry. */
-export interface CreateEntityInfoResponse {
-  id: string;
-  entity_id: string;
-  type: string;
-  value: string;
-  label: string | null;
-  is_primary: boolean;
-  secured: boolean;
-}
+export type CreateEntityInfoRequest = components["schemas"]["CreateEntityInfoRequest"];
 
 /** Request body for updating entity core fields. */
-export interface UpdateEntityRequest {
-  canonical_name?: string;
-  entity_type?: string;
-  aliases?: string[];
-  metadata?: Record<string, unknown>;
-  roles?: string[];
-}
+export type UpdateEntityRequest = components["schemas"]["UpdateEntityRequest"];
 
 /** Full entity detail including recent facts and linked contact info. */
-export interface EntityDetail extends EntitySummary {
-  metadata: Record<string, unknown>;
-  recent_facts: Fact[];
-  recent_facts_total: number;
-  recent_facts_offset: number;
-  recent_facts_limit: number;
-  recent_facts_has_more: boolean;
-  entity_info: EntityInfoEntry[];
-  rebind_receipts?: EntityRebindReceipt[];
-}
+export type EntityDetail = components["schemas"]["butlers__api__models__memory__EntityDetail"];
 
-export interface EntityRebindReceipt {
-  rebind_id: string;
-  target_schema: string;
-  references_rebound: number;
-  status: "active" | "failed" | "pending" | "skipped_no_table";
-  error_class: string | null;
-  completed_at: string | null;
-}
+export type EntityRebindReceipt = components["schemas"]["EntityRebindReceipt"];
 
 /** Query parameters for entity detail endpoints. */
 export interface EntityDetailParams {
@@ -3290,373 +1127,40 @@ export interface EntityParams {
   limit?: number;
 }
 
-// ---------------------------------------------------------------------------
-// Approvals
-// ---------------------------------------------------------------------------
+export type ApprovalDeliveryTruth = components["schemas"]["ApprovalDeliveryTruth"];
 
-/** Compact contact object linked from an approval action. */
-export interface TargetContact {
-  id: string;
-  name: string;
-  roles: string[];
-}
-
-/**
- * A public.entities UUID found in a pending action's tool_args, resolved to its
- * canonical name. Lets the dossier name who/what a fact references (e.g. the
- * subject/object of relationship_assert_fact) instead of showing bare UUIDs.
- */
-export interface EntityRef {
-  id: string;
-  name: string;
-  entity_type?: string | null;
-  roles: string[];
-}
-
-/** Typed reference supplied with an approval decision dossier. */
-export interface ApprovalEvidence {
-  type: "fact" | "entity" | "url" | "text";
-  ref: string;
-  note: string;
-}
-
-export type ApprovalBlastRadius = "none" | "self" | "contact" | "external";
-export type ApprovalReversibility =
-  "reversible" | "compensable" | "irreversible";
-export type ApprovalPushOutcome =
-  "delivered" | "deferred" | "collapsed" | "duplicate" | "failed";
-
-export type ApprovalDeliveryState =
-  | "ready"
-  | "claimed"
-  | "handoff_started"
-  | "retry_wait"
-  | "delivered"
-  | "collapsed"
-  | "cancelled"
-  | "superseded"
-  | "ambiguous";
-
-export interface ApprovalDeliveryCohort {
-  eligible: boolean;
-  state: ApprovalDeliveryState | null;
-  generation: number | null;
-  attempt_count: number;
-  next_eligible_at: string | null;
-  stuck: boolean;
-  ambiguous: boolean;
-}
-
-export interface ApprovalDeliveryTruth {
-  source: "durable" | "legacy" | "unknown";
-  state: ApprovalDeliveryState | null;
-  mode: "single" | "burst_digest" | "collapsed" | null;
-  generation: number | null;
-  last_reason_code: string | null;
-  attempt_count: number;
-  next_eligible_at: string | null;
-  stuck: boolean;
-  ambiguous: boolean;
-  legacy_outcome: ApprovalPushOutcome | null;
-  cohort: ApprovalDeliveryCohort | null;
-}
-
-export interface ApprovalAction {
-  id: string;
-  butler: string;
-  tool_name: string;
-  tool_args: Record<string, unknown>;
-  status: string;
-  requested_at: string;
-  agent_summary?: string | null;
-  session_id?: string | null;
-  expires_at?: string | null;
-  /** Exact server-stored classification; absent or null means origin unknown. */
-  origin?: "prepared" | null;
-  decided_by?: string | null;
-  decided_at?: string | null;
-  execution_result?: Record<string, unknown> | null;
-  approval_rule_id?: string | null;
-  target_contact?: TargetContact | null;
-  why?: string | null;
-  evidence?: ApprovalEvidence[];
-  blast_radius?: ApprovalBlastRadius | null;
-  reversibility?: ApprovalReversibility | null;
-  /**
-   * True when the approved action was actually dispatched and executed
-   * (status "executed"). False when it was approved but not yet run (e.g. no
-   * reachable butler daemon) — such actions stay in "approved" state and can be
-   * retried via POST /api/approvals/{id}/retry. Never treat a 200 approve
-   * response as success without checking this.
-   */
-  dispatched?: boolean;
-  /**
-   * Terminal outcome of the owner-facing approval push for this action, or
-   * null if no push was ever attempted.
-   */
-  push_outcome?: ApprovalPushOutcome | null;
-  /**
-   * True when this action is still pending AND the owner was never actually
-   * notified (push_outcome is null or "failed"). Never fabricate calm: a
-   * true value here means this row must not render as an ordinary pending
-   * action (bu-mda0r, bu-p5sg6).
-   */
-  push_failed?: boolean;
-  delivery?: ApprovalDeliveryTruth | null;
-}
-
-/**
- * Metadata for GET /api/approvals/actions. A non-empty degraded-source list
- * means a butler pool did not answer, so the action preview must not read as a
- * complete zero or all-clear.
- */
-export interface ApprovalActionsMeta extends PaginationMeta {
-  sources_degraded?: string[];
-}
-
-/** GET /api/approvals/actions response: action preview + degraded-pool meta. */
-export interface ApprovalActionsResponse {
-  data: ApprovalAction[];
-  meta: ApprovalActionsMeta;
-}
+export type ApprovalAction = components["schemas"]["ApprovalAction"];
 
 /** Compact summary for GET /api/approvals flat-list endpoint. */
-export interface ApprovalSummary {
-  id: string;
-  butler: string;
-  tool_name: string;
-  status: string;
-  created_at: string;
-  expires_at?: string | null;
-  /** Exact server-stored classification; absent or null means origin unknown. */
-  origin?: "prepared" | null;
-  why?: string | null;
-  /** Durable execution evidence used to distinguish eligible stalled rows. */
-  execution_result?: Record<string, unknown> | null;
-  blast_radius?: ApprovalBlastRadius | null;
-  reversibility?: ApprovalReversibility | null;
-  /**
-   * Terminal outcome of the owner-facing approval push for this action, or
-   * null if no push was ever attempted.
-   */
-  push_outcome?: ApprovalPushOutcome | null;
-  /**
-   * True when this action is still pending AND the owner was never actually
-   * notified. Never fabricate calm (bu-mda0r, bu-p5sg6).
-   */
-  push_failed?: boolean;
-  delivery?: ApprovalDeliveryTruth | null;
-}
-
-/** Replayable dashboard routing failure shown on the Approvals/Command surface. */
-export interface UnroutableAttentionItem {
-  id: string;
-  question: string;
-  failure_reason: string;
-  created_at: string;
-}
-
-export interface UnroutableRetryResult {
-  dead_letter_id: string;
-  replayed_request_id: string;
-  status: "queued";
-}
-
-/**
- * Metadata for the approvals list endpoints (GET /api/approvals and
- * /api/approvals/history). Extends the base bag with the degraded-envelope
- * flag the backend emits when the per-butler pool fan-out drops one or more
- * pools (approvals.py::list_approvals_flat / list_approvals_history ->
- * `ApiMeta(sources_degraded=...)` via `DegradedSources`). Mirrors the
- * fleet-wide `meta.sources_degraded` convention (see CLAUDE.md API
- * Conventions). Absent or empty means every queried pool answered; a
- * non-empty list means the queue/history undercounts and must NOT read as an
- * all-clear.
- */
-export interface ApprovalsListMeta extends ApiMeta {
-  /** Names of butler pools whose approvals query failed and were dropped from the list. */
-  sources_degraded?: string[];
-}
-
-/** GET /api/approvals and /history response: summaries + degraded-pool meta. */
-export interface ApprovalsListResponse {
-  data: ApprovalSummary[];
-  meta: ApprovalsListMeta;
-}
-
-/**
- * Metadata unique to the flat GET /api/approvals endpoint. Its stalled count
- * is always present, including when no approval pool is eligible.
- */
-export interface ApprovalsFlatListMeta extends ApprovalsListMeta {
-  /** Whole-population approved actions with no execution result, independent of page state/limit. */
-  stalled_count: number;
-}
-
-/** GET /api/approvals response: summaries plus its required stalled radar. */
-export interface ApprovalsFlatListResponse {
-  data: ApprovalSummary[];
-  meta: ApprovalsFlatListMeta;
-}
+export type ApprovalSummary = components["schemas"]["ApprovalSummary"];
 
 /** Full dossier for GET /api/approvals/{id}. */
-export interface DisplayedApprovalCall {
-  tool_name: string;
-  args_digest: string;
-}
+export type DisplayedApprovalCall = components["schemas"]["DisplayedApprovalCall"];
 
-export interface ApprovalCallPreview {
-  title: string;
-  facts: { label: string; value: string }[];
-  displayed_call: DisplayedApprovalCall;
-}
+export type ApprovalCallPreview = components["schemas"]["ApprovalCallPreview"];
 
-export interface ApprovalDetail {
-  call_preview?: ApprovalCallPreview | null;
-  id: string;
-  title: string;
-  butler: string;
-  created_at: string;
-  expires_at?: string | null;
-  /** Exact server-stored classification; absent or null means origin unknown. */
-  origin?: "prepared" | null;
-  why?: string | null;
-  evidence?: ApprovalEvidence[];
-  blast_radius?: ApprovalBlastRadius | null;
-  reversibility?: ApprovalReversibility | null;
-  proposed_action: {
-    tool_name: string;
-    tool_args: Record<string, unknown>;
-    agent_summary?: string | null;
-  };
-  status: string;
-  decided_by?: string | null;
-  decided_at?: string | null;
-  /** Recorded by the latest immutable action_rejected event, when available. */
-  denial_reason?: string | null;
-  /** Already redacted by the approval-detail API before dashboard presentation. */
-  execution_result?: Record<string, unknown> | null;
-  target_contact?: TargetContact | null;
-  /**
-   * Originating session UUID that produced this action, when known. Lets the
-   * dossier link back to the session/trace that proposed the action.
-   */
-  session_id?: string | null;
-  /**
-   * Entity UUIDs from proposed_action.tool_args resolved to canonical names.
-   * Empty when the action references no known entities or resolution failed.
-   */
-  referenced_entities?: EntityRef[];
-  /**
-   * Terminal outcome of the owner-facing approval push for this action, or
-   * null if no push was ever attempted.
-   */
-  push_outcome?: ApprovalPushOutcome | null;
-  /**
-   * True when this action is still pending AND the owner was never actually
-   * notified. Never fabricate calm (bu-mda0r, bu-p5sg6).
-   */
-  push_failed?: boolean;
-  delivery?: ApprovalDeliveryTruth | null;
-}
+export type ApprovalDetail = components["schemas"]["ApprovalDetail"];
 
-export interface ApprovalAbandonRequest {
-  reason: string;
-}
+export type ApprovalAbandonRequest = components["schemas"]["ApprovalAbandonRequest"];
 
 /** Quiet-hours policy singleton. */
-export interface ApprovalsPolicy {
-  quiet_start_hour?: number | null;
-  quiet_end_hour?: number | null;
-  timezone: string;
-}
+export type ApprovalsPolicy = components["schemas"]["ApprovalsPolicy"];
 
-export interface ApprovalApproveRequest {
-  displayed_call?: DisplayedApprovalCall | null;
-  edits?: Record<string, unknown> | null;
-}
+export type ApprovalApproveRequest = components["schemas"]["ApprovalApproveRequest"];
 
-export interface ApprovalDenyRequest {
-  reason?: string | null;
-}
+export type ApprovalDenyRequest = components["schemas"]["ApprovalDenyRequest"];
 
-export interface ApprovalDeferRequest {
-  hours: number;
-}
+export type ApprovalDeferRequest = components["schemas"]["ApprovalDeferRequest"];
 
-export interface ApprovalRule {
-  id: string;
-  tool_name: string;
-  arg_constraints: Record<string, unknown>;
-  description: string;
-  created_from?: string | null;
-  created_at: string;
-  expires_at?: string | null;
-  max_uses?: number | null;
-  use_count: number;
-  active: boolean;
-}
+export type ApprovalRule = components["schemas"]["ApprovalRule"];
 
 /** A configured approval gate, including the rules that narrow it. */
-export interface ApprovalGatedTool {
-  butler: string;
-  tool_name: string;
-  risk_tier: "low" | "medium" | "high" | "critical";
-  expiry_hours: number;
-  active_rules: ApprovalRule[];
-}
+export type ApprovalGatedTool = components["schemas"]["ApprovalGatedTool"];
 
-export interface RuleConstraintSuggestion {
-  action_id: string;
-  tool_name: string;
-  tool_args: Record<string, unknown>;
-  suggested_constraints: Record<string, unknown>;
-}
-
-export interface ApprovalMetrics {
-  total_pending: number;
-  total_approved_today: number;
-  total_rejected_today: number;
-  total_auto_approved_today: number;
-  total_expired_today: number;
-  avg_decision_latency_seconds?: number | null;
-  auto_approval_rate: number;
-  rejection_rate: number;
-  failure_count_today: number;
-  active_rules_count: number;
-  /**
-   * Whether APPROVAL_CALLBACK_SECRET resolves via the shared credential
-   * store. False means every approval push is structurally disabled (each
-   * attempt will resolve "failed") until it is provisioned. Null when this
-   * could not be determined (e.g. no approvals pool available) -- never
-   * treat null as a false all-clear.
-  */
-  callback_secret_configured?: boolean | null;
-  delivery_due_count?: number;
-  delivery_retry_wait_count?: number;
-  delivery_expired_lease_count?: number;
-  delivery_ambiguous_count?: number;
-  delivery_stuck_count?: number;
-  delivery_oldest_due_age_seconds?: number | null;
-  delivery_by_state?: Record<string, number>;
-  delivery_by_reason?: Record<string, number>;
-  delivery_sources_complete?: boolean;
-}
-
-/** Availability metadata for the independently aggregated approvals metric families. */
-export interface ApprovalMetricsMeta extends ApiMeta {
-  /** Configured sources whose pending-actions aggregate could not be read. */
-  pending_actions_sources_degraded?: string[];
-  /** Configured sources whose active-rules aggregate could not be read. */
-  approval_rules_sources_degraded?: string[];
-  /** De-duplicated union of every degraded approvals-metrics source. */
-  sources_degraded?: string[];
-}
+export type ApprovalMetrics = components["schemas"]["ApprovalMetrics"];
 
 /** GET /api/approvals/metrics response with per-family availability. */
-export interface ApprovalMetricsResponse extends ApiResponse<ApprovalMetrics> {
-  meta: ApprovalMetricsMeta;
-}
+export type ApprovalMetricsResponse = components["schemas"]["ApiResponseWithMeta_ApprovalMetrics_ApprovalMetricsMeta_"];
 
 export interface ApprovalActionParams {
   tool_name?: string;
@@ -3674,47 +1178,11 @@ export interface ApprovalRuleParams {
   limit?: number;
 }
 
-export interface ApprovalRuleCreateRequest {
-  /** Butler whose schema owns the rule (required by POST /approvals/rules). */
-  butler: string;
-  tool_name: string;
-  arg_constraints: Record<string, unknown>;
-  description: string;
-  expires_at?: string | null;
-  max_uses?: number | null;
-}
+export type ApprovalRuleCreateRequest = components["schemas"]["ApprovalRuleCreateRequest"];
 
-export interface ApprovalRuleFromActionRequest {
-  action_id: string;
-  constraint_overrides?: Record<string, unknown> | null;
-}
+export type ApprovalRuleFromActionRequest = components["schemas"]["ApprovalRuleFromActionRequest"];
 
-export interface AutonomySuggestionVelocity {
-  avg_seconds?: number | null;
-  sample_count: number;
-  fast_approval: boolean;
-  updated_at?: string | null;
-}
-
-export interface AutonomySuggestion {
-  id: string;
-  action_id?: string | null;
-  suggestion_type: "promotion" | "demotion";
-  pattern_fingerprint: string;
-  fingerprint_version: number;
-  tool_name: string;
-  representative_args: Record<string, unknown>;
-  status: "pending" | "confirmed" | "dismissed" | "superseded";
-  approval_count_at_creation: number;
-  scope_description: string;
-  created_at: string;
-  decided_at?: string | null;
-  decided_by?: string | null;
-  resulting_rule_id?: string | null;
-  cooldown_until?: string | null;
-  dismissal_reason?: string | null;
-  velocity?: AutonomySuggestionVelocity | null;
-}
+export type AutonomySuggestion = components["schemas"]["AutonomySuggestion"];
 
 export interface AutonomySuggestionParams {
   status?: string;
@@ -3723,142 +1191,22 @@ export interface AutonomySuggestionParams {
   offset?: number;
 }
 
-export interface AutonomySuggestionDismissRequest {
-  reason?: string | null;
-  cooldown_days?: number;
-}
+export type AutonomySuggestionDismissRequest = components["schemas"]["AutonomySuggestionDismissRequest"];
 
-// ---------------------------------------------------------------------------
-// OAuth / Secrets management types
-// ---------------------------------------------------------------------------
+export type GoogleAccount = components["schemas"]["GoogleAccountResponse"];
 
-export type OAuthCredentialState =
-  | "connected"
-  | "not_configured"
-  | "expired"
-  | "missing_scope"
-  | "redirect_uri_mismatch"
-  | "unapproved_tester"
-  | "unknown_error";
+export type GoogleCredentialStatusResponse = components["schemas"]["GoogleCredentialStatusResponse"];
 
-export interface GoogleAccount {
-  id: string;
-  email: string | null;
-  display_name: string | null;
-  is_primary: boolean;
-  status: "active" | "revoked" | "expired";
-  granted_scopes: string[];
-  connected_at: string;
-  last_token_refresh_at: string | null;
-}
+export type UpsertAppCredentialsRequest = components["schemas"]["UpsertAppCredentialsRequest"];
 
-export interface GoogleAccountStatus {
-  has_refresh_token: boolean;
-  has_app_credentials: boolean;
-  granted_scopes: string[];
-  missing_scopes: string[];
-  token_valid: boolean;
-  last_token_refresh_at: string | null;
-}
-
-export interface SetPrimaryAccountResponse {
-  success: boolean;
-  account: GoogleAccount;
-}
-
-export interface DisconnectAccountResponse {
-  success: boolean;
-  message: string;
-  auto_promoted_id: string | null;
-}
-
-export interface GoogleCredentialStatusResponse {
-  client_id_configured: boolean;
-  client_secret_configured: boolean;
-  refresh_token_present: boolean;
-  scope: string | null;
-  oauth_health: OAuthCredentialState;
-  oauth_health_remediation: string | null;
-  oauth_health_detail: string | null;
-}
-
-export interface UpsertAppCredentialsRequest {
-  client_id: string;
-  client_secret: string;
-}
-
-export interface UpsertAppCredentialsResponse {
-  success: boolean;
-  message: string;
-}
-
-// ---------------------------------------------------------------------------
-// CLI auth (device-code flow) types
-// ---------------------------------------------------------------------------
-
-export type CLIAuthSessionState =
-  "starting" | "awaiting_auth" | "success" | "failed" | "expired";
-
-export type CLIAuthHealthState =
-  "authenticated" | "not_authenticated" | "unavailable" | "probe_failed";
-
-export interface CLIAuthProvider {
-  name: string;
-  display_name: string;
-  runtime: string;
-  auth_mode: "device_code" | "api_key";
-  authenticated: boolean;
-  health: CLIAuthHealthState | null;
-  health_detail: string | null;
-  token_path: string | null;
-  env_var: string | null;
-}
-
-export interface CLIAuthStartResponse {
-  session_id: string;
-  state: CLIAuthSessionState;
-  auth_url: string | null;
-  device_code: string | null;
-  message: string | null;
-}
-
-export interface CLIAuthSessionResponse {
-  session_id: string;
-  state: CLIAuthSessionState;
-  auth_url: string | null;
-  device_code: string | null;
-  message: string | null;
-  provider: string | null;
-}
-
-export interface CLIAuthApiKeyResponse {
-  provider: string;
-  stored: boolean;
-  message: string | null;
-}
-
-export interface CLIAuthTestResponse {
-  provider: string;
-  success: boolean;
-  detail: string | null;
-}
+export type CLIAuthSessionResponse = components["schemas"]["CLIAuthSessionResponse"];
 
 // ---------------------------------------------------------------------------
 // Generic secrets management types
 // ---------------------------------------------------------------------------
 
 /** Metadata for a single secret. Values are never exposed in responses. */
-export interface SecretEntry {
-  key: string;
-  category: string;
-  description: string | null;
-  is_sensitive: boolean;
-  is_set: boolean;
-  created_at: string;
-  updated_at: string;
-  expires_at: string | null;
-  source: string;
-}
+export type SecretEntry = components["schemas"]["SecretEntry"];
 
 /** Known secret categories for grouping. */
 export type SecretCategory =
@@ -3879,11 +1227,7 @@ export interface SecretTemplate {
 export type IngestionPeriod = "24h" | "7d" | "30d";
 
 /** Today's ingestion summary attached to a connector list entry. */
-export interface ConnectorDaySummary {
-  messages_ingested: number;
-  messages_failed: number;
-  uptime_pct: number | null;
-}
+export type ConnectorDaySummary = components["schemas"]["ConnectorSummaryToday"] & { uptime_pct?: number | null };
 
 /**
  * Per-device liveness entry for a multi-device connector_type (e.g. OwnTracks,
@@ -3891,12 +1235,7 @@ export interface ConnectorDaySummary {
  * connector_registry only tracks a single heartbeat identity for the whole
  * connector). Sourced from public.ingestion_events.source_sender_identity.
  */
-export interface ConnectorDeviceLiveness {
-  sender_identity: string;
-  last_seen_at: string;
-  /** True when last_seen_at is older than the backend's stale threshold (48h). */
-  stale: boolean;
-}
+export type ConnectorDeviceLiveness = components["schemas"]["ConnectorDeviceLiveness"];
 
 /**
  * One persisted checkpoint cursor belonging to a parent connector (bu-6jv4m.11).
@@ -3909,160 +1248,39 @@ export interface ConnectorDeviceLiveness {
  * under their parent runtime instance and carry no liveness, state, or health
  * of their own — that authority is the parent's alone.
  */
-export interface ConnectorCheckpointRecord {
-  connector_type: string;
-  endpoint_identity: string;
-  /** The runtime instance this cursor belongs to, or null when unresolved. */
-  parent_endpoint_identity: string | null;
-  /**
-   * The part of the cursor key its parent identity does not already account
-   * for — e.g. `<account_uuid>:<resource>`. Falls back to the full identity
-   * when no parent is recorded.
-   */
-  label: string;
-  checkpoint_cursor: string | null;
-  checkpoint_updated_at: string | null;
-  /** Soft-archive state inherited from the registry row itself. */
-  archived: boolean;
-}
+export type ConnectorCheckpointRecord = components["schemas"]["ConnectorCheckpointRecord"];
 
 /** A connector with current liveness and today's stats (GET /api/ingestion/connectors/summaries). */
-export interface ConnectorSummary {
-  connector_type: string;
-  endpoint_identity: string;
-  /**
-   * "online" | "stale" | "offline" for a runtime instance, or "unclassified"
-   * when `operational_role` is `unknown` — no producer has claimed the row, so
-   * there is no heartbeat contract to measure it against. "unclassified" is a
-   * named unavailable state, never a healthy or an offline verdict.
-   */
-  liveness: string;
-  state: string; // "healthy" | "degraded" | "error"
-  error_message: string | null;
-  version: string | null;
-  uptime_s: number | null;
-  last_heartbeat_at: string | null;
-  first_seen_at: string;
-  today: ConnectorDaySummary | null;
-  /**
-   * 24-bucket hourly event counts for the last 24 hours (oldest hour first,
-   * newest last). Sourced from ingestion_events — always present, never null.
-   * Zero-filled for hours with no events.
-   */
-  hourly_events: number[];
-  /**
-   * 24-bucket hourly FILTERED/skip-routed event counts (bu-scyro), sourced
-   * from connectors.filtered_events — a DISTINCT series, never folded into
-   * `hourly_events`/`today.messages_ingested` (that would fabricate ingestion
-   * volume that never happened). Every self-persisting connector's skip
-   * volume (gmail, telegram, home_assistant, google_calendar) otherwise never
-   * appears on this chart at all. Optional/additive: absent on older cached
-   * responses — treat as all-zero when missing.
-   */
-  hourly_filtered_events?: number[];
-  /**
-   * Per-device liveness rows, most-recent-device first. Null for single-device
-   * connector_types (the roster row's own liveness already covers them); present
-   * only when more than one distinct sender_identity has ever been observed for
-   * this connector_type. Sourced from ingestion_events UNIONed with
-   * connectors.filtered_events (bu-scyro) — a sender/device fully skip-routed
-   * and never ingested is still surfaced here.
-   */
-  devices?: ConnectorDeviceLiveness[] | null;
-  /**
-   * Soft-archive state (bu-33dm2). `true` when this endpoint identity has been
-   * archived as superseded/dead. Archived identities are still returned by the
-   * summaries endpoint (so the roster can group them into a collapsed "archived"
-   * section reachable for history) but are separated from the active roster —
-   * excluded from attention/KPIs on the frontend and from the fleet-health
-   * rollups on the backend. Optional/additive: absent on older cached responses
-   * — treat as `false` when missing.
-   */
-  archived?: boolean;
-  /** ISO-8601 archival timestamp, or null when not archived (bu-33dm2). */
-  archived_at?: string | null;
-  /**
-   * Flag-only archive review-queue SUGGESTION (bu-u19yv). `true` when this
-   * active (non-archived) identity last heartbeated >30d ago AND a newer,
-   * currently-online sibling identity of the same `connector_type` exists.
-   * A SUGGESTION only: the identity still appears in the active roster and its
-   * true (offline) liveness/KPIs are unchanged — this flag never masks a
-   * failing live connector, it only proposes archiving a superseded one. The
-   * roster surfaces candidates as a review queue with a one-click archive.
-   * Optional/additive: absent on older cached responses — treat as `false`.
-   */
-  archive_candidate?: boolean;
-  /**
-   * Additive, read-only operational diagnostics that do not alter connector
-   * state, liveness, or fleet-health rollups. The OwnTracks cadence warning is
-   * sourced from durable location points rather than generic ingestion counts.
-   */
-  operational_warnings?: string[];
-  /**
-   * Persisted operational role (bu-6jv4m.11, migration sw_031):
-   * `runtime_instance` (an executable connector process — the only role with
-   * runtime-health authority), `checkpoint` (storage state, never returned in
-   * this list — see `checkpoints` below), or `unknown` (role not established).
-   * Optional/additive: absent on older cached responses — treat as `unknown`.
-   */
-  operational_role?: string;
-  /**
-   * Checkpoint cursors belonging to this runtime instance, label-sorted. These
-   * used to appear in the roster as separate OFFLINE connectors; they are now
-   * nested here, inspectable but with no status authority. Grouped per
-   * (connector_type, parent), so two accounts of one connector type never
-   * collect each other's cursors. Optional/additive.
-   */
-  checkpoints?: ConnectorCheckpointRecord[];
-}
+type ConnectorSummaryWire = components["schemas"]["ConnectorSummary"];
+/** Both the summary endpoint and the existing detail projection feed this view. */
+export type ConnectorSummary = Pick<ConnectorSummaryWire,
+  "connector_type" | "endpoint_identity" | "liveness" | "state" |
+  "error_message" | "version" | "uptime_s" | "last_heartbeat_at" |
+  "first_seen_at" | "hourly_events"> &
+  Partial<Omit<ConnectorSummaryWire, "today">> & {
+    /** Existing detail projection retains unavailable uptime separately. */
+    today?: (NonNullable<ConnectorSummaryWire["today"]> & { uptime_pct?: number | null }) | null;
+  };
 
 /** One OAuth scope entry from connector-oauth-scope-surface backend. */
-export interface ConnectorScopeEntry {
-  name: string;
-  category: "required" | "optional" | "sensitive" | "extra";
-  status: "ok" | "missing" | "extra";
-  sensitive_granted: boolean;
-  granted_at: string | null;
-  required_since: string | null;
-  serif_note: string;
-}
+export type ConnectorScopeEntry = components["schemas"]["ConnectorScopeRow"];
 
 /** Auth block from connector-oauth-scope-surface backend. */
-export interface ConnectorAuthBlock {
-  status:
-    | "ok"
-    | "degraded"
-    | "expired"
-    | "rotation-needed"
-    | "needs_reauth"
-    | "unsupported"
-    | "unconfigured";
-  type: string;
-  note: string | null;
-  expires_at: string | null;
-  required_scopes_version: number | null;
-  manifest_version: number | null;
-  alt_surface: {
-    kind: "session-validity" | "static-token" | "device-pairing";
-    validity_known: boolean;
-    validity_expires_at: string | null;
-    remediation_path: string;
-  } | null;
-  recovery_reason?: "expired" | "rotation-needed" | null;
-}
+export type ConnectorAuthBlock = components["schemas"]["ConnectorAuthBlock"];
 
 /** Client view model projected from the canonical flat connector-detail response. */
-export interface ConnectorDetail extends ConnectorSummary {
-  instance_id: string | null;
-  registered_via: string;
-  checkpoint: ConnectorCheckpoint | null;
-  counters: ConnectorCounters | null;
-  settings: Record<string, unknown> | null;
-  /** OAuth scope surface from connector-oauth-scope-surface capability. Null when not yet available. */
-  auth: ConnectorAuthBlock | null;
-  /** OAuth scopes from connector-oauth-scope-surface capability. Null when not yet available. */
-  scopes: ConnectorScopeEntry[] | null;
-}
+type ConnectorDetailWire = components["schemas"]["ConnectorDetailEntry"];
+export type ConnectorDetail = ConnectorSummary & Pick<ConnectorDetailWire,
+  "instance_id" | "registered_via" | "settings" | "auth" | "scopes"> & {
+  checkpoint: { cursor: ConnectorDetailWire["checkpoint_cursor"]; updated_at: ConnectorDetailWire["checkpoint_updated_at"] } | null;
+  counters: {
+    messages_ingested: ConnectorDetailWire["counter_messages_ingested"];
+    messages_failed: ConnectorDetailWire["counter_messages_failed"];
+    source_api_calls: ConnectorDetailWire["counter_source_api_calls"];
+    checkpoint_saves: ConnectorDetailWire["counter_checkpoint_saves"];
+    dedupe_accepted: ConnectorDetailWire["counter_dedupe_accepted"];
+  } | null;
+};
 
 export interface ConnectorCheckpoint {
   cursor: string | null;
@@ -4125,63 +1343,13 @@ export interface ConnectorStats {
  * aggregates_available=false means Prometheus is unreachable — all numeric
  * funnel fields are zero in that case; scrub and backlog flags are independent.
  */
-export interface PipelineStats {
-  /** Fresh Switchboard scrub-operation estimates, including attempts; absent on older servers. */
-  bearer_scrub_counts?: { auth_code: number; reset_link: number; magic_link: number } | null;
-  /** Independent Prometheus availability; only true makes scrub zeros measured values. */
-  bearer_scrub_available?: boolean;
-  window: string;
-  aggregates_available: boolean;
-  ingested: number;
-  filtered: number;
-  errored: number;
-  routed_by_butler: Record<string, number>;
-  /** 24-bucket hourly sparkline of accepted events (oldest first). */
-  spark24h: number[];
-  /** Events per minute over the trailing 60 minutes. */
-  rate1h: number;
-  /** Percentage of events routed vs. total [0, 100]. */
-  routed_pct: number;
-  /** Count of filtered events in the last 24 hours. */
-  filtered24h: number;
-  /**
-   * Unresolved ingestion events that failed execution. Deliberately reviewed
-   * write-offs are excluded and reported separately in `written_off_total`.
-   */
-  failed_total: number | null;
-  /** Events whose replay was requested and has not yet been reconciled. */
-  replay_pending_total: number | null;
-  /** Reviewed, deliberately unreplayed failures retained for audit history. */
-  written_off_total: number | null;
-  /**
-   * Whether the DB-backed backlog counts were available for this response.
-   * When false, every backlog count is null rather than a fabricated zero.
-   */
-  backlog_available: boolean;
-}
+export type PipelineStats = Pick<components["schemas"]["PipelineStatsResponse"], "window" | "aggregates_available" | "ingested" | "filtered" | "errored" | "routed_by_butler" | "spark24h" | "rate1h" | "routed_pct" | "filtered24h" | "backlog_available" | "failed_total" | "replay_pending_total" | "written_off_total"> & Partial<Pick<components["schemas"]["PipelineStatsResponse"], "bearer_scrub_counts" | "bearer_scrub_available">>;
 
 /** One measured connector-to-butler route in the fanout distribution. */
-export interface ConnectorFanoutRow {
-  connector_type: string;
-  endpoint_identity: string;
-  target_butler: string;
-  message_count: number;
-}
-
-/** Availability authority for the Prometheus-backed routing distribution. */
-export interface ConnectorFanoutMeta extends ApiMeta {
-  /**
-   * True only when Prometheus supplied a readable routing aggregate. False
-   * means the rows, if any, are a degraded fallback and must not be rendered
-   * as a confirmed routing distribution.
-   */
-  aggregates_available: boolean;
-}
+export type ConnectorFanoutRow = components["schemas"]["FanoutRow"];
 
 /** GET /api/switchboard/ingestion/fanout?period=7d. */
-export interface ConnectorFanoutResponse extends ApiResponse<ConnectorFanoutRow[]> {
-  meta: ConnectorFanoutMeta;
-}
+export type ConnectorFanoutResponse = components["schemas"]["ApiResponseWithMeta_list_FanoutRow__ConnectorFanoutMeta_"];
 
 /**
  * Connector list (GET /api/ingestion/connectors/summaries).
@@ -4193,46 +1361,7 @@ export interface ConnectorFanoutResponse extends ApiResponse<ConnectorFanoutRow[
  * `connector_registry_available=false`; the other flags cover the secondary
  * hourly, device-liveness, and OwnTracks-cadence queries.
  */
-export interface ConnectorSummariesResponse {
-  connectors: ConnectorSummary[];
-  /**
-   * False only if the primary connector registry query failed and the
-   * connector list is its HTTP-200 fallback. Optional/additive; absent on
-   * older cached responses is treated as available.
-   */
-  connector_registry_available?: boolean;
-  /**
-   * False only if the backend's per-device liveness query itself failed
-   * (genuine-failure-only degraded flag — every connector's `devices` falls
-   * back to null in that case). Optional/additive.
-   */
-  device_liveness_available?: boolean;
-  /**
-   * False only if the combined ingested+filtered hourly query itself failed
-   * (bu-scyro; mirrors `device_liveness_available`). Optional/additive.
-   */
-  hourly_events_available?: boolean;
-  /**
-   * False only if the OwnTracks durable-point cadence query itself failed.
-   * Optional/additive; absent on older cached responses is treated as available.
-   */
-  owntracks_cadence_available?: boolean;
-  /**
-   * Checkpoint records whose parent runtime instance could not be resolved —
-   * no parent recorded, or a parent whose registry row is gone (bu-6jv4m.11).
-   * Surfaced rather than dropped: an orphaned cursor is a real condition an
-   * operator should see, and hiding it would trade one invisibility bug for
-   * another. Optional/additive.
-   */
-  unparented_checkpoints?: ConnectorCheckpointRecord[];
-  /**
-   * How many returned connectors have an unestablished operational role. These
-   * still appear in `connectors` with `liveness: "unclassified"`; the count is
-   * the roster-level signal that the registry holds records nothing has
-   * claimed. Optional/additive.
-   */
-  unclassified_count?: number;
-}
+export type ConnectorSummariesResponse = components["schemas"]["ConnectorSummaryResponse"];
 
 /**
  * Result of POST /api/ingestion/connectors/{type}/{identity}/archive
@@ -4251,12 +1380,7 @@ export interface ConnectorArchiveResult {
  * Represents connectors the framework can deploy, regardless of whether
  * any instance is currently registered in connector_registry.
  */
-export interface ConnectorProfile {
-  connector_type: string;
-  channel: string;
-  provider: string;
-  display_name: string;
-}
+export type ConnectorProfile = components["schemas"]["ConnectorProfile"];
 
 // ---------------------------------------------------------------------------
 // Ingestion event lineage types (GET /api/switchboard/ingestion/events/*)
@@ -4285,114 +1409,13 @@ export type IngestionEventStatus =
   | "replay_failed";
 
 /** Compact per-session summary embedded in a list row (dispatch-ticks cell). */
-export interface IngestionEventListSessionSummary {
-  butler_name: string;
-  duration_ms: number | null;
-  cost_usd: number | null;
-  /** Whether the session was priced, lacked a price despite token usage, or recorded no usage. */
-  cost_evidence?: "priced" | "unpriced" | "no_usage";
-  success: boolean | null;
-}
+export type IngestionEventListSessionSummary = components["schemas"]["IngestionEventListSessionSummary"];
 
 /** One ingestion event from shared.ingestion_events (list view). */
-export interface IngestionEventSummary {
-  id: string; // UUIDv7 — the request_id
-  received_at: string | null;
-  source_channel: string | null;
-  source_provider: string | null;
-  source_endpoint_identity: string | null;
-  source_sender_identity: string | null;
-  source_thread_identity: string | null;
-  external_event_id: string | null;
-  dedupe_key: string | null;
-  dedupe_strategy: string | null;
-  ingestion_tier: string | null;
-  policy_tier: string | null;
-  triage_decision: string | null;
-  triage_target: string | null;
-  /** Unified timeline status. Defaults to 'ingested' for legacy rows. */
-  status: IngestionEventStatus;
-  /** Human-readable reason why this event was filtered or errored. */
-  filter_reason: string | null;
-  /** Detailed error context for error-status events (e.g. exception message). */
-  error_detail: string | null;
-  /** Server-authoritative connector policy; only true permits a replay action. */
-  replay_safe?: boolean;
-  /** Safe, human-readable explanation when replay_safe is false. */
-  replay_block_reason?: string | null;
-  /**
-   * Known-priced session subtotal across this event's linked sessions. It is
-   * lazily denormalized after a complete rollup, or derived from live session
-   * lineage for the list; null when no linked session has a known cost.
-   */
-  cost_usd: number | null;
-  /**
-   * Row-level enrichment (bu-4utdw.3): computed server-side via ONE grouped
-   * session fan-out for the whole page — never a per-row request. Use these
-   * directly in LedgerRow instead of mounting useIngestionEventRollup per row.
-   */
-  tokens_in: number | null;
-  tokens_out: number | null;
-  session_count: number;
-  /** Token-using sessions omitted from cost_usd because their price is unavailable. */
-  unpriced_session_count?: number;
-  /** Sessions that recorded neither token usage nor a stored cost. */
-  no_usage_session_count?: number;
-  sessions: IngestionEventListSessionSummary[];
-  /**
-   * Contact-resolved sender display name (relationship.entity_facts), or null
-   * when unresolved. Fall back to source_sender_identity when null.
-   */
-  sender_display: string | null;
-}
-
-/** Full ingestion event detail — augmented with lifecycle and decomposition fields from message_inbox. */
-export interface IngestionEventDetail extends IngestionEventSummary {
-  /** Lifecycle state from message_inbox (null if row pruned or switchboard unavailable). */
-  lifecycle_state: string | null;
-  /** Decomposition output JSONB from message_inbox (null if row pruned or unavailable). */
-  decomposition_output: Record<string, unknown> | null;
-}
-
-/** Response body from POST /api/ingestion/events/{id}/replay. */
-export interface IngestionEventReplayResponse {
-  id: string;
-  status: IngestionEventStatus;
-}
-
-/** Per-event result from POST /api/ingestion/events/retry/bulk. */
-export interface BulkRetryEventResult {
-  event_id: string;
-  /** "replay_pending" on success; "not_found" | "conflict" | "error" on failure. */
-  status: "replay_pending" | "not_found" | "conflict" | "error";
-  /** Present on failure statuses. */
-  error?: string;
-}
-
-/** Response from POST /api/ingestion/events/retry/bulk. */
-export interface BulkRetryEventsResponse {
-  results: BulkRetryEventResult[];
-  succeeded: number;
-  failed: number;
-}
+export type IngestionEventSummary = components["schemas"]["IngestionEventSummary"];
 
 /** One butler session spawned in response to an ingestion event. */
-export interface IngestionEventSession {
-  id: string; // session UUID
-  butler_name: string;
-  trigger_source: string | null;
-  started_at: string | null;
-  completed_at: string | null;
-  success: boolean | null;
-  input_tokens: number | null;
-  output_tokens: number | null;
-  /** Estimated USD cost for this session. Null when pricing data is unavailable. */
-  cost_usd: number | null;
-  /** Whether the session was priced, lacked a price despite token usage, or recorded no usage. */
-  cost_evidence?: "priced" | "unpriced" | "no_usage";
-  trace_id: string | null;
-  model: string | null;
-}
+export type IngestionEventSession = components["schemas"]["IngestionEventSession"];
 
 /** Query parameters for GET /api/ingestion/events (cursor-paginated). */
 export interface IngestionEventsParams {
@@ -4456,23 +1479,7 @@ export interface IngestionWindowRollupParams {
 }
 
 /** Response from GET /api/ingestion/rollup. */
-export interface IngestionWindowRollup {
-  /** Total matching events in the filter window. */
-  events: number;
-  /** Total sessions linked to matching events. */
-  sessions: number;
-  /**
-   * Aggregate cost in USD for the window. Populated live from the /rollup
-   * endpoint when pricing config is available; null when unavailable.
-   */
-  cost: number | null;
-  /** Token-using sessions omitted from cost because their price is unavailable. */
-  unpriced_session_count?: number;
-  /** Sessions with no token or stored-cost evidence. */
-  no_usage_session_count?: number;
-  /** The active filter window boundaries. */
-  window: { from: string | null; to: string | null };
-}
+export type IngestionWindowRollup = components["schemas"]["IngestionWindowRollup"];
 
 /** Bucket granularity accepted by GET /api/ingestion/events/histogram. */
 export type IngestionHistogramBucketSize = "1m" | "5m" | "1h";
@@ -4514,22 +1521,10 @@ export interface IngestionHistogramParams {
 }
 
 /** Per-status event counts for one histogram bucket. Every status defaults to 0. */
-export interface IngestionHistogramCounts {
-  ingested: number;
-  skipped: number;
-  filtered: number;
-  error: number;
-  failed: number;
-  replay_pending: number;
-  replay_complete: number;
-  replay_failed: number;
-}
+export type IngestionHistogramCounts = components["schemas"]["IngestionHistogramCounts"];
 
 /** One bucket of the ingestion events histogram. */
-export interface IngestionHistogramBucket {
-  ts: string;
-  counts: IngestionHistogramCounts;
-}
+export type IngestionHistogramBucket = components["schemas"]["IngestionHistogramBucket"];
 
 /**
  * Response from GET /api/ingestion/events/histogram.
@@ -4537,10 +1532,7 @@ export interface IngestionHistogramBucket {
  * `buckets` omits zero-count buckets — a bucket only appears when at least
  * one event fell into it during the requested window.
  */
-export interface IngestionHistogramResponse {
-  buckets: IngestionHistogramBucket[];
-  bucket: IngestionHistogramBucketSize;
-}
+export type IngestionHistogramResponse = components["schemas"]["IngestionHistogramResponse"];
 
 /**
  * Response from GET /api/ingestion/events/dropped-known.
@@ -4548,91 +1540,13 @@ export interface IngestionHistogramResponse {
  * `available=false` means complete classification is unknown. Positive counts
  * remain a lower bound only with counts_available; failed-read zeros are placeholders.
  */
-export interface IngestionDroppedKnownSummary {
-  available: boolean;
-  window: string;
-  /** Messages from known contacts dropped by a gate and not yet replayed. */
-  dropped: number;
-  /** Distinct (rule, sender) cases behind `dropped`. */
-  episodes: number;
-  counts_available: boolean;
-  classification_available: boolean;
-  uncertain_drops: number | null;
-  availability_reason: "none" | "counts_unavailable" | "registry_unavailable" | "classification_unknown" | "historical_uncertainty";
-}
-
-/** One replay attempt entry from public.audit_log. */
-export interface IngestionEventReplayHistoryEntry {
-  ts: string;
-  actor: string;
-  result: string | null;
-  cost: number | null;
-}
-
-/** Contact resolution result for an event's sender_identity. */
-export interface IngestionEventSenderContact {
-  resolved: boolean;
-  name: string | null;
-  raw: string | null;
-}
-
-/**
- * Raw payload response for an ingestion event.
- * GET /api/ingestion/events/{id}/payload — gated by audit log.
- * May be 403 when requester lacks payload-access grant.
- */
-export interface IngestionEventPayload {
-  /** Pretty-printed JSON or raw text of the original inbound payload. */
-  content: string;
-  /** Byte size of the full payload (may exceed the truncated content). */
-  bytes: number;
-  /** Whether the content was truncated due to size limits. */
-  truncated: boolean;
-  /** Channel/connector that produced this payload. */
-  channel: string | null;
-}
-
-// ---------------------------------------------------------------------------
-// Education
-// ---------------------------------------------------------------------------
-
-/** A directed edge in the mind map DAG. */
-export interface MindMapEdge {
-  parent_node_id: string;
-  child_node_id: string;
-  edge_type: string;
-}
+export type IngestionDroppedKnownSummary = components["schemas"]["IngestionDroppedKnownSummary"];
 
 /** A concept node in a mind map. */
-export interface MindMapNode {
-  id: string;
-  mind_map_id: string;
-  label: string;
-  description: string | null;
-  depth: number;
-  mastery_score: number;
-  mastery_status: string;
-  ease_factor: number;
-  repetitions: number;
-  next_review_at: string | null;
-  last_reviewed_at: string | null;
-  effort_minutes: number | null;
-  metadata: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-}
+export type MindMapNode = components["schemas"]["MindMapNodeResponse"];
 
 /** A mind map with optional nested nodes and edges. */
-export interface MindMap {
-  id: string;
-  title: string;
-  root_node_id: string | null;
-  status: string;
-  created_at: string;
-  updated_at: string;
-  nodes: MindMapNode[];
-  edges: MindMapEdge[];
-}
+export type MindMap = components["schemas"]["MindMapResponse"];
 
 /**
  * A registered source-material record.
@@ -4641,182 +1555,21 @@ export interface MindMap {
  * parses source contents. A `source_id` on a node's `metadata.source_refs`
  * that is absent from this list is a dangling reference, not a citation.
  */
-export interface EducationSourceMaterial {
-  source_id: string;
-  title: string;
-  authors: string[];
-  type: string;
-  url: string | null;
-  registered_at: string | null;
-}
-
-/** A recorded quiz response for a concept node. */
-export interface QuizResponse {
-  id: string;
-  node_id: string;
-  mind_map_id: string;
-  question_text: string;
-  user_answer: string | null;
-  quality: number;
-  response_type: string;
-  session_id: string | null;
-  responded_at: string;
-  evaluator_notes: string | null;
-  node_label: string | null;
-}
-
-/** An analytics snapshot for a mind map. */
-export interface AnalyticsSnapshot {
-  id: string | null;
-  mind_map_id: string;
-  snapshot_date: string;
-  metrics: Record<string, unknown>;
-  created_at: string | null;
-  trend: AnalyticsSnapshotTrendEntry[];
-}
-
-/** A single entry in the analytics trend series. */
-export interface AnalyticsSnapshotTrendEntry {
-  id: string;
-  mind_map_id: string;
-  snapshot_date: string;
-  metrics: Record<string, unknown>;
-  created_at: string;
-}
-
-/** Per-topic entry in cross-topic analytics. */
-export interface CrossTopicEntry {
-  mind_map_id: string;
-  title: string;
-  mastery_pct: number;
-  retention_rate_7d: number | null;
-  velocity: number;
-}
-
-/** Cross-topic comparative analytics. */
-export interface CrossTopicAnalytics {
-  topics: CrossTopicEntry[];
-  strongest_topic: string | null;
-  weakest_topic: string | null;
-  portfolio_mastery: number;
-}
+export type EducationSourceMaterial = components["schemas"]["SourceMaterialResponse"];
 
 /** Aggregate mastery statistics for a mind map. */
-export interface MasterySummary {
-  mind_map_id: string;
-  total_nodes: number;
-  mastered_count: number;
-  learning_count: number;
-  reviewing_count: number;
-  unseen_count: number;
-  diagnosed_count: number;
-  avg_mastery_score: number;
-  struggling_node_ids: string[];
-}
+export type MasterySummary = components["schemas"]["MasterySummaryResponse"];
 
 /** A node due for spaced-repetition review. */
-export interface PendingReviewNode {
-  node_id: string;
-  label: string;
-  ease_factor: number;
-  repetitions: number;
-  next_review_at: string;
-  mastery_status: string;
-  /** Real mastery score (0-100 scale is NOT assumed — see mind_map_nodes.mastery_score). Null when unavailable. */
-  mastery_score: number | null;
-}
+export type PendingReviewNode = components["schemas"]["PendingReviewNodeResponse"];
 
 /** One snapshot entry in an analytics trend time-series (from /analytics/trend). */
-export interface AnalyticsTrendEntry {
-  id: string | null;
-  mind_map_id: string;
-  snapshot_date: string;
-  metrics: Record<string, unknown>;
-  created_at: string | null;
-}
-
-/** Analytics trend time-series for a mind map (from /analytics/trend). */
-export interface AnalyticsTrendResponse {
-  mind_map_id: string;
-  days: number;
-  trend: AnalyticsTrendEntry[];
-}
+export type AnalyticsTrendEntry = components["schemas"]["AnalyticsTrendEntry"];
 
 /** Request body for submitting a new curriculum request. */
-export interface CurriculumRequestBody {
-  topic: string;
-  goal?: string | null;
-}
+export type CurriculumRequestBody = components["schemas"]["CurriculumRequestBody"];
 
-/**
- * 202 acknowledgement for a submitted curriculum request.
- *
- * `status` is always `"accepted"` — the request was durably recorded and handed
- * off, nothing more. Follow `request_id` for the actual outcome; a 202 is never
- * evidence that a curriculum exists or that the butler messaged the owner.
- */
-export interface CurriculumRequestResponse {
-  status: "accepted";
-  topic: string;
-  request_id: string;
-}
-
-/** Terminal reason a curriculum request failed. */
-export type CurriculumRequestFailureReason =
-  | "trigger_unreachable"
-  | "session_error"
-  | "no_curriculum_created"
-  | "timed_out";
-
-/**
- * Durable accepted-to-outcome receipt for one curriculum request.
- *
- * Evidence fields stay null until the detached curriculum work settles them. A
- * terminal `status` always carries `settled_at`, and `failed` always carries
- * `failure_reason`.
- */
-/**
- * Outcomes a curriculum receipt can carry for its calibration notice. The first
- * five are the attention ledger's own words for a dispatch; the last two
- * describe the state of our evidence rather than a dispatch.
- */
-export type CurriculumNoticeOutcome =
-  | "delivered"
-  | "coalesced"
-  | "deferred"
-  | "suppressed"
-  | "failed"
-  | "no_record"
-  | "unproven";
-
-export interface CurriculumRequestReceipt {
-  request_id: string;
-  topic: string;
-  goal?: string | null;
-  status: "accepted" | "running" | "completed" | "failed";
-  session_id?: string | null;
-  mind_map_id?: string | null;
-  calibration_ready_at?: string | null;
-  /**
-   * What the notification path attests about the calibration notice, from
-   * `public.attention_ledger` — never inferred from teaching-flow state.
-   *
-   * `delivered` is the only value that means a delivery channel accepted the
-   * message, and it is the only one that carries
-   * `calibration_notice_accepted_at`. `no_record` means the ledger was read and
-   * held no notify row for the session; `unproven` means it could not be read
-   * at all. `null` means the question was never asked. None of these, including
-   * `delivered`, attests that the owner read anything.
-   */
-  calibration_notice_outcome?: CurriculumNoticeOutcome | string | null;
-  /** When a delivery channel accepted the notice. Set only for `delivered`. */
-  calibration_notice_accepted_at?: string | null;
-  failure_reason?: CurriculumRequestFailureReason | string | null;
-  requested_at: string;
-  triggered_at?: string | null;
-  settled_at?: string | null;
-  updated_at: string;
-}
+export type CurriculumRequestReceipt = components["schemas"]["CurriculumRequestReceipt"];
 
 /**
  * Read-only status envelope for curriculum request receipts.
@@ -4824,10 +1577,7 @@ export interface CurriculumRequestReceipt {
  * `receipts_available: false` means the receipt store could not be read — render
  * that as "status unavailable", never as "no request in flight".
  */
-export interface CurriculumRequestStatusResponse {
-  receipts_available: boolean;
-  receipt: CurriculumRequestReceipt | null;
-}
+export type CurriculumRequestStatusResponse = components["schemas"]["CurriculumRequestStatusResponse"];
 
 /** Query params for mind map list. */
 export interface MindMapListParams {
@@ -4849,75 +1599,22 @@ export interface QuizResponseParams {
 // ---------------------------------------------------------------------------
 
 /** A persisted ingestion rule returned from the API. */
-export interface IngestionRule {
-  id: string;
-  scope: string;
-  rule_type: string;
-  condition: Record<string, unknown>;
-  action: string;
-  priority: number;
-  enabled: boolean;
-  name: string | null;
-  description: string | null;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-  deleted_at: string | null;
-}
+export type IngestionRule = components["schemas"]["IngestionRule"];
 
 /** Request body for POST /api/switchboard/ingestion-rules. */
-export interface IngestionRuleCreate {
-  scope: string;
-  rule_type: string;
-  condition: Record<string, unknown>;
-  action: string;
-  priority: number;
-  enabled?: boolean;
-  name?: string | null;
-  description?: string | null;
-}
+export type IngestionRuleCreate = components["schemas"]["IngestionRuleCreate"];
 
 /** Request body for PATCH /api/switchboard/ingestion-rules/:id. All fields optional. */
-export interface IngestionRuleUpdate {
-  scope?: string | null;
-  condition?: Record<string, unknown> | null;
-  action?: string | null;
-  priority?: number | null;
-  enabled?: boolean | null;
-  name?: string | null;
-  description?: string | null;
-}
+export type IngestionRuleUpdate = components["schemas"]["IngestionRuleUpdate"];
 
 /** Sample envelope for dry-run ingestion rule testing. */
-export interface IngestionRuleTestEnvelope {
-  sender_address?: string;
-  source_channel?: string;
-  source_endpoint_identity?: string;
-  headers?: Record<string, string>;
-  mime_parts?: string[];
-  raw_key?: string;
-}
+export type IngestionRuleTestEnvelope = components["schemas"]["IngestionRuleTestEnvelope"];
 
 /** Request body for POST /api/switchboard/ingestion-rules/test. */
-export interface IngestionRuleTestRequest {
-  envelope: IngestionRuleTestEnvelope;
-  scope?: string;
-}
+export type IngestionRuleTestRequest = components["schemas"]["IngestionRuleTestRequest"];
 
 /** Result of a dry-run ingestion rule test. */
-export interface IngestionRuleTestResult {
-  matched: boolean;
-  decision: string | null;
-  target_butler: string | null;
-  matched_rule_id: string | null;
-  matched_rule_type: string | null;
-  reason: string;
-}
-
-/** Response envelope for POST /api/switchboard/ingestion-rules/test. */
-export interface IngestionRuleTestResponse {
-  data: IngestionRuleTestResult;
-}
+export type IngestionRuleTestResult = components["schemas"]["IngestionRuleTestResult"];
 
 /** Query params for GET /api/switchboard/ingestion-rules. */
 export interface IngestionRuleListParams {
@@ -4946,19 +1643,14 @@ export type ChannelDefaultPriorityAction =
   "pass_through" | "block" | "skip" | "metadata_only" | "low_priority_queue";
 
 /** A channel's default policy document. */
-export interface ChannelDefaultPolicy {
+export type ChannelDefaultPolicy = {
   priority_action: ChannelDefaultPriorityAction;
   /** Email-only: drop messages older than this many days. */
   max_age_days?: number;
-}
+};
 
 /** GET/PATCH response for a single channel's defaults. */
-export interface ChannelDefaultEntry {
-  channel: string;
-  default_policy_json: ChannelDefaultPolicy;
-  updated_at: string;
-  updated_by: string;
-}
+export type ChannelDefaultEntry = components["schemas"]["ChannelDefaultEntry"];
 
 /**
  * Request body for PATCH /api/ingestion/channel-defaults/:channel.
@@ -4966,9 +1658,7 @@ export interface ChannelDefaultEntry {
  * No `updated_by`: the backend derives the row's attribution from the
  * authenticated principal and ignores any actor a client sends.
  */
-export interface ChannelDefaultUpdate {
-  default_policy_json: ChannelDefaultPolicy;
-}
+export type ChannelDefaultUpdate = components["schemas"]["ChannelDefaultPatchRequest"];
 
 // ---------------------------------------------------------------------------
 // Priority contacts — runtime source of truth for priority senders.
@@ -4980,35 +1670,10 @@ export interface ChannelDefaultUpdate {
 // ---------------------------------------------------------------------------
 
 /** One priority contact (global — butler-agnostic), joined to public.contacts. */
-export interface PriorityContactEntry {
-  contact_id: string;
-  added_at: string;
-  added_by: string | null;
-  /** Canonical contact name from public.contacts (may be null). */
-  name: string | null;
-  /** Non-sensitive channel identifiers (email/handle) from entity_facts. */
-  contact_info_values: string[];
-  /**
-   * True when this entry would silently match nothing at runtime.
-   * The sole consumer (GmailPolicyEvaluator) resolves senders via a 3-hop join
-   * (priority_contacts → contacts.entity_id → entity_facts has-email); a contact
-   * is inert when it has no linked entity_id or its entity carries no active
-   * has-email fact. The row saves OK but never matches any incoming sender.
-   */
-  is_inert: boolean;
-}
+export type PriorityContactEntry = components["schemas"]["PriorityContactEntry"];
 
 /** Request body for POST /api/ingestion/priority-contacts. */
-export interface PriorityContactAddRequest {
-  contact_id: string;
-}
-
-/** Response body for POST /api/ingestion/priority-contacts (201). */
-export interface PriorityContactAddResponse {
-  contact_id: string;
-  added_at: string;
-  added_by: string | null;
-}
+export type PriorityContactAddRequest = components["schemas"]["PriorityContactAddRequest"];
 
 /** Query parameters for GET /api/ingestion/priority-contacts. */
 export interface PriorityContactListParams {
@@ -5016,101 +1681,24 @@ export interface PriorityContactListParams {
   limit?: number;
 }
 
-// ---------------------------------------------------------------------------
-// Contacts identity typeahead — GET /api/contacts/search
-// ---------------------------------------------------------------------------
-
-/**
- * A non-secret channel identifier (email, phone, handle, website) that matched
- * a contact-search query. Surfaced for chip rendering. Mirrors backend
- * `MatchedIdentifier`.
- */
-export interface ContactMatchedIdentifier {
-  type: string;
-  value: string;
-}
-
 /**
  * A single person-entity match from GET /api/contacts/search. Mirrors backend
  * `ContactSearchResult`. `matched_identifier` is null when the entity matched
  * by name/alias only.
  */
-export interface ContactSearchResult {
-  entity_id: string;
-  canonical_name: string;
-  matched_identifier: ContactMatchedIdentifier | null;
-}
+export type ContactSearchResult = components["schemas"]["ContactSearchResult"];
 
 /** Envelope for GET /api/contacts/search. Mirrors backend `ContactSearchResponse`. */
-export interface ContactSearchResponse {
-  results: ContactSearchResult[];
-}
-
-// ---------------------------------------------------------------------------
-// Connector detail sections — events, incidents, routing rules [bu-5ywn2]
-// ---------------------------------------------------------------------------
-
-/** One event row from GET /api/ingestion/connectors/{type}/{identity}/events. */
-export interface ConnectorEventSummary {
-  id: string;
-  received_at: string | null;
-  source_channel: string | null;
-  source_sender_identity: string | null;
-  status: string;
-  filter_reason: string | null;
-  error_detail: string | null;
-}
+export type ContactSearchResponse = components["schemas"]["ContactSearchResponse"];
 
 /** Response from GET /api/ingestion/connectors/{type}/{identity}/events. */
-export interface ConnectorEventsResponse {
-  events: ConnectorEventSummary[];
-  connector_type: string;
-  endpoint_identity: string;
-  total_returned: number;
-}
-
-/** One incident row from GET /api/ingestion/connectors/{type}/{identity}/incidents. */
-export interface ConnectorIncidentSummary {
-  id: string;
-  received_at: string | null;
-  source_channel: string | null;
-  status: string;
-  error_detail: string | null;
-  filter_reason: string | null;
-}
+export type ConnectorEventsResponse = components["schemas"]["ConnectorEventsResponse"];
 
 /** Response from GET /api/ingestion/connectors/{type}/{identity}/incidents. */
-export interface ConnectorIncidentsResponse {
-  incidents: ConnectorIncidentSummary[];
-  connector_type: string;
-  endpoint_identity: string;
-  total_returned: number;
-}
-
-/** One routing rule from GET /api/ingestion/connectors/{type}/{identity}/routing-rules. */
-export interface ConnectorRoutingRule {
-  id: string;
-  scope: string;
-  rule_type: string;
-  condition: Record<string, unknown>;
-  action: string;
-  priority: number;
-  enabled: boolean;
-  name: string | null;
-  description: string | null;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-}
+export type ConnectorIncidentsResponse = components["schemas"]["ConnectorIncidentsResponse"];
 
 /** Response from GET /api/ingestion/connectors/{type}/{identity}/routing-rules. */
-export interface ConnectorRoutingRulesResponse {
-  rules: ConnectorRoutingRule[];
-  connector_type: string;
-  endpoint_identity: string;
-  total_returned: number;
-  filter_note: string | null;
-}
+export type ConnectorRoutingRulesResponse = components["schemas"]["ConnectorRoutingRulesResponse"];
 
 // ---------------------------------------------------------------------------
 // Model catalog
@@ -5130,270 +1718,41 @@ export interface ModelPricingEntry {
 export type PricingMap = Record<string, ModelPricingEntry>;
 
 /** A single entry in the shared model catalog. */
-export interface ModelCatalogEntry {
-  id: string;
-  alias: string;
-  runtime_type: string;
-  model_id: string;
-  extra_args: string[];
-  complexity_tier: ComplexityTier;
-  enabled: boolean;
-  priority: number;
-  session_timeout_s: number;
-  /** Rolling 24h token usage (from ledger aggregation). */
-  usage_24h: number;
-  /** Rolling 30d token usage (from ledger aggregation). */
-  usage_30d: number;
-  /** Configured 24h token limit; null = unlimited. */
-  limit_24h: number | null;
-  /** Configured 30d token limit; null = unlimited. */
-  limit_30d: number | null;
-  /** ISO-8601 timestamp of last verification attempt; null = never verified. */
-  last_verified_at: string | null;
-  /** Latency of last verification call in milliseconds; null = never verified. */
-  last_verified_latency_ms: number | null;
-  /** Whether the last verification succeeded; null = never verified. */
-  last_verified_ok: boolean | null;
-  /** Stored verification error text; null when never verified or the last
-   *  verification succeeded. */
-  last_verified_error: string | null;
-  /** Dispatch-outcome circuit breaker state (bu-hmdqz.2), fully derived from
-   *  model_dispatch_attempts. True = this entry is currently excluded from
-   *  routing regardless of enabled/last_verified_ok — the routing
-   *  consequence to surface alongside verification staleness. */
-  breaker_open: boolean;
-  /** Count of trailing consecutive runtime_failure dispatch attempts feeding
-   *  the breaker (capped at the breaker's own threshold). */
-  breaker_consecutive_failures: number;
-  /** Per-entry capability overrides (core_204). An absent feature is unknown,
-   *  not unsupported: image-bearing dispatches need `vision: true`. */
-  capabilities?: Record<string, boolean>;
-  /** Evidence-based routing score (bu-ep4ks.13), fully derived from recent
-   *  model_dispatch_attempts. Null whenever routing_score_insufficient_data
-   *  is true -- render "insufficient data", never a fabricated 0. */
-  routing_score: number | null;
-  /** True when the entry has fewer than the minimum qualifying dispatch
-   *  attempts for a trustworthy score; routing_score is then always null. */
-  routing_score_insufficient_data: boolean;
-  /** Human-readable reason when routing_score_insufficient_data is true. */
-  routing_score_reason: string | null;
-  /** Recent success rate (0-1) feeding the score; null when insufficient data. */
-  routing_success_rate: number | null;
-  /** p95 latency in ms feeding the score; null when no successful attempts
-   *  have a recorded duration yet. */
-  routing_p95_duration_ms: number | null;
-  /** Number of qualifying (success + runtime_failure) attempts in the
-   *  evidence window, regardless of whether that met the min-samples bar. */
-  routing_sample_count: number;
-  /** Global allowance grouping label; null uses the runtime default. */
-  allowance_account?: string | null;
-}
+export type ModelCatalogEntry = components["schemas"]["ModelCatalogEntry"];
 
-/** Current server-owned cascade impact for one catalog deletion. */
-export interface ModelDeleteImpact {
-  id: string;
-  override_count: number;
-}
+export type ModelAttentionEpisode = components["schemas"]["ModelAttentionEpisode"];
 
-export type RuntimeAttentionLifecycle =
-  | "pending"
-  | "sending"
-  | "sent"
-  | "failed"
-  | "uncertain";
+export type AllowanceAccount = components["schemas"]["AllowanceAccount"];
 
-export interface ModelAttentionEpisode {
-  episode_id: string;
-  lifecycle_state: RuntimeAttentionLifecycle;
-  created_at: string;
-  updated_at: string;
-  delivered_at: string | null;
-  safe_reason: string | null;
-  manual_reissue_of: string | null;
-  successor_id: string | null;
-  reissue_eligible: boolean;
-}
+export type AllowanceObservation = components["schemas"]["AllowanceObservation"];
 
-export interface ModelAttentionObservation {
-  available: boolean;
-  episodes: Record<string, ModelAttentionEpisode>;
-}
-
-export interface AllowanceEntry {
-  id: string;
-  alias: string;
-}
-
-export type AllowanceState = "available" | "exhausted" | "unknown";
-export type AllowanceResetSource = "parsed" | "default_window" | "unknown";
-
-export interface AllowanceAccount {
-  account_key: string;
-  state: AllowanceState;
-  reset_at: string | null;
-  reset_source: AllowanceResetSource;
-  first_seen_at: string;
-  updated_at: string;
-  entries: AllowanceEntry[];
-}
-
-export interface AllowanceObservation {
-  available: boolean;
-  accounts: AllowanceAccount[];
-}
-
-export interface ModelAttentionReissueResult {
-  original_episode_id: string;
-  successor_episode_id: string;
-  successor_state: RuntimeAttentionLifecycle;
-  created: boolean;
-}
-
-export interface FleetHaltAttentionEpisode {
-  episode_id: string;
-  lifecycle_state: RuntimeAttentionLifecycle;
-  created_at: string;
-  updated_at: string;
-  delivered_at: string | null;
-  safe_reason: string | null;
-}
-
-export interface FleetHaltAttentionObservation {
-  available: boolean;
-  episode: FleetHaltAttentionEpisode | null;
-}
+export type FleetHaltAttentionEpisode = components["schemas"]["FleetHaltAttentionEpisode"];
 
 /** Request body for PUT /api/settings/models/{id}/priority. */
-export interface ModelPriorityDelta {
-  delta: number;
-}
-
-/** Response from POST /api/settings/models/verify-all. */
-export interface VerifyAllResult {
-  accepted: boolean;
-  total: number;
-  ok: number;
-  failed: number;
-  /** Models the runtime-probe control plane could not probe at all. Their
-   *  existing verification evidence is left untouched. */
-  unavailable: number;
-}
+export type ModelPriorityDelta = components["schemas"]["ModelPriorityDelta"];
 
 /** Request body for creating a catalog entry. */
-export interface ModelCatalogCreate {
-  alias: string;
-  runtime_type: string;
-  model_id: string;
-  extra_args?: string[];
-  complexity_tier?: ComplexityTier;
-  enabled?: boolean;
-  priority?: number;
-  session_timeout_s?: number;
-  /** Global allowance grouping label; null uses the runtime default. */
-  allowance_account?: string | null;
-}
+export type ModelCatalogCreate = components["schemas"]["ModelCatalogCreate"];
 
 /** Request body for updating a catalog entry (all fields optional). */
-export interface ModelCatalogUpdate {
-  alias?: string;
-  runtime_type?: string;
-  model_id?: string;
-  extra_args?: string[];
-  complexity_tier?: ComplexityTier;
-  enabled?: boolean;
-  priority?: number;
-  session_timeout_s?: number;
-  /** Global allowance grouping label; null uses the runtime default. */
-  allowance_account?: string | null;
-}
+export type ModelCatalogUpdate = components["schemas"]["ModelCatalogUpdate"];
 
 /** A single per-butler model override joined with catalog alias. */
-export interface ButlerModelOverride {
-  id: string;
-  butler_name: string;
-  catalog_entry_id: string;
-  alias: string;
-  enabled: boolean;
-  priority: number | null;
-  complexity_tier: ComplexityTier | null;
-}
-
-/** One item in a batch upsert request for butler model overrides. */
-export interface ButlerModelOverrideUpsert {
-  catalog_entry_id: string;
-  enabled?: boolean;
-  priority?: number | null;
-  complexity_tier?: ComplexityTier | null;
-}
+export type ButlerModelOverride = components["schemas"]["ButlerModelOverride"];
 
 /** Required request-level explanation for a consequential override mutation. */
-export interface ButlerModelOverrideReason {
-  reason: string;
-  price_preview_unavailable?: boolean;
-}
+export type ButlerModelOverrideReason = components["schemas"]["ButlerModelOverrideReason"];
 
-export interface ButlerModelOverridesWrite extends ButlerModelOverrideReason {
-  overrides: ButlerModelOverrideUpsert[];
-}
-
-/** Response from the model test endpoint. */
-export interface ModelTestResult {
-  success: boolean;
-  error: string | null;
-  duration_ms: number;
-}
-
-/** Response from the resolve-model preview endpoint. */
-export interface ResolveModelResponse {
-  butler_name: string;
-  complexity: string;
-  runtime_type: string | null;
-  model_id: string | null;
-  extra_args: string[];
-  session_timeout_s: number | null;
-  resolved: boolean;
-  /** True when either window's usage meets or exceeds its configured limit. */
-  quota_blocked: boolean;
-  usage_24h: number;
-  limit_24h: number | null;
-  usage_30d: number;
-  limit_30d: number | null;
-}
+export type ButlerModelOverridesWrite = components["schemas"]["ButlerModelOverridesWrite"];
 
 /** Request body for PUT /api/settings/models/{entry_id}/limits. */
-export interface TokenLimitsRequest {
-  limit_24h: number | null;
-  limit_30d: number | null;
-}
-
-/** Response from PUT /api/settings/models/{entry_id}/limits. */
-export interface TokenLimitsResponse {
-  catalog_entry_id: string;
-  limit_24h: number | null;
-  limit_30d: number | null;
-  deleted: boolean;
-}
+export type TokenLimitsRequest = components["schemas"]["TokenLimitsRequest"];
 
 /** Window selector for POST /api/settings/models/{entry_id}/reset-usage. */
 export type UsageWindow = "24h" | "30d" | "both";
 
 /** Request body for POST /api/settings/models/{entry_id}/reset-usage. */
-export interface ResetUsageRequest {
-  window: UsageWindow;
-}
-
-/** Response from GET /api/settings/models/{entry_id}/usage. */
-export interface TokenUsageDetail {
-  catalog_entry_id: string;
-  usage_24h: number;
-  usage_30d: number;
-  limit_24h: number | null;
-  limit_30d: number | null;
-  reset_24h_at: string | null;
-  reset_30d_at: string | null;
-  percent_24h: number | null;
-  percent_30d: number | null;
-}
+export type ResetUsageRequest = components["schemas"]["ResetUsageRequest"];
 
 // ---------------------------------------------------------------------------
 // Provider configuration
@@ -5404,86 +1763,17 @@ export interface TokenUsageDetail {
 // ---------------------------------------------------------------------------
 
 /** Connection/session state for the WhatsApp account. */
-export type WhatsAppState =
-  "connected" | "disconnected" | "pair_required" | "not_configured";
-
-/** Status of an ongoing QR pairing attempt. */
-export type WhatsAppPairStatus = "waiting" | "paired" | "expired";
-
-/** Response from GET /api/connectors/whatsapp/status */
-export interface WhatsAppStatusResponse {
-  state: WhatsAppState;
-  /** Masked phone number, e.g. '+1 *** *** 7890', or null if not connected. */
-  phone: string | null;
-  /** ISO datetime when the account was first paired, or null. */
-  paired_at: string | null;
-  /** ISO datetime of the last successful sync, or null. */
-  last_sync_at: string | null;
-  /** Whether the Go bridge subprocess is currently running. */
-  bridge_running: boolean;
-}
-
-/** Response from POST /api/connectors/whatsapp/pair/start */
-export interface WhatsAppPairStartResponse {
-  /** Base64-encoded PNG data URI: 'data:image/png;base64,...' */
-  qr_data_uri: string;
-  /** ISO datetime when this QR code expires. */
-  expires_at: string;
-}
-
-/** Response from GET /api/connectors/whatsapp/pair/poll */
-export interface WhatsAppPairPollResponse {
-  status: WhatsAppPairStatus;
-  /** Phone number when status === 'paired', otherwise null. */
-  phone: string | null;
-}
-
-/** Response from POST /api/connectors/whatsapp/disconnect */
-export interface WhatsAppDisconnectResponse {
-  success: boolean;
-  message: string;
-}
+export type WhatsAppState = components["schemas"]["WhatsAppState"];
 
 // ---------------------------------------------------------------------------
 // Spotify connector types
 // ---------------------------------------------------------------------------
 
 /** Connection state for the Spotify account. */
-export type SpotifyState =
-  | "connected"
-  | "error"
-  | "unconfigured"
-  | "authorization_needed"
-  | "needs_reauth";
-
-/** Response from GET /api/spotify/status */
-export interface SpotifyStatusResponse {
-  connected: boolean;
-  state: SpotifyState;
-  capability_categories: ["listening-history"];
-}
-
-/** Response from POST /api/connectors/spotify/oauth/start */
-export interface SpotifyOAuthStartResponse {
-  authorization_url: string;
-  /** Opaque CSRF state token; clients must not persist or log it. */
-  state: string;
-}
+export type SpotifyState = components["schemas"]["SpotifyConnectionState"];
 
 /** Request body for POST /api/spotify/config */
-export interface SpotifyConfigRequest {
-  client_id: string;
-}
-
-/** Response from POST /api/spotify/config */
-export interface SpotifyConfigResponse {
-  configured: boolean;
-}
-
-/** Response from POST /api/connectors/spotify/disconnect */
-export interface SpotifyDisconnectResponse {
-  disconnected: boolean;
-}
+export type SpotifyConfigRequest = components["schemas"]["SpotifyConfigRequest"];
 
 // ---------------------------------------------------------------------------
 // OwnTracks connector types
@@ -5496,173 +1786,39 @@ export interface SpotifyDisconnectResponse {
  * (src/butlers/api/models/owntracks.py) exactly — keep these literals in
  * sync with that enum.
  */
-export type OwnTracksState =
-  "connected" | "no_events" | "stale" | "not_configured" | "offline";
+export type OwnTracksState = components["schemas"]["OwnTracksConnectionState"];
 
 /** Response from GET /api/connectors/owntracks/status */
-export interface OwnTracksStatusResponse {
-  state: OwnTracksState;
-  /** ISO datetime of the last received webhook event, or null. */
-  last_event_at: string | null;
-  /** Number of events received today (UTC day). */
-  events_today: number;
-  /** Whether a bearer token is currently configured. */
-  token_configured: boolean;
-}
+export type OwnTracksStatusResponse = components["schemas"]["OwnTracksStatusResponse"];
 
 /** Response from GET /api/connectors/owntracks/config */
-export interface OwnTracksConfigResponse {
-  /** The full webhook URL the OwnTracks app should POST to. */
-  webhook_url: string;
-  /** Masked bearer token preview, or null when no token is configured. */
-  token_masked: string | null;
-  /** App configuration guidance returned by the connector API. */
-  setup_instructions: {
-    mode: string;
-    url_field: string;
-    auth_type: string;
-    steps_ios: string[];
-    steps_android: string[];
-    troubleshooting_hint: string;
-  };
-}
-
-/** Response from POST /api/connectors/owntracks/token/generate */
-export interface OwnTracksTokenResponse {
-  /** The newly generated bearer token (shown once; store securely). */
-  token: string;
-}
-
-// ---------------------------------------------------------------------------
-// Home Assistant settings types
-// ---------------------------------------------------------------------------
-
-/** Connection state for the Home Assistant integration. */
-export type HomeAssistantState =
-  "connected" | "disconnected" | "not_configured";
-
-/** Response from GET /api/settings/home-assistant */
-export interface HomeAssistantStatusResponse {
-  state: HomeAssistantState;
-  /** Whether a HA URL is stored in CredentialStore. */
-  url_configured: boolean;
-  /** Whether a HA access token is stored in CredentialStore. */
-  token_configured: boolean;
-  /** Base origin of the HA URL (e.g. 'http://homeassistant.local:8123'), or null. */
-  masked_url: string | null;
-}
+export type OwnTracksConfigResponse = components["schemas"]["OwnTracksConfigResponse"];
 
 /** Request body for POST /api/settings/home-assistant */
-export interface HomeAssistantConfigRequest {
-  /** Home Assistant base URL (e.g. http://homeassistant.local:8123). */
-  url: string;
-  /** Long-lived access token from Home Assistant. */
-  token: string;
-}
+export type HomeAssistantConfigRequest = components["schemas"]["HAConfigRequest"];
 
-/** Response from POST /api/settings/home-assistant */
-export interface HomeAssistantConfigResponse {
-  success: boolean;
-  message: string;
-  /** Base origin of the stored HA URL, or null on failure. */
-  masked_url: string | null;
-}
+export type HomePersonMappingInput = NonNullable<ApiOptions<"/home/person-mappings", "POST">["body"]>["mappings"][number];
 
-/** Response from DELETE /api/settings/home-assistant */
-export interface HomeAssistantDeleteResponse {
-  success: boolean;
-  message: string;
-}
-
-export interface HomePersonMappingInput {
-  ha_person_id: string;
-  entity_id: string;
-}
-
-export interface HomePersonMappingReceipt {
-  receipt: string;
-  complete: boolean;
-  received_count: number;
-  created_count: number;
-  unchanged_count: number;
-  conflict_count: number;
-  invalid_reference_count: number;
-}
+export type HomePersonMappingReceipt = components["schemas"]["MappingReceipt"];
 
 // ---------------------------------------------------------------------------
 // Dunbar tier ranking
 // ---------------------------------------------------------------------------
 
 /** A single contact's Dunbar tier ranking entry. */
-export interface DunbarEntry {
-  contact_id: string;
-  entity_id: string;
-  canonical_name: string;
-  dunbar_tier: number;
-  dunbar_score: number;
-  dunbar_tier_override: boolean;
-  warmth?: number | null;
-  avatar_url?: string | null;
-  aliases?: string[];
-  last_interaction_at?: string | null;
-  effective_cadence_days?: number | null;
-  stale_contact_state?: "present" | "absent" | "unmeasurable";
-}
+export type DunbarEntry = components["schemas"]["DunbarEntry"];
 
 /** Response from GET /api/relationship/dunbar/ranking */
-export interface DunbarRankingResponse {
-  entries: DunbarEntry[];
-  owner_entity_id: string | null;
-  cadence_available?: boolean;
-  unmeasurable_count?: number;
-}
+export type DunbarRankingResponse = components["schemas"]["DunbarRankingResponse"];
 
 // ---------------------------------------------------------------------------
 // Overdue contacts (bu-iuol4.22)
 // ---------------------------------------------------------------------------
 
 /** A single overdue contact entry (GET /contacts/overdue?days=N). */
-export interface OverdueContact {
-  contact_id: string;
-  name: string;
-  tier: number;
-  owed_days: number;
-  last_contact_date: string | null;
-  target_cadence_days: number;
-}
+export type OverdueContact = components["schemas"]["OverdueContact"];
 
-/** Response from GET /api/relationship/contacts/overdue?days=N */
-export interface OverdueContactsResponse {
-  contacts: OverdueContact[];
-  cadence_available: boolean;
-  unmeasurable_count: number;
-}
-
-// ---------------------------------------------------------------------------
-// Pending meeting debriefs (bu-q7vx1q.63)
-// ---------------------------------------------------------------------------
-
-export interface PendingDebriefAttendee {
-  entity_id: string | null;
-  name: string | null;
-  email: string | null;
-}
-
-export interface PendingDebrief {
-  debrief_id: string;
-  /** The batch number the Telegram prompt shows; the reply is prefixed with it. */
-  number: number | null;
-  event_title: string | null;
-  occurrence_start: string;
-  prompted_at: string;
-  attendees: PendingDebriefAttendee[];
-}
-
-/** Response from GET /api/relationship/meeting-debriefs/pending */
-export interface PendingDebriefsResponse {
-  debriefs: PendingDebrief[];
-  debriefs_available: boolean;
-}
+export type PendingDebrief = components["schemas"]["PendingDebrief"];
 
 // ---------------------------------------------------------------------------
 // Dashboard conversations
@@ -5676,65 +1832,13 @@ export interface MessageToolCall {
   result?: unknown;
 }
 
-export interface Citation {
-  label: string;
-  target: string | null;
-  kind: "internal" | "external" | "unlinked";
-}
+export type Citation = components["schemas"]["ConversationCitation"];
 
 /** A single message in a dashboard conversation. */
-export interface Message {
-  id: string;
-  conversation_id: string;
-  role: "user" | "assistant";
-  content: string;
-  tool_calls: MessageToolCall[] | null;
-  error: string | null;
-  /** Canonical API field. */
-  model_name?: string | null;
-  /** Deprecated frontend-only alias retained while optimistic fixtures migrate. */
-  model?: string | null;
-  input_tokens: number | null;
-  output_tokens: number | null;
-  duration_ms: number | null;
-  session_id: string | null;
-  request_id: string | null;
-  /** Deprecated string-only compatibility projection during the rollout window. */
-  sources?: string[];
-  /** Canonical server-normalized navigation citations. */
-  citations?: Citation[];
-  /** Server-derived author of this assistant message; null for unknown/legacy rows. */
-  routed_butler?: string | null;
-  created_at: string;
-  /** Compact page-context snapshot captured with this user message, or null. */
-  page_context?: PageContext | null;
-  /** When `page_context` was captured; null whenever `page_context` is null. */
-  captured_at?: string | null;
-}
+export type Message = Omit<components["schemas"]["ConversationMessage"], "captured_at" | "citations" | "model_name" | "page_context" | "routed_butler" | "sources"> & Partial<Pick<components["schemas"]["ConversationMessage"], "captured_at" | "citations" | "model_name" | "page_context" | "routed_butler" | "sources">> & { /** Existing optimistic/legacy UI alias; never sent as API wire. */ model?: components["schemas"]["ConversationMessage"]["model_name"] };
 
 /** Summary of a dashboard conversation (list view). */
-export interface ConversationSummary {
-  id: string;
-  butler_name: string;
-  title: string | null;
-  status: "active" | "archived";
-  created_at: string;
-  updated_at: string;
-  message_count: number;
-  /**
-   * Butler this Switchboard-classification-routed conversation stuck to
-   * after its first successful route (sticky follow-ups). `null`/absent for
-   * per-butler pinned conversations and bug/system-report threads.
-   */
-  routed_butler?: string | null;
-  /**
-   * Timestamp of the most recent assistant-role message in this
-   * conversation, or `null` if none has arrived yet. This is the
-   * unread-badge watermark signal (see `use-chat-unread.ts`) because it
-   * changes whenever a confirm-loop reply is persisted.
-   */
-  latest_assistant_reply_at?: string | null;
-}
+export type ConversationSummary = components["schemas"]["ConversationSummary"];
 
 /** Query params for GET /api/butlers/{name}/conversations. */
 export interface ConversationListParams {
@@ -5766,24 +1870,7 @@ export interface PageContextVisibleResource {
  * (per-butler, one row per conversation), this is one row per matching
  * message, ranked by text relevance.
  */
-export interface MessageSearchResult {
-  message_id: string;
-  conversation_id: string;
-  role: string;
-  created_at: string;
-  butler_name: string;
-  session_id: string | null;
-  /** Plain-text excerpt around the match (markers already stripped). */
-  snippet: string;
-  /** [start, end) character offsets into `snippet`, one pair per match. */
-  highlight_ranges: [number, number][];
-  /**
-   * Dashboard path to open for more context — `/sessions/{id}` when the
-   * message has a session, else `/butlers/{butler_name}` (no dedicated
-   * conversation page exists yet).
-   */
-  deep_link: string;
-}
+export type MessageSearchResult = components["schemas"]["MessageSearchResult"];
 
 /** Query params for GET /api/conversations/messages/search. */
 export interface MessageSearchParams {
@@ -5810,15 +1897,7 @@ export interface MessageSearchParams {
  * `FloatingChatWidget.tsx`) attaches it through their shared
  * `buildMessagePayload` choke point.
  */
-export interface PageContext {
-  route: string;
-  query_params?: Record<string, string>;
-  entity_ref?: string | null;
-  visible_resource?: PageContextVisibleResource | null;
-  visible_summary?: string | null;
-  /** Server-set: true when the payload exceeded the size budget and was trimmed. */
-  truncated?: boolean;
-}
+export type PageContext = components["schemas"]["PageContext"];
 
 /** Request body for POST /api/butlers/{name}/conversations. */
 export interface CreateConversationRequest {
@@ -5843,29 +1922,6 @@ export interface SendMessageRequest {
   message_id?: string;
   /** See `PageContext` — unpopulated seam for bu-p6ey8.4. */
   page_context?: PageContext;
-}
-
-/**
- * Raw response from the canonical message-scoped dashboard-turn Stop endpoint
- * (`.../conversation-turns/{message_id}/cancel`). Always HTTP 200 -- mirrors
- * the backend's `ConversationCancelResponse`. Exactly one of
- * three honest outcomes:
- *   - `cancelled: true` -- the control plane either blocked every future
- *     runtime before invocation or every already-invoking runtime confirmed
- *     it had stopped.
- *   - `cancelled: false, already_finished: true` -- nothing was running;
- *     benign no-op, never rendered as a failure.
- *   - `cancelled: false, already_finished: false` -- cancellation was
- *     attempted but could not be confirmed; `message` explains why and the
- *     caller must surface this as a real failure, never as "stopped".
- */
-export interface ConversationCancelResponse {
-  cancelled: boolean;
-  already_finished: boolean;
-  /** Persisted thread identity, including a just-created conversation. */
-  conversation_id?: string | null;
-  session_id?: string | null;
-  message?: string | null;
 }
 
 /** SSE event types emitted by the conversation streaming endpoints. */
@@ -5938,106 +1994,16 @@ export interface ConversationSseErrorData {
 // ---------------------------------------------------------------------------
 
 /** Request body for POST /api/telegram/session/send-code */
-export interface TelegramSendCodeRequest {
-  api_id: number;
-  api_hash: string;
-  phone: string;
-  scope_consent: true;
-}
-
-/** Response from POST /api/telegram/session/send-code */
-export interface TelegramSendCodeResponse {
-  session_token: string;
-  phone_code_hash: string;
-}
+export type TelegramSendCodeRequest = components["schemas"]["SendCodeRequest"];
 
 /** Request body for POST /api/telegram/session/verify */
-export interface TelegramVerifyCodeRequest {
-  session_token: string;
-  code: string;
-  password?: string | null;
-}
-
-/** Response from POST /api/telegram/session/verify */
-export interface TelegramVerifyCodeResponse {
-  success: boolean;
-  user_name: string | null;
-  message: string;
-}
+export type TelegramVerifyCodeRequest = components["schemas"]["VerifyCodeRequest"];
 
 /** Response from GET /api/telegram/session/status */
-export interface TelegramSessionStatusResponse {
-  has_api_id: boolean;
-  has_api_hash: boolean;
-  has_session: boolean;
-  has_scope_consent: boolean;
-  ready: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// General settings
-// ---------------------------------------------------------------------------
-
-/** Response from GET/PUT /api/settings/general. */
-export interface GeneralSettings {
-  timezone: string;
-  timezone_label: string;
-  language: string;
-  date_format: string;
-  time_format: string;
-  week_starts_on: string;
-  currency: string;
-  measurement_system: "metric";
-}
-
-// ---------------------------------------------------------------------------
-// Blob storage (S3-compatible)
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Steam connector types
-// ---------------------------------------------------------------------------
-
-/** Account status for a connected Steam account. */
-export type SteamAccountStatus = "active" | "suspended" | "revoked";
-
-/** A single connected Steam account. */
-export interface SteamAccountResponse {
-  id: string;
-  steam_id: string;
-  display_name: string | null;
-  profile_url: string | null;
-  avatar_url: string | null;
-  is_primary: boolean;
-  status: SteamAccountStatus;
-  connected_at: string;
-  last_poll_at: string | null;
-}
-
-/** Response from GET /api/steam/accounts */
-export interface SteamAccountListResponse {
-  accounts: SteamAccountResponse[];
-}
+export type TelegramSessionStatusResponse = components["schemas"]["SessionStatusResponse"];
 
 /** Request body for POST /api/steam/accounts */
-export interface SteamConnectRequest {
-  steam_id: string;
-  api_key: string;
-  display_name?: string | null;
-}
-
-/** Response from POST /api/steam/accounts */
-export interface SteamConnectResponse {
-  success: boolean;
-  message: string;
-  account: SteamAccountResponse;
-}
-
-/** Response from DELETE /api/steam/accounts/{id} */
-export interface SteamDisconnectResponse {
-  success: boolean;
-  message: string;
-}
+export type SteamConnectRequest = components["schemas"]["SteamConnectRequest"];
 
 // ---------------------------------------------------------------------------
 // Healing attempts (self-healing + QA-originated investigations)
@@ -6064,59 +2030,19 @@ export type QaPatrolReadStatus =
   QaPatrolStatus | (string & { readonly __qaPatrolStatus?: never });
 
 /** Lightweight patrol record for list views — GET /api/qa/patrols */
-export interface QaPatrolSummary {
-  id: string;
-  started_at: string;
-  completed_at: string | null;
-  status: QaPatrolReadStatus;
-  findings_count: number;
-  novel_count: number;
-  dispatched_count: number;
-  log_lookback_minutes: number;
-  sources_polled: string[];
-  error_detail: string | null;
-}
+export type QaPatrolSummary = components["schemas"]["QaPatrolSummary"];
 
 /** A single finding record from a patrol — GET /api/qa/patrols/:id/findings */
-export interface QaFindingRecord {
-  id: string;
-  patrol_id: string;
-  fingerprint: string;
-  source_type: string;
-  source_butler: string;
-  severity: number;
-  exception_type: string;
-  event_summary: string;
-  call_site: string;
-  occurrence_count: number;
-  first_seen: string;
-  last_seen: string;
-  dedup_reason: string | null;
-  healing_attempt_id: string | null;
-  source_session_trigger_source: string | null;
-  structured_evidence: Record<string, unknown> | null;
-  created_at: string;
-}
+export type QaFindingRecord = components["schemas"]["QaFindingRecord"];
 
 /** Full patrol with nested findings — GET /api/qa/patrols/:id */
-export interface QaPatrolDetail extends QaPatrolSummary {
-  findings: QaFindingRecord[];
-}
+export type QaPatrolDetail = components["schemas"]["QaPatrolDetail"];
 
 /** A dismissal record — GET /api/qa/dismissals */
-export interface QaDismissal {
-  fingerprint: string;
-  dismissed_until: string;
-  dismissed_by: string;
-  created_at: string;
-}
+export type QaDismissal = components["schemas"]["QaDismissal"];
 
 /** Active dismissal embedded in a QA case dossier — GET /api/qa/cases/:id */
-export interface QaActiveDismissal {
-  fingerprint: string;
-  expires_at: string;
-  reason: string | null;
-}
+export type QaActiveDismissal = components["schemas"]["QaActiveDismissal"];
 
 /** A known issue grouped by fingerprint — GET /api/qa/known-issues */
 export interface QaKnownIssue {
@@ -6135,192 +2061,29 @@ export interface QaKnownIssue {
   dismissal: QaDismissal | null;
 }
 
-/** 24h aggregate statistics */
-export interface QaStats24h {
-  patrols_completed: number;
-  total_findings: number;
-  novel_findings: number;
-  dispatched_investigations: number;
-  prs_opened: number;
-}
-
-/** All-time aggregate statistics */
-export interface QaAllTimeStats {
-  total_patrols: number;
-  total_findings: number;
-  novel_findings: number;
-  dispatched_investigations: number;
-  prs_merged: number;
-  prs_failed: number;
-  success_rate: number;
-}
-
 /** KPI strip metrics for the QA dossier dashboard — GET /api/qa/summary */
-export interface QaKpiBlock {
-  prs_landed_24h: number;
-  /** pr_merged closures ONLY — 'time to repair', never a terminal crash. */
-  mttr_24h_seconds: number | null;
-  self_resolved_7d_pct: number;
-  active_cases_now: number;
-  /** Terminal crashes (failed/timeout/anonymization_failed) closed in the last 24h. */
-  failed_24h: number;
-  /** Prior-period comparison values for delta sub-labels. */
-  prs_landed_prior_24h: number;
-  mttr_prior_24h_seconds: number | null;
-  self_resolved_prior_7d_pct: number | null;
-  failed_prior_24h: number;
-}
+export type QaKpiBlock = components["schemas"]["QaKpiBlock"];
 
 /** Active-case status breakdown for the QA dossier dashboard — GET /api/qa/summary */
-export interface QaActiveBreakdown {
-  awaiting_ci: number;
-  escalated_open_cases: number;
-}
+export type QaActiveBreakdown = components["schemas"]["QaActiveBreakdown"];
 
 /** QA staffer summary — GET /api/qa/summary */
-export interface QaSummary {
-  staffer_status: string;
-  last_patrol_at: string | null;
-  next_patrol_at: string | null;
-  last_patrol: QaPatrolSummary | null;
-  stats_24h: QaStats24h;
-  stats_all_time: QaAllTimeStats;
-  kpis: QaKpiBlock;
-  active_breakdown: QaActiveBreakdown;
-  active_sources: string[];
-  circuit_breaker: {
-    tripped: boolean;
-    consecutive_failures: number;
-    /** Consecutive-failure threshold that trips the breaker. Optional for
-     * fixture back-compat; the real endpoint always sets it (default 5). */
-    threshold?: number;
-  };
-  credentials_status: {
-    gh_token_present: boolean | null;
-    git_author_name_present: boolean | null;
-    git_author_email_present: boolean | null;
-    provisioning_hint: string | null;
-  };
-  port: number | null;
-  model: string | null;
-  patrol_interval_minutes: number | null;
-  /** Non-null when the QA staffer's own model dispatch has an open breaker
-   * whose latest failure looks credential/auth-related (bu-hmdqz.9). */
-  runtime_credential_alert: string | null;
-}
+export type QaSummary = components["schemas"]["QaSummary"];
 
 /** Summary row for the QA Cases API — GET /api/qa/cases */
-export interface QaCaseSummary {
-  id: string;
-  short_id: string;
-  sev: "high" | "medium" | "low";
-  butler: string;
-  headline: string | null;
-  detected: string;
-  age_seconds: number;
-  state: "detect" | "diagnose" | "pr" | "landed" | "escalated" | "failed";
-  pr_state: "drafted" | "open" | "merged" | "closed" | null;
-  pr_url: string | null;
-  /** The QA staffer's investigation session, or null when none was spawned. */
-  healing_session_id: string | null;
-  /** Failing sessions that seeded the finding. Empty when none were captured. */
-  session_ids: string[];
-}
+export type QaCaseSummary = components["schemas"]["QaCaseSummary"];
 
 /** Parsed QA investigation notes embedded in a case dossier. */
-export interface QaInvestigationNotes {
-  schema_version: 1;
-  headline: string;
-  hypothesis: string;
-  blurb_segments: (
-    | string
-    | {
-        claim: string;
-        text: string;
-      }
-  )[];
-  claims: Record<
-    string,
-    {
-      evidence_ids: string[];
-      note: string;
-    }
-  >;
-  evidence_lines: {
-    id: string;
-    ts: string;
-    lvl: string;
-    butler: string;
-    msg: string;
-  }[];
-  counter_evidence: {
-    hypothesis: string;
-    verdict: "rejected" | "accepted" | "pending";
-    reason: string;
-  }[];
-  why_this_fix: string;
-  diff_snapshot: {
-    kind: "meta" | "+" | "-" | " ";
-    text: string;
-  }[];
-}
+export type QaInvestigationNotes = components["schemas"]["InvestigationNotes"];
 
 /** Pull request summary embedded in a QA case dossier. */
-export interface QaPrSummary {
-  number: number;
-  state: "drafted" | "open" | "merged" | "closed";
-  title: string;
-  branch: string;
-  ci_status: "passing" | "failing" | "pending" | "unknown" | null;
-  additions: number | null;
-  deletions: number | null;
-  opened_at: string;
-  merged_at: string | null;
-  url: string;
-}
+export type QaPrSummary = components["schemas"]["QaPrSummary"];
 
 /** A single chronological event in the QA case journal. */
-export interface QaJournalEvent {
-  id: string;
-  ts: string;
-  step:
-    | "flagged"
-    | "sampled"
-    | "cross-checked"
-    | "considered"
-    | "concluded"
-    | "drafted"
-    | "wait"
-    | "merged"
-    | "tick"
-    | "escalated";
-  text: string;
-  detail: string | null;
-  data: Record<string, unknown>;
-}
+export type QaJournalEvent = components["schemas"]["QaJournalEvent"];
 
 /** Full case payload for the QA dossier renderer — GET /api/qa/cases/:id */
-export interface QaCaseDossier {
-  case: QaCaseSummary;
-  state_track_stage:
-    "detect" | "diagnose" | "pr" | "landed" | "escalated" | "failed";
-  /** Whether a committed proposal was published as a PR, retained locally after publication failure, or absent. */
-  proposal_state: "none" | "unpublished" | "published";
-  /** Retained commit diff, projected independently so malformed narrative notes cannot hide a real local proposal. */
-  proposal_diff_snapshot: QaInvestigationNotes["diff_snapshot"];
-  /** Finding fingerprint for dismiss/undismiss actions. Null when no finding is linked yet. */
-  fingerprint: string | null;
-  dismissal: QaActiveDismissal | null;
-  investigation_notes: QaInvestigationNotes | null;
-  pr: QaPrSummary | null;
-  journal: QaJournalEvent[];
-  /** The QA staffer's investigation session. Null when no session was spawned — the dossier renders no door rather than a broken link. */
-  healing_session_id: string | null;
-  /** Failing sessions that seeded the finding. Empty when none were captured. Each links to /sessions/:id. */
-  session_ids: string[];
-  /** Raw crash text (healing_attempts.error_detail) for the 'failed' failure banner. */
-  error_detail: string | null;
-}
+export type QaCaseDossier = components["schemas"]["QaCaseDossier"];
 
 /** Params for listing QA cases */
 export interface QaCasesParams {
@@ -6352,21 +2115,7 @@ export interface QaPatrolsParams {
 }
 
 /** A single investigation record — GET /api/qa/investigations */
-export interface QaInvestigation {
-  id: string;
-  fingerprint: string;
-  butler_name: string;
-  status: string;
-  severity: number;
-  exception_type: string;
-  call_site: string;
-  sanitized_msg: string | null;
-  pr_url: string | null;
-  pr_number: number | null;
-  created_at: string;
-  updated_at: string;
-  closed_at: string | null;
-}
+export type QaInvestigation = components["schemas"]["QaInvestigation"];
 
 /** Params for listing investigations */
 export interface QaInvestigationsParams {
@@ -6375,138 +2124,26 @@ export interface QaInvestigationsParams {
   limit?: number;
 }
 
-/** Response from POST /api/qa/force-patrol */
-export interface ForcePatrolResponse {
-  /** Whether a patrol cycle was actually triggered (in-process or via the QA daemon MCP tool). */
-  triggered?: boolean;
-  message: string;
-}
-
 /** A recent healing attempt relevant to circuit breaker state */
-export interface CircuitBreakerAttempt {
-  id: string;
-  status: string;
-  closed_at: string;
-}
-
-/** Current state of the QA dispatch circuit breaker — GET /api/qa/circuit-breaker */
-export interface CircuitBreakerStatus {
-  tripped: boolean;
-  threshold: number;
-  recent_statuses: string[];
-  recent_attempts: CircuitBreakerAttempt[];
-}
-
-/** Response from POST /api/qa/circuit-breaker/reset */
-export interface CircuitBreakerResetResponse {
-  reset: boolean;
-  message: string;
-}
+export type CircuitBreakerAttempt = components["schemas"]["CircuitBreakerAttempt"];
 
 /** QA repository configuration — GET /api/qa/settings/repo */
-export interface QaRepoConfig {
-  repo_url: string;
-  clone_path: string | null;
-  last_synced_at: string | null;
-  last_sync_error: string | null;
-  created_at: string;
-  updated_at: string;
-}
+export type QaRepoConfig = components["schemas"]["QaRepoConfig"];
 
 /** Request body for PUT /api/qa/settings/repo */
-export interface QaRepoConfigUpdate {
-  repo_url: string;
-}
-
-/** Response from POST /api/qa/settings/repo/sync */
-export interface QaRepoSyncResponse {
-  synced: boolean;
-  clone_path: string | null;
-  error: string | null;
-}
+export type QaRepoConfigUpdate = components["schemas"]["QaRepoConfigUpdate"];
 
 /** Request body for PUT /api/qa/settings/git-author */
-export interface QaGitAuthorUpdate {
-  name: string;
-  email: string;
-}
-
-/** Response from PUT /api/qa/settings/git-author */
-export interface QaGitAuthorStatus {
-  git_author_name_present: boolean;
-  git_author_email_present: boolean;
-}
-
-/** A single entry in the QA repository whitelist. */
-export interface QaAllowedRepo {
-  id: string;
-  owner: string;
-  repo: string;
-  enabled: boolean;
-  created_at: string;
-  updated_at: string;
-}
+export type QaGitAuthorUpdate = components["schemas"]["QaGitAuthorUpdate"];
 
 /** Request body for adding a repository to the whitelist. */
-export interface QaAllowedRepoCreate {
-  owner_repo: string;
-  enabled?: boolean;
-}
+export type QaAllowedRepoCreate = components["schemas"]["AllowedRepoCreate"];
 
 /** Request body for toggling the enabled flag on a whitelisted repository. */
-export interface QaAllowedRepoPatch {
-  enabled: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// Runtime Config
-// ---------------------------------------------------------------------------
-
-/** Accepted tool_exposure_policy values — closed to eager_filtered|auto. */
-export type ToolExposurePolicy = "eager_filtered" | "auto";
-
-/** Response from GET /api/butlers/{name}/runtime-config. */
-export interface RuntimeConfigResponse {
-  butler_name: string;
-  core_groups: string[] | null;
-  declared_core_groups: string[] | null;
-  effective_core_groups: string[] | null;
-  core_groups_source: "git" | "runtime_narrowing";
-  core_groups_narrowing_reason: string | null;
-  declared_tool_names: string[] | null;
-  effective_tool_names: string[] | null;
-  registered_tool_names: string[] | null;
-  tool_registration_failures: Array<{
-    tool_name: string;
-    module_name: string;
-    error_type: string;
-  }> | null;
-  tool_declaration_complete: boolean | null;
-  tool_snapshot_status: "available" | "unavailable";
-  catalog_read_sensitivity: "normal" | "internal" | "confidential";
-  max_concurrent: number;
-  max_queued: number;
-  tool_exposure_policy: ToolExposurePolicy;
-  seeded_at: string | null;
-  updated_at: string | null;
-  field_tiers: Record<string, "hot" | "cold">;
-}
+export type QaAllowedRepoPatch = components["schemas"]["AllowedRepoPatch"];
 
 /** Request body for PATCH /api/butlers/{name}/runtime-config. */
-export interface RuntimeConfigPatch {
-  core_groups?: string[] | null;
-  core_groups_narrowing_reason?: string | null;
-  catalog_read_sensitivity?: "normal" | "internal" | "confidential";
-  max_concurrent?: number;
-  max_queued?: number;
-  tool_exposure_policy?: ToolExposurePolicy;
-}
-
-/** Response from PATCH /api/butlers/{name}/runtime-config. */
-export interface RuntimeConfigPatchResponse {
-  config: RuntimeConfigResponse;
-  restart_required: string[];
-}
+export type RuntimeConfigPatch = components["schemas"]["RuntimeConfigPatch"];
 
 // ---------------------------------------------------------------------------
 // Google Health connector status + scope-selective disconnect
@@ -6519,125 +2156,13 @@ export interface RuntimeConfigPatchResponse {
  * Google account exists yet; the connector itself never reports this
  * value over its heartbeat.
  */
-export type GoogleHealthConnectorState =
-  "healthy" | "degraded" | "error" | "not_configured";
+export type GoogleHealthConnectorState = components["schemas"]["GoogleHealthConnectorState"];
 
 /** Per-account connector state — one entry per health-scoped Google account. */
-export interface GoogleHealthAccountStatus {
-  /** Authenticated Google email address — stable identifier for the account. */
-  email: string;
-  /** Per-account operational state derived from connector_registry heartbeat. */
-  state: GoogleHealthConnectorState;
-  /**
-   * Connector-reported failure reason (e.g. `api_forbidden` for a 403,
-   * `scope_missing`, `token_invalid`), surfaced when the state is `degraded`
-   * or `error`. Lets the UI distinguish a failing connector from an
-   * empty-but-healthy one. `null` when healthy or no heartbeat exists.
-   */
-  error_message: string | null;
-  /** Full Google Health scope URLs granted for this account. */
-  scopes_granted: string[];
-  /** Most recent ingest timestamp for events from this account, or null. */
-  last_ingest_at: string | null;
-  /** Value of public.google_accounts.last_token_refresh_at for this account. */
-  last_token_refresh_at: string | null;
-  /** Most recently observed X-RateLimit-Remaining, or null (distinct from 0). */
-  rate_limit_remaining: number | null;
-  /** Count of sleep-session ingestion events in the last 7 days for this account. */
-  sleep_sessions_7d: number;
-  /** Count of daily-summary ingestion events in the last 7 days for this account. */
-  daily_summaries_7d: number;
-}
+export type GoogleHealthAccountStatus = components["schemas"]["AccountStatus"];
 
 /** Response from GET /api/connectors/google-health/status. */
-export interface GoogleHealthStatusResponse {
-  connected: boolean;
-  /** Full Google Health scope URLs on the primary account's granted_scopes. */
-  scopes_granted: string[];
-  /** Most recent ingest timestamp (ISO 8601), or null when none has occurred. */
-  last_ingest_at: string | null;
-  /** Last token refresh timestamp, or null. */
-  last_token_refresh_at: string | null;
-  /** Most recently observed X-RateLimit-Remaining, or null (distinct from 0). */
-  rate_limit_remaining: number | null;
-  /**
-   * Estimated timestamp the primary account's refresh token needs
-   * re-consent, or null when no estimate can be derived (production-verified
-   * accounts have no fixed refresh-token lifetime; test-mode accounts expire
-   * ~7 days after `last_token_refresh_at`).
-   */
-  token_expiry_estimate_at?: string | null;
-  /** metadata.google_health_test_mode on the primary Google account row. */
-  test_mode: boolean;
-  state: GoogleHealthConnectorState;
-  /**
-   * Worst-of account's connector failure reason, surfaced when `state` is
-   * `degraded` or `error`. `null` when no account reports an error.
-   */
-  error_message: string | null;
-  /** Count of sleep-session ingestion events in the last 7 days. */
-  sleep_sessions_7d: number;
-  /** Count of daily-summary ingestion events in the last 7 days. */
-  daily_summaries_7d: number;
-  /**
-   * Per-account status entries — one per health-scoped Google account.
-   * Empty when no primary account exists (state = not_configured).
-   * Single-account installs contain exactly one entry.
-   */
-  accounts: GoogleHealthAccountStatus[];
-  /**
-   * Email of the is_primary=true Google account, or null when none is configured.
-   * Single-account consumers can use this without inspecting the accounts list.
-   */
-  primary_account_email: string | null;
-}
-
-/** Response from DELETE /api/connectors/google-health/disconnect. */
-export interface GoogleHealthDisconnectResponse {
-  success: boolean;
-  message: string;
-  /** Scope URLs that were stripped from granted_scopes. */
-  scopes_removed: string[];
-}
-
-// ---------------------------------------------------------------------------
-// Chronicler dashboard types
-// ---------------------------------------------------------------------------
-
-/** Per-source contribution within an aggregate bucket. */
-export interface ChroniclerSourceBreakdownEntry {
-  source_name: string;
-  total_seconds: number;
-  episode_count: number;
-  tombstoned: boolean;
-}
-
-/** One category bucket from GET /api/chronicler/aggregate/by-category. */
-export interface ChroniclerCategoryBucket {
-  category: string;
-  total_seconds: number;
-  episode_count: number;
-  source_breakdown: ChroniclerSourceBreakdownEntry[];
-  /** Least-precise precision value across contributing rows. */
-  precision: string;
-  /** Shortest non-NULL retention_days across contributing rows, or null. */
-  retention_floor_days: number | null;
-}
-
-/** Response envelope for GET /api/chronicler/aggregate/by-category. */
-export interface ChroniclerCategoryBuckets {
-  start_at: string;
-  end_at: string;
-  tz: string;
-  /** Sorted by total_seconds DESC, then category ASC. */
-  buckets: ChroniclerCategoryBucket[];
-  /**
-   * Waking-window seconds (owner-tz) not covered by any activity-layer
-   * episode of any lane. Optional so older cached responses / test fixtures
-   * without this field still parse; treat a missing value as 0.
-   */
-  untracked_seconds?: number;
-}
+export type GoogleHealthStatusResponse = components["schemas"]["GoogleHealthStatusResponse"];
 
 /** Query parameters for GET /api/chronicler/aggregate/by-category. */
 export interface ChroniclerAggregateByCategoryParams {
@@ -6647,24 +2172,6 @@ export interface ChroniclerAggregateByCategoryParams {
   /** Comma-separated privacy tiers to include. Default: exclude restricted. */
   privacy_tier?: string;
   include_tombstoned?: boolean;
-}
-
-/** One (day, category) bucket from GET /api/chronicler/aggregate/by-day. */
-export interface ChroniclerAggregateByDayRow {
-  /** ISO-8601 date string YYYY-MM-DD for the bucket's calendar day. */
-  day: string;
-  category: string;
-  total_seconds: number;
-  episode_count: number;
-  /** Inclusive start of the calendar day in the requested timezone. */
-  day_start: string;
-  /** Exclusive end of the calendar day in the requested timezone. */
-  day_end: string;
-  source_breakdown: ChroniclerSourceBreakdownEntry[];
-  /** Least-precise precision value across contributing rows. */
-  precision: string;
-  /** Shortest non-NULL retention_days across contributing rows, or null. */
-  retention_floor_days: number | null;
 }
 
 /** Query parameters for GET /api/chronicler/aggregate/by-day. */
@@ -6677,74 +2184,11 @@ export interface ChroniclerAggregateByDayParams {
   include_tombstoned?: boolean;
 }
 
-/** Per-subsource projection checkpoint detail. */
-export interface ChroniclerSubsourceCheckpoint {
-  subsource: string;
-  last_run_at: string | null;
-  last_error: string | null;
-}
-
 /** Runtime state for a single source adapter, joined with projection checkpoints. */
-export interface ChroniclerSourceStateRow {
-  source_name: string;
-  chronicler_compatibility: string;
-  read_surface: string | null;
-  boundary_semantics: string | null;
-  optional_schema: boolean;
-  active: boolean;
-  inactive_reason: string | null;
-  last_run_at: string | null;
-  last_error: string | null;
-  subsource_checkpoints: ChroniclerSubsourceCheckpoint[] | null;
-}
-
-// ── Daily balance vs usual (IEA, tasks.md §9b, bu-jc6htw.2) ─────────────────
-
-/**
- * One lane's balance for the target day, from GET /api/chronicler/balance.
- * Baseline is a trailing rolling-window mean over the same materialized
- * per-day rollups the backend's daily rollup job writes.
- */
-export interface ChroniclerBalanceLaneRow {
-  lane: string;
-  seconds: number;
-  /**
-   * Trailing rolling-window mean seconds for this lane, or null when there is
-   * no materialized rollup history yet within the lookback window — NOT the
-   * same as a real 0 baseline.
-   */
-  baseline_seconds: number | null;
-  /** `seconds - baseline_seconds`. Null whenever `baseline_seconds` is null. */
-  delta_seconds: number | null;
-  baseline_sample_days: number;
-  /**
-   * True when a source contributing to this lane is `feeder_dark` for the
-   * target day. Render as "data unavailable" — never as a truthful zero/delta.
-   */
-  unavailable: boolean;
-}
+export type ChroniclerSourceStateRow = components["schemas"]["SourceStateRow"];
 
 /** Response envelope for GET /api/chronicler/balance. */
-export interface ChroniclerBalanceResponse {
-  local_date: string;
-  timezone: string;
-  /**
-   * Materialization state of the target day's rollup:
-   * - `"materialized"` — rows written, `lanes` reflect real data;
-   * - `"not_yet_materialized"` — no rows yet (legitimate absence, not error);
-   * - `"unknown"` — the query failed (see `balance_source_error`).
-   */
-  status: "materialized" | "not_yet_materialized" | "unknown";
-  baseline_lookback_days: number;
-  /** Empty when `status !== "materialized"`; one entry per lane otherwise. */
-  lanes: ChroniclerBalanceLaneRow[];
-  /**
-   * True when the underlying query raised — `lanes` is empty in that case,
-   * never a truthful empty/zero result. Distinct from
-   * `status: "not_yet_materialized"` and from a lane's `unavailable`.
-   */
-  balance_source_error: boolean;
-}
+export type ChroniclerBalanceResponse = components["schemas"]["BalanceResponse"];
 
 /** Query parameters for GET /api/chronicler/balance. */
 export interface ChroniclerBalanceParams {
@@ -6754,54 +2198,11 @@ export interface ChroniclerBalanceParams {
   lookback_days?: number;
 }
 
-// ── Trends (IEA, tasks.md §9b, bu-jc6htw.2) ─────────────────────────────────
-
-/** One lane's balance for one day within a trends window. */
-export interface ChroniclerTrendLaneDay {
-  local_date: string;
-  status: "materialized" | "not_yet_materialized" | "unknown";
-  seconds: number;
-  baseline_seconds: number | null;
-  delta_seconds: number | null;
-  unavailable: boolean;
-}
-
 /** One lane's day-by-day series across the requested trends window. */
-export interface ChroniclerTrendLaneSeries {
-  lane: string;
-  /** Ordered by local_date ASC, one entry per day in [start_date, end_date]. */
-  days: ChroniclerTrendLaneDay[];
-  /** Trailing run of consecutive non-zero-activity days ending at end_date. */
-  streak_days: number;
-}
-
-/** One day where a lane's total deviated sharply from its baseline. */
-export interface ChroniclerTrendAnomaly {
-  lane: string;
-  local_date: string;
-  seconds: number;
-  baseline_seconds: number;
-  delta_seconds: number;
-  /** `"spike"` when seconds > baseline, `"drop"` when seconds < baseline. */
-  direction: "spike" | "drop";
-}
+export type ChroniclerTrendLaneSeries = components["schemas"]["TrendLaneSeries"];
 
 /** Response envelope for GET /api/chronicler/trends. */
-export interface ChroniclerTrendsResponse {
-  window: "week" | "month";
-  start_date: string;
-  end_date: string;
-  tz: string;
-  baseline_lookback_days: number;
-  lanes: ChroniclerTrendLaneSeries[];
-  /** Ordered by local_date ASC, then lane ASC. */
-  anomalies: ChroniclerTrendAnomaly[];
-  /**
-   * True when the underlying rollup query raised — `lanes`/`anomalies` are
-   * empty in that case, never a truthful empty/zero result.
-   */
-  trends_source_error: boolean;
-}
+export type ChroniclerTrendsResponse = components["schemas"]["TrendsResponse"];
 
 /** Query parameters for GET /api/chronicler/trends. */
 export interface ChroniclerTrendsParams {
@@ -6811,86 +2212,14 @@ export interface ChroniclerTrendsParams {
   lookback_days?: number;
 }
 
-// ── Daily rollups + flags (bu-333dq bead 5; narrative bu-4qymf/chronicler_020) ──
-
-/** One lane's totals for a single local day, from GET /api/chronicler/rollups. */
-export interface ChroniclerRollupLaneRow {
-  lane: string;
-  seconds: number;
-  episode_count: number;
-  distinct_place_count: number | null;
-  /**
-   * True when a source contributing to this lane is flagged `feeder_dark`
-   * for this day. Render this lane as "data unavailable" — never as a
-   * truthful zero — regardless of what `seconds` says.
-   */
-  unavailable: boolean;
-}
-
 /** One deterministic anomaly-flag row from `chronicler.daily_rollup_flags`. */
-export interface ChroniclerRollupFlagRow {
-  /** One of `feeder_dark`, `sleep_missing`, `routine_break`, `lane_share_outlier`. */
-  flag_type: string;
-  /** One of `info`, `warning`. */
-  severity: string;
-  detail: Record<string, unknown>;
-  /**
-   * Optional one-line natural-language label for this flag, from the bounded
-   * once-daily LLM labeling pass (migration chronicler_020). `null` is normal
-   * and NOT an error — the pass is optional, has not run for this day, or
-   * produced no label. Render its absence as "no label", never as a degraded
-   * state (`flag_type`/`severity`/`detail` are always present).
-   */
-  narrative: string | null;
-}
+export type ChroniclerRollupFlagRow = components["schemas"]["RollupFlagRow"];
 
 /** One local calendar day's rollup + flags, from GET /api/chronicler/rollups. */
-export interface ChroniclerRollupDay {
-  /** ISO-8601 date string (YYYY-MM-DD), local to `timezone`. */
-  local_date: string;
-  timezone: string;
-  /**
-   * - `"materialized"` — the daily rollup job has written this day's rows;
-   *   `lanes`/`flags` reflect real data.
-   * - `"not_yet_materialized"` — no rows exist yet (day not fully elapsed,
-   *   or outside the job's lookback window). A legitimate absence, not an
-   *   error — never render this as a false all-clear zero, but also never
-   *   treat it as a degraded/error state either.
-   * - `"unknown"` — the query for this window failed (see
-   *   {@link ChroniclerRollupsResponse.rollups_source_error}); this day's
-   *   `lanes`/`flags` are empty because nothing could be read.
-   */
-  status: "materialized" | "not_yet_materialized" | "unknown";
-  lanes: ChroniclerRollupLaneRow[];
-  flags: ChroniclerRollupFlagRow[];
-  /**
-   * Optional one-line prose summary of this local day, from the bounded
-   * once-daily LLM labeling pass (migration chronicler_020). `null` is normal
-   * and NOT an error — the labeling pass is optional, has not run for this day
-   * (e.g. days before the feature), or produced no summary. Render its absence
-   * as nothing/a neutral placeholder, never as a degraded state. Always `null`
-   * when `status !== "materialized"` (no rows carry it).
-   */
-  narrative: string | null;
-}
+export type ChroniclerRollupDay = components["schemas"]["RollupDay"];
 
 /** Response envelope for GET /api/chronicler/rollups. */
-export interface ChroniclerRollupsResponse {
-  start_date: string;
-  end_date: string;
-  tz: string;
-  /** Ordered by local_date ASC, one entry per day in [start_date, end_date]. */
-  days: ChroniclerRollupDay[];
-  /**
-   * True when the underlying query raised instead of returning rows —
-   * mirrors the backend's `aggregates_available`-family degraded-envelope
-   * convention. Every day in `days` comes back `status: "unknown"` with
-   * empty `lanes`/`flags` when this is true. Never treat a missing/false
-   * value alone as proof of freshness, only as "this request did not fail
-   * outright".
-   */
-  rollups_source_error: boolean;
-}
+export type ChroniclerRollupsResponse = components["schemas"]["RollupsResponse"];
 
 /**
  * Query parameters for GET /api/chronicler/rollups. Provide either `date`
@@ -6906,41 +2235,10 @@ export interface ChroniclerRollupsParams {
 // ── Who-you-were-with (IEA, tasks.md §9b, bu-jc6htw.2) ──────────────────────
 
 /** One resolved (or unattributed) companion for a who-you-were-with window. */
-export interface ChroniclerCompanionEntry {
-  /** Null when the companion could not be resolved (`unattributed=true`). */
-  entity_id: string | null;
-  /**
-   * Null when unattributed, OR when entity_id is known but the name lookup
-   * failed — see {@link ChroniclerWhoYouWereWithResponse.companion_names_unavailable}
-   * to distinguish the two.
-   */
-  display_name: string | null;
-  unattributed: boolean;
-  /** E.g. "Telegram", "email", "in-person" for a co-presence social activity. */
-  channel: string;
-  co_present_seconds: number;
-  episode_count: number;
-}
+export type ChroniclerCompanionEntry = components["schemas"]["CompanionEntry"];
 
 /** Response envelope for GET /api/chronicler/who-you-were-with. */
-export interface ChroniclerWhoYouWereWithResponse {
-  start_at: string;
-  end_at: string;
-  tz: string;
-  /** Sorted by co_present_seconds DESC. */
-  companions: ChroniclerCompanionEntry[];
-  /**
-   * True when entity_id → display_name resolution failed. Identity/duration/
-   * channel data is still trustworthy; only display names are degraded.
-   * Distinct from an entry's own `unattributed` (identity genuinely unknown).
-   */
-  companion_names_unavailable: boolean;
-  /**
-   * True when the chronicler-own-schema episode query itself failed —
-   * `companions` is empty in that case, never a truthful empty result.
-   */
-  who_you_were_with_source_error: boolean;
-}
+export type ChroniclerWhoYouWereWithResponse = components["schemas"]["WhoYouWereWithResponse"];
 
 /** Query parameters for GET /api/chronicler/who-you-were-with. */
 export interface ChroniclerWhoYouWereWithParams {
@@ -6949,60 +2247,8 @@ export interface ChroniclerWhoYouWereWithParams {
   tz?: string;
 }
 
-// ── Activity evidence chain (IEA, tasks.md §9a) ────────────────────────────
-
-/** One corroborating signal backing an activity, resolved to its point-event. */
-export interface ChroniclerEvidenceChainLink {
-  event_id: string;
-  source_name: string;
-  event_type: string;
-  occurred_at: string;
-  /** How the point-event relates to the activity. */
-  relation:
-    "supports" | "boundary_start" | "boundary_end" | "evidence" | string;
-  /** Human-readable label — the event title, else a source/type fallback. */
-  descriptor: string;
-  privacy: string;
-}
-
-/** Response envelope for GET /api/chronicler/episodes/{id}/evidence-chain. */
-export interface ChroniclerActivityEvidenceChain {
-  episode_id: string;
-  /** The episode's IEA layer; only `activity` rows carry a meaningful chain. */
-  layer: string;
-  confidence: "high" | "medium" | "low" | string;
-  /** Denormalized point-event id list from `episodes.evidence_refs`. */
-  evidence_refs: string[];
-  /** Resolved evidence links, ordered by occurred_at ASC. */
-  links: ChroniclerEvidenceChainLink[];
-}
-
-// ── Low-confidence correction prompts (IEA, tasks.md §9a) ──────────────────
-
-/** One low-confidence activity surfaced for owner confirmation / relabel. */
-export interface ChroniclerCorrectionPrompt {
-  episode_id: string;
-  source_name: string;
-  episode_type: string;
-  title: string | null;
-  start_at: string;
-  end_at: string | null;
-  /** The lane the activity is currently counted toward, or null. */
-  best_guess_lane: string | null;
-  confidence: string;
-  evidence_refs: string[];
-  /** Number of corroborating evidence links — low here is why confidence is low. */
-  evidence_count: number;
-}
-
 /** Response envelope for GET /api/chronicler/correction-prompts. */
-export interface ChroniclerCorrectionPrompts {
-  start_at: string;
-  end_at: string;
-  tz: string;
-  /** Low-confidence activities, ordered by start_at ASC. */
-  prompts: ChroniclerCorrectionPrompt[];
-}
+export type ChroniclerCorrectionPrompts = components["schemas"]["CorrectionPrompts"];
 
 /** Query parameters for GET /api/chronicler/correction-prompts. */
 export interface ChroniclerCorrectionPromptsParams {
@@ -7026,35 +2272,7 @@ export interface ChroniclerEpisodesParams {
 }
 
 /** A single Chronicler episode (corrected view). */
-export interface ChroniclerEpisode {
-  id: string;
-  source_name: string;
-  source_ref: string;
-  episode_type: string;
-  start_at: string;
-  end_at: string | null;
-  precision: string;
-  title: string | null;
-  payload: Record<string, unknown>;
-  privacy: string;
-  retention_days: number | null;
-  tombstone_at: string | null;
-  canonical_start_at: string;
-  canonical_end_at: string | null;
-  canonical_title: string | null;
-  canonical_privacy: string;
-  corrected_at: string | null;
-  correction_note: string | null;
-  created_at: string;
-  updated_at: string;
-  /**
-   * Stable category string derived from `(source_name, episode_type)` by the
-   * backend (`chronicler.aggregations.category_for`). Always emitted by the
-   * backend; one of the values in the lane taxonomy (e.g. `work`, `calendar`,
-   * `music`, ...) or `other` when the source/type pair is unmapped.
-   */
-  category: string;
-}
+export type ChroniclerEpisode = components["schemas"]["ChroniclerEpisode"];
 
 /**
  * Fresh day-close cache response: prose + provenance refs.
@@ -7089,31 +2307,11 @@ export type ChroniclerDayCloseResponse =
   | ChroniclerDayCloseStaleResponse
   | ChroniclerDayCloseInvalidResponse;
 
-/** Successful POST /aggregate/day-close/refresh result with a persisted cache row. */
-export interface ChroniclerDayCloseRefreshResponse {
-  cache_key: string;
-  cache_built_at: string;
-  invalid: boolean;
-  invalid_reason: "inadmissible_prose" | "date_mismatch" | null;
-}
-
-/** Successful refresh for a validated canonical bundle with no episodes or events. */
-export interface ChroniclerDayCloseRefreshQuietResponse {
-  cache_key: string;
-  quiet: true;
-}
-
 /** POST /aggregate/day-close/refresh success shape. */
-export type ChroniclerDayCloseRefreshResult =
-  ChroniclerDayCloseRefreshResponse | ChroniclerDayCloseRefreshQuietResponse;
+export type ChroniclerDayCloseRefreshResult = ApiResult<"/chronicler/aggregate/day-close/refresh", "POST">;
 
 /** Required body for POST /api/chronicler/aggregate/day-close/refresh. */
-export interface ChroniclerDayCloseRefreshRequest {
-  /** Settled local calendar date in YYYY-MM-DD form. */
-  date: string;
-  /** Exact IANA timezone that defines this refresh tuple. */
-  tz: string;
-}
+export type ChroniclerDayCloseRefreshRequest = components["schemas"]["DayCloseRefreshRequest"];
 
 /** Query parameters for GET /api/chronicler/aggregate/day-close. */
 export interface ChroniclerDayCloseParams {
@@ -7123,43 +2321,6 @@ export interface ChroniclerDayCloseParams {
   tz: string;
 }
 
-/** A single Chronicler point event (corrected view). */
-export interface ChroniclerPointEvent {
-  id: string;
-  source_name: string;
-  source_ref: string;
-  event_type: string;
-  occurred_at: string;
-  precision: string;
-  title: string | null;
-  payload: Record<string, unknown>;
-  privacy: string;
-  retention_days: number | null;
-  tombstone_at: string | null;
-  canonical_occurred_at: string;
-  canonical_title: string | null;
-  canonical_privacy: string;
-  corrected_at: string | null;
-  correction_note: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-/** A single Chronicler override record. */
-export interface ChroniclerOverride {
-  id: string;
-  target_kind: string;
-  target_id: string;
-  corrected_start_at: string | null;
-  corrected_end_at: string | null;
-  corrected_title: string | null;
-  corrected_privacy: string | null;
-  corrected_tombstone_at: string | null;
-  note: string | null;
-  submitted_by: string | null;
-  created_at: string;
-}
-
 /**
  * Request body for `POST /api/chronicler/episodes/{id}/corrections` — the
  * episode-correction write path (JARVIS audit move 6, bu-86c4c.15). At least
@@ -7167,15 +2328,7 @@ export interface ChroniclerOverride {
  * Carries no `submitted_by`: the server derives attribution from the
  * authenticated principal and ignores any value a client sends.
  */
-export interface SubmitCorrectionRequest {
-  corrected_start_at?: string | null;
-  corrected_end_at?: string | null;
-  corrected_title?: string | null;
-  /** One of 'normal', 'sensitive', 'restricted'. */
-  corrected_privacy?: string | null;
-  corrected_tombstone_at?: string | null;
-  note?: string | null;
-}
+export type SubmitCorrectionRequest = components["schemas"]["SubmitCorrectionRequest"];
 
 /** Query parameters for GET /api/chronicler/events. */
 export interface ChroniclerEventsParams {
@@ -7186,16 +2339,6 @@ export interface ChroniclerEventsParams {
   include_tombstoned?: boolean;
   offset?: number;
   limit?: number;
-}
-
-/**
- * Response from POST /api/chronicler/episodes/{id}/explain.
- * Returned when the per-episode LLM drilldown succeeds and a cache row is written.
- */
-export interface ChroniclerEpisodeExplainResponse {
-  episode_id: string;
-  cache_key: string;
-  cache_built_at: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -7216,41 +2359,10 @@ export interface ChroniclerEpisodeExplainResponse {
  * has missed one or more evidence-backed weekly mining runs; a declared row
  * is never made stale by the miner.
  */
-export interface ChroniclerRoutine {
-  id: string;
-  /** Bitmask over ISO weekday, bit 0 = Monday ... bit 6 = Sunday. */
-  dow_mask: number;
-  /** Local wall-clock start, "HH:MM:SS". */
-  window_start_local: string;
-  /** Local wall-clock end, "HH:MM:SS". */
-  window_end_local: string;
-  timezone: string;
-  label: string;
-  support_count: number;
-  confidence: number;
-  evidence_summary: Record<string, unknown>;
-  origin: "mined" | "declared";
-  enabled: boolean;
-  /** Most recent miner re-detection; null for owner-declared routines. */
-  last_confirmed_at: string | null;
-  /** Consecutive evidence-backed mining runs that did not re-detect this row. */
-  missed_mine_cycles: number;
-  /** Whether a mined row has missed at least one mining cycle. */
-  stale: boolean;
-  created_at: string;
-  updated_at: string;
-}
+export type ChroniclerRoutine = components["schemas"]["RoutineRow"];
 
 /** Request body for POST /api/chronicler/routines (declare a schedule). */
-export interface ChroniclerCreateRoutineRequest {
-  dow_mask: number;
-  /** "HH:MM" or "HH:MM:SS". */
-  window_start_local: string;
-  window_end_local: string;
-  label: string;
-  timezone?: string;
-  enabled?: boolean;
-}
+export type ChroniclerCreateRoutineRequest = components["schemas"]["CreateRoutineRequest"];
 
 /**
  * Request body for PATCH /api/chronicler/routines/{id}.
@@ -7259,41 +2371,13 @@ export interface ChroniclerCreateRoutineRequest {
  * (`dow_mask`/`window_*`/`timezone`) apply only to declared routines — the
  * server rejects them with 400 on a mined routine.
  */
-export interface ChroniclerUpdateRoutineRequest {
-  enabled?: boolean;
-  label?: string;
-  dow_mask?: number;
-  window_start_local?: string;
-  window_end_local?: string;
-  timezone?: string;
-}
-
-// ---------------------------------------------------------------------------
-// Relationship butler: entity-level tab types
-// ---------------------------------------------------------------------------
-
-/** A note fact for a relationship entity (predicate='contact_note'). */
-export interface EntityNote {
-  id: string;
-  content: string;
-  emotion: string | null;
-  created_at: string | null;
-}
+export type ChroniclerUpdateRoutineRequest = components["schemas"]["UpdateRoutineRequest"];
 
 /** An interaction fact for a relationship entity (predicate LIKE 'interaction_%'). */
-export interface EntityInteraction {
-  id: string;
-  type: string;
-  summary: string | null;
-  occurred_at: string | null;
-  direction: string | null;
-}
+export type EntityInteraction = components["schemas"]["EntityInteraction"];
 
 /** Request body for POST /api/relationship/entities/{id}/notes. */
-export interface CreateEntityNoteRequest {
-  content: string;
-  emotion?: string | null;
-}
+export type CreateEntityNoteRequest = components["schemas"]["CreateEntityNoteRequest"];
 
 /**
  * Request body for POST /api/relationship/entities/{id}/interactions.
@@ -7302,60 +2386,19 @@ export interface CreateEntityNoteRequest {
  * sending it also opts the write into the backend's same-day idempotency
  * guard, which answers 409 rather than logging the interaction twice.
  */
-export interface CreateEntityInteractionRequest {
-  type: string;
-  summary?: string | null;
-  occurred_at?: string | null;
-  direction?: string | null;
-  duration_minutes?: number | null;
-}
+export type CreateEntityInteractionRequest = components["schemas"]["CreateEntityInteractionRequest"];
 
 /** Request body for POST /api/relationship/entities/{id}/gifts. */
-export interface CreateEntityGiftRequest {
-  description: string;
-  occasion?: string | null;
-}
+export type CreateEntityGiftRequest = components["schemas"]["CreateEntityGiftRequest"];
 
 /** A gift fact for a relationship entity (predicate='gift'). */
-export interface EntityGift {
-  id: string;
-  description: string | null;
-  occasion: string | null;
-  status: string | null;
-  created_at: string | null;
-}
+export type EntityGift = components["schemas"]["EntityGift"];
 
 /** A loan fact for a relationship entity (predicate='loan'). */
-export interface EntityLoan {
-  id: string;
-  description: string | null;
-  amount_cents: string | null;
-  currency: string | null;
-  direction: string | null;
-  settled: string | null;
-  settled_at: string | null;
-  created_at: string | null;
-}
+export type EntityLoan = components["schemas"]["EntityLoan"];
 
 /** A single entry in a relationship entity's unified timeline. */
-export interface EntityTimelineItem {
-  kind: string;
-  id: string;
-  content: string | null;
-  valid_at: string | null;
-  predicate: string;
-  metadata: Record<string, unknown> | null;
-}
-
-/** Completeness-tagged interaction evidence for a rolling cadence window. */
-export interface EntityCadenceResponse {
-  window_days: number;
-  window_started_at: string;
-  window_ended_at: string;
-  interaction_count: number;
-  completeness: "complete" | "incomplete";
-  has_more: boolean;
-}
+export type EntityTimelineItem = components["schemas"]["EntityTimelineItem"];
 
 /** A contact linked to an entity, for the entity detail page.
  *
@@ -7369,88 +2412,20 @@ export interface EntityCadenceResponse {
  * fact for (`email`/`telegram`); the channel-preference control offers only
  * these. Both are entity-level and attached to the first linked contact only.
  */
-export interface LinkedContactSummary {
-  id: string;
-  full_name: string;
-  email: string | null;
-  phone: string | null;
-  contact_info: ContactInfoEntry[];
-  labels: Label[];
-  preferred_channel: string | null;
-  reachable_channels: string[];
-}
+export type LinkedContactSummary = components["schemas"]["LinkedContactSummary"];
 
 /** One row of message activity for an entity, grouped by channel + thread. */
-export interface MessageThreadSummary {
-  source_channel: string | null;
-  thread_identity: string | null;
-  sender_identity: string | null;
-  message_count: number;
-  last_received_at: string | null;
-  last_direction: string | null;
-  last_snippet: string | null;
-}
-
-/** Response envelope for PATCH /entities/{id}/dunbar-tier. */
-export interface DunbarTierOverrideResponse {
-  entity_id: string;
-  contact_id: string;
-  tier: number | null;
-  action: string;
-  message: string;
-}
-
-/**
- * Relationship-scoped entity detail from GET /api/relationship/entities/{id}.
- * Separate from the memory-butler EntityDetail — this surface is activity-focused.
- *
- * `state` is the highest-priority curation bucket this entity belongs to, using
- * the same classification logic as GET /entities/queue.
- *
- * `state_evidence` mirrors the `evidence` dict from the queue for non-healthy
- * states, or null for healthy entities.
- */
-export interface RelationshipEntityDetail {
-  id: string;
-  canonical_name: string;
-  entity_type: string;
-  aliases: string[];
-  roles: string[];
-  metadata: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-  state: "healthy" | "unidentified" | "duplicate-candidate" | "stale";
-  state_evidence: Record<string, unknown> | null;
-  entity_info: EntityInfoEntry[];
-}
+export type MessageThreadSummary = components["schemas"]["MessageThreadSummary"];
 
 /**
  * Compact entity row from GET /api/butlers/relationship/entities (list+filter API, §9.1).
  * Distinct from the memory-butler EntitySummary: this surface includes relationship-scoped
  * fields (tier, last_seen, first_seen, contact_fact_count) instead of memory-butler fact_count.
  */
-export interface RelationshipEntitySummary {
-  id: string;
-  canonical_name: string;
-  entity_type: string;
-  aliases: string[];
-  roles: string[];
-  metadata: Record<string, unknown>;
-  tier: number | null;
-  last_seen: string | null;
-  first_seen: string | null;
-  contact_fact_count: number;
-  created_at: string;
-  updated_at: string;
-}
+export type RelationshipEntitySummary = components["schemas"]["relationship_api_models_internal__EntitySummary"];
 
 /** Paginated response from GET /api/butlers/relationship/entities (§9.1). */
-export interface RelationshipEntityListResponse {
-  items: RelationshipEntitySummary[];
-  total: number;
-  limit: number;
-  offset: number;
-}
+export type RelationshipEntityListResponse = components["schemas"]["EntityListResponse"];
 
 /** Query parameters for the relationship entity list endpoint (§9.1). */
 export interface RelationshipEntityListParams {
@@ -7466,72 +2441,26 @@ export interface RelationshipEntityListParams {
 }
 
 /** One entry in the entity curation queue (§9.5). */
-export interface RelationshipQueueEntry {
-  entity_id: string;
-  canonical_name: string;
-  entity_type: string;
-  bucket: "unidentified" | "duplicate-candidate" | "stale";
-  evidence: Record<string, unknown>;
-  last_seen: string | null;
-}
+export type RelationshipQueueEntry = components["schemas"]["QueueEntry"];
 
 /** Paginated curation queue response from GET /api/butlers/relationship/entities/queue (§9.5). */
-export interface RelationshipQueueResponse {
-  items: RelationshipQueueEntry[];
-  total: number;
-  limit: number;
-  offset: number;
-}
+export type RelationshipQueueResponse = components["schemas"]["QueueResponse"];
 
 /** Request body for POST /api/butlers/relationship/entities. */
-export interface PromoteRelationshipEntityRequest {
-  entity_id: string;
-  canonical_name: string;
-  entity_type: string;
-  roles?: string[] | null;
-  initial_facts?: Array<{
-    predicate: string;
-    object: string;
-    object_kind?: "literal" | "entity";
-    conf?: number;
-    primary?: boolean | null;
-  }>;
-}
+export type PromoteRelationshipEntityRequest = components["schemas"]["PromoteEntityRequest"];
 
 /** Request body for POST /api/butlers/relationship/entities (create path — entity_id omitted). */
-export interface CreateRelationshipEntityRequest {
-  canonical_name: string;
-  entity_type: string;
-  roles?: string[] | null;
-}
+export type CreateRelationshipEntityRequest = components["schemas"]["PromoteEntityRequest"];
 
 /** Request body for POST /api/butlers/relationship/entities/{id}/merge. */
-export interface MergeRelationshipEntitiesRequest {
-  entityA: string;
-  entityB: string;
-  keepAs: "A" | "B";
-}
-
-/** Response for POST /api/butlers/relationship/entities/{id}/merge. */
-export interface MergeRelationshipEntitiesResponse {
-  kept_entity_id: string;
-  tombstoned_entity_id: string;
-  subject_facts_rewired: number;
-  object_facts_rewired: number;
-  rebind_id: string | null;
-  receipts: EntityRebindReceipt[];
-  failed_schemas: string[];
-}
+export type MergeRelationshipEntitiesRequest = components["schemas"]["MergeEntitiesRequest"];
 
 // ---------------------------------------------------------------------------
 // Merge-review compare — POST /api/relationship/entities/compare (relationship-merge-review)
 // ---------------------------------------------------------------------------
 
 /** Request body for POST /api/relationship/entities/compare. */
-export interface CompareEntitiesRequest {
-  entity_a: string;
-  entity_b: string;
-}
+export type CompareEntitiesRequest = components["schemas"]["CompareRequest"];
 
 /**
  * One fact row in a compare block, carrying full provenance.
@@ -7541,38 +2470,10 @@ export interface CompareEntitiesRequest {
  * row belongs to so the two-column diff can place it. ``last_seen`` is null on
  * narrative-store rows (no ``last_seen`` column).
  */
-export interface CompareFact extends FactAttribution {
-  id: string;
-  entity_id: string;
-  predicate: string;
-  object: string;
-  object_kind: string;
-  store: "identity" | "narrative";
-  src: string;
-  conf: number;
-  verified: boolean;
-  primary?: boolean | null;
-  observed_at?: string | null;
-  last_seen?: string | null;
-  staleness_band: string;
-}
-
-/** Identity summary of an entity inside a compare block. ``tier`` is nullable. */
-export interface CompareEntitySummary {
-  id: string;
-  canonical_name: string;
-  entity_type: string;
-  aliases: string[];
-  tier: number | null;
-  state: string;
-}
+export type CompareFact = components["schemas"]["CompareFact"];
 
 /** Per-entity block (``a`` or ``b``) in a compare response. */
-export interface CompareEntityBlock {
-  entity: CompareEntitySummary;
-  identity_facts: CompareFact[];
-  narrative_facts: CompareFact[];
-}
+export type CompareEntityBlock = components["schemas"]["CompareEntityBlock"];
 
 /**
  * Response for POST /api/relationship/entities/compare — a structural diff only.
@@ -7585,93 +2486,30 @@ export interface CompareEntityBlock {
  *
  * No scoring, no ranking, no similarity percentage, no generated text.
  */
-export interface CompareEntitiesResponse {
-  a: CompareEntityBlock;
-  b: CompareEntityBlock;
-  shared: CompareFact[];
-  divergent: CompareFact[];
-}
+export type CompareEntitiesResponse = components["schemas"]["CompareResponse"];
 
 /** Request body for POST /api/relationship/entities/dismiss-pair. */
-export interface DismissEntityPairRequest {
-  entity_a: string;
-  entity_b: string;
-}
-
-/** Response for POST /api/relationship/entities/dismiss-pair. */
-export interface DismissEntityPairResponse {
-  review_id: string;
-  entity_a: string;
-  entity_b: string;
-  outcome: "dismissed";
-  shared_facts: CompareFact[];
-}
-
-/** Response for POST /api/butlers/relationship/entities/queue/dismiss. */
-export interface DismissRelationshipEntityQueueResponse {
-  dismissed: Array<{
-    entity_id: string;
-    outcome: string;
-    fact_id: string | null;
-    action_id: string | null;
-  }>;
-  status: string;
-}
+export type DismissEntityPairRequest = components["schemas"]["DismissPairRequest"];
 
 // ---------------------------------------------------------------------------
 // System endpoints — GET /api/system/*
 // ---------------------------------------------------------------------------
 
 /** Software identity and process uptime facts. */
-export interface InstanceFacts {
-  version: string;
-  uptime_seconds: number;
-  started_at: string;
-}
+export type InstanceFacts = components["schemas"]["InstanceFacts"];
 
 /** Disk footprint of a single butler schema. */
-export interface SchemaSize {
-  schema_name: string;
-  size_bytes: number;
-  table_count: number;
-}
-
-/** Disk footprint of a single table. */
-export interface TableSize {
-  schema_name: string;
-  table_name: string;
-  size_bytes: number;
-}
+export type SchemaSize = components["schemas"]["SchemaSize"];
 
 /** PostgreSQL catalog size facts for the running database. */
-export interface DatabaseFacts {
-  total_size_bytes: number;
-  schemas: SchemaSize[];
-  largest_tables: TableSize[];
-  growth_rate_bytes_per_day: number | null;
-}
-
-/** Single backup event in the backup history list.
- *
- * `status` (bu-9r3hd.5) is a real, verified per-artifact verdict, not a
- * fabricated constant -- see `BackupFacts.last_backup_status`.
- */
-export interface BackupEvent {
-  completed_at: string;
-  size_bytes: number;
-  status: "healthy" | "corrupt" | "empty";
-}
+export type DatabaseFacts = components["schemas"]["DatabaseFacts"];
 
 /** Result of the most recent weekly restore-drill attempt (bu-9r3hd.5).
  *
  * `result: "pending"` means the drill has never run yet -- a real "unknown"
  * state, never rendered as a passing drill.
  */
-export interface RestoreDrillFacts {
-  checked_at: string | null;
-  result: "pass" | "fail" | "pending" | "degraded";
-  detail: string | null;
-}
+export type RestoreDrillFacts = components["schemas"]["RestoreDrillFacts"];
 
 /** Outcome of the most recent backup *run*, successful or not (bu-xrqyu).
  *
@@ -7683,12 +2521,7 @@ export interface RestoreDrillFacts {
  * `result: "unknown"` means no readable receipt was found -- a real "we do not
  * know", never folded into a pass, and never rendered as a failure either.
  */
-export interface BackupRunFacts {
-  result: "success" | "failed" | "unknown";
-  finished_at: string | null;
-  exit_code: number | null;
-  reason: string | null;
-}
+export type BackupRunFacts = components["schemas"]["BackupRunFacts"];
 
 /** Backup recency, verified artifact health, run outcome, and drill facts.
  *
@@ -7698,70 +2531,13 @@ export interface BackupRunFacts {
  * healthy state. For `last_run` that absence is the same state the backend
  * spells `result: "unknown"`, so both collapse onto one code path.
  */
-export interface BackupFacts {
-  last_backup_at: string | null;
-  last_backup_size_bytes: number | null;
-  backup_source_reachable: boolean;
-  backup_history: BackupEvent[];
-  last_backup_status?: "healthy" | "corrupt" | "empty" | "missing";
-  backup_stale?: boolean;
-  last_run?: BackupRunFacts;
-  restore_drill?: RestoreDrillFacts;
-}
-
-/** A single external actor that has received data from this instance. */
-export interface EgressActor {
-  actor_id: string;
-  display_name: string;
-  last_seen_at: string;
-  total_calls: number;
-  data_types: string[];
-}
+export type BackupFacts = components["schemas"]["BackupFacts"];
 
 /** Aggregated catalog of external-actor egress events. */
-export interface EgressCatalog {
-  actors: EgressActor[];
-  catalog_covers_from: string | null;
-}
-
-/** Per-butler liveness and session snapshot. */
-export interface ButlerHeartbeat {
-  name: string;
-  last_heartbeat_at: string | null;
-  last_session_at: string | null;
-  active_session_count: number;
-  heartbeat_age_seconds: number | null;
-  error?: string | null;
-}
-
-/** Collection of per-butler heartbeat entries. */
-export interface HeartbeatFacts {
-  butlers: ButlerHeartbeat[];
-}
+export type EgressCatalog = components["schemas"]["EgressCatalog"];
 
 /** Aggregated state of the proactive insight delivery pipeline. */
-export interface InsightDeliveryState {
-  /** Candidates with status='pending', waiting to be delivered. */
-  queued: number;
-  /** Candidates successfully delivered (status='delivered'). */
-  delivered: number;
-  /**
-   * Candidates permanently blocked after 3 consecutive delivery failures.
-   * Excludes cooldown-filtered and dedup-filtered candidates.
-   */
-  failed: number;
-  /** ISO 8601 timestamp of the most recent successful delivery, or null. */
-  last_delivery_at: string | null;
-}
-
-/** One migration chain out of sync between the codebase and a schema (bu-9r3hd.1). */
-export interface DriftEntry {
-  schema_name: string;
-  chain: string;
-  expected_head: string;
-  /** Currently-applied revision for this chain in this schema, or null if never applied. */
-  actual_revision: string | null;
-}
+export type InsightDeliveryState = components["schemas"]["InsightDeliveryState"];
 
 /**
  * Migration-drift sentinel result.
@@ -7770,29 +2546,7 @@ export interface DriftEntry {
  * unavailable, unreadable schema) -- per the fleet-wide degraded-envelope
  * convention, never render this as a truthful all-clear.
  */
-export interface DriftFacts {
-  checked_at: string;
-  is_drifted: boolean;
-  drifted: DriftEntry[];
-  /** ISO 8601 timestamp the current drift composition was first detected, or null. */
-  first_detected_at: string | null;
-  /** True once drift has persisted >24h and a QA case has been opened. */
-  escalated: boolean;
-  drift_check_available: boolean;
-}
-
-/**
- * One deployed stored function whose body left the committed definition
- * (bu-bi5an). Digests only -- never a body -- since a stored body can hold
- * operator-supplied literals.
- */
-export interface StoredFunctionEntry {
-  function: string;
-  /** init-db.sql line(s) of the committed variant(s), for locating the source. */
-  committed_lines: number[];
-  committed_digests: string[];
-  deployed_digests: string[];
-}
+export type DriftFacts = components["schemas"]["DriftFacts"];
 
 /**
  * Deployed stored-function bodies vs the configured bootstrap source
@@ -7805,35 +2559,7 @@ export interface StoredFunctionEntry {
  * failed -- per the fleet-wide degraded-envelope convention, never render
  * this as a truthful all-clear.
  */
-export interface StoredFunctionFacts {
-  checked_at: string;
-  is_drifted: boolean;
-  drifted: StoredFunctionEntry[];
-  not_deployed: string[];
-  matched_count: number;
-  stored_function_check_available: boolean;
-  /**
-   * SECURITY DEFINER functions whose search_path is not exactly
-   * `pg_catalog, pg_temp` (bu-hefzis). Independent of `is_drifted`.
-   */
-  unpinned_definers: UnpinnedDefinerEntry[];
-  /** `false` means the definer catalog read failed -- never an all-clear. */
-  definer_check_available: boolean;
-}
-
-/**
- * One SECURITY DEFINER with an unpinned search_path (bu-hefzis).
- *
- * `remedy` is `migrations` when the migration login owns the function, and
- * `init_db` (re-run scripts/init-db.sql as a cluster superuser) otherwise.
- */
-export interface UnpinnedDefinerEntry {
-  function: string;
-  owner: string;
-  /** Deployed search_path, or null when none is set. */
-  search_path: string | null;
-  remedy: "migrations" | "init_db";
-}
+export type StoredFunctionFacts = components["schemas"]["StoredFunctionFacts"];
 
 /**
  * One episode row from public.infra_conditions or public.owner_conditions
@@ -7846,42 +2572,14 @@ export interface UnpinnedDefinerEntry {
  * from "owner" (owner-facing standing concerns, e.g. an overdue bill) --
  * both share the same lifecycle and this same shape.
  */
-export interface ConditionEntry {
-  ledger: string; // "infra" | "owner"
-  id: string;
-  source: string;
-  fingerprint: string;
-  episode: number;
-  /** "open" | "aging" | "resolved" */
-  state: string;
-  first_detected_at: string;
-  last_confirmed_at: string;
-  last_escalated_at: string | null;
-  next_reescalate_at: string | null;
-  /** "L0" | "L1" | "L2" | "L3" */
-  escalation_level: string;
-  resolved_at: string | null;
-  recovered_after_s: number | null;
-  summary: string | null;
-  metadata: Record<string, unknown> | null;
-  /** Linked owner attention; only fleet-control and overdue-QA conditions carry it. */
-  attention?: ConditionAttention | null;
-}
+export type ConditionEntry = components["schemas"]["ConditionEntry"];
 
 /**
  * Linked runtime-attention delivery for a fleet or overdue-QA condition
  * (REQ-butler-control-plane-liveness-007). Only "sent" means delivered;
  * "sending" and "uncertain" never do, and nothing here can resend.
  */
-export interface ConditionAttention {
-  /** "pending" | "worker_unavailable" | "sending" | "sent" | "failed" | "uncertain" | "unavailable" | "not_raised" | "within_grace" */
-  status: string;
-  episode_id: string | null;
-  created_at: string | null;
-  delivered_at: string | null;
-  safe_reason: string | null;
-  outbox_retained: boolean | null;
-}
+export type ConditionAttention = components["schemas"]["ConditionAttention"];
 
 /**
  * Standing infrastructure conditions, most-recently-detected first.
@@ -7890,47 +2588,7 @@ export interface ConditionAttention {
  * per the fleet-wide degraded-envelope convention, render "unknown", never
  * a fabricated "no active conditions" all-clear.
  */
-export interface ConditionsFacts {
-  conditions: ConditionEntry[];
-  total: number;
-  conditions_available: boolean;
-}
-
-/**
- * A dispatch-decision record from public.healing_dispatch_events -- a gate
- * evaluation (why a healing/QA-remediation workflow was or was not
- * launched), distinct from a launched healing_attempts execution.
- *
- * `decision="infra_condition_open"` (Gate 5.5, bu-27dxl.6.4) means a QA
- * finding was suppressed because a standing infrastructure condition with
- * this same `fingerprint` was already active -- see ConditionEntry.
- */
-export interface HealingDispatchEvent {
-  id: string;
-  fingerprint: string;
-  butler_name: string;
-  decision: string;
-  reason: string | null;
-  attempt_id: string | null;
-  created_at: string;
-}
-
-/** Single row from public.deployments (a boot or deploy execution). */
-export interface DeploymentRecord {
-  id: string;
-  git_sha: string;
-  migration_head: string | null;
-  started_at: string;
-  finished_at: string | null;
-  /** "success" | "failed" */
-  result: string;
-  /** "boot" | "deploy"; null for rows written before provenance tracking. */
-  source: string | null;
-  /** "image" | "hotreload-worktree"; null when runtime detection is unknown. */
-  serving_mode: string | null;
-  /** Stable linked-worktree label, e.g. `.worktrees/fix-queue`, when available. */
-  serving_worktree: string | null;
-}
+export type ConditionsFacts = components["schemas"]["ConditionsFacts"];
 
 /**
  * Current (most recent) deployment plus recent deployment history (bu-9r3hd.3/bu-hmdqz.1).
@@ -7940,35 +2598,10 @@ export interface DeploymentRecord {
  * GitHub compare call failed) -- per the fleet-wide degraded-envelope
  * convention, render that as "unknown", never as "up to date".
  */
-export interface DeploymentFacts {
-  current: DeploymentRecord | null;
-  recent: DeploymentRecord[];
-  commits_behind_main: number | null;
-  commits_behind_available: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// Dashboard briefing (GET /api/dashboard/briefing)
-//
-// See: openspec/changes/dashboard-overview-briefing/specs/dashboard-briefing/spec.md
-// and about/heart-and-soul/design-language.md (Editorial archetype).
-// ---------------------------------------------------------------------------
-
-/**
- * Six state classes the briefing classifier produces (bu-gcz9e.1 added
- * "degraded" -- headline classified from the composed board/attention model,
- * see GET /api/dashboard/briefing).
- *
- * "degraded" is distinct from "degraded-quiet": degraded-quiet means a real
- * butler is known to be unhealthy; degraded means one or more state sources
- * (board/notifications/approvals/qa/audit) could not be read at all, so a
- * swallowed fetch failure can never compose "quiet".
- */
-export type BriefingStateClass =
-  "urgent" | "busy" | "mild" | "degraded-quiet" | "degraded" | "quiet";
+export type DeploymentFacts = components["schemas"]["DeploymentFacts"];
 
 /** Whether the elaboration paragraph came from the LLM or the templated fallback. */
-export type BriefingSource = "llm" | "fallback";
+export type BriefingSource = Briefing["source"];
 
 /**
  * Server-composed briefing object the Overview page renders verbatim.
@@ -7978,276 +2611,38 @@ export type BriefingSource = "llm" | "fallback";
  * fallback. `source` tells the status pill which path produced the elaboration.
  * Cached per-owner for 5 minutes (the hook below mirrors that TTL).
  */
-export interface Briefing {
-  greet: string;
-  headline: string;
-  elaboration: string;
-  source: BriefingSource;
-  state_class: BriefingStateClass;
-  generated_at: string;
-}
-
-// ---------------------------------------------------------------------------
-// Chronicles editorial briefing (bu-i29ix) -- distinct from the dashboard
-// briefing above. Backed by /api/chronicler/briefing|attention|kpi.
-// ---------------------------------------------------------------------------
-
-/** Content state classes: normal editorial classification of a covered, available day. */
-export type ChroniclesContentStateClass = "urgent" | "busy" | "mild" | "quiet";
-
-/**
- * Non-content state classes: coverage or availability for this day could not
- * be affirmatively established. `voice_paragraph` is deterministic
- * state-specific copy for these three — never a cached (fresh or stale)
- * day-close summary (clarify-chronicles-narrative-truth design.md decision 3).
- */
-export type ChroniclesNonContentStateClass =
-  "no_data" | "unavailable" | "degraded";
+export type Briefing = components["schemas"]["butlers__api__routers__dashboard_briefing__Briefing"];
 
 /** State classes the chronicles briefing classifier produces. */
-export type ChroniclesStateClass =
-  ChroniclesContentStateClass | ChroniclesNonContentStateClass;
+export type ChroniclesStateClass = components["schemas"]["ChroniclesStateClass"];
 
-/** Source of the voice paragraph in the chronicles briefing. */
-export type ChroniclesVoiceSource = "llm·cached" | "templated" | "stale";
+export type ChroniclesAttentionItem = components["schemas"]["ChroniclesAttentionItem"];
 
-export interface ChroniclesAttentionItem {
-  kind: "anomaly" | "source_health" | "open_correction" | string;
-  severity: "high" | "medium" | "low" | string;
-  title: string;
-  detail: string | null;
-  action_href: string | null;
-}
+export type ChroniclesKpi = components["schemas"]["ChroniclesKpi"];
 
-export interface ChroniclesLaneHours {
-  lane: string;
-  hours: number;
-}
+export type ChroniclesRecentDay = components["schemas"]["ChroniclesRecentDay"];
 
-export interface ChroniclesStreaks {
-  sleep: number;
-  exercise: number;
-}
-
-export interface ChroniclesKpi {
-  hours_by_top_lanes: ChroniclesLaneHours[];
-  longest_episode_minutes: number;
-  longest_episode_title: string | null;
-  longest_gap_minutes: number;
-  sleep_minutes: number;
-  streaks: ChroniclesStreaks;
-}
-
-export interface ChroniclesRecentDay {
-  date: string;
-  total_minutes: number;
-  top_lane: string | null;
-  episode_count: number;
-}
-
-export type ChroniclesSubqueryAvailabilityState =
-  "available" | "unavailable" | "not_requested";
-
-/** Availability of an owned Chronicles briefing read.
- * `unavailable` is a failed source; `not_requested` is intentionally skipped
- * or optional during cold boot, never a calm empty result. */
-export interface ChroniclesSubqueryAvailability {
-  subquery: string;
-  state: ChroniclesSubqueryAvailabilityState;
-}
-
-export interface ChroniclesBriefing {
-  date: string;
-  /** `no_data`/`unavailable`/`degraded` are non-content states: this day's
-   * coverage or availability could not be affirmed. Never render them with
-   * the quiet-day copy or treatment. */
-  state_class: ChroniclesStateClass;
-  headline: string;
-  voice_paragraph: string;
-  voice_source: ChroniclesVoiceSource;
-  kpi: ChroniclesKpi;
-  attention_items: ChroniclesAttentionItem[];
-  recent_days: ChroniclesRecentDay[];
-  /**
-   * Stable per-subquery availability ledger for honest degraded rendering.
-   * Optional for rolling deploys against a backend that predates this
-   * additive response field; consumers should treat absence as an empty list.
-   */
-  subquery_availability?: ChroniclesSubqueryAvailability[];
-  /** Earliest authoritatively covered local day (owner tz, YYYY-MM-DD), or
-   * null when Chronicler has no durable coverage proof. It blocks additional
-   * backward archive navigation; a valid pre-floor deep link stays addressable
-   * and returns the explicit `no_data` state. */
-  earliest_date?: string | null;
-}
+export type ChroniclesBriefing = components["schemas"]["ChroniclesBriefing"];
 
 // ---------------------------------------------------------------------------
 // Finance butler types (GET /api/finance/*)
 // ---------------------------------------------------------------------------
 
-export interface FinanceTransaction {
-  id: string;
-  posted_at: string;
-  merchant: string;
-  normalized_merchant: string | null;
-  description: string | null;
-  /** Numeric amount as string to preserve precision. */
-  amount: string;
-  currency: string;
-  direction: "debit" | "credit";
-  category: string;
-  inferred_category: string | null;
-  payment_method: string | null;
-  account_id: string | null;
-  receipt_url: string | null;
-  external_ref: string | null;
-  source_message_id: string | null;
-  metadata: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-}
+export type FinanceTransaction = components["schemas"]["TransactionModel"];
 
-export interface FinanceSubscription {
-  id: string;
-  service: string;
-  /** Numeric amount as string. */
-  amount: string;
-  currency: string;
-  frequency: string;
-  next_renewal: string;
-  status: "active" | "paused" | "cancelled";
-  auto_renew: boolean;
-  payment_method: string | null;
-  account_id: string | null;
-  source_message_id: string | null;
-  cancellation_url: string | null;
-  notice_period_days: number | null;
-  cancel_by: string | null;
-  metadata: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-}
+export type FinanceSubscription = components["schemas"]["SubscriptionModel"];
 
 /** One forward obligation ledger row (bu-8cdl1.10), denormalized with its
  * subscription's service/amount and cancellation-door status. */
-export interface FinanceObligation {
-  subscription_id: string;
-  service: string;
-  /** Numeric amount as string. */
-  amount: string;
-  currency: string;
-  period: string;
-  cancellation_url: string | null;
-  notice_period_days: number | null;
-  cancel_by: string | null;
-  warn_by: string | null;
-  unknown_door: boolean;
-  /** Numeric amount as string. */
-  price_change_amount: string | null;
-  price_change_direction: "increase" | "decrease" | null;
-  days_remaining_to_act: number | null;
-}
+export type FinanceObligation = components["schemas"]["ObligationModel"];
 
-export interface FinanceObligationsResponse {
-  items: FinanceObligation[];
-  count: number;
-  available: boolean;
-  degraded_reason: "obligation_ledger_unavailable" | null;
-}
+export type FinanceExpectedSignal = components["schemas"]["FinanceExpectedSignalModel"];
 
-export interface FinanceExpectedSignal {
-  signal_key: string;
-  producer: string;
-  producer_endpoint_identity: string | null;
-  expected_cadence_seconds: number;
-  last_observed_at: string | null;
-  measurability: "present" | "absent" | "unmeasurable";
-  unmeasurable_reason: string | null;
-  evaluated_at: string;
-}
+export type FinanceAccount = components["schemas"]["AccountModel"];
 
-export interface FinanceExpectedSignalsResponse {
-  signals: FinanceExpectedSignal[] | null;
-  available: boolean;
-  degraded_reason: string | null;
-}
+export type FinanceSpendingGroup = components["schemas"]["SpendingGroupModel"];
 
-export interface FinanceBill {
-  id: string;
-  payee: string;
-  /** Numeric amount as string. */
-  amount: string;
-  currency: string;
-  due_date: string;
-  frequency: string;
-  status: "pending" | "paid" | "overdue";
-  payment_method: string | null;
-  account_id: string | null;
-  source_message_id: string | null;
-  statement_period_start: string | null;
-  statement_period_end: string | null;
-  paid_at: string | null;
-  metadata: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface FinanceAccount {
-  id: string;
-  institution: string;
-  type: string;
-  name: string | null;
-  last_four: string | null;
-  currency: string;
-  last_synced_at?: string | null;
-  feed_degraded?: boolean;
-  feed_degraded_reason?: "never_synced" | "stale" | null;
-  metadata: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface FinanceSpendingGroup {
-  key: string;
-  /** Numeric amount as string. */
-  amount: string;
-  count: number;
-}
-
-export interface FinanceSpendingSummary {
-  start_date: string;
-  end_date: string;
-  currency: string | null;
-  /** Numeric total as string. */
-  total_spend: string;
-  groups: FinanceSpendingGroup[];
-  by_currency?: Array<{
-    currency: string;
-    total_spend: string;
-    groups: FinanceSpendingGroup[];
-  }>;
-  legacy_aggregate_degraded?: boolean;
-  degraded_reason?: "multiple_currencies_unconverted" | null;
-}
-
-export interface FinanceUpcomingBillItem {
-  bill: FinanceBill;
-  urgency: "overdue" | "due_today" | "due_soon" | "upcoming";
-  days_until_due: number;
-}
-
-export interface FinanceUpcomingBillsResponse {
-  items: FinanceUpcomingBillItem[];
-  /** Numeric total as string. */
-  total_amount: string;
-  currency?: string | null;
-  by_currency?: Array<{ currency: string; total_amount: string }>;
-  legacy_aggregate_degraded?: boolean;
-  degraded_reason?: "multiple_currencies_unconverted" | null;
-  count: number;
-  days_ahead: number;
-  include_overdue: boolean;
-}
+export type FinanceUpcomingBillItem = components["schemas"]["UpcomingBillItemModel"];
 
 export interface FinanceTransactionListParams {
   category?: string;
@@ -8281,212 +2676,30 @@ export interface FinanceUpcomingBillsParams {
   include_overdue?: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// Finance bulk metadata overlay (PATCH /api/finance/transactions/bulk-metadata)
-//
-// Bulk edits write to the bitemporal `facts` overlay (normalized_merchant /
-// inferred_category), which the overlay-aware GET /transactions read merges
-// over the base finance.transactions rows (bu-v3a4x.1). Each op matches facts
-// by an ILIKE merchant pattern and sets one or both overlay fields.
-// ---------------------------------------------------------------------------
-
-/** Match criteria for a single bulk-metadata op (ILIKE on raw merchant). */
-export interface FinanceBulkUpdateMatch {
-  merchant_pattern: string;
-}
-
-/** Overlay fields to set on matching transaction facts. At least one required. */
-export interface FinanceBulkUpdateSet {
-  normalized_merchant?: string;
-  inferred_category?: string;
-}
-
 /** A single op in a bulk-metadata request. */
-export interface FinanceBulkUpdateOp {
-  match: FinanceBulkUpdateMatch;
-  set: FinanceBulkUpdateSet;
-}
+export type FinanceBulkUpdateOp = components["schemas"]["BulkUpdateOpModel"];
 
 /** Request body for PATCH /api/finance/transactions/bulk-metadata. */
-export interface FinanceBulkUpdateRequest {
-  ops: FinanceBulkUpdateOp[];
-}
-
-/** Result of a single bulk-metadata op. */
-export interface FinanceBulkUpdateOpResult {
-  pattern: string;
-  set: Record<string, unknown>;
-  matched: number;
-  updated: number;
-}
-
-/** Response from PATCH /api/finance/transactions/bulk-metadata. */
-export interface FinanceBulkUpdateResponse {
-  updated_total: number;
-  results: FinanceBulkUpdateOpResult[];
-}
+export type FinanceBulkUpdateRequest = components["schemas"]["BulkUpdateRequestModel"];
 
 // ---------------------------------------------------------------------------
 // Travel butler types (bu-0eac9)
 // ---------------------------------------------------------------------------
 
 /** A travel trip container. */
-export interface TravelTrip {
-  id: string;
-  name: string;
-  destination: string;
-  start_date: string;
-  end_date: string;
-  status: "planned" | "active" | "completed" | "cancelled";
-  metadata: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-}
+export type TravelTrip = components["schemas"]["TripModel"];
 
 /** A transport leg (flight, train, bus, ferry) within a trip. */
-export interface TravelLeg {
-  id: string;
-  trip_id: string;
-  type: string;
-  carrier: string | null;
-  departure_airport_station: string | null;
-  departure_city: string | null;
-  departure_at: string;
-  arrival_airport_station: string | null;
-  arrival_city: string | null;
-  arrival_at: string;
-  confirmation_number: string | null;
-  pnr: string | null;
-  seat: string | null;
-  metadata: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-}
+export type TravelLeg = components["schemas"]["LegModel"];
 
 /** An accommodation (hotel, airbnb, hostel) within a trip. */
-export interface TravelAccommodation {
-  id: string;
-  trip_id: string;
-  type: string;
-  name: string | null;
-  address: string | null;
-  check_in: string | null;
-  check_out: string | null;
-  confirmation_number: string | null;
-  metadata: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-}
-
-/** A reservation (car rental, restaurant, activity, tour) within a trip. */
-export interface TravelReservation {
-  id: string;
-  trip_id: string;
-  type: string;
-  provider: string | null;
-  datetime: string | null;
-  confirmation_number: string | null;
-  metadata: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-}
-
-/** A travel document (boarding pass, visa, insurance, receipt) attached to a trip. */
-export interface TravelDocument {
-  id: string;
-  trip_id: string;
-  type: string;
-  blob_ref: string | null;
-  expiry_date: string | null;
-  metadata: Record<string, unknown>;
-  created_at: string;
-}
+export type TravelAccommodation = components["schemas"]["AccommodationModel"];
 
 /** A single entry in a trip's chronological timeline. */
-export interface TravelTimelineEntry {
-  entity_type: string;
-  entity_id: string;
-  sort_key: string | null;
-  summary: string;
-}
-
-/** An alert or pre-trip action item for a trip. */
-export interface TravelAlert {
-  type: string;
-  message: string;
-  severity: "high" | "medium" | "low";
-}
-
-/** A traveller in the trip party, linked to the shared person identity spine. */
-export interface TravelTraveller {
-  id: string;
-  entity_id: string | null;
-  display_name: string | null;
-}
-
-/** Derived integrity verdict for one adjacent-leg connection. */
-export interface TravelConnection {
-  inbound_leg_id: string;
-  outbound_leg_id: string;
-  verdict: "holds" | "tight" | "broken" | "unknown";
-  available_minutes: number | null;
-  evidence: Record<string, unknown>;
-  computed_at: string;
-}
-
-/** Full trip summary with all linked entities and timeline. */
-export interface TravelTripSummary {
-  trip: TravelTrip;
-  legs: TravelLeg[];
-  accommodations: TravelAccommodation[];
-  reservations: TravelReservation[];
-  documents: TravelDocument[];
-  timeline: TravelTimelineEntry[];
-  alerts: TravelAlert[];
-  party: TravelTraveller[];
-  connections: TravelConnection[];
-  connection_reason: "no_connection_on_journey" | null;
-  /** Leg ids excluded from `legs` because their row could not be normalized. */
-  unreadable_leg_ids: string[];
-  /** Accommodation ids excluded from `accommodations` because their row could not be normalized. */
-  unreadable_accommodation_ids: string[];
-  /** Reservation ids excluded from `reservations` because their row could not be normalized. */
-  unreadable_reservation_ids: string[];
-  /** Document ids excluded from `documents` because their row could not be normalized. */
-  unreadable_document_ids: string[];
-  /** Traveller ids excluded from `party` because their row could not be normalized. */
-  unreadable_party_ids: string[];
-  /** Connection ids excluded because their derived row could not be normalized. */
-  unreadable_connection_ids: string[];
-}
+export type TravelTimelineEntry = components["schemas"]["TimelineEntryModel"];
 
 /** An upcoming trip with legs, accommodations, and days until departure. */
-export interface TravelUpcomingTrip {
-  trip: TravelTrip;
-  legs: TravelLeg[];
-  accommodations: TravelAccommodation[];
-  days_until_departure: number | null;
-}
-
-/** A pre-trip action item with urgency ranking across upcoming trips. */
-export interface TravelPreTripAction {
-  trip_id: string;
-  trip_name: string;
-  type: string;
-  message: string;
-  severity: "high" | "medium" | "low";
-  urgency_rank: number;
-}
-
-/** Upcoming travel overview with trips and urgency-ranked pre-trip actions. */
-export interface TravelUpcomingModel {
-  upcoming_trips: TravelUpcomingTrip[];
-  actions: TravelPreTripAction[];
-  window_start: string;
-  window_end: string;
-  /** Trip ids excluded from `upcoming_trips` because their row could not be normalized. */
-  unreadable_trip_ids: string[];
-}
+export type TravelUpcomingTrip = components["schemas"]["UpcomingTripModel"];
 
 /** Params for listing trips. */
 export interface TravelTripsParams {
@@ -8497,138 +2710,39 @@ export interface TravelTripsParams {
   limit?: number;
 }
 
-/** Pagination metadata for GET /api/travel/trips, plus per-row degraded-mode disclosure. */
-export interface TravelTripsMeta extends PaginationMeta {
-  /** Trip ids excluded from `data` because their row could not be normalized. */
-  unreadable_trip_ids: string[];
-}
-
-/** Paginated trips list response, with per-row degraded-mode disclosure. */
-export interface TravelTripsResponse extends PaginatedResponse<TravelTrip> {
-  meta: TravelTripsMeta;
-}
-
 /** A document expiring within the requested look-ahead window. */
-export interface TravelExpiringDocument {
-  id: string;
-  trip_id: string;
-  type: string;
-  name: string | null;
-  expiry_date: string;
-  days_until_expiry: number;
-}
-
-/** Response for the cross-trip expiring-documents aggregation endpoint. */
-export interface TravelExpiringDocumentsResponse {
-  documents: TravelExpiringDocument[];
-}
+export type TravelExpiringDocument = components["schemas"]["ExpiringDocumentModel"];
 
 // ---------------------------------------------------------------------------
 // Home butler types
 // ---------------------------------------------------------------------------
 
 /** Aggregate statistics about the Home butler's entity snapshot cache. */
-export interface HomeSnapshotStatus {
-  total_entities: number;
-  domains: Record<string, number>;
-  oldest_captured_at: string | null;
-  newest_captured_at: string | null;
-  /** False during an HA outage: counts/timestamps below may be stale, not a truthful current read. */
-  ha_source_available: boolean;
-}
+export type HomeSnapshotStatus = components["schemas"]["StatisticsResponse"];
 
 /** Saved location and feed health used by the Home atmosphere refresh job. */
-export interface HomeAtmosphereCurrentResponse {
-  configured: boolean;
-  latitude: number | null;
-  longitude: number | null;
-  stale: boolean;
-  source_error: boolean;
-  last_error: string | null;
-}
+export type HomeAtmosphereCurrentResponse = components["schemas"]["AtmosphereCurrentResponse"];
 
 /** Coordinates accepted by the Home atmosphere location endpoint. */
-export interface HomeAtmosphereLocationUpdate {
-  latitude: number;
-  longitude: number;
-}
+export type HomeAtmosphereLocationUpdate = components["schemas"]["AtmosphereLocationUpdateRequest"];
 
 /** A single device entry in the home butler device inventory. */
-export interface HomeDeviceEntry {
-  entity_id: string;
-  state: string;
-  friendly_name: string | null;
-  area_name: string | null;
-  domain: string;
-  last_updated: string | null;
-  health_status: "healthy" | "offline";
-}
-
-/** Pagination metadata for the device inventory endpoint. */
-export interface HomeDevicePaginationMeta {
-  page: number;
-  page_size: number;
-  total_count: number;
-  total_pages: number;
-  /** False during an HA outage: the listed devices below may be stale, not a truthful current read. */
-  ha_source_available: boolean;
-}
+export type HomeDeviceEntry = components["schemas"]["DeviceInventoryEntry"];
 
 /** Paginated response for the device inventory endpoint. */
-export interface HomeDeviceInventoryResponse {
-  data: HomeDeviceEntry[];
-  meta: HomeDevicePaginationMeta;
-}
+export type HomeDeviceInventoryResponse = components["schemas"]["DeviceInventoryResponse"];
 
 /** A single time-series data point for energy consumption. */
-export interface HomeEnergyDataPoint {
-  timestamp: string;
-  total_kwh: number;
-  devices: Record<string, number>;
-}
+export type HomeEnergyDataPoint = components["schemas"]["EnergyDataPoint"];
 
 /** A top energy-consuming device entry. */
-export interface HomeTopConsumer {
-  entity_id: string;
-  friendly_name: string | null;
-  total_kwh: number;
-  percentage: number;
-}
+export type HomeTopConsumer = components["schemas"]["TopConsumerEntry"];
 
 /** A maintenance item with computed status. */
-export interface HomeMaintenanceItem {
-  id: string;
-  name: string;
-  category: string;
-  interval_days: number;
-  last_completed_at: string | null;
-  next_due_at: string | null;
-  status: "overdue" | "due" | "upcoming" | "ok";
-  notes: string | null;
-}
+export type HomeMaintenanceItem = components["schemas"]["MaintenanceItemResponse"];
 
 /** A single entry in the Home Assistant command audit log. */
-export interface HomeCommandLogEntry {
-  id: number;
-  domain: string;
-  service: string;
-  target: Record<string, unknown> | null;
-  data: Record<string, unknown> | null;
-  result: Record<string, unknown> | null;
-  context_id: string | null;
-  issued_at: string;
-  attempt_id?: string | null;
-  risk?: "safe" | "reversible" | "consequential" | "protected" | null;
-  actor?: string | null;
-  session_id?: string | null;
-  approval_id?: string | null;
-  requested_state?: Record<string, unknown> | null;
-  observed_state?: Record<string, unknown> | null;
-  status?: "attempting" | "succeeded" | "failed" | "unverified" | null;
-  rollback_hint?: Record<string, unknown> | null;
-  failure_reason?: string | null;
-  completed_at?: string | null;
-}
+export type HomeCommandLogEntry = components["schemas"]["CommandLogEntry"];
 
 // ---------------------------------------------------------------------------
 // Butler logs (bu-iuol4.17)
@@ -8637,16 +2751,6 @@ export interface HomeCommandLogEntry {
 /** Severity level for butler log lines. */
 export type LogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR";
 
-/** A single structured log line from GET /api/butlers/{name}/logs. */
-export interface ButlerLogLine {
-  ts: string;
-  level: LogLevel;
-  msg: string;
-  source: string | null;
-  request_id: string | null;
-  metadata: Record<string, unknown> | null;
-}
-
 /** Query parameters for the butler logs endpoint. */
 export interface ButlerLogsParams {
   level?: LogLevel;
@@ -8654,42 +2758,9 @@ export interface ButlerLogsParams {
   limit?: number;
 }
 
-/** Response shape for GET /api/butlers/{name}/logs. */
-export interface ButlerLogsResponse {
-  lines: ButlerLogLine[];
-}
-
-// ---------------------------------------------------------------------------
-// Butler analytics (bu-iuol4.16)
-// ---------------------------------------------------------------------------
-
-/** A single hourly bucket from GET /api/butlers/{name}/analytics/hourly-activity. */
-export interface HourlyActivityBucket {
-  hour_start: string; // ISO datetime string
-  sessions_count: number;
-  /** 0 = most recent hour; higher = further back. */
-  hour_index: number;
-}
-
-/** Response from GET /api/butlers/{name}/analytics/hourly-activity. */
-export interface HourlyActivity {
-  buckets: HourlyActivityBucket[];
-}
-
 /** Query params for GET /api/butlers/{name}/analytics/hourly-activity. */
 export interface HourlyActivityParams {
   window_hours?: number;
-}
-
-/** A single daily bucket from GET /api/butlers/{name}/analytics/daily-activity. */
-export interface DailyActivityBucket {
-  date: string; // ISO date string
-  sessions_count: number;
-}
-
-/** Response from GET /api/butlers/{name}/analytics/daily-activity. */
-export interface DailyActivity {
-  buckets: DailyActivityBucket[];
 }
 
 /** Query params for GET /api/butlers/{name}/analytics/daily-activity. */
@@ -8697,34 +2768,9 @@ export interface DailyActivityParams {
   window_days?: 7 | 30;
 }
 
-/** A single kind entry from GET /api/butlers/{name}/analytics/session-kinds. */
-export interface SessionKindItem {
-  kind: string;
-  count: number;
-}
-
-/** Response from GET /api/butlers/{name}/analytics/session-kinds. */
-export interface SessionKindBreakdown {
-  kinds: SessionKindItem[];
-}
-
 /** Query params for GET /api/butlers/{name}/analytics/session-kinds. */
 export interface SessionKindsParams {
   window_days?: number;
-}
-
-/** Response from GET /api/butlers/{name}/analytics/latency-stats. */
-export interface LatencyStats {
-  /** Median session duration in ms, or null when no data in the window. */
-  p50_ms: number | null;
-  /** 95th-percentile session duration in ms, or null when no data in the window. */
-  p95_ms: number | null;
-  /** Mean session duration in ms, or null when no data in the window. */
-  mean_ms: number | null;
-  /** Number of sessions with a recorded duration in the window. */
-  count: number;
-  /** Most-frequently-used model in the window, or null when no data. */
-  model: string | null;
 }
 
 /** Query params for GET /api/butlers/{name}/analytics/latency-stats. */
@@ -8741,14 +2787,7 @@ export interface LatencyStatsParams {
  * set. `succeeded` / `failed` / `by_error_marker` mirror the outcome fields
  * `sessions_summary` computes for the same period and window.
  */
-export interface FrictionSummary {
-  period: "today" | "7d" | "30d";
-  total: number;
-  by_kind: Record<string, number>;
-  succeeded: number;
-  failed: number;
-  by_error_marker: Record<string, number>;
-}
+export type FrictionSummary = components["schemas"]["FrictionSummary"];
 
 /** Query params for GET /api/butlers/{name}/analytics/friction. */
 export interface FrictionSummaryParams {
@@ -8764,74 +2803,14 @@ export type ActivityEventType =
   "session_completed" | "approval_raised" | "memory_write";
 
 /** A single event in the butler activity feed. */
-export interface ButlerActivityEvent {
-  /** Discriminator field identifying the event source. */
-  event_type: ActivityEventType;
-  /** ISO 8601 timestamp of the event. */
-  ts: string;
-  /** Human-readable one-line summary of the event. */
-  summary: string;
-  /** Optional identifier for the originating entity as a string. */
-  entity_id: string | null;
-  /** Source-specific payload with additional context. */
-  metadata: Record<string, unknown>;
-}
+export type ButlerActivityEvent = components["schemas"]["ActivityEvent"];
 
 /** Response model for GET /api/butlers/{name}/activity-feed. */
-export interface ActivityFeed {
-  /** Time-ordered list of activity events, newest first. */
-  events: ButlerActivityEvent[];
-}
+export type ActivityFeed = components["schemas"]["ActivityFeed"];
 
 /** Query params for GET /api/butlers/{name}/activity-feed. */
 export interface ActivityFeedParams {
   limit?: number;
-}
-
-/** Response from GET /api/butlers/{name}/memory/stats. */
-export interface ButlerMemoryStats {
-  /** Total episodes written by this butler. */
-  total_episodes: number;
-  /** Episodes written in the last 24 hours. */
-  episodes_24h: number;
-  /** Total facts attributed to this butler. */
-  total_facts: number;
-  /** Facts created in the last 24 hours. */
-  facts_24h: number;
-  /** Total entities created by this butler. */
-  total_entities: number;
-  /** Entities created in the last 24 hours. */
-  entities_24h: number;
-  /** Total rules attributed to this butler. */
-  total_rules: number;
-  /** Rules created in the last 24 hours. */
-  rules_24h: number;
-}
-
-// ---------------------------------------------------------------------------
-// Phase 7 — butler management (§9.2)
-// ---------------------------------------------------------------------------
-
-/** A versioned snapshot of a butler's system prompt. */
-export interface PromptVersion {
-  butler_name: string;
-  prompt: string;
-  version: number;
-  updated_at: string;
-  updated_by: string | null;
-}
-
-export interface ButlerEffectivePrompt {
-  butler_name: string;
-  status: "captured" | "preview" | "legacy_unavailable" | "unavailable" | "corrupt";
-  effective_prompt: string | null;
-  prompt_digest: string | null;
-  prompt_provenance: PromptProvenanceEntry[];
-  total_bytes: number | null;
-  roster_digest: string | null;
-  drift_status: "matches_git" | "drifted" | "unknown";
-  drifted_since: string | null;
-  changed_sources: string[];
 }
 
 /**
@@ -8839,76 +2818,19 @@ export interface ButlerEffectivePrompt {
  * server derives attribution from the authenticated principal and ignores any
  * actor a client sends.
  */
-export interface PromptUpdateRequest {
-  prompt: string;
-}
-
-/** Memory tier access metadata for a butler. */
-export interface MemoryAccess {
-  read: ("short" | "mid" | "long")[];
-  write: ("short" | "mid" | "long")[];
-  namespace: string | null;
-  embedding_model: string | null;
-  drops_7d: number;
-}
+export type PromptUpdateRequest = components["schemas"]["PromptUpdateRequest"];
 
 /**
  * Request body for POST /api/butlers/{name}/kill. Carries no `actor` — see
  * `PromptUpdateRequest`.
  */
-export interface KillRequest {
-  grace_seconds?: number;
-}
-
-/** Response for POST /api/butlers/{name}/kill. */
-export interface KillResponse {
-  butler_name: string;
-  grace_seconds: number;
-  status: string;
-}
-
-// ---------------------------------------------------------------------------
-// Memory re-embedding (bu-9bqsy)
-// Mirrors src/butlers/api/models/memory.py: ReembedPendingCounts,
-// ReembedRunRequest, ReembedRunResult
-// ---------------------------------------------------------------------------
-
-/** Per-tier counts of rows whose stored embedding is stale. */
-export interface ReembedPendingCounts {
-  /** Stale row count per tier: episodes, facts, rules. */
-  counts: Record<string, number>;
-  /** Sum of all tier counts. */
-  total: number;
-  /** Model name used as the reference point for staleness. */
-  current_model: string;
-}
+export type KillRequest = components["schemas"]["KillRequest"];
 
 /** Request body for POST /api/memory/reembed. */
-export interface ReembedRunRequest {
-  /** Butler schema to operate on. */
-  butler: string;
-  /** When true (default), count and log only — no DB writes are performed. */
-  dry_run?: boolean;
-  /** Subset of tiers to process (episodes, facts, rules). Null → all tiers. */
-  tiers?: string[] | null;
-  /** Rows per DB round-trip (1–500, default 50). */
-  batch_size?: number;
-  /** Embedding model currently configured. */
-  current_model?: string;
-}
+export type ReembedRunRequest = components["schemas"]["ReembedRunRequest"];
 
 /** Response from POST /api/memory/reembed. */
-export interface ReembedRunResult {
-  dry_run: boolean;
-  current_model: string;
-  tiers_processed: string[];
-  /** Rows re-embedded (or found stale in dry_run) per tier. */
-  counts: Record<string, number>;
-  /** Sum across all tiers. */
-  total: number;
-  /** Non-fatal per-batch errors encountered during the run. */
-  errors: string[];
-}
+export type ReembedRunResult = components["schemas"]["ReembedRunResult"];
 
 // ---------------------------------------------------------------------------
 // Relationship entity neighbours (GET /api/butlers/relationship/entities/{id}/neighbours)
@@ -8922,33 +2844,10 @@ export interface ReembedRunResult {
  * ``direction`` is ``"forward"`` when anchor is the subject (anchor → neighbour)
  * and ``"reverse"`` when anchor is the object (neighbour → anchor).
  */
-export interface NeighbourEntry {
-  entity_id: string;
-  canonical_name: string;
-  /** Neighbour entity type ("person" / "organization" / ...); null on a registry miss. */
-  entity_type: string | null;
-  direction: "forward" | "reverse";
-  src: string;
-  conf: number;
-  last_seen: string | null;
-  weight: number | null;
-  verified: boolean;
-  primary: boolean | null;
-}
+export type NeighbourEntry = components["schemas"]["NeighbourEntry"];
 
 /** Response envelope from GET /api/butlers/relationship/entities/{id}/neighbours. */
-export interface NeighboursResponse {
-  /** Maps relational predicate to its list of neighbours. */
-  neighbours: Record<string, NeighbourEntry[]>;
-  /**
-   * Per-predicate count of neighbours NOT returned in ``neighbours`` because of
-   * ranked truncation (the "+N more" affordance in the Plex).
-   *
-   * Empty (and an omitted predicate means zero remainder) when no truncation was
-   * applied — i.e. when ``rank`` was not requested.
-   */
-  remainders: Record<string, number>;
-}
+export type NeighboursResponse = components["schemas"]["NeighboursResponse"];
 
 /** Query parameters for the entity neighbours endpoint. */
 export interface NeighboursParams {
@@ -8965,68 +2864,14 @@ export interface NeighboursParams {
   per_predicate?: number;
 }
 
-// ---------------------------------------------------------------------------
-// Plex halo (GET /api/butlers/relationship/plex/halo)
-// Dimension halo on the owner Plex: non-person entities grouped by type.
-// ---------------------------------------------------------------------------
-
-/** A relational triple connecting a halo satellite to a person entity. */
-export interface HaloEdge {
-  person_id: string;
-  predicate: string;
-}
-
 /** One non-person entity shown in a halo arc, with its person edges. */
-export interface HaloSatellite {
-  entity_id: string;
-  canonical_name: string;
-  last_seen: string | null;
-  edges: HaloEdge[];
-}
+export type HaloSatellite = components["schemas"]["HaloSatellite"];
 
 /** Response envelope from GET /api/butlers/relationship/plex/halo. */
-export interface HaloResponse {
-  /**
-   * Maps each non-person entity type ("organization" / "place" / "other") to
-   * its top-N satellites ranked by last_seen DESC NULLS LAST. Types with zero
-   * entities are omitted.
-   */
-  arcs: Record<string, HaloSatellite[]>;
-  /** Full per-type entity count, for the arc's "+N" overflow label. */
-  totals: Record<string, number>;
-}
-
-// ---------------------------------------------------------------------------
-// Relationship entity search (GET /api/butlers/relationship/entities/search)
-// Used by the EntityFinder Cmd-K component (bu-xfjwk).
-// ---------------------------------------------------------------------------
-
-/** The rule that produced the highest score for this result.
- *
- * - ``prefix``       — query is a prefix of the name or an alias (score 100)
- * - ``contact_fact`` — query matches a contact-fact object value (score 70)
- * - ``substring``    — query is a substring of the name or an alias (score 50)
- * - ``predicate``    — query matches a predicate label (score 30)
- */
-export type EntityFinderMatchKind =
-  "prefix" | "contact_fact" | "substring" | "predicate";
+export type HaloResponse = components["schemas"]["HaloResponse"];
 
 /** A single result from GET /api/butlers/relationship/entities/search. */
-export interface EntityFinderSearchResult {
-  entity_id: string;
-  canonical_name: string;
-  entity_type: string;
-  score: number;
-  match_kind: EntityFinderMatchKind;
-}
-
-/** Response envelope for GET /api/butlers/relationship/entities/search. */
-export interface EntityFinderSearchResponse {
-  results: EntityFinderSearchResult[];
-  total: number;
-  q: string;
-  limit: number;
-}
+export type EntityFinderSearchResult = components["schemas"]["SearchResultEntry"];
 
 // ---------------------------------------------------------------------------
 // Relationship entity concentration (GET /api/relationship/entities/concentration)
@@ -9040,26 +2885,7 @@ export interface EntityFinderSearchResponse {
  * tabs (contact predicates like ``has-email`` do not produce meaningful
  * weight aggregations for the balance-sheet view).
  */
-export interface PredicateTab {
-  predicate: string;
-  label: string;
-  description: string | null;
-  /** Count of distinct entities with active facts for this predicate. */
-  entity_count: number;
-}
-
-/**
- * The object ("where") of a relational triple contributing to a row.
- *
- * For a `works-at` row the target is the organization. When `object_kind` is
- * `"entity"`, `entity_id` is set and the UI renders a hyperlink to that entity.
- * When `"literal"`, `entity_id` is null and `name` is shown as plain text.
- */
-export interface ConcentrationTarget {
-  name: string;
-  entity_id: string | null;
-  object_kind: string;
-}
+export type PredicateTab = components["schemas"]["PredicateTab"];
 
 /**
  * One row in the concentration balance-sheet for a given predicate.
@@ -9069,54 +2895,16 @@ export interface ConcentrationTarget {
  * ``targets`` lists where the predicate points (e.g. the organizations for a
  * `works-at` row); entity-kind targets carry an `entity_id` for hyperlinking.
  */
-export interface ConcentrationEntry {
-  entity_id: string;
-  canonical_name: string;
-  weight_sum: number;
-  fact_count: number;
-  share: number | null;
-  last_seen: string | null;
-  src: string;
-  conf: number;
-  verified: boolean;
-  primary: boolean | null;
-  targets: ConcentrationTarget[];
-}
-
-/** Header rollup for the concentration page. */
-export interface ConcentrationRollup {
-  total: number;
-  top3_share: number | null;
-}
+export type ConcentrationEntry = components["schemas"]["ConcentrationEntry"];
 
 /** Response envelope for GET /api/relationship/entities/concentration?pred=<predicate>. */
-export interface ConcentrationResponse {
-  predicate: string;
-  items: ConcentrationEntry[];
-  rollup: ConcentrationRollup;
-  predicate_tabs: PredicateTab[];
-  total: number;
-}
-
-// ---------------------------------------------------------------------------
-// Entity provenance facts (GET /api/butlers/relationship/entities/{id}/facts)
-// Workbench-mode ProvenanceGrid — per §6b Amendment 7 (bu-mg4dk).
-// ---------------------------------------------------------------------------
-
-/**
- * Origin store of an entity fact row.
- *
- * - ``"identity"`` — the relationship triple store (``relationship.entity_facts``).
- * - ``"narrative"`` — labeled memory-module ``facts`` rows, appended only when
- *   ``store=all`` is requested.
- */
-export type EntityFactStore = "identity" | "narrative";
+export type ConcentrationResponse = components["schemas"]["ConcentrationResponse"];
 
 /**
  * Read-time staleness band derived from the most-recent observation timestamp.
  * Separate axis from confidence (``conf``).
  */
-export type EntityFactStalenessBand = "fresh" | "aging" | "stale";
+export type EntityFactStalenessBand = EntityFact["staleness_band"];
 
 /**
  * One fact row for the Workbench ProvenanceGrid.
@@ -9132,25 +2920,7 @@ export type EntityFactStalenessBand = "fresh" | "aging" | "stale";
  * Note: ``source_event_id`` is not yet a column in relationship.entity_facts.
  * Use ``src`` for source attribution until that column is added.
  */
-export interface EntityFact extends FactAttribution {
-  id: string;
-  subject: string;
-  predicate: string;
-  object: string;
-  object_kind: "literal" | "entity";
-  src: string;
-  conf: number;
-  weight: number | null;
-  last_observed_at: string | null;
-  verified: boolean;
-  primary: boolean | null;
-  validity: string;
-  created_at: string;
-  /** Origin store of this row. Identity rows always carry ``"identity"``. */
-  store: EntityFactStore;
-  /** Read-time staleness band (``"fresh"`` / ``"aging"`` / ``"stale"``). */
-  staleness_band: EntityFactStalenessBand;
-}
+export type EntityFact = components["schemas"]["EntityFactEntry"];
 
 /** Validity filter for the facts drill (active rows vs. superseded history). */
 export type EntityFactsValidity = "active" | "superseded";
@@ -9189,59 +2959,13 @@ export interface EntityFactsParams {
  * day. Zero-activity days are present with ``count=0`` — the sparkline renders
  * quiet days honestly rather than collapsing them out.
  */
-export interface ActivityBin {
-  date: string;
-  count: number;
-}
+export type ActivityBin = components["schemas"]["ActivityBin"];
 
 /** One canonical row in the merged entity activity stream. */
-export interface EntityActivityItem extends FactAttribution {
-  id: string;
-  ts: string | null;
-  kind: string;
-  src: "relationship" | "chronicler";
-  store: "narrative" | "identity" | null;
-  predicate: string | null;
-  episode_id: string | null;
-  /** Exact server-normalized narrative, identity value, or Chronicle title. */
-  summary: string | null;
-}
+export type EntityActivityItem = components["schemas"]["ActivityEntry"];
 
 /** Response for GET /api/relationship/entities/{id}/activity. */
-export interface EntityActivityResponse {
-  items: EntityActivityItem[];
-  total: number;
-  limit: number;
-  offset: number;
-  degraded: boolean;
-  degraded_reason: "chronicler_activity_unavailable" | null;
-}
-
-/**
- * Response for GET /api/butlers/relationship/entities/{id}/activity when
- * ``bins_only=true``.
- *
- * ``bins`` is a dense, ascending-by-date series covering the full window (one
- * entry per day, including zero-count days). The sparkline component consumes
- * this directly.
- */
-export interface ActivityBinsResponse {
-  bins: ActivityBin[];
-  /** True when the Chronicler contribution could not be read. */
-  degraded: boolean;
-  /** Fixed content-blind failure discriminator; never an upstream error message. */
-  degraded_reason: "chronicler_activity_unavailable" | null;
-}
-
-/** Response for POST /api/butlers/relationship/entities/{id}/view-mark. */
-export interface ViewMarkResponse {
-  entity_id: string;
-  /** The timestamp the mark was upserted to (ISO 8601). */
-  marked_at: string;
-}
-
-/** Origin store of a delta fact row. */
-export type DeltaFactStore = "identity" | "narrative";
+export type EntityActivityResponse = components["schemas"]["ActivityResponse"];
 
 /**
  * One fact that changed since the entity's view mark.
@@ -9251,19 +2975,7 @@ export type DeltaFactStore = "identity" | "narrative";
  * narrative origin; ``changed_at`` is the per-store change timestamp that beat
  * the view mark.
  */
-export interface DeltaFactEntry extends FactAttribution {
-  id: string;
-  subject: string;
-  predicate: string;
-  object: string;
-  object_kind: string;
-  src: string;
-  conf: number;
-  store: DeltaFactStore;
-  validity: string;
-  created_at: string;
-  changed_at: string;
-}
+export type DeltaFactEntry = components["schemas"]["DeltaFactEntry"];
 
 /**
  * Response for GET /api/butlers/relationship/entities/{id}/delta-facts.
@@ -9273,10 +2985,7 @@ export interface DeltaFactEntry extends FactAttribution {
  * renders no banner). The endpoint never moves the mark; the caller posts the
  * mark afterwards via the view-mark endpoint.
  */
-export interface DeltaFactsResponse {
-  marked_at: string | null;
-  items: DeltaFactEntry[];
-}
+export type DeltaFactsResponse = components["schemas"]["DeltaFactsResponse"];
 
 /**
  * A date-kind fact with its owner-relevant next occurrence.
@@ -9287,20 +2996,7 @@ export interface DeltaFactsResponse {
  * ``next_occurrence`` is the next calendar occurrence of (month, day) on or
  * after the request date; ``days_until`` is the integer day count to it.
  */
-export interface CoreDateEntry extends FactAttribution {
-  id: string;
-  predicate: string;
-  value: string;
-  month: number;
-  day: number;
-  year: number | null;
-  next_occurrence: string;
-  days_until: number;
-  src: string;
-  conf: number;
-  verified: boolean;
-  staleness_band: string;
-}
+export type CoreDateEntry = components["schemas"]["CoreDateEntry"];
 
 /**
  * Response for GET /api/butlers/relationship/entities/{id}/core-dates.
@@ -9309,9 +3005,7 @@ export interface CoreDateEntry extends FactAttribution {
  * soonest upcoming date first), so the detail page surfaces the next occurrence
  * without client-side sorting.
  */
-export interface CoreDatesResponse {
-  items: CoreDateEntry[];
-}
+export type CoreDatesResponse = components["schemas"]["CoreDatesResponse"];
 
 // ---------------------------------------------------------------------------
 // Secrets v2 — breaks catalogue (GET /api/secrets/breaks-catalogue)
@@ -9323,102 +3017,12 @@ export interface CoreDatesResponse {
  *
  * Returned by GET /api/secrets/breaks-catalogue?provider=<p>
  */
-export interface BreakEntry {
-  /** Butler slug that depends on this credential. */
-  butler: string;
-  /** Human-readable feature name (e.g. "calendar sync"). */
-  feature: string;
-  /** Severity of breakage if the credential is sick. */
-  severity: "high" | "medium" | "low";
-  /** OAuth scopes required by this feature (empty for non-OAuth credentials). */
-  required_scopes: string[];
-  /**
-   * Capability family this feature maps to (bu-4v5es) — 'calendar' | 'gmail'
-   * | 'drive' | 'health' for Google, 'connectivity' for every other
-   * provider. Null when required_scopes don't map to any known capability
-   * (e.g. Google's ecosystem-wide account-connection row) — the frontend
-   * falls back to the static severity pip for those.
-   */
-  capability?: string | null;
-}
+export type BreakEntry = components["schemas"]["BreakEntry"];
 
 /** Query parameters for the breaks-catalogue endpoint. */
 export interface BreaksCatalogueParams {
   /** Provider slug to filter by. When omitted, full catalogue is returned. */
   provider?: string;
-}
-
-/**
- * Metadata for GET /api/secrets/breaks-catalogue. Extends the base bag with
- * the degraded-envelope flag the backend emits when the shared credential
- * pool is unreachable (secrets_v2.py::get_breaks_catalogue ->
- * `ApiMeta(catalogue_available=False)`). Mirrors the fleet-wide
- * `meta.<flag>` convention (see CLAUDE.md API Conventions — Degraded-Mode
- * Response Envelope). `false` means the shared pool could not be reached, so
- * the empty `data` list must NOT read as "no breaks tracked for this
- * provider" — a legitimately-absent table (pre-migration) is a different
- * case and is not flagged, keeping the honest empty state.
- */
-export interface BreaksCatalogueMeta extends ApiMeta {
-  /** False only when the shared credential pool was unreachable. */
-  catalogue_available?: boolean;
-}
-
-/** GET /api/secrets/breaks-catalogue response: entries + degraded-pool meta. */
-export interface BreaksCatalogueResponse {
-  data: BreakEntry[];
-  meta: BreaksCatalogueMeta;
-}
-
-// ---------------------------------------------------------------------------
-// Secrets v2 — inventory endpoint (GET /api/secrets/inventory)
-// bu-nrgk9
-// ---------------------------------------------------------------------------
-
-/**
- * Most recent probe result for a credential, as returned by the inventory
- * endpoint.
- *
- * `latency_ms` is real (bu-6v1hx): populated from public.secret_probe_log
- * when the probe made an actual live network round trip (currently only the
- * user-credential probe's live OAuth/PAT verify). Null when the probe was
- * derived from local state only — never a fabricated 0.
- */
-export interface SecretsProbeResult {
-  ok: boolean;
-  code: number | null;
-  message: string | null;
-  at: string | null;
-  latency_ms?: number | null;
-}
-
-/**
- * One credential's outcome from a probe-all sweep (POST /api/secrets/probe-all).
- *
- * `key` is the canonical credential key ("u:google" / "s:KEY" / "c:cli-auth/codex")
- * — matches the passport spine's focus-key encoding 1:1, so a result can be
- * looked up directly against a SpineEntry without re-deriving the key.
- *
- * `ok: null` means the row was skipped (rate-limited, circuit-broken, or an
- * unexpected error) rather than actually probed — see `skipped`/`skip_reason`.
- */
-export interface SecretsProbeAllResult {
-  key: string;
-  family: "system" | "user" | "cli";
-  label: string;
-  ok: boolean | null;
-  message: string | null;
-  skipped: boolean;
-  skip_reason: string | null;
-}
-
-/** Aggregate response for POST /api/secrets/probe-all. */
-export interface SecretsProbeAllResponse {
-  results: SecretsProbeAllResult[];
-  probed: number;
-  ok: number;
-  failed: number;
-  skipped: number;
 }
 
 /**
@@ -9494,13 +3098,7 @@ export interface SecretsSystemRaw {
  * The backend serialises `code` and `at` on every response, including when
  * their values are null; neither detail route excludes unset or null fields.
  */
-export interface SecretsCredentialTestOutcome {
-  ok: boolean;
-  code: number | null;
-  /** Pre-formatted relative timestamp (e.g. "14:21 today"). */
-  at: string | null;
-  latency_ms?: number | null;
-}
+export type SecretsCredentialTestOutcome = components["schemas"]["CredentialTestOutcome"];
 
 /**
  * Latest content-blind probe outcome for one capability family of a user
@@ -9511,10 +3109,7 @@ export interface SecretsCredentialTestOutcome {
  * — 'calendar' | 'gmail' | 'drive' | 'health' | 'connectivity' | 'other' —
  * never a raw scope identifier.
  */
-export interface SecretsCredentialCapabilityOutcome {
-  capability: string;
-  test: SecretsCredentialTestOutcome | null;
-}
+export type SecretsCredentialCapabilityOutcome = components["schemas"]["CredentialCapabilityOutcome"];
 
 /**
  * One audit-log entry for a credential, without its free-text `note`
@@ -9524,11 +3119,7 @@ export interface SecretsCredentialCapabilityOutcome {
  * the only operator-authored field on an audit row and the backend drops it on
  * read, for every writer, so there is nothing here to render.
  */
-export interface SecretsCredentialAuditOutcome {
-  ts: string;
-  actor: string;
-  action: string;
-}
+export type SecretsCredentialAuditOutcome = components["schemas"]["CredentialAuditOutcome"];
 
 /**
  * A user credential row as returned by GET /api/secrets/inventory.
@@ -9603,13 +3194,7 @@ export interface SecretsUserRaw {
  *
  * Maps to IdentityInfo in the backend secrets_v2 router.
  */
-export interface SecretsIdentityInfo {
-  entity_id: string;
-  /** Human-readable name from public.entities.canonical_name. */
-  name: string;
-  /** 'owner' when the entity has 'owner' in its roles; 'member' otherwise. */
-  role: "owner" | "member";
-}
+export type SecretsIdentityInfo = components["schemas"]["IdentityInfo"];
 
 /**
  * Provider display metadata as returned by the backend catalog.
@@ -9627,50 +3212,6 @@ export interface SecretsProviderInfo {
   cadence: string;
 }
 
-/**
- * Payload shape of ApiResponse<InventoryData> from GET /api/secrets/inventory.
- */
-export interface SecretsInventoryData {
-  cli: SecretsCliRaw[];
-  system: SecretsSystemRaw[];
-  user: SecretsUserRaw[];
-  /** Identity metadata for each unique entity referenced in the user array. */
-  identities: SecretsIdentityInfo[];
-  /**
-   * Provider display metadata catalog keyed by provider slug.
-   * Present since bu-ej5dr; may be absent in older backend responses (use FE fallback).
-   */
-  providers?: Record<string, SecretsProviderInfo>;
-}
-
-/** Deduplicated state counts keyed by the passport credential family. */
-export interface SecretsInventoryFamilyCounts {
-  cli: number;
-  system: number;
-  user: number;
-}
-
-/** Meta fields returned alongside the inventory payload. */
-export interface SecretsInventoryMeta {
-  /** Genuinely broken or imminently-expiring rows (bu-976n0 tri-state split). */
-  failing_count: number;
-  /** Set-but-never-probed rows — an unknown, not a failure (bu-976n0). */
-  unverified_count: number;
-  /** Per-family failing counts from the same deduplicated server-side row set. */
-  failing_count_by_family: SecretsInventoryFamilyCounts;
-  /** Per-family unverified counts from the same deduplicated server-side row set. */
-  unverified_count_by_family: SecretsInventoryFamilyCounts;
-  severity?: Record<string, number>;
-  /**
-   * Named sources that failed during this fan-out and were dropped from the
-   * response rather than failing the whole request (bu-5ccth). Mirrors the
-   * fleet-wide `meta.sources_degraded` convention (see CLAUDE.md API
-   * Conventions and `approvals.py`'s `DegradedSources` usage). Absent or
-   * empty means every source that was queried succeeded.
-   */
-  sources_degraded?: string[];
-}
-
 /** Query parameters for GET /api/secrets/inventory. */
 export interface SecretsInventoryParams {
   /**
@@ -9678,76 +3219,6 @@ export interface SecretsInventoryParams {
    * When omitted, the owner identity is used (projection-lens semantics).
    */
   identity?: string;
-}
-
-// ---------------------------------------------------------------------------
-// Secrets v2 — per-credential detail + mutation types (bu-ayp6v.1)
-//
-// These types mirror the Pydantic models in secrets_v2.py:
-//   UserSecretDetail, SystemCredentialDetail, CliCredentialDetail,
-//   CliRotateResult, DisconnectStatus, SystemDeleteStatus, CliRevokeResult,
-//   AuditEvent.
-// ---------------------------------------------------------------------------
-
-/**
- * Content-blind evidence payload for a single user-scoped credential.
- *
- * Returned by GET /api/secrets/user/<provider>?identity=<uuid> and by
- * POST /api/secrets/user/<provider>/rotate.
- * Maps to UserSecretDetail in secrets_v2.py, field for field: the backend
- * builds it in `_content_blind_detail`, which is the only bridge from the
- * router's internal `_UserCredentialRecord` to this wire shape.
- *
- * Raw credential values are NEVER returned, and neither is anything that can
- * echo one: the persisted `entity_info.type` and `label`, raw OAuth scope
- * identifiers, probe messages, audit notes, and the failure tail are all off
- * this wire (owner decision, 2026-08-13). Capability evidence arrives as
- * members of the backend's fixed CAPABILITY_VOCABULARY instead. Do not re-add
- * any of them here to make a component compile — the field will be
- * `undefined` at runtime.
- *
- * Nothing is optional: the backend serialises every field on every response
- * (no `response_model_exclude_none`/`exclude_unset`), so an absent value
- * arrives as `null` or an empty array, never as a missing key.
- */
-export interface SecretsUserDetail {
-  /** entity_info primary key (UUID string). */
-  id: string;
-  /** entity UUID. */
-  entity_id: string;
-  /** The provider path segment the caller asked for (e.g. "google"). */
-  provider: string;
-
-  /** Derived state: "ok" | "warn" | "failing" | "expired" | "never_set". */
-  state: string;
-  /** SHA-256[:8] hex fingerprint, computed on-read. Null when value is unset. */
-  fingerprint: string | null;
-
-  /** ISO-8601 created_at. */
-  issued: string | null;
-  /** ISO-8601 expires_at. Google test-mode only; null for every other provider. */
-  expires: string | null;
-  last_verified: string | null;
-
-  /**
-   * Capability categories this credential's provider needs, derived
-   * server-side from public.provider_feature_catalogue.required_scopes.
-   * Empty means "no capability is recorded", never "unknown".
-   */
-  capabilities_required: string[];
-  /**
-   * Capability categories actually granted. A real source only exists for
-   * Google today (public.google_accounts.granted_scopes); every other provider
-   * stays empty.
-   */
-  capabilities_granted: string[];
-
-  /** Most recent probe outcome, without its free-text message. */
-  test: SecretsCredentialTestOutcome | null;
-  /** Last 10 audit rows, newest first, each without its free-text note. */
-  audit: SecretsCredentialAuditOutcome[];
-  /** Per-capability probe state (bu-4v5es). See SecretsUserRaw.capabilities. */
-  capabilities: SecretsCredentialCapabilityOutcome[];
 }
 
 /**
@@ -9761,28 +3232,7 @@ export interface SecretsUserDetail {
  * (owner decision, 2026-08-13). `breaks` is absent too — nothing ever
  * populated it, so it was dropped rather than published as an empty array.
  */
-export interface SecretsSystemCredentialDetail {
-  key: string;
-  category: string;
-  description: string | null;
-
-  state: string;
-  fingerprint: string | null;
-
-  /** "shared" | "local" | "missing". */
-  row_state: string;
-  source: string | null;
-  target: string | null;
-
-  last_verified: string | null;
-  used_by: string[];
-
-  test: SecretsCredentialTestOutcome | null;
-  audit: SecretsCredentialAuditOutcome[];
-
-  /** Butler schema that owns this row. */
-  butler: string;
-}
+export type SecretsSystemCredentialDetail = components["schemas"]["SystemCredentialDetail"];
 
 /**
  * Content-blind evidence payload for a single CLI runtime token.
@@ -9794,249 +3244,33 @@ export interface SecretsSystemCredentialDetail {
  * as raw OAuth scope identifiers. `last_used` is absent because nothing
  * persists it, and the probe's free-text `message` is off this wire.
  */
-export interface SecretsCliDetail {
-  /** secret_key (the credential identifier). */
-  id: string;
-  label: string | null;
-
-  state: string;
-  fingerprint: string | null;
-
-  issued: string | null;
-  expires: string | null;
-
-  /** CAPABILITY_VOCABULARY members. Empty means "none recorded". */
-  capabilities_required: string[];
-  capabilities_granted: string[];
-
-  test: SecretsCredentialTestOutcome | null;
-}
-
-/**
- * A single content-blind audit event for a credential.
- *
- * Returned by GET /api/secrets/audit/<scope>/<key>
- * Maps to AuditEvent in secrets_v2.py.
- * `ts` is pre-formatted server-side (e.g. "14:21 today", "yesterday 09:08").
- *
- * There is no `note` field (bu-rh8z5): the backend does not select the stored
- * audit note, which carries provider and exception text verbatim. `action` is
- * the verb to render; do not "fix" this by reaching for a note that is not on
- * the wire.
- */
-export interface SecretsAuditEvent {
-  ts: string;
-  actor: string;
-  action: string;
-}
+export type SecretsCliDetail = components["schemas"]["CliCredentialDetail"];
 
 /**
  * Response payload for POST /api/secrets/user/<provider>/rotate.
  * Returns ApiResponse<SecretsUserDetail> (updated credential).
  */
-export interface SecretsRotateUserRequest {
-  /** New secret value to store. */
-  value: string;
-}
-
-/**
- * Response payload for POST /api/secrets/user/<provider>/disconnect.
- * Maps to DisconnectStatus in secrets_v2.py.
- */
-export interface SecretsDisconnectStatus {
-  status: "disconnected";
-}
+export type SecretsRotateUserRequest = components["schemas"]["RotateRequest"];
 
 /**
  * Request body for POST /api/secrets/system/<key>.
  * Maps to SystemSetRequest in secrets_v2.py.
  */
-export interface SecretsSystemSetRequest {
-  value: string;
-  /** "shared" (default) or a butler name for per-butler override. */
-  target: "shared" | string;
-  /**
-   * Credential category, persisted on butler_secrets.category at first-time
-   * create. Optional; backend defaults to "general". Free-form string so the FE
-   * template vocabulary (src/lib/secret-templates.ts) can supply any category.
-   */
-  category?: string;
-}
-
-/**
- * Response payload for DELETE /api/secrets/system/<key>.
- * Maps to SystemDeleteStatus in secrets_v2.py.
- * status is "disconnected" (shared row) or "revoked" (override row).
- */
-export interface SecretsSystemDeleteStatus {
-  status: "disconnected" | "revoked";
-}
-
-/**
- * Response payload for POST /api/secrets/cli/<id>/rotate.
- * Maps to CliRotateResult in secrets_v2.py.
- *
- * IMPORTANT: `value` is returned EXACTLY ONCE in this response.
- * No GET endpoint exposes raw values; this is the only opportunity to
- * copy the value into local config.
- */
-export interface SecretsCliRotateResult {
-  /** SHA-256 first-8 hex fingerprint of the newly-generated value. */
-  fingerprint: string;
-  /** Raw secret value — returned ONCE; not retrievable via any GET endpoint. */
-  value: string;
-}
-
-/**
- * Response payload for POST /api/secrets/cli/<id>/revoke.
- * Maps to CliRevokeResult in secrets_v2.py.
- */
-export interface SecretsCliRevokeResult {
-  status: "revoked";
-}
-
-/**
- * Response payload for POST /api/secrets/cli/<id>/reauthorize.
- * Maps to CliReauthorizeResponse in secrets_v2.py.
- *
- * Inspect `auth_mode` to decide which fields are meaningful:
- *   "device_code" → session_id, auth_url, device_code, message present.
- *                   Poll GET /api/cli-auth/sessions/{session_id} for completion.
- *   "api_key"     → env_var, prompt present; caller renders key-entry form.
- */
-export interface SecretsCliReauthorizeResult {
-  auth_mode: "device_code" | "api_key";
-  provider: string;
-  // device_code fields
-  session_id?: string | null;
-  session_state?: string | null;
-  auth_url?: string | null;
-  device_code?: string | null;
-  message?: string | null;
-  // api_key fields
-  env_var?: string | null;
-  prompt?: string | null;
-}
+export type SecretsSystemSetRequest = components["schemas"]["SystemSetRequest"];
 
 /** Query params for GET /api/secrets/audit/<scope>/<key>. */
 export interface SecretsAuditParams {
   limit?: number;
 }
 
-// ---------------------------------------------------------------------------
-// Entity-contacts triple API (GET/POST/DELETE /entities/{id}/contacts)
-// Introduced by entity-redesign §9.4 (bu-u1w78). These types represent
-// contact-fact triples in relationship.entity_facts (has-* predicates).
-// ---------------------------------------------------------------------------
-
-/**
- * One contact-fact triple from GET /entities/{id}/contacts.
- *
- * `id` is the fact UUID in relationship.entity_facts.
- * `predicate` is the contact predicate (e.g. has-email, has-phone, has-handle).
- * `object` is the fact value (e.g. "alice@example.com").
- * `value_hash` is SHA-256[:16] of the object, used as the DELETE path segment.
- */
-export interface ContactFact extends FactAttribution {
-  id: string;
-  predicate: string;
-  object: string;
-  value_hash: string;
-  src: string;
-  conf: number;
-  last_seen: string | null;
-  weight: number | null;
-  verified: boolean;
-  primary: boolean | null;
-}
-
 /** Request body for POST /entities/{id}/contacts. */
-export interface AddEntityContactRequest {
-  predicate: string;
-  value: string;
-  src?: string;
-  verified?: boolean;
-  primary?: boolean | null;
-  conf?: number;
-  /** Source channel type (e.g. "telegram", "email") when known. Lets the
-   * backend normalise the stored value to its canonical entity_facts form —
-   * telegram handles are stored "telegram:<bare>" so storage, resolution, and
-   * delivery agree on one format. The "has-*" predicate alone cannot tell a
-   * telegram handle from a linkedin/twitter handle. */
-  channel_type?: string;
-}
-
-/**
- * Response for POST /entities/{id}/contacts.
- *
- * `outcome` is one of "inserted", "unchanged", "superseded", or
- * "pending_approval". When outcome == "pending_approval", `fact` is null
- * and `action_id` carries the pending-actions UUID; HTTP status is 202.
- */
-export interface AddEntityContactResponse {
-  outcome: string;
-  fact: ContactFact | null;
-  action_id: string | null;
-}
-
-/** Response for DELETE /entities/{id}/contacts/{predicate}/{value_hash}. */
-export interface DeleteEntityContactResponse {
-  deleted: boolean;
-  fact_id: string;
-}
-
-/** Response for POST /entities/{id}/contacts/{predicate}/{value_hash}/verify. */
-export interface MarkEntityContactVerifiedResponse {
-  verified: boolean;
-  fact_id: string;
-}
+export type AddEntityContactRequest = components["schemas"]["AddContactRequest"];
 
 /** Request body for PUT /entities/{id}/preferred-channel. */
-export interface SetPreferredChannelRequest {
-  channel: string;
-}
-
-/**
- * Response for PUT /entities/{id}/preferred-channel.
- *
- * `outcome` is one of "inserted", "unchanged", or "superseded" from the
- * single-valued `prefers-channel` assert path. `channel` echoes the now-active
- * preferred channel.
- */
-export interface SetPreferredChannelResponse {
-  outcome: string;
-  channel: string;
-}
-
-/** Response for DELETE /entities/{id}/preferred-channel. */
-export interface ClearPreferredChannelResponse {
-  cleared: number;
-}
+export type SetPreferredChannelRequest = components["schemas"]["SetPreferredChannelRequest"];
 
 /** Request body for PUT /entities/{id}/contacts/{predicate}/{value_hash}. */
-export interface UpdateEntityContactRequest {
-  new_value: string;
-  src?: string;
-  verified?: boolean;
-  primary?: boolean | null;
-  conf?: number;
-}
-
-/**
- * Response for PUT /entities/{id}/contacts/{predicate}/{value_hash}.
- *
- * `outcome` is one of "inserted", "unchanged", "superseded", or
- * "pending_approval". When outcome == "pending_approval", `fact` is null
- * and `action_id` carries the pending-actions UUID; HTTP status is 202.
- * `retracted_fact_id` is the UUID of the old (retracted) row (null when
- * same-value update or pending_approval).
- */
-export interface UpdateEntityContactResponse {
-  outcome: string;
-  retracted_fact_id: string | null;
-  fact: ContactFact | null;
-  action_id: string | null;
-}
+export type UpdateEntityContactRequest = components["schemas"]["UpdateContactRequest"];
 
 // ---------------------------------------------------------------------------
 // Timeline saved views (bu-vgj88)
@@ -10061,25 +3295,13 @@ export interface TimelineSavedViewFilterSpec {
 }
 
 /** A single persisted saved view returned from GET /api/timeline/saved-views. */
-export interface TimelineSavedViewEntry {
-  id: string;
-  name: string;
-  filter_spec: TimelineSavedViewFilterSpec;
-  created_at: string;
-  updated_at: string;
-}
+export type TimelineSavedViewEntry = components["schemas"]["SavedViewEntry"];
 
 /** Request body for POST /api/timeline/saved-views. */
-export interface TimelineSavedViewCreateRequest {
-  name: string;
-  filter_spec: TimelineSavedViewFilterSpec;
-}
+export type TimelineSavedViewCreateRequest = components["schemas"]["SavedViewCreateRequest"];
 
 /** Request body for PATCH /api/timeline/saved-views/{id}. */
-export interface TimelineSavedViewUpdateRequest {
-  name?: string;
-  filter_spec?: TimelineSavedViewFilterSpec;
-}
+export type TimelineSavedViewUpdateRequest = components["schemas"]["SavedViewUpdateRequest"];
 
 // ---------------------------------------------------------------------------
 // Proactive insight candidates (bu-sqjc7.3 / bu-w7b18.1)
@@ -10092,22 +3314,7 @@ export interface TimelineSavedViewUpdateRequest {
  * Mirrors the Switchboard InsightCandidate model (roster/switchboard/api/models.py).
  * The Switchboard role is the only butler role with SELECT on this table.
  */
-export interface InsightCandidate {
-  id: string;
-  origin_butler: string;
-  priority: number;
-  category: string;
-  dedup_key: string;
-  cooldown_days: number | null;
-  expires_at: string | null;
-  message: string;
-  channel: string | null;
-  metadata: Record<string, unknown> | null;
-  created_at: string | null;
-  status: string;
-  delivered_at: string | null;
-  delivery_attempt_count: number;
-}
+export type InsightCandidate = components["schemas"]["InsightCandidate"];
 
 /** Query parameters for GET /api/switchboard/insights. */
 export interface InsightCandidatesParams {
@@ -10116,82 +3323,23 @@ export interface InsightCandidatesParams {
   limit?: number;
 }
 
-export type InsightFeedbackVerdict = "useful" | "not_now" | "never";
+export type InsightFeedbackVerdict = components["schemas"]["InsightFeedbackResponse"]["verdict"];
 
 // ---------------------------------------------------------------------------
 // Rule-promotion approvals surface (bu-o62bc, bead 4)
 // ---------------------------------------------------------------------------
 
 /** A pending rule-promotion suggestion needing owner action (a confirm card). */
-export interface RulePromotionSuggestion {
-  id: string;
-  sender_key: string;
-  source_channel: string;
-  proposed_rule_type: string;
-  proposed_condition: Record<string, unknown>;
-  proposed_action: string;
-  evidence_count: number;
-  is_clearly_automated: boolean;
-  first_evidence_at: string | null;
-  last_evidence_at: string | null;
-  created_at: string;
-}
+export type RulePromotionSuggestion = components["schemas"]["RulePromotionSuggestion"];
 
 /** An auto-applied (auto-minted) rule-promotion, shown informationally. */
-export interface RulePromotionAutoApplied {
-  id: string;
-  sender_key: string;
-  source_channel: string;
-  proposed_action: string;
-  evidence_count: number;
-  created_rule_id: string | null;
-  rule_enabled: boolean | null;
-  decided_at: string | null;
-  decided_by: string | null;
-}
-
-/** GET /api/switchboard/rule-promotion-suggestions payload. */
-export interface RulePromotionSurface {
-  pending: RulePromotionSuggestion[];
-  auto_applied: RulePromotionAutoApplied[];
-}
-
-/** Fan-out availability metadata for the rule-promotion suggestion surface. */
-export interface RulePromotionSurfaceMeta extends ApiMeta {
-  sources_degraded?: string[];
-}
-
-export interface RulePromotionSurfaceResponse extends ApiResponse<RulePromotionSurface> {
-  meta: RulePromotionSurfaceMeta;
-}
+export type RulePromotionAutoApplied = components["schemas"]["RulePromotionAutoApplied"];
 
 /** Aggregate rule-promotion metrics for the approvals dashboard tile (bead 6). */
-export interface RulePromotionStats {
-  suggestions_pending: number;
-  suggestions_confirmed: number;
-  suggestions_dismissed: number;
-  suggestions_superseded: number;
-  promoted_rules_active: number;
-  promoted_rule_matches: number;
-  llm_sessions_avoided_estimate: number;
-  demotion_pending: number;
-  promoted_rule_spot_checks: number;
-}
-
-/** Fan-out availability metadata for rule-promotion aggregate metrics. */
-export interface RulePromotionStatsMeta extends ApiMeta {
-  sources_degraded?: string[];
-}
-
-export interface RulePromotionStatsResponse extends ApiResponse<RulePromotionStats> {
-  meta: RulePromotionStatsMeta;
-}
+export type RulePromotionStats = components["schemas"]["RulePromotionStats"];
 
 /** Body for dismissing a pending rule-promotion suggestion. */
-export interface RulePromotionDismissRequest {
-  reason?: string;
-  cooldown_days?: number;
-}
+export type RulePromotionDismissRequest = components["schemas"]["RulePromotionDismissRequest"];
 
 /**
  * One row of public.delegation_ledger -- a cross-butler question/answer
@@ -10201,71 +3349,26 @@ export interface RulePromotionDismissRequest {
  * "task_conflict" are the two failure states the wake protocol introduces --
  * before this widening they rendered as an ordinary answered row.
  */
-export interface DelegationLedgerEntry {
-  id: string;
-  asked_at: string;
-  asking_butler: string;
-  question: string;
-  target_butler: string | null;
-  catalog_match_id: string | null;
-  catalog_score: number | null;
-  /** "pending" | "routed" | "unroutable" | "failed" | "answered" */
-  status: string;
-  reason: string | null;
-  answer: string | null;
-  answered_at: string | null;
-  answering_butler: string | null;
-  answer_digest: string | null;
-  wake_key: string | null;
-  /** "not_applicable" | "callback_pending" | "callback_failed" | "callback_routed" | "task_created" | "task_conflict" */
-  wake_state: string;
-  wake_task_id: string | null;
-  wake_task_name: string | null;
-  wake_updated_at: string | null;
-}
+export type DelegationLedgerEntry = components["schemas"]["DelegationLedgerEntry"];
 
 /**
  * One row of public.butler_subscriptions -- a standing (subscriber_butler,
  * event_type) registration on the domain-event bus (bu-317s5).
  */
-export interface SubscriptionEntry {
-  id: string;
-  subscriber_butler: string;
-  event_type: string;
-  active: boolean;
-  created_at: string;
-  updated_at: string;
-}
+export type SubscriptionEntry = components["schemas"]["SubscriptionEntry"];
 
 /**
  * The latest step of a subscriber's reaction lifecycle for one event
  * (bu-6jv4m.8). Distinct from `DeliveryEntry.status`: that says the wake was
  * handed over, this says what the subscriber did about it.
  */
-export interface ReactionSummary {
-  /** "scheduled" | "running" | "acted" | "ignored" | "deferred" | "failed" | "unreported" */
-  status: string;
-  session_id: string | null;
-  note: string | null;
-  recorded_at: string;
-}
+export type ReactionSummary = components["schemas"]["ReactionSummary"];
 
 /**
  * One public.domain_event_reactions row -- an append-only step in one
  * subscriber's reaction to one event (bu-6jv4m.8).
  */
-export interface ReactionEntry {
-  id: string;
-  event_id: string;
-  subscriber_butler: string;
-  /** "scheduled" | "running" | "acted" | "ignored" | "deferred" | "failed" | "unreported" */
-  status: string;
-  session_id: string | null;
-  task_name: string | null;
-  note: string | null;
-  evidence: Array<{ kind: string; ref: string; label?: string }>;
-  recorded_at: string;
-}
+export type ReactionEntry = components["schemas"]["ReactionEntry"];
 
 /**
  * One materialized publisher-owned event contract from
@@ -10273,108 +3376,22 @@ export interface ReactionEntry {
  * of its own `roster/<butler>/domain_events.toml` declaration, refreshed at
  * startup. Read surface only: the TOML is the source of truth.
  */
-export interface ContractEntry {
-  event_type: string;
-  publisher: string;
-  schema_version: number;
-  summary: string;
-  /** "standard" | "minimized-derived" */
-  retention_policy: string;
-  /** "expected" | "optional" */
-  reaction_expectation: string;
-  reaction_contract: string;
-  permitted_subscribers: string[];
-  required_fields: string[];
-  optional_fields: string[];
-  materialized_at: string;
-}
+export type ContractEntry = components["schemas"]["ContractEntry"];
 
 /**
  * One public.domain_event_deliveries row joined with its event -- a fan-out
  * delivery attempt to (or from) a butler on the domain-event bus (bu-317s5).
  */
-export interface DeliveryEntry {
-  id: string;
-  event_id: string;
-  subscriber_butler: string;
-  /** "pending" | "delivered" | "conflict" | "failed" | "failed_permanent" */
-  status: string;
-  task_id: string | null;
-  task_name: string | null;
-  error_message: string | null;
-  /** Dispatch attempts so far, bumped on every retry (bu-1yw6d reconciliation sweep). */
-  attempt_count: number;
-  delivered_at: string | null;
-  created_at: string;
-  updated_at: string;
-  event_type: string;
-  source_butler: string;
-  occurred_at: string;
-  /**
-   * Latest reaction step for this (event, subscriber), or null when the
-   * subscriber has recorded nothing. `status` above is transport only --
-   * "delivered" means the wake was scheduled, never that anyone acted.
-   */
-  reaction: ReactionSummary | null;
-}
+export type DeliveryEntry = components["schemas"]["DeliveryEntry"];
 
 // ---------------------------------------------------------------------------
 // Lifestyle taste ledger (bu-2jtfw.10)
 // ---------------------------------------------------------------------------
 
 /** Ledger-wide taste counts. GET /api/lifestyle/taste/summary. */
-export type TasteSummaryQueryName =
-  | "total_works"
-  | "total_signals"
-  | "total_verdicts"
-  | "recent_signals_7d"
-  | "works_by_kind"
-  | "signals_by_kind";
+export type TasteSummaryQueryName = components["schemas"]["TasteSummaryQueryName"];
 
-export interface TasteSummaryQueryAvailability {
-  query: TasteSummaryQueryName;
-  state: "available" | "unavailable";
-  /** Fixed content-blind classifier; no upstream exception text crosses the API. */
-  reason: "query_failed" | null;
-}
-
-export interface TasteSummary {
-  total_works: number;
-  total_signals: number;
-  total_verdicts: number;
-  recent_signals_7d: number;
-  works_by_kind: Record<string, number>;
-  signals_by_kind: Record<string, number>;
-  /**
-   * Complete, partial, or wholly unavailable summary coverage. The field is
-   * additive: cached or rolling-deploy responses produced before the status
-   * ledger remain usable as complete data.
-   */
-  availability?: "complete" | "partial" | "unavailable";
-  /** Stable content-blind status for every summary query section, when present. */
-  query_availability?: TasteSummaryQueryAvailability[];
-  /** False only when every summary query failed, never for a genuine empty ledger. */
-  ledger_available: boolean;
-}
-
-/** One work (track, artist, ...) in the taste ledger. */
-export interface TasteWork {
-  id: string;
-  kind: string;
-  title: string | null;
-  external_ids: Record<string, unknown>;
-  created_at: string;
-}
-
-/** One owner-asserted taste verdict, optionally tied to a work. */
-export interface TasteVerdict {
-  id: string;
-  work_id: string | null;
-  predicate: string;
-  verdict_text: string;
-  source: string;
-  created_at: string;
-}
+export type TasteSummary = components["schemas"]["TasteSummary"];
 
 export interface TasteWorksParams {
   kind?: string;
@@ -10399,8 +3416,4 @@ export interface FactAttribution {
   confirmed_at?: string | null;
   confirmed_by_entity_id?: string | null;
   confirmation_source?: string | null;
-}
-
-export interface CandidateIdentityFact extends ContactFact {
-  validity: "candidate";
 }

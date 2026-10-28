@@ -2,7 +2,7 @@ import type { Fact } from "../../../src/api/types";
 
 /** Complete synthetic fact; each owner retains its scenario-specific fields. */
 export function makeFact(overrides: Partial<Fact> = {}): Fact {
-  return {
+  return { source_episode_status: null, superseded_by: null, content_authority: null, authority_entity_id: null, authority_entity_name: null, tenant_id: "owner", request_id: null, retention_class: "operational", sensitivity: "normal", valid_at: null, invalid_at: null, idempotency_key: null,
     id: "synthetic-fact", subject: "owner", predicate: "prefers", content: "Synthetic preference",
     importance: 5, confidence: 0.9, decay_rate: 0, permanence: "stable",
     source_butler: null, source_episode_id: null, session_id: null, supersedes_id: null,

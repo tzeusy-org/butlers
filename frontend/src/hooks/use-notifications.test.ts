@@ -35,7 +35,7 @@ vi.mock("@/lib/event-bus", () => ({
   }),
 }));
 
-vi.mock("@/api/index.ts", () => ({
+vi.mock("@/api/client.ts", () => ({
   getNotifications: vi.fn(() => Promise.resolve({ data: [] })),
   getNotificationStats: vi.fn(() => Promise.resolve({ data: {} })),
   getButlerNotifications: vi.fn(() => Promise.resolve({ data: [] })),

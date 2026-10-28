@@ -51,6 +51,8 @@ _CONNECTOR_MANAGED_ENTITY_INFO_TYPES = SPOTIFY_MANAGED_ENTITY_INFO_TYPES
 # Load local models module
 _models_module = roster_module("relationship", "api/models", api_source=__file__)
 
+CandidateFactsResponse = _models_module.CandidateFactsResponse
+IdentityFactDecisionResponse = _models_module.IdentityFactDecisionResponse
 Group = _models_module.Group
 GroupListResponse = _models_module.GroupListResponse
 Label = _models_module.Label
@@ -118,6 +120,7 @@ DismissQueueItemResult = _models_module.DismissQueueItemResult
 DismissQueueResponse = _models_module.DismissQueueResponse
 ActivityEntry = _models_module.ActivityEntry
 ActivityResponse = _models_module.ActivityResponse
+ActivityStreamWithBinsResponse = _models_module.ActivityStreamWithBinsResponse
 EntityFactEntry = _models_module.EntityFactEntry
 ActivityBin = _models_module.ActivityBin
 ActivityBinsResponse = _models_module.ActivityBinsResponse
@@ -6812,7 +6815,13 @@ def _build_daily_bins(entries: list[ActivityEntry], window_days: int) -> list[Ac
     return bins
 
 
-@router.get("/entities/{entity_id}/activity", response_model=None)
+@router.get(
+    "/entities/{entity_id}/activity",
+    response_model=None,
+    responses={
+        200: {"model": ActivityResponse | ActivityBinsResponse | ActivityStreamWithBinsResponse}
+    },
+)
 async def get_entity_activity(
     entity_id: UUID,
     limit: int = Query(50, ge=1, le=200, description="Maximum entries per page."),
@@ -7287,7 +7296,9 @@ async def get_entity_core_dates(
     return CoreDatesResponse(items=items)
 
 
-@router.get("/entities/{entity_id}/identity-candidates")
+@router.get(
+    "/entities/{entity_id}/identity-candidates", responses={200: {"model": CandidateFactsResponse}}
+)
 async def list_identity_candidates(entity_id: UUID, *, db: Db):
     """Protected review surface, never used for reachability or delivery."""
     from butlers.core.fact_authority import current_fact_write_context
@@ -7313,7 +7324,10 @@ async def list_identity_candidates(entity_id: UUID, *, db: Db):
     )
 
 
-@router.post("/entities/{entity_id}/identity-facts/{fact_id}/{decision}")
+@router.post(
+    "/entities/{entity_id}/identity-facts/{fact_id}/{decision}",
+    responses={200: {"model": IdentityFactDecisionResponse}},
+)
 async def owner_identity_fact_decision(
     entity_id: UUID,
     fact_id: UUID,
@@ -7355,7 +7369,10 @@ async def owner_identity_fact_decision(
             raise HTTPException(409, detail={"code": "fact_stale", "message": str(exc)}) from exc
 
 
-@router.get("/entities/{entity_id}/identity-facts/{fact_id}/decision")
+@router.get(
+    "/entities/{entity_id}/identity-facts/{fact_id}/decision",
+    responses={200: {"model": IdentityFactDecisionResponse}},
+)
 async def read_identity_fact_decision(
     entity_id: UUID,
     fact_id: UUID,

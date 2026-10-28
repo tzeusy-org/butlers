@@ -21,7 +21,7 @@ import { axe, toHaveNoViolations } from "jest-axe";
 
 import CurriculumRequestReceiptPanel from "./CurriculumRequestReceiptPanel";
 import { AppTimezoneProvider } from "@/components/ui/timezone-context";
-import type { CurriculumRequestReceipt, CurriculumRequestStatusResponse } from "@/api/index.ts";
+import type { CurriculumRequestReceipt, CurriculumRequestStatusResponse } from "@/api/types.ts";
 
 expect.extend(toHaveNoViolations);
 

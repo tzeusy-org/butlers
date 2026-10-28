@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel
+from butlers.api.models.base import ResponseSchemaModel
 
 
 class GoogleHealthConnectorState(StrEnum):
@@ -37,7 +37,7 @@ class GoogleHealthConnectorState(StrEnum):
     """No primary Google account exists in public.google_accounts."""
 
 
-class AccountStatus(BaseModel):
+class AccountStatus(ResponseSchemaModel):
     """Per-account connector state for a single Google account.
 
     Populated by ``get_google_health_status`` from ``connector_registry``
@@ -81,7 +81,7 @@ class AccountStatus(BaseModel):
     """Count of daily-summary ingestion events in the last 7 days for this account."""
 
 
-class GoogleHealthStatusResponse(BaseModel):
+class GoogleHealthStatusResponse(ResponseSchemaModel):
     """Response for GET /api/connectors/google-health/status.
 
     Surfaces the data the Google Health connector status card renders:
@@ -177,7 +177,7 @@ class GoogleHealthStatusResponse(BaseModel):
     canonical identity without inspecting the ``accounts`` list."""
 
 
-class GoogleHealthDisconnectResponse(BaseModel):
+class GoogleHealthDisconnectResponse(ResponseSchemaModel):
     """Response for DELETE /api/connectors/google-health/disconnect.
 
     Reports whether the scope-selective revocation succeeded and how many

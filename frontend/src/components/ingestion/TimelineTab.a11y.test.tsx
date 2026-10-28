@@ -21,7 +21,7 @@ import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { axe, toHaveNoViolations } from "jest-axe";
 
-import type { IngestionEventSummary } from "@/api/index.ts";
+import type { IngestionEventSummary } from "@/api/types.ts";
 
 expect.extend(toHaveNoViolations);
 
@@ -32,8 +32,8 @@ expect.extend(toHaveNoViolations);
 // Mocks — same pattern as TimelineTab.test.tsx
 // ---------------------------------------------------------------------------
 
-vi.mock("@/api/index.ts", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/api/index.ts")>();
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client.ts")>();
   return {
     ...actual,
     replayIngestionEvent: vi.fn(),
@@ -84,6 +84,10 @@ const CONTENDED_AXE_TIMEOUT_MS = 15_000;
 
 function makeEvent(overrides: Partial<IngestionEventSummary> = {}): IngestionEventSummary {
   return {
+replay_safe: false,
+replay_block_reason: null,
+unpriced_session_count: 0,
+no_usage_session_count: 0,
     id: "aabbccdd-0000-0000-0000-000000000001",
     received_at: "2026-01-01T10:00:00Z",
     source_channel: "gmail",

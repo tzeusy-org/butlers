@@ -46,5 +46,5 @@ export interface ForecastData {
 
 /** Shared `/spend` posture query used by SpendPage and intent prefetch. */
 export function fetchSpendForecast(): Promise<{ data: ForecastData }> {
-  return apiFetch<{ data: ForecastData }>("/spend/forecast")
+  return apiFetch("/spend/forecast")
 }

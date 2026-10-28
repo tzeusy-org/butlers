@@ -6,13 +6,13 @@ import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react
 
 import type { TelegramSessionStatusResponse } from "@/api/types";
 
-vi.mock("@/api/index", () => ({
+vi.mock("@/api/client", () => ({
   getTelegramSessionStatus: vi.fn(),
   telegramSendCode: vi.fn(),
   telegramVerifyCode: vi.fn(),
 }));
 
-import { getTelegramSessionStatus } from "@/api/index";
+import { getTelegramSessionStatus } from "@/api/client.ts";
 import { TelegramSessionSetup } from "./TelegramSessionSetup";
 
 const UNREADY_STATUS: TelegramSessionStatusResponse = {

@@ -4,21 +4,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import {
-  acknowledgeAllFailed,
-  escalateNotification,
-  getButlerNotifications,
-  getNotifications,
-  getNotificationStats,
-  markNotificationRead,
-  retryNotification,
-} from "@/api/index.ts";
-import type {
-  NotificationActionResult,
-  NotificationParams,
-  NotificationStatsParams,
-  NotificationSummary,
-} from "@/api/index.ts";
+import { acknowledgeAllFailed, escalateNotification, getButlerNotifications, getNotifications, getNotificationStats, markNotificationRead, retryNotification } from "@/api/client.ts";
+import type { NotificationActionResult, NotificationParams, NotificationStatsParams, NotificationSummary } from "@/api/types.ts";
 import { useOptimisticListMutation } from "@/hooks/use-optimistic-mutation.ts";
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 

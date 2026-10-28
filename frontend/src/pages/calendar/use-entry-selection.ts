@@ -7,7 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { getCalendarWorkspaceEntry } from "@/api/index.ts";
+import { getCalendarWorkspaceEntry } from "@/api/client.ts";
 import type { UnifiedCalendarEntry } from "@/api/types.ts";
 import type { UpdateCalendarQuery } from "@/pages/calendar/use-calendar-url-state";
 

@@ -29,6 +29,7 @@ import type { ChroniclerEpisode } from "@/api/types"
 
 function makeEpisode(overrides: Partial<ChroniclerEpisode> & { id: string }): ChroniclerEpisode {
   return {
+participant_entity_ids: [],
     source_name: "core.sessions",
     source_ref: overrides.id,
     episode_type: "work",

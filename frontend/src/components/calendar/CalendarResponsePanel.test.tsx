@@ -4,12 +4,12 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
-import { respondToCalendarInvitation } from "@/api/index";
+import { respondToCalendarInvitation } from "@/api/client.ts";
 import type { CalendarInvitationEntry, CalendarResponseReceipt } from "@/api/types";
 import { CalendarResponsePanel } from "@/components/calendar/CalendarResponsePanel";
 import { CommandRegistryProvider, useCommandMenuActions } from "@/lib/command-registry";
 
-vi.mock("@/api/index", () => ({
+vi.mock("@/api/client", () => ({
   respondToCalendarInvitation: vi.fn(),
 }));
 afterEach(() => { cleanup(); vi.resetAllMocks(); });

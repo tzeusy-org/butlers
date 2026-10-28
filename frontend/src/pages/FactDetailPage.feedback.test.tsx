@@ -22,6 +22,18 @@ function json(body: unknown, status = 200) {
 beforeEach(() => {
   posts = []; outcome = 200; release = undefined;
   fact = {
+source_episode_status: null,
+superseded_by: null,
+content_authority: null,
+authority_entity_id: null,
+authority_entity_name: null,
+tenant_id: "owner",
+request_id: null,
+retention_class: "operational",
+sensitivity: "normal",
+valid_at: null,
+invalid_at: null,
+idempotency_key: null,
     id, subject: "Owner", predicate: "preferred_drink", content: "A cup of tea",
     importance: 5, confidence: 0.9, decay_rate: 0.002, permanence: "standard",
     source_butler: "general", source_episode_id: null, session_id: null, supersedes_id: null,

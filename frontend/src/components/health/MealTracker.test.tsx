@@ -21,6 +21,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
+import { MealForm } from "@/components/health/MealForm";
 import MealTracker, { type MealTrackerProps } from "@/components/health/MealTracker";
 
 const createMutate = vi.fn().mockResolvedValue({});
@@ -128,6 +129,21 @@ describe("MealTracker — direct CRUD", () => {
         description: "Grilled chicken salad",
       }),
     });
+    cleanup();
+    updateMutate.mockClear();
+    render(<MealForm meal={{
+      id: "legacy-meal", type: "retired_meal_type", description: "Stored meal",
+      nutrition: null, eaten_at: "2026-01-01T12:00:00Z", notes: null,
+      created_at: "2026-01-01T12:00:00Z",
+    }} onDone={vi.fn()} onCancel={vi.fn()} />);
+    expect(screen.getByRole("option", { name: "Unsupported meal type: retired_meal_type" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+    expect(updateMutate).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toContain("Select a supported meal type");
+    fireEvent.change(screen.getByLabelText("Type"), { target: { value: "dinner" } });
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+    await waitFor(() => expect(updateMutate).toHaveBeenCalledTimes(1));
+    expect(updateMutate.mock.calls[0][0].body.type).toBe("dinner");
   });
 
   it("deletes a meal after confirmation", async () => {

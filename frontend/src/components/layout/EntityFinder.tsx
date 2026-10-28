@@ -51,7 +51,7 @@ import {
   useEntityFinderSearch,
   useEntityNeighbours,
 } from "@/hooks/use-entities";
-import { getOwnerSetupStatus } from "@/api/index";
+import { getOwnerSetupStatus } from "@/api/client.ts";
 import {
   OPEN_ENTITY_FINDER_EVENT,
   aggregateOwnerPinned,
@@ -73,10 +73,7 @@ import {
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { KbMono } from "@/components/ui/KbMono";
-import type {
-  EntityFinderSearchResult,
-  NeighbourEntry,
-} from "@/api/index.ts";
+import type { EntityFinderSearchResult, NeighbourEntry } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
 // Pages group — client-side instant matches, sourced from the single route

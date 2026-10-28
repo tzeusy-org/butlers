@@ -46,6 +46,8 @@ type UseNotificationStatsResult = ReturnType<typeof useNotificationStats>;
 // ---------------------------------------------------------------------------
 
 const NOTIFICATION_1 = {
+approval_review: null,
+approval_review_state: "none" as const,
   id: "notif-aaa",
   source_butler: "switchboard",
   channel: "telegram",
@@ -61,6 +63,8 @@ const NOTIFICATION_1 = {
 };
 
 const NOTIFICATION_2 = {
+approval_review: null,
+approval_review_state: "none" as const,
   id: "notif-bbb",
   source_butler: "general",
   channel: "email",
@@ -76,6 +80,8 @@ const NOTIFICATION_2 = {
 };
 
 const NOTIFICATION_READ = {
+approval_review: null,
+approval_review_state: "none" as const,
   id: "notif-ccc",
   source_butler: "switchboard",
   channel: "telegram",
@@ -155,6 +161,7 @@ describe("NotificationsPage", () => {
     setStatsState({
       data: {
         data: {
+source_available: true,
           total: 2,
           sent: 1,
           failed: 1,
@@ -166,6 +173,7 @@ describe("NotificationsPage", () => {
     });
     setNotificationsState({
       data: {
+source_available: true,
         data: [NOTIFICATION_1, NOTIFICATION_2],
         meta: { total: 2, offset: 0, limit: 20, has_more: false },
       },
@@ -182,6 +190,7 @@ describe("NotificationsPage", () => {
     setStatsState({
       data: {
         data: {
+source_available: true,
           total: 2,
           sent: 1,
           failed: 1,
@@ -193,6 +202,7 @@ describe("NotificationsPage", () => {
     });
     setNotificationsState({
       data: {
+source_available: true,
         data: [NOTIFICATION_1, NOTIFICATION_2],
         meta: { total: 2, offset: 0, limit: 20, has_more: false },
       },
@@ -210,12 +220,14 @@ describe("NotificationsPage", () => {
   it("renders empty state when list returns no rows", () => {
     setStatsState({
       data: {
-        data: { total: 0, sent: 0, failed: 0, by_channel: {}, by_butler: {} },
+        data: {
+source_available: true, total: 0, sent: 0, failed: 0, by_channel: {}, by_butler: {} },
         meta: {},
       },
     });
     setNotificationsState({
       data: {
+source_available: true,
         data: [],
         meta: { total: 0, offset: 0, limit: 20, has_more: false },
       },
@@ -231,6 +243,7 @@ describe("NotificationsPage", () => {
     setStatsState({ data: undefined });
     setNotificationsState({
       data: {
+source_available: true,
         data: [],
         meta: {},
       } as unknown as NonNullable<UseNotificationsResult["data"]>,
@@ -287,6 +300,7 @@ describe("NotificationsPage", () => {
     setStatsState({
       data: {
         data: {
+source_available: true,
           total: 34,
           sent: 29,
           failed: 5,
@@ -298,6 +312,7 @@ describe("NotificationsPage", () => {
     });
     setNotificationsState({
       data: {
+source_available: true,
         data: [NOTIFICATION_1],
         meta: { total: 1, offset: 0, limit: 20, has_more: false },
       },
@@ -342,6 +357,7 @@ describe("NotificationsPage", () => {
       setStatsState({
         data: {
           data: {
+source_available: true,
             total: 1,
             sent: 0,
             failed: 1,
@@ -525,12 +541,14 @@ describe("NotificationsPage — j/k list-triage (bu-qvnce.11 slice 4)", () => {
     } as unknown as ReturnType<typeof useEscalateNotification>);
     setStatsState({
       data: {
-        data: { total: 2, sent: 1, failed: 1, by_channel: {}, by_butler: {} },
+        data: {
+source_available: true, total: 2, sent: 1, failed: 1, by_channel: {}, by_butler: {} },
         meta: {},
       },
     });
     setNotificationsState({
       data: {
+source_available: true,
         data: [NOTIFICATION_1, NOTIFICATION_2],
         meta: { total: 2, offset: 0, limit: 20, has_more: false },
       },
@@ -609,6 +627,7 @@ describe("NotificationsPage — j/k list-triage (bu-qvnce.11 slice 4)", () => {
   it("renders no footer hint strip when there are no notifications", () => {
     setNotificationsState({
       data: {
+source_available: true,
         data: [],
         meta: { total: 0, offset: 0, limit: 20, has_more: false },
       },
@@ -629,6 +648,7 @@ describe("NotificationsPage — j/k list-triage (bu-qvnce.11 slice 4)", () => {
     } as unknown as ReturnType<typeof useMarkNotificationRead>);
     setNotificationsState({
       data: {
+source_available: true,
         data: [NOTIFICATION_READ],
         meta: { total: 1, offset: 0, limit: 20, has_more: false },
       },
@@ -671,12 +691,14 @@ describe("NotificationsPage — debounced filter feedback", () => {
     } as unknown as ReturnType<typeof useEscalateNotification>);
     setStatsState({
       data: {
-        data: { total: 1, sent: 1, failed: 0, by_channel: {}, by_butler: {} },
+        data: {
+source_available: true, total: 1, sent: 1, failed: 0, by_channel: {}, by_butler: {} },
         meta: {},
       },
     });
     setNotificationsState({
       data: {
+source_available: true,
         data: [NOTIFICATION_1],
         meta: { total: 1, offset: 0, limit: 20, has_more: false },
       },
@@ -764,12 +786,14 @@ describe("NotificationsPage — Acknowledge-all-failed confirm (bu-ep4ks.11)", (
     } as unknown as ReturnType<typeof useEscalateNotification>);
     setStatsState({
       data: {
-        data: { total: 2, sent: 1, failed: 1, by_channel: {}, by_butler: {} },
+        data: {
+source_available: true, total: 2, sent: 1, failed: 1, by_channel: {}, by_butler: {} },
         meta: {},
       },
     });
     setNotificationsState({
       data: {
+source_available: true,
         data: [NOTIFICATION_1, NOTIFICATION_2],
         meta: { total: 2, offset: 0, limit: 20, has_more: false },
       },

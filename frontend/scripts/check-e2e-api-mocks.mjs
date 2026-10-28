@@ -11,9 +11,9 @@ const contracts = [
 ];
 // Python's stdlib AST distinguishes executable declarations from inert text.
 // The helper parses only source text and supports only the two contracts above.
-export function projectModel(source, route, model) {
+export function projectModel(source, route, model, baseSource) {
   const result = spawnSync("python3", [fileURLToPath(new URL("./e2e_backend_response_models.py", import.meta.url))], {
-    input: JSON.stringify({ source, route, model }), encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({ source, route, model, base_source: baseSource }), encoding: "utf8", timeout: 10000,
   });
   if (result.error || result.status !== 0) {
     throw new Error(result.stderr || `Unsupported backend response contract: ${result.error?.message}`);

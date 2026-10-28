@@ -107,6 +107,14 @@ import type { ActivityFeed, ButlerDetail } from "@/api/types";
 // ---------------------------------------------------------------------------
 
 const BASE_BUTLER: ButlerDetail = {
+db: "",
+description: null,
+last_session_started_at: null,
+db_name: null,
+db_schema: null,
+blind_spots: [],
+blind_spots_evaluated_at: null,
+blind_spots_query_failed: false,
   name: "general",
   status: "ok",
   port: 8001,

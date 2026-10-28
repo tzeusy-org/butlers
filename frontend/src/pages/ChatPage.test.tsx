@@ -42,6 +42,8 @@ function makeConversation(
   overrides: Partial<ConversationSummary> = {},
 ): ConversationSummary {
   return {
+routed_butler: null,
+latest_assistant_reply_at: null,
     id: "conversation-1",
     butler_name: "switchboard",
     title: "Landlord follow-up",
@@ -55,6 +57,12 @@ function makeConversation(
 
 function makeMessage(overrides: Partial<Message> = {}): Message {
   return {
+model_name: null,
+sources: [],
+citations: [],
+routed_butler: null,
+page_context: null,
+captured_at: null,
     id: "message-1",
     conversation_id: "conversation-1",
     role: "assistant",

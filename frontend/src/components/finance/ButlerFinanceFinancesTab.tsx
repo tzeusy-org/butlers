@@ -53,16 +53,7 @@ import {
   useFinanceTransactions,
   useFinanceUpcomingBills,
 } from "@/hooks/use-finance";
-import type {
-  FinanceAccount,
-  FinanceExpectedSignal,
-  FinanceBulkUpdateOp,
-  FinanceObligation,
-  FinanceTransaction,
-  FinanceSubscription,
-  FinanceUpcomingBillItem,
-  FinanceSpendingGroup,
-} from "@/api/index.ts";
+import type { FinanceAccount, FinanceExpectedSignal, FinanceBulkUpdateOp, FinanceObligation, FinanceTransaction, FinanceSubscription, FinanceUpcomingBillItem, FinanceSpendingGroup } from "@/api/types.ts";
 import { Panel, KpiCell } from "@/components/ui/atoms";
 import { chartColor } from "@/lib/chart-colors";
 

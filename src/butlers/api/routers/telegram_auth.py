@@ -52,6 +52,7 @@ from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.connectors.telegram_user_client_consent import (
     is_account_wide_ingestion_consent_granted,
     load_account_wide_ingestion_consent,
@@ -84,7 +85,7 @@ class SendCodeRequest(BaseModel):
     scope_consent: Literal[True]
 
 
-class SendCodeResponse(BaseModel):
+class SendCodeResponse(ResponseSchemaModel):
     session_token: str
     phone_code_hash: str
 
@@ -95,13 +96,13 @@ class VerifyCodeRequest(BaseModel):
     password: str | None = None
 
 
-class VerifyCodeResponse(BaseModel):
+class VerifyCodeResponse(ResponseSchemaModel):
     success: bool
     user_name: str | None = None
     message: str
 
 
-class SessionStatusResponse(BaseModel):
+class SessionStatusResponse(ResponseSchemaModel):
     has_api_id: bool
     has_api_hash: bool
     has_session: bool

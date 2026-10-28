@@ -13,7 +13,7 @@
  *    SESSION_TIMEOUT -> inspect-session banner
  *
  * Data-fetching hooks (`@/hooks/use-conversations`) and the SSE/create/send
- * boundary (`./sse-utils`, `@/api/index`) are mocked so tests are
+ * boundary (`./sse-utils`, `@/api/client`) are mocked so tests are
  * deterministic and don't depend on a real backend or streaming transport.
  */
 
@@ -61,20 +61,19 @@ vi.mock("@/hooks/use-conversations.ts", () => ({
   })),
 }));
 
-vi.mock("@/api/client.ts", () => ({
-  fetchPricingMap: vi.fn().mockResolvedValue({ data: {} }),
-}));
+
 
 const createConversationMock = vi.fn();
 const sendMessageMock = vi.fn();
 const cancelConversationMessageTurnMock = vi.fn();
 const getConversationMessagesMock = vi.fn();
-vi.mock("@/api/index.ts", () => ({
-  createConversation: (...args: unknown[]) => createConversationMock(...args),
-  sendMessage: (...args: unknown[]) => sendMessageMock(...args),
-  cancelConversationMessageTurn: (...args: unknown[]) =>
+vi.mock("@/api/client.ts", () => ({
+fetchPricingMap: vi.fn().mockResolvedValue({ data: {} }),
+createConversation: (...args: unknown[]) => createConversationMock(...args),
+sendMessage: (...args: unknown[]) => sendMessageMock(...args),
+cancelConversationMessageTurn: (...args: unknown[]) =>
     cancelConversationMessageTurnMock(...args),
-  getConversationMessages: (...args: unknown[]) => getConversationMessagesMock(...args),
+getConversationMessages: (...args: unknown[]) => getConversationMessagesMock(...args)
 }));
 
 // consumeSseStream is mocked to synchronously replay a scripted event queue,
@@ -112,6 +111,7 @@ import {
 
 const CONVERSATIONS: ConversationSummary[] = [
   {
+latest_assistant_reply_at: null,
     id: "conv-2",
     butler_name: "switchboard",
     title: "Most recent thread",
@@ -122,6 +122,7 @@ const CONVERSATIONS: ConversationSummary[] = [
     routed_butler: "relationship",
   },
   {
+latest_assistant_reply_at: null,
     id: "conv-1",
     butler_name: "switchboard",
     title: "Older thread",
@@ -155,6 +156,12 @@ const MESSAGES_BY_CONV: Record<string, Message[]> = {
 };
 
 const NEXT_THREAD_MESSAGE: Message = {
+model_name: null,
+sources: [],
+citations: [],
+routed_butler: null,
+page_context: null,
+captured_at: null,
   ...MESSAGES_BY_CONV["conv-2"][0],
   id: "msg-older-thread",
   conversation_id: "conv-1",
@@ -717,7 +724,8 @@ describe("FloatingChatWidget — unread badge", () => {
   // The watermark follows the latest persisted assistant reply.
   function conversationsWithLatestReplyAt(latestReplyAt: string | null): ConversationSummary[] {
     return [
-      { ...CONVERSATIONS[0], latest_assistant_reply_at: latestReplyAt },
+      {
+...CONVERSATIONS[0], latest_assistant_reply_at: latestReplyAt },
       CONVERSATIONS[1],
     ];
   }
@@ -1473,7 +1481,8 @@ describe("FloatingChatWidget — focus-not-obscured guard (bu-0ynlk.13)", () => 
 describe("FloatingChatWidget — unread reply announced via shell announcer (bu-0ynlk.13)", () => {
   function conversationsWithLatestReplyAt(latestReplyAt: string | null): ConversationSummary[] {
     return [
-      { ...CONVERSATIONS[0], latest_assistant_reply_at: latestReplyAt },
+      {
+...CONVERSATIONS[0], latest_assistant_reply_at: latestReplyAt },
       CONVERSATIONS[1],
     ];
   }

@@ -21,7 +21,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate, useNavigationType } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import type { IngestionEventSummary } from "@/api/index.ts";
+import type { IngestionEventSummary } from "@/api/types.ts";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -30,8 +30,8 @@ import type { IngestionEventSummary } from "@/api/index.ts";
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock("@/api/index.ts", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/api/index.ts")>();
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client.ts")>();
   return {
     ...actual,
     replayIngestionEvent: vi.fn(),
@@ -80,7 +80,7 @@ import {
   useUpdateTimelineSavedView,
   useDeleteTimelineSavedView,
 } from "@/hooks/use-timeline-saved-views";
-import type { TimelineSavedViewEntry } from "@/api/index.ts";
+import type { TimelineSavedViewEntry } from "@/api/types.ts";
 
 import { TimelineTab } from "./TimelineTab";
 
@@ -108,6 +108,10 @@ function makeQueryClient() {
 
 function makeEvent(overrides: Partial<IngestionEventSummary> = {}): IngestionEventSummary {
   return {
+replay_safe: false,
+replay_block_reason: null,
+unpriced_session_count: 0,
+no_usage_session_count: 0,
     id: "aabbccdd-0000-0000-0000-000000000001",
     received_at: "2026-01-01T10:00:00Z",
     source_channel: "gmail",

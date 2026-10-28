@@ -42,6 +42,7 @@ function boardRow(overrides: Partial<BoardRow> = {}): BoardRow {
     heartbeat_age_seconds: null,
     heartbeat_unavailable: false,
     schema_unreachable: false,
+    stripe_source_error: false,
     hourly_stripe: [],
     hourly_total: 0,
     cadence_seconds: null,
@@ -54,6 +55,10 @@ function boardRow(overrides: Partial<BoardRow> = {}): BoardRow {
 
 function issue(overrides: Partial<Issue> = {}): Issue {
   return {
+error_message: null,
+recurrence_at: null,
+butlers: [],
+dismissed: false,
     severity: "medium",
     type: "runtime",
     butler: "general",
@@ -71,6 +76,16 @@ function approvalMetrics(
   overrides: Partial<ApprovalMetrics> = {},
 ): ApprovalMetrics {
   return {
+callback_secret_configured: null,
+delivery_due_count: 0,
+delivery_retry_wait_count: 0,
+delivery_expired_lease_count: 0,
+delivery_ambiguous_count: 0,
+delivery_stuck_count: 0,
+delivery_oldest_due_age_seconds: null,
+delivery_by_state: {},
+delivery_by_reason: {},
+delivery_sources_complete: false,
     total_pending: 0,
     total_approved_today: 0,
     total_rejected_today: 0,
@@ -90,6 +105,13 @@ function approvalSummary(
   overrides: Partial<ApprovalSummary> = {},
 ): ApprovalSummary {
   return {
+execution_result: null,
+blast_radius: null,
+reversibility: null,
+origin: null,
+push_outcome: null,
+push_failed: false,
+delivery: null,
     id,
     butler: "general",
     tool_name: "send_email",
@@ -105,6 +127,7 @@ function notificationStats(
   overrides: Partial<NotificationStats> = {},
 ): NotificationStats {
   return {
+source_available: true,
     total: 0,
     sent: 0,
     failed: 0,
@@ -1502,7 +1525,8 @@ describe("deriveOverviewTriageModel — severity-first stable ordering (bu-gcz9e
           }),
         ],
         qaSummary: qaSummary({
-          circuit_breaker: { tripped: true, consecutive_failures: 4 },
+          circuit_breaker: {
+threshold: 5, tripped: true, consecutive_failures: 4 },
         }),
       },
       { now: NOW },
@@ -1540,7 +1564,8 @@ describe("deriveOverviewTriageModel — severity-first stable ordering (bu-gcz9e
   it("surfaces a critical QA circuit-breaker-tripped attention row, taking precedence over a simultaneous failed patrol (mirrors QaVerdictOpener's clause precedence)", () => {
     const model = deriveOverviewTriageModel({
       qaSummary: qaSummary({
-        circuit_breaker: { tripped: true, consecutive_failures: 6 },
+        circuit_breaker: {
+threshold: 5, tripped: true, consecutive_failures: 6 },
         last_patrol: {
           id: "patrol-1",
           started_at: "2026-05-14T11:00:00.000Z",
@@ -1571,7 +1596,8 @@ describe("deriveOverviewTriageModel — severity-first stable ordering (bu-gcz9e
   it("does not surface a QA breaker row when the breaker is not tripped", () => {
     const model = deriveOverviewTriageModel({
       qaSummary: qaSummary({
-        circuit_breaker: { tripped: false, consecutive_failures: 0 },
+        circuit_breaker: {
+threshold: 5, tripped: false, consecutive_failures: 0 },
       }),
     });
 

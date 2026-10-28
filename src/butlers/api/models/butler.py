@@ -9,10 +9,12 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from butlers.api.models.base import ResponseSchemaModel
 
 
-class ModuleStatus(BaseModel):
+class ModuleStatus(ResponseSchemaModel):
     """Health status of a single butler module."""
 
     name: str
@@ -25,7 +27,7 @@ class ModuleStatus(BaseModel):
     credential_health: Literal["ok", "warning", "error"] | None = None
 
 
-class ButlerSummary(BaseModel):
+class ButlerSummary(ResponseSchemaModel):
     """Lightweight butler representation for list views."""
 
     name: str

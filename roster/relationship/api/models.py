@@ -13,6 +13,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
+from butlers.api.models.base import ResponseSchemaModel
+
 
 def _reject_trusted_internal_src(v: str) -> str:
     """Reject ``src`` values that bypass the owner-entity approval gate.
@@ -33,7 +35,7 @@ def _reject_trusted_internal_src(v: str) -> str:
     return v
 
 
-class Label(BaseModel):
+class Label(ResponseSchemaModel):
     """A label/tag that can be applied to contacts or groups."""
 
     id: UUID
@@ -41,7 +43,7 @@ class Label(BaseModel):
     color: str | None = None
 
 
-class FactReporter(BaseModel):
+class FactReporter(ResponseSchemaModel):
     """Available live reporter; unavailable history never fabricates a name."""
 
     entity_id: UUID | None = None
@@ -110,13 +112,13 @@ class ContactInfoEntry(FactAttribution):
     verified: bool = False
 
 
-class OwnerSetupStatus(BaseModel):
+class OwnerSetupStatus(ResponseSchemaModel):
     """Response for GET /owner/setup-status: the owner entity id, if one exists."""
 
     entity_id: UUID | None = None
 
 
-class Group(BaseModel):
+class Group(ResponseSchemaModel):
     """A named group of contacts."""
 
     id: UUID
@@ -143,7 +145,7 @@ class CreateLabelRequest(BaseModel):
     )
 
 
-class CreateLabelResponse(BaseModel):
+class CreateLabelResponse(ResponseSchemaModel):
     """Response for POST /labels."""
 
     id: UUID
@@ -151,7 +153,7 @@ class CreateLabelResponse(BaseModel):
     color: str | None = None
 
 
-class AssignGroupLabelResponse(BaseModel):
+class AssignGroupLabelResponse(ResponseSchemaModel):
     """Response for POST /groups/{group_id}/labels/{label_id}.
 
     ``assigned`` is True when the label was newly assigned; False when
@@ -163,7 +165,7 @@ class AssignGroupLabelResponse(BaseModel):
     assigned: bool
 
 
-class RemoveGroupLabelResponse(BaseModel):
+class RemoveGroupLabelResponse(ResponseSchemaModel):
     """Response for DELETE /groups/{group_id}/labels/{label_id}.
 
     ``removed`` is True when the assignment was deleted; False when
@@ -175,14 +177,14 @@ class RemoveGroupLabelResponse(BaseModel):
     removed: bool
 
 
-class GroupLabelsResponse(BaseModel):
+class GroupLabelsResponse(ResponseSchemaModel):
     """Response for GET /groups/{group_id}/labels — all labels on a group."""
 
     group_id: UUID
     labels: list[Label]
 
 
-class UpcomingDate(BaseModel):
+class UpcomingDate(ResponseSchemaModel):
     """Upcoming important date (birthday, anniversary, etc.)."""
 
     contact_id: UUID
@@ -192,7 +194,7 @@ class UpcomingDate(BaseModel):
     days_until: int
 
 
-class GroupListResponse(BaseModel):
+class GroupListResponse(ResponseSchemaModel):
     """Paginated list of groups."""
 
     groups: list[Group]
@@ -204,7 +206,7 @@ class GroupListResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class GroupMember(BaseModel):
+class GroupMember(ResponseSchemaModel):
     """One member entity of a group, for the Circles lens roster.
 
     ``id`` is the ``contact_id`` (the ``group_members`` row identity).
@@ -224,7 +226,7 @@ class GroupMember(BaseModel):
     entity_type: str
 
 
-class GroupMembersResponse(BaseModel):
+class GroupMembersResponse(ResponseSchemaModel):
     """Response for ``GET /groups/{group_id}/members``.
 
     ``members`` is ordered by ``name ASC`` for stable rendering.
@@ -239,7 +241,7 @@ class GroupMembersResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class EntityInfoEntry(BaseModel):
+class EntityInfoEntry(ResponseSchemaModel):
     """A single entity_info row for an entity.
 
     The ``value`` field is set to ``None`` when ``secured=True`` and the
@@ -255,7 +257,7 @@ class EntityInfoEntry(BaseModel):
     secured: bool = False
 
 
-class EntityDetail(BaseModel):
+class EntityDetail(ResponseSchemaModel):
     """Full entity record with entity_info entries.
 
     ``state`` reflects the highest-priority curation bucket the entity matches,
@@ -314,7 +316,7 @@ class UpdateEntityInfoRequest(BaseModel):
     is_primary: bool | None = None
 
 
-class CreateEntityInfoResponse(BaseModel):
+class CreateEntityInfoResponse(ResponseSchemaModel):
     """Response for POST /entities/{id}/info."""
 
     id: UUID
@@ -326,7 +328,7 @@ class CreateEntityInfoResponse(BaseModel):
     secured: bool
 
 
-class OwnerEntityInfoResponse(BaseModel):
+class OwnerEntityInfoResponse(ResponseSchemaModel):
     """Response for GET /owner/entity-info — all entity_info entries for the owner entity."""
 
     entity_id: UUID
@@ -334,7 +336,7 @@ class OwnerEntityInfoResponse(BaseModel):
     entries: list[EntityInfoEntry] = Field(default_factory=list)
 
 
-class DunbarEntry(BaseModel):
+class DunbarEntry(ResponseSchemaModel):
     """Dunbar tier ranking entry for a single contact/entity.
 
     The ``warmth`` field uses the same formula as ``ContactSummary.warmth``
@@ -359,7 +361,7 @@ class DunbarEntry(BaseModel):
     stale_contact_state: Literal["present", "absent", "unmeasurable"] = "unmeasurable"
 
 
-class DunbarRankingResponse(BaseModel):
+class DunbarRankingResponse(ResponseSchemaModel):
     """Response for GET /dunbar/ranking."""
 
     entries: list[DunbarEntry]
@@ -368,7 +370,7 @@ class DunbarRankingResponse(BaseModel):
     unmeasurable_count: int = 0
 
 
-class OverdueContact(BaseModel):
+class OverdueContact(ResponseSchemaModel):
     """One measurable contact whose existing cadence has elapsed."""
 
     contact_id: UUID
@@ -379,7 +381,7 @@ class OverdueContact(BaseModel):
     target_cadence_days: int
 
 
-class OverdueContactsResponse(BaseModel):
+class OverdueContactsResponse(ResponseSchemaModel):
     """Overdue rows plus aggregate expected-signal availability."""
 
     contacts: list[OverdueContact]
@@ -387,7 +389,7 @@ class OverdueContactsResponse(BaseModel):
     unmeasurable_count: int
 
 
-class PendingDebriefAttendee(BaseModel):
+class PendingDebriefAttendee(ResponseSchemaModel):
     """An attendee frozen into a debrief snapshot (active-posture entities only)."""
 
     entity_id: str | None = None
@@ -395,7 +397,7 @@ class PendingDebriefAttendee(BaseModel):
     email: str | None = None
 
 
-class PendingDebrief(BaseModel):
+class PendingDebrief(ResponseSchemaModel):
     """One prompted, unanswered meeting debrief."""
 
     debrief_id: str
@@ -406,7 +408,7 @@ class PendingDebrief(BaseModel):
     attendees: list[PendingDebriefAttendee]
 
 
-class PendingDebriefsResponse(BaseModel):
+class PendingDebriefsResponse(ResponseSchemaModel):
     """Pending debriefs; ``debriefs_available`` is false when the read failed."""
 
     debriefs: list[PendingDebrief]
@@ -418,7 +420,7 @@ class PendingDebriefsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class EntityNote(BaseModel):
+class EntityNote(ResponseSchemaModel):
     """A note fact for an entity (predicate='contact_note').
 
     ``created_at`` is mapped from ``fact.valid_at``.
@@ -445,7 +447,7 @@ class EntityNote(BaseModel):
     primary: bool = False
 
 
-class EntityInteraction(BaseModel):
+class EntityInteraction(ResponseSchemaModel):
     """An interaction fact for an entity (predicate LIKE 'interaction_%').
 
     ``type`` is the predicate suffix (e.g. 'meeting' from 'interaction_meeting').
@@ -471,7 +473,7 @@ class EntityInteraction(BaseModel):
     primary: bool = False
 
 
-class EntityGift(BaseModel):
+class EntityGift(ResponseSchemaModel):
     """A gift fact for an entity (predicate='gift').
 
     ``description`` maps to ``fact.content``.
@@ -497,7 +499,7 @@ class EntityGift(BaseModel):
     primary: bool = False
 
 
-class EntityLoan(BaseModel):
+class EntityLoan(ResponseSchemaModel):
     """A loan fact for an entity (predicate='loan').
 
     ``description`` maps to ``fact.content``.
@@ -529,7 +531,7 @@ class EntityLoan(BaseModel):
     primary: bool = False
 
 
-class EntityTimelineItem(BaseModel):
+class EntityTimelineItem(ResponseSchemaModel):
     """A single entry in an entity's unified timeline.
 
     ``kind`` identifies the predicate family:
@@ -559,7 +561,7 @@ class EntityTimelineItem(BaseModel):
     primary: bool = False
 
 
-class EntityCadenceResponse(BaseModel):
+class EntityCadenceResponse(ResponseSchemaModel):
     """Bounded interaction evidence for one explicit rolling window.
 
     ``interaction_count`` is exact only when ``completeness`` is ``complete``.
@@ -636,7 +638,7 @@ class CreateEntityGiftRequest(BaseModel):
     _strip_description = field_validator("description")(_require_non_blank)
 
 
-class LinkedContactSummary(BaseModel):
+class LinkedContactSummary(ResponseSchemaModel):
     """A contact linked to an entity, for the entity detail page linked-contacts section.
 
     ``contact_info`` contains all non-secured ``relationship.entity_facts`` channel entries
@@ -677,7 +679,7 @@ class LinkedContactSummary(BaseModel):
     reachable_channels: list[str] = Field(default_factory=list)
 
 
-class EntityImportantDate(BaseModel):
+class EntityImportantDate(ResponseSchemaModel):
     """A row from public.important_dates scoped to one of an entity's contacts.
 
     ``upcoming_date`` is computed by the API: the next occurrence of (month, day)
@@ -710,7 +712,7 @@ class DunbarTierOverrideRequest(BaseModel):
     )
 
 
-class DunbarTierOverrideResponse(BaseModel):
+class DunbarTierOverrideResponse(ResponseSchemaModel):
     """Response envelope for PATCH /entities/{id}/dunbar-tier.
 
     ``contact_id`` is ``null`` when the entity has no linked contact (contactless
@@ -724,7 +726,7 @@ class DunbarTierOverrideResponse(BaseModel):
     message: str
 
 
-class MessageThreadSummary(BaseModel):
+class MessageThreadSummary(ResponseSchemaModel):
     """One row of incoming/outgoing message activity for an entity.
 
     Aggregates rows from ``switchboard.message_inbox`` whose
@@ -750,7 +752,7 @@ class MessageThreadSummary(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class EntitySummary(BaseModel):
+class EntitySummary(ResponseSchemaModel):
     """Compact entity representation for the index list view.
 
     ``tier`` is the effective Dunbar tier: the rank-based computed tier for
@@ -782,7 +784,7 @@ class EntitySummary(BaseModel):
     updated_at: datetime
 
 
-class EntityListResponse(BaseModel):
+class EntityListResponse(ResponseSchemaModel):
     """Paginated response for GET /entities.
 
     ``total`` is the total count of entities matching the active filters
@@ -801,7 +803,7 @@ class EntityListResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class NeighbourEntry(BaseModel):
+class NeighbourEntry(ResponseSchemaModel):
     """A single neighbour entity reached via a relational triple.
 
     ``entity_id`` is the UUID of the OTHER entity (not the queried one).
@@ -827,7 +829,7 @@ class NeighbourEntry(BaseModel):
     primary: bool | None = None
 
 
-class NeighboursResponse(BaseModel):
+class NeighboursResponse(ResponseSchemaModel):
     """Response for GET /entities/{id}/neighbours.
 
     ``neighbours`` maps each relational predicate to the list of neighbour
@@ -860,14 +862,14 @@ class NeighboursResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class HaloEdge(BaseModel):
+class HaloEdge(ResponseSchemaModel):
     """A relational triple connecting a halo satellite to a person entity."""
 
     person_id: UUID
     predicate: str
 
 
-class HaloSatellite(BaseModel):
+class HaloSatellite(ResponseSchemaModel):
     """One non-person entity shown in a halo arc, with its person edges.
 
     ``edges`` lists every active relational triple between this satellite and
@@ -881,7 +883,7 @@ class HaloSatellite(BaseModel):
     edges: list[HaloEdge] = Field(default_factory=list)
 
 
-class HaloResponse(BaseModel):
+class HaloResponse(ResponseSchemaModel):
     """Response for GET /plex/halo.
 
     ``arcs`` maps each non-person entity type (``organization`` / ``place`` /
@@ -900,7 +902,7 @@ class HaloResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class SearchResultEntry(BaseModel):
+class SearchResultEntry(ResponseSchemaModel):
     """A single entity search result with its match score and match kind.
 
     ``entity_id`` is the UUID of the matching entity.
@@ -925,7 +927,7 @@ class SearchResultEntry(BaseModel):
     match_kind: Literal["prefix", "contact_fact", "substring", "predicate"]
 
 
-class SearchResponse(BaseModel):
+class SearchResponse(ResponseSchemaModel):
     """Response for GET /entities/search.
 
     ``results`` is ordered by score descending (highest first).  Ties are
@@ -944,7 +946,7 @@ class SearchResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class QueueEntry(BaseModel):
+class QueueEntry(ResponseSchemaModel):
     """A single entry in the curation queue.
 
     Each entry identifies one entity that needs operator attention and records
@@ -978,7 +980,7 @@ class QueueEntry(BaseModel):
     last_seen: datetime | None = None
 
 
-class QueueResponse(BaseModel):
+class QueueResponse(ResponseSchemaModel):
     """Paginated response for GET /entities/queue.
 
     Section ordering inside ``items`` (per spec §1): Unidentified first,
@@ -1001,7 +1003,7 @@ class QueueResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class PredicateTab(BaseModel):
+class PredicateTab(ResponseSchemaModel):
     """A predicate tab enumerated from ``relationship.entity_predicate_registry``.
 
     Only predicates with ``kind='relational'`` are surfaced as concentration
@@ -1022,7 +1024,7 @@ class PredicateTab(BaseModel):
     entity_count: int = 0
 
 
-class ConcentrationTarget(BaseModel):
+class ConcentrationTarget(ResponseSchemaModel):
     """The object ("where") of a relational triple contributing to a row.
 
     For a ``works-at`` triple the subject is the person and the *target* is the
@@ -1042,7 +1044,7 @@ class ConcentrationTarget(BaseModel):
     object_kind: str
 
 
-class ConcentrationEntry(BaseModel):
+class ConcentrationEntry(ResponseSchemaModel):
     """One row in the concentration balance-sheet for a given predicate.
 
     ``entity_id`` identifies the entity being aggregated.
@@ -1080,7 +1082,7 @@ class ConcentrationEntry(BaseModel):
     targets: list[ConcentrationTarget] = Field(default_factory=list)
 
 
-class ConcentrationRollup(BaseModel):
+class ConcentrationRollup(ResponseSchemaModel):
     """Header rollup for the concentration page.
 
     ``total`` is the sum of all ``weight_sum`` values across all entities for
@@ -1094,7 +1096,7 @@ class ConcentrationRollup(BaseModel):
     top3_share: float | None = None
 
 
-class ConcentrationResponse(BaseModel):
+class ConcentrationResponse(ResponseSchemaModel):
     """Response for ``GET /entities/concentration?pred=<predicate>``.
 
     ``predicate`` echoes the active predicate (the one whose data is in
@@ -1208,7 +1210,7 @@ class ContactFact(FactAttribution):
     primary: bool | None = None
 
 
-class ContactsResponse(BaseModel):
+class ContactsResponse(ResponseSchemaModel):
     """Response for ``GET /entities/{id}/contacts``.
 
     ``facts`` is a flat list of contact-fact triples (all active
@@ -1256,7 +1258,7 @@ class AddContactRequest(BaseModel):
         return _reject_trusted_internal_src(v)
 
 
-class AddContactResponse(BaseModel):
+class AddContactResponse(ResponseSchemaModel):
     """Response for ``POST /entities/{id}/contacts``.
 
     On success, returns the resulting fact (new or updated).
@@ -1271,7 +1273,7 @@ class AddContactResponse(BaseModel):
     action_id: UUID | None = None
 
 
-class DeleteContactResponse(BaseModel):
+class DeleteContactResponse(ResponseSchemaModel):
     """Response for ``DELETE /entities/{id}/contacts/{pred}/{valueHash}``.
 
     ``deleted`` is always True on success (the fact was retracted).
@@ -1282,7 +1284,7 @@ class DeleteContactResponse(BaseModel):
     fact_id: UUID
 
 
-class MarkContactVerifiedResponse(BaseModel):
+class MarkContactVerifiedResponse(ResponseSchemaModel):
     """Response for ``POST /entities/{id}/contacts/{pred}/{valueHash}/verify``.
 
     ``verified`` is always True on success.
@@ -1305,7 +1307,7 @@ class SetPreferredChannelRequest(BaseModel):
     channel: str
 
 
-class SetPreferredChannelResponse(BaseModel):
+class SetPreferredChannelResponse(ResponseSchemaModel):
     """Response for ``PUT /entities/{id}/preferred-channel``.
 
     ``outcome`` is one of ``inserted``, ``unchanged``, or ``superseded`` from
@@ -1317,7 +1319,7 @@ class SetPreferredChannelResponse(BaseModel):
     channel: str
 
 
-class ClearPreferredChannelResponse(BaseModel):
+class ClearPreferredChannelResponse(ResponseSchemaModel):
     """Response for ``DELETE /entities/{id}/preferred-channel``.
 
     ``cleared`` is the number of active ``prefers-channel`` rows retracted
@@ -1355,7 +1357,7 @@ class UpdateContactRequest(BaseModel):
         return _reject_trusted_internal_src(v)
 
 
-class UpdateContactResponse(BaseModel):
+class UpdateContactResponse(ResponseSchemaModel):
     """Response for ``PUT /entities/{id}/contacts/{pred}/{valueHash}``.
 
     ``outcome`` is one of ``inserted``, ``unchanged``, ``superseded``, or
@@ -1400,7 +1402,7 @@ class MergeEntitiesRequest(BaseModel):
     )
 
 
-class MergeEntitiesResponse(BaseModel):
+class MergeEntitiesResponse(ResponseSchemaModel):
     """Response for ``POST /entities/{id}/merge``.
 
     ``kept_entity_id`` is the UUID of the surviving entity.
@@ -1436,7 +1438,7 @@ class DismissQueueRequest(BaseModel):
     entity_id: UUID
 
 
-class DismissQueueItemResult(BaseModel):
+class DismissQueueItemResult(ResponseSchemaModel):
     """Per-entity result within a ``DismissQueueResponse``.
 
     ``entity_id`` is the dismissed entity's UUID.
@@ -1455,7 +1457,7 @@ class DismissQueueItemResult(BaseModel):
     action_id: UUID | None = None
 
 
-class DismissQueueResponse(BaseModel):
+class DismissQueueResponse(ResponseSchemaModel):
     """Response for ``POST /entities/queue/dismiss``.
 
     ``dismissed`` lists per-entity outcomes (always a single entry for
@@ -1619,12 +1621,18 @@ class ActivityBinsResponse(BaseModel):
     degraded_reason: Literal["chronicler_activity_unavailable"] | None = None
 
 
+class ActivityStreamWithBinsResponse(ActivityResponse):
+    """The existing stream dictionary branch additionally serializes daily bins."""
+
+    bins: list[ActivityBin]
+
+
 # ---------------------------------------------------------------------------
 # View marks + delta-since-last-visit (entity v3 — "Delta-since-last-visit")
 # ---------------------------------------------------------------------------
 
 
-class ViewMarkResponse(BaseModel):
+class ViewMarkResponse(ResponseSchemaModel):
     """Response for ``POST /entities/{id}/view-mark``.
 
     ``marked_at`` is the timestamp persisted to ``relationship.entity_view_marks``
@@ -1660,7 +1668,7 @@ class DeltaFactEntry(FactAttribution):
     changed_at: datetime
 
 
-class DeltaFactsResponse(BaseModel):
+class DeltaFactsResponse(ResponseSchemaModel):
     """Response for ``GET /entities/{id}/delta-facts``.
 
     ``marked_at`` is the view mark the delta was computed against (``None`` on a
@@ -1704,7 +1712,7 @@ class CoreDateEntry(FactAttribution):
     staleness_band: str
 
 
-class CoreDatesResponse(BaseModel):
+class CoreDatesResponse(ResponseSchemaModel):
     """Response for ``GET /entities/{id}/core-dates``.
 
     ``items`` are date-kind facts ordered by ``days_until`` ascending (the
@@ -1761,7 +1769,7 @@ class CompareFact(FactAttribution):
     staleness_band: str
 
 
-class CompareEntitySummary(BaseModel):
+class CompareEntitySummary(ResponseSchemaModel):
     """Identity summary of an entity inside a compare block."""
 
     id: UUID
@@ -1772,7 +1780,7 @@ class CompareEntitySummary(BaseModel):
     state: str
 
 
-class CompareEntityBlock(BaseModel):
+class CompareEntityBlock(ResponseSchemaModel):
     """Per-entity block (``a`` or ``b``) in a compare response.
 
     ``entity`` carries the identity summary (``tier`` is the pinned Dunbar tier
@@ -1786,7 +1794,7 @@ class CompareEntityBlock(BaseModel):
     narrative_facts: list[CompareFact]
 
 
-class CompareResponse(BaseModel):
+class CompareResponse(ResponseSchemaModel):
     """Response for ``POST /entities/compare`` — a structural diff only.
 
     - ``a`` / ``b`` — per-entity blocks with identity + narrative facts.
@@ -1821,7 +1829,7 @@ class DismissPairRequest(BaseModel):
     entity_b: UUID = Field(..., description="UUID of the second entity in the pair.")
 
 
-class DismissPairResponse(BaseModel):
+class DismissPairResponse(ResponseSchemaModel):
     """Response for ``POST /entities/dismiss-pair``.
 
     ``review_id`` is the UUID of the written ``merge_reviews`` audit row.

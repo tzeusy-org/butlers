@@ -116,6 +116,7 @@ function boardRow(overrides: Partial<BoardRow> = {}): BoardRow {
     heartbeat_age_seconds: null,
     heartbeat_unavailable: false,
     schema_unreachable: false,
+    stripe_source_error: false,
     hourly_stripe: [],
     hourly_total: 0,
     cadence_seconds: null,

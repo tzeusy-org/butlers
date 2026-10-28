@@ -14,8 +14,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, computed_field, field_validator
 
+from butlers.api.models.base import ResponseSchemaModel
 
-class EntityStateResponse(BaseModel):
+
+class EntityStateResponse(ResponseSchemaModel):
     """Full state detail for a single Home Assistant entity."""
 
     entity_id: str
@@ -26,7 +28,7 @@ class EntityStateResponse(BaseModel):
     ha_source_available: bool
 
 
-class EntitySummaryResponse(BaseModel):
+class EntitySummaryResponse(ResponseSchemaModel):
     """Summary row for an entity in a list response."""
 
     entity_id: str
@@ -37,7 +39,7 @@ class EntitySummaryResponse(BaseModel):
     captured_at: str
 
 
-class AreaResponse(BaseModel):
+class AreaResponse(ResponseSchemaModel):
     """An area grouping from the Home Assistant entity snapshot cache.
 
     The home butler does not maintain a separate areas table; areas are
@@ -50,7 +52,7 @@ class AreaResponse(BaseModel):
     ha_source_available: bool
 
 
-class CommandLogEntry(BaseModel):
+class CommandLogEntry(ResponseSchemaModel):
     """A single durable Home Assistant actuation receipt."""
 
     id: int
@@ -74,7 +76,7 @@ class CommandLogEntry(BaseModel):
     completed_at: str | None = None
 
 
-class StatisticsResponse(BaseModel):
+class StatisticsResponse(ResponseSchemaModel):
     """Aggregate statistics about the Home butler's entity snapshot cache."""
 
     total_entities: int
@@ -89,7 +91,7 @@ class StatisticsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class DeviceInventoryEntry(BaseModel):
+class DeviceInventoryEntry(ResponseSchemaModel):
     """A single device entry in the inventory listing."""
 
     entity_id: str
@@ -101,7 +103,7 @@ class DeviceInventoryEntry(BaseModel):
     health_status: Literal["healthy", "offline"]
 
 
-class DevicePaginationMeta(BaseModel):
+class DevicePaginationMeta(ResponseSchemaModel):
     """Page-based pagination metadata for the device inventory endpoint."""
 
     page: int
@@ -118,7 +120,7 @@ class DevicePaginationMeta(BaseModel):
         return max(1, math.ceil(self.total_count / self.page_size))
 
 
-class DeviceInventoryResponse(BaseModel):
+class DeviceInventoryResponse(ResponseSchemaModel):
     """Paginated response wrapper for device inventory."""
 
     data: list[DeviceInventoryEntry]
@@ -248,7 +250,7 @@ class ThresholdUpdateRequest(BaseModel):
     energy: EnergyThresholds | None = None
 
 
-class AtmosphereCurrentResponse(BaseModel):
+class AtmosphereCurrentResponse(ResponseSchemaModel):
     """Current weather/AQI/pollen conditions from the shared context feed.
 
     ``configured=False`` means no home location is on file (legitimate
@@ -289,7 +291,7 @@ class AtmosphereLocationUpdateRequest(BaseModel):
     longitude: float = Field(..., ge=-180, le=180)
 
 
-class SafetyWatchEntry(BaseModel):
+class SafetyWatchEntry(ResponseSchemaModel):
     """One owner-declared life-safety sensor (``home.safety_watch``)."""
 
     entity_id: str

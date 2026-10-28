@@ -52,42 +52,42 @@ import { test, expect, type Page } from "@playwright/test";
 const MOCK_INVENTORY_RESPONSE: ResponseOf<"getSecretsInventory"> = {
   data: {
     user: [
-      {
+      { issued: null, expires: null, capabilities_required: [], capabilities_granted: [], audit: [], capabilities: [],
         id: "u-google-tze",
         entity_id: "tze",
         provider: "google",
         state: "ok",
         fingerprint: "sha256:7a3f9e2c",
         last_verified: "14:21 today",
-        test: { ok: true, code: 200, at: "14:21 today" },
+        test: { latency_ms: null, ok: true, code: 200, at: "14:21 today" },
       },
-      {
+      { issued: null, expires: null, capabilities_required: [], capabilities_granted: [], audit: [], capabilities: [],
         id: "u-google-wei",
         entity_id: "wei",
         provider: "google",
         state: "ok",
         fingerprint: "sha256:aa1122bb",
         last_verified: "12:00 today",
-        test: { ok: true, code: 200, at: "12:00 today" },
+        test: { latency_ms: null, ok: true, code: 200, at: "12:00 today" },
       },
     ],
     system: [
-      {
+      { last_test_ok: null, last_test_code: null, audit: [], read_only: false, used_by: [],
         key: "BUTLER_TELEGRAM_TOKEN",
         state: "ok",
         fingerprint: "sha256:ab12cd34",
         last_verified: "14:01 today",
         butler: "switchboard",
-        test: { ok: true, code: 200, at: "14:01 today" },
+        test: { latency_ms: null, ok: true, code: 200, at: "14:01 today" },
       },
     ],
     cli: [
-      {
+      { issued: null, expires: null, last_test_ok: null, last_test_code: null,
         key: "claude-cli",
         state: "ok",
         fingerprint: "sha256:11a47cd2",
         last_verified: "14:15 today",
-        test: { ok: true, code: 200, at: "14:15 today" },
+        test: { latency_ms: null, ok: true, code: 200, at: "14:15 today" },
       },
     ],
     identities: [
@@ -99,7 +99,7 @@ const MOCK_INVENTORY_RESPONSE: ResponseOf<"getSecretsInventory"> = {
       spotify: { id: "spotify", label: "Spotify", glyph: "S", kind: "oauth", authority: "accounts.spotify.com", brief: "Recent listens.", cadence: "poll · 15m" },
     },
   },
-  meta: {
+  meta: { severity: {"ok":4},
     failing_count: 1,
     unverified_count: 0,
     failing_count_by_family: { cli: 0, system: 0, user: 1 },

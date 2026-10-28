@@ -332,7 +332,7 @@ test("actual owner-session loss retires stored content and advances the stale-wr
 
 // REQ-dashboard-chat-ui-004: empty or whitespace text is an ordered deletion.
 test("whitespace-only chat edits tombstone committed text and never restore an affordance", async ({ page, context }) => {
-  await context.route((url) => url.pathname === "/api/butlers/switchboard", (route) => route.fulfill({ json: mockResponse("getButler", { meta: {}, data: { name: "switchboard", status: "running", port: 0, type: "butler", sessions_24h: 0, modules: [], schedules: [], skills: [] } }) }));
+  await context.route((url) => url.pathname === "/api/butlers/switchboard", (route) => route.fulfill({ json: mockResponse("getButler", { meta: {}, data: { db: "", description: null, last_session_started_at: null, db_name: null, db_schema: null, process_facts: null, blind_spots: [], blind_spots_evaluated_at: null, blind_spots_query_failed: false, name: "switchboard", status: "running", port: 0, type: "butler", sessions_24h: 0, modules: [], schedules: [], skills: [] } }) }));
   for (const posture of ["page", "dock", "floating", "panel"] as const) {
     const open = async () => {
       await page.setViewportSize({ width: posture === "floating" || posture === "panel" ? 1100 : 1440, height: 900 });
@@ -584,8 +584,8 @@ test("late butler-calendar outcomes leave a reopened event draft alone", async (
   await context.route((url) => url.pathname === "/api/calendar/workspace/invitations", (route) => route.fulfill({ json: mockResponse("getCalendarInvitations", { meta: {}, data: { entries: [], issues_available: true, conflicts_available: true, sources_degraded: [], has_more: false, next_cursor: null } }) }));
   await context.route((url) => url.pathname === "/api/calendar/workspace/conflicts", (route) => route.fulfill({ json: mockResponse("getCalendarWorkspaceConflicts", { meta: {}, data: { issues: [], issues_available: true, scan_window: { start: "2026-01-01T00:00:00Z", end: "2026-01-02T00:00:00Z" } } }) }));
   const lane = { lane_id: "general", butler_name: "general", title: "General lane", source_keys: ["internal_reminders:general"] };
-  await context.route((url) => url.pathname === "/api/calendar/workspace/meta", (route) => route.fulfill({ json: mockResponse("getCalendarWorkspaceMeta", { meta: {}, data: { capabilities: { views: ["user", "butler"], filters: {}, sync: { global: true, by_source: true } }, connected_sources: [], writable_calendars: [], lane_definitions: [lane], default_timezone: "UTC", primary_calendar_id: null } }) }));
-  await context.route((url) => url.pathname === "/api/calendar/workspace", (route) => route.fulfill({ json: mockResponse("getCalendarWorkspace", { meta: {}, data: { entries: [], source_freshness: [], lanes: [lane], next_cursor: null, has_more: false } }) }));
+  await context.route((url) => url.pathname === "/api/calendar/workspace/meta", (route) => route.fulfill({ json: mockResponse("getCalendarWorkspaceMeta", { meta: {}, data: { sources_available: true, capabilities: { views: ["user", "butler"], filters: {}, sync: { global: true, by_source: true } }, connected_sources: [], writable_calendars: [], lane_definitions: [lane], default_timezone: "UTC", primary_calendar_id: null } }) }));
+  await context.route((url) => url.pathname === "/api/calendar/workspace", (route) => route.fulfill({ json: mockResponse("getCalendarWorkspace", { meta: {}, data: { has_domain_context: false, people_source_available: true, entries_source_available: true, sources_available: true, entries: [], source_freshness: [], lanes: [lane], next_cursor: null, has_more: false } }) }));
   let release: (() => void) | undefined; let started = false;
   await context.route((url) => url.pathname === "/api/calendar/workspace/butler-events", async (route) => {
     started = true; await new Promise<void>((resolve) => { release = resolve; });

@@ -34,7 +34,7 @@ const NOW = "2026-10-01T09:00:00Z";
 const APPROVAL_ID = "11111111-1111-4111-8111-111111111111";
 const CONVERSATION_ID = "22222222-2222-4222-8222-222222222222";
 
-const APPROVAL_SUMMARY: ResponseOf<"getApprovalsFlat">["data"][number] = {
+const APPROVAL_SUMMARY: ResponseOf<"getApprovalsFlat">["data"][number] = { execution_result: null, origin: null, push_outcome: null, push_failed: false, delivery: null,
   id: APPROVAL_ID,
   butler: "general",
   tool_name: "send_email",
@@ -52,12 +52,12 @@ const APPROVALS_FIXTURES: Fixtures = {
     meta: { stalled_count: 0, sources_degraded: [] },
   }),
   "**/api/approvals/history*": mockJson("getApprovalsHistory", { data: [], meta: { sources_degraded: [] } }),
-  "**/api/approvals/policy": mockJson("getApprovalsPolicy", { data: { timezone: "UTC" }, meta: {} }),
+  "**/api/approvals/policy": mockJson("getApprovalsPolicy", { data: { quiet_start_hour: null, quiet_end_hour: null, timezone: "UTC" }, meta: {} }),
   "**/api/approvals/unroutable": mockJson("getUnroutableAttention", { data: [], meta: {} }),
   "**/api/approvals/rules*": mockJson("getApprovalRules", { data: [], meta: { total: 0, offset: 0, limit: 50, has_more: false } }),
   "**/api/approvals/metrics": mockJson("getApprovalMetrics", emptyApprovalMetrics),
   [`**/api/approvals/${APPROVAL_ID}`]: mockJson("getApprovalDetail", {
-    data: {
+    data: { call_preview: null, decided_by: null, decided_at: null, denial_reason: null, target_contact: null, session_id: null, referenced_entities: [],
       ...APPROVAL_SUMMARY,
       title: "Send email to landlord",
       evidence: [{ type: "text", ref: "thread", note: "Lease ends 2026-11-30." }],
@@ -75,14 +75,14 @@ const SECRETS_FIXTURES: Fixtures = {
   "**/api/secrets/inventory**": mockJson("getSecretsInventory", {
     data: {
       user: [
-        {
+        { issued: null, expires: null, capabilities_required: [], capabilities_granted: [], audit: [], capabilities: [],
           id: "u-google-tze",
           entity_id: "tze",
           provider: "google",
           state: "ok",
           fingerprint: "sha256:7a3f9e2c",
           last_verified: "14:21 today",
-          test: { ok: true, code: 200, at: "14:21 today" },
+          test: { latency_ms: null, ok: true, code: 200, at: "14:21 today" },
         },
       ],
       system: [],
@@ -100,7 +100,7 @@ const SECRETS_FIXTURES: Fixtures = {
         },
       },
     },
-    meta: {
+    meta: { severity: {"ok":1},
       failing_count: 0,
       unverified_count: 0,
       failing_count_by_family: { cli: 0, system: 0, user: 0 },
@@ -110,7 +110,7 @@ const SECRETS_FIXTURES: Fixtures = {
   "**/api/secrets/breaks-catalogue**": mockJson("getBreaksCatalogue", { data: [], meta: { catalogue_available: true } }),
 };
 
-const CONVERSATION: ResponseOf<"getConversationById"> = {
+const CONVERSATION: ResponseOf<"listConversations">["data"][number] = { routed_butler: null, latest_assistant_reply_at: null,
   id: CONVERSATION_ID,
   butler_name: "switchboard",
   title: "Lease renewal",
@@ -122,11 +122,11 @@ const CONVERSATION: ResponseOf<"getConversationById"> = {
 
 const CHAT_FIXTURES: Fixtures = {
   [`**/api/conversations/${CONVERSATION_ID}`]: mockJson("getConversationById", CONVERSATION),
-  "**/api/butlers/*/conversations": mockJson("listConversations", { data: [CONVERSATION], meta: {} }),
-  "**/api/butlers/*/conversations?*": mockJson("listConversations", { data: [CONVERSATION], meta: {} }),
+  "**/api/butlers/*/conversations": mockJson("listConversations", { data: [CONVERSATION], meta: { total: 1, offset: 0, limit: 20, has_more: false } }),
+  "**/api/butlers/*/conversations?*": mockJson("listConversations", { data: [CONVERSATION], meta: { total: 1, offset: 0, limit: 20, has_more: false } }),
   [`**/api/butlers/*/conversations/${CONVERSATION_ID}/messages`]: mockJson("getConversationMessages", {
     data: [
-      {
+      { model_name: null, sources: [], citations: [], routed_butler: null, page_context: null, captured_at: null,
         id: "33333333-3333-4333-8333-333333333333",
         conversation_id: CONVERSATION_ID,
         role: "assistant",
@@ -141,7 +141,7 @@ const CHAT_FIXTURES: Fixtures = {
         created_at: NOW,
       },
     ],
-    meta: {},
+    meta: { total: 1, offset: 0, limit: 50, has_more: false },
   }),
   "**/api/pricing*": mockJson("fetchPricingMap", { data: {}, meta: {} }),
 };

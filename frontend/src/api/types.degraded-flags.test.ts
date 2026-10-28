@@ -47,7 +47,7 @@ import { describe, expect, it } from "vitest"
 
 const API_DIR = path.resolve(__dirname) // frontend/src/api
 const SRC_DIR = path.resolve(__dirname, "..") // frontend/src
-const TYPES_FILE = path.join(API_DIR, "types.ts")
+const TYPES_FILE = path.join(API_DIR, "schema.gen.ts")
 
 // ---------------------------------------------------------------------------
 // Registry
@@ -299,7 +299,7 @@ describe("degraded-envelope FE flag-consumption registry (bu-tpudw.5)", () => {
     ).toEqual([])
   })
 
-  it("every registry entry names a field actually declared in api/types.ts", () => {
+  it("every registry entry names a field actually declared in generated schema.gen.ts", () => {
     const typesContent = fs.readFileSync(TYPES_FILE, "utf-8")
     const missing = REGISTRY.filter(
       (entry) => !new RegExp(`\\b${entry.flag}\\??:\\s`).test(typesContent),
@@ -307,7 +307,7 @@ describe("degraded-envelope FE flag-consumption registry (bu-tpudw.5)", () => {
 
     expect(
       missing.map((entry) => entry.flag),
-      "Registry entries not found as declared fields in frontend/src/api/types.ts.\n" +
+      "Registry entries not found as declared fields in frontend/src/api/schema.gen.ts.\n" +
         "A registry entry must name a field that is actually typed there — remove or\n" +
         "fix the stale entry:\n\n" +
         missing.map((entry) => `  - ${entry.flag} (${entry.emittedBy})`).join("\n"),

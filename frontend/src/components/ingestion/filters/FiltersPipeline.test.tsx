@@ -105,7 +105,7 @@ import type {
   PriorityContactEntry,
   RelationshipEntitySummary,
 } from '@/api/types'
-import { ApiError } from '@/api/index.ts'
+import { ApiError } from "@/api/client.ts";
 import { FiltersPipeline } from './FiltersPipeline'
 import {
   PipelineGateDiagram,

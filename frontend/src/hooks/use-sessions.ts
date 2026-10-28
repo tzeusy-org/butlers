@@ -7,19 +7,14 @@ import type {
   ApiResponse,
   SessionDetail,
   SessionParams,
+  ButlerSessionParams,
   SessionPromptReceipt,
   SessionSummary,
 } from "@/api/types.ts";
 import { POLL_RUNNING_SESSION_MS } from "@/lib/poll-policy";
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
-import {
-  getButlerSessions,
-  getSession,
-  getSessionPrompt,
-  getSessionAggregate,
-  getSessions,
-} from "@/api/index.ts";
+import { getButlerSessions, getSession, getSessionPrompt, getSessionAggregate, getSessions } from "@/api/client.ts";
 
 interface SessionQueryOptions {
   refetchInterval?: number | false;
@@ -55,7 +50,7 @@ export type SessionErrorExcerptState =
  * than leaning on the bus (no per-tool-call bus event exists).
  */
 function sessionDetailRefetchInterval(query: {
-  state: { data?: ApiResponse<SessionDetail> };
+  state: { data?: { data: Pick<SessionDetail, "success"> } };
 }): number | false {
   const session = query.state.data?.data;
   if (!session) return false;
@@ -103,7 +98,7 @@ export function useSessionAggregate(params?: SessionParams, options?: SessionQue
 }
 
 /** Fetch a paginated list of sessions for a single butler. */
-export function useButlerSessions(name: string, params?: SessionParams) {
+export function useButlerSessions(name: string, params?: ButlerSessionParams) {
   // See useSessions above: fleet-event-bus-driven, poll is a bus-aware safety net.
   const refetchInterval = useBusAwarePollInterval();
   return useQuery({
@@ -136,7 +131,9 @@ export function useButlerSessions(name: string, params?: SessionParams) {
  * plus a loading body for this response; it never presents the omitted
  * transcript/tool-call fields as known-empty data.
  */
-function detailSeedFromSummary(summary: SessionSummary): ApiResponse<SessionDetail> {
+type SessionDetailSeed = Omit<SessionDetail, "correction_count" | "linked_message" | "resolution_receipt">;
+
+function detailSeedFromSummary(summary: SessionSummary): ApiResponse<SessionDetailSeed> {
   return {
     data: {
       id: summary.id,
@@ -173,7 +170,7 @@ function detailSeedFromSummary(summary: SessionSummary): ApiResponse<SessionDeta
  * substitute for the authoritative detail response.
  */
 export function useGlobalSessionDetail(id: string | null, seed?: SessionSummary) {
-  return useQuery({
+  return useQuery<ApiResponse<SessionDetail | SessionDetailSeed>>({
     queryKey: ["session-detail-global", id],
     queryFn: () => getSession(id!),
     enabled: !!id,

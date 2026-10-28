@@ -17,7 +17,7 @@ import {
   usePatchRuntimeConfig,
   useRuntimeConfig,
 } from "@/hooks/use-butlers";
-import type { RuntimeConfigPatch } from "@/api/index.ts";
+import type { RuntimeConfigPatch } from "@/api/types.ts";
 
 // Tool exposure policy choices for the single-select editor.
 const TOOL_EXPOSURE_POLICIES = [
@@ -47,7 +47,7 @@ interface RuntimeConfigCardProps {
   butlerName: string;
 }
 
-function FieldTierBadge({ tier }: { tier: "hot" | "cold" }) {
+function FieldTierBadge({ tier }: { tier: string }) {
   return (
     <Badge variant={tier === "hot" ? "default" : "secondary"} className="ml-2 text-[10px]">
       {tier === "hot" ? "hot" : "restart required"}

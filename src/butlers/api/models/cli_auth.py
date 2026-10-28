@@ -10,6 +10,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
+from butlers.api.models.base import ResponseSchemaModel
+
 
 class CLIAuthSessionState(StrEnum):
     """State of a CLI auth session."""
@@ -39,7 +41,7 @@ class CLIAuthHealthState(StrEnum):
     probe_failed = "probe_failed"
 
 
-class CLIAuthProvider(BaseModel):
+class CLIAuthProvider(ResponseSchemaModel):
     """Summary of a CLI auth provider and its current status."""
 
     name: str
@@ -70,7 +72,7 @@ class CLIAuthProvider(BaseModel):
     """Environment variable name for API key providers."""
 
 
-class CLIAuthStartResponse(BaseModel):
+class CLIAuthStartResponse(ResponseSchemaModel):
     """Response from POST /api/cli-auth/{provider}/start."""
 
     session_id: str
@@ -89,7 +91,7 @@ class CLIAuthStartResponse(BaseModel):
     """Human-readable status message."""
 
 
-class CLIAuthSessionResponse(BaseModel):
+class CLIAuthSessionResponse(ResponseSchemaModel):
     """Response from GET /api/cli-auth/sessions/{session_id}."""
 
     session_id: str
@@ -107,7 +109,7 @@ class CLIAuthApiKeyRequest(BaseModel):
     """The API key value to store."""
 
 
-class CLIAuthApiKeyResponse(BaseModel):
+class CLIAuthApiKeyResponse(ResponseSchemaModel):
     """Response from PUT /api/cli-auth/{provider}/api-key."""
 
     provider: str
@@ -115,7 +117,7 @@ class CLIAuthApiKeyResponse(BaseModel):
     message: str | None = None
 
 
-class CLIAuthTestResponse(BaseModel):
+class CLIAuthTestResponse(ResponseSchemaModel):
     """Response from POST /api/cli-auth/{provider}/test."""
 
     provider: str

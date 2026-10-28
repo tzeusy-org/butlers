@@ -31,6 +31,9 @@ Documents the API access patterns, polling/refresh behavior, and write-operation
   [about/lay-and-land/frontend.md](../../about/lay-and-land/frontend.md).
 - **Endpoint shapes:** each router's `response_model` (mounted in `src/butlers/api/app.py`,
   butler routers under `roster/{butler}/api/router.py`) and the generated OpenAPI schema.
+  `frontend/src/api/schema.gen.ts` is the generated wire/path contract;
+  `api/client.ts` owns requests, and `api/types.ts` names generated aliases and UI
+  views. Import those modules directly; there is no `api/index.ts` barrel.
 - **Cross-cutting API rules:**
   [Response Conventions](../api_and_protocols/response-conventions.md).
 - The pages in this directory explain rationale and patterns; they do not enumerate features or

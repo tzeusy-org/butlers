@@ -75,7 +75,8 @@ describe("CalendarVerdictOpener", () => {
     const props = { entriesCount: 1, sourceCount: 1, rangeLabel: "week", workspaceLoading: false,
       workspaceError: false, sourceFreshnessLoading: false, sourceFreshnessError: false,
       freshnessDetail: null, conflictScanEnabled: true, conflictLoading: false, conflictError: false,
-      conflictsAvailable: true, conflicts: [], invitations: [{ entry_id: "invited", title: "Invitation",
+      conflictsAvailable: true, conflicts: [], invitations: [{
+response_configured: false, entry_id: "invited", title: "Invitation",
         start_at: "2026-07-01T09:00:00Z", end_at: "2026-07-01T10:00:00Z", timezone: "UTC", butler_name: "general",
         organizer: null, organizer_source: "unknown" as const, conflict_issues: [issue] }],
       invitationsHasMore: true, onOpenInvitation: open, onMoreInvitations: more };

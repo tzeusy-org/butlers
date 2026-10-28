@@ -36,7 +36,6 @@ import type {
   CliCredential,
   Identity,
   CredentialState,
-  CredentialFamilyCounts,
   TestResult,
   AuditEvent,
   CapabilityStatus,
@@ -472,8 +471,8 @@ export function adaptInventoryResponse(data: {
   providers?: Record<string, SecretsProviderInfo>;
   failing_count: number;
   unverified_count: number;
-  failing_count_by_family: CredentialFamilyCounts;
-  unverified_count_by_family: CredentialFamilyCounts;
+  failing_count_by_family: Record<string, number>;
+  unverified_count_by_family: Record<string, number>;
   /** Threaded from meta.sources_degraded (bu-5ccth); see InventoryResponse.sourcesDegraded. */
   sources_degraded?: string[];
 }): InventoryResponse {
@@ -507,8 +506,8 @@ export function adaptInventoryResponse(data: {
     providers,
     failingCount: data.failing_count,
     unverifiedCount: data.unverified_count,
-    failingCountByFamily: data.failing_count_by_family,
-    unverifiedCountByFamily: data.unverified_count_by_family,
+    failingCountByFamily: { system: data.failing_count_by_family.system, user: data.failing_count_by_family.user, cli: data.failing_count_by_family.cli },
+    unverifiedCountByFamily: { system: data.unverified_count_by_family.system, user: data.unverified_count_by_family.user, cli: data.unverified_count_by_family.cli },
     ownerEntityId,
     sourcesDegraded: data.sources_degraded ?? [],
   };

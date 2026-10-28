@@ -25,19 +25,18 @@ const mockListDeliveries = vi.fn();
 const mockListSubscriptions = vi.fn();
 const mockListContracts = vi.fn();
 
-vi.mock("@/api/client", () => ({
-  getDispatchAttempts: (...args: unknown[]) => mockGetDispatchAttempts(...args),
-  getFleetHaltAttention: (...args: unknown[]) => mockGetFleetHaltAttention(...args),
-}));
 
-vi.mock("@/api/index.ts", () => ({
-  listDelegationLedger: (...args: unknown[]) => mockListLedger(...args),
-  getHealingDispatchEvents: (...args: unknown[]) => mockGetHealingEvents(...args),
-  listDomainEventDeliveries: (...args: unknown[]) => mockListDeliveries(...args),
-  listDomainEventSubscriptions: (...args: unknown[]) => mockListSubscriptions(...args),
-  listDomainEventContracts: (...args: unknown[]) => mockListContracts(...args),
-  listDomainEventReactions: vi.fn(),
-  replayDomainEventDelivery: vi.fn(),
+
+vi.mock("@/api/client.ts", () => ({
+getDispatchAttempts: (...args: unknown[]) => mockGetDispatchAttempts(...args),
+getFleetHaltAttention: (...args: unknown[]) => mockGetFleetHaltAttention(...args),
+listDelegationLedger: (...args: unknown[]) => mockListLedger(...args),
+getHealingDispatchEvents: (...args: unknown[]) => mockGetHealingEvents(...args),
+listDomainEventDeliveries: (...args: unknown[]) => mockListDeliveries(...args),
+listDomainEventSubscriptions: (...args: unknown[]) => mockListSubscriptions(...args),
+listDomainEventContracts: (...args: unknown[]) => mockListContracts(...args),
+listDomainEventReactions: vi.fn(),
+replayDomainEventDelivery: vi.fn()
 }));
 
 // A healthy bus is exactly the case that used to leave these views stale.

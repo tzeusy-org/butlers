@@ -1,3 +1,4 @@
+import type { TimelineEvent } from "../../src/api/types";
 import { fulfillEmptyApi } from "./fixtures/empty-api";
 import { mockJson, type ResponseOf } from "./fixtures/api-responses";
 /**
@@ -60,7 +61,7 @@ async function mockHealthyApprovalMetrics(page: Page) {
       status: 200,
       contentType: "application/json",
       body: mockJson("getApprovalMetrics", {
-        data: { total_pending: 0, total_approved_today: 0, total_rejected_today: 0, total_auto_approved_today: 0, total_expired_today: 0, auto_approval_rate: 0, rejection_rate: 0, failure_count_today: 0, active_rules_count: 0 },
+        data: { avg_decision_latency_seconds: null, callback_secret_configured: null, delivery_due_count: 0, delivery_retry_wait_count: 0, delivery_expired_lease_count: 0, delivery_ambiguous_count: 0, delivery_stuck_count: 0, delivery_oldest_due_age_seconds: null, delivery_by_state: {}, delivery_by_reason: {}, delivery_sources_complete: false, total_pending: 0, total_approved_today: 0, total_rejected_today: 0, total_auto_approved_today: 0, total_expired_today: 0, auto_approval_rate: 0, rejection_rate: 0, failure_count_today: 0, active_rules_count: 0 },
         meta: {},
       }),
     });
@@ -114,7 +115,7 @@ async function mockIngestion(page: Page, events: ResponseOf<"listIngestionEvents
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: mockJson("listIngestionEvents", { items: events, next_cursor: null, limit: 50 }),
+      body: mockJson("listIngestionEvents", { sources_degraded: null, items: events, next_cursor: null, limit: 50 }),
     });
   });
 }
@@ -165,7 +166,7 @@ test.describe("LiveStatusBadge — /ingestion (events head poll)", () => {
 // /timeline (TimelinePage) — badge driven by useTimelineLedger's head poll
 // ---------------------------------------------------------------------------
 
-function timelineEvent(timestamp: string): ResponseOf<"getTimeline">["data"][number] {
+function timelineEvent(timestamp: string): TimelineEvent {
   return {
     id: "11111111-0000-0000-0000-000000000001",
     type: "session",
@@ -177,7 +178,7 @@ function timelineEvent(timestamp: string): ResponseOf<"getTimeline">["data"][num
   };
 }
 
-const TIMELINE_META = {
+const TIMELINE_META = { degraded_butlers: [],
   cursor: null,
   has_more: false,
   heartbeat_rollup: { ticks: 0, butlers: 0, failed: 0 },
@@ -205,7 +206,7 @@ const TIMELINE_HISTOGRAM: ResponseOf<"getTimelineHistogram"> = {
  * "Down"). Route predicates are pathname-specific so the three response
  * envelopes cannot be confused with each other.
  */
-async function mockTimeline(page: Page, events: ResponseOf<"getTimeline">["data"] | 500) {
+async function mockTimeline(page: Page, events: TimelineEvent[] | 500) {
   await page.route("**/api/**", (route) => {
     if (new URL(route.request().url()).pathname.startsWith("/api/auth/owner/")) return route.fallback();
     return fulfillEmptyApi(route);
@@ -233,7 +234,7 @@ async function mockTimeline(page: Page, events: ResponseOf<"getTimeline">["data"
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: mockJson("getTimeline", { data: events, meta: TIMELINE_META }),
+      body: JSON.stringify({ data: events, meta: TIMELINE_META }),
     });
   });
 }

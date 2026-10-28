@@ -5,10 +5,10 @@
 // verdict so both read the same account the same way.
 // ---------------------------------------------------------------------------
 
-import type { AllowanceAccount, AllowanceResetSource } from "@/api/types.ts";
+import type { AllowanceAccount } from "@/api/types.ts";
 
 /** How the reset time was learned, as the owner reads it. */
-export function allowanceSourceLabel(source: AllowanceResetSource): string {
+export function allowanceSourceLabel(source: AllowanceAccount["reset_source"]): string {
   if (source === "parsed") return "provider said";
   if (source === "default_window") return "estimated";
   return "unknown";

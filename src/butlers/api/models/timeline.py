@@ -11,10 +11,12 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from butlers.api.models.base import ResponseSchemaModel
 
 
-class TimelineEvent(BaseModel):
+class TimelineEvent(ResponseSchemaModel):
     """A single event in the cross-butler timeline.
 
     Events are produced from multiple sources (sessions, notifications) and
@@ -60,7 +62,7 @@ class TimelineEvent(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
-class TimelineHeartbeatRollup(BaseModel):
+class TimelineHeartbeatRollup(ResponseSchemaModel):
     """Aggregate counts over the heartbeat events in the current page.
 
     Computed server-side so the UI never has to (mis)derive rollup copy from
@@ -75,7 +77,7 @@ class TimelineHeartbeatRollup(BaseModel):
     failed: int = 0
 
 
-class TimelineMeta(BaseModel):
+class TimelineMeta(ResponseSchemaModel):
     """Pagination metadata for timeline responses."""
 
     cursor: str | None = None
@@ -103,7 +105,7 @@ class TimelineMeta(BaseModel):
     )
 
 
-class TimelineResponse(BaseModel):
+class TimelineResponse(ResponseSchemaModel):
     """Cursor-paginated timeline response.
 
     Uses an opaque composite ``(timestamp, id)`` keyset cursor for stable
@@ -116,7 +118,7 @@ class TimelineResponse(BaseModel):
     meta: TimelineMeta = Field(default_factory=TimelineMeta)
 
 
-class TimelineHistogramBucket(BaseModel):
+class TimelineHistogramBucket(ResponseSchemaModel):
     """Content-blind count of matching events in one UTC minute."""
 
     start: datetime
@@ -124,7 +126,7 @@ class TimelineHistogramBucket(BaseModel):
     count: int = Field(ge=0)
 
 
-class TimelineHistogramMeta(BaseModel):
+class TimelineHistogramMeta(ResponseSchemaModel):
     """Interval and source-availability evidence for a histogram read."""
 
     since: datetime
@@ -137,14 +139,14 @@ class TimelineHistogramMeta(BaseModel):
     degraded_butlers: list[str] = Field(default_factory=list)
 
 
-class TimelineHistogramResponse(BaseModel):
+class TimelineHistogramResponse(ResponseSchemaModel):
     """Server-counted, zero-filled minute density for the Timeline."""
 
     data: list[TimelineHistogramBucket]
     meta: TimelineHistogramMeta
 
 
-class TimelineAttentionItem(BaseModel):
+class TimelineAttentionItem(ResponseSchemaModel):
     """Content-blind identifier for a recent record currently marked failed."""
 
     id: UUID
@@ -153,7 +155,7 @@ class TimelineAttentionItem(BaseModel):
     timestamp: datetime
 
 
-class TimelineAttentionMeta(BaseModel):
+class TimelineAttentionMeta(ResponseSchemaModel):
     """Captured-window counts and source availability for the attention strip."""
 
     since: datetime
@@ -169,7 +171,7 @@ class TimelineAttentionMeta(BaseModel):
     degraded_butlers: list[str] = Field(default_factory=list)
 
 
-class TimelineAttentionResponse(BaseModel):
+class TimelineAttentionResponse(ResponseSchemaModel):
     """Read-only recent-failure identifiers and aggregate metadata."""
 
     data: list[TimelineAttentionItem]

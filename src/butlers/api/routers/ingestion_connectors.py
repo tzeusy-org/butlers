@@ -45,12 +45,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, NoReturn
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, with_config
+from typing_extensions import TypedDict
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db
-from butlers.api.models import ApiMeta, ApiResponse
+from butlers.api.models import ApiMeta, ApiResponse, ApiResponseWithMeta
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.api.oauth_scope_registry import (
     build_scope_rows,
     compute_auth_status,
@@ -80,6 +82,12 @@ from butlers.modules.approvals.command_contracts import (
     CONNECTOR_ROTATE_TOKEN_PRODUCER,
 )
 from butlers.modules.approvals.park import park_pending_action
+
+
+@with_config(ConfigDict(extra="allow"))
+class ConnectorStatsMeta(TypedDict):
+    hourly_events_available: bool
+
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +172,7 @@ class ConnectorSummaryResponse(BaseModel):
     owntracks_cadence_available: bool = True
 
 
-class ConnectorScopeRow(BaseModel):
+class ConnectorScopeRow(ResponseSchemaModel):
     """One OAuth scope entry in the flat connector-detail response."""
 
     name: str
@@ -187,7 +195,7 @@ ConnectorAuthStatus = Literal[
 ]
 
 
-class ConnectorAuthBlock(BaseModel):
+class ConnectorAuthBlock(ResponseSchemaModel):
     """Auth state for an OAuth or non-OAuth connector detail response."""
 
     status: ConnectorAuthStatus
@@ -200,7 +208,7 @@ class ConnectorAuthBlock(BaseModel):
     recovery_reason: Literal["expired", "rotation-needed"] | None = None
 
 
-class ConnectorDetailEntry(BaseModel):
+class ConnectorDetailEntry(ResponseSchemaModel):
     """Full dashboard detail projection for one non-deleted connector identity."""
 
     connector_type: str
@@ -229,7 +237,15 @@ class ConnectorDetailEntry(BaseModel):
     scopes: list[ConnectorScopeRow] | None = None
 
 
-class ConnectorStatsHourly(BaseModel):
+class ConnectorLifecycleResult(ResponseSchemaModel):
+    """The identity and state already returned by pause and run-now."""
+
+    connector_type: str
+    endpoint_identity: str
+    state: str
+
+
+class ConnectorStatsHourly(ResponseSchemaModel):
     """One hourly bucket in the connector detail history."""
 
     connector_type: str
@@ -244,7 +260,7 @@ class ConnectorStatsHourly(BaseModel):
     error_count: int = 0
 
 
-class ConnectorStatsDaily(BaseModel):
+class ConnectorStatsDaily(ResponseSchemaModel):
     """One daily bucket in the connector detail history."""
 
     connector_type: str
@@ -1487,7 +1503,9 @@ async def get_connector_detail(
 
 @router.get(
     "/{connector_type}/{endpoint_identity}/stats",
-    response_model=ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]],
+    response_model=ApiResponseWithMeta[
+        list[ConnectorStatsHourly] | list[ConnectorStatsDaily], ConnectorStatsMeta
+    ],
 )
 async def get_connector_stats(
     connector_type: str,
@@ -1610,6 +1628,7 @@ async def update_connector_settings(
     "/{connector_type}/{endpoint_identity}/pause",
     response_model=ApiResponse[dict],
     status_code=200,
+    responses={200: {"model": ApiResponse[ConnectorLifecycleResult]}},
 )
 async def pause_connector(
     connector_type: str,
@@ -1706,6 +1725,7 @@ async def pause_connector(
     "/{connector_type}/{endpoint_identity}/run-now",
     response_model=ApiResponse[dict],
     status_code=200,
+    responses={200: {"model": ApiResponse[ConnectorLifecycleResult]}},
 )
 async def run_now_connector(
     connector_type: str,
@@ -2385,7 +2405,7 @@ _CONNECTOR_CATALOG: list[dict[str, Any]] = [
 ]
 
 
-class ConnectorProfile(BaseModel):
+class ConnectorProfile(ResponseSchemaModel):
     """A single connector profile entry from the discovery catalog."""
 
     connector_type: str
@@ -2394,7 +2414,7 @@ class ConnectorProfile(BaseModel):
     display_name: str
 
 
-class ConnectorAvailableResponse(BaseModel):
+class ConnectorAvailableResponse(ResponseSchemaModel):
     """Response body for GET /api/ingestion/connectors/available."""
 
     data: list[ConnectorProfile]
@@ -2433,7 +2453,7 @@ _DEFAULT_CONNECTOR_INCIDENTS = 10
 _INCIDENT_STATUSES: frozenset[str] = frozenset({"failed", "error", "replay_failed"})
 
 
-class ConnectorEventSummary(BaseModel):
+class ConnectorEventSummary(ResponseSchemaModel):
     """A single event row returned from the connector-scoped events endpoint."""
 
     id: str
@@ -2445,7 +2465,7 @@ class ConnectorEventSummary(BaseModel):
     error_detail: str | None
 
 
-class ConnectorEventsResponse(BaseModel):
+class ConnectorEventsResponse(ResponseSchemaModel):
     """Response envelope for GET …/{type}/{identity}/events."""
 
     events: list[ConnectorEventSummary]
@@ -2454,7 +2474,7 @@ class ConnectorEventsResponse(BaseModel):
     total_returned: int
 
 
-class ConnectorIncidentSummary(BaseModel):
+class ConnectorIncidentSummary(ResponseSchemaModel):
     """A single incident row returned from the connector-scoped incidents endpoint."""
 
     id: str
@@ -2465,7 +2485,7 @@ class ConnectorIncidentSummary(BaseModel):
     filter_reason: str | None
 
 
-class ConnectorIncidentsResponse(BaseModel):
+class ConnectorIncidentsResponse(ResponseSchemaModel):
     """Response envelope for GET …/{type}/{identity}/incidents."""
 
     incidents: list[ConnectorIncidentSummary]
@@ -2474,7 +2494,7 @@ class ConnectorIncidentsResponse(BaseModel):
     total_returned: int
 
 
-class ConnectorRoutingRule(BaseModel):
+class ConnectorRoutingRule(ResponseSchemaModel):
     """A single ingestion rule referencing this connector."""
 
     id: str
@@ -2491,7 +2511,7 @@ class ConnectorRoutingRule(BaseModel):
     updated_at: str
 
 
-class ConnectorRoutingRulesResponse(BaseModel):
+class ConnectorRoutingRulesResponse(ResponseSchemaModel):
     """Response envelope for GET …/{type}/{identity}/routing-rules."""
 
     rules: list[ConnectorRoutingRule]

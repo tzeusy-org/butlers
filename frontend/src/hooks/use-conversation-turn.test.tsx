@@ -31,7 +31,7 @@ const createConversationMock = vi.fn();
 const sendMessageMock = vi.fn();
 const cancelConversationMessageTurnMock = vi.fn();
 const getConversationMessagesMock = vi.fn();
-vi.mock("@/api/index.ts", () => ({
+vi.mock("@/api/client.ts", () => ({
   createConversation: (...args: unknown[]) => createConversationMock(...args),
   sendMessage: (...args: unknown[]) => sendMessageMock(...args),
   cancelConversationMessageTurn: (...args: unknown[]) =>
@@ -93,6 +93,9 @@ function renderTurn() {
 
 function makeAssistantMessageForCompletion(): Message {
   return {
+model_name: null,
+page_context: null,
+captured_at: null,
     id: "m1",
     conversation_id: "c1",
     role: "assistant",

@@ -68,7 +68,7 @@ vi.mock("@/lib/event-bus", () => ({
 
 // Mock the API module — we only need getApprovalsFlat + getApprovalsHistory +
 // getApprovalsPolicy for these tests. Others are stubs to satisfy imports.
-vi.mock("@/api/index.ts", () => ({
+vi.mock("@/api/client.ts", () => ({
   getApprovalsFlat: vi.fn(),
   getApprovalsHistory: vi.fn(),
   getApprovalsPolicy: vi.fn(),
@@ -106,19 +106,7 @@ vi.mock("@/api/index.ts", () => ({
   setRulePromotionRuleEnabled: vi.fn(),
 }));
 
-import {
-  getApprovalDetail,
-  getApprovalGatedTools,
-  getApprovalMetrics,
-  getApprovalsFlat,
-  getApprovalsHistory,
-  getApprovalsPolicy,
-  getApprovalRules,
-  getAutonomySuggestions,
-  getRulePromotionStats,
-  getRulePromotionSuggestions,
-  getUnroutableAttention,
-} from "@/api/index.ts";
+import { getApprovalDetail, getApprovalGatedTools, getApprovalMetrics, getApprovalsFlat, getApprovalsHistory, getApprovalsPolicy, getApprovalRules, getAutonomySuggestions, getRulePromotionStats, getRulePromotionSuggestions, getUnroutableAttention } from "@/api/client.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMock = any;

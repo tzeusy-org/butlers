@@ -4,18 +4,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import {
-  forceButlerTick,
-  getButler,
-  getButlerConfig,
-  getButlerModules,
-  getButlerSkills,
-  getButlers,
-  getButlersBoard,
-  getRuntimeConfig,
-  patchRuntimeConfig,
-} from "@/api/index.ts";
-import type { RuntimeConfigPatch } from "@/api/index.ts";
+import { forceButlerTick, getButler, getButlerConfig, getButlerModules, getButlerSkills, getButlers, getButlersBoard, getRuntimeConfig, patchRuntimeConfig } from "@/api/client.ts";
+import type { RuntimeConfigPatch } from "@/api/types.ts";
 
 // The bare butlers list and board both need this primary-path cadence. Board
 // session events can invalidate the cache sooner, but receiver health changes

@@ -17,7 +17,7 @@ import { describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
-import type { IngestionEventListSessionSummary } from "@/api/index.ts";
+import type { IngestionEventListSessionSummary } from "@/api/types.ts";
 import { DispatchTicksCell, computeTickWidths } from "./DispatchTicksCell";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -25,6 +25,7 @@ import { DispatchTicksCell, computeTickWidths } from "./DispatchTicksCell";
 
 function session(overrides: Partial<IngestionEventListSessionSummary> = {}): IngestionEventListSessionSummary {
   return {
+cost_evidence: "no_usage",
     butler_name: "relationship",
     duration_ms: 41_000,
     cost_usd: 0.09,

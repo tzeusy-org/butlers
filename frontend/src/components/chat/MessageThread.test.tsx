@@ -20,6 +20,9 @@ afterEach(() => cleanup());
 
 function makeAssistantMessage(overrides: Partial<Message> = {}): Message {
   return {
+model_name: null,
+page_context: null,
+captured_at: null,
     id: "message-1",
     conversation_id: "conversation-1",
     role: "assistant",
@@ -382,6 +385,12 @@ describe("MessageThread — sr-only live announcer region (bu-0ynlk.13)", () => 
       vi.advanceTimersByTime(3500);
 
       const committedMessage: Message = {
+model_name: null,
+sources: [],
+citations: [],
+routed_butler: null,
+page_context: null,
+captured_at: null,
         id: "message-1",
         conversation_id: "conversation-1",
         role: "assistant",

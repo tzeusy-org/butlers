@@ -37,6 +37,7 @@ from butlers.api.deps import (
 )
 from butlers.api.lifespan_supervisor import supervise_lifespan_loop
 from butlers.api.middleware import register_error_handlers
+from butlers.api.models import ErrorResponse, HealthResponse
 from butlers.api.owner_auth.config import OwnerAuthConfig
 from butlers.api.owner_auth.http import OwnerAuthMiddleware
 from butlers.api.owner_auth.service import (
@@ -560,6 +561,7 @@ def create_app(
         title="Butlers Dashboard API",
         version="0.1.0",
         lifespan=lifespan,
+        responses={500: {"model": ErrorResponse}},
     )
     # Health endpoints return 503 until lifespan startup sets this True.
     app.state.ready = False
@@ -648,8 +650,8 @@ def create_app(
                 "Mounted butler router: %s (prefix=%s)", entry.butler_name, entry.router.prefix
             )
 
-    @app.get("/api/health")
-    @app.get("/health")
+    @app.get("/api/health", response_model=HealthResponse, response_model_exclude_unset=True)
+    @app.get("/health", response_model=HealthResponse, response_model_exclude_unset=True)
     async def health():
         if not app.state.ready:
             return JSONResponse(status_code=503, content={"status": "starting"})

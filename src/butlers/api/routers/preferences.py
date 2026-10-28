@@ -18,11 +18,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.api.routers.memory import (
     _is_missing_memory_schema_error,
     _memory_relation,
@@ -40,7 +40,7 @@ router = APIRouter(prefix="/api/preferences", tags=["preferences"])
 # ---------------------------------------------------------------------------
 
 
-class PreferenceEntry(BaseModel):
+class PreferenceEntry(ResponseSchemaModel):
     """A single active preference fact for the owner."""
 
     predicate: str

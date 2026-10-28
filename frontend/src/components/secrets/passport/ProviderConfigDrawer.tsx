@@ -56,7 +56,7 @@ import {
   useSteamConnect,
   useSteamDisconnect,
 } from "@/hooks/use-steam.ts";
-import type { SteamConnectRequest } from "@/api/index.ts";
+import type { SteamConnectRequest } from "@/api/types.ts";
 import {
   useSpotifyStatus,
   useSpotifyConfig,

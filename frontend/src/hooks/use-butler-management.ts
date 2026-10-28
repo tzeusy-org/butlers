@@ -7,15 +7,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
-import {
-  getButlerMemoryAccess,
-  getButlerEffectivePrompt,
-  getButlerPrompt,
-  getButlerPromptHistory,
-  killButler,
-  updateButlerPrompt,
-} from "@/api/index.ts";
-import type { KillRequest, PromptUpdateRequest } from "@/api/index.ts";
+import { getButlerMemoryAccess, getButlerEffectivePrompt, getButlerPrompt, getButlerPromptHistory, killButler, updateButlerPrompt } from "@/api/client.ts";
+import type { KillRequest, PromptUpdateRequest } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
 // System prompt

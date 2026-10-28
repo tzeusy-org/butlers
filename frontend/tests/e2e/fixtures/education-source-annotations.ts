@@ -69,7 +69,7 @@ export const test = base.extend<{ registryAvailable: boolean }>({
           case "/api/approvals/metrics":
           case "/api/health": return reply(emptyApiJson(url)!);
           case "/api/settings/general": return reply(mockJson("getGeneralSettings", { data: { timezone: "UTC", timezone_label: "UTC", language: "en", date_format: "YYYY-MM-DD", time_format: "24h", week_starts_on: "monday", currency: "USD", measurement_system: "metric" }, meta: {} }));
-          case "/api/butlers": return reply(mockJson("getButlers", { data: [{ name: "education", status: "running", port: 0, type: "butler", sessions_24h: 0 }], meta: {} }));
+          case "/api/butlers": return reply(mockJson("getButlers", { data: [{ db: "", description: null, modules: [], last_session_started_at: null, name: "education", status: "running", port: 0, type: "butler", sessions_24h: 0 }], meta: {} }));
           case "/api/education/mind-maps": {
             const status = url.searchParams.get("status");
             if (status === "active" || status === "draft") {

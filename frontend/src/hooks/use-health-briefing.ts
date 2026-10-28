@@ -22,8 +22,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import { getHealthBriefing } from "@/api/index.ts";
-import type { Briefing } from "@/api/types.ts";
+import { getHealthBriefing } from "@/api/client.ts";
 
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
 
@@ -40,7 +39,7 @@ export const healthBriefingKeys = {
  * No refetchInterval — manual refresh only (see module docstring).
  */
 export function useHealthBriefing() {
-  return useQuery<Briefing>({
+  return useQuery({
     queryKey: healthBriefingKeys.all,
     queryFn: getHealthBriefing,
     staleTime: FIVE_MINUTES_MS,

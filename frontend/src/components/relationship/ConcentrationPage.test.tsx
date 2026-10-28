@@ -432,8 +432,10 @@ describe("ConcentrationPage — entity rows", () => {
     const STALE_RESPONSE: ConcentrationResponse = {
       ...KNOWS_RESPONSE,
       items: [
-        { ...KNOWS_RESPONSE.items[0], last_seen: "2020-01-01T00:00:00Z" },
-        { ...KNOWS_RESPONSE.items[1], last_seen: new Date().toISOString() },
+        {
+...KNOWS_RESPONSE.items[0], last_seen: "2020-01-01T00:00:00Z" },
+        {
+...KNOWS_RESPONSE.items[1], last_seen: new Date().toISOString() },
       ],
     };
     vi.mocked(useEntityConcentration).mockReturnValue({

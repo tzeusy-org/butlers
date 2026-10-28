@@ -16,7 +16,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest"
 
 const mockGetSessions = vi.fn()
 
-vi.mock("@/api/index.ts", () => ({
+vi.mock("@/api/client.ts", () => ({
   getSessions: (...args: Parameters<typeof mockGetSessions>) => mockGetSessions(...args),
 }))
 

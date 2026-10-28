@@ -47,6 +47,7 @@ import { useForceButlerTick, usePingButler } from "@/hooks/use-butlers";
 
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
   return {
+recurrence_at: null,
     severity: "warning",
     type: "audit_error_group:oauth-token-expired",
     butler: "calendar",

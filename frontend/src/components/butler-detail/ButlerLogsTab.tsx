@@ -51,7 +51,7 @@ const LEVEL_CHIPS: LevelChipDef[] = [
 // Doctrine: NO raw oklch/hex. Only design tokens.
 // ---------------------------------------------------------------------------
 
-function levelClass(level: LogLevel): string {
+function levelClass(level: string): string | undefined {
   switch (level) {
     case "DEBUG": return "text-muted-foreground";
     case "INFO":  return "text-primary";
@@ -95,7 +95,7 @@ function FilterChip({ label, active, onClick }: FilterChipProps) {
 
 interface LogLineRowProps {
   ts: string;
-  level: LogLevel;
+  level: string;
   msg: string;
 }
 

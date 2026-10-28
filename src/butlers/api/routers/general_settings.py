@@ -8,6 +8,7 @@ from pydantic import BaseModel, field_validator
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.core.general_settings import (
     GENERAL_MEASUREMENT_SYSTEM,
     load_general_settings,
@@ -23,7 +24,7 @@ from butlers.core.general_settings import (
 router = APIRouter(prefix="/api/settings/general", tags=["general-settings"])
 
 
-class GeneralSettingsResponse(BaseModel):
+class GeneralSettingsResponse(ResponseSchemaModel):
     """Shared general settings returned to the settings page."""
 
     timezone: str

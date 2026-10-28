@@ -10,14 +10,16 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, field_validator
+
+from butlers.api.models.base import ResponseSchemaModel
 
 # ---------------------------------------------------------------------------
 # Base response wrappers
 # ---------------------------------------------------------------------------
 
 
-class ApiMeta(BaseModel):
+class ApiMeta(ResponseSchemaModel):
     """Extensible metadata bag attached to every API response."""
 
     model_config = {"extra": "allow"}
@@ -31,6 +33,28 @@ class ApiResponse[T](BaseModel):
 
     data: T
     meta: ApiMeta = Field(default_factory=ApiMeta)
+
+
+class ApiResponseWithMeta[T, M](ApiResponse[T]):
+    """An existing response envelope with a source-declared metadata contract.
+
+    The shared extensible ApiMeta/ApiResponse remain unchanged. Route-specific
+    metadata uses native TypedDict fields so omitted optional keys stay omitted;
+    the producer supplies its original dictionary, including allowed extras.
+    """
+
+    meta: M
+
+    @field_validator("meta", mode="before")
+    @classmethod
+    def _metadata_mapping(cls, value: object) -> object:
+        # Existing producers and direct Python consumers retain their ApiMeta
+        # object. Only this opt-in response boundary adapts it for TypedDict.
+        if isinstance(value, PaginationMeta):
+            # This exact existing model computes has_more at serialization.
+            # Keep every raw extra/nested model, then include that property.
+            return {**dict(value), "has_more": value.has_more}
+        return dict(value) if isinstance(value, ApiMeta) else value
 
 
 class ErrorDetail(BaseModel):
@@ -53,7 +77,7 @@ class ErrorResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class PaginationMeta(BaseModel):
+class PaginationMeta(ResponseSchemaModel):
     """Pagination metadata for list endpoints."""
 
     model_config = {"extra": "allow"}
@@ -69,7 +93,7 @@ class PaginationMeta(BaseModel):
         return self.offset + self.limit < self.total
 
 
-class PaginatedResponse[T](BaseModel):
+class PaginatedResponse[T](ResponseSchemaModel):
     """API response wrapper for paginated list endpoints.
 
     ``{"data": [T, ...], "meta": PaginationMeta}``
@@ -79,7 +103,7 @@ class PaginatedResponse[T](BaseModel):
     meta: PaginationMeta
 
 
-class KeysetMeta(BaseModel):
+class KeysetMeta(ResponseSchemaModel):
     """Keyset (cursor) pagination metadata for the sessions list only.
 
     ``{"limit": 50, "next_cursor": "<opaque>|null", "has_more": true}``
@@ -100,7 +124,7 @@ class KeysetMeta(BaseModel):
     sources_degraded: list[str] | None = None
 
 
-class KeysetResponse[T](BaseModel):
+class KeysetResponse[T](ResponseSchemaModel):
     """API response wrapper for keyset-paginated list endpoints.
 
     ``{"data": [T, ...], "meta": KeysetMeta}``
@@ -115,7 +139,7 @@ class KeysetResponse[T](BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ScheduleEntry(BaseModel):
+class ScheduleEntry(ResponseSchemaModel):
     """A single scheduled task from butler.toml."""
 
     name: str
@@ -123,7 +147,7 @@ class ScheduleEntry(BaseModel):
     prompt: str | None = None
 
 
-class ModuleInfo(BaseModel):
+class ModuleInfo(ResponseSchemaModel):
     """Module status information."""
 
     name: str
@@ -131,7 +155,7 @@ class ModuleInfo(BaseModel):
     config: dict | None = None
 
 
-class ButlerSummary(BaseModel):
+class ButlerSummary(ResponseSchemaModel):
     """Lightweight butler representation for list views.
 
     Combines static config data (name, port, description, modules) with
@@ -150,14 +174,14 @@ class ButlerSummary(BaseModel):
     last_session_started_at: datetime | None = None
 
 
-class SkillInfo(BaseModel):
+class SkillInfo(ResponseSchemaModel):
     """Skill name and SKILL.md content for a butler."""
 
     name: str
     content: str
 
 
-class ProcessFacts(BaseModel):
+class ProcessFacts(ResponseSchemaModel):
     """Container-boundary-safe process facts for the butler Overview tab.
 
     Derived from stable topology sources rather than per-process OS state.
@@ -170,7 +194,7 @@ class ProcessFacts(BaseModel):
     config_path: str
 
 
-class BlindSpotSignal(BaseModel):
+class BlindSpotSignal(ResponseSchemaModel):
     """One declared expected signal not confirmed PRESENT as of evaluation time."""
 
     signal_key: str
@@ -199,7 +223,7 @@ class ButlerDetail(ButlerSummary):
     blind_spots_query_failed: bool = False
 
 
-class SessionSummary(BaseModel):
+class SessionSummary(ResponseSchemaModel):
     """Lightweight session representation for list views."""
 
     id: UUID
@@ -227,7 +251,7 @@ class SessionSummary(BaseModel):
     cost_usd: float | None = None
 
 
-class ButlerConfigResponse(BaseModel):
+class ButlerConfigResponse(ResponseSchemaModel):
     """Full butler configuration returned by the config endpoint.
 
     Contains the parsed butler.toml as a dict plus the raw text content
@@ -241,10 +265,28 @@ class ButlerConfigResponse(BaseModel):
     manifesto_md: str | None = None
 
 
+class HealthAuthPosture(BaseModel):
+    """Public booleans from the health handler, never credential values."""
+
+    owner_auth_enabled: bool
+    owner_auth_available: bool
+    api_key_auth_enabled: bool
+    export_secret_insecure_default: bool
+
+
+class HealthSecurityPosture(BaseModel):
+    """Infrastructure posture reported by the existing health handler."""
+
+    insecure_infra_defaults: bool
+    role_enforcement_disabled: bool
+
+
 class HealthResponse(BaseModel):
-    """Health-check response."""
+    """Health-check response, including the existing starting-state envelope."""
 
     status: str
+    auth: HealthAuthPosture | None = None
+    security: HealthSecurityPosture | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +320,7 @@ def compute_issue_key(issue_type: str, butler: str) -> str:
     return f"{issue_type}::{butler}"
 
 
-class Issue(BaseModel):
+class Issue(ResponseSchemaModel):
     """Active issue detected across butler infrastructure."""
 
     severity: str  # "critical" or "warning"
@@ -325,7 +367,7 @@ class Issue(BaseModel):
         return compute_issue_key(self.type, self.butler)
 
 
-class AuditIssueGroupRef(BaseModel):
+class AuditIssueGroupRef(ResponseSchemaModel):
     """Server-computed Issues-group identity for one audit-log failure row.
 
     The exact evidence door behind ``GET /api/issues/group-for-audit/{id}``
@@ -390,7 +432,7 @@ class TriggerRequest(BaseModel):
     complexity: str = "workhorse"
 
 
-class TriggerResponse(BaseModel):
+class TriggerResponse(ResponseSchemaModel):
     """Response from triggering a runtime session."""
 
     session_id: str | None = None
@@ -398,7 +440,7 @@ class TriggerResponse(BaseModel):
     output: str | None = None
 
 
-class TickResponse(BaseModel):
+class TickResponse(ResponseSchemaModel):
     """Response from a forced scheduler tick."""
 
     success: bool
@@ -410,7 +452,7 @@ class TickResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class MCPToolInfo(BaseModel):
+class MCPToolInfo(ResponseSchemaModel):
     """A tool exposed by a butler's MCP server."""
 
     name: str
@@ -425,7 +467,7 @@ class MCPToolCallRequest(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
-class MCPToolCallResponse(BaseModel):
+class MCPToolCallResponse(ResponseSchemaModel):
     """Response envelope for a proxied MCP tool invocation."""
 
     tool_name: str
@@ -440,7 +482,7 @@ class MCPToolCallResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class UnpricedModelUsage(BaseModel):
+class UnpricedModelUsage(ResponseSchemaModel):
     """Executed-model ledger usage excluded from a priced subtotal."""
 
     model: str
@@ -451,7 +493,7 @@ class UnpricedModelUsage(BaseModel):
     cache_creation_tokens: int
 
 
-class SpendDivergence(BaseModel):
+class SpendDivergence(ResponseSchemaModel):
     """Material token-total disagreement between session and ledger evidence."""
 
     date: str
@@ -461,7 +503,7 @@ class SpendDivergence(BaseModel):
     difference_ratio: float
 
 
-class SpendSummary(BaseModel):
+class SpendSummary(ResponseSchemaModel):
     """Aggregate spend summary across all butlers.
 
     ``total_input_tokens`` is the UNCACHED input bucket only -- it always was,
@@ -509,7 +551,7 @@ class SpendSummary(BaseModel):
     unavailable_butlers: list[str] = Field(default_factory=list)
 
 
-class DailySpend(BaseModel):
+class DailySpend(ResponseSchemaModel):
     """Spend data for a single day.
 
     See :class:`SpendSummary` for the four-bucket / ``cache_hit_rate`` contract
@@ -529,7 +571,7 @@ class DailySpend(BaseModel):
     unpriced_models: list[UnpricedModelUsage] = Field(default_factory=list)
 
 
-class TopSession(BaseModel):
+class TopSession(ResponseSchemaModel):
     """A session ranked by cost."""
 
     session_id: str
@@ -542,7 +584,7 @@ class TopSession(BaseModel):
     purpose_lane: Literal["standard", "private_content"] | None = None
 
 
-class ScheduleCost(BaseModel):
+class ScheduleCost(ResponseSchemaModel):
     """Cost analysis for a single scheduled task.
 
     Two groups of fields that must not be confused (bu-6jv4m.2). ``total_runs``,

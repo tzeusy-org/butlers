@@ -38,7 +38,7 @@ import { useMemo, useState } from "react";
 import { formatInTimeZone } from "date-fns-tz";
 
 import { useTimezone } from "@/components/ui/timezone-context";
-import type { IngestionHistogramBucket, IngestionHistogramCounts } from "@/api/index.ts";
+import type { IngestionHistogramBucket, IngestionHistogramCounts } from "@/api/types.ts";
 
 const ZERO_COUNTS: IngestionHistogramCounts = {
   ingested: 0,

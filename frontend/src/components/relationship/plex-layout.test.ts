@@ -48,6 +48,11 @@ function dunbarEntry(
   overrides: Partial<DunbarEntry> & { entity_id: string },
 ): DunbarEntry {
   return {
+avatar_url: null,
+aliases: [],
+warmth: null,
+effective_cadence_days: null,
+stale_contact_state: "unmeasurable",
     contact_id: `contact-${overrides.entity_id}`,
     canonical_name: overrides.entity_id,
     dunbar_tier: 50,

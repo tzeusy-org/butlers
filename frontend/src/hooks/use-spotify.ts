@@ -7,13 +7,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import {
-  disconnectSpotify,
-  getSpotifyStatus,
-  saveSpotifyConfig,
-  startSpotifyOAuth,
-} from "@/api/index.ts";
-import type { SpotifyConfigRequest } from "@/api/index.ts";
+import { disconnectSpotify, getSpotifyStatus, saveSpotifyConfig, startSpotifyOAuth } from "@/api/client.ts";
+import type { SpotifyConfigRequest } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
 // Query keys

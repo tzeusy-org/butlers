@@ -69,6 +69,7 @@ from butlers.api.models import (
     PaginatedResponse,
     PaginationMeta,
 )
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.config import ConfigError, load_config
 from butlers.core.failover_classifier import is_provider_auth_marker
 from butlers.core.healing.constants import CIRCUIT_BREAKER_FAILURE_STATUSES
@@ -335,7 +336,7 @@ def _synthetic_findings_enabled() -> bool:
 # ---------------------------------------------------------------------------
 
 
-class QaPatrolSummary(BaseModel):
+class QaPatrolSummary(ResponseSchemaModel):
     """Lightweight patrol record for list views."""
 
     id: uuid.UUID
@@ -353,7 +354,7 @@ class QaPatrolSummary(BaseModel):
     error_detail: str | None = None
 
 
-class QaFindingRecord(BaseModel):
+class QaFindingRecord(ResponseSchemaModel):
     """A single QA finding record from a patrol."""
 
     id: uuid.UUID
@@ -381,7 +382,7 @@ class QaPatrolDetail(QaPatrolSummary):
     findings: list[QaFindingRecord] = Field(default_factory=list)
 
 
-class QaDismissal(BaseModel):
+class QaDismissal(ResponseSchemaModel):
     """A dismissal record for a known issue fingerprint."""
 
     fingerprint: str
@@ -390,7 +391,7 @@ class QaDismissal(BaseModel):
     created_at: datetime
 
 
-class QaActiveDismissal(BaseModel):
+class QaActiveDismissal(ResponseSchemaModel):
     """Active dismissal data embedded in a QA case dossier."""
 
     fingerprint: str
@@ -398,7 +399,7 @@ class QaActiveDismissal(BaseModel):
     reason: str | None = None
 
 
-class KnownIssue(BaseModel):
+class KnownIssue(ResponseSchemaModel):
     """A known issue grouped by fingerprint with aggregated stats."""
 
     fingerprint: str
@@ -416,7 +417,7 @@ class KnownIssue(BaseModel):
     dismissal: QaDismissal | None = None
 
 
-class QaStats24h(BaseModel):
+class QaStats24h(ResponseSchemaModel):
     """Aggregate stats over the last 24 hours."""
 
     patrols_completed: int
@@ -426,7 +427,7 @@ class QaStats24h(BaseModel):
     prs_opened: int = 0
 
 
-class QaAllTimeStats(BaseModel):
+class QaAllTimeStats(ResponseSchemaModel):
     """All-time aggregate stats."""
 
     total_patrols: int
@@ -438,7 +439,7 @@ class QaAllTimeStats(BaseModel):
     success_rate: float = 0.0
 
 
-class QaKpiBlock(BaseModel):
+class QaKpiBlock(ResponseSchemaModel):
     """KPI strip metrics for the QA dossier dashboard."""
 
     prs_landed_24h: int
@@ -464,14 +465,14 @@ class QaKpiBlock(BaseModel):
     failed_prior_24h: int = 0
 
 
-class QaActiveBreakdown(BaseModel):
+class QaActiveBreakdown(ResponseSchemaModel):
     """Small active-case status breakdown for the QA dossier dashboard."""
 
     awaiting_ci: int
     escalated_open_cases: int
 
 
-class QaCaseSummary(BaseModel):
+class QaCaseSummary(ResponseSchemaModel):
     """Summary row for the QA Cases API."""
 
     id: uuid.UUID
@@ -490,7 +491,7 @@ class QaCaseSummary(BaseModel):
     session_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
-class QaPrSummary(BaseModel):
+class QaPrSummary(ResponseSchemaModel):
     """Pull request summary embedded in a QA case dossier."""
 
     number: int
@@ -508,7 +509,7 @@ class QaPrSummary(BaseModel):
     url: str
 
 
-class QaJournalEvent(BaseModel):
+class QaJournalEvent(ResponseSchemaModel):
     """A single chronological event in the QA case journal."""
 
     id: uuid.UUID
@@ -530,7 +531,7 @@ class QaJournalEvent(BaseModel):
     data: dict[str, Any]
 
 
-class QaCaseDossier(BaseModel):
+class QaCaseDossier(ResponseSchemaModel):
     """Full case payload for the QA dossier renderer."""
 
     case: QaCaseSummary
@@ -559,7 +560,7 @@ class QaCaseDossier(BaseModel):
     error_detail: str | None = None
 
 
-class QaCircuitBreaker(BaseModel):
+class QaCircuitBreaker(ResponseSchemaModel):
     """Circuit breaker state for QA investigations."""
 
     tripped: bool
@@ -570,7 +571,7 @@ class QaCircuitBreaker(BaseModel):
     threshold: int = 5
 
 
-class QaCredentialsStatus(BaseModel):
+class QaCredentialsStatus(ResponseSchemaModel):
     """Credential availability status for QA investigations.
 
     Populated when the daemon wires a ``credentials_status_fn`` into the
@@ -605,7 +606,7 @@ class QaCredentialsStatus(BaseModel):
     """
 
 
-class QaSummary(BaseModel):
+class QaSummary(ResponseSchemaModel):
     """QA staffer status summary for the dashboard."""
 
     staffer_status: str = "unknown"
@@ -656,7 +657,7 @@ class DismissRequest(BaseModel):
     dismissed_by: str = "dashboard_user"
 
 
-class QaInvestigation(BaseModel):
+class QaInvestigation(ResponseSchemaModel):
     """A QA-originated healing attempt with PR info."""
 
     id: uuid.UUID
@@ -691,7 +692,7 @@ class QaInvestigation(BaseModel):
     last_follow_up_at: datetime | None = None
 
 
-class QaTrendsDay(BaseModel):
+class QaTrendsDay(ResponseSchemaModel):
     """A single day's patrol aggregate for trend charts."""
 
     date: str  # ISO date string yyyy-mm-dd
@@ -702,7 +703,7 @@ class QaTrendsDay(BaseModel):
     success_rate: float  # fraction of patrols that were clean, 0.0–1.0
 
 
-class AllowedRepo(BaseModel):
+class AllowedRepo(ResponseSchemaModel):
     """A single entry in the QA repository whitelist."""
 
     id: uuid.UUID
@@ -736,21 +737,21 @@ class AllowedRepoPatch(BaseModel):
     enabled: bool
 
 
-class QaSourceBreakdown(BaseModel):
+class QaSourceBreakdown(ResponseSchemaModel):
     """Per-source finding count for breakdown charts."""
 
     source_type: str
     count: int
 
 
-class QaTrends(BaseModel):
+class QaTrends(ResponseSchemaModel):
     """7-day trend data for the QA overview charts."""
 
     days: list[QaTrendsDay]
     source_breakdown: list[QaSourceBreakdown]
 
 
-class ForcePatrolResponse(BaseModel):
+class ForcePatrolResponse(ResponseSchemaModel):
     """Response from a force-patrol request.
 
     ``triggered`` reports whether a patrol cycle was actually kicked off — either
@@ -812,7 +813,7 @@ class SyntheticFindingCreate(BaseModel):
     )
 
 
-class SyntheticFindingResponse(BaseModel):
+class SyntheticFindingResponse(ResponseSchemaModel):
     """Response returned after queueing a synthetic QA finding."""
 
     accepted: bool
@@ -822,7 +823,7 @@ class SyntheticFindingResponse(BaseModel):
     message: str
 
 
-class CircuitBreakerAttempt(BaseModel):
+class CircuitBreakerAttempt(ResponseSchemaModel):
     """A recent healing attempt relevant to circuit breaker state."""
 
     id: str
@@ -830,7 +831,7 @@ class CircuitBreakerAttempt(BaseModel):
     closed_at: str
 
 
-class CircuitBreakerStatus(BaseModel):
+class CircuitBreakerStatus(ResponseSchemaModel):
     """Current state of the QA dispatch circuit breaker."""
 
     tripped: bool
@@ -839,14 +840,14 @@ class CircuitBreakerStatus(BaseModel):
     recent_attempts: list[CircuitBreakerAttempt]
 
 
-class CircuitBreakerResetResponse(BaseModel):
+class CircuitBreakerResetResponse(ResponseSchemaModel):
     """Response from resetting the circuit breaker."""
 
     reset: bool
     message: str
 
 
-class QaRepoConfig(BaseModel):
+class QaRepoConfig(ResponseSchemaModel):
     """Current QA repository configuration."""
 
     repo_url: str
@@ -863,7 +864,7 @@ class QaRepoConfigUpdate(BaseModel):
     repo_url: str = Field(..., description="Git repository URL (HTTPS recommended)")
 
 
-class QaRepoSyncResponse(BaseModel):
+class QaRepoSyncResponse(ResponseSchemaModel):
     """Response from a repo sync request."""
 
     synced: bool
@@ -883,7 +884,7 @@ class QaGitAuthorUpdate(BaseModel):
     email: str = Field(..., min_length=3, description="Git author email")
 
 
-class QaGitAuthorStatus(BaseModel):
+class QaGitAuthorStatus(ResponseSchemaModel):
     """Presence status of the QA git author identity after a write.
 
     Mirrors the ``credentials_status`` fields surfaced by ``GET /api/qa/summary``
@@ -894,7 +895,7 @@ class QaGitAuthorStatus(BaseModel):
     git_author_email_present: bool
 
 
-class QaMetaReviewFinding(BaseModel):
+class QaMetaReviewFinding(ResponseSchemaModel):
     """A QA-self-recursive finding routed to the operator meta-review lane.
 
     These are findings where ``source_butler == "qa"`` and the originating

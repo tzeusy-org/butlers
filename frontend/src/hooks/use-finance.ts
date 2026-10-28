@@ -1,23 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import {
-  getFinanceAccounts,
-  getFinanceExpectedSignals,
-  getFinanceObligations,
-  getFinanceSpendingSummary,
-  getFinanceSubscriptions,
-  getFinanceTransactions,
-  getFinanceUpcomingBills,
-  patchFinanceBulkMetadata,
-} from "@/api/index.ts";
-import type {
-  FinanceAccountListParams,
-  FinanceBulkUpdateRequest,
-  FinanceSpendingSummaryParams,
-  FinanceSubscriptionListParams,
-  FinanceTransactionListParams,
-  FinanceUpcomingBillsParams,
-} from "@/api/index.ts";
+import { getFinanceAccounts, getFinanceExpectedSignals, getFinanceObligations, getFinanceSpendingSummary, getFinanceSubscriptions, getFinanceTransactions, getFinanceUpcomingBills, patchFinanceBulkMetadata } from "@/api/client.ts";
+import type { FinanceAccountListParams, FinanceBulkUpdateRequest, FinanceSpendingSummaryParams, FinanceSubscriptionListParams, FinanceTransactionListParams, FinanceUpcomingBillsParams } from "@/api/types.ts";
 
 /**
  * Primary poll interval for finance butler queries (bu-ep4ks.15). No fleet-bus event

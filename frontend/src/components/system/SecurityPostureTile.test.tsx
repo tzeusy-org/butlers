@@ -22,6 +22,13 @@ import { describe, expect, it, vi } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 
 import type { HealthResponse } from "@/api/types"
+import { getHealth } from "@/api/client";
+import { ownerFetch } from "@/api/owner-session";
+vi.mock("@/api/owner-session", async (original) => ({ ...await original<typeof import("@/api/owner-session")>(), ownerFetch: vi.fn() }));
+async function rawHealth(raw: unknown): Promise<HealthResponse> {
+  vi.mocked(ownerFetch).mockResolvedValueOnce(new Response(JSON.stringify(raw)));
+  return getHealth();
+}
 import { SecurityPostureTile } from "./SecurityPostureTile"
 
 // ---------------------------------------------------------------------------
@@ -80,12 +87,12 @@ function render(): string {
 // ---------------------------------------------------------------------------
 
 describe("SecurityPostureTile -- loading state", () => {
-  it("renders skeleton when isPending=true", () => {
+  it("renders skeleton when isPending=true", async () => {
     mockResult = { isPending: true }
     expect(render()).toContain("security-posture-tile-skeleton")
   })
 
-  it("does not render content while loading", () => {
+  it("does not render content while loading", async () => {
     mockResult = { isPending: true }
     expect(render()).not.toContain("security-posture-tile-content")
   })
@@ -96,17 +103,17 @@ describe("SecurityPostureTile -- loading state", () => {
 // ---------------------------------------------------------------------------
 
 describe("SecurityPostureTile -- error state", () => {
-  it("renders error message when isError=true", () => {
+  it("renders error message when isError=true", async () => {
     mockResult = { isPending: false, isError: true }
     expect(render()).toContain("security-posture-tile-error")
   })
 
-  it("renders error text when isError=true", () => {
+  it("renders error text when isError=true", async () => {
     mockResult = { isPending: false, isError: true }
     expect(render()).toContain("Could not load security posture")
   })
 
-  it("does not render content when isError=true", () => {
+  it("does not render content when isError=true", async () => {
     mockResult = { isPending: false, isError: true }
     expect(render()).not.toContain("security-posture-tile-content")
   })
@@ -117,7 +124,7 @@ describe("SecurityPostureTile -- error state", () => {
 // ---------------------------------------------------------------------------
 
 describe("SecurityPostureTile -- both fields secure", () => {
-  it("renders content container", () => {
+  it("renders content container", async () => {
     mockResult = {
       isPending: false,
       data: makeHealthResponse({ api_key_auth_enabled: true, export_secret_insecure_default: false }),
@@ -125,7 +132,7 @@ describe("SecurityPostureTile -- both fields secure", () => {
     expect(render()).toContain("security-posture-tile-content")
   })
 
-  it("shows 'Enabled' for available owner authentication", () => {
+  it("shows 'Enabled' for available owner authentication", async () => {
     mockResult = {
       isPending: false,
       data: makeHealthResponse({ api_key_auth_enabled: true, export_secret_insecure_default: false }),
@@ -133,7 +140,7 @@ describe("SecurityPostureTile -- both fields secure", () => {
     expect(render()).toContain("Enabled")
   })
 
-  it("shows 'Configured' for export secret when not insecure", () => {
+  it("shows 'Configured' for export secret when not insecure", async () => {
     mockResult = {
       isPending: false,
       data: makeHealthResponse({ api_key_auth_enabled: true, export_secret_insecure_default: false }),
@@ -147,7 +154,7 @@ describe("SecurityPostureTile -- both fields secure", () => {
 // ---------------------------------------------------------------------------
 
 describe("SecurityPostureTile -- both fields insecure", () => {
-  it("shows 'Unavailable' when owner authentication cannot reach authoritative state", () => {
+  it("shows 'Unavailable' when owner authentication cannot reach authoritative state", async () => {
     mockResult = {
       isPending: false,
       data: makeHealthResponse({ owner_auth_available: false, api_key_auth_enabled: false, export_secret_insecure_default: true }),
@@ -156,7 +163,7 @@ describe("SecurityPostureTile -- both fields insecure", () => {
     expect(html).toContain("Unavailable")
   })
 
-  it("shows 'Insecure default' when export secret is missing", () => {
+  it("shows 'Insecure default' when export secret is missing", async () => {
     mockResult = {
       isPending: false,
       data: makeHealthResponse({ api_key_auth_enabled: false, export_secret_insecure_default: true }),
@@ -170,7 +177,7 @@ describe("SecurityPostureTile -- both fields insecure", () => {
 // ---------------------------------------------------------------------------
 
 describe("SecurityPostureTile -- mixed states", () => {
-  it("shows 'Enabled' and 'Insecure default' when key set but export missing", () => {
+  it("shows 'Enabled' and 'Insecure default' when key set but export missing", async () => {
     mockResult = {
       isPending: false,
       data: makeHealthResponse({ api_key_auth_enabled: true, export_secret_insecure_default: true }),
@@ -180,7 +187,7 @@ describe("SecurityPostureTile -- mixed states", () => {
     expect(html).toContain("Insecure default")
   })
 
-  it("shows passkey protection as enabled when the optional API key is absent", () => {
+  it("shows passkey protection as enabled when the optional API key is absent", async () => {
     mockResult = {
       isPending: false,
       data: makeHealthResponse({ api_key_auth_enabled: false, export_secret_insecure_default: false }),
@@ -198,7 +205,7 @@ describe("SecurityPostureTile -- mixed states", () => {
 // ---------------------------------------------------------------------------
 
 describe("SecurityPostureTile -- infra defaults indicator", () => {
-  it("shows 'Insecure defaults active' when insecure_infra_defaults=true", () => {
+  it("shows 'Insecure defaults active' when insecure_infra_defaults=true", async () => {
     mockResult = {
       isPending: false,
       data: makeHealthResponse({}, { insecure_infra_defaults: true }),
@@ -206,7 +213,7 @@ describe("SecurityPostureTile -- infra defaults indicator", () => {
     expect(render()).toContain("Insecure defaults active")
   })
 
-  it("shows 'Hardened' when insecure_infra_defaults=false", () => {
+  it("shows 'Hardened' when insecure_infra_defaults=false", async () => {
     mockResult = {
       isPending: false,
       data: makeHealthResponse({}, { insecure_infra_defaults: false }),
@@ -214,10 +221,10 @@ describe("SecurityPostureTile -- infra defaults indicator", () => {
     expect(render()).toContain("Hardened")
   })
 
-  it("defaults to insecure when security field is absent (honest default)", () => {
+  it("defaults to insecure when security field is absent (honest default)", async () => {
     mockResult = {
       isPending: false,
-      data: { status: "ok", auth: { api_key_auth_enabled: true, export_secret_insecure_default: false } },
+      data: await rawHealth({ status: "ok", auth: { api_key_auth_enabled: true, export_secret_insecure_default: false } }),
     }
     expect(render()).toContain("Insecure defaults active")
   })
@@ -228,7 +235,7 @@ describe("SecurityPostureTile -- infra defaults indicator", () => {
 // ---------------------------------------------------------------------------
 
 describe("SecurityPostureTile -- DB role enforcement indicator", () => {
-  it("shows 'Disabled (dev posture)' when role_enforcement_disabled=true", () => {
+  it("shows 'Disabled (dev posture)' when role_enforcement_disabled=true", async () => {
     mockResult = {
       isPending: false,
       data: makeHealthResponse({}, { role_enforcement_disabled: true }),
@@ -236,7 +243,7 @@ describe("SecurityPostureTile -- DB role enforcement indicator", () => {
     expect(render()).toContain("Disabled (dev posture)")
   })
 
-  it("shows 'Active' when role_enforcement_disabled=false", () => {
+  it("shows 'Active' when role_enforcement_disabled=false", async () => {
     mockResult = {
       isPending: false,
       data: makeHealthResponse({}, { role_enforcement_disabled: false }),
@@ -244,16 +251,16 @@ describe("SecurityPostureTile -- DB role enforcement indicator", () => {
     expect(render()).toContain("Active")
   })
 
-  it("defaults to insecure when security field is absent (honest default)", () => {
+  it("defaults to insecure when security field is absent (honest default)", async () => {
     mockResult = {
       isPending: false,
-      data: { status: "ok", auth: { api_key_auth_enabled: true, export_secret_insecure_default: false } },
+      data: await rawHealth({ status: "ok", auth: { api_key_auth_enabled: true, export_secret_insecure_default: false } }),
     }
     // When security is absent, role_enforcement_disabled defaults to true → shows insecure label
     expect(render()).toContain("Disabled (dev posture)")
   })
 
-  it("renders the role enforcement row with correct testId", () => {
+  it("renders the role enforcement row with correct testId", async () => {
     mockResult = {
       isPending: false,
       data: makeHealthResponse({}, { role_enforcement_disabled: false }),
@@ -261,7 +268,7 @@ describe("SecurityPostureTile -- DB role enforcement indicator", () => {
     expect(render()).toContain("posture-role-enforcement")
   })
 
-  it("shows 'Active' badge when role enforcement is active", () => {
+  it("shows 'Active' badge when role enforcement is active", async () => {
     mockResult = {
       isPending: false,
       data: makeHealthResponse({}, { role_enforcement_disabled: false }),
@@ -277,20 +284,20 @@ describe("SecurityPostureTile -- DB role enforcement indicator", () => {
 // ---------------------------------------------------------------------------
 
 describe("SecurityPostureTile -- no secret material", () => {
-  it("never renders secret values in the tile output", () => {
+  it("never renders secret values in the tile output", async () => {
     const CANARY_SECRET = "CANARY_SECRET_VALUE_XYZ_DO_NOT_SHOW"
     // Even if somehow a canary leaked into the health response as status text,
     // the tile should not propagate it — but since our type has only booleans
     // in auth, the canary must not appear.
     mockResult = {
       isPending: false,
-      data: {
+      data: await rawHealth({
         status: "ok",
         // auth and security fields are booleans; no path for the canary to sneak in
         auth: { api_key_auth_enabled: true, export_secret_insecure_default: false,
           ...{ api_key: CANARY_SECRET } },
         security: { insecure_infra_defaults: false, role_enforcement_disabled: false },
-      },
+      }),
     }
     expect(JSON.stringify(mockResult.data)).toContain(CANARY_SECRET)
     const html = render()

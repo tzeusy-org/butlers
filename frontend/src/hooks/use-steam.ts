@@ -7,12 +7,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import {
-  connectSteamAccount,
-  disconnectSteamAccount,
-  listSteamAccounts,
-} from "@/api/index.ts";
-import type { SteamConnectRequest } from "@/api/index.ts";
+import { connectSteamAccount, disconnectSteamAccount, listSteamAccounts } from "@/api/client.ts";
+import type { SteamConnectRequest } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
 // Query keys

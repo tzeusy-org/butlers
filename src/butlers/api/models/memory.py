@@ -13,6 +13,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from butlers.api.models.base import ResponseSchemaModel
+
 
 class ConsolidationStatus(StrEnum):
     """Canonical consolidation lifecycle states for an episode.
@@ -35,7 +37,7 @@ class EpisodeSourceStatus(StrEnum):
     UNRESOLVED = "unresolved"
 
 
-class MemoryLink(BaseModel):
+class MemoryLink(ResponseSchemaModel):
     """A durable relation between two memory records.
 
     Episode endpoints expose their bounded availability without returning a
@@ -52,7 +54,7 @@ class MemoryLink(BaseModel):
     target_episode_status: EpisodeSourceStatus | None = None
 
 
-class Episode(BaseModel):
+class Episode(ResponseSchemaModel):
     """An episode from the Eden memory tier."""
 
     id: str
@@ -79,7 +81,7 @@ class Episode(BaseModel):
     next_consolidation_retry_at: str | None = None
 
 
-class Fact(BaseModel):
+class Fact(ResponseSchemaModel):
     """A consolidated fact from the mid-term memory tier."""
 
     id: str
@@ -120,7 +122,7 @@ class Fact(BaseModel):
     metadata: dict = {}
 
 
-class Rule(BaseModel):
+class Rule(ResponseSchemaModel):
     """A behavioral rule from the long-term memory tier."""
 
     id: str
@@ -159,7 +161,7 @@ class Rule(BaseModel):
     held: bool = False
 
 
-class RuleEndorsement(BaseModel):
+class RuleEndorsement(ResponseSchemaModel):
     """Receipt for an owner endorsement of a held rule (idempotent)."""
 
     rule_id: str
@@ -169,7 +171,7 @@ class RuleEndorsement(BaseModel):
     changed: bool = False
 
 
-class MemoryGapOrigin(BaseModel):
+class MemoryGapOrigin(ResponseSchemaModel):
     """One thread an owner question was asked in."""
 
     conversation_id: str
@@ -179,7 +181,7 @@ class MemoryGapOrigin(BaseModel):
     delivered_at: str | None = None
 
 
-class MemoryGap(BaseModel):
+class MemoryGap(ResponseSchemaModel):
     """An owner question this butler could not answer yet (bu-q7vx1q.9)."""
 
     gap_id: str
@@ -198,14 +200,14 @@ class MemoryGap(BaseModel):
     origins: list[MemoryGapOrigin] = []
 
 
-class MemoryGapDismissal(BaseModel):
+class MemoryGapDismissal(ResponseSchemaModel):
     """Receipt for an owner dismissal; ``status`` is the gap's resulting state."""
 
     gap_id: str
     status: str
 
 
-class MemoryStats(BaseModel):
+class MemoryStats(ResponseSchemaModel):
     """Aggregated statistics across all memory tiers."""
 
     total_episodes: int = 0
@@ -267,7 +269,7 @@ class GraphHealthCoverage(BaseModel):
     pools: list[GraphHealthPoolCoverage]
 
 
-class EntitySummary(BaseModel):
+class EntitySummary(ResponseSchemaModel):
     """Lightweight entity representation for list views."""
 
     id: str
@@ -286,7 +288,7 @@ class EntitySummary(BaseModel):
     dunbar_score: float | None = None
 
 
-class EntityInfoEntry(BaseModel):
+class EntityInfoEntry(ResponseSchemaModel):
     """A single entity_info row (credential, identifier, etc.)."""
 
     id: str
@@ -297,7 +299,7 @@ class EntityInfoEntry(BaseModel):
     secured: bool = False
 
 
-class EntityRebindReceipt(BaseModel):
+class EntityRebindReceipt(ResponseSchemaModel):
     """One schema's durable outcome for an entity-merge rebind cohort."""
 
     rebind_id: str
@@ -331,7 +333,7 @@ class UpdateEntityRequest(BaseModel):
     roles: list[str] | None = None
 
 
-class MemoryActivity(BaseModel):
+class MemoryActivity(ResponseSchemaModel):
     """A recent memory activity event (new fact, rule, or episode)."""
 
     id: str
@@ -341,7 +343,7 @@ class MemoryActivity(BaseModel):
     created_at: str
 
 
-class ButlerMemoryStats(BaseModel):
+class ButlerMemoryStats(ResponseSchemaModel):
     """Per-butler memory subsystem counts with 24-hour deltas."""
 
     total_episodes: int = 0
@@ -354,7 +356,7 @@ class ButlerMemoryStats(BaseModel):
     rules_24h: int = 0
 
 
-class MemoryRetentionPolicy(BaseModel):
+class MemoryRetentionPolicy(ResponseSchemaModel):
     """A single row from public.memory_retention_policies."""
 
     kind: str
@@ -378,7 +380,7 @@ class UpdateRetentionPoliciesRequest(BaseModel):
     policies: list[UpdateRetentionPolicyEntry]
 
 
-class CompactionLogEntry(BaseModel):
+class CompactionLogEntry(ResponseSchemaModel):
     """A single row from public.memory_compaction_log."""
 
     id: int
@@ -388,7 +390,7 @@ class CompactionLogEntry(BaseModel):
     bytes_freed: int | None = None
 
 
-class MemoryInspectResult(BaseModel):
+class MemoryInspectResult(ResponseSchemaModel):
     """A single result from the memory inspect search.
 
     The flat ``id``/``kind``/``content``/``butler``/``created_at``/``metadata``
@@ -417,7 +419,7 @@ class MemoryInspectResult(BaseModel):
 _DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 
-class ReembedPendingCounts(BaseModel):
+class ReembedPendingCounts(ResponseSchemaModel):
     """Per-tier counts of rows whose stored embedding is stale."""
 
     counts: dict[str, int]
@@ -443,7 +445,7 @@ class ReembedRunRequest(BaseModel):
     """Embedding model currently configured.  Defaults to all-MiniLM-L6-v2."""
 
 
-class ReembedRunResult(BaseModel):
+class ReembedRunResult(ResponseSchemaModel):
     """Response from POST /api/memory/reembed.
 
     Note: this is a synchronous (blocking) endpoint. Re-embedding thousands of
@@ -467,7 +469,7 @@ class ReembedRunResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class EntityGraphCoverage(BaseModel):
+class EntityGraphCoverage(ResponseSchemaModel):
     """Relationship coverage for one entity, drawn from public.entity_graph_edges.
 
     RFC 0031 (Slice 4): counts, never content — ``relationships_withheld``
@@ -478,7 +480,7 @@ class EntityGraphCoverage(BaseModel):
     relationships_withheld: int
 
 
-class MemoryCatalogSearchResult(BaseModel):
+class MemoryCatalogSearchResult(ResponseSchemaModel):
     """One row from a public.memory_catalog cross-butler search.
 
     A discovery pointer, not the canonical memory item — ``source_schema`` /

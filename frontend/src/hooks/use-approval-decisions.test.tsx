@@ -15,10 +15,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, renderHook, act, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { getApprovalActions } from "@/api/index.ts";
+import { getApprovalActions } from "@/api/client.ts";
 import type { ApprovalAction, PaginatedResponse } from "@/api/types";
 
-vi.mock("@/api/index.ts", () => ({
+vi.mock("@/api/client.ts", () => ({
   approveApproval: vi.fn(() => Promise.resolve({ data: { id: "a1", status: "executed", dispatched: true } })),
   denyApproval: vi.fn(() => Promise.resolve({ data: { id: "a1", status: "denied" } })),
   deferApproval: vi.fn(() => Promise.resolve({ data: { id: "a1", status: "deferred" } })),
@@ -34,6 +34,23 @@ import { useApprovalActions } from "./use-approvals";
 
 function approvalAction(id: string): ApprovalAction {
   return {
+agent_summary: null,
+session_id: null,
+expires_at: null,
+decided_by: null,
+decided_at: null,
+execution_result: null,
+approval_rule_id: null,
+target_contact: null,
+why: null,
+evidence: [],
+blast_radius: null,
+reversibility: null,
+origin: null,
+dispatched: false,
+push_outcome: null,
+push_failed: false,
+delivery: null,
     id,
     butler: "general",
     tool_name: "send_reminder",

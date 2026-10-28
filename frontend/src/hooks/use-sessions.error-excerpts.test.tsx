@@ -8,13 +8,15 @@ import type { SessionSummary } from "@/api/types";
 
 const mockGetSession = vi.fn();
 
-vi.mock("@/api/index.ts", () => ({
+vi.mock("@/api/client.ts", () => ({
   getSession: (...args: unknown[]) => mockGetSession(...args),
 }));
 
 import { useSessionErrorExcerpts } from "./use-sessions";
 
 const session: SessionSummary = {
+purpose_lane: null,
+cost_usd: null,
   id: "failed-session",
   butler: "health",
   prompt: "Run health summary",

@@ -9,8 +9,8 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { getApprovalGatedTools } from "@/api/index.ts";
-import type { ApprovalGatedTool, ApprovalRule } from "@/api/index.ts";
+import { getApprovalGatedTools } from "@/api/client.ts";
+import type { ApprovalGatedTool, ApprovalRule } from "@/api/types.ts";
 import { approvalKeys, useRevokeRule } from "@/hooks/use-approvals.ts";
 import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary.tsx";
 import { CreateRuleDialog } from "@/components/approvals/create-rule-dialog.tsx";

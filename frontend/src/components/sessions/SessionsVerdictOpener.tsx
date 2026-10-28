@@ -18,7 +18,7 @@
 // failures in the window it folds into the calm all-clear line instead.
 // ---------------------------------------------------------------------------
 
-import type { SessionAggregate, SessionSummary } from "@/api/index.ts";
+import type { SessionAggregate, SessionSummary } from "@/api/types.ts";
 import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-verdict";
 import { elapsedText } from "@/lib/session-elapsed";
 

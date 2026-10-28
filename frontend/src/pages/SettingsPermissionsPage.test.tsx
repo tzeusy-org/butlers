@@ -40,11 +40,15 @@ vi.mock("@/hooks/use-audit-log", () => ({
 }));
 
 const apiFetchMock = vi.hoisted(() => vi.fn());
+const nativeClient = vi.hoisted((): {
+  apiFetch?: typeof import("@/api/client")["apiFetch"];
+} => ({}));
 const resolveApiHrefMock = vi.hoisted(() => vi.fn((path: string) => `/api${path}`));
-vi.mock("@/api/client", () => ({
-  apiFetch: apiFetchMock,
-  resolveApiHref: resolveApiHrefMock,
-}));
+vi.mock("@/api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client")>();
+  nativeClient.apiFetch = actual.apiFetch;
+  return { ...actual, apiFetch: apiFetchMock, resolveApiHref: resolveApiHrefMock };
+});
 
 // Mock sonner to prevent DOM errors in jsdom
 vi.mock("sonner", () => ({
@@ -58,7 +62,8 @@ beforeEach(() => {
   resolveApiHrefMock.mockReset();
   resolveApiHrefMock.mockImplementation((path: string) => `/api${path}`);
   apiFetchMock.mockReset();
-  apiFetchMock.mockImplementation(defaultApiFetch);
+  if (!nativeClient.apiFetch) throw new Error("Native API client was not loaded");
+  apiFetchMock.mockImplementation(nativeClient.apiFetch);
   clearOwnerSession();
   rememberOwnerCsrf({
     csrf_token: "permissions-page-test-csrf",
@@ -112,33 +117,6 @@ function defaultFetch(url: string) {
     ok: true,
     json: () => Promise.resolve({ data: {} }),
   });
-}
-
-async function defaultApiFetch(path: string, init?: RequestInit) {
-  const response = await fetchMock(resolveApiHrefMock(path), init);
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    const error = new Error(
-      typeof body?.detail === "string"
-        ? body.detail
-        : Array.isArray(body?.detail)
-          ? body.detail
-              .map((detail: Record<string, unknown>) =>
-                String(detail.msg ?? detail.message ?? JSON.stringify(detail)),
-              )
-              .join("; ")
-        : body?.detail?.error ?? `Request failed: ${response.status}`,
-    );
-    Object.assign(error, {
-      status: response.status,
-      detail:
-        typeof body?.detail === "object" && body.detail !== null && !Array.isArray(body.detail)
-          ? body.detail
-          : undefined,
-    });
-    throw error;
-  }
-  return response.json();
 }
 
 /** Dense matrix fixture: chronicler with spawn=explicit(revoked), notify=inherited */
@@ -282,12 +260,12 @@ describe("SettingsPermissionsPage — export section [bu-9q1dx.1]", () => {
     resolveApiHrefMock.mockImplementation((path: string) =>
       path === signedUrl ? resolvedUrl : `/api${path}`,
     );
-    apiFetchMock.mockImplementation((path: string, init?: RequestInit) =>
-      path === "/data/export"
-        ? Promise.resolve({
+    fetchMock.mockImplementation((url: string) =>
+      url === "/api/data/export"
+        ? Promise.resolve({ ok: true, status: 200, json: async () => ({
             data: { signed_url: signedUrl, expires_at: "2026-08-02T01:00:00Z" },
-          })
-        : defaultApiFetch(path, init),
+          }) })
+        : defaultFetch(url),
     );
 
     await act(async () => {
@@ -297,11 +275,12 @@ describe("SettingsPermissionsPage — export section [bu-9q1dx.1]", () => {
     fireEvent.click(await screen.findByRole("button", { name: /export/i }));
 
     await waitFor(() => {
-      expect(apiFetchMock).toHaveBeenCalledWith("/data/export", {
+      expect(fetchMock).toHaveBeenCalledWith("/api/data/export", expect.objectContaining({
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scope: "all" }),
-      });
+      }));
+      const request = fetchMock.mock.calls.find(([url]) => url === "/api/data/export");
+      expect(new Headers(request?.[1]?.headers).get("Content-Type")).toBe("application/json");
     });
     expect(resolveApiHrefMock).toHaveBeenCalledWith(signedUrl);
 
@@ -681,7 +660,13 @@ describe("SettingsPermissionsPage — mounted API base path", () => {
 
   it("loads permissions and webhooks through the mounted API base", async () => {
     const requestedUrls: string[] = [];
-    resolveApiHrefMock.mockImplementation((path: string) => `/butlers-dev-api/api${path}`);
+    // Re-evaluate the actual native client's module-level API mount. Keep the
+    // page's recording spy, but delegate it to this real isolated transport.
+    vi.stubEnv("VITE_API_URL", "/butlers-dev-api/api");
+    vi.resetModules();
+    const mounted = await vi.importActual<typeof import("@/api/client")>("@/api/client");
+    apiFetchMock.mockImplementation(mounted.apiFetch);
+    vi.unstubAllEnvs();
     fetchMock.mockReset();
     fetchMock.mockImplementation((url: string) => {
       requestedUrls.push(url);

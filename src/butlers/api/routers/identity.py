@@ -19,10 +19,10 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Query
-from pydantic import BaseModel
 
 from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.identity import normalize_email_sender
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ router = APIRouter(prefix="/api/identity", tags=["identity"])
 _MAX_SCANNED_ROWS = 200_000
 
 
-class EmailMatchRate(BaseModel):
+class EmailMatchRate(ResponseSchemaModel):
     """Email sender -> entity match-rate summary (bu-qeaou).
 
     ``distinct_senders`` counts normalized (bare, lowercased) email addresses

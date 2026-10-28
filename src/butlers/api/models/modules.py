@@ -11,8 +11,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from butlers.api.models.base import ResponseSchemaModel
 
-class ModuleRuntimeStateResponse(BaseModel):
+
+class ModuleRuntimeStateResponse(ResponseSchemaModel):
     """Runtime state of a single butler module.
 
     Reflects the daemon's ``ModuleRuntimeState`` dataclass plus additional

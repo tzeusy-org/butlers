@@ -13,15 +13,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import {
-  getButlerHourlyActivity,
-  getButlerDailyActivity,
-  getButlerSessionKinds,
-  getButlerLatencyStats,
-  getButlerFrictionSummary,
-  getButlerActivityFeed,
-  getButlerMemoryStats,
-} from "@/api/index.ts";
+import { getButlerHourlyActivity, getButlerDailyActivity, getButlerSessionKinds, getButlerLatencyStats, getButlerFrictionSummary, getButlerActivityFeed, getButlerMemoryStats } from "@/api/client.ts";
 
 // ---------------------------------------------------------------------------
 // useButlerHourlyActivity
@@ -80,12 +72,6 @@ export function useButlerSessionKinds(butlerName: string, windowDays: number = 7
   });
 }
 
-// ---------------------------------------------------------------------------
-// useButlerLatencyStats
-// ---------------------------------------------------------------------------
-
-export { type LatencyStats } from "@/api/index.ts";
-
 /**
  * Fetch latency percentile statistics for a butler over a rolling window.
  *
@@ -108,7 +94,7 @@ export function useButlerLatencyStats(butlerName: string, windowDays: number = 7
 // useButlerFrictionSummary (bu-8cdl1.9 S3)
 // ---------------------------------------------------------------------------
 
-export { type FrictionSummary } from "@/api/index.ts";
+export { type FrictionSummary } from "@/api/types.ts";
 
 /**
  * Fetch typed friction-episode counts and session outcomes for a butler.
@@ -133,7 +119,7 @@ export function useButlerFrictionSummary(
 // useButlerActivityFeed (bu-y7lo7)
 // ---------------------------------------------------------------------------
 
-export { type ActivityFeed, type ButlerActivityEvent, type ActivityEventType } from "@/api/index.ts";
+export { type ActivityFeed, type ButlerActivityEvent, type ActivityEventType } from "@/api/types.ts";
 
 /**
  * Fetch the merged activity feed for a butler.
@@ -150,15 +136,9 @@ export function useButlerActivityFeed(butlerName: string, limit?: number) {
     queryFn: () => getButlerActivityFeed(butlerName, limit != null ? { limit } : undefined),
     enabled: !!butlerName,
     staleTime: 30_000,
-    select: (response) => response.data,
+    select: (response) => response,
   });
 }
-
-// ---------------------------------------------------------------------------
-// useButlerMemoryStats
-// ---------------------------------------------------------------------------
-
-export { type ButlerMemoryStats } from "@/api/index.ts";
 
 /**
  * Fetch per-butler memory subsystem KPI counts and 24-hour deltas.

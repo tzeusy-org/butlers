@@ -7,12 +7,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import {
-  disconnectWhatsApp,
-  getWhatsAppStatus,
-  pollWhatsAppPairing,
-  startWhatsAppPairing,
-} from "@/api/index.ts";
+import { disconnectWhatsApp, getWhatsAppStatus, pollWhatsAppPairing, startWhatsAppPairing } from "@/api/client.ts";
 
 // ---------------------------------------------------------------------------
 // Query keys

@@ -16,7 +16,6 @@ import { render, cleanup, act } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 
 import type { PaletteCommand } from "@/lib/command-registry";
-import type { TriggerResponse } from "@/api/types";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -30,7 +29,7 @@ vi.mock("react-router", async () => {
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
-vi.mock("@/api/index", () => ({ triggerButler: vi.fn() }));
+vi.mock("@/api/client", () => ({ triggerButler: vi.fn() }));
 
 vi.mock("@/hooks/use-butlers", () => ({ useButlers: vi.fn() }));
 
@@ -42,7 +41,7 @@ vi.mock("@/lib/command-registry", () => ({
 }));
 
 import { GlobalActionsRegistrar } from "./GlobalActionsRegistrar";
-import { triggerButler } from "@/api/index";
+import { triggerButler } from "@/api/client.ts";
 import { useButlers } from "@/hooks/use-butlers";
 
 // ---------------------------------------------------------------------------
@@ -85,11 +84,11 @@ describe("GlobalActionsRegistrar — Run <butler> command", () => {
   });
 
   it("triggers with a valid backend complexity tier, not 'medium' (bu-jlhk5)", async () => {
-    vi.mocked(triggerButler).mockResolvedValue({
+    vi.mocked(triggerButler).mockResolvedValue({ data: {
       session_id: "sess-1",
       success: true,
       output: "",
-    } as TriggerResponse);
+    } });
     renderRegistrar();
 
     const command = registeredCommands.find((c) => c.id === "trigger:general");

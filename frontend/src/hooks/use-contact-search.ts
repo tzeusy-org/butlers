@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { searchContacts } from "@/api/index.ts";
+import { searchContacts } from "@/api/client.ts";
 import type { ContactSearchResponse } from "@/api/types.ts";
 
 /**

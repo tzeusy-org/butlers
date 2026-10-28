@@ -24,6 +24,10 @@ function json(body: unknown, status = 200) {
 beforeEach(() => {
   posts = 0; reads = 0; outcome = 200; release = undefined;
   episode = {
+tenant_id: "owner",
+request_id: null,
+retention_class: "transient",
+sensitivity: "normal",
     id, butler: "general", session_id: null, content: "Recovery dossier", importance: 5,
     reference_count: 0, consolidated: false, consolidation_status: "dead_letter",
     created_at: "2026-01-01T10:00:00Z", last_referenced_at: null, expires_at: null, metadata: {},

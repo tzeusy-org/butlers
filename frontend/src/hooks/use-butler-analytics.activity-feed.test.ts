@@ -32,8 +32,8 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
 });
 
 // Mock the API client so tests never hit the network.
-vi.mock("@/api/index.ts", async (importOriginal) => {
-  const original = await importOriginal<typeof import("@/api/index.ts")>();
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/api/client.ts")>();
   return {
     ...original,
     getButlerActivityFeed: vi.fn(),
@@ -42,8 +42,8 @@ vi.mock("@/api/index.ts", async (importOriginal) => {
 
 import { useQuery } from "@tanstack/react-query";
 import { useButlerActivityFeed } from "@/hooks/use-butler-analytics";
-import { getButlerActivityFeed } from "@/api/index.ts";
-import type { ActivityFeed, ButlerActivityEvent } from "@/api/index.ts";
+import { getButlerActivityFeed } from "@/api/client.ts";
+import type { ActivityFeed, ButlerActivityEvent } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -112,6 +112,9 @@ describe("useButlerActivityFeed -- success state", () => {
     expect(result.isLoading).toBe(false);
     expect(result.isError).toBe(false);
     expect(result.data).toEqual(feed);
+    // The route returns ActivityFeed itself, without an ApiResponse envelope.
+    const options = vi.mocked(useQuery).mock.calls.at(-1)?.[0];
+    expect(options?.select?.(feed)).toEqual(feed);
   });
 
   it("returns empty events list when feed is empty", () => {
@@ -209,10 +212,7 @@ describe("useButlerActivityFeed -- limit parameter", () => {
       isError: false,
       error: null,
     } as ReturnType<typeof useQuery>);
-    vi.mocked(getButlerActivityFeed).mockResolvedValue({
-      data: makeActivityFeed([]),
-      meta: {},
-    });
+    vi.mocked(getButlerActivityFeed).mockResolvedValue(makeActivityFeed([]));
   });
 
   it("calls getButlerActivityFeed with no params when limit is omitted", () => {

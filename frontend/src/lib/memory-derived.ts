@@ -15,7 +15,7 @@
  *   reports `validity === 'fading'`, because the server owns the threshold.
  */
 
-import type { Episode, Fact, MemoryInspectResult, MemoryRule } from '@/api/types.ts'
+import type { Episode, Fact, MemoryInspectResult } from '@/api/types.ts'
 import { dayKeyInTimeZone, shiftDayKey } from '@/lib/day-window'
 
 const MS_PER_DAY = 1000 * 60 * 60 * 24
@@ -57,7 +57,7 @@ export function daysSince(fromIso: string | null | undefined, now: Date = new Da
  * @param fact  The fact to evaluate (uses confidence, decay_rate, timestamps).
  * @param now   Reference instant (injectable for deterministic tests).
  */
-export function effectiveConfidence(fact: Fact, now: Date = new Date()): number {
+export function effectiveConfidence(fact: Pick<Fact, "confidence" | "decay_rate" | "last_confirmed_at" | "created_at">, now: Date = new Date()): number {
   const elapsedDays = daysSince(fact.last_confirmed_at ?? fact.created_at, now)
   const decayed = fact.confidence * Math.exp(-fact.decay_rate * elapsedDays)
   return clamp01(decayed)
@@ -297,7 +297,7 @@ function metaNumber(meta: Record<string, unknown>, key: string): number | null {
  * carries no numeral (confidence 0 → effective 0, rendered `0.00`), and
  * validity defaults to `active` so the row never dims on a guessed fading state.
  */
-export function inspectResultToFact(result: MemoryInspectResult): Fact {
+export function inspectResultToFact(result: MemoryInspectResult) {
   if (result.fact) return result.fact
   const meta = result.metadata ?? {}
   return {
@@ -335,7 +335,7 @@ export function inspectResultToFact(result: MemoryInspectResult): Fact {
  * `metadata`-with-honest-defaults only when no embedded row is present:
  * maturity defaults to `candidate` and counts to 0 (zero harm → zero red).
  */
-export function inspectResultToRule(result: MemoryInspectResult): MemoryRule {
+export function inspectResultToRule(result: MemoryInspectResult) {
   if (result.rule) return result.rule
   const meta = result.metadata ?? {}
   return {
@@ -369,7 +369,7 @@ export function inspectResultToRule(result: MemoryInspectResult): MemoryRule {
  * importance is 0 (muted time) and status defaults to `consolidated` (a filled,
  * colorless glyph — never a guessed dead-letter `✕`).
  */
-export function inspectResultToEpisode(result: MemoryInspectResult): Episode {
+export function inspectResultToEpisode(result: MemoryInspectResult) {
   if (result.episode) return result.episode
   const meta = result.metadata ?? {}
   const status = metaString(meta, 'consolidation_status') ?? 'consolidated'

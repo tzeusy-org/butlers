@@ -4,12 +4,19 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { Schedule } from "@/api/types.ts";
 import { ScheduleTable } from "@/components/schedules/ScheduleTable";
 
+import { getButlerSchedules } from "@/api/client";
+import { ownerFetch } from "@/api/owner-session";
+vi.mock("@/api/owner-session", async (original) => ({ ...await original<typeof import("@/api/owner-session")>(), ownerFetch: vi.fn() }));
+type RawSchedule = Omit<Schedule, "dispatch_mode"> & { dispatch_mode: Schedule["dispatch_mode"] | null };
+
 const noop = vi.fn();
 
-function renderTable(schedules: Schedule[]): string {
+async function renderTable(schedules: RawSchedule[]): Promise<string> {
+  vi.mocked(ownerFetch).mockResolvedValueOnce(new Response(JSON.stringify({ data: schedules, meta: {} })));
+  const response = await getButlerSchedules("general");
   return renderToStaticMarkup(
     <ScheduleTable
-      schedules={schedules}
+      schedules={response.data}
       isLoading={false}
       onToggle={noop}
       onEdit={noop}
@@ -19,8 +26,18 @@ function renderTable(schedules: Schedule[]): string {
   );
 }
 
-function makeSchedule(overrides: Partial<Schedule>): Schedule {
+function makeSchedule(overrides: Partial<RawSchedule>): RawSchedule {
   return {
+dispatch_mode: "prompt",
+job_name: null,
+job_args: null,
+complexity: null,
+timezone: null,
+start_at: null,
+end_at: null,
+until_at: null,
+display_title: null,
+calendar_event_id: null,
     id: "sched-1",
     name: "daily-review",
     cron: "0 9 * * *",
@@ -35,9 +52,9 @@ function makeSchedule(overrides: Partial<Schedule>): Schedule {
   };
 }
 
-describe("ScheduleTable dual-mode rendering", () => {
-  it("renders prompt and job mode rows with mode visibility", () => {
-    const html = renderTable([
+describe("ScheduleTable dual-mode rendering", async () => {
+  it("renders prompt and job mode rows with mode visibility", async () => {
+    const html = await renderTable([
       makeSchedule({
         id: "sched-prompt",
         dispatch_mode: "prompt",
@@ -60,10 +77,10 @@ describe("ScheduleTable dual-mode rendering", () => {
     expect(html).toContain("{&quot;policy_tier&quot;:&quot;default&quot;}");
   });
 
-  it("routes the enable/disable action through a focusable tooltip, not a native title= (bu-sywxz)", () => {
+  it("routes the enable/disable action through a focusable tooltip, not a native title= (bu-sywxz)", async () => {
     // The enable/disable action hint used to live only in a `title=` attribute,
     // which never surfaced on keyboard focus. It is now a radix Tip trigger.
-    const html = renderTable([
+    const html = await renderTable([
       makeSchedule({ id: "sched-on", enabled: true }),
     ]);
     // The visible On/Off state still renders...
@@ -73,8 +90,8 @@ describe("ScheduleTable dual-mode rendering", () => {
     expect(html).not.toContain('title="Click to enable"');
   });
 
-  it("falls back to job mode when legacy rows omit dispatch_mode but include job_name", () => {
-    const html = renderTable([
+  it("falls back to job mode when legacy rows omit dispatch_mode but include job_name", async () => {
+    const html = await renderTable([
       makeSchedule({
         id: "sched-fallback",
         name: "stats-rollup",

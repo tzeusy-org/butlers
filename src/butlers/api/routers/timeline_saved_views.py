@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field, field_validator
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
+from butlers.api.models.base import ResponseSchemaModel
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ router = APIRouter(prefix="/api/timeline/saved-views", tags=["timeline"])
 # ---------------------------------------------------------------------------
 
 
-class SavedViewEntry(BaseModel):
+class SavedViewEntry(ResponseSchemaModel):
     """A single persisted saved view returned from the API."""
 
     id: UUID

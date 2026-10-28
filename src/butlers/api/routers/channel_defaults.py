@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 from butlers.api.audit_emit import authenticated_principal
 from butlers.api.deps import Db
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.api.routers.audit import append as _audit_append
 
 logger = logging.getLogger(__name__)
@@ -100,7 +101,7 @@ def _validate_policy_for_channel(channel: str, policy: dict[str, Any]) -> str | 
 # ---------------------------------------------------------------------------
 
 
-class ChannelDefaultEntry(BaseModel):
+class ChannelDefaultEntry(ResponseSchemaModel):
     """A single channel_defaults row returned from the API."""
 
     channel: str

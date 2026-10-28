@@ -41,14 +41,7 @@ import {
   useTravelTripSummary,
   useExpiringDocuments,
 } from "@/hooks/use-travel";
-import type {
-  TravelExpiringDocument,
-  TravelLeg,
-  TravelAccommodation,
-  TravelTimelineEntry,
-  TravelTrip,
-  TravelUpcomingTrip,
-} from "@/api/index.ts";
+import type { TravelExpiringDocument, TravelLeg, TravelAccommodation, TravelTimelineEntry, TravelTrip, TravelUpcomingTrip } from "@/api/types.ts";
 
 // Look-ahead window for expiring-document alerts (must match hook default).
 const EXPIRING_DOCS_LOOKAHEAD_DAYS = 180;
@@ -466,7 +459,8 @@ function TripRoster({ onTripClick }: TripRosterProps) {
   // Trip ids excluded from `trips` because their row could not be normalized —
   // disclose rather than let the roster read as a complete, truthful list
   // (mirrors the KPI strip's unreadable_trip_ids treatment, bu-2jtfw.1).
-  const unreadableTripIds = tripsResp?.meta?.unreadable_trip_ids ?? [];
+  const unreadableTripIds = Array.isArray(tripsResp?.meta?.unreadable_trip_ids)
+    ? tripsResp.meta.unreadable_trip_ids : [];
   const totalPages = Math.max(1, Math.ceil(total / TRIPS_PAGE_SIZE));
   const currentPage = page + 1;
 

@@ -284,6 +284,7 @@ describe("TimelinePage — error vs empty state", () => {
     setLedger({
       events: [
         {
+machine_class: "owner",
           id: "e1",
           type: "session",
           butler: "home",
@@ -471,6 +472,7 @@ describe("TimelinePage — error vs empty state", () => {
       isError: false,
       events: [
         {
+machine_class: "owner",
           id: "e1",
           type: "session",
           butler: "home",
@@ -500,6 +502,7 @@ describe("TimelinePage — error vs empty state", () => {
       isFetching: true,
       events: [
         {
+machine_class: "owner",
           id: "e1",
           type: "session",
           butler: "home",
@@ -634,6 +637,7 @@ describe("TimelinePage — density and historical seek", () => {
     setLedger({
       events: [
         {
+machine_class: "owner",
           id: "cached-live",
           type: "session",
           butler: "home",
@@ -857,6 +861,7 @@ describe("TimelinePage — current failed records", () => {
       data: {
         data: [
           {
+machine_class: "owner",
             id: notificationId,
             type: "notification",
             butler: "atlas",

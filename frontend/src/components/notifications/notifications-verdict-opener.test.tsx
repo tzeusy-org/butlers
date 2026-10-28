@@ -18,7 +18,7 @@ import {
   NotificationsVerdictOpener,
   NOTIFICATIONS_VERDICT_WINDOW_HOURS,
 } from "@/components/notifications/notifications-verdict-opener";
-import type { NotificationStats } from "@/api/index.ts";
+import type { NotificationStats } from "@/api/types.ts";
 
 function render(ui: React.ReactElement): string {
   return renderToStaticMarkup(<MemoryRouter>{ui}</MemoryRouter>);

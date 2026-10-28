@@ -1,24 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  confirmAutonomySuggestion,
-  createApprovalRule,
-  createApprovalRuleFromAction,
-  dismissAutonomySuggestion,
-  getApprovalActions,
-  getApprovalMetrics,
-  getApprovalsFlat,
-  getAutonomySuggestions,
-  revokeApprovalRule,
-} from "@/api/index.ts";
-import type {
-  ApprovalActionParams,
-  ApprovalMetricsResponse,
-  ApprovalRuleCreateRequest,
-  ApprovalRuleFromActionRequest,
-  ApprovalRuleParams,
-  AutonomySuggestionDismissRequest,
-  AutonomySuggestionParams,
-} from "@/api/index.ts";
+import { confirmAutonomySuggestion, createApprovalRule, createApprovalRuleFromAction, dismissAutonomySuggestion, getApprovalActions, getApprovalMetrics, getApprovalsFlat, getAutonomySuggestions, revokeApprovalRule } from "@/api/client.ts";
+import type { ApprovalActionParams, ApprovalMetricsResponse, ApprovalRuleCreateRequest, ApprovalRuleFromActionRequest, ApprovalRuleParams, AutonomySuggestionDismissRequest, AutonomySuggestionParams } from "@/api/types.ts";
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
 const NO_DEGRADED_SOURCES: string[] = [];

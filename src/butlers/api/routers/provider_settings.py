@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
+from butlers.api.models.base import ResponseSchemaModel
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ router = APIRouter(prefix="/api/settings/providers", tags=["provider-settings"])
 # ---------------------------------------------------------------------------
 
 
-class ProviderConfig(BaseModel):
+class ProviderConfig(ResponseSchemaModel):
     """A single provider configuration entry.
 
     ``config_available`` is False when the stored JSONB config could not be read
@@ -69,7 +70,7 @@ class ProviderConfigUpdate(BaseModel):
     enabled: bool | None = None
 
 
-class ConnectivityResult(BaseModel):
+class ConnectivityResult(ResponseSchemaModel):
     """Response from the test-connectivity endpoint."""
 
     success: bool

@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Time } from "@/components/ui/time";
 import { useCurriculumRequestReceipt } from "@/hooks/use-education";
-import type { CurriculumRequestReceipt } from "@/api/index.ts";
+import type { CurriculumRequestReceipt } from "@/api/types.ts";
 
 /**
  * Accepted-to-outcome receipt for a curriculum request (bu-6jv4m.10).

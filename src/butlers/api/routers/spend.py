@@ -33,7 +33,7 @@ import uuid
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from datetime import UTC, date, datetime, timedelta
-from typing import Literal
+from typing import Literal, NotRequired
 
 import anyio
 from fastapi import (
@@ -44,7 +44,8 @@ from fastapi import (
     Request,
 )
 from fastmcp.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, with_config
+from typing_extensions import TypedDict
 
 from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
@@ -61,6 +62,7 @@ from butlers.api.deps import (
 from butlers.api.models import (
     ApiMeta,
     ApiResponse,
+    ApiResponseWithMeta,
     DailySpend,
     ScheduleCost,
     SpendDivergence,
@@ -68,6 +70,7 @@ from butlers.api.models import (
     TopSession,
     UnpricedModelUsage,
 )
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.routers.audit import append as audit_append
 from butlers.api.runtime_attention_status import ATTENTION_REASON_COPY
@@ -84,6 +87,27 @@ from butlers.core.sessions import (
     sessions_summary,
     top_sessions,
 )
+
+
+@with_config(ConfigDict(extra="allow"))
+class DailySpendMeta(TypedDict):
+    unavailable_butlers: NotRequired[list[str]]
+    historical_attribution_note: str | None
+    source_error: NotRequired[bool]
+    unpriced_models: NotRequired[list[UnpricedModelUsage]]
+    divergences: NotRequired[list[SpendDivergence]]
+    divergence_source_error: NotRequired[bool]
+
+
+@with_config(ConfigDict(extra="allow"))
+class SpendSourcesMeta(TypedDict, total=False):
+    unavailable_butlers: list[str]
+
+
+@with_config(ConfigDict(extra="allow"))
+class ScheduleSpendMeta(SpendSourcesMeta):
+    forecast_basis: str
+
 
 logger = logging.getLogger(__name__)
 
@@ -769,7 +793,7 @@ async def _get_butler_session_stats_for_range(
     return (info.name, 0.0, 0, 0, 0, {})
 
 
-class FleetHaltAttentionEpisode(BaseModel):
+class FleetHaltAttentionEpisode(ResponseSchemaModel):
     """Content-blind durable delivery evidence for the current breach window."""
 
     episode_id: uuid.UUID
@@ -780,7 +804,7 @@ class FleetHaltAttentionEpisode(BaseModel):
     safe_reason: str | None = None
 
 
-class FleetHaltAttentionObservation(BaseModel):
+class FleetHaltAttentionObservation(ResponseSchemaModel):
     """Fleet-halt outbox availability, distinct from an empty observation."""
 
     available: bool
@@ -990,7 +1014,7 @@ async def _get_butler_daily_stats(
     return []
 
 
-@router.get("/daily", response_model=ApiResponse[list[DailySpend]])
+@router.get("/daily", response_model=ApiResponseWithMeta[list[DailySpend], DailySpendMeta])
 async def get_daily_costs(
     from_date: date | None = Query(None, alias="from"),
     to_date: date | None = Query(None, alias="to"),
@@ -1203,7 +1227,7 @@ async def _get_butler_top_sessions(
     return []
 
 
-@router.get("/top-sessions", response_model=ApiResponse[list[TopSession]])
+@router.get("/top-sessions", response_model=ApiResponseWithMeta[list[TopSession], SpendSourcesMeta])
 async def get_top_sessions(
     limit: int = Query(default=10, ge=1, le=50),
     from_date: date | None = Query(None, alias="from"),
@@ -1457,7 +1481,9 @@ async def _get_butler_schedule_costs(
     return []
 
 
-@router.get("/by-schedule", response_model=ApiResponse[list[ScheduleCost]])
+@router.get(
+    "/by-schedule", response_model=ApiResponseWithMeta[list[ScheduleCost], ScheduleSpendMeta]
+)
 async def get_costs_by_schedule(
     from_date: date | None = Query(None, alias="from"),
     to_date: date | None = Query(None, alias="to"),
@@ -1586,7 +1612,26 @@ async def _get_spend_breakdown_by_purpose(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/breakdown", response_model=ApiResponse[dict])
+@with_config(ConfigDict(extra="allow"))
+class SpendBreakdownData(TypedDict):
+    """Exact existing ledger/feature breakdown dictionary, without filling omitted keys."""
+
+    by: str
+    breakdown: dict[str, float]
+    unavailable_butlers: NotRequired[list[str]]
+    unpriced_models: NotRequired[list[UnpricedModelUsage]]
+    billing_classes: NotRequired[dict[str, str]]
+    source_error: NotRequired[bool]
+    divergences: NotRequired[list[SpendDivergence]]
+    divergence_source_error: NotRequired[bool]
+    historical_attribution_note: NotRequired[str | None]
+
+
+@router.get(
+    "/breakdown",
+    response_model=ApiResponse[dict],
+    responses={200: {"model": ApiResponse[SpendBreakdownData]}},
+)
 async def get_spend_breakdown(
     by: Literal["butler", "model", "feature", "purpose"] = Query(
         "butler", description="Dimension to break spend down by"
@@ -1681,7 +1726,7 @@ async def get_spend_breakdown(
 # ---------------------------------------------------------------------------
 
 
-class ForecastDay(BaseModel):
+class ForecastDay(ResponseSchemaModel):
     date: str
     cost_usd: float
     projected: bool  # True for extrapolated days after today
@@ -1698,7 +1743,7 @@ def projection_confidence_for(days_elapsed: int) -> Literal["low", "normal"]:
     return "low" if days_elapsed < 3 else "normal"
 
 
-class ForecastResponse(BaseModel):
+class ForecastResponse(ResponseSchemaModel):
     days: list[ForecastDay]
     projected_eom_usd: float
     days_in_month: int
@@ -1936,7 +1981,7 @@ class SpendRuleAction(BaseModel):
         return self
 
 
-class SpendRule(BaseModel):
+class SpendRule(ResponseSchemaModel):
     id: str
     position: int
     condition: dict
@@ -2245,7 +2290,7 @@ async def delete_spend_rule(
 # ---------------------------------------------------------------------------
 
 
-class SpendCeiling(BaseModel):
+class SpendCeiling(ResponseSchemaModel):
     monthly_usd: float
     updated_at: str
 

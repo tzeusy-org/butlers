@@ -20,7 +20,6 @@ import anyio
 from croniter import croniter
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
@@ -50,6 +49,7 @@ from butlers.api.models import (
     TriggerRequest,
     TriggerResponse,
 )
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.api.read_models.butlers import query_sessions_24h
 from butlers.api.routers.audit import log_audit_entry
 from butlers.config import ConfigError, load_config
@@ -428,7 +428,7 @@ _BOARD_LEGACY_REGISTRY_SQL = """
 """
 
 
-class BoardRow(BaseModel):
+class BoardRow(ResponseSchemaModel):
     """One butler's row on the consolidated fleet status board."""
 
     name: str
@@ -471,7 +471,7 @@ class BoardRow(BaseModel):
     cadence_status: str  # "on_schedule" | "overdue" | "unknown"
 
 
-class BoardAggregates(BaseModel):
+class BoardAggregates(ResponseSchemaModel):
     """Fleet-wide aggregates for the board header/footer."""
 
     total: int
@@ -498,7 +498,7 @@ class BoardAggregates(BaseModel):
     sources_partially_degraded: bool
 
 
-class BoardResponse(BaseModel):
+class BoardResponse(ResponseSchemaModel):
     """Response envelope for GET /api/butlers/board."""
 
     rows: list[BoardRow]

@@ -22,6 +22,7 @@ describe("CalendarWorkspacePage recurring instance capping", () => {
     dayPrefix: string = "2026-03-01",
   ) {
     return Array.from({ length: count }, (_, i) => ({
+      linked_people: [], source_butler: null, source_session_id: null,
       entry_id: `entry-${scheduleId}-${dayPrefix}-${i}`,
       event_id: `evt-entry-${scheduleId}-${dayPrefix}-${i}`,
       view: "butler" as const,
@@ -51,6 +52,10 @@ describe("CalendarWorkspacePage recurring instance capping", () => {
     setWorkspaceState({
       data: {
         data: {
+entries_source_available: true,
+people_source_available: true,
+sources_available: true,
+has_domain_context: false,
           entries: makeRecurringEntries("sched-hourly", 12),
           source_freshness: [],
           lanes: [
@@ -70,6 +75,7 @@ describe("CalendarWorkspacePage recurring instance capping", () => {
     setWorkspaceMetaState({
       data: {
         data: {
+sources_available: true,
           capabilities: {
             views: ["user", "butler"],
             filters: { butlers: true, sources: true, timezone: true },
@@ -108,6 +114,10 @@ describe("CalendarWorkspacePage recurring instance capping", () => {
     setWorkspaceState({
       data: {
         data: {
+entries_source_available: true,
+people_source_available: true,
+sources_available: true,
+has_domain_context: false,
           entries: makeRecurringEntries("sched-exact10", 10),
           source_freshness: [],
           lanes: [
@@ -127,6 +137,7 @@ describe("CalendarWorkspacePage recurring instance capping", () => {
     setWorkspaceMetaState({
       data: {
         data: {
+sources_available: true,
           capabilities: {
             views: ["user", "butler"],
             filters: { butlers: true, sources: true, timezone: true },
@@ -164,6 +175,10 @@ describe("CalendarWorkspacePage recurring instance capping", () => {
     setWorkspaceState({
       data: {
         data: {
+entries_source_available: true,
+people_source_available: true,
+sources_available: true,
+has_domain_context: false,
           entries: [...entriesA, ...entriesB],
           source_freshness: [],
           lanes: [
@@ -183,6 +198,7 @@ describe("CalendarWorkspacePage recurring instance capping", () => {
     setWorkspaceMetaState({
       data: {
         data: {
+sources_available: true,
           capabilities: {
             views: ["user", "butler"],
             filters: { butlers: true, sources: true, timezone: true },
@@ -222,6 +238,10 @@ describe("CalendarWorkspacePage recurring instance capping", () => {
     setWorkspaceState({
       data: {
         data: {
+entries_source_available: true,
+people_source_available: true,
+sources_available: true,
+has_domain_context: false,
           entries: [...day1Entries, ...day2Entries],
           source_freshness: [],
           lanes: [
@@ -241,6 +261,7 @@ describe("CalendarWorkspacePage recurring instance capping", () => {
     setWorkspaceMetaState({
       data: {
         data: {
+sources_available: true,
           capabilities: {
             views: ["user", "butler"],
             filters: { butlers: true, sources: true, timezone: true },

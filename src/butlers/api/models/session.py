@@ -14,10 +14,12 @@ from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
+
+from butlers.api.models.base import ResponseSchemaModel
 
 
-class ProcessLog(BaseModel):
+class ProcessLog(ResponseSchemaModel):
     """Process-level diagnostics from a runtime adapter invocation."""
 
     pid: int | None = None
@@ -33,7 +35,7 @@ class ProcessLog(BaseModel):
     expires_at: datetime | None = None
 
 
-class LinkedChatMessage(BaseModel):
+class LinkedChatMessage(ResponseSchemaModel):
     """The dashboard chat message this session was invoked from, if any.
 
     Reverse of ``ConversationMessage.session_id`` (bu-0ynlk.5) -- powers the
@@ -46,14 +48,14 @@ class LinkedChatMessage(BaseModel):
     message_id: UUID
 
 
-class SessionKindItem(BaseModel):
+class SessionKindItem(ResponseSchemaModel):
     """A single trigger_source bucket with its session count."""
 
     kind: str
     count: int
 
 
-class SessionKindBreakdown(BaseModel):
+class SessionKindBreakdown(ResponseSchemaModel):
     """Breakdown of sessions by trigger_source for a rolling window.
 
     Returned by ``GET /api/butlers/{name}/analytics/session-kinds``.
@@ -65,20 +67,20 @@ class SessionKindBreakdown(BaseModel):
     kinds: list[SessionKindItem] = []
 
 
-class DailyActivityBucket(BaseModel):
+class DailyActivityBucket(ResponseSchemaModel):
     """Session count for a single calendar day."""
 
     date: date
     sessions_count: int
 
 
-class DailyActivity(BaseModel):
+class DailyActivity(ResponseSchemaModel):
     """Daily session counts over a rolling window."""
 
     buckets: list[DailyActivityBucket] = []
 
 
-class HourlyActivityBucket(BaseModel):
+class HourlyActivityBucket(ResponseSchemaModel):
     """Session count for a single clock hour.
 
     ``hour_index=0`` is the most recent (current) hour; higher values are
@@ -91,7 +93,7 @@ class HourlyActivityBucket(BaseModel):
     hour_index: int
 
 
-class HourlyActivity(BaseModel):
+class HourlyActivity(ResponseSchemaModel):
     """Hourly session counts over a rolling window.
 
     Returned by ``GET /api/butlers/{name}/analytics/hourly-activity``.
@@ -104,7 +106,7 @@ class HourlyActivity(BaseModel):
     buckets: list[HourlyActivityBucket] = []
 
 
-class LatencyStats(BaseModel):
+class LatencyStats(ResponseSchemaModel):
     """Latency percentile statistics for a butler over a rolling window.
 
     Returned by ``GET /api/butlers/{name}/analytics/latency-stats``.
@@ -121,7 +123,7 @@ class LatencyStats(BaseModel):
     model: str | None = None
 
 
-class FrictionSummary(BaseModel):
+class FrictionSummary(ResponseSchemaModel):
     """Typed friction episodes and session outcomes for a butler over a period.
 
     Returned by ``GET /api/butlers/{name}/analytics/friction``. ``by_kind``
@@ -139,21 +141,21 @@ class FrictionSummary(BaseModel):
     by_error_marker: dict[str, int] = {}
 
 
-class SessionAggregateButler(BaseModel):
+class SessionAggregateButler(ResponseSchemaModel):
     """A single butler's matching-session count for the aggregate rollup."""
 
     butler: str
     count: int
 
 
-class SessionAggregateTriggerSource(BaseModel):
+class SessionAggregateTriggerSource(ResponseSchemaModel):
     """A single trigger_source's matching-session count for the aggregate rollup."""
 
     trigger_source: str
     count: int
 
 
-class SessionAggregate(BaseModel):
+class SessionAggregate(ResponseSchemaModel):
     """Window-scoped, filter-aware session rollup across all butlers.
 
     Returned by ``GET /api/sessions/aggregate``.  ``total`` counts every session
@@ -186,7 +188,7 @@ class SessionAggregate(BaseModel):
     trigger_breakdown_degraded_sources: list[str] = []
 
 
-class SessionDetail(BaseModel):
+class SessionDetail(ResponseSchemaModel):
     """Full session record with all fields from the sessions table."""
 
     id: UUID
@@ -216,7 +218,7 @@ class SessionDetail(BaseModel):
     resolution_receipt: dict[str, Any] | None = None
 
 
-class PromptProvenance(BaseModel):
+class PromptProvenance(ResponseSchemaModel):
     """Content-blind evidence for one named effective-prompt source."""
 
     model_config = {"extra": "forbid"}
@@ -238,7 +240,7 @@ class PromptProvenance(BaseModel):
         return self
 
 
-class SessionPromptReceipt(BaseModel):
+class SessionPromptReceipt(ResponseSchemaModel):
     """Owner-only exact effective system prompt captured at session creation."""
 
     id: UUID

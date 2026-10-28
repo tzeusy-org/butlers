@@ -14,6 +14,22 @@ timeline and relationship) return unwrapped typed payloads; each route's `respon
 authority, surfaced in the generated OpenAPI schema. Error codes are stable machine strings;
 clients branch on `error.code`, never on `message`.
 
+`frontend/src/api/schema.gen.ts` is generated from this native OpenAPI contract
+with pinned `openapi-typescript`; edit the Python authority, then regenerate it.
+Response models may inherit `ResponseSchemaModel` to describe default-valued
+fields that are emitted during serialization without making request fields
+mandatory. Routes retaining dictionary responses can publish a native output
+model as metadata while preserving their existing runtime validator; such a
+model does not add runtime response validation. Do not replace explicit
+`response_model_exclude_*` behavior or an extensible metadata bag to satisfy the
+TypeScript compiler.
+
+Endpoint-specific metadata models use opt-in envelopes and retain arbitrary
+extension keys, nulls, nested aliases and the original direct-Python return type.
+Shared `ApiResponse`/`ApiMeta` behavior remains unchanged. Regeneration is static:
+`npm run generate:api` and `npm run check:api` need the checkout's installed Python
+package and frontend dependencies, but no running API, database or provider.
+
 Shared query and persistence primitives live below the API package. The insights read-model
 re-exports `butlers.insight_delivery_state`; sessions re-exports its unchanged legacy cursor from
 `butlers.session_cursor`; `butlers.api.conversations` re-exports shared message/reply writers from

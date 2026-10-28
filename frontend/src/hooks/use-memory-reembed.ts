@@ -8,7 +8,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { getReembedPending, runReembed } from "@/api/index.ts";
+import { getReembedPending, runReembed } from "@/api/client.ts";
 import type { ReembedRunRequest } from "@/api/types.ts";
 
 /**

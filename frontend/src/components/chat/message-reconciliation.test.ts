@@ -5,6 +5,12 @@ import { reconcileConversationMessages } from "./message-reconciliation.ts";
 
 function userMessage(id: string, content: string, conversationId = "conv-1"): Message {
   return {
+model_name: null,
+sources: [],
+citations: [],
+routed_butler: null,
+page_context: null,
+captured_at: null,
     id,
     conversation_id: conversationId,
     role: "user",

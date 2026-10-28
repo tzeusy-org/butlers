@@ -8,11 +8,12 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from butlers.api.audit_emit import IgnoresCallerAssertedActor
+from butlers.api.models.base import ResponseSchemaModel
 
 # ── Aggregate models ───────────────────────────────────────────────────────
 
 
-class SourceBreakdownEntry(BaseModel):
+class SourceBreakdownEntry(ResponseSchemaModel):
     """Per-source contribution within an aggregate bucket."""
 
     source_name: str
@@ -21,7 +22,7 @@ class SourceBreakdownEntry(BaseModel):
     tombstoned: bool = False
 
 
-class CategoryBucket(BaseModel):
+class CategoryBucket(ResponseSchemaModel):
     """One category bucket from GET /api/chronicler/aggregate/by-category."""
 
     category: str
@@ -43,7 +44,7 @@ class CategoryBucket(BaseModel):
     """Shortest non-NULL retention_days across contributing rows, or None."""
 
 
-class CategoryBuckets(BaseModel):
+class CategoryBuckets(ResponseSchemaModel):
     """Response envelope for GET /api/chronicler/aggregate/by-category."""
 
     start_at: datetime
@@ -59,7 +60,7 @@ class CategoryBuckets(BaseModel):
     full day."""
 
 
-class AggregateByDayRow(BaseModel):
+class AggregateByDayRow(ResponseSchemaModel):
     """One (day, category) bucket from GET /api/chronicler/aggregate/by-day."""
 
     day: str
@@ -78,7 +79,7 @@ class AggregateByDayRow(BaseModel):
     """Shortest non-NULL retention_days across contributing rows, or None."""
 
 
-class SubsourceCheckpoint(BaseModel):
+class SubsourceCheckpoint(ResponseSchemaModel):
     """Per-subsource projection checkpoint detail."""
 
     subsource: str
@@ -86,7 +87,7 @@ class SubsourceCheckpoint(BaseModel):
     last_error: str | None = None
 
 
-class ProjectionHealthRow(BaseModel):
+class ProjectionHealthRow(ResponseSchemaModel):
     """Projection health for a single (source_name, subsource) checkpoint row.
 
     Exposed via GET /api/chronicler/projection-health to surface ingestion
@@ -101,7 +102,7 @@ class ProjectionHealthRow(BaseModel):
     watermark: datetime | None = None
 
 
-class SourceStateRow(BaseModel):
+class SourceStateRow(ResponseSchemaModel):
     """Runtime state for a single source adapter, joined with projection checkpoints."""
 
     source_name: str
@@ -116,7 +117,7 @@ class SourceStateRow(BaseModel):
     subsource_checkpoints: list[SubsourceCheckpoint] | None = None
 
 
-class ChroniclerPointEvent(BaseModel):
+class ChroniclerPointEvent(ResponseSchemaModel):
     id: str
     source_name: str
     source_ref: str
@@ -137,7 +138,7 @@ class ChroniclerPointEvent(BaseModel):
     updated_at: datetime
 
 
-class ChroniclerEpisode(BaseModel):
+class ChroniclerEpisode(ResponseSchemaModel):
     id: str
     source_name: str
     source_ref: str
@@ -170,7 +171,7 @@ class ChroniclerEpisode(BaseModel):
     Empty list when no entity links exist."""
 
 
-class ChroniclerOverride(BaseModel):
+class ChroniclerOverride(ResponseSchemaModel):
     id: str
     target_kind: str
     target_id: str
@@ -219,7 +220,7 @@ class ResolveGapInterviewRequest(BaseModel):
     answer: str
 
 
-class DayCloseFreshResponse(BaseModel):
+class DayCloseFreshResponse(ResponseSchemaModel):
     """Cache hit: fresh prose with provenance."""
 
     prose: str
@@ -227,7 +228,7 @@ class DayCloseFreshResponse(BaseModel):
     cache_built_at: datetime
 
 
-class DayCloseStaleResponse(BaseModel):
+class DayCloseStaleResponse(ResponseSchemaModel):
     """Cache stale: one or more source rows changed after cache_built_at."""
 
     stale: bool = True
@@ -235,7 +236,7 @@ class DayCloseStaleResponse(BaseModel):
     last_invalidating_event_at: datetime
 
 
-class DayCloseInvalidResponse(BaseModel):
+class DayCloseInvalidResponse(ResponseSchemaModel):
     """Cache row failed the deterministic day-close admission predicate.
 
     A successful, explicit cache-state response (clarify-chronicles-narrative-truth
@@ -282,7 +283,7 @@ class DayCloseRefreshRequest(BaseModel):
         return schema
 
 
-class DayCloseRefreshResponse(BaseModel):
+class DayCloseRefreshResponse(ResponseSchemaModel):
     """Response body for a successful day-close refresh."""
 
     cache_key: str
@@ -298,7 +299,7 @@ class DayCloseRefreshResponse(BaseModel):
     """``inadmissible_prose`` or ``date_mismatch`` when ``invalid`` is true."""
 
 
-class DayCloseRefreshQuietResponse(BaseModel):
+class DayCloseRefreshQuietResponse(ResponseSchemaModel):
     """Successful executed close for a day whose canonical bundle was empty.
 
     A quiet close deliberately writes no prose cache row. It therefore never
@@ -310,7 +311,7 @@ class DayCloseRefreshQuietResponse(BaseModel):
     quiet: Literal[True] = True
 
 
-class EpisodeExplainResponse(BaseModel):
+class EpisodeExplainResponse(ResponseSchemaModel):
     """Response body for a successful per-episode explain."""
 
     episode_id: str
@@ -318,7 +319,7 @@ class EpisodeExplainResponse(BaseModel):
     cache_built_at: datetime
 
 
-class OpsSessionRow(BaseModel):
+class OpsSessionRow(ResponseSchemaModel):
     """One operational session row from GET /api/chronicler/ops/sessions.
 
     Operational sessions are those whose ``trigger_source`` matches the
@@ -341,7 +342,7 @@ class OpsSessionRow(BaseModel):
 # ── Editorial briefing / attention / KPI models (bu-i29ix) ─────────────────
 
 
-class ChroniclesAttentionItem(BaseModel):
+class ChroniclesAttentionItem(ResponseSchemaModel):
     """One entry in the Chronicles attention list.
 
     The ``kind`` discriminates the source of the item: ``anomaly`` (sleep,
@@ -359,7 +360,7 @@ class ChroniclesAttentionItem(BaseModel):
     action_href: str | None = None
 
 
-class ChroniclesLaneHours(BaseModel):
+class ChroniclesLaneHours(ResponseSchemaModel):
     """One entry in the KPI hours-by-lane list."""
 
     lane: str
@@ -367,7 +368,7 @@ class ChroniclesLaneHours(BaseModel):
     hours: float
 
 
-class ChroniclesStreaks(BaseModel):
+class ChroniclesStreaks(ResponseSchemaModel):
     """Small streak counters surfaced in the KPI strip."""
 
     sleep: int = 0
@@ -376,7 +377,7 @@ class ChroniclesStreaks(BaseModel):
     """Consecutive days with a non-zero workout_episode."""
 
 
-class ChroniclesKpi(BaseModel):
+class ChroniclesKpi(ResponseSchemaModel):
     """KPI snapshot for a single day window."""
 
     hours_by_top_lanes: list[ChroniclesLaneHours] = Field(default_factory=list)
@@ -389,7 +390,7 @@ class ChroniclesKpi(BaseModel):
     streaks: ChroniclesStreaks = Field(default_factory=ChroniclesStreaks)
 
 
-class ChroniclesRecentDay(BaseModel):
+class ChroniclesRecentDay(ResponseSchemaModel):
     """One day in the recent-days index."""
 
     date: str
@@ -399,7 +400,7 @@ class ChroniclesRecentDay(BaseModel):
     episode_count: int
 
 
-class ChroniclesBriefingSubqueryAvailability(BaseModel):
+class ChroniclesBriefingSubqueryAvailability(ResponseSchemaModel):
     """Availability of one owned editorial briefing subquery."""
 
     subquery: str
@@ -415,7 +416,7 @@ type ChroniclesVoiceSource = Literal["llm·cached", "templated", "stale"]
 """Closed provenance union for the briefing voice paragraph."""
 
 
-class ChroniclesBriefing(BaseModel):
+class ChroniclesBriefing(ResponseSchemaModel):
     """Editorial briefing object for /api/chronicler/briefing."""
 
     date: str
@@ -453,7 +454,7 @@ class ChroniclesBriefing(BaseModel):
 # ── Activity evidence chain (IEA, tasks.md S9a) ────────────────────────────
 
 
-class EvidenceChainLink(BaseModel):
+class EvidenceChainLink(ResponseSchemaModel):
     """One corroborating signal backing an activity, resolved from the canonical
     ``episode_event_links`` chain to its underlying point-event.
 
@@ -474,7 +475,7 @@ class EvidenceChainLink(BaseModel):
     privacy: str
 
 
-class ActivityEvidenceChain(BaseModel):
+class ActivityEvidenceChain(ResponseSchemaModel):
     """Response envelope for GET /api/chronicler/episodes/{id}/evidence-chain."""
 
     episode_id: str
@@ -492,7 +493,7 @@ class ActivityEvidenceChain(BaseModel):
 # ── Low-confidence correction prompts (IEA, tasks.md S9a) ──────────────────
 
 
-class CorrectionPrompt(BaseModel):
+class CorrectionPrompt(ResponseSchemaModel):
     """One low-confidence activity surfaced for owner confirmation / relabel.
 
     The write path reuses the existing corrections overlay: submit a correction
@@ -516,7 +517,7 @@ class CorrectionPrompt(BaseModel):
     """Number of corroborating evidence links — low here is why confidence is low."""
 
 
-class CorrectionPrompts(BaseModel):
+class CorrectionPrompts(ResponseSchemaModel):
     """Response envelope for GET /api/chronicler/correction-prompts."""
 
     start_at: datetime
@@ -529,7 +530,7 @@ class CorrectionPrompts(BaseModel):
 # ── Daily rollups + flags (bu-333dq, telemetry-distillation bead 5) ────────
 
 
-class RollupLaneRow(BaseModel):
+class RollupLaneRow(ResponseSchemaModel):
     """One lane's totals for a single local day, from GET /api/chronicler/rollups.
 
     Mirrors ``chronicler.daily_rollups`` (one row per ``(local_date, lane)``),
@@ -551,7 +552,7 @@ class RollupLaneRow(BaseModel):
     the feeder producing them was down, not because nothing happened."""
 
 
-class RollupFlagRow(BaseModel):
+class RollupFlagRow(ResponseSchemaModel):
     """One deterministic anomaly-flag row from ``chronicler.daily_rollup_flags``."""
 
     flag_type: str
@@ -570,7 +571,7 @@ class RollupFlagRow(BaseModel):
     present regardless)."""
 
 
-class RollupDay(BaseModel):
+class RollupDay(ResponseSchemaModel):
     """One local calendar day's rollup + flags, from GET /api/chronicler/rollups."""
 
     local_date: str
@@ -607,7 +608,7 @@ class RollupDay(BaseModel):
     rows to carry it)."""
 
 
-class RollupsResponse(BaseModel):
+class RollupsResponse(ResponseSchemaModel):
     """Response envelope for GET /api/chronicler/rollups.
 
     Degraded-envelope convention (butlers/CLAUDE.md "API Conventions"): a
@@ -637,7 +638,7 @@ class RollupsResponse(BaseModel):
 # ── Daily balance vs usual (IEA, tasks.md S9b, bu-jc6htw.2) ─────────────────
 
 
-class BalanceLaneRow(BaseModel):
+class BalanceLaneRow(ResponseSchemaModel):
     """One lane's balance for the target day, from GET /api/chronicler/balance.
 
     Baseline is a trailing rolling-window mean over ``chronicler.daily_rollups``
@@ -662,7 +663,7 @@ class BalanceLaneRow(BaseModel):
     'data unavailable', never as a truthful zero/delta."""
 
 
-class BalanceResponse(BaseModel):
+class BalanceResponse(ResponseSchemaModel):
     """Response envelope for GET /api/chronicler/balance.
 
     Degraded-envelope convention (butlers/CLAUDE.md "API Conventions"): a
@@ -689,7 +690,7 @@ class BalanceResponse(BaseModel):
 # ── Trends (IEA, tasks.md S9b, bu-jc6htw.2) ─────────────────────────────────
 
 
-class TrendLaneDay(BaseModel):
+class TrendLaneDay(ResponseSchemaModel):
     """One lane's balance for one day within a trends window."""
 
     local_date: str
@@ -703,7 +704,7 @@ class TrendLaneDay(BaseModel):
     evaluated per day."""
 
 
-class TrendLaneSeries(BaseModel):
+class TrendLaneSeries(ResponseSchemaModel):
     """One lane's day-by-day series across the requested trends window."""
 
     lane: str
@@ -715,7 +716,7 @@ class TrendLaneSeries(BaseModel):
     day has no activity in this lane."""
 
 
-class TrendAnomaly(BaseModel):
+class TrendAnomaly(ResponseSchemaModel):
     """One day where a lane's total deviated sharply from its baseline.
 
     Flagged by ``balance.is_lane_anomalous`` — requires both a minimum
@@ -732,7 +733,7 @@ class TrendAnomaly(BaseModel):
     """``"spike"`` when seconds > baseline, ``"drop"`` when seconds < baseline."""
 
 
-class TrendsResponse(BaseModel):
+class TrendsResponse(ResponseSchemaModel):
     """Response envelope for GET /api/chronicler/trends.
 
     Degraded-envelope convention: ``trends_source_error=True`` means the
@@ -755,7 +756,7 @@ class TrendsResponse(BaseModel):
 # ── Who-you-were-with (IEA, tasks.md S9b, bu-jc6htw.2) ──────────────────────
 
 
-class CompanionEntry(BaseModel):
+class CompanionEntry(ResponseSchemaModel):
     """One resolved (or unattributed) companion for a who-you-were-with window.
 
     Identity resolution happens once, at write time, in
@@ -786,7 +787,7 @@ class CompanionEntry(BaseModel):
     episode_count: int
 
 
-class WhoYouWereWithResponse(BaseModel):
+class WhoYouWereWithResponse(ResponseSchemaModel):
     """Response envelope for GET /api/chronicler/who-you-were-with."""
 
     start_at: datetime
@@ -805,7 +806,7 @@ class WhoYouWereWithResponse(BaseModel):
     ``companions`` is empty in that case, never a truthful empty result."""
 
 
-class RoutineRow(BaseModel):
+class RoutineRow(ResponseSchemaModel):
     """A row from GET /api/chronicler/routines (bu-whhll.9)."""
 
     id: str

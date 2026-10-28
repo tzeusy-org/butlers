@@ -51,14 +51,14 @@ import { test, expect, type Page } from "@playwright/test";
 const MOCK_INVENTORY_WITH_EXPIRED: ResponseOf<"getSecretsInventory"> = {
   data: {
     user: [
-      {
+      { issued: null, expires: null, capabilities_required: [], capabilities_granted: [], audit: [], capabilities: [],
         id: "u-google-tze",
         entity_id: "tze",
         provider: "google",
         state: "expired",
         fingerprint: "sha256:7a3f9e2c",
         last_verified: "3 days ago",
-        test: { ok: false, code: 401, at: "3 days ago" },
+        test: { latency_ms: null, ok: false, code: 401, at: "3 days ago" },
       },
     ],
     system: [],
@@ -85,7 +85,7 @@ const MOCK_INVENTORY_WITH_EXPIRED: ResponseOf<"getSecretsInventory"> = {
       },
     },
   },
-  meta: {
+  meta: { severity: {"expired":1},
     failing_count: 0,
     unverified_count: 0,
     failing_count_by_family: { cli: 0, system: 0, user: 0 },

@@ -94,6 +94,7 @@ from pydantic import BaseModel
 
 from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.api.routers import audit
 from butlers.api.routers.webhooks import dispatch_event
 
@@ -333,7 +334,7 @@ class ExportRequest(BaseModel):
     scope: str = "all"
 
 
-class ExportResponse(BaseModel):
+class ExportResponse(ResponseSchemaModel):
     """Signed URL + metadata returned by POST /api/data/export."""
 
     signed_url: str
@@ -352,7 +353,7 @@ class WipeRequest(BaseModel):
     phrase: str
 
 
-class WipeResponse(BaseModel):
+class WipeResponse(ResponseSchemaModel):
     """Confirmation payload returned after a successful wipe."""
 
     wiped: bool

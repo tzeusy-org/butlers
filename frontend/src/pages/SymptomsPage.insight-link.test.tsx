@@ -30,6 +30,7 @@ vi.mock("@/hooks/use-health", () => ({
 
 function candidate(metadata: InsightCandidate["metadata"]): InsightCandidate {
   return {
+prepared_action_id: null,
     id: "symptom-insight",
     origin_butler: "health",
     priority: 70,

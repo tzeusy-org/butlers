@@ -200,6 +200,9 @@ describe("useCliDeviceAuth: reauthorize() routes to audited endpoint", () => {
   it("device_code branch: calls reauthorizeCliCredential and sets sessionId for polling", async () => {
     vi.mocked(apiClient.reauthorizeCliCredential).mockResolvedValueOnce({
       data: {
+env_var: null,
+prompt: null,
+session_state: null,
         auth_mode: "device_code",
         provider: "codex",
         session_id: "test-session-999",
@@ -230,6 +233,11 @@ describe("useCliDeviceAuth: reauthorize() routes to audited endpoint", () => {
   it("api_key branch: calls reauthorizeCliCredential and sets apiKeyReauthPending", async () => {
     vi.mocked(apiClient.reauthorizeCliCredential).mockResolvedValueOnce({
       data: {
+auth_url: null,
+device_code: null,
+session_id: null,
+session_state: null,
+message: null,
         auth_mode: "api_key",
         provider: "claude",
         env_var: "ANTHROPIC_API_KEY",
@@ -253,7 +261,12 @@ describe("useCliDeviceAuth: reauthorize() routes to audited endpoint", () => {
 
   it("acknowledgeApiKeyReauth() clears apiKeyReauthPending", async () => {
     vi.mocked(apiClient.reauthorizeCliCredential).mockResolvedValueOnce({
-      data: { auth_mode: "api_key", provider: "claude", env_var: null, prompt: null },
+      data: {
+auth_url: null,
+device_code: null,
+session_id: null,
+session_state: null,
+message: null, auth_mode: "api_key", provider: "claude", env_var: null, prompt: null },
       meta: {} as never,
     });
     vi.mocked(apiClient.listCLIAuthProviders).mockResolvedValue([]);

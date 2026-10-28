@@ -23,12 +23,19 @@ const PRIVATE_ERROR = "synthetic-private-error-payload";
 const timestamp = "2026-10-20T00:00:00Z";
 
 function conversation(id = "existing", title = "Existing conversation"): ConversationSummary {
-  return { id, title, butler_name: "switchboard", status: "active", created_at: timestamp,
+  return {
+latest_assistant_reply_at: null, id, title, butler_name: "switchboard", status: "active", created_at: timestamp,
     updated_at: timestamp, message_count: 1, routed_butler: null };
 }
 
 function message(id: string): Message {
-  return { id: `message-${id}`, conversation_id: id, role: "user", content: `History for ${id}`,
+  return {
+model_name: null,
+sources: [],
+citations: [],
+routed_butler: null,
+page_context: null,
+captured_at: null, id: `message-${id}`, conversation_id: id, role: "user", content: `History for ${id}`,
     tool_calls: null, error: null, input_tokens: null, output_tokens: null, duration_ms: null,
     session_id: null, request_id: null, created_at: timestamp };
 }

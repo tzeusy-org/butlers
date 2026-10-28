@@ -37,6 +37,19 @@ vi.mock("@/hooks/use-memory", () => ({
 type UseRuleResult = ReturnType<typeof useRule>;
 
 const BASE_RULE: MemoryRule = {
+source_episode_status: null,
+tenant_id: "owner",
+request_id: null,
+retention_class: "rule",
+sensitivity: "normal",
+last_confirmed_at: null,
+content_authority: null,
+authority_entity_id: null,
+authority_entity_name: null,
+endorsed_by: null,
+endorsed_by_name: null,
+endorsed_at: null,
+held: false,
   id: "abcd1234-0000-0000-0000-000000000000",
   content: "Always confirm before deleting records",
   scope: "global",
@@ -136,7 +149,8 @@ describe("RuleDetailPage", () => {
   });
 
   it("does NOT color the harmful fragment when harmful_count is 0", () => {
-    setRule({ ...BASE_RULE, harmful_count: 0 });
+    setRule({
+...BASE_RULE, harmful_count: 0 });
     const out = html();
     // The harmful span must not carry the red text token when harm is zero.
     // (--red-text: the AA-safe text sibling of the --red fill token, bu-f310e.)
@@ -145,35 +159,40 @@ describe("RuleDetailPage", () => {
   });
 
   it("colors the harmful fragment --red-text when harmful_count > 0", () => {
-    setRule({ ...BASE_RULE, harmful_count: 4 });
+    setRule({
+...BASE_RULE, harmful_count: 4 });
     const out = html();
     expect(out).toContain("harmful 4");
     expect(out).toContain("var(--red-text)");
   });
 
   it("renders provenance derived-from-episode when source_episode_id set", () => {
-    setRule({ ...BASE_RULE, source_episode_status: "available" });
+    setRule({
+...BASE_RULE, source_episode_status: "available" });
     const out = html();
     expect(out).toContain("PROVENANCE");
     expect(out).toContain("derived from episode");
   });
 
   it("renders an expired source without a dangling episode link", () => {
-    setRule({ ...BASE_RULE, source_episode_status: "expired" } as MemoryRule);
+    setRule({
+...BASE_RULE, source_episode_status: "expired" } as MemoryRule);
     const out = html();
     expect(out).toContain("Source expired");
     expect(out).not.toContain('href="/memory/episodes/ep-7abcdef0"');
   });
 
   it("renders an unresolved source without a dangling episode link", () => {
-    setRule({ ...BASE_RULE, source_episode_status: "unresolved" } as MemoryRule);
+    setRule({
+...BASE_RULE, source_episode_status: "unresolved" } as MemoryRule);
     const out = html();
     expect(out).toContain("Source unresolved");
     expect(out).not.toContain('href="/memory/episodes/ep-7abcdef0"');
   });
 
   it("omits the PROVENANCE section when no source episode", () => {
-    setRule({ ...BASE_RULE, source_episode_id: null });
+    setRule({
+...BASE_RULE, source_episode_id: null });
     const out = html();
     expect(out).not.toContain("PROVENANCE");
   });
@@ -199,7 +218,8 @@ describe("RuleDetailPage", () => {
   });
 
   it("labels a forgotten rule with a badge (bu-5ud8p.2)", () => {
-    setRule({ ...BASE_RULE, metadata: { forgotten: true } });
+    setRule({
+...BASE_RULE, metadata: { forgotten: true } });
     const out = html();
     expect(out).toContain("forgotten");
   });
@@ -211,7 +231,8 @@ describe("RuleDetailPage", () => {
   });
 
   it("labels a retired rule with a badge (bu-6t8ix.3)", () => {
-    setRule({ ...BASE_RULE, retired_at: "2026-06-01T00:00:00Z" });
+    setRule({
+...BASE_RULE, retired_at: "2026-06-01T00:00:00Z" });
     const out = html();
     expect(out).toContain("retired");
   });
@@ -241,7 +262,8 @@ describe("RuleDetailPage", () => {
   });
 
   it("renders a disabled 'Retired' label once retired, and clicking it is a no-op", () => {
-    setRule({ ...BASE_RULE, retired_at: "2026-06-01T00:00:00Z" });
+    setRule({
+...BASE_RULE, retired_at: "2026-06-01T00:00:00Z" });
     mounted = render();
 
     const retiredBtn = Array.from(mounted!.container.querySelectorAll("button")).find(

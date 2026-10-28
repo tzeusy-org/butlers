@@ -6,10 +6,10 @@ trip summaries, and upcoming travel used by the travel butler's dashboard endpoi
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from butlers.api.models.base import ResponseSchemaModel
 
 
-class TripModel(BaseModel):
+class TripModel(ResponseSchemaModel):
     """A travel trip container."""
 
     id: str
@@ -23,7 +23,7 @@ class TripModel(BaseModel):
     updated_at: str
 
 
-class LegModel(BaseModel):
+class LegModel(ResponseSchemaModel):
     """A transport leg (flight, train, bus, ferry) within a trip."""
 
     id: str
@@ -44,7 +44,7 @@ class LegModel(BaseModel):
     updated_at: str
 
 
-class AccommodationModel(BaseModel):
+class AccommodationModel(ResponseSchemaModel):
     """An accommodation (hotel, airbnb, hostel) within a trip."""
 
     id: str
@@ -60,7 +60,7 @@ class AccommodationModel(BaseModel):
     updated_at: str
 
 
-class ReservationModel(BaseModel):
+class ReservationModel(ResponseSchemaModel):
     """A reservation (car rental, restaurant, activity, tour) within a trip."""
 
     id: str
@@ -74,7 +74,7 @@ class ReservationModel(BaseModel):
     updated_at: str
 
 
-class DocumentModel(BaseModel):
+class DocumentModel(ResponseSchemaModel):
     """A travel document (boarding pass, visa, insurance, receipt) attached to a trip."""
 
     id: str
@@ -86,7 +86,7 @@ class DocumentModel(BaseModel):
     created_at: str
 
 
-class TimelineEntryModel(BaseModel):
+class TimelineEntryModel(ResponseSchemaModel):
     """A single entry in a trip's chronological timeline."""
 
     entity_type: str
@@ -95,7 +95,7 @@ class TimelineEntryModel(BaseModel):
     summary: str
 
 
-class AlertModel(BaseModel):
+class AlertModel(ResponseSchemaModel):
     """An alert or pre-trip action item for a trip."""
 
     type: str
@@ -103,7 +103,7 @@ class AlertModel(BaseModel):
     severity: str
 
 
-class ConnectionModel(BaseModel):
+class ConnectionModel(ResponseSchemaModel):
     """A derived verdict for the layover between two adjacent legs of a trip."""
 
     inbound_leg_id: str
@@ -114,7 +114,7 @@ class ConnectionModel(BaseModel):
     computed_at: str
 
 
-class TravellerModel(BaseModel):
+class TravellerModel(ResponseSchemaModel):
     """A member of the traveller party linked through public entity identity."""
 
     id: str
@@ -122,7 +122,7 @@ class TravellerModel(BaseModel):
     display_name: str | None = None
 
 
-class TripSummaryModel(BaseModel):
+class TripSummaryModel(ResponseSchemaModel):
     """Full trip summary with all linked entities and timeline."""
 
     trip: TripModel
@@ -150,7 +150,7 @@ class TripSummaryModel(BaseModel):
     unreadable_connection_ids: list[str] = []
 
 
-class UpcomingTripModel(BaseModel):
+class UpcomingTripModel(ResponseSchemaModel):
     """An upcoming trip with legs, accommodations, and days until departure."""
 
     trip: TripModel
@@ -159,7 +159,7 @@ class UpcomingTripModel(BaseModel):
     days_until_departure: int | None = None
 
 
-class PreTripActionModel(BaseModel):
+class PreTripActionModel(ResponseSchemaModel):
     """A pre-trip action item with urgency ranking across upcoming trips."""
 
     trip_id: str
@@ -170,7 +170,7 @@ class PreTripActionModel(BaseModel):
     urgency_rank: int
 
 
-class UpcomingTravelModel(BaseModel):
+class UpcomingTravelModel(ResponseSchemaModel):
     """Upcoming travel overview with trips and urgency-ranked pre-trip actions."""
 
     upcoming_trips: list[UpcomingTripModel] = []
@@ -183,7 +183,7 @@ class UpcomingTravelModel(BaseModel):
     unreadable_trip_ids: list[str] = []
 
 
-class ExpiringDocumentModel(BaseModel):
+class ExpiringDocumentModel(ResponseSchemaModel):
     """A document expiring within the requested look-ahead window."""
 
     id: str
@@ -194,7 +194,7 @@ class ExpiringDocumentModel(BaseModel):
     days_until_expiry: int
 
 
-class ExpiringDocumentsResponse(BaseModel):
+class ExpiringDocumentsResponse(ResponseSchemaModel):
     """Response for the cross-trip expiring-documents aggregation endpoint."""
 
     documents: list[ExpiringDocumentModel] = []

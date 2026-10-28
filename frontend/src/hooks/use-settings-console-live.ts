@@ -33,6 +33,7 @@
 import { useEffect, useState } from "react";
 
 import { useBusEvent } from "@/lib/event-bus";
+import type { ApiResult } from "@/api/request-types";
 import type { FleetEvent } from "@/hooks/event-cache-registry";
 
 // ---------------------------------------------------------------------------
@@ -42,7 +43,7 @@ import type { FleetEvent } from "@/hooks/event-cache-registry";
 export interface AttentionItem {
   /** Stable per-item identity; kind is intentionally non-unique. */
   id: string;
-  tone: "red" | "amber";
+  tone: ApiResult<"/settings/console", "GET">["data"]["attention"][number]["tone"];
   kind: string;
   text: string;
   action_route: string;

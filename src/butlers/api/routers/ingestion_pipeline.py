@@ -41,6 +41,8 @@ import time
 from typing import Literal
 
 from fastapi import APIRouter, Query
+from pydantic import ConfigDict, with_config
+from typing_extensions import TypedDict
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import OptionalDb
@@ -76,6 +78,41 @@ _DEGRADED_WINDOWS: dict[str, list[int]] = {
 }
 
 WindowLiteral = Literal["1h", "24h", "7d"]
+
+
+@with_config(ConfigDict(extra="allow"))
+class BearerScrubCounts(TypedDict):
+    """Closed measured scrub kinds from _fetch_bearer_scrub_counts."""
+
+    auth_code: float
+    reset_link: float
+    magic_link: float
+
+
+@with_config(ConfigDict(extra="allow"))
+class PipelineStatsResponse(TypedDict):
+    """Existing complete funnel + independent scrub/backlog wire fields.
+
+    The original dictionary producer and its validation/serialization remain
+    unchanged; this native schema describes its declared JSON response.
+    """
+
+    window: str
+    aggregates_available: bool
+    ingested: int
+    filtered: int
+    errored: int
+    routed_by_butler: dict[str, int]
+    spark24h: list[int]
+    rate1h: float
+    routed_pct: float
+    filtered24h: int
+    bearer_scrub_counts: BearerScrubCounts | None
+    bearer_scrub_available: bool
+    backlog_available: bool
+    failed_total: int | None
+    replay_pending_total: int | None
+    written_off_total: int | None
 
 
 def _degraded_response(window: str) -> dict:
@@ -553,7 +590,7 @@ async def prometheus_aggregates_available(window: str = "24h") -> bool:
 # ---------------------------------------------------------------------------
 
 
-@router.get("")
+@router.get("", responses={200: {"model": PipelineStatsResponse}})
 async def get_pipeline_stats(
     window: WindowLiteral = Query(
         "24h",

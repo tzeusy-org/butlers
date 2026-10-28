@@ -15,7 +15,7 @@ import type { BoardResponse, BoardRow, BoardAggregates } from "@/api/types"
 const mockGetButlersBoard = vi.fn()
 const mockUseQuery = vi.fn()
 
-vi.mock("@/api/index.ts", () => ({
+vi.mock("@/api/client.ts", () => ({
   getButlersBoard: (...args: Parameters<typeof mockGetButlersBoard>) => mockGetButlersBoard(...args),
 }))
 
@@ -76,6 +76,7 @@ function makeRow(overrides: Partial<BoardRow> = {}): BoardRow {
     heartbeat_age_seconds: null,
     heartbeat_unavailable: false,
     schema_unreachable: false,
+    stripe_source_error: false,
     hourly_stripe: Array(24).fill(0),
     hourly_total: 0,
     cadence_seconds: null,
@@ -88,6 +89,7 @@ function makeRow(overrides: Partial<BoardRow> = {}): BoardRow {
 
 function makeAggregates(overrides: Partial<BoardAggregates> = {}): BoardAggregates {
   return {
+sessions_source_error: false,
     total: 0,
     butler_count: 0,
     staffer_count: 0,
@@ -156,7 +158,8 @@ describe("row mapping (snake_case wire -> camelCase UI contract)", () => {
       heartbeat_age_seconds: 300,
       heartbeat_unavailable: true,
       schema_unreachable: true,
-      hourly_stripe: [1, 2, 3, ...Array(21).fill(0)],
+      stripe_source_error: false,
+    hourly_stripe: [1, 2, 3, ...Array(21).fill(0)],
       hourly_total: 6,
       cadence_seconds: 86400,
       cadence_label: "daily",
@@ -287,6 +290,7 @@ describe("aggregates passthrough", () => {
   it("maps every BoardAggregates field onto its camelCase counterpart", () => {
     mockQuerySuccess(
       makeBoardResponse([makeRow()], {
+sessions_source_error: false,
         total: 5,
         butler_count: 4,
         staffer_count: 1,

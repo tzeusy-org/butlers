@@ -28,9 +28,11 @@ import json
 import logging
 from datetime import UTC, timedelta
 from datetime import datetime as _datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, NotRequired
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from pydantic import ConfigDict, with_config
+from typing_extensions import TypedDict
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
@@ -829,7 +831,29 @@ async def get_ingestion_event_rollup(
 _MAX_BULK_RETRY_BATCH = 100
 
 
-@router.post("/retry/bulk")
+@with_config(ConfigDict(extra="allow"))
+class BulkRetryEventResult(TypedDict):
+    """Existing closed per-item replay outcome and optional error text."""
+
+    event_id: str
+    status: Literal["replay_pending", "not_found", "conflict", "error"]
+    error: NotRequired[str]
+
+
+@with_config(ConfigDict(extra="allow"))
+class BulkRetryEventsResponse(TypedDict):
+    results: list[BulkRetryEventResult]
+    succeeded: int
+    failed: int
+
+
+@with_config(ConfigDict(extra="allow"))
+class IngestionReplayResponse(TypedDict):
+    id: str
+    status: Literal["replay_pending"]
+
+
+@router.post("/retry/bulk", responses={200: {"model": BulkRetryEventsResponse}})
 async def bulk_retry_ingestion_events(
     request: Request,
     body: Annotated[dict, Body(...)],
@@ -1042,7 +1066,7 @@ async def bulk_retry_ingestion_events(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{event_id}/replay")
+@router.post("/{event_id}/replay", responses={200: {"model": IngestionReplayResponse}})
 async def replay_ingestion_event(
     event_id: str,
     request: Request,

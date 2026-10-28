@@ -7,16 +7,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import {
-  listDomainEventSubscriptions,
-  listDomainEventDeliveries,
-  listDomainEventReactions,
-  listDomainEventContracts,
-  replayDomainEventDelivery,
-  type DomainEventSubscriptionsParams,
-  type DomainEventDeliveriesParams,
-  type DomainEventContractsParams,
-} from "@/api/index.ts";
+import { listDomainEventSubscriptions, listDomainEventDeliveries, listDomainEventReactions, listDomainEventContracts, replayDomainEventDelivery } from "@/api/client.ts";
+import type { DomainEventSubscriptionsParams, DomainEventDeliveriesParams, DomainEventContractsParams } from "@/api/client.ts";
 
 // Subscriptions and contracts are roster/migration configuration: they change on deploy, not
 // at runtime, so they load once and refresh on remount or focus (no interval).

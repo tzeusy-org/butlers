@@ -23,7 +23,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, useLocation } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import type { IngestionEventStatus, IngestionEventSummary } from "@/api/index.ts";
+import type { IngestionEventStatus, IngestionEventSummary } from "@/api/types.ts";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -32,8 +32,8 @@ import type { IngestionEventStatus, IngestionEventSummary } from "@/api/index.ts
 // Mock API module
 // ---------------------------------------------------------------------------
 
-vi.mock("@/api/index.ts", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/api/index.ts")>();
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client.ts")>();
   return {
     ...actual,
     replayIngestionEvent: vi.fn(),
@@ -66,7 +66,7 @@ vi.mock("@/hooks/use-ingestion", () => ({
   useConnectorSummaries: vi.fn(),
 }));
 
-import { ApiError, bulkRetryEvents, replayIngestionEvent } from "@/api/index.ts";
+import { ApiError, bulkRetryEvents, replayIngestionEvent } from "@/api/client.ts";
 import { toast } from "sonner";
 import {
   useIngestionEvents,
@@ -100,6 +100,8 @@ function LocationProbe() {
 
 function makeEvent(overrides: Partial<IngestionEventSummary> = {}): IngestionEventSummary {
   return {
+unpriced_session_count: 0,
+no_usage_session_count: 0,
     id: "aabbccdd-0000-0000-0000-000000000001",
     received_at: "2026-01-01T10:00:00Z",
     source_channel: "gmail",

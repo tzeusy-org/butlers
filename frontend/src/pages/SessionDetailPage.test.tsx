@@ -26,6 +26,10 @@ vi.mock("@/components/sessions/ToolCallTimeline", () => ({
 type UseGlobalSessionDetailResult = ReturnType<typeof useGlobalSessionDetail>;
 
 const BASE_SESSION: SessionDetail = {
+purpose_lane: null,
+correction_count: 0,
+linked_message: null,
+resolution_receipt: null,
   id: "sess-abc123",
   butler: "general",
   prompt: "What is the weather today?",
@@ -258,6 +262,10 @@ describe("SessionDetailPage — content", () => {
       success: false,
       error: "boom",
       process_log: {
+attempt_count: null,
+result_source: null,
+retry_attempted: null,
+retry_succeeded: null,
         pid: 1,
         exit_code: 137,
         command: null,

@@ -16,7 +16,7 @@ import userEvent from "@testing-library/user-event";
 
 import ReviewTimeline from "./ReviewTimeline";
 import { AppTimezoneProvider } from "@/components/ui/timezone-context";
-import type { MindMap, PendingReviewNode } from "@/api/index.ts";
+import type { MindMap, PendingReviewNode } from "@/api/types.ts";
 
 /**
  * Render with the owner timezone pinned to UTC so the host-local (TZ=UTC)

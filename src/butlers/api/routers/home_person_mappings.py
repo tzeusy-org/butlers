@@ -376,7 +376,38 @@ async def _request_invalid_response(
     return _error(422, "INVALID_REQUEST", "Mapping request is invalid.", receipt)
 
 
-@router.post("", response_model=None)
+def _mapping_request_schema() -> dict[str, Any]:
+    """Document the native parser without moving bounded/audited validation to FastAPI."""
+    schema = MappingBatch.model_json_schema()
+    definitions = schema.pop("$defs", {})
+
+    def inline(value: Any) -> Any:
+        if isinstance(value, dict):
+            if "$ref" in value:
+                return inline(definitions[value["$ref"].removeprefix("#/$defs/")])
+            return {key: inline(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [inline(item) for item in value]
+        return value
+
+    return inline(schema)
+
+
+@router.post(
+    "",
+    response_model=None,
+    responses={200: {"model": ApiResponse[MappingReceipt]}},
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "description": (
+                "At most 32768 bytes; the existing strict, audited parser validates "
+                "1–50 distinct mappings. Errors retain the content-blind receipt envelope."
+            ),
+            "content": {"application/json": {"schema": _mapping_request_schema()}},
+        }
+    },
+)
 async def submit_person_mappings(
     request: Request,
     _owner: Literal["owner"] = Depends(require_dashboard_owner_control),

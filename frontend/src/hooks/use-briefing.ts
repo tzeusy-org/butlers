@@ -18,7 +18,6 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { getDashboardBriefing } from "@/api/client.ts";
-import type { Briefing } from "@/api/types.ts";
 
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
 
@@ -27,7 +26,7 @@ export const briefingKeys = {
 };
 
 export function useBriefing() {
-  return useQuery<Briefing>({
+  return useQuery({
     queryKey: briefingKeys.all,
     queryFn: getDashboardBriefing,
     staleTime: FIVE_MINUTES_MS,

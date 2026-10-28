@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel
+from butlers.api.models.base import ResponseSchemaModel
 
 
 class OwnTracksConnectionState(StrEnum):
@@ -36,7 +36,7 @@ class OwnTracksConnectionState(StrEnum):
     """Connector process is not running (no recent heartbeat)."""
 
 
-class OwnTracksTokenResponse(BaseModel):
+class OwnTracksTokenResponse(ResponseSchemaModel):
     """Response for POST /api/connectors/owntracks/token/generate.
 
     Returns the newly generated bearer token. The token is shown once;
@@ -49,7 +49,7 @@ class OwnTracksTokenResponse(BaseModel):
     message: str = "Token generated. Copy it now — it will not be shown again."
 
 
-class OwnTracksStatusResponse(BaseModel):
+class OwnTracksStatusResponse(ResponseSchemaModel):
     """Response for GET /api/connectors/owntracks/status.
 
     Reports connection state, last event timestamp, and event counts
@@ -75,7 +75,7 @@ class OwnTracksStatusResponse(BaseModel):
     """Connector uptime in seconds, if available."""
 
 
-class OwnTracksConfigResponse(BaseModel):
+class OwnTracksConfigResponse(ResponseSchemaModel):
     """Response for GET /api/connectors/owntracks/config.
 
     Returns the computed webhook URL and setup instructions metadata
@@ -92,7 +92,7 @@ class OwnTracksConfigResponse(BaseModel):
     """Inline app configuration instructions for iOS and Android."""
 
 
-class OwnTracksSetupInstructions(BaseModel):
+class OwnTracksSetupInstructions(ResponseSchemaModel):
     """Inline setup instructions for the OwnTracks mobile app.
 
     Surfaces step-by-step guidance in the dashboard UI to minimize

@@ -34,10 +34,20 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const apiFetchMock = vi.fn();
 
-vi.mock("@/api/client", () => ({
-  apiFetch: (...args: Parameters<typeof import("@/api/client").apiFetch>) =>
-    apiFetchMock(...args),
-}));
+vi.mock("@/api/owner-session", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/owner-session")>();
+  return {
+    ...actual,
+    ownerFetch: async (url: string, options?: RequestInit) => {
+      const result = await apiFetchMock(url.replace(/^\/api/, ""), options);
+      if (result === undefined) return new Response(null, { status: 204 });
+      return new Response(JSON.stringify(result), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  };
+});
 
 const mockUseSpendTicker = vi.fn();
 

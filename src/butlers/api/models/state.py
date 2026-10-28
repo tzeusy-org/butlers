@@ -11,8 +11,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from butlers.api.models.base import ResponseSchemaModel
 
-class StateEntry(BaseModel):
+
+class StateEntry(ResponseSchemaModel):
     """A single key-value entry from the butler's state store.
 
     ``value`` accepts any JSON-serialisable type (object, array, scalar, or

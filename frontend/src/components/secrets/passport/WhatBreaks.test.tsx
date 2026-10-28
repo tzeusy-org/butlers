@@ -25,7 +25,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import * as React from "react"
 
 import type { BreakEntry } from "@/api/types"
-import type { ApiResponse } from "@/api/types"
+import type { ApiResult } from "@/api/request-types"
 
 // ---------------------------------------------------------------------------
 // Mock the API client function
@@ -44,8 +44,8 @@ const mockGetBreaksCatalogue = vi.mocked(getBreaksCatalogue)
 
 function makeApiResponse(
   entries: BreakEntry[],
-  meta: ApiResponse<BreakEntry[]>["meta"] = {},
-): ApiResponse<BreakEntry[]> {
+  meta: ApiResult<"/secrets/breaks-catalogue", "GET">["meta"] = {},
+): ApiResult<"/secrets/breaks-catalogue", "GET"> {
   return {
     data: entries,
     meta,
@@ -54,6 +54,7 @@ function makeApiResponse(
 
 function makeBreakEntry(overrides: Partial<BreakEntry> = {}): BreakEntry {
   return {
+capability: null,
     butler: "health",
     feature: "symptom sync",
     severity: "high",
@@ -253,7 +254,7 @@ describe("WhatBreaks: API call", () => {
 describe("WhatBreaksRow: ProviderMark (bu-sd0l7.2 reunification)", () => {
   it("derives the glyph from the butler slug's first character, uppercased", () => {
     render(
-      <WhatBreaksRow entry={{ butler: "health", feature: "symptom sync", severity: "high", required_scopes: [] }} />,
+      <WhatBreaksRow entry={{ butler: "health", capability: null, feature: "symptom sync", severity: "high", required_scopes: [] }} />,
     )
     const mark = screen.getByLabelText("health")
     expect(mark.textContent).toBe("H")
@@ -261,7 +262,7 @@ describe("WhatBreaksRow: ProviderMark (bu-sd0l7.2 reunification)", () => {
 
   it("carries the shipping atoms.tsx ProviderMark's data-provider-mark attribute", () => {
     render(
-      <WhatBreaksRow entry={{ butler: "calendar", feature: "event sync", severity: "medium", required_scopes: [] }} />,
+      <WhatBreaksRow entry={{ butler: "calendar", capability: null, feature: "event sync", severity: "medium", required_scopes: [] }} />,
     )
     expect(screen.getByLabelText("calendar").getAttribute("data-provider-mark")).toBe("true")
   })

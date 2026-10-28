@@ -19,7 +19,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import * as React from "react"
 
 import type { BreakEntry } from "@/api/types"
-import type { ApiResponse } from "@/api/types"
+import type { ApiResult } from "@/api/request-types"
 
 // ---------------------------------------------------------------------------
 // Mock the API client function
@@ -38,13 +38,14 @@ const mockGetBreaksCatalogue = vi.mocked(getBreaksCatalogue)
 
 function makeApiResponse(
   entries: BreakEntry[],
-  meta: ApiResponse<BreakEntry[]>["meta"] = {},
-): ApiResponse<BreakEntry[]> {
+  meta: ApiResult<"/secrets/breaks-catalogue", "GET">["meta"] = {},
+): ApiResult<"/secrets/breaks-catalogue", "GET"> {
   return { data: entries, meta }
 }
 
 function makeBreakEntry(overrides: Partial<BreakEntry> = {}): BreakEntry {
   return {
+capability: null,
     butler: "health",
     feature: "symptom sync",
     severity: "high",

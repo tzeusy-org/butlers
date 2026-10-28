@@ -24,7 +24,7 @@ vi.mock("sonner", () => {
   return { toast: toastFn };
 });
 
-vi.mock("@/api/index.ts", () => ({ triggerButler: vi.fn() }));
+vi.mock("@/api/client.ts", () => ({ triggerButler: vi.fn() }));
 
 vi.mock("@/hooks/use-general", () => ({
   useRegistry: vi.fn(),

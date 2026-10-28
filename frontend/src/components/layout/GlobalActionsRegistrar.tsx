@@ -15,7 +15,7 @@ import { useMemo } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
 
-import { triggerButler } from "@/api/index";
+import { triggerButler } from "@/api/client.ts";
 import { useButlers } from "@/hooks/use-butlers";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 
@@ -46,7 +46,7 @@ export function GlobalActionsRegistrar() {
             DEFAULT_COMPLEXITY,
           );
           toast.success(`Started ${b.name}`);
-          if (response.session_id) navigate(`/sessions/${response.session_id}`);
+          if (response.data.session_id) navigate(`/sessions/${response.data.session_id}`);
         } catch {
           toast.error(`Failed to run ${b.name}`);
         }

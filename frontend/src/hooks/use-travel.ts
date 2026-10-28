@@ -14,13 +14,8 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import {
-  getTravelTrips,
-  getTravelTripSummary,
-  getTravelUpcoming,
-  getTravelExpiringDocuments,
-} from "@/api/index.ts";
-import type { TravelTripsParams } from "@/api/index.ts";
+import { getTravelTrips, getTravelTripSummary, getTravelUpcoming, getTravelExpiringDocuments } from "@/api/client.ts";
+import type { TravelTripsParams } from "@/api/types.ts";
 
 /**
  * Primary poll interval for travel butler queries (bu-ep4ks.15). No fleet-bus event

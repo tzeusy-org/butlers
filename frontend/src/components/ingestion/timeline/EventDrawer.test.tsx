@@ -15,8 +15,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { ApiError } from "@/api/index.ts";
-import type { IngestionEventSummary, IngestionEventSession } from "@/api/index.ts";
+import { ApiError, getIngestionEventSessions } from "@/api/client.ts";
+import type { IngestionEventSummary, IngestionEventSession } from "@/api/types.ts";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -25,8 +25,8 @@ import type { IngestionEventSummary, IngestionEventSession } from "@/api/index.t
 // Mock API and hooks
 // ---------------------------------------------------------------------------
 
-vi.mock("@/api/index.ts", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/api/index.ts")>();
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client.ts")>();
   return {
     ...actual,
     replayIngestionEvent: vi.fn(),
@@ -67,6 +67,8 @@ function makeQueryClient() {
 
 function makeEvent(overrides: Partial<IngestionEventSummary> = {}): IngestionEventSummary {
   return {
+unpriced_session_count: 0,
+no_usage_session_count: 0,
     id: "aaaaaaaa-0000-0000-0000-000000000001",
     received_at: "2026-05-17T10:30:00Z",
     source_channel: "email",
@@ -97,7 +99,7 @@ function makeEvent(overrides: Partial<IngestionEventSummary> = {}): IngestionEve
   };
 }
 
-function makeSession(overrides: Partial<IngestionEventSession> = {}): IngestionEventSession {
+function makeSession(overrides: Partial<IngestionEventSession> = {}) {
   return {
     id: "ssssssss-0000-0000-0000-000000000001",
     butler_name: "herald",
@@ -153,6 +155,7 @@ describe("EventDrawer — per-session cost column", () => {
     act(() => root.unmount());
     container.remove();
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
     sessionStorage.clear();
   });
 
@@ -172,29 +175,33 @@ describe("EventDrawer — per-session cost column", () => {
     });
   }
 
-  function mockSessions(sessions: IngestionEventSession[]) {
+  async function mockSessions(sessions: unknown[]) {
+    // Deliberate legacy wire omissions pass through the real generated-typed
+    // transport; the current generated DTO is never weakened or asserted.
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ data: sessions }), { status: 200, headers: { "Content-Type": "application/json" } })));
+    const response = await getIngestionEventSessions("aaaaaaaa-0000-0000-0000-000000000001");
     vi.mocked(useIngestionEventSessions).mockReturnValue({
-        data: { data: sessions },
+        data: response,
         isLoading: false,
         isError: false,
       } as unknown as ReturnType<typeof useIngestionEventSessions>);
   }
 
-  it("renders the real cost when cost_usd is a positive number", () => {
-    mockSessions([makeSession({ cost_usd: 0.0042 })]);
+  it("renders the real cost when cost_usd is a positive number", async () => {
+    await mockSessions([makeSession({ cost_usd: 0.0042 })]);
     renderDrawer();
     // formatCost(0.0042) → "$0.0042"
     expect(container.textContent).toContain("$0.0042");
   });
 
-  it("renders $0.00 when cost_usd is zero (not em dash)", () => {
-    mockSessions([makeSession({ cost_usd: 0 })]);
+  it("renders $0.00 when cost_usd is zero (not em dash)", async () => {
+    await mockSessions([makeSession({ cost_usd: 0 })]);
     renderDrawer();
     expect(container.textContent).toContain("$0.00");
   });
 
-  it("renders em dash only when cost_usd is null", () => {
-    mockSessions([makeSession({ cost_usd: null })]);
+  it("renders em dash only when cost_usd is null", async () => {
+    await mockSessions([makeSession({ cost_usd: null })]);
     renderDrawer();
     // formatCost(null) → "—"
     // The cost column should show "—" but not a dollar amount
@@ -204,8 +211,8 @@ describe("EventDrawer — per-session cost column", () => {
     expect(sessionBlock!.textContent).not.toContain("$");
   });
 
-  it("labels a no-usage session without calling it unpriced", () => {
-    mockSessions([makeSession({ cost_usd: null, cost_evidence: "no_usage" })]);
+  it("labels a no-usage session without calling it unpriced", async () => {
+    await mockSessions([makeSession({ cost_usd: null, cost_evidence: "no_usage" })]);
     renderDrawer();
 
     const sessionBlock = container.querySelector("[data-testid='sessions-tab-content']");
@@ -213,14 +220,14 @@ describe("EventDrawer — per-session cost column", () => {
     expect(sessionBlock!.textContent).not.toContain("cost unavailable");
   });
 
-  it("renders <$0.001 for sub-mill costs", () => {
-    mockSessions([makeSession({ cost_usd: 0.0005 })]);
+  it("renders <$0.001 for sub-mill costs", async () => {
+    await mockSessions([makeSession({ cost_usd: 0.0005 })]);
     renderDrawer();
     expect(container.textContent).toContain("<$0.001");
   });
 
-  it("renders cost for each session independently", () => {
-    mockSessions([
+  it("renders cost for each session independently", async () => {
+    await mockSessions([
       makeSession({ id: "sess-1", butler_name: "herald", cost_usd: 0.0010 }),
       makeSession({ id: "sess-2", butler_name: "atlas", cost_usd: null }),
     ]);
@@ -234,8 +241,8 @@ describe("EventDrawer — per-session cost column", () => {
     expect(content!.textContent).toContain("atlas");
   });
 
-  it("uses the theme-aware categorical foreground for flamegraph duration text", () => {
-    mockSessions([makeSession()]);
+  it("uses the theme-aware categorical foreground for flamegraph duration text", async () => {
+    await mockSessions([makeSession()]);
     renderDrawer();
 
     const duration = container.querySelector<HTMLSpanElement>(
@@ -246,14 +253,14 @@ describe("EventDrawer — per-session cost column", () => {
     expect(duration!.className).not.toContain("text-white");
   });
 
-  it("shows empty state when no sessions", () => {
-    mockSessions([]);
+  it("shows empty state when no sessions", async () => {
+    await mockSessions([]);
     renderDrawer();
     expect(container.querySelector("[data-testid='sessions-tab-empty']")).not.toBeNull();
   });
 
-  it("explains a policy-bypass route in the empty state", () => {
-    mockSessions([]);
+  it("explains a policy-bypass route in the empty state", async () => {
+    await mockSessions([]);
     vi.mocked(useIngestionEventDetail).mockReturnValue({
       data: {
         data: {
@@ -295,8 +302,8 @@ describe("EventDrawer — per-session cost column", () => {
     expect(detail?.style.color).toBe(color);
   });
 
-  it("renders honest empty states for error and filtered events", () => {
-    mockSessions([]);
+  it("renders honest empty states for error and filtered events", async () => {
+    await mockSessions([]);
 
     renderDrawer(makeEvent({ status: "error", error_detail: "connector timeout" }));
     let empty = container.querySelector("[data-testid='sessions-tab-empty']");
@@ -317,8 +324,8 @@ describe("EventDrawer — per-session cost column", () => {
     expect(empty!.textContent).toContain("duplicate");
   });
 
-  it("renders an honest empty state for a 'failed' event (routing failure after ingestion, bu-lkzsf.1)", () => {
-    mockSessions([]);
+  it("renders an honest empty state for a 'failed' event (routing failure after ingestion, bu-lkzsf.1)", async () => {
+    await mockSessions([]);
 
     renderDrawer(makeEvent({ status: "failed", error_detail: "switchboard unreachable" }));
     const empty = container.querySelector("[data-testid='sessions-tab-empty']");
@@ -327,8 +334,8 @@ describe("EventDrawer — per-session cost column", () => {
     expect(empty!.textContent).toContain("switchboard unreachable");
   });
 
-  it("explains when a replayable-status event is blocked by connector policy", () => {
-    mockSessions([]);
+  it("explains when a replayable-status event is blocked by connector policy", async () => {
+    await mockSessions([]);
     renderDrawer(
       makeEvent({
         status: "error",

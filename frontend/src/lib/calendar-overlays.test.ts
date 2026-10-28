@@ -14,6 +14,8 @@ import {
 
 function overlayEntry(overrides: Partial<UnifiedCalendarEntry> = {}): UnifiedCalendarEntry {
   return {
+source_session_id: null,
+linked_people: [],
     entry_id: "00000000-0000-0000-0000-000000000001",
     event_id: null,
     view: "overlays",

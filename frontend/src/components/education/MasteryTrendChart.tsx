@@ -18,15 +18,14 @@ export default function MasteryTrendChart({ mindMapId }: MasteryTrendChartProps)
   const windowEnd = useTickingNow(60_000);
   const series = useMemo(() => {
     return buildTimeSeries(
-      (analytics?.trend ?? []).map((entry) => ({
-        at: entry.snapshot_date,
-        values: {
-          mastery:
-            typeof entry.metrics?.mastery_pct === "number"
-              ? Math.round(entry.metrics.mastery_pct * 100)
-              : null,
-        },
-      })),
+      (analytics?.trend ?? []).flatMap((entry) => {
+        const at = entry.snapshot_date;
+        if (typeof at !== "string" && typeof at !== "number" && !(at instanceof Date)) return [];
+        const metrics = entry.metrics;
+        const mastery = metrics !== null && typeof metrics === "object" && "mastery_pct" in metrics
+          ? metrics.mastery_pct : undefined;
+        return [{ at, values: { mastery: typeof mastery === "number" ? Math.round(mastery * 100) : null } }];
+      }),
       ["mastery"],
       { windowStart: windowEnd - TREND_DAYS * DAY_MS, windowEnd, maxGapMs: 3 * DAY_MS },
     );

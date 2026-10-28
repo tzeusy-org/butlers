@@ -7,12 +7,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import {
-  configureHomeAssistant,
-  deleteHomeAssistantConfig,
-  getHomeAssistantStatus,
-} from "@/api/index.ts";
-import type { HomeAssistantConfigRequest } from "@/api/index.ts";
+import { configureHomeAssistant, deleteHomeAssistantConfig, getHomeAssistantStatus } from "@/api/client.ts";
+import type { HomeAssistantConfigRequest } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
 // Query keys

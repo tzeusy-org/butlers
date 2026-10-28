@@ -91,7 +91,7 @@ export interface StalenessBandProps extends React.HTMLAttributes<HTMLSpanElement
  *   <StalenessBand band="fresh" />  // neutral
  */
 export function StalenessBand({ band, className, ...props }: StalenessBandProps) {
-  const label = STALENESS_LABELS[band]
+  const label = STALENESS_LABELS[band] ?? band
   const isStale = band === "stale"
 
   return (

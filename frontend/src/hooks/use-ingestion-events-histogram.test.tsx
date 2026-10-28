@@ -9,18 +9,18 @@
 // - the query is enabled (fetch fires) once both from and to are present
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 const mockGetIngestionEventsHistogram = vi.fn();
 
-vi.mock("@/api/index.ts", () => ({
+vi.mock("@/api/client.ts", () => ({
   // Function under test.
   getIngestionEventsHistogram: (...args: unknown[]) =>
     mockGetIngestionEventsHistogram(...args),
   // The hook module also imports these — provide inert stubs so the mock
-  // covers the whole "@/api/index.ts" surface it pulls from.
+  // covers the whole "@/api/client.ts" surface it pulls from.
   listIngestionEvents: vi.fn(),
   getIngestionEvent: vi.fn(),
   getIngestionEventSessions: vi.fn(),
@@ -193,6 +193,14 @@ describe("useIngestionEventsHistogram", () => {
       ...resolvedParams,
       bucket: "5m",
     }, expect.any(AbortSignal));
+
+    // A response bucket determines the strip's actual time scale. An unknown
+    // bucket must become query error state, never render a guessed duration.
+    mockGetIngestionEventsHistogram.mockResolvedValueOnce({ buckets: [], bucket: "unexpected" });
+    await act(async () => { await result.current.refetch(); });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error?.message).toBe("Unknown histogram bucket.");
+    expect(mockGetIngestionEventsHistogram).toHaveBeenCalledTimes(3);
   });
 
   it("does not make a second coarsening attempt when the fallback also returns 422", async () => {

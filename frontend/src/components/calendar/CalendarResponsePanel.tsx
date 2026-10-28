@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { respondToCalendarInvitation } from "@/api/index";
+import { respondToCalendarInvitation } from "@/api/client.ts";
 import type { CalendarInvitationEntry, CalendarResponseReceipt, CalendarResponseRequest } from "@/api/types";
 import { useRegisterCommands } from "@/lib/command-registry";
 

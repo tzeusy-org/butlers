@@ -47,6 +47,7 @@ describe("CalendarWorkspacePage sync freshness plaque (bu-hmdqz.10)", () => {
     setWorkspaceMetaState({
       data: {
         data: {
+sources_available: true,
           capabilities: {
             views: ["user", "butler"],
             filters: { butlers: true, sources: true, timezone: true },
@@ -141,6 +142,7 @@ describe("CalendarWorkspacePage sync freshness plaque (bu-hmdqz.10)", () => {
     setWorkspaceMetaState({
       data: {
         data: {
+sources_available: true,
           capabilities: {
             views: ["user", "butler"],
             filters: { butlers: true, sources: true, timezone: true },
@@ -191,6 +193,7 @@ describe("CalendarWorkspacePage sync freshness plaque (bu-hmdqz.10)", () => {
     setWorkspaceMetaState({
       data: {
         data: {
+sources_available: true,
           capabilities: {
             views: ["user", "butler"],
             filters: { butlers: true, sources: true, timezone: true },

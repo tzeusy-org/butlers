@@ -38,7 +38,7 @@ import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate } from "react-router";
 import { toast } from "sonner";
 
-import { triggerButler } from "@/api/index.ts";
+import { triggerButler } from "@/api/client.ts";
 import { useCommandBarPrefill } from "@/components/butler-detail/command-bar-prefill";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { COMPLEXITY_TIERS, complexityLabel } from "@/components/general/ComplexityBadge.tsx";
@@ -159,8 +159,8 @@ export function ButlerDetailActions({ butlerName }: ButlerDetailActionsProps) {
       toast.success(trimmed ? "Prompt sent" : "Force run triggered");
       // Link the operator straight to the spawned session rather than dropping
       // the returned session_id on the floor.
-      if (response.session_id) {
-        navigate(`/sessions/${response.session_id}`);
+      if (response.data.session_id) {
+        navigate(`/sessions/${response.data.session_id}`);
       }
       setPrompt("");
     } catch {

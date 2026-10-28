@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { callButlerMcpTool, getButlerMcpTools } from "@/api/index.ts";
+import { callButlerMcpTool, getButlerMcpTools } from "@/api/client.ts";
 import { ApiError } from "@/api/client.ts";
 import type { ButlerMcpTool, ButlerMcpToolCallResponse } from "@/api/types.ts";
 import JsonViewer from "@/components/general/JsonViewer";

@@ -14,7 +14,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 
 import { ApprovalsVerdictOpener } from "@/components/approvals/approvals-verdict-opener.tsx";
-import type { ApprovalSummary } from "@/api/index.ts";
+import type { ApprovalSummary } from "@/api/types.ts";
 
 function render(ui: React.ReactElement): string {
   return renderToStaticMarkup(<MemoryRouter>{ui}</MemoryRouter>);
@@ -22,6 +22,13 @@ function render(ui: React.ReactElement): string {
 
 function summary(overrides: Partial<ApprovalSummary>): ApprovalSummary {
   return {
+execution_result: null,
+blast_radius: null,
+reversibility: null,
+origin: null,
+push_outcome: null,
+push_failed: false,
+delivery: null,
     id: "a-1",
     butler: "general",
     tool_name: "send_email",

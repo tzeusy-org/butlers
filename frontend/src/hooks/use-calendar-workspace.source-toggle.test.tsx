@@ -13,15 +13,15 @@ import type {
   CalendarWorkspaceSourceFreshness,
 } from "@/api/types.ts";
 
-vi.mock("@/api/index.ts", async (importOriginal) => {
-  const original = await importOriginal<typeof import("@/api/index.ts")>();
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/api/client.ts")>();
   return {
     ...original,
     toggleCalendarSource: vi.fn(),
   };
 });
 
-import { toggleCalendarSource } from "@/api/index.ts";
+import { toggleCalendarSource } from "@/api/client.ts";
 import { useToggleCalendarSource } from "./use-calendar-workspace.ts";
 
 const SHARED_SOURCE_KEY = "provider:google:primary";
@@ -67,6 +67,11 @@ function workspaceResponse(
 ): ApiResponse<CalendarWorkspaceReadResponse> {
   return {
     data: {
+has_domain_context: false,
+people_source_available: true,
+entries_source_available: true,
+sources_available: true,
+
       entries: [],
       source_freshness: Array.isArray(sources) ? sources : [sources],
       lanes: [],
@@ -82,6 +87,8 @@ function metaResponse(
 ): ApiResponse<CalendarWorkspaceMetaResponse> {
   return {
     data: {
+sources_available: true,
+
       capabilities: {
         views: ["user", "butler"],
         filters: {},

@@ -9,6 +9,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from butlers.api.models.base import ResponseSchemaModel
+
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
@@ -204,7 +206,7 @@ class ConversationUpdateRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ConversationSummary(BaseModel):
+class ConversationSummary(ResponseSchemaModel):
     """Lightweight conversation representation for list views."""
 
     id: UUID
@@ -226,7 +228,7 @@ class ConversationSummary(BaseModel):
     )
 
 
-class ConversationCitation(BaseModel):
+class ConversationCitation(ResponseSchemaModel):
     """One server-normalized navigation citation for an assistant answer."""
 
     label: str
@@ -234,7 +236,7 @@ class ConversationCitation(BaseModel):
     kind: Literal["internal", "external", "unlinked"]
 
 
-class ConversationMessage(BaseModel):
+class ConversationMessage(ResponseSchemaModel):
     """Full message representation including attribution."""
 
     id: UUID
@@ -278,7 +280,7 @@ class ConversationMessage(BaseModel):
         return [] if value is None else value
 
 
-class ConversationDetail(BaseModel):
+class ConversationDetail(ResponseSchemaModel):
     """Cross-butler conversation identity (``GET /api/conversations/{id}``, bu-0ynlk.11).
 
     Deliberately narrower than ``ConversationSummary``: this lookup resolves a
@@ -308,7 +310,7 @@ class ConversationSearchResult(ConversationSummary):
     snippet: str
 
 
-class MessageSearchResult(BaseModel):
+class MessageSearchResult(ResponseSchemaModel):
     """One message-level full-text search hit (``GET /api/conversations/messages/search``)."""
 
     message_id: UUID
@@ -330,7 +332,7 @@ class MessageSearchResult(BaseModel):
     )
 
 
-class ConversationStats(BaseModel):
+class ConversationStats(ResponseSchemaModel):
     """Aggregate conversation statistics for a butler."""
 
     total_conversations: int
@@ -338,7 +340,7 @@ class ConversationStats(BaseModel):
     total_messages: int
 
 
-class ConversationCancelResponse(BaseModel):
+class ConversationCancelResponse(ResponseSchemaModel):
     """Raw response for the canonical message-scoped dashboard Stop endpoint.
 
     ``POST .../conversation-turns/{message_id}/cancel`` is canonical; the

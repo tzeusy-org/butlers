@@ -1,11 +1,6 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  disconnectAccount,
-  getAccountStatus,
-  getGoogleAccounts,
-  setPrimaryAccount,
-  type SecretEntry,
-} from "@/api/index.ts";
+import { disconnectAccount, getAccountStatus, getGoogleAccounts, setPrimaryAccount } from "@/api/client.ts";
+import type { SecretEntry } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
 // Query keys

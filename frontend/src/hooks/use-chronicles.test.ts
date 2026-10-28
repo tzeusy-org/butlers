@@ -163,7 +163,7 @@ describe("getChroniclerAggregateByCategory client delegate", () => {
 
   it("passes params through to client", async () => {
     const mockData = {
-      data: { start_at: params.start_at, end_at: params.end_at, tz: "UTC", buckets: [] },
+      data: { start_at: params.start_at, end_at: params.end_at, tz: "UTC", buckets: [], untracked_seconds: 0 },
       meta: {},
     };
     vi.mocked(getChroniclerAggregateByCategory).mockResolvedValueOnce(mockData);
@@ -177,7 +177,8 @@ describe("getChroniclerAggregateByCategory client delegate", () => {
   it("passes tz and privacy_tier params", async () => {
     const extended = { ...params, tz: "America/New_York", privacy_tier: "normal,sensitive" };
     vi.mocked(getChroniclerAggregateByCategory).mockResolvedValueOnce({
-      data: { start_at: params.start_at, end_at: params.end_at, tz: "America/New_York", buckets: [] },
+      data: {
+untracked_seconds: 0, start_at: params.start_at, end_at: params.end_at, tz: "America/New_York", buckets: [] },
       meta: {},
     });
 

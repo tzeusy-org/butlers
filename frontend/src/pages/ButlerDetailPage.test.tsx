@@ -148,8 +148,8 @@ vi.mock("@/components/chat/ChatPanel", () => ({
 }));
 
 // Mock triggerButler so the command bar does not fire real HTTP requests.
-vi.mock("@/api/index.ts", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/api/index.ts")>();
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client.ts")>();
   return {
     ...actual,
     triggerButler: vi.fn(() => Promise.resolve({ success: true, session_id: null, output: "" })),
@@ -165,6 +165,10 @@ vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 type UseButlerResult = ReturnType<typeof useButler>;
 
 const BASE_BUTLER: ButlerSummary = {
+db: "",
+description: null,
+modules: [],
+last_session_started_at: null,
   name: "general",
   status: "ok",
   port: 8001,
@@ -588,7 +592,8 @@ describe("ButlerDetailPage — loading and error states via DetailPage shell", (
 describe("ButlerDetailPage — bespoke conditional tabs", () => {
   function setButlerName(name: string) {
     vi.mocked(useParams).mockReturnValue({ name });
-    setButlerState({ ...BASE_BUTLER, name });
+    setButlerState({
+...BASE_BUTLER, name });
   }
 
   it.each([
@@ -740,7 +745,8 @@ describe("Spec scenario -- no Tier 2 hero block, header precedes tab rail", () =
 describe("Spec scenario -- sibling nav is owned by the shell PageHeader", () => {
   beforeEach(() => {
     vi.mocked(useParams).mockReturnValue({ name: "health" });
-    setButlerState({ ...BASE_BUTLER, name: "health" });
+    setButlerState({
+...BASE_BUTLER, name: "health" });
     vi.mocked(useButlerStatusBoard).mockReturnValue({
       needsYou: [],
       rows: ROSTER_NAMES.map((n) => makeRow(n)),
@@ -785,7 +791,8 @@ describe("Spec scenario -- detail body remains token-only", () => {
 describe("Spec scenario -- redesigned overview owns page KPIs; legacy footer is removed", () => {
   beforeEach(() => {
     vi.mocked(useParams).mockReturnValue({ name: "general" });
-    setButlerState({ ...BASE_BUTLER, name: "general", sessions_24h: 7 });
+    setButlerState({
+...BASE_BUTLER, name: "general", sessions_24h: 7 });
     vi.mocked(useButlerStatusBoard).mockReturnValue({
       needsYou: [],
       rows: [],
@@ -859,7 +866,8 @@ describe("Spec scenario -- ButlerHeartbeatTile absent from detail page, present 
 
   beforeEach(() => {
     vi.mocked(useParams).mockReturnValue({ name: "relationship" });
-    setButlerState({ ...BASE_BUTLER, name: "relationship" });
+    setButlerState({
+...BASE_BUTLER, name: "relationship" });
     vi.mocked(useButlerStatusBoard).mockReturnValue({
       needsYou: [],
       rows: [],
@@ -907,7 +915,8 @@ describe("Spec scenario -- responsive tab rail", () => {
 
   it("tab rail container has overflow-x-auto and snap-x classes", () => {
     vi.mocked(useParams).mockReturnValue({ name: "general" });
-    setButlerState({ ...BASE_BUTLER, name: "general" });
+    setButlerState({
+...BASE_BUTLER, name: "general" });
 
     const { container } = renderPageLive();
     const tablist = container.querySelector('[role="tablist"]');
@@ -918,7 +927,8 @@ describe("Spec scenario -- responsive tab rail", () => {
 
   it("switchboard tab rail uses the detail-page line treatment and shows every unified + bespoke tab", () => {
     vi.mocked(useParams).mockReturnValue({ name: "switchboard" });
-    setButlerState({ ...BASE_BUTLER, name: "switchboard" });
+    setButlerState({
+...BASE_BUTLER, name: "switchboard" });
 
     const { container } = renderPageLive();
     const tablist = container.querySelector('[role="tablist"]');
@@ -942,7 +952,8 @@ describe("Spec scenario -- responsive tab rail", () => {
 
   it("every butler has exactly 6 unified tabs plus its own bespoke tab count", () => {
     vi.mocked(useParams).mockReturnValue({ name: "finance" });
-    setButlerState({ ...BASE_BUTLER, name: "finance" });
+    setButlerState({
+...BASE_BUTLER, name: "finance" });
 
     renderPageLive();
     const triggers = screen.getAllByRole("tab");
@@ -952,7 +963,8 @@ describe("Spec scenario -- responsive tab rail", () => {
 
   it("Tab key advances focus through every trigger in document order", async () => {
     vi.mocked(useParams).mockReturnValue({ name: "general" });
-    setButlerState({ ...BASE_BUTLER, name: "general" });
+    setButlerState({
+...BASE_BUTLER, name: "general" });
 
     const { container } = renderPageLive();
     const tablist = container.querySelector('[role="tablist"]');

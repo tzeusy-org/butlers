@@ -3,11 +3,7 @@ import { Check, Loader2 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import {
-  getTelegramSessionStatus,
-  telegramSendCode,
-  telegramVerifyCode,
-} from "@/api/index";
+import { getTelegramSessionStatus, telegramSendCode, telegramVerifyCode } from "@/api/client.ts";
 import type { EntityInfoEntry } from "@/api/types";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Button } from "@/components/ui/button";
@@ -127,14 +123,20 @@ export function TelegramSessionSetup({
         resolvedApiId = await new Promise<string>((resolve, reject) => {
           revealMutation.mutate(
             { entityId, infoId: apiIdEntry.id },
-            { onSuccess: (data) => resolve(data.value ?? ""), onError: reject },
+            { onSuccess: (data) => {
+              if (typeof data.value === "string" || data.value == null) resolve(data.value ?? "");
+              else reject(new Error("Credential value is not text"));
+            }, onError: reject },
           );
         });
       }
       const resolvedApiHash = await new Promise<string>((resolve, reject) => {
         revealMutation.mutate(
           { entityId, infoId: apiHashEntry.id },
-          { onSuccess: (data) => resolve(data.value ?? ""), onError: reject },
+          { onSuccess: (data) => {
+              if (typeof data.value === "string" || data.value == null) resolve(data.value ?? "");
+              else reject(new Error("Credential value is not text"));
+            }, onError: reject },
         );
       });
       setApiId(resolvedApiId ?? "");

@@ -11,8 +11,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from butlers.api.models.base import ResponseSchemaModel
 
-class MindMapEdgeResponse(BaseModel):
+
+class MindMapEdgeResponse(ResponseSchemaModel):
     """A directed edge in the mind map DAG."""
 
     parent_node_id: str
@@ -20,7 +22,7 @@ class MindMapEdgeResponse(BaseModel):
     edge_type: str
 
 
-class MindMapNodeResponse(BaseModel):
+class MindMapNodeResponse(ResponseSchemaModel):
     """A concept node in a mind map."""
 
     id: str
@@ -40,7 +42,7 @@ class MindMapNodeResponse(BaseModel):
     updated_at: str
 
 
-class MindMapResponse(BaseModel):
+class MindMapResponse(ResponseSchemaModel):
     """A mind map with optional nested nodes and edges."""
 
     id: str
@@ -53,7 +55,7 @@ class MindMapResponse(BaseModel):
     edges: list[MindMapEdgeResponse] = []
 
 
-class SourceMaterialResponse(BaseModel):
+class SourceMaterialResponse(ResponseSchemaModel):
     """A registered source-material record from the education state store.
 
     Metadata only: the registry never stores or fetches source contents, so
@@ -68,7 +70,7 @@ class SourceMaterialResponse(BaseModel):
     registered_at: str | None = None
 
 
-class QuizResponseModel(BaseModel):
+class QuizResponseModel(ResponseSchemaModel):
     """A recorded quiz response for a concept node."""
 
     id: str
@@ -84,7 +86,7 @@ class QuizResponseModel(BaseModel):
     node_label: str | None = None
 
 
-class AnalyticsSnapshotResponse(BaseModel):
+class AnalyticsSnapshotResponse(ResponseSchemaModel):
     """An analytics snapshot for a mind map, with optional trend data."""
 
     id: str | None = None
@@ -95,7 +97,7 @@ class AnalyticsSnapshotResponse(BaseModel):
     trend: list[dict[str, Any]] = []
 
 
-class TeachingFlowResponse(BaseModel):
+class TeachingFlowResponse(ResponseSchemaModel):
     """A teaching flow entry with mastery summary."""
 
     mind_map_id: str
@@ -107,7 +109,7 @@ class TeachingFlowResponse(BaseModel):
     mastery_pct: float = 0.0
 
 
-class MasterySummaryResponse(BaseModel):
+class MasterySummaryResponse(ResponseSchemaModel):
     """Aggregate mastery statistics for a mind map."""
 
     mind_map_id: str
@@ -121,7 +123,7 @@ class MasterySummaryResponse(BaseModel):
     struggling_node_ids: list[str] = []
 
 
-class CrossTopicTopicEntry(BaseModel):
+class CrossTopicTopicEntry(ResponseSchemaModel):
     """Per-topic entry in cross-topic analytics."""
 
     mind_map_id: str
@@ -131,7 +133,7 @@ class CrossTopicTopicEntry(BaseModel):
     velocity: float
 
 
-class CrossTopicAnalyticsResponse(BaseModel):
+class CrossTopicAnalyticsResponse(ResponseSchemaModel):
     """Cross-topic comparative analytics across all active mind maps."""
 
     topics: list[CrossTopicTopicEntry] = []
@@ -140,7 +142,7 @@ class CrossTopicAnalyticsResponse(BaseModel):
     portfolio_mastery: float = 0.0
 
 
-class PendingReviewNodeResponse(BaseModel):
+class PendingReviewNodeResponse(ResponseSchemaModel):
     """A node due for spaced-repetition review."""
 
     node_id: str
@@ -168,7 +170,7 @@ class CurriculumRequestBody(BaseModel):
     goal: str | None = None
 
 
-class CurriculumRequestResponse(BaseModel):
+class CurriculumRequestResponse(ResponseSchemaModel):
     """202 acknowledgement for a submitted curriculum request.
 
     ``status`` is always ``"accepted"`` — the request has been durably recorded
@@ -181,7 +183,7 @@ class CurriculumRequestResponse(BaseModel):
     request_id: str
 
 
-class CurriculumRequestReceipt(BaseModel):
+class CurriculumRequestReceipt(ResponseSchemaModel):
     """Durable accepted-to-outcome receipt for one curriculum request.
 
     Mirrors a row of ``education.curriculum_requests``. Evidence fields stay
@@ -214,7 +216,7 @@ class CurriculumRequestReceipt(BaseModel):
     updated_at: str
 
 
-class CurriculumRequestStatusResponse(BaseModel):
+class CurriculumRequestStatusResponse(ResponseSchemaModel):
     """Read-only status envelope for curriculum request receipts.
 
     ``receipts_available`` is ``False`` when the receipt store cannot be read
@@ -226,7 +228,7 @@ class CurriculumRequestStatusResponse(BaseModel):
     receipt: CurriculumRequestReceipt | None = None
 
 
-class AnalyticsTrendEntry(BaseModel):
+class AnalyticsTrendEntry(ResponseSchemaModel):
     """One snapshot entry in an analytics trend time-series."""
 
     id: str | None = None
@@ -236,7 +238,7 @@ class AnalyticsTrendEntry(BaseModel):
     created_at: str | None = None
 
 
-class AnalyticsTrendResponse(BaseModel):
+class AnalyticsTrendResponse(ResponseSchemaModel):
     """Analytics trend time-series for a mind map."""
 
     mind_map_id: str
@@ -244,7 +246,7 @@ class AnalyticsTrendResponse(BaseModel):
     trend: list[AnalyticsTrendEntry] = []
 
 
-class StrugglingNodeEntry(BaseModel):
+class StrugglingNodeEntry(ResponseSchemaModel):
     """A concept node identified as struggling."""
 
     node_id: str
@@ -254,7 +256,7 @@ class StrugglingNodeEntry(BaseModel):
     reason: str
 
 
-class StrugglingNodesResponse(BaseModel):
+class StrugglingNodesResponse(ResponseSchemaModel):
     """List of struggling nodes for a mind map."""
 
     mind_map_id: str

@@ -14,6 +14,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from butlers.api.models.base import ResponseSchemaModel
+
 
 class SpotifyConnectionState(StrEnum):
     """Operational state of the Spotify connection.
@@ -37,7 +39,7 @@ class SpotifyConnectionState(StrEnum):
     """Tokens present but granted scopes are insufficient — re-authorization required."""
 
 
-class SpotifyStatusResponse(BaseModel):
+class SpotifyStatusResponse(ResponseSchemaModel):
     """Response for GET /api/connectors/spotify/status.
 
     Reports the current Spotify connection state for the settings page.
@@ -58,7 +60,7 @@ class SpotifyStatusResponse(BaseModel):
     """Fixed non-sensitive capability projection for the connector."""
 
 
-class SpotifyOAuthStartResponse(BaseModel):
+class SpotifyOAuthStartResponse(ResponseSchemaModel):
     """Response for POST /api/connectors/spotify/oauth/start.
 
     Returns the Spotify authorization URL to redirect the user to.
@@ -87,14 +89,14 @@ class SpotifyConfigRequest(BaseModel):
     )
 
 
-class SpotifyConfigResponse(BaseModel):
+class SpotifyConfigResponse(ResponseSchemaModel):
     """Response for POST /api/connectors/spotify/config."""
 
     configured: bool = True
     """True when the client_id was stored in CredentialStore."""
 
 
-class SpotifyDisconnectResponse(BaseModel):
+class SpotifyDisconnectResponse(ResponseSchemaModel):
     """Response for POST /api/connectors/spotify/disconnect."""
 
     disconnected: bool = True

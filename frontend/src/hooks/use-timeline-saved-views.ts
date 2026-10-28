@@ -10,16 +10,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import {
-  createTimelineSavedView,
-  deleteTimelineSavedView,
-  listTimelineSavedViews,
-  updateTimelineSavedView,
-} from "@/api/index.ts";
-import type {
-  TimelineSavedViewCreateRequest,
-  TimelineSavedViewUpdateRequest,
-} from "@/api/index.ts";
+import { createTimelineSavedView, deleteTimelineSavedView, listTimelineSavedViews, updateTimelineSavedView } from "@/api/client.ts";
+import type { TimelineSavedViewCreateRequest, TimelineSavedViewUpdateRequest } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
 // Query key factory

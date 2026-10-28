@@ -129,7 +129,7 @@ function Section({
 
 async function fetchPermissions(): Promise<PermissionsMatrix> {
   try {
-    const body = await apiFetch<{ data: PermissionsMatrix }>("/permissions");
+    const body = await apiFetch("/permissions");
     return body.data as PermissionsMatrix;
   } catch (err) {
     rethrowLegacyHttpError(err, (status) => `GET /api/permissions failed: ${status}`);
@@ -143,14 +143,9 @@ async function putPermission(
   reason: string,
 ): Promise<void> {
   try {
-    await apiFetch<void>(
-      `/permissions/${encodeURIComponent(butler)}/${encodeURIComponent(perm)}`,
-      {
-        method: "PUT",
+    await apiFetch("/permissions/{butler}/{perm}", { method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ granted, reason }),
-      },
-    );
+        body: { granted, reason }, path: { butler, perm } });
   } catch (err) {
     rethrowLegacyMutationError(err, (status) => `PUT failed: ${status}`);
   }
@@ -158,7 +153,7 @@ async function putPermission(
 
 async function fetchWebhooks(): Promise<WebhookRow[]> {
   try {
-    const body = await apiFetch<{ data: WebhookRow[] }>("/webhooks");
+    const body = await apiFetch("/webhooks");
     return body.data as WebhookRow[];
   } catch (err) {
     rethrowLegacyHttpError(err, (status) => `GET /api/webhooks failed: ${status}`);
@@ -167,7 +162,7 @@ async function fetchWebhooks(): Promise<WebhookRow[]> {
 
 async function deleteWebhook(id: string): Promise<void> {
   try {
-    await apiFetch<void>(`/webhooks/${id}`, { method: "DELETE" });
+    await apiFetch("/webhooks/{webhook_id}", { method: "DELETE", path: { webhook_id: id } });
   } catch (err) {
     rethrowLegacyHttpError(err, (status) => `DELETE /api/webhooks/${id} failed: ${status}`);
   }
@@ -177,9 +172,7 @@ export type WebhookTestResult = { ok: boolean; status_code: number | null; laten
 
 async function testWebhook(id: string): Promise<WebhookTestResult> {
   try {
-    const body = await apiFetch<{
-      data: WebhookTestResult;
-    }>(`/webhooks/${id}/test`, { method: "POST" });
+    const body = await apiFetch("/webhooks/{webhook_id}/test", { method: "POST", path: { webhook_id: id } });
     return body.data;
   } catch (err) {
     rethrowLegacyHttpError(err, (status) => `POST /api/webhooks/${id}/test failed: ${status}`);
@@ -187,13 +180,9 @@ async function testWebhook(id: string): Promise<WebhookTestResult> {
 }
 
 async function postExport(scope: ExportScope): Promise<{ signed_url: string; expires_at: string }> {
-  const body = await apiFetch<{
-    data: { signed_url: string; expires_at: string };
-  }>("/data/export", {
-    method: "POST",
+  const body = await apiFetch("/data/export", { method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ scope }),
-  });
+    body: { scope } });
   return body.data;
 }
 
@@ -203,11 +192,9 @@ async function createWebhook(
 ): Promise<WebhookWithSecret> {
   // The signing secret is generated server-side and returned ONCE here.
   try {
-    const body = await apiFetch<{ data: WebhookWithSecret }>("/webhooks", {
-      method: "POST",
+    const body = await apiFetch("/webhooks", { method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ endpoint, events }),
-    });
+      body: { endpoint, events } });
     return body.data as WebhookWithSecret;
   } catch (err) {
     rethrowLegacyHttpError(err, (status) => `POST /api/webhooks failed: ${status}`);
@@ -230,11 +217,9 @@ async function updateWebhook(
   payload: WebhookUpdatePayload,
 ): Promise<WebhookWithSecret> {
   try {
-    const body = await apiFetch<{ data: WebhookWithSecret }>(`/webhooks/${id}`, {
-      method: "PUT",
+    const body = await apiFetch("/webhooks/{webhook_id}", { method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+      body: payload, path: { webhook_id: id } });
     return body.data as WebhookWithSecret;
   } catch (err) {
     rethrowLegacyWebhookMutationError(

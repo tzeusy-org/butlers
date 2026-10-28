@@ -12,11 +12,11 @@ import logging
 import time
 
 from fastapi import APIRouter
-from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ _BLOB_KEYS = [
 # ---------------------------------------------------------------------------
 
 
-class BlobStorageStatus(BaseModel):
+class BlobStorageStatus(ResponseSchemaModel):
     """Current blob storage configuration status."""
 
     endpoint_url: str | None = None
@@ -48,7 +48,7 @@ class BlobStorageStatus(BaseModel):
     configured: bool = False
 
 
-class BlobStorageTestResult(BaseModel):
+class BlobStorageTestResult(ResponseSchemaModel):
     """Result of an S3 connectivity test."""
 
     success: bool

@@ -85,16 +85,8 @@ import {
   useUpdateTimelineSavedView,
   useDeleteTimelineSavedView,
 } from "@/hooks/use-timeline-saved-views";
-import type {
-  ConnectorSummary,
-  IngestionEventSummary,
-  IngestionEventStatus,
-  IngestionHistogramBucket,
-  IngestionHistogramBucketSize,
-  TimelineSavedViewEntry,
-  TimelineSavedViewFilterSpec,
-} from "@/api/index.ts";
-import { ApiError, bulkRetryEvents, replayIngestionEvent } from "@/api/index.ts";
+import type { ConnectorSummary, IngestionEventSummary, IngestionEventStatus, IngestionHistogramBucket, IngestionHistogramBucketSize, TimelineSavedViewEntry, TimelineSavedViewFilterSpec } from "@/api/types.ts";
+import { ApiError, bulkRetryEvents, replayIngestionEvent } from "@/api/client.ts";
 import { Time } from "@/components/ui/time";
 import { RowStatus, ROW_STATUS_WORDS } from "./StatusBadge";
 import { isBulkEligible, bulkIneligibleReason, isReplaySafe } from "./bulkEligibility";
@@ -111,7 +103,7 @@ import { SourceDegradedNote } from "@/components/ui/query-boundary";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function isReplayable(status: IngestionEventStatus): boolean {
+function isReplayable(status: IngestionEventSummary["status"]): boolean {
   return (
     status !== "replay_pending" &&
     status !== "ingested" &&
@@ -120,7 +112,7 @@ function isReplayable(status: IngestionEventStatus): boolean {
   );
 }
 
-function isReplayPending(status: IngestionEventStatus): boolean {
+function isReplayPending(status: IngestionEventSummary["status"]): boolean {
   return status === "replay_pending";
 }
 
@@ -2338,7 +2330,8 @@ export function TimelineTab({
     return override ? { ...e, status: override } : e;
   });
 
-  const events = allEvents.filter((e) => enabledStatuses.has(e.status));
+  const selectedStatuses: ReadonlySet<string> = enabledStatuses;
+  const events = allEvents.filter((e) => selectedStatuses.has(e.status));
 
   // Find the drawer event in the current event list
   const drawerEvent = drawerEventId

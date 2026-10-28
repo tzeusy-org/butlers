@@ -37,6 +37,8 @@ const NOW = Date.parse("2026-07-06T12:00:00.000Z");
 
 function makeSession(overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
+purpose_lane: null,
+cost_usd: null,
     id: "sess-1",
     butler: "health",
     prompt: "Roll up daily stats",

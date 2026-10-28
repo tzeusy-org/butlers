@@ -32,6 +32,18 @@ const NOW = new Date('2026-06-12T00:00:00.000Z')
 /** Build a Fact with sane defaults; override only the fields a test exercises. */
 function makeFact(overrides: Partial<Fact> = {}): Fact {
   return {
+source_episode_status: null,
+superseded_by: null,
+content_authority: null,
+authority_entity_id: null,
+authority_entity_name: null,
+tenant_id: "owner",
+request_id: null,
+retention_class: "operational",
+sensitivity: "normal",
+valid_at: null,
+invalid_at: null,
+idempotency_key: null,
     id: 'fact-1',
     subject: 'owner',
     predicate: 'prefers',
@@ -63,6 +75,19 @@ function makeFact(overrides: Partial<Fact> = {}): Fact {
 /** Build a MemoryRule with sane defaults; override only what a test exercises. */
 function makeRule(overrides: Partial<MemoryRule> = {}): MemoryRule {
   return {
+source_episode_status: null,
+tenant_id: "owner",
+request_id: null,
+retention_class: "rule",
+sensitivity: "normal",
+last_confirmed_at: null,
+content_authority: null,
+authority_entity_id: null,
+authority_entity_name: null,
+endorsed_by: null,
+endorsed_by_name: null,
+endorsed_at: null,
+held: false,
     id: 'rule-1',
     content: 'always confirm before sending',
     scope: 'global',
@@ -89,6 +114,10 @@ function makeRule(overrides: Partial<MemoryRule> = {}): MemoryRule {
 /** Build an Episode with sane defaults; override only what a test exercises. */
 function makeEpisode(overrides: Partial<Episode> = {}): Episode {
   return {
+tenant_id: "owner",
+request_id: null,
+retention_class: "transient",
+sensitivity: "normal",
     id: 'ep-1',
     butler: 'lifestyle',
     session_id: null,
@@ -260,6 +289,9 @@ describe('consolidationGlyph', () => {
 
 function makeInspect(overrides: Partial<MemoryInspectResult> = {}): MemoryInspectResult {
   return {
+fact: null,
+rule: null,
+episode: null,
     id: 'r-1',
     kind: 'fact',
     content: 'ibuprofen, after meals',

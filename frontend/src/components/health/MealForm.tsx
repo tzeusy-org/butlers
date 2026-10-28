@@ -21,7 +21,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { ApiError } from "@/api/client";
-import type { Meal, MealNutrition } from "@/api/types";
+import type { Meal } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -74,6 +74,7 @@ export function MealForm({ meal, onDone, onCancel }: MealFormProps) {
   const isEdit = meal != null;
 
   const [type, setType] = useState<string>(meal?.type ?? "breakfast");
+  const [typeError, setTypeError] = useState<string | null>(null);
   const [description, setDescription] = useState(meal?.description ?? "");
   const [eatenAt, setEatenAt] = useState(isoToDateInput(meal?.eaten_at));
   const [calories, setCalories] = useState(nutritionField(meal, "calories"));
@@ -94,7 +95,7 @@ export function MealForm({ meal, onDone, onCancel }: MealFormProps) {
     toast.error(message);
   }
 
-  function buildNutrition(): MealNutrition | null {
+  function buildNutrition() {
     const c = parseNumber(calories);
     const p = parseNumber(protein);
     const cb = parseNumber(carbs);
@@ -112,6 +113,12 @@ export function MealForm({ meal, onDone, onCancel }: MealFormProps) {
       return;
     }
 
+    const selectedType = MEAL_TYPES.find((value) => value === type);
+    if (!selectedType) {
+      setTypeError("Select a supported meal type.");
+      return;
+    }
+
     const trimmedNotes = notes.trim();
     const nutrition = buildNutrition();
     const eatenIso = eatenAtToIso(eatenAt);
@@ -124,7 +131,7 @@ export function MealForm({ meal, onDone, onCancel }: MealFormProps) {
         await updateMutation.mutateAsync({
           id: meal.id,
           body: {
-            type,
+            type: selectedType,
             description: trimmedDescription,
             eaten_at: eatenIso,
             nutrition,
@@ -134,7 +141,7 @@ export function MealForm({ meal, onDone, onCancel }: MealFormProps) {
         if (draft.current(submission)) toast.success("Meal updated.");
       } else {
         await createMutation.mutateAsync({
-          type,
+          type: selectedType,
           description: trimmedDescription,
           eaten_at: eatenIso,
           nutrition,
@@ -157,15 +164,19 @@ export function MealForm({ meal, onDone, onCancel }: MealFormProps) {
           <select
             id="meal-type"
             value={type}
-            onChange={(e) => setType(e.target.value)}
+            onChange={(e) => { setType(e.target.value); setTypeError(null); }}
             className="border-input bg-background ring-offset-background focus-visible:ring-focus flex h-10 w-full rounded-md border px-3 py-2 text-sm capitalize focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
           >
+            {!MEAL_TYPES.some((value) => value === type) && (
+              <option value={type}>Unsupported meal type: {type}</option>
+            )}
             {MEAL_TYPES.map((opt) => (
               <option key={opt} value={opt} className="capitalize">
                 {opt}
               </option>
             ))}
           </select>
+          {typeError && <p role="alert" className="text-destructive text-sm">{typeError}</p>}
         </div>
         <div className="space-y-2">
           <Label htmlFor="meal-eaten">Eaten (optional)</Label>

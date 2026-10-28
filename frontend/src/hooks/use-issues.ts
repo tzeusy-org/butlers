@@ -4,13 +4,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import {
-  dismissIssue,
-  getAuditIssueGroup,
-  getIssueOccurrences,
-  getIssues,
-  undismissIssue,
-} from "@/api/index.ts";
+import { dismissIssue, getAuditIssueGroup, getIssueOccurrences, getIssues, undismissIssue } from "@/api/client.ts";
 import type { ApiResponse, Issue } from "@/api/types";
 import { useOptimisticListMutation } from "@/hooks/use-optimistic-mutation.ts";
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";

@@ -8,7 +8,7 @@
 // classification, no new route.
 // ---------------------------------------------------------------------------
 
-import { createConversation } from "@/api/index.ts";
+import { createConversation } from "@/api/client.ts";
 import type { PendingDebrief } from "@/api/types.ts";
 import { consumeSseStream } from "@/components/chat/sse-utils.ts";
 

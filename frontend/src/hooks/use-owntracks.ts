@@ -7,11 +7,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import {
-  generateOwnTracksToken,
-  getOwnTracksConfig,
-  getOwnTracksStatus,
-} from "@/api/index.ts";
+import { generateOwnTracksToken, getOwnTracksConfig, getOwnTracksStatus } from "@/api/client.ts";
 
 /**
  * Primary poll interval for OwnTracks status queries (bu-ep4ks.15).

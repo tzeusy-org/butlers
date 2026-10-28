@@ -133,6 +133,16 @@ function makeRow(
 
 function makeSchedule(overrides: Partial<Schedule> = {}): Schedule {
   return {
+dispatch_mode: "prompt",
+job_name: null,
+job_args: null,
+complexity: null,
+timezone: null,
+start_at: null,
+end_at: null,
+until_at: null,
+display_title: null,
+calendar_event_id: null,
     id: "schedule-1",
     name: "Daily check-in",
     cron: "0 9 * * *",

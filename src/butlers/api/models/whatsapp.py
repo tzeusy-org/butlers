@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel
+from butlers.api.models.base import ResponseSchemaModel
 
 
 class WhatsAppState(StrEnum):
@@ -47,7 +47,7 @@ class WhatsAppPairStatus(StrEnum):
     """QR code expired without being scanned."""
 
 
-class WhatsAppStatusResponse(BaseModel):
+class WhatsAppStatusResponse(ResponseSchemaModel):
     """Response for GET /api/connectors/whatsapp/status.
 
     Reports the current WhatsApp connection state for the settings page.
@@ -69,7 +69,7 @@ class WhatsAppStatusResponse(BaseModel):
     """Whether the Go bridge subprocess is currently running."""
 
 
-class WhatsAppPairStartResponse(BaseModel):
+class WhatsAppPairStartResponse(ResponseSchemaModel):
     """Response for POST /api/connectors/whatsapp/pair/start.
 
     Returns a QR code data URI and expiry for the pairing modal.
@@ -82,7 +82,7 @@ class WhatsAppPairStartResponse(BaseModel):
     """ISO datetime when this QR code expires (typically ~60 seconds)."""
 
 
-class WhatsAppPairPollResponse(BaseModel):
+class WhatsAppPairPollResponse(ResponseSchemaModel):
     """Response for GET /api/connectors/whatsapp/pair/poll.
 
     Used by the frontend to poll pairing progress.
@@ -95,7 +95,7 @@ class WhatsAppPairPollResponse(BaseModel):
     """Connected phone number when status == 'paired', otherwise null."""
 
 
-class WhatsAppHealthResponse(BaseModel):
+class WhatsAppHealthResponse(ResponseSchemaModel):
     """Response for GET /api/connectors/whatsapp/health.
 
     Proxies bridge /status and surfaces session health for the badge.
@@ -114,7 +114,7 @@ class WhatsAppHealthResponse(BaseModel):
     """Timestamp of the last WhatsApp event, if available."""
 
 
-class WhatsAppDisconnectResponse(BaseModel):
+class WhatsAppDisconnectResponse(ResponseSchemaModel):
     """Response for POST /api/connectors/whatsapp/disconnect."""
 
     success: bool = True

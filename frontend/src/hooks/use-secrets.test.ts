@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { SecretEntry } from "@/api/index.ts";
+import type { SecretEntry } from "@/api/types.ts";
 import { isSharedSecretsTarget, mergeResolvedSecrets } from "@/hooks/use-secrets";
 
 function secret(overrides: Partial<SecretEntry> & Pick<SecretEntry, "key">): SecretEntry {

@@ -25,7 +25,6 @@ import type {
   CalendarPrepCommitment,
   CalendarPrepCommitmentDirection,
   CalendarPrepCommitmentKind,
-  CalendarPrepMessageContext,
 } from "@/api/types.ts";
 import { TierBadge, tierLabel } from "@/components/ui/TierBadge.tsx";
 import { FetchingDim } from "@/components/ui/fetching-dim";
@@ -58,11 +57,11 @@ function titleizeToken(value: string): string {
  * email-owning butlers' prep job). Optional fields may be empty/`null`, so we
  * trim and fall back gracefully rather than assuming presence.
  */
-function readMessageContext(item: CalendarPrepMessageContext): {
+function readMessageContext(item: Record<string, unknown>): {
   primary: string | null;
   secondary: string | null;
 } {
-  const clean = (value: string | null | undefined): string | null =>
+  const clean = (value: unknown): string | null =>
     typeof value === "string" && value.trim() ? value.trim() : null;
   const primary = clean(item.subject) ?? clean(item.snippet);
   const secondary = clean(item.last_message_at) ?? clean(item.channel);
@@ -70,7 +69,7 @@ function readMessageContext(item: CalendarPrepMessageContext): {
 }
 
 /** One message-context item row inside an attendee's panel. */
-function MessageContextItem({ item }: { item: CalendarPrepMessageContext }) {
+function MessageContextItem({ item }: { item: Record<string, unknown> }) {
   const { primary, secondary } = readMessageContext(item);
   return (
     <div

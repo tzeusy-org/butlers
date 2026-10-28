@@ -34,9 +34,27 @@ function renderWidget(props: Partial<React.ComponentProps<typeof CostWidget>> = 
 }
 
 const DAILY: DailySpend[] = [
-  { date: "2026-05-01", cost_usd: 0.1, sessions: 1, input_tokens: 100, output_tokens: 50 },
-  { date: "2026-05-02", cost_usd: 0.4, sessions: 2, input_tokens: 200, output_tokens: 100 },
-  { date: "2026-05-03", cost_usd: 0.2, sessions: 1, input_tokens: 100, output_tokens: 50 },
+  {
+by_butler: {},
+cache_creation_tokens: 0,
+cache_hit_rate: null,
+cache_read_cost_usd: 0,
+cached_input_tokens: 0,
+unpriced_models: [], date: "2026-05-01", cost_usd: 0.1, sessions: 1, input_tokens: 100, output_tokens: 50 },
+  {
+by_butler: {},
+cache_creation_tokens: 0,
+cache_hit_rate: null,
+cache_read_cost_usd: 0,
+cached_input_tokens: 0,
+unpriced_models: [], date: "2026-05-02", cost_usd: 0.4, sessions: 2, input_tokens: 200, output_tokens: 100 },
+  {
+by_butler: {},
+cache_creation_tokens: 0,
+cache_hit_rate: null,
+cache_read_cost_usd: 0,
+cached_input_tokens: 0,
+unpriced_models: [], date: "2026-05-03", cost_usd: 0.2, sessions: 1, input_tokens: 100, output_tokens: 50 },
 ];
 
 const UNPRICED: UnpricedModelUsage[] = [

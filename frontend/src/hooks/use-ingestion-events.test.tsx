@@ -3,13 +3,13 @@ import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-libr
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
-import * as api from "@/api/index.ts";
+import * as api from "@/api/client.ts";
 import {
   ingestionEventKeys, useIngestionEvents, useIngestionEventDetail,
   useIngestionEventSessions, useIngestionWindowRollup, useIngestionEventsHistogram,
 } from "./use-ingestion-events";
 
-vi.mock("@/api/index.ts", () => ({
+vi.mock("@/api/client.ts", () => ({
   listIngestionEvents: vi.fn(), getIngestionEvent: vi.fn(),
   getIngestionEventSessions: vi.fn(),
   getIngestionWindowRollup: vi.fn(), getIngestionEventsHistogram: vi.fn(),
@@ -169,12 +169,18 @@ it("reconciles active drawer and aggregate reads every 30 seconds without bus ev
   vi.mocked(api.getIngestionEventSessions).mockResolvedValue({ data: [], meta: {} });
   vi.mocked(api.getIngestionWindowRollup)
     .mockResolvedValueOnce({
+no_usage_session_count: 0,
+unpriced_session_count: 0,
       events: 0, sessions: 0, cost: null, window: { from: null, to: null },
     })
     .mockResolvedValueOnce({
+no_usage_session_count: 0,
+unpriced_session_count: 0,
       events: 1, sessions: 1, cost: null, window: { from: null, to: null },
     })
     .mockResolvedValueOnce({
+no_usage_session_count: 0,
+unpriced_session_count: 0,
       events: 1, sessions: 1, cost: null, window: { from: null, to: null },
     });
   vi.mocked(api.getIngestionEventsHistogram)

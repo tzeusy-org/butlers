@@ -13,13 +13,14 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     Db,
 )
 from butlers.api.models import PaginatedResponse, PaginationMeta
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.core.healing.constants import CIRCUIT_BREAKER_FAILURE_STATUSES
 from butlers.core.healing.tracking import (
     VALID_STATUSES,
@@ -43,7 +44,7 @@ router = APIRouter(prefix="/api/healing", tags=["healing"])
 # ---------------------------------------------------------------------------
 
 
-class HealingAttempt(BaseModel):
+class HealingAttempt(ResponseSchemaModel):
     """Full healing attempt record for API responses."""
 
     id: uuid.UUID
@@ -68,7 +69,7 @@ class HealingAttempt(BaseModel):
     error_detail: str | None = None
 
 
-class CircuitBreakerStatus(BaseModel):
+class CircuitBreakerStatus(ResponseSchemaModel):
     """Circuit breaker state for the dashboard."""
 
     tripped: bool
@@ -365,7 +366,7 @@ async def reset_circuit_breaker(
 # ---------------------------------------------------------------------------
 
 
-class HealingDispatchEvent(BaseModel):
+class HealingDispatchEvent(ResponseSchemaModel):
     """A dispatch decision record (gate evaluation, not an execution attempt)."""
 
     id: uuid.UUID

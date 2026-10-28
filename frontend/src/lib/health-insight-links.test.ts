@@ -21,6 +21,7 @@ const CHART_ELIGIBLE = new Set(["weight", "blood_pressure"]);
 
 function candidate(overrides: Partial<InsightCandidate> = {}): InsightCandidate {
   return {
+prepared_action_id: null,
     id: "insight-1",
     origin_butler: "health",
     priority: 50,

@@ -14,21 +14,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import {
-  archiveConnector,
-  getConnectorDetail,
-  getConnectorEvents,
-  getConnectorFanout,
-  getConnectorIncidents,
-  getConnectorRoutingRules,
-  getConnectorStats,
-  getConnectorSummaries,
-  getPipelineStats,
-  listAvailableConnectors,
-  unarchiveConnector,
-  updateConnectorSettings,
-} from "@/api/index.ts";
-import type { IngestionPeriod } from "@/api/index.ts";
+import { archiveConnector, getConnectorDetail, getConnectorEvents, getConnectorFanout, getConnectorIncidents, getConnectorRoutingRules, getConnectorStats, getConnectorSummaries, getPipelineStats, listAvailableConnectors, unarchiveConnector, updateConnectorSettings } from "@/api/client.ts";
+import type { IngestionPeriod } from "@/api/types.ts";
 
 /**
  * Primary poll intervals for ingestion connector overview/stats queries (bu-ep4ks.15). No fleet-bus event

@@ -15,12 +15,11 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel
-
 from butlers.api.models import PaginatedResponse
+from butlers.api.models.base import ResponseSchemaModel
 
 
-class AttentionLedgerEntry(BaseModel):
+class AttentionLedgerEntry(ResponseSchemaModel):
     """One row of ``public.attention_ledger``."""
 
     id: UUID
@@ -50,7 +49,7 @@ class AttentionLedgerListResponse(PaginatedResponse[AttentionLedgerEntry]):
     source_available: bool = True
 
 
-class AttentionSourceSummary(BaseModel):
+class AttentionSourceSummary(ResponseSchemaModel):
     """Delivery-vs-suppression counts for one ``origin_butler`` over a window.
 
     "Source" here means ``origin_butler`` (e.g. ``secrets_lifecycle``,
@@ -82,7 +81,7 @@ class AttentionSourceSummary(BaseModel):
     suppressed_never_delivered: bool
 
 
-class AttentionLedgerSummaryResponse(BaseModel):
+class AttentionLedgerSummaryResponse(ResponseSchemaModel):
     """Per-source (per-``origin_butler``) delivery-vs-suppression rollup."""
 
     since: datetime | None

@@ -30,7 +30,9 @@ STEPS: tuple[tuple[str, str], ...] = (
     ("Query-result coercion gate (bu-ep4ks.5)", "lint:query-coercion"),
 )
 
-HOSTED_ONLY: tuple[str, ...] = ("knip", "build")
+# API contract commands run locally through Make's dedicated check-api-contract
+# prerequisite, including backend-only changes; this runner owns frontend lint.
+HOSTED_ONLY: tuple[str, ...] = ("knip", "build", "check:api", "check:api-contract")
 
 
 def changed_paths(base: str) -> list[str]:

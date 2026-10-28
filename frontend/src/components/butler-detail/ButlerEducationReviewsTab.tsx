@@ -38,7 +38,7 @@ import { chartColor } from "@/lib/chart-colors";
 import { useTickingNow } from "@/hooks/use-ticking-now";
 import { DAY_MS, buildTimeSeries } from "@/lib/time-series";
 import { TimeSeriesChart, TooltipDate } from "@/components/ui/TimeSeriesChart";
-import type { PendingReviewNode, MindMapNode, MasterySummary, AnalyticsTrendEntry } from "@/api/index.ts";
+import type { PendingReviewNode, MindMapNode, MasterySummary, AnalyticsTrendEntry } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
 // Types

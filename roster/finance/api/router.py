@@ -11,8 +11,11 @@ import json
 import logging
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Literal
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
+from pydantic import ConfigDict, with_config
+from typing_extensions import TypedDict
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
@@ -44,6 +47,26 @@ SpendingSummaryModel = _models.SpendingSummaryModel
 SubscriptionModel = _models.SubscriptionModel
 TransactionModel = _models.TransactionModel
 UpcomingBillItemModel = _models.UpcomingBillItemModel
+
+
+@with_config(ConfigDict(extra="allow"))
+class UpcomingBillCurrencyTotal(TypedDict):
+    currency: str
+    total_amount: str
+
+
+@with_config(ConfigDict(extra="allow"))
+class UpcomingBillsResponse(TypedDict):
+    items: list[UpcomingBillItemModel]
+    total_amount: str
+    currency: str | None
+    by_currency: list[UpcomingBillCurrencyTotal]
+    legacy_aggregate_degraded: bool
+    degraded_reason: Literal["multiple_currencies_unconverted"] | None
+    count: int
+    days_ahead: int
+    include_overdue: bool
+
 
 logger = logging.getLogger(__name__)
 
@@ -833,7 +856,7 @@ async def get_spending_summary(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/upcoming-bills")
+@router.get("/upcoming-bills", responses={200: {"model": UpcomingBillsResponse}})
 async def get_upcoming_bills(
     days_ahead: int = Query(14, ge=1, le=365, description="Look-ahead window in days"),
     include_overdue: bool = Query(True, description="Include overdue bills"),

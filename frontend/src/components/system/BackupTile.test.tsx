@@ -16,6 +16,9 @@ import { describe, expect, it, vi } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 
 import type { ApiResponse, BackupFacts } from "@/api/types"
+import { ownerFetch } from "@/api/owner-session";
+vi.mock("@/api/owner-session", async (original) => ({ ...await original<typeof import("@/api/owner-session")>(), ownerFetch: vi.fn() }));
+import { getBackupFacts } from "@/api/client";
 import { BackupTile } from "./BackupTile"
 
 // ---------------------------------------------------------------------------
@@ -54,8 +57,9 @@ vi.mock("@/components/ui/time", () => ({
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeBackupFacts(overrides: Partial<BackupFacts> = {}): ApiResponse<BackupFacts> {
-  return {
+async function makeBackupFacts(overrides: Partial<BackupFacts> = {}): Promise<ApiResponse<BackupFacts>> {
+  // The historical omitted fields remain omitted in raw HTTP input.
+  vi.mocked(ownerFetch).mockResolvedValueOnce(new Response(JSON.stringify({
     data: {
       last_backup_at: "2026-05-01T02:00:00Z",
       last_backup_size_bytes: 1048576,
@@ -64,7 +68,8 @@ function makeBackupFacts(overrides: Partial<BackupFacts> = {}): ApiResponse<Back
       ...overrides,
     },
     meta: {},
-  }
+  })));
+  return getBackupFacts();
 }
 
 function render(): string {
@@ -76,14 +81,14 @@ function render(): string {
 // ---------------------------------------------------------------------------
 
 describe("BackupTile -- loading state", () => {
-  it("renders skeleton when isPending=true", () => {
+  it("renders skeleton when isPending=true", async () => {
     mockResult = { isPending: true }
     const html = render()
     expect(html).toContain("backup-tile-skeleton")
     expect(html).toContain('aria-busy="true"')
   })
 
-  it("does not render content while loading", () => {
+  it("does not render content while loading", async () => {
     mockResult = { isPending: true }
     const html = render()
     expect(html).not.toContain("backup-tile-content")
@@ -96,19 +101,19 @@ describe("BackupTile -- loading state", () => {
 // ---------------------------------------------------------------------------
 
 describe("BackupTile -- error state", () => {
-  it("renders error message when isError=true", () => {
+  it("renders error message when isError=true", async () => {
     mockResult = { isPending: false, isError: true }
     const html = render()
     expect(html).toContain("backup-tile-error")
     expect(html).toContain('data-degraded="true"')
   })
 
-  it("renders error text when isError=true", () => {
+  it("renders error text when isError=true", async () => {
     mockResult = { isPending: false, isError: true }
     expect(render()).toContain("Could not load backup facts")
   })
 
-  it("does not render content or unavailable state when isError=true", () => {
+  it("does not render content or unavailable state when isError=true", async () => {
     mockResult = { isPending: false, isError: true }
     const html = render()
     expect(html).not.toContain("backup-tile-content")
@@ -121,36 +126,36 @@ describe("BackupTile -- error state", () => {
 // ---------------------------------------------------------------------------
 
 describe("BackupTile -- backup source unreachable", () => {
-  it("renders unavailable state when backup_source_reachable is false", () => {
+  it("renders unavailable state when backup_source_reachable is false", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({ backup_source_reachable: false }),
+      data: await makeBackupFacts({ backup_source_reachable: false }),
     }
     const html = render()
     expect(html).toContain("backup-tile-unavailable")
     expect(html).toContain('data-degraded="true"')
   })
 
-  it("shows 'Backup status unavailable' text", () => {
+  it("shows 'Backup status unavailable' text", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({ backup_source_reachable: false }),
+      data: await makeBackupFacts({ backup_source_reachable: false }),
     }
     expect(render()).toContain("Backup status unavailable")
   })
 
-  it("does not render error state when source is unreachable", () => {
+  it("does not render error state when source is unreachable", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({ backup_source_reachable: false }),
+      data: await makeBackupFacts({ backup_source_reachable: false }),
     }
     expect(render()).not.toContain("backup-tile-error")
   })
 
-  it("does not render content tile when source is unreachable", () => {
+  it("does not render content tile when source is unreachable", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({ backup_source_reachable: false }),
+      data: await makeBackupFacts({ backup_source_reachable: false }),
     }
     expect(render()).not.toContain("backup-tile-content")
   })
@@ -161,28 +166,28 @@ describe("BackupTile -- backup source unreachable", () => {
 // ---------------------------------------------------------------------------
 
 describe("BackupTile -- reachable with last_backup_at", () => {
-  it("renders content container", () => {
-    mockResult = { isPending: false, data: makeBackupFacts() }
+  it("renders content container", async () => {
+    mockResult = { isPending: false, data: await makeBackupFacts() }
     expect(render()).toContain("backup-tile-content")
   })
 
-  it("renders a status badge", () => {
-    mockResult = { isPending: false, data: makeBackupFacts() }
+  it("renders a status badge", async () => {
+    mockResult = { isPending: false, data: await makeBackupFacts() }
     expect(render()).toContain("backup-tile-status-badge")
   })
 
-  it("renders the last_backup_at timestamp via <Time>", () => {
+  it("renders the last_backup_at timestamp via <Time>", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({ last_backup_at: "2026-05-01T02:00:00Z" }),
+      data: await makeBackupFacts({ last_backup_at: "2026-05-01T02:00:00Z" }),
     }
     expect(render()).toContain("2026-05-01T02:00:00Z")
   })
 
-  it("does not show 'Never run' when last_backup_at is set", () => {
+  it("does not show 'Never run' when last_backup_at is set", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({ last_backup_at: "2026-05-01T02:00:00Z" }),
+      data: await makeBackupFacts({ last_backup_at: "2026-05-01T02:00:00Z" }),
     }
     expect(render()).not.toContain("Never run")
   })
@@ -193,18 +198,18 @@ describe("BackupTile -- reachable with last_backup_at", () => {
 // ---------------------------------------------------------------------------
 
 describe("BackupTile -- reachable without last_backup_at", () => {
-  it("renders 'Never run' when last_backup_at is null", () => {
+  it("renders 'Never run' when last_backup_at is null", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({ last_backup_at: null }),
+      data: await makeBackupFacts({ last_backup_at: null }),
     }
     expect(render()).toContain("Never run")
   })
 
-  it("does not render a <time> element when last_backup_at is null", () => {
+  it("does not render a <time> element when last_backup_at is null", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({ last_backup_at: null }),
+      data: await makeBackupFacts({ last_backup_at: null }),
     }
     expect(render()).not.toContain("<time")
   })
@@ -215,44 +220,44 @@ describe("BackupTile -- reachable without last_backup_at", () => {
 // ---------------------------------------------------------------------------
 
 describe("BackupTile -- verified status badge (bu-9r3hd.5)", () => {
-  it("renders 'Healthy' when the artifact verified healthy and isn't stale", () => {
+  it("renders 'Healthy' when the artifact verified healthy and isn't stale", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({ last_backup_status: "healthy", backup_stale: false }),
+      data: await makeBackupFacts({ last_backup_status: "healthy", backup_stale: false }),
     }
     expect(render()).toContain("Healthy")
   })
 
-  it("renders 'Corrupt' when the artifact failed integrity verification", () => {
+  it("renders 'Corrupt' when the artifact failed integrity verification", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({ last_backup_status: "corrupt" }),
+      data: await makeBackupFacts({ last_backup_status: "corrupt" }),
     }
     const html = render()
     expect(html).toContain("Corrupt")
     expect(html).not.toContain(">Healthy<")
   })
 
-  it("renders 'Empty' when the artifact is below the size floor", () => {
+  it("renders 'Empty' when the artifact is below the size floor", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({ last_backup_status: "empty" }),
+      data: await makeBackupFacts({ last_backup_status: "empty" }),
     }
     expect(render()).toContain("Empty")
   })
 
-  it("renders 'Stale' when the artifact is healthy but past the age threshold", () => {
+  it("renders 'Stale' when the artifact is healthy but past the age threshold", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({ last_backup_status: "healthy", backup_stale: true }),
+      data: await makeBackupFacts({ last_backup_status: "healthy", backup_stale: true }),
     }
     expect(render()).toContain("Stale")
   })
 
-  it("renders 'Unverified' rather than a fabricated 'Healthy' when status fields are absent", () => {
+  it("renders 'Unverified' rather than a fabricated 'Healthy' when status fields are absent", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({ last_backup_status: undefined, backup_stale: undefined }),
+      data: await makeBackupFacts({ last_backup_status: undefined, backup_stale: undefined }),
     }
     const html = render()
     expect(html).toContain("Unverified")
@@ -265,28 +270,28 @@ describe("BackupTile -- verified status badge (bu-9r3hd.5)", () => {
 // ---------------------------------------------------------------------------
 
 describe("BackupTile -- restore drill row (bu-9r3hd.5)", () => {
-  it("renders 'No drill yet' when restore_drill is absent", () => {
+  it("renders 'No drill yet' when restore_drill is absent", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({ restore_drill: undefined }),
+      data: await makeBackupFacts({ restore_drill: undefined }),
     }
     expect(render()).toContain("backup-tile-drill-pending")
   })
 
-  it("renders 'No drill yet' when restore_drill.result is 'pending'", () => {
+  it("renders 'No drill yet' when restore_drill.result is 'pending'", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({
+      data: await makeBackupFacts({
         restore_drill: { checked_at: null, result: "pending", detail: null },
       }),
     }
     expect(render()).toContain("backup-tile-drill-pending")
   })
 
-  it("renders a pass row when restore_drill.result is 'pass'", () => {
+  it("renders a pass row when restore_drill.result is 'pass'", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({
+      data: await makeBackupFacts({
         restore_drill: {
           checked_at: "2026-07-04T02:00:00Z",
           result: "pass",
@@ -299,10 +304,10 @@ describe("BackupTile -- restore drill row (bu-9r3hd.5)", () => {
     expect(html).toContain("Passed")
   })
 
-  it("renders a problem row with detail when restore_drill.result is 'fail'", () => {
+  it("renders a problem row with detail when restore_drill.result is 'fail'", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({
+      data: await makeBackupFacts({
         restore_drill: {
           checked_at: "2026-07-04T02:00:00Z",
           result: "fail",
@@ -316,10 +321,10 @@ describe("BackupTile -- restore drill row (bu-9r3hd.5)", () => {
     expect(html).toContain("relation already exists")
   })
 
-  it("renders a problem row when restore_drill.result is 'degraded'", () => {
+  it("renders a problem row when restore_drill.result is 'degraded'", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({
+      data: await makeBackupFacts({
         restore_drill: { checked_at: null, result: "degraded", detail: "pool unavailable" },
       }),
     }
@@ -328,11 +333,11 @@ describe("BackupTile -- restore drill row (bu-9r3hd.5)", () => {
     expect(html).toContain("Unavailable")
   })
 
-  it("withholds an unexpected degraded diagnostic from the UI", () => {
+  it("withholds an unexpected degraded diagnostic from the UI", async () => {
     const marker = "backup-tile-private-marker"
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({
+      data: await makeBackupFacts({
         restore_drill: {
           checked_at: null,
           result: "degraded",
@@ -352,13 +357,13 @@ describe("BackupTile -- restore drill row (bu-9r3hd.5)", () => {
 // ---------------------------------------------------------------------------
 
 describe("BackupTile -- last run outcome (bu-u41p0)", () => {
-  it("badges a failed run even when the artifact is verified healthy and fresh", () => {
+  it("badges a failed run even when the artifact is verified healthy and fresh", async () => {
     // The regression this bead exists for: pg_dump.sh publishes nothing on
     // failure, so yesterday's good dump is still there and every freshness
     // fact reads clean. The badge must not say "Healthy".
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({
+      data: await makeBackupFacts({
         last_backup_status: "healthy",
         backup_stale: false,
         last_run: {
@@ -374,10 +379,10 @@ describe("BackupTile -- last run outcome (bu-u41p0)", () => {
     expect(html).not.toContain(">Healthy<")
   })
 
-  it("reports a failed run's finish time and reason in its own row", () => {
+  it("reports a failed run's finish time and reason in its own row", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({
+      data: await makeBackupFacts({
         last_run: {
           result: "failed",
           finished_at: "2026-05-02T02:00:00Z",
@@ -392,11 +397,11 @@ describe("BackupTile -- last run outcome (bu-u41p0)", () => {
     expect(html).toContain("2026-05-02T02:00:00Z")
   })
 
-  it("withholds a reason outside the script's fixed vocabulary", () => {
+  it("withholds a reason outside the script's fixed vocabulary", async () => {
     const marker = "backup-run-private-marker"
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({
+      data: await makeBackupFacts({
         last_run: {
           result: "failed",
           finished_at: null,
@@ -410,10 +415,10 @@ describe("BackupTile -- last run outcome (bu-u41p0)", () => {
     expect(html).not.toContain(marker)
   })
 
-  it("renders 'unknown' as neither healthy nor failed in the run row", () => {
+  it("renders 'unknown' as neither healthy nor failed in the run row", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({
+      data: await makeBackupFacts({
         last_run: { result: "unknown", finished_at: null, exit_code: null, reason: null },
       }),
     }
@@ -423,17 +428,17 @@ describe("BackupTile -- last run outcome (bu-u41p0)", () => {
     expect(html).not.toContain("backup-tile-run-failed")
   })
 
-  it("treats an absent last_run the same as an explicit 'unknown'", () => {
-    mockResult = { isPending: false, data: makeBackupFacts({ last_run: undefined }) }
+  it("treats an absent last_run the same as an explicit 'unknown'", async () => {
+    mockResult = { isPending: false, data: await makeBackupFacts({ last_run: undefined }) }
     expect(render()).toContain("backup-tile-run-unknown")
   })
 
-  it("leaves the badge on 'Stale' when the run result is unknown", () => {
+  it("leaves the badge on 'Stale' when the run result is unknown", async () => {
     // "unknown" is the absence of a signal, so it neither rescues a stale
     // artifact nor demotes it further -- the freshness verdict still stands.
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({
+      data: await makeBackupFacts({
         last_backup_status: "healthy",
         backup_stale: true,
         last_run: { result: "unknown", finished_at: null, exit_code: null, reason: null },
@@ -444,10 +449,10 @@ describe("BackupTile -- last run outcome (bu-u41p0)", () => {
     expect(html).toContain("backup-tile-run-unknown")
   })
 
-  it("leaves the badge on 'Healthy' when the run succeeded", () => {
+  it("leaves the badge on 'Healthy' when the run succeeded", async () => {
     mockResult = {
       isPending: false,
-      data: makeBackupFacts({
+      data: await makeBackupFacts({
         last_backup_status: "healthy",
         backup_stale: false,
         last_run: {

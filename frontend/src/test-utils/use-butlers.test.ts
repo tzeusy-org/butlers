@@ -20,8 +20,16 @@ describe("useButlers test helper", () => {
     setUseButlersState({
       data: {
         data: [
-          { name: "general", status: "ok", port: 40101, type: "butler" },
-          { name: "health", status: "ok", port: 40102, type: "butler", sessions_24h: 7 },
+          {
+description: null,
+modules: [],
+db: "",
+last_session_started_at: null, name: "general", status: "ok", port: 40101, type: "butler" },
+          {
+description: null,
+modules: [],
+db: "",
+last_session_started_at: null, name: "health", status: "ok", port: 40102, type: "butler", sessions_24h: 7 },
         ],
       },
     });

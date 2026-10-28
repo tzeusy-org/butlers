@@ -48,6 +48,7 @@ vi.mock("@/hooks/use-issues", () => ({
 
 function entry(overrides: Partial<AuditLogEntry> = {}): AuditLogEntry {
   return {
+redacted: false,
     id: 1,
     ts: "2026-07-01T12:00:00.000Z",
     actor: "owner",

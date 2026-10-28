@@ -20,6 +20,9 @@ import { createRoot } from "react-dom/client";
 import { MemoryRouter, useNavigate } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+import { ownerFetch } from "@/api/owner-session";
+vi.mock("@/api/owner-session", async (original) => ({ ...await original<typeof import("@/api/owner-session")>(), ownerFetch: vi.fn() }));
+import { getChroniclesBriefing } from "@/api/client.ts";
 import ChroniclesPage from "@/pages/ChroniclesPage";
 import type { ChroniclesBriefing } from "@/api/types";
 
@@ -62,7 +65,7 @@ vi.mock("@/hooks/use-chronicles-briefing", () => ({
   },
 }));
 
-vi.mock("@/api/client.ts", () => ({ postChroniclerDayCloseRefresh }));
+vi.mock("@/api/client.ts", async (original) => ({ ...await original<typeof import("@/api/client.ts")>(), postChroniclerDayCloseRefresh }));
 
 // The drilldown panel pulls in heavy modules (Gantt, Map, Scrubber). For these
 // editorial smoke tests we stub it out; content visibility is tested in its
@@ -227,10 +230,11 @@ describe("ChroniclesPage editorial archetype", () => {
     expect(html).toContain("Recent days");
   });
 
-  it("renders a legacy briefing response without the availability ledger", () => {
-    const legacyBriefing = buildBriefing();
-    delete legacyBriefing.subquery_availability;
-    _briefing = legacyBriefing;
+  it("renders a legacy briefing response without the availability ledger", async () => {
+    const { subquery_availability: _availability, ...legacyBriefing } = buildBriefing();
+    void _availability;
+    vi.mocked(ownerFetch).mockResolvedValueOnce(new Response(JSON.stringify(legacyBriefing)));
+    _briefing = await getChroniclesBriefing();
 
     const html = renderPage();
 

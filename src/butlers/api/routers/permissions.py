@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.api.routers import audit
 from butlers.api.routers.webhooks import dispatch_event
 from butlers.api.security import validate_no_secrets
@@ -32,7 +33,7 @@ router = APIRouter(prefix="/api/permissions", tags=["permissions"])
 # ---------------------------------------------------------------------------
 
 
-class PermissionCell(BaseModel):
+class PermissionCell(ResponseSchemaModel):
     """One cell in the permissions matrix."""
 
     granted: bool
@@ -41,7 +42,7 @@ class PermissionCell(BaseModel):
     inherited: bool = False
 
 
-class PermissionsMatrix(BaseModel):
+class PermissionsMatrix(ResponseSchemaModel):
     """Full permissions × butlers matrix.
 
     ``cells`` maps ``butler_name → {permission_name → PermissionCell}``.
@@ -142,7 +143,7 @@ async def get_permissions_matrix(
 # ---------------------------------------------------------------------------
 
 
-class PermissionSetResponse(BaseModel):
+class PermissionSetResponse(ResponseSchemaModel):
     """Response body for a successful permission update."""
 
     butler: str

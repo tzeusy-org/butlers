@@ -19,6 +19,7 @@ function makeEpisode(
   endIso: string | null,
 ): ChroniclerEpisode {
   return {
+participant_entity_ids: [],
     id: String(epId++),
     source_name: sourceName,
     source_ref: "test",

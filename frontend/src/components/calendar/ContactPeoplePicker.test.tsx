@@ -30,7 +30,7 @@ import { ContactPeoplePicker, type SelectedPerson } from "./ContactPeoplePicker"
 import type { ContactSearchResponse } from "@/api/types.ts";
 
 const searchContactsMock = vi.fn();
-vi.mock("@/api/index.ts", () => ({
+vi.mock("@/api/client.ts", () => ({
   searchContacts: (...args: unknown[]) => searchContactsMock(...args),
 }));
 

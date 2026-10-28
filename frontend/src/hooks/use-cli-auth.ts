@@ -1,16 +1,8 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  cancelCLIAuthSession,
-  deleteCLIAuthApiKey,
-  getCLIAuthSession,
-  listCLIAuthProviders,
-  saveCLIAuthApiKey,
-  startCLIAuth,
-  testCLIAuthApiKey,
-} from "@/api/index.ts";
+import { cancelCLIAuthSession, deleteCLIAuthApiKey, getCLIAuthSession, listCLIAuthProviders, saveCLIAuthApiKey, startCLIAuth, testCLIAuthApiKey } from "@/api/client.ts";
 import { reauthorizeCliCredential } from "@/api/client.ts";
-import type { CLIAuthSessionResponse } from "@/api/index.ts";
+import type { CLIAuthSessionResponse } from "@/api/types.ts";
 import { secretsInventoryKeys } from "@/hooks/use-secrets-inventory.ts";
 
 /**

@@ -92,7 +92,11 @@ import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy"
 const mockUseQuery = vi.mocked(useQuery)
 
 function makeButler(name: string): ButlerSummary {
-  return { name, status: "ok", port: 41200, type: "butler", sessions_24h: 0 }
+  return {
+db: "",
+description: null,
+modules: [],
+last_session_started_at: null, name, status: "ok", port: 41200, type: "butler", sessions_24h: 0 }
 }
 
 function renderChart(props: Parameters<typeof SessionStripeChart>[0]): string {

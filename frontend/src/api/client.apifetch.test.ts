@@ -22,7 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mockFetch = vi.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
 
-import { apiFetch, ApiError, API_REQUEST_TIMEOUT_MS, getApprovalDetail, getCalendarResponseReceipt } from "./client.ts";
+import { apiFetch, ApiError, API_REQUEST_TIMEOUT_MS, getMeasurementsLatest, getApprovalDetail, getCalendarResponseReceipt } from "./client.ts";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -88,7 +88,7 @@ describe("apiFetch — timeout", () => {
         }),
     );
 
-    const promise = apiFetch("/slow");
+    const promise = apiFetch("/health");
     // Attach the rejection assertion before advancing timers so the rejection
     // is observed synchronously with the abort, avoiding an unhandled
     // rejection warning in between.
@@ -130,7 +130,7 @@ describe("apiFetch — standard error envelope details", () => {
       }),
     });
 
-    const error = await apiFetch("/beads/bu-safe").catch((caught) => caught);
+    const error = await apiFetch("/issues/group-for-audit/{audit_id}", { path: {audit_id:7} }).catch((caught) => caught);
 
     expect(error).toMatchObject({
       name: "ApiError",
@@ -153,7 +153,9 @@ describe("apiFetch — standard error envelope details", () => {
       json: async () => ({ detail }),
     });
 
-    const error = (await apiFetch("/relationship/entities/e/contacts/has-email/h", {
+    const error = (await apiFetch("/relationship/entities/{entity_id}/contacts/{predicate}/{value_hash}", {
+      path: {entity_id:"e",predicate:"has-email",value_hash:"h"},
+      body: {new_value:"new"},
       method: "PUT",
     }).catch((caught) => caught)) as ApiError;
 
@@ -171,7 +173,7 @@ describe("apiFetch — standard error envelope details", () => {
       statusText: "Conflict",
       json: async () => ({ detail: { error: "wipe_disabled" } }),
     });
-    const wipe = (await apiFetch("/wipe").catch((caught) => caught)) as ApiError;
+    const wipe = (await apiFetch("/health").catch((caught) => caught)) as ApiError;
     expect([wipe.code, wipe.message]).toEqual(["UNKNOWN_ERROR", "wipe_disabled"]);
 
     mockFetch.mockResolvedValueOnce({
@@ -180,7 +182,7 @@ describe("apiFetch — standard error envelope details", () => {
       statusText: "Conflict",
       json: async () => ({ detail: { foo: 1 } }),
     });
-    const unknown = (await apiFetch("/unknown").catch((caught) => caught)) as ApiError;
+    const unknown = (await apiFetch("/health").catch((caught) => caught)) as ApiError;
     expect([unknown.code, unknown.message]).toEqual(["UNKNOWN_ERROR", '{"foo":1}']);
     expect(unknown.detail).toEqual({ foo: 1 });
   });
@@ -202,7 +204,7 @@ describe("apiFetch — caller-provided AbortSignal", () => {
         }),
     );
 
-    const promise = apiFetch("/slow", { signal: callerController.signal });
+    const promise = apiFetch("/health", { signal: callerController.signal });
     const assertion = expect(promise).rejects.toMatchObject({ name: "AbortError" });
     callerController.abort();
 
@@ -217,7 +219,7 @@ describe("apiFetch — caller-provided AbortSignal", () => {
       Promise.reject(Object.assign(new Error("cancelled"), { name: "AbortError" })),
     );
 
-    await expect(apiFetch("/slow", { signal: callerController.signal })).rejects.toMatchObject({
+    await expect(apiFetch("/health", { signal: callerController.signal })).rejects.toMatchObject({
       name: "AbortError",
     });
   });
@@ -235,9 +237,50 @@ describe("apiFetch — caller-provided AbortSignal", () => {
         }),
     );
 
-    const promise = apiFetch("/slow", { signal: callerController.signal });
+    const promise = apiFetch("/health", { signal: callerController.signal });
     const assertion = expect(promise).rejects.not.toBeInstanceOf(ApiError);
     callerController.abort();
     await assertion;
   });
 });
+
+
+describe("generated query serialization", () => {
+  it("preserves the empty measurement request's server validation and scalar omission boundaries", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 422, statusText: "Unprocessable Entity", json: async () => ({ detail: [{ loc: ["query", "types"], msg: "Field required", type: "missing" }] }) });
+    await expect(getMeasurementsLatest([])).rejects.toMatchObject({ status: 422, message: "Field required" });
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toMatch(/\/health\/measurements\/latest$/);
+    expect(mockFetch.mock.calls.at(-1)?.[1]).not.toHaveProperty("omitEmptyQuery");
+    mockFetch.mockResolvedValueOnce(jsonResponse({ measurements: {} }));
+    await getMeasurementsLatest(["glucose", "steps"]);
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toMatch(/\?types=glucose%2Csteps$/);
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    await apiFetch("/search", { query: { q: "", limit: 0 } });
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toMatch(/\?q=&limit=0$/);
+    mockFetch.mockResolvedValueOnce(jsonResponse({}));
+    await apiFetch("/relationship/entities/{entity_id}/activity", { path: { entity_id: "safe" }, query: { window: "", bins_only: false }, omitEmptyQuery: ["window"] });
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toMatch(/\?bins_only=false$/);
+  });
+});
+
+// These calls are never executed: the real TypeScript compiler must reject each
+// malformed operation while the runtime cases above exercise the actual transport.
+function generatedRequestTypeErrors() {
+  // @ts-expect-error required query options cannot disappear
+  void apiFetch("/health/measurements/latest");
+  // @ts-expect-error required query field cannot disappear
+  void apiFetch("/health/measurements/latest", { query: {} });
+  // @ts-expect-error query keys are generated, not arbitrary strings
+  void apiFetch("/health/measurements/latest", { query: { types: "safe", invented: 1 } });
+  // @ts-expect-error this path has no DELETE operation
+  void apiFetch("/health/measurements/latest", { method: "DELETE", query: { types: "safe" } });
+  // @ts-expect-error omission keys must belong to this generated query
+  void apiFetch("/health/measurements/latest", { query: { types: "safe" }, omitEmptyQuery: ["invented"] });
+  // @ts-expect-error required path binding must be present
+  void apiFetch("/sessions/{session_id}");
+  // @ts-expect-error GET has no JSON request body
+  void apiFetch("/health/measurements/latest", { query: { types: "safe" }, body: {} });
+}
+
+// Keep this compiler-only contract referenced without executing invalid calls.
+void generatedRequestTypeErrors;

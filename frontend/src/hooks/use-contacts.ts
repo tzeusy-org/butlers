@@ -5,22 +5,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import {
-  getGroupMembers,
-  getGroups,
-  getLabels,
-  createLabel,
-  assignGroupLabel,
-  removeGroupLabel,
-  getOverdueContacts,
-  getUpcomingDates,
-} from "@/api/index.ts";
-import type {
-  ApiResponse,
-  Group,
-  Label,
-  GroupParams,
-} from "@/api/index.ts";
+import { getGroupMembers, getGroups, getLabels, createLabel, assignGroupLabel, removeGroupLabel, getOverdueContacts, getUpcomingDates } from "@/api/client.ts";
+import type { ApiResponse, Group, Label, GroupParams } from "@/api/types.ts";
 import {
   type ListSnapshot,
   rollbackLists,

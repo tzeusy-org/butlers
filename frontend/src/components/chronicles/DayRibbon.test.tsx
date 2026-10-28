@@ -11,6 +11,7 @@ function makeEpisode(overrides: Partial<ChroniclerEpisode> = {}): ChroniclerEpis
   const start = "2026-04-25T09:00:00Z"
   const end = "2026-04-25T10:00:00Z"
   return {
+participant_entity_ids: [],
     id: "ep-1",
     source_name: "google_health.measurements",
     source_ref: "ref-1",

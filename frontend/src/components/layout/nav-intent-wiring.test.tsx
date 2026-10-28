@@ -38,7 +38,7 @@ vi.mock("@/hooks/use-entities", () => ({
   useUpdateEntityDunbarTier: vi.fn(),
 }))
 vi.mock("@/hooks/use-search", () => ({ useSearch: vi.fn() }))
-vi.mock("@/api/index.ts", () => ({
+vi.mock("@/api/client.ts", () => ({
   getOwnerSetupStatus: vi.fn(async () => ({ entity_id: null })),
   getSession: vi.fn(() => Promise.resolve({ data: {} })),
   getApprovalDetail: vi.fn(),

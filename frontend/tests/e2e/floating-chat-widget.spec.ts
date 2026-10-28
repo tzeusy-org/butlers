@@ -52,7 +52,7 @@ test("floating chat widget: open, send, see persisted reply", async ({ page }) =
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: mockJson("listConversations", { data: [], meta: { total: 0, limit: 20, offset: 0 } }),
+          body: mockJson("listConversations", { data: [], meta: { has_more: false, total: 0, limit: 20, offset: 0 } }),
         });
         return;
       }
@@ -97,7 +97,7 @@ test("floating chat widget: open, send, see persisted reply", async ({ page }) =
         contentType: "application/json",
         body: mockJson("getConversationMessages", {
           data: [
-            {
+            { sources: [], citations: [], routed_butler: null, page_context: null, captured_at: null,
               id: "msg-1",
               conversation_id: CONVERSATION_ID,
               role: "user",
@@ -112,7 +112,7 @@ test("floating chat widget: open, send, see persisted reply", async ({ page }) =
               error: null,
               request_id: null,
             },
-            {
+            { sources: [], citations: [], routed_butler: null, page_context: null, captured_at: null,
               id: "22222222-2222-2222-2222-222222222222",
               conversation_id: CONVERSATION_ID,
               role: "assistant",
@@ -128,7 +128,7 @@ test("floating chat widget: open, send, see persisted reply", async ({ page }) =
               request_id: null,
             },
           ],
-          meta: { total: 2, limit: 50, offset: 0 },
+          meta: { has_more: false, total: 2, limit: 50, offset: 0 },
         }),
       });
     },
@@ -199,7 +199,7 @@ test("floating chat widget: badges the trigger for a reply that arrived while cl
               latest_assistant_reply_at: NOW_ISO, // > the seeded watermark -> badges
             },
           ],
-          meta: { total: 1, limit: 20, offset: 0 },
+          meta: { has_more: false, total: 1, limit: 20, offset: 0 },
         }),
       });
       return;
@@ -213,7 +213,7 @@ test("floating chat widget: badges the trigger for a reply that arrived while cl
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: mockJson("getConversationMessages", { data: [], meta: { total: 0, limit: 50, offset: 0 } }),
+        body: mockJson("getConversationMessages", { data: [], meta: { has_more: false, total: 0, limit: 50, offset: 0 } }),
       });
     },
   );

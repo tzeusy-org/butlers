@@ -12,15 +12,15 @@ import type {
   RelationshipQueueResponse,
 } from "@/api/types.ts";
 
-vi.mock("@/api/index.ts", async (importOriginal) => {
-  const original = await importOriginal<typeof import("@/api/index.ts")>();
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/api/client.ts")>();
   return {
     ...original,
     archiveRelationshipEntity: vi.fn(),
   };
 });
 
-import { archiveRelationshipEntity } from "@/api/index.ts";
+import { archiveRelationshipEntity } from "@/api/client.ts";
 import { useArchiveRelationshipEntity } from "./use-entities.ts";
 
 function deferred<T>() {

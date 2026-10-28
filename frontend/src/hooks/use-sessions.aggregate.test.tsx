@@ -11,7 +11,7 @@ import type { ReactNode } from "react";
 
 const mockGetSessionAggregate = vi.fn();
 
-vi.mock("@/api/index.ts", () => ({
+vi.mock("@/api/client.ts", () => ({
   getSessionAggregate: (...args: unknown[]) => mockGetSessionAggregate(...args),
   // The hook module also imports these; provide inert stubs.
   getSessions: vi.fn(),

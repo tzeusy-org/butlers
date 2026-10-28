@@ -26,8 +26,8 @@ vi.mock("@/lib/event-bus", () => ({
   }),
 }));
 
-vi.mock("@/api/index.ts", async (importOriginal) => {
-  const original = await importOriginal<typeof import("@/api/index.ts")>();
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/api/client.ts")>();
   return {
     ...original,
     getCalendarDayBriefing: vi.fn(),

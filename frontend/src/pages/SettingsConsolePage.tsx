@@ -27,7 +27,6 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
-import type { ApprovalMetricsResponse } from "@/api/types";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Eyebrow } from "@/components/ui/Eyebrow";
@@ -80,7 +79,7 @@ interface ApprovalMetricsSummary {
 // ---------------------------------------------------------------------------
 
 function fetchConsole(): Promise<{ data: ConsoleData }> {
-  return apiFetch<{ data: ConsoleData }>("/settings/console");
+  return apiFetch("/settings/console");
 }
 
 function fetchSpendSummary(): Promise<{ data: SpendSummary }> {
@@ -88,13 +87,11 @@ function fetchSpendSummary(): Promise<{ data: SpendSummary }> {
   // prices mtd_usd from the ledger (bu-7o89u.1) so this panel's "MTD" label
   // matches the number the spawn-deny gate enforces, instead of a rolling-30d
   // fan-out mislabeled as MTD (bu-7o89u.2).
-  return apiFetch<{ data: SpendSummary }>("/spend/forecast");
+  return apiFetch("/spend/forecast");
 }
 
 function fetchModelStats(): Promise<ModelStats> {
-  return apiFetch<{
-    data: Array<{ last_verified_ok: boolean | null; enabled: boolean }>;
-  }>("/settings/models").then((res) => {
+  return apiFetch("/settings/models").then((res) => {
     const enabled = res.data.filter((m) => m.enabled);
     const ok = enabled.filter((m) => m.last_verified_ok === true).length;
     const errors = enabled.filter((m) => m.last_verified_ok === false).length;
@@ -103,7 +100,7 @@ function fetchModelStats(): Promise<ModelStats> {
 }
 
 function fetchApprovalMetrics(): Promise<ApprovalMetricsSummary> {
-  return apiFetch<ApprovalMetricsResponse>("/approvals/metrics").then((response) => {
+  return apiFetch("/approvals/metrics").then((response) => {
     if (!isCompleteApprovalMetricsResponse(response)) {
       throw new Error("Approval metrics response is incomplete");
     }

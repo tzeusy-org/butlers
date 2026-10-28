@@ -11,6 +11,12 @@ import { AutonomySuggestionsBanner } from "@/components/approvals/autonomy-sugge
 afterEach(cleanup);
 
 const V2_PROMOTION: AutonomySuggestion = {
+decided_at: null,
+decided_by: null,
+resulting_rule_id: null,
+cooldown_until: null,
+dismissal_reason: null,
+velocity: null,
   id: "suggestion-1",
   suggestion_type: "promotion",
   pattern_fingerprint: "fingerprint",
