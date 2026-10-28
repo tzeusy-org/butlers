@@ -15,7 +15,8 @@ confirm-resolution path instead of the connector's default drop behavior. This r
 strictly additive to the connector's existing recognition of `apr1:` (approval decisions)
 and `cgi:` (gap-interview) prefixes: a `callback_data` matches at most one of the three
 known prefixes, and any `callback_data` matching none of them retains the connector's
-existing silent-drop behavior unchanged. The connector MUST NOT call a domain sink directly. It authenticates and forwards typed
+existing silent-drop behavior unchanged. The connector MUST NOT call a domain sink directly.
+It authenticates and forwards typed
 callbacks to the confirm service using a credential restricted to the exact confirm routes.
 The confirm service dispatches only registered sinks and cannot invoke approval decisions.
 Runtime emission remains dark until the canonical RFC 0038 switch; disabled confirms fail
@@ -24,10 +25,10 @@ explicitly rather than producing buttons that cannot resolve.
 #### Scenario: Confirm callback routed additively
 
 - **WHEN** a `callback_query` arrives whose `callback_data` begins with the `cfm1:` prefix
-- **THEN** the connector routes it to the confirm-resolution path (verifying recipient sender/chat
-  identity and HMAC per `notify-confirm-interaction`, then performing the atomic
-  `pending_confirms` transition and verified goal admission or registered deterministic sink dispatch), acknowledging the tap via
-  `answerCallbackQuery`
+- **THEN** the connector verifies the token and forwards the authenticated sender/chat
+  through the exact confirm-service API route, acknowledging the tap via `answerCallbackQuery`
+- **AND** the service verifies stored recipient identity and atomically records the answer
+  and its durable admission or sink-dispatch obligation
 - **AND** this routing does not alter the connector's existing handling of `apr1:` or
   `cgi:` prefixed `callback_data`, or its default-drop behavior for every other
   `callback_query`

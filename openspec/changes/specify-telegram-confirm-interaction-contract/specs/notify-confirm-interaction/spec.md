@@ -168,13 +168,15 @@ Scope: v1-mandatory
 Resolving a confirm SHALL include a single atomic conditional update
 (`status='pending' -> status='answered'`, or the equivalent for expiry) that succeeds for
 at most one caller per `confirm_id`. A resolution attempt against a row that is no longer
-`pending` MUST NOT mutate state and MUST NOT re-trigger answer dispatch.
+`pending` MUST NOT change the recorded choice or create another dispatch obligation.
+Recovery may advance the existing application/rendering receipt under its own idempotent fence.
 
 #### Scenario: First valid tap wins
 
 - **WHEN** two authenticated, valid taps for the same `confirm_id` (e.g. a double-tap, or
   concurrent requests) race
-- **THEN** exactly one atomically transitions the row to `answered` and records one durable answer-dispatch obligation
+- **THEN** exactly one atomically transitions the row to `answered` and records one durable
+  answer-dispatch obligation
 - **AND** the other observes zero rows affected and receives the "already handled" toast
 
 #### Scenario: Tap on an already-resolved confirm
@@ -183,7 +185,7 @@ at most one caller per `confirm_id`. A resolution attempt against a row that is 
   `answered` or `expired`
 - **THEN** the callback is answered with a non-destructive "already handled" notice
   reflecting the row's current terminal state, the message is edited to show that state,
-  and no further reentry is triggered
+  and no duplicate dispatch obligation is created
 
 ### Requirement: Expiry Semantics and Timeout Reentry
 
@@ -215,7 +217,7 @@ when it did not.
   prior tick (e.g. after a scheduler restart)
 - **THEN** it performs no further state change and triggers no duplicate dispatch
 
-### Requirement: Reply-to-Origin Reentry via Verified Goal Admission via Verified Goal Admission
+### Requirement: Reply-to-Origin Reentry via Verified Goal Admission
 
 ID: REQ-notify-confirm-interaction-008
 Source: RFC 0038 D7/D13/D18; specify-telegram-confirm-interaction-contract/design.md
