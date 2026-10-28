@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter, useLocation } from "react-router";
+import { MemoryRouter, useLocation, useNavigate } from "react-router";
 
 import MemoryBrowser from "@/components/memory/MemoryBrowser";
 import { useMemoryInspect } from "@/hooks/use-memory";
@@ -24,10 +24,14 @@ vi.mock("@/hooks/use-memory", () => ({
 let lastSearch = "";
 function Probe() {
   const search = useLocation().search;
+  const navigate = useNavigate();
   useEffect(() => {
     lastSearch = search;
   }, [search]);
-  return null;
+  return <>
+    <button onClick={() => navigate(-1)}>history back</button>
+    <button onClick={() => navigate(1)}>history forward</button>
+  </>;
 }
 
 const episode = {
@@ -111,6 +115,22 @@ describe("MemoryBrowser search paging", () => {
 
     act(() => button("prev").click());
     expect(lastSearch).toContain("offset=50");
+
+    act(() => button("history back").click());
+    expect(lastSearch).toContain("offset=100");
+    expect(lastSearch).toContain("q=fatigue");
+    expect(lastSearch).toContain("kind=episode");
+    expect(vi.mocked(useMemoryInspect).mock.lastCall?.[0]).toMatchObject({
+      q: "fatigue", kind: "episode", offset: 100,
+    });
+
+    act(() => button("history forward").click());
+    expect(lastSearch).toContain("offset=50");
+    expect(lastSearch).toContain("q=fatigue");
+    expect(lastSearch).toContain("kind=episode");
+    expect(vi.mocked(useMemoryInspect).mock.lastCall?.[0]).toMatchObject({
+      q: "fatigue", kind: "episode", offset: 50,
+    });
   });
 
   it("resets the offset when the scope pill changes", () => {
