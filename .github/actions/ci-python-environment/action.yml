@@ -1,5 +1,5 @@
 name: CI Python environment
-description: Set up pinned Python and uv; repair the frozen checkout environment for execution jobs.
+description: Restore advisory dependencies and always repair the frozen checkout-owned environment.
 runs:
   using: composite
   steps:
@@ -11,7 +11,6 @@ runs:
       run: python3 scripts/install_ci_uv.py
       shell: bash
     - name: Compute exact environment cache key
-      if: github.job != 'route'
       id: environment-key
       run: |
         set -euo pipefail
@@ -19,13 +18,11 @@ runs:
         printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
       shell: bash
     - name: Restore advisory environment cache
-      if: github.job != 'route'
       uses: actions/cache@v4
       continue-on-error: true
       with:
         path: .venv
         key: ${{ steps.environment-key.outputs.key }}
     - name: Install dependencies
-      if: github.job != 'route'
       run: python3 scripts/ci_environment.py prepare
       shell: bash

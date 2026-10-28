@@ -38,7 +38,7 @@ jobs:
           fetch-depth: 0
 
       # The single composite owns pinned Python and uv for every role.
-      # Route skips dependency/cache preparation; its classifier is stdlib only.
+      # Every invoked role retains frozen repair; classification remains stdlib only.
       - name: Set up the source-pinned planner Python
         if: github.event_name == 'pull_request'
         uses: ./.github/actions/ci-python-environment

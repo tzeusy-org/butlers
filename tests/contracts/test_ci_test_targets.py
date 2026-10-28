@@ -308,23 +308,22 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
                     timeout=10,
                 )
         calls = [json.loads(line) for line in command_log.read_text().splitlines()]
-        expected = [["scripts/install_ci_uv.py"]]
-        if role != "route":
-            expected += [
-                ["scripts/ci_environment.py", "key"],
-                ["scripts/ci_environment.py", "prepare"],
-            ]
+        expected = [
+            ["scripts/install_ci_uv.py"],
+            ["scripts/ci_environment.py", "key"],
+            ["scripts/ci_environment.py", "prepare"],
+        ]
         assert calls == expected, (role, calls)
     dependency_steps = {
         "Compute exact environment cache key",
         "Restore advisory environment cache",
         "Install dependencies",
     }
-    assert {
+    assert not {
         step["name"] for step in environment["runs"]["steps"] if step.get("if")
-    } == dependency_steps
+    }
     assert all(
-        step.get("if") == "github.job != 'route'"
+        not step.get("if")
         for step in environment["runs"]["steps"]
         if step["name"] in dependency_steps
     )

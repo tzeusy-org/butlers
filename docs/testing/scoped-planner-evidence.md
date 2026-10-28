@@ -60,10 +60,9 @@ are retained. Retired computed full opaque topology and live manifests are not
 restored. Count reconciliation is not per-item execution evidence.
 
 Route obtains its pinned Python and uv from the same no-input composite as
-execution jobs, before the changed-path filter. Only the exact route role skips
-environment cache/key preparation and dependency installation; all execution
-roles retain frozen checkout-owned repair. The classifier still uses only the
-standard library. Its unchanged two-minute bound is not measured setup or cost
+execution jobs, before the changed-path filter. Every invoked role performs the
+advisory cache lookup and mandatory frozen checkout-owned repair, including
+route. The classifier itself still uses only the standard library. Its unchanged two-minute bound is not measured setup or cost
 evidence, and this wiring does not admit a profile or enable SCOPED execution.
 
 The affected job additionally collects all configured roots and selected files
