@@ -59,7 +59,7 @@ claims are labelled and quoted input stays literal/inert.
 ## Recovery and admission
 
 Messenger rechecks shared owner quiet/sleep policy at delivery. An unavailable policy
-retains pending work; a producer callback cannot override it. Deferred rows rotate behind
+retains pending work; a producer callback cannot override it. Every attempted reconciliation, including a failed edit or unavailable policy, rotates behind
 other work without changing their immutable identity.
 
 A committed `sending` boundary precedes any provider call. A lost or ambiguous initial

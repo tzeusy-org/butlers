@@ -125,6 +125,15 @@ class ConfirmDelivery:
                 import logging
 
                 logging.getLogger(__name__).warning("Confirm delivery reconciliation unavailable")
+            finally:
+                # Failed policy reads and failed terminal edits must rotate too:
+                # otherwise one poisoned batch permanently strands all newer work.
+                async with self.service._connection() as conn:
+                    await conn.execute(
+                        "UPDATE public.pending_confirms SET updated_at=clock_timestamp() "
+                        "WHERE id=$1",
+                        row["id"],
+                    )
 
 
 def terminal_text(row):

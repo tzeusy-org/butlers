@@ -396,3 +396,49 @@ async def test_owner_pages_retain_older_actionable_questions(confirms):
     assert all(row["status"] == "pending" for row in second["rows"])
     with pytest.raises(ValueError, match="invalid_confirm_cursor"):
         await service.list_owner(before=uuid4())
+
+
+@pytest.mark.parametrize("failure", ["policy", "render"])
+async def test_failed_batch_does_not_strand_later_prompt(confirms, failure):
+    from unittest.mock import AsyncMock
+
+    from butlers.core.confirm_delivery import ConfirmDelivery
+
+    admin, runtime = confirms
+    service = ConfirmService(
+        runtime,
+        secret="synthetic",
+        sinks={"test": SinkRegistration("test", frozenset({"a", "b"}), lambda *args: None)},
+    )
+    prompt = ConfirmPrompt(
+        "Which?",
+        (ConfirmOption("a", "A"), ConfirmOption("b", "B")),
+        Recipient(uuid4(), "42", "100", False),
+    )
+    for index in range(3):
+        row = await service.create("test", f"poison-{index}", prompt, sink="test", sink_ref="day")
+        if failure == "render":
+            async with runtime.acquire() as conn:
+                await conn.execute(
+                    "UPDATE public.pending_confirms SET status='answered',answer_index=0,answered_at=clock_timestamp(),answer_channel='telegram',application_status='applied',delivery_status='confirmed',message_ref='1' WHERE id=$1",
+                    row["id"],
+                )
+    healthy = await service.create("test", "healthy", prompt, sink="test", sink_ref="day")
+
+    async def allowed(row):
+        if failure == "policy" and row["producer_key"].startswith("poison"):
+            raise RuntimeError("unavailable source policy")
+        return True
+
+    send = AsyncMock(return_value={"status": "confirmed", "reference": "99"})
+    delivery = ConfirmDelivery(
+        service, send=send, edit=AsyncMock(return_value=False), allowed=allowed
+    )
+    await delivery.cycle(limit=2)
+    send.assert_not_awaited()
+    await delivery.cycle(limit=2)
+    assert (await service.get(healthy["id"]))["delivery_status"] == "confirmed"
+    send.assert_awaited_once()
+    assert send.await_args.args[0]["id"] == healthy["id"]
+    await delivery.cycle(limit=2)
+    send.assert_awaited_once()
