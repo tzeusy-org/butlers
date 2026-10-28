@@ -1,6 +1,6 @@
 ## Status and scope
 
-Proposed specification contract, not an implementation plan or runtime activation. The existing run 23 gate `bu-69cc1o` and epic `bu-okh0fw` remain held. Each domain specification must incorporate this contract before its own adoption. `v1-mandatory` means mandatory for the first release of an enrolled feature, not a claim that today's sources already conform.
+Owner-adopted shared specification as of 2026-10-28; see the exact approval and source revision in `proposal.md`. Gate `bu-69cc1o` is released for specification work under epic `bu-okh0fw`. Each domain specification must incorporate this binding contract before its own adoption. `v1-mandatory` means mandatory for the first release of an enrolled feature, not a claim that today's sources already conform. Concrete profiles, implementation and activation remain separate deliverables.
 
 ## Existing behavior and gaps
 
@@ -30,7 +30,7 @@ An explicit zero reasoning allowance is valid for deterministic-only profiles. I
 
 Numerical settings belong in the subsequent feature profile, supported by source capability and measurements. A candidate five-second local processing target cannot be advertised as five-second physical-event-to-owner delivery when the source polls every thirty minutes. This proposal deliberately makes complete finite profiles a release requirement instead of inventing unmeasured universal timings.
 
-## Application to the three held feature packets
+## Application to the three released feature packets
 
 | Packet | Required feature-specific contract | Acceptance evidence |
 | --- | --- | --- |
@@ -46,6 +46,6 @@ Specification review must cover failures, ordering, concurrency, authorization a
 
 Each feature needs replay/burst and gap tests, aggregate admission/settlement tests where inference is permitted, and evidence for owner stop and expiry under overload. At implementation closeout, verify the selected deployment's timestamps, source cadence, p95 response and failure denominator; preserve raw receipt provenance without copying personal sensor data into PRs. Until then, all numerical performance statements remain targets or observations with explicitly limited scope.
 
-No source, schema, manifesto, UI component, provider subscription or retained-data change is made here. Future domain specification work owns any such changes and their migration/rollback checks. Existing adoption and deployment gates remain intact.
+No source, schema, manifesto, UI component, provider subscription or retained-data change is made here. Future domain specification work owns any such changes and their migration/rollback checks. The shared-spec adoption and specification-release gate are satisfied; feature-specific adoption and deployment gates remain intact.
 
 Proposal-stage validation is allocated to this complete changeset using affected authoring plus full-diagnostic nonregression against base `ddda7a87d`. The repository-wide trace checker has pre-existing authoring debt; its full-tree result must remain reported separately. This scoped receipt is not full authoring signoff, implementation evidence or merge permission.

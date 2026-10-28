@@ -1,12 +1,13 @@
 ## Tracking and adoption
 
-Execution tracking remains in Beads; this document is the verification handoff, not a second task queue. The proposal remains unadopted until its exact contract is reviewed and accepted. `bu-69cc1o` is unchanged.
+Execution tracking remains in Beads; this document is the verification handoff, not a second task queue. The owner adopted the exact shared contract and released specification work on 2026-10-28; `proposal.md` records the approval and immutable source revision. `bu-69cc1o` is satisfied. Domain feature specifications and operational profiles remain to be completed and adopted.
 
 OpenSpec archive gates mirror the Beads deliverables below and remain incomplete until those deliverables and their ensuing implementation evidence are accepted:
 
-- [ ] 1. Adopt the exact shared contract and complete the feature profiles in `bu-okh0fw.1`, `.2` and `.3`.
-- [ ] 2. Reconcile enforcement ownership and verification coverage in `bu-okh0fw.4`.
-- [ ] 3. Supply implementation and live response evidence for enrolled features before archiving this contract as delivered.
+- [x] 1. Adopt the exact shared contract and release specification work (owner approval 2026-10-28, recorded in proposal.md).
+- [ ] 2. Complete and adopt the feature profiles in `bu-okh0fw.1`, `.2` and `.3`.
+- [ ] 3. Reconcile enforcement ownership and verification coverage in `bu-okh0fw.4`.
+- [ ] 4. Supply implementation and live response evidence for enrolled features before archiving this contract as delivered.
 
 | Existing work item | Required specification deliverable |
 | --- | --- |
