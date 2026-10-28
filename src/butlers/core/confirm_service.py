@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
@@ -29,6 +30,25 @@ class ConfirmService:
         self.pool, self.secret = pool, secret
         self._sinks = dict(sinks)
         self._admission = admission
+
+    @asynccontextmanager
+    async def _connection(self):
+        async with self.pool.acquire() as conn:
+            role = await conn.fetchrow(
+                "SELECT current_user AS name, rolsuper, rolbypassrls FROM pg_roles "
+                "WHERE rolname=current_user"
+            )
+            if (
+                role["name"] not in {"butler_switchboard_rw", "butler_messenger_rw"}
+                or role["rolsuper"]
+                or role["rolbypassrls"]
+                or await conn.fetchval(
+                    "SELECT pg_has_role(current_user,relowner,'MEMBER') "
+                    "FROM pg_class WHERE oid='public.pending_confirms'::regclass"
+                )
+            ):
+                raise ValueError("restricted confirm service role required")
+            yield conn
 
     async def create(
         self,
@@ -67,14 +87,41 @@ class ConfirmService:
             "text": prompt.render_text(),
         }
         recipient = prompt.recipient
-        async with self.pool.acquire() as conn, conn.transaction():
+
+        def same_identity(row):
+            return (
+                row is not None
+                and row["prompt"] == payload
+                and row["recipient_entity"] == recipient.entity_id
+                and row["recipient_sender"] == recipient.sender_id
+                and row["recipient_chat"] == recipient.chat_id
+                and row["recipient_owner"] == recipient.owner
+                and (row["sink"], row["sink_ref"], row["goal_delivery_ref"])
+                == (sink, sink_ref, goal_delivery_ref)
+            )
+
+        async with self._connection() as conn, conn.transaction():
+            existing = await conn.fetchrow(
+                "SELECT * FROM public.pending_confirms WHERE producer=$1 AND producer_key=$2",
+                producer,
+                producer_key,
+            )
+            if existing is not None:
+                if not same_identity(existing):
+                    raise ValueError("producer key already binds a different immutable prompt")
+                return dict(existing)
+            expiry = None
+            if sink is None:
+                expiry = await self._admission.validate_prompt(
+                    producer, prompt, goal_delivery_ref, connection=conn
+                )
             row = await conn.fetchrow(
                 """
                 INSERT INTO public.pending_confirms
                     (id,producer,producer_key,prompt,recipient_entity,recipient_sender,
                      recipient_chat,recipient_owner,sink,sink_ref,goal_delivery_ref,expires_at)
                 VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,
-                        clock_timestamp()+$12::int*interval '1 second')
+                        COALESCE($13::timestamptz,clock_timestamp()+$12::int*interval '1 second'))
                 ON CONFLICT (producer,producer_key) DO NOTHING RETURNING *
             """,
                 uuid4(),
@@ -89,6 +136,7 @@ class ConfirmService:
                 sink_ref,
                 goal_delivery_ref,
                 prompt.timeout_seconds,
+                expiry,
             )
             if row is None:
                 row = await conn.fetchrow(
@@ -97,28 +145,19 @@ class ConfirmService:
                     producer,
                     producer_key,
                 )
-                if (
-                    row is None
-                    or row["prompt"] != payload
-                    or row["recipient_entity"] != recipient.entity_id
-                    or row["recipient_sender"] != recipient.sender_id
-                    or row["recipient_chat"] != recipient.chat_id
-                    or row["recipient_owner"] != recipient.owner
-                    or (row["sink"], row["sink_ref"], row["goal_delivery_ref"])
-                    != (sink, sink_ref, goal_delivery_ref)
-                ):
+                if not same_identity(row):
                     raise ValueError("producer key already binds a different immutable prompt")
         return dict(row)
 
     async def get(self, confirm_id: UUID) -> dict | None:
-        async with self.pool.acquire() as conn:
+        async with self._connection() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM public.pending_confirms WHERE id=$1", confirm_id
             )
         return dict(row) if row else None
 
     async def list_owner(self, *, limit: int = 50) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self._connection() as conn:
             rows = await conn.fetch(
                 """SELECT * FROM public.pending_confirms WHERE recipient_owner
                 ORDER BY created_at DESC LIMIT $1""",
@@ -164,7 +203,7 @@ class ConfirmService:
         chat_id=None,
         owner=False,
     ) -> dict:
-        async with self.pool.acquire() as conn, conn.transaction():
+        async with self._connection() as conn, conn.transaction():
             row = await conn.fetchrow(
                 """SELECT *, expires_at <= clock_timestamp() AS elapsed
                 FROM public.pending_confirms WHERE id=$1 FOR UPDATE""",
@@ -179,6 +218,20 @@ class ConfirmService:
                 )
             ):
                 return {"status": "refused"}
+            channel = "dashboard" if owner else "telegram"
+            if not owner and row["recipient_owner"]:
+                from butlers.identity import resolve_owner_channel_via_definer
+
+                identity = await resolve_owner_channel_via_definer(
+                    conn, "telegram_bot", sender_id, raise_on_error=True
+                )
+                if (
+                    not identity
+                    or not identity[1]
+                    or identity[0].entity_id != row["recipient_entity"]
+                ):
+                    return {"status": "refused"}
+                channel = "telegram_owner"
             if type(option) is not int or not 0 <= option < len(row["prompt"]["options"]):
                 return {"status": "refused"}
             if row["status"] != "pending":
@@ -195,37 +248,40 @@ class ConfirmService:
             await conn.execute(
                 """UPDATE public.pending_confirms
                 SET status=$2, answer_index=$3, answered_at=clock_timestamp(),
-                    application_status='pending' WHERE id=$1""",
+                    application_status='pending',answer_channel=$4 WHERE id=$1""",
                 confirm_id,
                 status,
                 None if elapsed else option,
+                None if elapsed else channel,
             )
         return {"status": status, "application_status": "pending"}
 
     async def expire(self) -> int:
-        async with self.pool.acquire() as conn:
+        async with self._connection() as conn:
             result = await conn.execute("""UPDATE public.pending_confirms
                 SET status='expired', answered_at=clock_timestamp(),application_status='pending'
                 WHERE status='pending' AND expires_at <= clock_timestamp()""")
         return int(result.split()[-1])
 
-    async def dispatch_one(self) -> bool:
+    async def dispatch_one(self, *, exclude: tuple[UUID, ...] = ()) -> UUID | None:
         """Claim one durable obligation. Lost RPC replies retry the same domain key."""
         claim = uuid4()
-        async with self.pool.acquire() as conn, conn.transaction():
+        async with self._connection() as conn, conn.transaction():
             row = await conn.fetchrow(
                 """WITH candidate AS (
                     SELECT id FROM public.pending_confirms
                     WHERE application_status IN ('pending','error')
+                      AND id <> ALL($2::uuid[])
                       AND (claim_until IS NULL OR claim_until <= clock_timestamp())
                     ORDER BY updated_at FOR UPDATE SKIP LOCKED LIMIT 1)
                 UPDATE public.pending_confirms p SET claim_token=$1,
                     claim_until=clock_timestamp()+interval '30 seconds'
                 FROM candidate c WHERE p.id=c.id RETURNING p.*""",
                 claim,
+                list(exclude),
             )
         if row is None:
-            return False
+            return None
         prompt = row["prompt"]
         value = (
             prompt["options"][row["answer_index"]]["value"]
@@ -255,7 +311,7 @@ class ConfirmService:
             state, receipt = "error", {"code": "application_unconfirmed"}
         else:
             state = "applied"
-        async with self.pool.acquire() as conn:
+        async with self._connection() as conn:
             await conn.execute(
                 """UPDATE public.pending_confirms
                 SET application_status=$3,application_receipt=$4::jsonb,
@@ -266,4 +322,4 @@ class ConfirmService:
                 state,
                 receipt,
             )
-        return True
+        return row["id"]

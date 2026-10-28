@@ -23,7 +23,7 @@ def upgrade():
             recipient_sender TEXT NOT NULL,
             recipient_chat TEXT NOT NULL,
             recipient_owner BOOLEAN NOT NULL,
-            goal_delivery_ref TEXT,
+            goal_delivery_ref TEXT UNIQUE,
             sink TEXT,
             sink_ref TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
@@ -32,6 +32,7 @@ def upgrade():
                 CHECK (status IN ('pending', 'answered', 'expired')),
             answer_index INTEGER CHECK (answer_index BETWEEN 0 AND 3),
             answered_at TIMESTAMPTZ,
+            answer_channel TEXT CHECK (answer_channel IN ('telegram','telegram_owner','dashboard')),
             application_status TEXT NOT NULL DEFAULT 'idle'
                 CHECK (application_status IN ('idle', 'pending', 'applied', 'error')),
             application_receipt JSONB,
@@ -80,8 +81,8 @@ def upgrade():
                    OLD.goal_delivery_ref,OLD.sink,OLD.sink_ref,OLD.created_at,OLD.expires_at)
             THEN RAISE EXCEPTION 'confirm prompt identity is immutable'; END IF;
             IF OLD.status <> 'pending' AND
-               ROW(NEW.status,NEW.answer_index,NEW.answered_at) IS DISTINCT FROM
-               ROW(OLD.status,OLD.answer_index,OLD.answered_at)
+               ROW(NEW.status,NEW.answer_index,NEW.answered_at,NEW.answer_channel) IS DISTINCT FROM
+               ROW(OLD.status,OLD.answer_index,OLD.answered_at,OLD.answer_channel)
             THEN RAISE EXCEPTION 'confirm choice is immutable'; END IF;
             NEW.updated_at := clock_timestamp();
             RETURN NEW;
@@ -91,15 +92,47 @@ def upgrade():
         CREATE TRIGGER confirm_identity_guard BEFORE UPDATE ON public.pending_confirms
             FOR EACH ROW EXECUTE FUNCTION public.guard_confirm_identity();
     """)
+    op.execute("""
+        DO $$ DECLARE owner_name NAME; BEGIN
+            SELECT pg_get_userbyid(relowner) INTO STRICT owner_name
+            FROM pg_class WHERE oid='public.pending_confirms'::regclass;
+            DROP POLICY IF EXISTS confirm_backup_read ON public.pending_confirms;
+            DROP POLICY IF EXISTS confirm_restore_owner ON public.pending_confirms;
+            EXECUTE format(
+                'CREATE POLICY confirm_backup_read ON public.pending_confirms '
+                'FOR SELECT USING (current_user = %L::name)', owner_name
+            );
+            EXECUTE format(
+                'CREATE POLICY confirm_restore_owner ON public.pending_confirms '
+                'FOR INSERT WITH CHECK (current_user = %L::name)', owner_name
+            );
+        END $$;
+        CREATE OR REPLACE FUNCTION public.confirm_restore_row(payload JSONB) RETURNS void
+        LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$ BEGIN
+            IF current_user <> (
+                SELECT pg_get_userbyid(relowner) FROM pg_class
+                WHERE oid='public.pending_confirms'::regclass
+            ) THEN
+                RAISE EXCEPTION 'confirm restore requires the exact table owner';
+            END IF;
+            INSERT INTO public.pending_confirms
+            SELECT (jsonb_populate_record(NULL::public.pending_confirms,payload)).*;
+        END $$;
+        REVOKE ALL ON FUNCTION public.confirm_restore_row(JSONB) FROM PUBLIC;
+        DO $$ DECLARE role_name NAME; BEGIN
+            FOR role_name IN SELECT rolname FROM pg_roles
+                WHERE rolname LIKE 'butler\\_%\\_rw' ESCAPE '\\'
+                   OR rolname='connector_writer'
+            LOOP
+                EXECUTE format(
+                    'REVOKE ALL ON FUNCTION public.confirm_restore_row(JSONB) FROM %I',role_name
+                );
+            END LOOP;
+        END $$;
+    """)
 
 
 def downgrade():
-    op.execute("""
-        DO $$ BEGIN
-            IF EXISTS (SELECT 1 FROM public.pending_confirms) THEN
-                RAISE EXCEPTION 'Cannot discard durable confirm history';
-            END IF;
-        END $$;
-        DROP TABLE IF EXISTS public.pending_confirms;
-        DROP FUNCTION IF EXISTS public.guard_confirm_identity();
-    """)
+    # Shared coordination history survives per-schema rollback. Another schema
+    # may still use this table; discarding accepted answers is never reversible.
+    pass

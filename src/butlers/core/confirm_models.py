@@ -55,8 +55,11 @@ class ConfirmCard:
     def lines(self) -> list[str]:
         return [
             *self.facts,
-            *(f"Assistant claim: {s}" for s in self.claims),
-            *(f"Quoted input: {defang_delivery_text(s)}" for s in self.quotes),
+            *(f"Assistant claim: {' '.join(s.splitlines())}" for s in self.claims),
+            *(
+                f"Quoted input: {defang_delivery_text(' '.join(s.splitlines()))}"
+                for s in self.quotes
+            ),
         ]
 
 
@@ -84,7 +87,24 @@ class ConfirmPrompt:
             raise ValueError("timeout value must reference an offered option")
         if not isinstance(self.recipient, Recipient) or not isinstance(self.card, ConfirmCard):
             raise ValueError("resolved recipient and typed card required")
+        if len(self.render_text().encode("utf-16-le")) // 2 > 3000:
+            raise ValueError("confirm card exceeds the single-message budget")
 
     def render_text(self) -> str:
         """Plain text for Telegram (no parse mode) and escaped React text nodes."""
         return "\n".join((self.question, *self.card.lines()))
+
+
+def effect_digest(producer: str, prompt: ConfirmPrompt) -> str:
+    """Exact preauthorized notify arguments; computed by the broker before dispatch.
+
+    Includes route and producer, not just visible text. A delivery reference for
+    another question or channel identity is never sufficient authority.
+    """
+    from dataclasses import asdict
+
+    from butlers.core.goal_admission import digest
+
+    envelope = asdict(prompt)
+    envelope["recipient"]["entity_id"] = str(prompt.recipient.entity_id)
+    return digest({"intent": "confirm", "producer": producer, "prompt": envelope})

@@ -64,6 +64,7 @@ from butlers.testing.migration import (
     create_migration_db,
     migration_db_name,
 )
+from tests.scripts.test_pg_dump_backup import _CONFIRM_FIXTURE_SQL, _run_backup_script
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RESTORE_SCRIPT = _REPO_ROOT / "scripts" / "pg_restore.sh"
@@ -234,6 +235,29 @@ def backup_artifact(source_db_url: str, postgres_container, tmp_path_factory) ->
     assert result.returncode == 0, f"backup run failed:\n{result.stdout}\n{result.stderr}"
     artifacts = sorted(backup_dir.glob("butlers_*.sql.gz"))
     assert len(artifacts) == 1, f"expected exactly one artifact, got {artifacts}"
+    return artifacts[0]
+
+
+@pytest.fixture(scope="module")
+def populated_confirm_artifact(
+    source_db_url, postgres_container, tmp_path_factory, backup_artifact
+) -> Path:
+    # Capture the historical empty-confirm artifact first. Its ownership-control
+    # tests retain their original scope; no answer requires replay there.
+    engine = create_engine(source_db_url)
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql("SET ROLE butler_messenger_rw")
+            conn.exec_driver_sql(_CONFIRM_FIXTURE_SQL)
+    finally:
+        engine.dispose()
+    directory = tmp_path_factory.mktemp("confirm-backups")
+    result = _run_backup_script(
+        source_db_url, directory, str(postgres_container.get_exposed_port(5432))
+    )
+    assert result.returncode == 0, f"confirm backup failed:\n{result.stdout}\n{result.stderr}"
+    artifacts = list(directory.glob("butlers_*.sql.gz"))
+    assert len(artifacts) == 1
     return artifacts[0]
 
 
@@ -521,8 +545,23 @@ def test_restore_script_refuses_to_certify_a_laundered_restore(
 @pytest.mark.db
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
+def test_populated_confirm_restore_refuses_missing_source_owner_membership(
+    populated_confirm_artifact: Path, disaster_recovery_target: _Target
+) -> None:
+    result = _run_restore_script(
+        populated_confirm_artifact, disaster_recovery_target, "butlers_confirm_owner_refused"
+    )
+    assert result.returncode != 0
+    assert "confirm restore requires source table-owner membership" in (
+        result.stdout + result.stderr
+    )
+
+
+@pytest.mark.db
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
 def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
-    backup_artifact: Path, source_db_url: str, postgres_container
+    populated_confirm_artifact: Path, source_db_url: str, postgres_container
 ) -> None:
     """A restore the script certifies has no definer function on the restorer.
 
@@ -548,12 +587,63 @@ def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
     )
     db_name = "butlers_restore_certified"
 
-    result = _run_restore_script(backup_artifact, target, db_name)
+    result = _run_restore_script(populated_confirm_artifact, target, db_name)
     assert result.returncode == 0, (
         f"the supported restore path must certify:\n{result.stdout[-2000:]}\n{result.stderr[-2000:]}"
     )
 
     restored_url = target.url(db_name)
+
+    # Accepted answers and their unfinished application/rendering receipts are
+    # replay fences. Compare the whole row, not only a count or chosen value.
+    assert _query(source_db_url, "SELECT to_jsonb(t)::text FROM public.pending_confirms t") == (
+        _query(restored_url, "SELECT to_jsonb(t)::text FROM public.pending_confirms t")
+    )
+    assert _query(
+        restored_url,
+        "SELECT status||'/'||answer_index||'/'||application_status FROM public.pending_confirms",
+    ) == ["answered/1/error"]
+    assert _query(
+        restored_url,
+        "SELECT delivery_status||'/'||(message_ref IS NULL)::text FROM public.pending_confirms",
+    ) == ["ambiguous/true"]
+    confirm_posture = (
+        "SELECT relrowsecurity::text||'/'||relforcerowsecurity::text||'/'||"
+        "pg_get_userbyid(relowner) FROM pg_class "
+        "WHERE oid='public.pending_confirms'::regclass"
+    )
+    assert _query(source_db_url, confirm_posture) == _query(restored_url, confirm_posture)
+    assert _query(restored_url, confirm_posture)[0].startswith("true/true/")
+    assert _query(
+        restored_url,
+        "SELECT prosecdef::text||'/'||has_function_privilege('public',oid,'EXECUTE')::text "
+        "FROM pg_proc WHERE oid='public.confirm_restore_row(jsonb)'::regprocedure",
+    ) == ["false/false"]
+    confirm_engine = create_engine(restored_url, isolation_level="AUTOCOMMIT")
+    try:
+        with confirm_engine.connect() as conn:
+            # Even a later broad bootstrap grant cannot turn the fixed importer
+            # into runtime write authority: its invoker check remains binding.
+            conn.exec_driver_sql(
+                "GRANT EXECUTE ON FUNCTION public.confirm_restore_row(JSONB) "
+                "TO butler_general_rw,butler_messenger_rw,connector_writer"
+            )
+            for role in ("butler_general_rw", "butler_messenger_rw", "connector_writer"):
+                conn.exec_driver_sql(f"SET ROLE {role}")
+                if role != "butler_messenger_rw":
+                    assert (
+                        conn.exec_driver_sql(
+                            "SELECT count(*) FROM public.pending_confirms"
+                        ).scalar_one()
+                        == 0
+                    )
+                with pytest.raises(
+                    DBAPIError, match="confirm restore requires the exact table owner"
+                ):
+                    conn.exec_driver_sql("SELECT public.confirm_restore_row('{}'::jsonb)")
+                conn.exec_driver_sql("RESET ROLE")
+    finally:
+        confirm_engine.dispose()
 
     for relation in (
         "connectors.home_assistant_persons",

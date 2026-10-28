@@ -5,8 +5,10 @@
 - [x] 1.3 Specify immutable recipient-bound signed prompts and recoverable registered domain sinks.
 - [x] 1.4 Record bounds/signature changes and preserve noninteractive fallback and approval separation.
 - [x] 1.5 Record inherited Telegram/dashboard simple-card requirements and concrete Phase B custody.
-- [ ] 1.6 Obtain independent exact-head semantic review and resolve all findings.
-- [ ] 1.7 Obtain owner adoption of the exact reviewed artifact before implementation.
+- [x] 1.6 Obtain independent exact-head semantic review and resolve all findings.
+- [x] 1.7 Obtain owner adoption of the exact reviewed artifact before implementation.
+
+Owner adopted independently reviewed commit `537046f73f9d7d41ed70af0bb662241867c9dc25` on 2026-10-28.
 
 ## 2. Phase B: implement under bu-ow5a4 after adoption
 
