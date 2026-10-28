@@ -4,11 +4,13 @@ Fast sensor transport does not guarantee a timely owner experience, and frequent
 
 ## What Changes
 
-- Propose a shared consumer contract: deterministic routine observation handling, complete finite response profiles, loss-aware coalescing, aggregate inference budgets and honest latency receipts.
-- Apply the contract to appliance handoffs, travel disruption reviews and bounded comfort sessions through the existing held specification packets, with concrete verification cases in `design.md`.
+- Establish the adopted shared consumer contract: deterministic routine observation handling, complete finite response profiles, loss-aware coalescing, aggregate inference budgets and honest latency receipts.
+- Apply the contract to appliance handoffs, travel disruption reviews and bounded comfort sessions through the released specification packets, with concrete verification cases in `design.md`.
 - Keep operational limit values in versioned runtime configuration. Require each feature proposal to supply its actual initial profile and supported source population before activation; transport defaults are not product guarantees.
 
-Status: **proposed, not adopted or implemented**. The owner's request authorizes drafting and linking these requirements. It does not release `bu-69cc1o`, adopt numerical settings, or enable devices, reasoning or notifications. Merging this proposal preserves that status.
+Status: **owner-adopted specification; not implemented**. On 2026-10-28 the owner accepted the recommendation to adopt the shared specification and release the three feature-specification tasks: "agreed, please proceed with your recommendation". This adopts REQ-event-response-contract-001 through 005 exactly as reviewed in PR #5073 (source commit `c7979f9aa9c487d34015bdb8aca853549dfcde57`, merged as `980f0f13cbde023021084f1bb4438c64b6c7a0d9`) and authorizes closing specification-release gate `bu-69cc1o`.
+
+The shared requirements are binding on the ensuing feature specifications. Their concrete profiles and domain behavior still require completed specification and exact-text adoption before implementation. This decision adopts no numerical settings and enables no devices, reasoning or notifications. Keep this OpenSpec change active until implementation and verification are complete; adoption is not an archive or delivery receipt.
 
 ## Capabilities
 
