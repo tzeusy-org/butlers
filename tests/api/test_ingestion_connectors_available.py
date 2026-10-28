@@ -50,8 +50,8 @@ async def test_available_connectors_schema(app):
 @pytest.mark.parametrize(
     "connector_type,expected",
     [
-        ("gmail", {"channel": "email", "provider": "google"}),
-        ("telegram_bot", {"channel": "telegram"}),
+        ("gmail", {"channel": "email", "provider": "gmail"}),
+        ("telegram_bot", {"channel": "telegram_bot"}),
         (
             "activitywatch",
             {"channel": "activitywatch", "provider": "activitywatch"},
@@ -82,3 +82,54 @@ async def test_available_connectors_no_db_dependency(app):
 
     # Must succeed without any DB setup
     assert resp.status_code == 200
+
+
+async def test_available_connectors_equal_deployable_descriptor_projection(app):
+    """REQ-connector-base-spec-010: actual HTTP discovery uses canonical emitter identities."""
+    from butlers.connectors.catalog import discovery_connectors
+    from butlers.tools.switchboard.contracts import IngestSourceV1
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/ingestion/connectors/available")
+    assert response.status_code == 200
+    rows = response.json()["data"]
+    assert rows == [row.discovery_profile() for row in discovery_connectors()]
+    assert len({row["connector_type"] for row in rows}) == len(rows)
+    assert "live_listener" in {row["connector_type"] for row in rows}
+    assert "discord" not in {row["connector_type"] for row in rows}
+    for row in rows:
+        source = IngestSourceV1(
+            channel=row["channel"], provider=row["provider"], endpoint_identity="synthetic"
+        )
+        assert (source.channel, source.provider) == (row["channel"], row["provider"])
+
+
+async def test_descriptor_retirement_drives_discovery_and_preview_only(app, monkeypatch):
+    """S1 consumers honor the row rather than retaining independent identity lists."""
+    from dataclasses import replace
+
+    from butlers.connectors import catalog
+    from butlers.ingestion_bearer_scrub import scrub_filtered_preview
+
+    monkeypatch.setattr(
+        catalog,
+        "CONNECTOR_DESCRIPTORS",
+        tuple(
+            replace(row, retired=True) if row.connector_type == "gmail" else row
+            for row in catalog.CONNECTOR_DESCRIPTORS
+        ),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/ingestion/connectors/available")
+    assert response.status_code == 200
+    assert "gmail" not in {row["connector_type"] for row in response.json()["data"]}
+    assert (
+        scrub_filtered_preview(
+            "Your login code is 482913", connector_type="gmail", sender_identity="", full_payload={}
+        )
+        == "Your login code is [auth-code withheld: unknown]"
+    )

@@ -295,3 +295,76 @@ def test_scrub_that_moves_text_collapses_untrusted_spans_to_whole_text() -> None
     assert out["payload"]["untrusted_spans"] == [
         {"kind": "forwarded", "start": 0, "end": len(scrubbed), "origin_identity": "555"}
     ]
+
+
+def test_filtered_preview_retains_every_closed_connector_label() -> None:
+    """REQ-connector-base-spec-009: projection preserves the complete old label population."""
+    from butlers.ingestion_bearer_scrub import scrub_filtered_preview
+
+    labels = (
+        "gmail",
+        "telegram",
+        "telegram_bot",
+        "telegram_user",
+        "telegram_user_client",
+        "whatsapp_user_client",
+        "google_drive",
+        "google_calendar",
+        "google_health",
+        "spotify",
+        "owntracks",
+        "steam",
+        "activitywatch",
+        "home_assistant",
+        "live-listener",
+        "live_listener",
+    )
+    for label in labels:
+        assert (
+            scrub_filtered_preview(
+                "Your login code is 482913",
+                connector_type=label,
+                sender_identity="",
+                full_payload={},
+            )
+            == f"Your login code is [auth-code withheld: {label}]"
+        ), label
+    for label in ("unknown-label", "discord", "482913", "https://test.invalid/reset?token=482913"):
+        result = scrub_filtered_preview(
+            "Your login code is 482913",
+            connector_type=label,
+            sender_identity="",
+            full_payload={},
+        )
+        assert result == "Your login code is [auth-code withheld: unknown]"
+
+
+def test_filtered_preview_keeps_link_withholding_and_detector_failure(monkeypatch) -> None:
+    from butlers import ingestion_bearer_scrub as scrubber
+
+    preview = "Reset https://example.test/reset?token=synthetic-private-token"
+    out = scrubber.scrub_filtered_preview(
+        preview,
+        connector_type="https://caller.invalid/secret",
+        sender_identity="",
+        full_payload={"source": {"provider": "482913"}},
+    )
+    assert out == "Reset [reset-link withheld: example.test]"
+    assert "synthetic-private-token" not in out and "caller.invalid" not in out
+
+    def detector_error(*args, **kwargs):
+        raise RuntimeError("synthetic private marker must not be reflected")
+
+    monkeypatch.setattr(scrubber, "scrub_text", detector_error)
+    assert (
+        scrubber.scrub_filtered_preview(
+            "Your code is 482913", connector_type="gmail", sender_identity="", full_payload={}
+        )
+        is None
+    )
+    assert (
+        scrubber.scrub_filtered_preview(
+            None, connector_type="gmail", sender_identity="", full_payload={}
+        )
+        is None
+    )
