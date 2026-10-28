@@ -154,7 +154,7 @@ async def test_native_connector_registers_kind_through_its_heartbeat(
         runtime._run_poll_loop = AsyncMock()
         await runtime.start()
     else:
-        manager = google_drive.GDriveConnectorManager(db_pool=None, heartbeat_interval_s=0)
+        manager = google_drive.DriveAccountSource(db_pool=None, heartbeat_interval_s=0)
         manager._mcp_client = MagicMock()
         manager._start_heartbeat()
         await manager._account_heartbeat_task

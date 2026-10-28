@@ -41,10 +41,9 @@ import json
 import logging
 import os
 import random
-import signal
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -58,18 +57,19 @@ from pydantic import BaseModel
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.google_fleet import GoogleAccountFleet
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
-from butlers.google_credentials import resolve_google_credentials
+from butlers.google_credentials import (
+    GOOGLE_TOKEN_URL,
+    GoogleTokenCache,
+    resolve_google_credentials,
+)
 from butlers.ingestion_bearer_scrub import scrub_text
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.ingestion_spans import CHANNEL_KIND_FEED
 from butlers.metrics_registry import get_or_create_counter, get_or_create_gauge
-from butlers.oauth_token_payload import (
-    OAuthTokenValidationError,
-    validate_oauth_token_payload,
-)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -90,7 +90,7 @@ _DRIVE_SCOPE_READONLY = "https://www.googleapis.com/auth/drive.readonly"
 
 # Google Drive API base URL
 _DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
-_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_GOOGLE_TOKEN_URL = GOOGLE_TOKEN_URL
 
 # Default config values
 _DEFAULT_POLL_INTERVAL_S = 300
@@ -1042,59 +1042,34 @@ class GDriveAccountLoop:
             await asyncio.sleep(self._config.poll_interval_s)
 
     async def _get_access_token(self) -> str:
-        """Return a valid OAuth access token, refreshing if needed (task 3.4 / 8.4).
-
-        Uses an early-expiry margin of 60 seconds so the token is refreshed
-        before it actually expires.  On refresh failure, the error is propagated
-        so the caller can decide how to handle it.
-        """
-        now = datetime.now(UTC)
-        if (
-            self._access_token is not None
-            and self._token_expires_at is not None
-            and now < self._token_expires_at - timedelta(seconds=60)
-        ):
-            return self._access_token
-
-        # Refresh the token
+        """Return an account token through the shared locked 60-second cache."""
         if self._http_client is None:
             self._http_client = httpx.AsyncClient(timeout=30)
+        cache = getattr(self, "_google_token_cache", None)
+        if cache is None:
+            cache = self._google_token_cache = GoogleTokenCache(self)
+
+        async def refreshed() -> None:
+            self._metrics.record_source_api_call(api_method="token_refresh", status="success")
+            self._record_source_api_success()
 
         try:
-            resp = await self._http_client.post(
-                _GOOGLE_TOKEN_URL,
-                data={
-                    "grant_type": "refresh_token",
-                    "refresh_token": self._config.refresh_token,
-                    "client_id": self._config.client_id,
-                    "client_secret": self._config.client_secret,
-                },
+            token = await cache.get_token(
+                self._http_client,
+                on_refreshed=refreshed,
+                client_id=self._config.client_id,
+                client_secret=self._config.client_secret,
+                refresh_token=self._config.refresh_token,
                 timeout=15,
             )
-        except Exception as exc:
-            error = RuntimeError(f"Drive: token refresh network error for {self.email!r}: {exc}")
+        except httpx.HTTPStatusError as exc:
+            error = _http_status_error(exc.response, "Drive token refresh failed")
             self._record_source_api_failure(error)
             raise error from exc
-
-        if resp.status_code != 200:
-            error = _http_status_error(resp, "Drive token refresh failed")
-            self._record_source_api_failure(error)
-            raise error
-
-        # Validate the whole payload before touching connector state, so a
-        # malformed 200 cannot leave a stale token paired with a fresh expiry.
-        try:
-            token = validate_oauth_token_payload(resp.json())
-        except OAuthTokenValidationError as exc:
+        except Exception as exc:
             self._record_source_api_failure(exc)
             raise
-
-        self._access_token = token.access_token
-        self._token_expires_at = now + timedelta(seconds=token.expires_in)
-        self._metrics.record_source_api_call(api_method="token_refresh", status="success")
-        self._record_source_api_success()
-        logger.debug("Drive: token refreshed for email=%s", self.email)
-        return self._access_token
+        return token
 
     async def _load_cursor(self) -> GDriveCursor | None:
         """Load GDriveCursor from cursor_store (task 9.3).
@@ -1815,11 +1790,11 @@ class GDriveAccountLoop:
 
 
 # ---------------------------------------------------------------------------
-# GDriveConnectorManager — top-level multi-account orchestrator (task 8.1)
+# DriveAccountSource — top-level multi-account orchestrator (task 8.1)
 # ---------------------------------------------------------------------------
 
 
-class GDriveConnectorManager:
+class DriveAccountSource(GoogleAccountFleet):
     """Top-level orchestrator for the multi-account Google Drive connector.
 
     Discovers all active Google accounts with drive scopes from
@@ -1845,6 +1820,7 @@ class GDriveConnectorManager:
         health_port: int = _DEFAULT_HEALTH_PORT,
         heartbeat_interval_s: int = 120,
     ) -> None:
+        super().__init__()
         self._db_pool = db_pool
         self._credential_store = credential_store
         self._switchboard_mcp_url = switchboard_mcp_url
@@ -1854,29 +1830,11 @@ class GDriveConnectorManager:
         self._health_port = health_port
         self._heartbeat_interval_s = heartbeat_interval_s
 
-        # Active account loops keyed by email
-        self._loops: dict[str, GDriveAccountLoop] = {}
-
-        # State
-        self._start_time = time.time()
-        self._running = False
-        self._reload_event = asyncio.Event()
-        # Capture the main event loop so background health-server thread can
-        # signal _reload_event via call_soon_threadsafe.
-        self._main_loop: asyncio.AbstractEventLoop | None = None
-
-        # Health server (started in background thread)
-        self._health_server: uvicorn.Server | None = None
-        self._health_thread: Thread | None = None
-
         # Credential store (shared across accounts for app creds)
         if self._credential_store is None and self._db_pool is not None:
             from butlers.credential_store import CredentialStore
 
             self._credential_store = CredentialStore(self._db_pool)
-
-        # Rescan task
-        self._rescan_task: asyncio.Task[None] | None = None
 
         # Heartbeat (per-connector-manager, uses aggregated health)
         self._heartbeat: ConnectorHeartbeat | None = None
@@ -1899,7 +1857,7 @@ class GDriveConnectorManager:
                     """
                     SELECT id, entity_id, email, granted_scopes, status,
                            is_primary, connected_at, last_token_refresh_at,
-                           display_name
+                           display_name, metadata
                     FROM public.google_accounts
                     WHERE status = 'active'
                     ORDER BY is_primary DESC, connected_at ASC
@@ -1927,86 +1885,79 @@ class GDriveConnectorManager:
 
         return qualifying
 
-    async def sync_accounts(self) -> tuple[list[str], list[str], list[str]]:
-        """Discover qualifying accounts and reconcile running loops (task 12.1).
+    async def _make_account_loop(self, email: str, metadata: dict[str, Any] | None):
+        try:
+            creds = await resolve_google_credentials(
+                self._credential_store,
+                pool=self._db_pool,
+                caller="google_drive",
+                account=email,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Drive manager: credential resolution failed for account %r (skipping): %s",
+                email,
+                exc,
+            )
+            return None
 
-        Returns (added, removed, unchanged) email lists.
-        """
-        qualifying = await self.discover_drive_accounts()
+        poll_interval = self._poll_interval_s
+        meta = metadata
+        if meta and "poll_interval_s" in meta:
+            try:
+                poll_interval = int(meta["poll_interval_s"])
+            except (ValueError, TypeError):
+                pass
 
-        desired_emails: set[str] = set()
-        account_metadata: dict[str, dict[str, Any] | None] = {}
-        for row in qualifying:
+        config = GDriveAccountConfig(
+            email=email,
+            client_id=creds.client_id,
+            client_secret=creds.client_secret,
+            refresh_token=creds.refresh_token,
+            switchboard_mcp_url=self._switchboard_mcp_url,
+            poll_interval_s=poll_interval,
+        )
+
+        loop = GDriveAccountLoop(
+            email=email,
+            config=config,
+            db_pool=self._db_pool,
+            cursor_pool=self._cursor_pool,
+        )
+        return loop
+
+    async def _discover_accounts(self) -> dict[str, Any]:
+        accounts = {}
+        for row in await self.discover_drive_accounts():
             email = row["email"]
             if email is None:
                 continue
-            desired_emails.add(email)
-            metadata = row["metadata"] if "metadata" in row.keys() else {}  # type: ignore[call-overload]
-            gdrive_section: dict[str, Any] | None = None
-            if isinstance(metadata, dict):
-                sec = metadata.get("google_drive")
-                if isinstance(sec, dict):
-                    gdrive_section = sec
-            account_metadata[email] = gdrive_section
+            metadata = row["metadata"] if "metadata" in row.keys() else {}
+            section = metadata.get("google_drive") if isinstance(metadata, dict) else None
+            accounts[email] = section if isinstance(section, dict) else None
+        return accounts
 
-        current_emails = set(self._loops.keys())
-        to_add = desired_emails - current_emails
-        to_remove = current_emails - desired_emails
-        unchanged = current_emails & desired_emails
+    async def _fleet_ready(self) -> None:
+        self._start_heartbeat()
 
-        # Stop removed loops (graceful: complete in-flight, checkpoint, stop)
-        for email in to_remove:
-            loop = self._loops.pop(email)
-            logger.info("Drive manager: stopping loop for removed account %r", email)
-            await loop.stop()
-
-        # Start new loops
-        added: list[str] = []
-        for email in to_add:
+    async def _close_source(self) -> None:
+        if self._account_heartbeat_task is not None:
+            task, self._account_heartbeat_task = self._account_heartbeat_task, None
+            task.cancel()
             try:
-                creds = await resolve_google_credentials(
-                    self._credential_store,
-                    pool=self._db_pool,
-                    caller="google_drive",
-                    account=email,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Drive manager: credential resolution failed for account %r (skipping): %s",
-                    email,
-                    exc,
-                )
-                continue
+                await task
+            except asyncio.CancelledError:
+                pass
+        if self._heartbeat is not None:
+            heartbeat, self._heartbeat = self._heartbeat, None
+            await heartbeat.stop()
+        if self._mcp_client is not None:
+            client, self._mcp_client = self._mcp_client, None
+            await client.close()
 
-            poll_interval = self._poll_interval_s
-            meta = account_metadata.get(email)
-            if meta and "poll_interval_s" in meta:
-                try:
-                    poll_interval = int(meta["poll_interval_s"])
-                except (ValueError, TypeError):
-                    pass
-
-            config = GDriveAccountConfig(
-                email=email,
-                client_id=creds.client_id,
-                client_secret=creds.client_secret,
-                refresh_token=creds.refresh_token,
-                switchboard_mcp_url=self._switchboard_mcp_url,
-                poll_interval_s=poll_interval,
-            )
-
-            loop = GDriveAccountLoop(
-                email=email,
-                config=config,
-                db_pool=self._db_pool,
-                cursor_pool=self._cursor_pool,
-            )
-            self._loops[email] = loop
-            loop.start()
-            added.append(email)
-            logger.info("Drive manager: started loop for new account %r", email)
-
-        return added, list(to_remove), list(unchanged)
+    @property
+    def rescan_interval(self) -> float:
+        return self._account_rescan_interval_s
 
     def get_health(self) -> MultiAccountHealthStatus:
         """Return aggregated health status across all account loops (task 12.4)."""
@@ -2029,62 +1980,9 @@ class GDriveConnectorManager:
             timestamp=datetime.now(UTC).isoformat(),
         )
 
-    async def stop(self) -> None:
-        """Stop all account loops gracefully."""
-        self._running = False
-
-        # Stop heartbeats
-        if self._account_heartbeat_task is not None:
-            self._account_heartbeat_task.cancel()
-            self._account_heartbeat_task = None
-        if self._heartbeat is not None:
-            await self._heartbeat.stop()
-            self._heartbeat = None
-
-        # Stop MCP client
-        if self._mcp_client is not None:
-            try:
-                await self._mcp_client.close()
-            except Exception:
-                pass
-            self._mcp_client = None
-
-        for email, loop in list(self._loops.items()):
-            logger.info("Drive manager: stopping loop for account %r", email)
-            await loop.stop()
-        self._loops.clear()
-        logger.info("Drive manager: all account loops stopped")
-
     # ------------------------------------------------------------------
     # Task 12.2: SIGHUP handler and reload_accounts MCP tool
     # ------------------------------------------------------------------
-
-    def _setup_sighup(self) -> None:
-        """Register SIGHUP handler to trigger immediate account re-scan (task 12.2)."""
-        try:
-            loop = asyncio.get_event_loop()
-
-            def _on_sighup() -> None:
-                logger.info("Drive manager: SIGHUP received — triggering account reload")
-                self._reload_event.set()
-
-            loop.add_signal_handler(signal.SIGHUP, _on_sighup)
-            logger.debug("Drive manager: SIGHUP handler registered")
-        except (OSError, NotImplementedError):
-            # SIGHUP not available on Windows
-            logger.debug("Drive manager: SIGHUP not available on this platform")
-
-    async def reload_accounts(self) -> dict[str, Any]:
-        """Trigger immediate account re-scan (connector_reload_accounts MCP tool, task 12.2).
-
-        Returns a summary of accounts added, removed, and unchanged.
-        """
-        added, removed, unchanged = await self.sync_accounts()
-        return {
-            "added": added,
-            "removed": removed,
-            "unchanged": unchanged,
-        }
 
     # ------------------------------------------------------------------
     # Task 12.4: Aggregated health HTTP endpoint
@@ -2266,80 +2164,6 @@ class GDriveConnectorManager:
     # Task 12.1: Periodic rescan loop + start/stop lifecycle
     # ------------------------------------------------------------------
 
-    async def start(self) -> None:
-        """Start the connector manager: discover accounts, start loops, run rescan loop.
-
-        Task 12.1: Implements periodic account re-scan at account_rescan_interval_s.
-        Task 12.2: Registers SIGHUP handler for on-demand reload.
-        Task 12.4: Starts aggregated health HTTP endpoint.
-        Task 12.5: Starts heartbeat protocol.
-        """
-        self._running = True
-
-        # Capture the running event loop so the background health-server thread
-        # can safely signal _reload_event via loop.call_soon_threadsafe.
-        self._main_loop = asyncio.get_running_loop()
-
-        # Start health server (task 12.4)
-        self._start_health_server()
-
-        # Register SIGHUP for on-demand reload (task 12.2)
-        self._setup_sighup()
-
-        # Initial account discovery (task 12.1)
-        added, removed, unchanged = await self.sync_accounts()
-        logger.info(
-            "Drive manager: initial account sync — added=%d removed=%d unchanged=%d",
-            len(added),
-            len(removed),
-            len(unchanged),
-        )
-
-        if not self._loops:
-            logger.warning(
-                "Drive manager: no qualifying Drive accounts found at startup. "
-                "Running in idle/degraded mode. Will retry at rescan interval=%ds.",
-                self._account_rescan_interval_s,
-            )
-
-        # Start heartbeat (task 12.5) — MCP client must be wired externally before start()
-        self._start_heartbeat()
-
-        # Main rescan loop (task 12.1)
-        try:
-            await self._run_rescan_loop()
-        finally:
-            await self.stop()
-
-    async def _run_rescan_loop(self) -> None:
-        """Periodically re-scan for account changes, also triggered by reload events.
-
-        Task 12.1: Periodic re-scan at account_rescan_interval_s.
-        Task 12.2: Also triggered by _reload_event (SIGHUP or /reload endpoint).
-        Task 12.3: Graceful loop shutdown — removed accounts have their loops stopped.
-        """
-        rescan_interval = self._account_rescan_interval_s
-        while self._running:
-            # Wait for either rescan interval or reload trigger
-            try:
-                await asyncio.wait_for(self._reload_event.wait(), timeout=rescan_interval)
-                logger.info("Drive manager: reload triggered — re-scanning accounts")
-                self._reload_event.clear()
-            except TimeoutError:
-                logger.debug("Drive manager: periodic re-scan triggered")
-
-            if not self._running:
-                break
-
-            added, removed, unchanged = await self.sync_accounts()
-            if added or removed:
-                logger.info(
-                    "Drive manager: account sync — added=%s removed=%s unchanged=%d",
-                    added,
-                    removed,
-                    len(unchanged),
-                )
-
 
 # ---------------------------------------------------------------------------
 # Async entrypoint — process bootstrap (task 13.4)
@@ -2443,7 +2267,7 @@ async def run_google_drive_connector() -> None:
     # Step 3: Start the multi-account manager.
     # Manager is created outside the try block so it is always defined when
     # the finally block runs. If the constructor raises, no cleanup is needed.
-    manager = GDriveConnectorManager(
+    manager = DriveAccountSource(
         db_pool=shared_pool,
         credential_store=None,  # manager resolves credentials lazily via pool
         switchboard_mcp_url=process_config.switchboard_mcp_url,

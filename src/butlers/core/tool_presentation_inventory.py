@@ -11635,7 +11635,7 @@ STORE_WRITERS = MappingProxyType(
                 "butlers.connectors.cursor_store.save_connector_settings",
                 "butlers.connectors.cursor_store.save_cursor",
                 "butlers.connectors.google_drive.GDriveAccountLoop._save_metadata_cache_to_store",
-                "butlers.connectors.google_drive.GDriveConnectorManager._account_heartbeat_loop",
+                "butlers.connectors.google_drive.DriveAccountSource._account_heartbeat_loop",
                 "butlers.tools.switchboard.connector.heartbeat._persist_registry",
             ),
             unknown_writers=True,

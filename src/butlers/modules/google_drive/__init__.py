@@ -29,15 +29,12 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from butlers.google_credentials import (
+    GoogleTokenCache,
     MissingGoogleCredentialsError,
     _pool_acquire,
     resolve_google_credentials,
 )
 from butlers.modules.base import Module, ToolMeta
-from butlers.oauth_token_payload import (
-    OAuthTokenValidationError,
-    validate_oauth_token_payload,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +43,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
-_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 _DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
 
 _FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
@@ -70,7 +66,6 @@ _RATE_LIMIT_MAX_RETRIES = 3
 _RATE_LIMIT_BASE_DELAY_S = 1.0
 
 # Token expiry safety margin (spec §3.4): refresh 60s before expiry
-_TOKEN_EXPIRY_MARGIN_S = 60
 
 # Extension to MIME type map for MIME inference (spec §5.4)
 _EXT_MIME_MAP: dict[str, str] = {
@@ -171,13 +166,6 @@ class _DriveTokenCache:
     def __init__(self) -> None:
         self._access_token: str | None = None
         self._expires_at: float = 0.0
-        self._lock = asyncio.Lock()
-
-    def _is_fresh(self) -> bool:
-        return (
-            self._access_token is not None
-            and time.monotonic() < self._expires_at - _TOKEN_EXPIRY_MARGIN_S
-        )
 
     async def get_token(
         self,
@@ -189,25 +177,15 @@ class _DriveTokenCache:
         on_refreshed: Any | None = None,
     ) -> str:
         """Return a valid access token, refreshing if needed."""
-        if self._is_fresh():
-            assert self._access_token is not None
-            return self._access_token
-
-        async with self._lock:
-            # Double-checked locking: another coroutine may have refreshed
-            if self._is_fresh():
-                assert self._access_token is not None
-                return self._access_token
-
-            await self._refresh(
-                client_id=client_id,
-                client_secret=client_secret,
-                refresh_token=refresh_token,
-                http_client=http_client,
-                on_refreshed=on_refreshed,
-            )
-            assert self._access_token is not None
-            return self._access_token
+        await self._refresh(
+            client_id=client_id,
+            client_secret=client_secret,
+            refresh_token=refresh_token,
+            http_client=http_client,
+            on_refreshed=on_refreshed,
+        )
+        assert self._access_token is not None
+        return self._access_token
 
     async def _refresh(
         self,
@@ -218,51 +196,33 @@ class _DriveTokenCache:
         http_client: httpx.AsyncClient,
         on_refreshed: Any | None,
     ) -> None:
+        async def notify() -> None:
+            if on_refreshed is not None:
+                try:
+                    await on_refreshed()
+                except Exception:
+                    logger.debug("Google Drive token callback failed (best-effort)")
+
+        cache = getattr(self, "_google_token_cache", None)
+        if cache is None:
+            cache = self._google_token_cache = GoogleTokenCache(
+                self, expiry_field="_expires_at", clock=time.monotonic
+            )
         try:
-            response = await http_client.post(
-                _GOOGLE_TOKEN_URL,
-                data={
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "refresh_token": refresh_token,
-                    "grant_type": "refresh_token",
-                },
+            await cache.get_token(
+                http_client,
+                client_id=client_id,
+                client_secret=client_secret,
+                refresh_token=refresh_token,
+                on_refreshed=notify,
                 headers={"Accept": "application/json"},
             )
         except httpx.HTTPError as exc:
-            raise RuntimeError(
-                f"Google Drive token refresh failed: {_redact_creds(str(exc))}"
-            ) from exc
-
-        if response.status_code < 200 or response.status_code >= 300:
-            raise RuntimeError(
-                f"Google Drive token refresh failed (HTTP {response.status_code}): "
-                f"{_redact_creds(response.text[:200])}"
-            )
-
-        # Validate the whole payload before touching module state, so a
-        # malformed 200 cannot leave a stale token paired with a fresh expiry.
-        try:
-            token = validate_oauth_token_payload(response.json())
-        except OAuthTokenValidationError as exc:
+            raise RuntimeError("Google Drive token refresh failed") from exc
+        except ValueError as exc:
             raise RuntimeError(
                 "Google Drive token refresh returned an invalid token payload"
             ) from exc
-
-        self._access_token = token.access_token
-        self._expires_at = time.monotonic() + token.expires_in
-
-        logger.debug("Google Drive token refreshed (expires_in=%ds)", token.expires_in)
-
-        # Update last_token_refresh_at in google_accounts (spec §3.4)
-        if on_refreshed is not None:
-            try:
-                await on_refreshed()
-            except Exception:
-                logger.debug(
-                    "GoogleDriveModule: failed to invoke on_refreshed callback",
-                    exc_info=True,
-                )
 
 
 # ---------------------------------------------------------------------------

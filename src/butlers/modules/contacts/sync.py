@@ -20,11 +20,12 @@ from typing import Any, Literal, Protocol
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
-from butlers.oauth_token_payload import OAuthTokenValidationError, validate_oauth_token_payload
+from butlers.google_credentials import GOOGLE_TOKEN_URL, GoogleOAuthClient
+
+GOOGLE_OAUTH_TOKEN_URL = GOOGLE_TOKEN_URL
 
 logger = logging.getLogger(__name__)
 
-GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_PEOPLE_API_CONNECTIONS_URL = "https://people.googleapis.com/v1/people/me/connections"
 GOOGLE_CONTACT_GROUPS_URL = "https://people.googleapis.com/v1/contactGroups"
 
@@ -350,100 +351,6 @@ class _GoogleOAuthCredentials(BaseModel):
         return normalized
 
 
-class _GoogleOAuthClient:
-    """Refresh-token OAuth helper with in-memory access-token cache."""
-
-    def __init__(
-        self,
-        credentials: _GoogleOAuthCredentials,
-        http_client: httpx.AsyncClient,
-    ) -> None:
-        self._credentials = credentials
-        self._http_client = http_client
-        self._access_token: str | None = None
-        self._access_token_expires_at: datetime | None = None
-        self._refresh_lock = asyncio.Lock()
-
-    async def get_access_token(self, *, force_refresh: bool = False) -> str:
-        if not force_refresh and self._token_is_fresh():
-            assert self._access_token is not None
-            return self._access_token
-
-        async with self._refresh_lock:
-            if not force_refresh and self._token_is_fresh():
-                assert self._access_token is not None
-                return self._access_token
-
-            await self._refresh_access_token()
-            assert self._access_token is not None
-            return self._access_token
-
-    def _token_is_fresh(self) -> bool:
-        if self._access_token is None or self._access_token_expires_at is None:
-            return False
-        return datetime.now(UTC) < self._access_token_expires_at
-
-    async def _refresh_access_token(self) -> None:
-        max_retries = 2
-        last_exc: ContactsTokenRefreshError | None = None
-
-        for attempt in range(max_retries + 1):
-            try:
-                response = await self._http_client.post(
-                    GOOGLE_OAUTH_TOKEN_URL,
-                    data={
-                        "client_id": self._credentials.client_id,
-                        "client_secret": self._credentials.client_secret,
-                        "refresh_token": self._credentials.refresh_token,
-                        "grant_type": "refresh_token",
-                    },
-                    headers={"Accept": "application/json"},
-                )
-            except httpx.HTTPError as exc:
-                raise ContactsTokenRefreshError(
-                    f"Google OAuth token refresh request failed: {exc}"
-                ) from exc
-
-            if response.status_code < 200 or response.status_code >= 300:
-                last_exc = ContactsTokenRefreshError(
-                    "Google OAuth token refresh failed "
-                    f"({response.status_code}): {_safe_google_error_message(response)}"
-                )
-                if attempt < max_retries:
-                    delay = 2**attempt  # 1s, 2s
-                    logger.warning(
-                        "ContactsSync: token refresh attempt %d/%d failed (%d), retrying in %ds",
-                        attempt + 1,
-                        max_retries + 1,
-                        response.status_code,
-                        delay,
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-                raise last_exc
-
-            break
-
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise ContactsTokenRefreshError(
-                "Google OAuth token endpoint returned invalid JSON"
-            ) from exc
-
-        try:
-            token = validate_oauth_token_payload(payload)
-        except OAuthTokenValidationError as exc:
-            raise ContactsTokenRefreshError(
-                "Google OAuth token endpoint returned an invalid token payload"
-            ) from exc
-
-        refresh_ttl_seconds = max(token.expires_in - 60, 30)
-
-        self._access_token = token.access_token
-        self._access_token_expires_at = datetime.now(UTC) + timedelta(seconds=refresh_ttl_seconds)
-
-
 class GoogleContactsProvider(ContactsProvider):
     """Google People API provider implementation for contacts sync."""
 
@@ -470,7 +377,9 @@ class GoogleContactsProvider(ContactsProvider):
             if http_client is not None
             else httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=10.0))
         )
-        self._oauth = _GoogleOAuthClient(self._credentials, self._http_client)
+        self._oauth = GoogleOAuthClient(
+            self._credentials, self._http_client, error_type=ContactsTokenRefreshError
+        )
 
     @property
     def name(self) -> str:

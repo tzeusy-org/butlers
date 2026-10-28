@@ -43,7 +43,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import signal
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -59,6 +58,7 @@ from pydantic import BaseModel
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.google_fleet import GoogleAccountFleet
 from butlers.connectors.health_socket import make_health_socket
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
@@ -66,13 +66,14 @@ from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
 from butlers.credential_store import CredentialStore, shared_db_name_from_env
 from butlers.db import db_params_from_env, should_retry_with_ssl_disable
-from butlers.google_credentials import InvalidGoogleCredentialsError, load_google_credentials
+from butlers.google_credentials import (
+    GOOGLE_TOKEN_URL,
+    GoogleTokenCache,
+    InvalidGoogleCredentialsError,
+    load_google_credentials,
+)
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.ingestion_spans import CHANNEL_KIND_MESSAGE
-from butlers.oauth_token_payload import (
-    OAuthTokenValidationError,
-    validate_oauth_token_payload,
-)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -93,7 +94,7 @@ _GCAL_SCOPE_READONLY = "https://www.googleapis.com/auth/calendar.readonly"
 
 # Google Calendar API base URL
 _GCAL_API_BASE = "https://www.googleapis.com/calendar/v3"
-_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_GOOGLE_TOKEN_URL = GOOGLE_TOKEN_URL
 
 # Default config values
 _DEFAULT_POLL_INTERVAL_S = 60
@@ -1214,46 +1215,32 @@ class CalendarConnectorRuntime:
     # ------------------------------------------------------------------
 
     async def _get_access_token(self) -> str:
-        """Return a valid access token, refreshing if needed."""
-        now = datetime.now(UTC)
-        if (
-            self._access_token is not None
-            and self._token_expires_at is not None
-            and now < self._token_expires_at - timedelta(seconds=60)
-        ):
-            return self._access_token
-
-        # Refresh the token
+        """Return an account token through the shared locked 60-second cache."""
         assert self._http_client is not None
-        resp = await self._http_client.post(
-            _GOOGLE_TOKEN_URL,
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": self._config.refresh_token,
-                "client_id": self._config.client_id,
-                "client_secret": self._config.client_secret,
-            },
-            timeout=15,
-        )
+        cache = getattr(self, "_google_token_cache", None)
+        if cache is None:
+            cache = self._google_token_cache = GoogleTokenCache(self)
 
-        if resp.status_code != 200:
-            error = _http_status_error(resp, "Calendar token refresh failed")
-            self._record_source_api_failure(error)
-            raise error
+        async def refreshed() -> None:
+            self._record_source_api_success()
 
-        # Validate the whole payload before touching connector state, so a
-        # malformed 200 cannot leave a stale token paired with a fresh expiry.
         try:
-            token = validate_oauth_token_payload(resp.json())
-        except OAuthTokenValidationError as exc:
+            token = await cache.get_token(
+                self._http_client,
+                on_refreshed=refreshed,
+                client_id=self._config.client_id,
+                client_secret=self._config.client_secret,
+                refresh_token=self._config.refresh_token,
+                timeout=15,
+            )
+        except httpx.HTTPStatusError as exc:
+            error = _http_status_error(exc.response, "Calendar token refresh failed")
+            self._record_source_api_failure(error)
+            raise error from exc
+        except Exception as exc:
             self._record_source_api_failure(exc)
             raise
-
-        self._access_token = token.access_token
-        self._token_expires_at = now + timedelta(seconds=token.expires_in)
-        self._record_source_api_success()
-        logger.debug("Calendar: token refreshed for email=%s", self._config.email)
-        return self._access_token
+        return token
 
     async def _gcal_api_get(
         self,
@@ -1883,11 +1870,13 @@ class CalendarAccountLoop:
 
 
 # ---------------------------------------------------------------------------
-# CalendarConnectorManager — top-level multi-account orchestrator
+# CalendarAccountSource — top-level multi-account orchestrator
 # ---------------------------------------------------------------------------
 
 
-class CalendarConnectorManager:
+class CalendarAccountSource(GoogleAccountFleet):
+    restart_dead_accounts = True
+
     """Top-level orchestrator for the multi-account Google Calendar connector.
 
     Discovers all active Google accounts with calendar scopes from
@@ -1908,22 +1897,10 @@ class CalendarConnectorManager:
         db_pool: asyncpg.Pool,
         cursor_pool: asyncpg.Pool | None,
     ) -> None:
+        super().__init__()
         self._process_config = process_config
         self._db_pool = db_pool
         self._cursor_pool = cursor_pool
-
-        # Active account loops keyed by email
-        self._loops: dict[str, CalendarAccountLoop] = {}
-
-        # State
-        self._start_time = time.time()
-        self._running = False
-        self._reload_event = asyncio.Event()
-        self._main_loop: asyncio.AbstractEventLoop | None = None
-
-        # Health server
-        self._health_server: uvicorn.Server | None = None
-        self._health_thread: Thread | None = None
 
         # Credential store (shared across accounts for app creds)
         self._credential_store: CredentialStore | None = None
@@ -2020,88 +1997,52 @@ class CalendarConnectorManager:
             )
             return None
 
-    async def _sync_accounts(
-        self,
-    ) -> tuple[list[str], list[str], list[str]]:
-        """Discover qualifying accounts and reconcile running loops.
+    async def _make_account_loop(self, email: str, metadata: dict[str, Any] | None):
+        creds = await self._resolve_credentials_for_account(email)
+        if creds is None:
+            return None
 
-        Returns (added, removed, unchanged) email lists.
-        """
-        qualifying = await self._discover_qualifying_accounts()
-
-        # Compute desired set
-        desired_emails: set[str] = set()
-        account_metadata: dict[str, dict[str, Any] | None] = {}
-        for email, metadata_calendar in qualifying:
-            if email is None:
-                continue
-            desired_emails.add(email)
-            account_metadata[email] = metadata_calendar
-
-        current_emails = set(self._loops.keys())
-
-        # Detect dead loops: account still in self._loops but task has finished
-        # (e.g. crashed due to token error).  Remove them so they get re-added.
-        dead_emails: set[str] = set()
-        for email in current_emails & desired_emails:
-            loop = self._loops[email]
-            if not loop.is_running:
-                logger.warning(
-                    "Calendar manager: account loop for %r is dead (error=%s) — will restart",
-                    email,
-                    loop._error,
-                )
-                await loop.stop()
-                del self._loops[email]
-                dead_emails.add(email)
-
-        current_emails -= dead_emails
-        to_add = (desired_emails - current_emails) | dead_emails
-        to_remove = current_emails - desired_emails
-        unchanged = current_emails & desired_emails
-
-        # Stop removed loops (graceful: complete in-flight, checkpoint, stop)
-        for email in to_remove:
-            loop = self._loops.pop(email)
-            logger.info("Calendar manager: stopping loop for removed account %r", email)
-            await loop.stop()
-
-        # Start new loops
-        added: list[str] = []
-        for email in to_add:
-            creds = await self._resolve_credentials_for_account(email)
-            if creds is None:
-                continue
-
-            metadata_calendar = account_metadata.get(email)
-            try:
-                account_config = self._process_config.make_account_config(
-                    email=email,
-                    client_id=creds["client_id"],
-                    client_secret=creds["client_secret"],
-                    refresh_token=creds["refresh_token"],
-                    metadata_calendar=metadata_calendar,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Calendar manager: failed to build config for account %r (skipping): %s",
-                    email,
-                    exc,
-                )
-                continue
-
-            loop = CalendarAccountLoop(
+        metadata_calendar = metadata
+        try:
+            account_config = self._process_config.make_account_config(
                 email=email,
-                config=account_config,
-                db_pool=self._db_pool,
-                cursor_pool=self._cursor_pool,
+                client_id=creds["client_id"],
+                client_secret=creds["client_secret"],
+                refresh_token=creds["refresh_token"],
+                metadata_calendar=metadata_calendar,
             )
-            self._loops[email] = loop
-            loop.start()
-            added.append(email)
-            logger.info("Calendar manager: started loop for new account %r", email)
+        except Exception as exc:
+            logger.warning(
+                "Calendar manager: failed to build config for account %r (skipping): %s",
+                email,
+                exc,
+            )
+            return None
 
-        return added, list(to_remove), list(unchanged)
+        loop = CalendarAccountLoop(
+            email=email,
+            config=account_config,
+            db_pool=self._db_pool,
+            cursor_pool=self._cursor_pool,
+        )
+        return loop
+
+    async def _discover_accounts(self) -> dict[str, Any]:
+        return {
+            email: metadata
+            for email, metadata in await self._discover_qualifying_accounts()
+            if email is not None
+        }
+
+    async def _fleet_ready(self) -> None:
+        try:
+            await wait_for_switchboard_ready(self._process_config.switchboard_mcp_url)
+        except TimeoutError:
+            logger.warning("Switchboard readiness probe timed out; proceeding")
+
+    @property
+    def rescan_interval(self) -> float:
+        return self._process_config.account_rescan_interval_s
 
     def _start_health_server(self) -> None:
         """Start aggregated health/metrics endpoint in background thread."""
@@ -2162,94 +2103,6 @@ class CalendarConnectorManager:
             account_health=account_statuses,
             timestamp=datetime.now(UTC).isoformat(),
         )
-
-    def _setup_sighup(self) -> None:
-        """Register SIGHUP handler to trigger immediate account re-scan."""
-        try:
-            loop = asyncio.get_event_loop()
-
-            def _on_sighup() -> None:
-                logger.info("Calendar manager: SIGHUP received — triggering account reload")
-                self._reload_event.set()
-
-            loop.add_signal_handler(signal.SIGHUP, _on_sighup)
-        except (OSError, NotImplementedError):
-            logger.debug("Calendar manager: SIGHUP not available on this platform")
-
-    async def start(self) -> None:
-        """Start the connector manager: discover accounts, start loops, run rescan loop."""
-        self._running = True
-        self._main_loop = asyncio.get_running_loop()
-
-        # Start health server
-        self._start_health_server()
-
-        # Register SIGHUP for reload
-        self._setup_sighup()
-
-        # Initial account discovery
-        added, removed, unchanged = await self._sync_accounts()
-        logger.info(
-            "Calendar manager: initial account sync — added=%d removed=%d unchanged=%d",
-            len(added),
-            len(removed),
-            len(unchanged),
-        )
-
-        if not self._loops:
-            logger.warning(
-                "Calendar manager: no qualifying accounts found at startup. "
-                "Running in idle/degraded mode. Will retry at rescan interval=%ds.",
-                self._process_config.account_rescan_interval_s,
-            )
-
-        # Wait for Switchboard readiness
-        try:
-            await wait_for_switchboard_ready(self._process_config.switchboard_mcp_url)
-        except TimeoutError:
-            logger.warning(
-                "Calendar manager: Switchboard readiness probe timed out; proceeding anyway."
-            )
-
-        # Main rescan loop
-        try:
-            await self._run_rescan_loop()
-        finally:
-            await self.stop()
-
-    async def _run_rescan_loop(self) -> None:
-        """Periodically re-scan for account changes, also triggered by reload events."""
-        rescan_interval = self._process_config.account_rescan_interval_s
-        while self._running:
-            try:
-                await asyncio.wait_for(self._reload_event.wait(), timeout=rescan_interval)
-                logger.info("Calendar manager: reload triggered — re-scanning accounts")
-                self._reload_event.clear()
-            except TimeoutError:
-                logger.debug("Calendar manager: periodic re-scan triggered")
-
-            if not self._running:
-                break
-
-            added, removed, unchanged = await self._sync_accounts()
-            if added or removed:
-                logger.info(
-                    "Calendar manager: account sync — added=%s removed=%s unchanged=%d",
-                    added,
-                    removed,
-                    len(unchanged),
-                )
-
-    async def stop(self) -> None:
-        """Gracefully stop all account loops and the manager."""
-        self._running = False
-
-        for email, loop in list(self._loops.items()):
-            logger.info("Calendar manager: stopping loop for %r", email)
-            await loop.stop()
-        self._loops.clear()
-
-        logger.info("Calendar manager: all account loops stopped")
 
 
 # ---------------------------------------------------------------------------
@@ -2497,7 +2350,7 @@ async def run_google_calendar_connector() -> None:
         cursor_pool = None
 
     try:
-        manager = CalendarConnectorManager(
+        manager = CalendarAccountSource(
             process_config=process_config,
             db_pool=db_pool or _NullPool(),  # type: ignore[arg-type]
             cursor_pool=cursor_pool,

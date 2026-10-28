@@ -50,7 +50,7 @@ from butlers.api.routers.ingestion_connectors import (
 from butlers.connectors.cursor_store import NO_PARENT, save_cursor
 from butlers.connectors.google_drive import (
     AccountHealthStatus,
-    GDriveConnectorManager,
+    DriveAccountSource,
     MultiAccountHealthStatus,
 )
 from butlers.connectors.home_assistant_checkpoint import save_ha_checkpoint
@@ -279,7 +279,7 @@ async def test_drive_per_account_heartbeat_claims_the_runtime_role(pool: asyncpg
         endpoint,
     )
 
-    manager = GDriveConnectorManager(
+    manager = DriveAccountSource(
         db_pool=None,  # type: ignore[arg-type]
         cursor_pool=pool,
         heartbeat_interval_s=0,

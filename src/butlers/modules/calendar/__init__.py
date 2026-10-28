@@ -151,7 +151,6 @@ from .models import _normalize_recurrence_rule as _normalize_recurrence_rule
 from .models import _resolve_all_day_flag as _resolve_all_day_flag
 from .mutations import MutationsMixin
 from .oauth import _extract_google_credential_value as _extract_google_credential_value
-from .oauth import _GoogleOAuthClient as _GoogleOAuthClient
 from .oauth import _GoogleOAuthCredentials as _GoogleOAuthCredentials
 from .projection import ProjectionMixin
 from .provider import CalendarProvider as CalendarProvider

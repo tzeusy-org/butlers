@@ -326,7 +326,11 @@ async def test_mint_access_token_classifies_only_exact_oauth_error_codes(
     connector._client_id = "client-id"
     connector._client_secret = "client-secret"
     connector._http_client = MagicMock()
-    connector._http_client.post = AsyncMock(return_value=httpx.Response(400, json=payload))
+    connector._http_client.post = AsyncMock(
+        return_value=httpx.Response(
+            400, json=payload, request=httpx.Request("POST", "https://oauth2.googleapis.com/token")
+        )
+    )
     monkeypatch.setattr(
         "butlers.google_credentials._resolve_entity_refresh_token",
         AsyncMock(return_value="refresh-token"),

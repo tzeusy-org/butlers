@@ -39,6 +39,7 @@ from fastmcp import FastMCP
 from pydantic import BaseModel, ValidationError
 
 from butlers.core.temporal.scheduling import SchedulingPreferences
+from butlers.google_credentials import GoogleOAuthClient
 from butlers.modules.base import Module
 from butlers.modules.calendar import (
     _CREDENTIAL_KEY_CALENDAR_ID,
@@ -72,7 +73,6 @@ from butlers.modules.calendar import (
     _google_error_code,
     _google_event_to_calendar_event,
     _google_rfc3339,
-    _GoogleOAuthClient,
     _GoogleOAuthCredentials,
     _GoogleProvider,
     _merge_busy_windows,
@@ -2201,7 +2201,7 @@ class TestGoogleHelpers:
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
         on_revoked = AsyncMock()
-        oauth = _GoogleOAuthClient(
+        oauth = GoogleOAuthClient(
             _GoogleOAuthCredentials(
                 client_id="client-id",
                 client_secret="client-secret",
@@ -2209,6 +2209,7 @@ class TestGoogleHelpers:
             ),
             client,
             on_token_revoked=on_revoked,
+            error_type=CalendarTokenRefreshError,
         )
 
         try:
