@@ -45,6 +45,7 @@ from butlers.connectors.google_health import (
     ResourceState,
     _endpoint_identity_for_user,
 )
+from butlers.google_credentials import GoogleOAuthClient
 from butlers.modules import calendar as calendar_module
 from butlers.modules.contacts import sync as contacts_sync
 from butlers.modules.google_drive import _DriveTokenCache
@@ -334,7 +335,7 @@ async def test_gmail_connector_rejects_without_partial_mutation(payload: dict[st
 
 
 # ---------------------------------------------------------------------------
-# Site 6: modules/calendar.py — _GoogleOAuthClient._refresh_access_token
+# Site 6: modules/calendar.py — GoogleOAuthClient._refresh_access_token
 # ---------------------------------------------------------------------------
 
 
@@ -342,8 +343,8 @@ def _calendar_module_oauth(
     payload: dict[str, Any],
     *,
     on_token_refreshed: AsyncMock | None = None,
-) -> calendar_module._GoogleOAuthClient:
-    oauth = calendar_module._GoogleOAuthClient(
+) -> GoogleOAuthClient:
+    oauth = GoogleOAuthClient(
         calendar_module._GoogleOAuthCredentials(
             client_id="client-id",
             client_secret="client-secret",
@@ -351,6 +352,7 @@ def _calendar_module_oauth(
         ),
         _token_client(payload),
         on_token_refreshed=on_token_refreshed,
+        error_type=calendar_module.CalendarTokenRefreshError,
     )
     oauth._access_token = _STALE_ACCESS_TOKEN
     oauth._access_token_expires_at = datetime.now(UTC) - timedelta(hours=1)
@@ -388,18 +390,19 @@ async def test_calendar_module_rejects_without_partial_mutation(
 
 
 # ---------------------------------------------------------------------------
-# Site 7: modules/contacts/sync.py — _GoogleOAuthClient._refresh_access_token
+# Site 7: modules/contacts/sync.py — GoogleOAuthClient._refresh_access_token
 # ---------------------------------------------------------------------------
 
 
-def _contacts_module_oauth(payload: dict[str, Any]) -> contacts_sync._GoogleOAuthClient:
-    oauth = contacts_sync._GoogleOAuthClient(
+def _contacts_module_oauth(payload: dict[str, Any]) -> GoogleOAuthClient:
+    oauth = GoogleOAuthClient(
         contacts_sync._GoogleOAuthCredentials(
             client_id="client-id",
             client_secret="client-secret",
             refresh_token="synthetic-refresh-token-not-real",
         ),
         _token_client(payload),
+        error_type=contacts_sync.ContactsTokenRefreshError,
     )
     oauth._access_token = _STALE_ACCESS_TOKEN
     oauth._access_token_expires_at = datetime.now(UTC) - timedelta(hours=1)
@@ -427,3 +430,365 @@ async def test_contacts_module_rejects_without_partial_mutation(
     assert str(exc_info.value) == "Google OAuth token endpoint returned an invalid token payload"
     assert oauth._access_token == _STALE_ACCESS_TOKEN
     assert oauth._access_token_expires_at == stale_expiry
+
+
+async def test_gmail_refresh_stampede_has_one_endpoint_attempt_and_rotation_is_not_cached() -> None:
+    import asyncio
+
+    runtime = _gmail_runtime()
+    calls = []
+
+    async def endpoint(request):
+        calls.append(request)
+        await asyncio.sleep(0)
+        return httpx.Response(200, json=_VALID_PAYLOAD)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(endpoint)) as client:
+        runtime._http_client = client
+        assert (
+            await asyncio.gather(*(runtime._get_access_token() for _ in range(8)))
+            == [_FRESH_ACCESS_TOKEN] * 8
+        )
+        assert len(calls) == 1
+        assert str(calls[0].url) == "https://oauth2.googleapis.com/token"
+        assert calls[0].method == "POST"
+        runtime._config = runtime._config.model_copy(
+            update={"gmail_refresh_token": "synthetic-rotated-token"}
+        )
+        assert await runtime._get_access_token() == _FRESH_ACCESS_TOKEN
+        assert len(calls) == 2
+        assert b"synthetic-rotated-token" in calls[-1].content
+        credentials = calendar_module._GoogleOAuthCredentials(
+            client_id="shared-module-id",
+            client_secret="shared-module-secret",
+            refresh_token="shared-account-refresh",
+        )
+        first = GoogleOAuthClient(credentials, client)
+        second = GoogleOAuthClient(credentials, client)
+        assert await asyncio.gather(first.get_access_token(), second.get_access_token()) == [
+            _FRESH_ACCESS_TOKEN,
+            _FRESH_ACCESS_TOKEN,
+        ]
+        assert len(calls) == 3  # distinct wrappers share one account/scope record
+        second._access_token = None  # explicit data-API invalidation must mint again
+        assert (
+            await asyncio.gather(*(second.get_access_token() for _ in range(8)))
+            == [_FRESH_ACCESS_TOKEN] * 8
+        )
+        assert len(calls) == 4
+
+
+async def test_shared_cache_scope_expiry_force_and_failed_mint_are_isolated() -> None:
+    from types import SimpleNamespace
+    from urllib.parse import parse_qs
+
+    from butlers.google_credentials import GoogleTokenCache
+
+    now = [1000.0]
+    state = SimpleNamespace(_access_token=None, _token_expires_at=0.0)
+
+    def clock():
+        return now[0]
+
+    cache = GoogleTokenCache(state, clock=clock)
+    calls = []
+    payload = dict(_VALID_PAYLOAD)
+
+    async def endpoint(request):
+        calls.append(parse_qs(request.content.decode()))
+        return httpx.Response(200, json=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(endpoint)) as client:
+        args = dict(client_id="id", client_secret="secret", refresh_token="refresh")
+        assert await cache.get_token(client, **args) == _FRESH_ACCESS_TOKEN
+        now[0] = state._token_expires_at - 61
+        await cache.get_token(client, **args)
+        assert len(calls) == 1
+        now[0] += 1
+        await cache.get_token(client, **args)
+        assert len(calls) == 2  # exactly sixty seconds is early-expired
+        await cache.get_token(client, **args, scopes=frozenset({"health-b", "health-a"}))
+        assert calls[-1]["scope"] == ["health-a health-b"]
+        assert len(calls) == 3
+        await cache.get_token(client, **args, force_refresh=True)
+        assert len(calls) == 4 and "scope" not in calls[-1]
+        before = (state._access_token, state._token_expires_at)
+        payload["expires_in"] = True
+        with pytest.raises(OAuthTokenValidationError):
+            await cache.get_token(client, **args, force_refresh=True)
+        assert (state._access_token, state._token_expires_at) == before
+        sibling = SimpleNamespace(_access_token=None, _token_expires_at=0.0)
+        payload["expires_in"] = 30
+        await GoogleTokenCache(sibling, clock=clock).get_token(
+            client, **{**args, "refresh_token": "different-account-refresh"}
+        )
+        assert sibling._token_expires_at == now[0] + 30
+        assert (state._access_token, state._token_expires_at) == before
+
+
+@pytest.mark.parametrize(
+    "status,code,attempts",
+    [
+        (400, "invalid_grant", 1),
+        (400, "unauthorized_client", 3),
+        (401, None, 3),
+        (503, None, 3),
+        (0, None, 1),
+    ],
+)
+async def test_shared_module_refresh_keeps_retry_budget_and_revocation_boundary(
+    monkeypatch,
+    status,
+    code,
+    attempts,
+) -> None:
+    import asyncio
+
+    revoked = AsyncMock()
+    refreshed = AsyncMock()
+    calls = []
+    private = "synthetic-provider-private-message"
+
+    async def endpoint(request):
+        calls.append(request)
+        if not status:
+            raise httpx.ConnectError(private, request=request)
+        return httpx.Response(status, json={"error": code, "error_description": private})
+
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    async with httpx.AsyncClient(transport=httpx.MockTransport(endpoint)) as client:
+        oauth = GoogleOAuthClient(
+            calendar_module._GoogleOAuthCredentials(
+                client_id="id", client_secret="secret", refresh_token="refresh"
+            ),
+            client,
+            on_token_revoked=revoked,
+            on_token_refreshed=refreshed,
+            error_type=calendar_module.CalendarTokenRefreshError,
+        )
+        with pytest.raises(calendar_module.CalendarTokenRefreshError) as caught:
+            await oauth.get_access_token()
+        assert private not in str(caught.value)
+        assert len(calls) == attempts
+        assert oauth._access_token is None and oauth._access_token_expires_at is None
+        assert revoked.await_count == (1 if code == "invalid_grant" else 0)
+        refreshed.assert_not_awaited()
+        assert all(str(request.url) == "https://oauth2.googleapis.com/token" for request in calls)
+
+
+@pytest.mark.parametrize(
+    "site",
+    [
+        "gmail",
+        "calendar",
+        "drive",
+        "health",
+        "calendar_module",
+        "contacts_module",
+        "drive_module",
+        "oauth_probe",
+        "credential_probe",
+        "capability_probe",
+        "health_probe",
+    ],
+)
+async def test_every_refresh_adapter_uses_one_fake_endpoint_and_keeps_error_authority(
+    monkeypatch,
+    site,
+):
+    import asyncio
+    from dataclasses import replace
+    from urllib.parse import parse_qs
+
+    from butlers.api.routers import oauth, secrets_v2
+    from butlers.google_credentials import GOOGLE_TOKEN_URL
+
+    client_type = httpx.AsyncClient
+    responses = [(status, False) for status in (200, 400, 401, 503)]
+    if site in {"credential_probe", "capability_probe", "health_probe"}:
+        responses.append((200, True))
+    for status, malformed in responses:
+        calls = []
+        api_calls = []
+        malformed_token = "synthetic-malformed-token-not-real"
+        refresh = f"synthetic-{site}-{status}"
+        revoked = AsyncMock()
+        pool = MagicMock()
+        pool.execute = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value=None)
+
+        async def endpoint(
+            request,
+            *,
+            calls=calls,
+            status=status,
+            api_calls=api_calls,
+            malformed=malformed,
+            malformed_token=malformed_token,
+        ):
+            if request.method != "POST":
+                api_calls.append(request)
+                return httpx.Response(200, json={})
+            data = parse_qs(request.content.decode())
+            calls.append((request, data))
+            # Reach the separate down-scope exchange even when its response fails.
+            result_status = 200 if site == "health_probe" and "scope" not in data else status
+            invalid_mint = malformed and (site != "health_probe" or "scope" in data)
+            if invalid_mint:
+                return httpx.Response(
+                    200,
+                    json={
+                        "access_token": malformed_token,
+                        "expires_in": True,
+                        "scope": "https://www.googleapis.com/auth/googlehealth.activity.read",
+                    },
+                )
+            return httpx.Response(
+                result_status,
+                json=(
+                    {"access_token": "matrix-token", "expires_in": 3600}
+                    if result_status == 200
+                    else {"error": "invalid_grant" if result_status == 400 else "server_error"}
+                ),
+            )
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(asyncio, "sleep", AsyncMock())
+            patcher.setattr(
+                "butlers.google_credentials._resolve_entity_refresh_token",
+                AsyncMock(return_value=refresh),
+            )
+            store = MagicMock()
+            store.load = AsyncMock(side_effect=lambda key: "id" if key.endswith("ID") else "secret")
+            patcher.setattr(secrets_v2, "CredentialStore", lambda *args, store=store: store)
+            patcher.setattr(
+                httpx,
+                "AsyncClient",
+                lambda *args, **kwargs: client_type(transport=httpx.MockTransport(endpoint)),
+            )
+            async with client_type(transport=httpx.MockTransport(endpoint)) as client:
+                if site in {"gmail", "calendar", "drive"}:
+                    runtime = {
+                        "gmail": _gmail_runtime,
+                        "calendar": _calendar_runtime,
+                        "drive": _drive_loop,
+                    }[site]()
+                    field = "gmail_refresh_token" if site == "gmail" else "refresh_token"
+                    if site == "gmail":
+                        runtime._config = runtime._config.model_copy(update={field: refresh})
+                    else:
+                        runtime._config = replace(runtime._config, **{field: refresh})
+                    runtime._http_client = client
+                    action = runtime._get_access_token
+                elif site == "health":
+                    runtime, context = _health_connector()
+                    runtime._http_client = client
+
+                    async def action(runtime=runtime, context=context):
+                        return await runtime._mint_access_token(context.account_id)
+                elif site in {"calendar_module", "contacts_module"}:
+                    credentials = calendar_module._GoogleOAuthCredentials(
+                        client_id="id", client_secret="secret", refresh_token=refresh
+                    )
+                    runtime = GoogleOAuthClient(credentials, client, on_token_revoked=revoked)
+                    action = runtime.get_access_token
+                elif site == "drive_module":
+                    runtime = _DriveTokenCache()
+
+                    async def action(runtime=runtime, refresh=refresh):
+                        return await runtime.get_token(
+                            client_id="id",
+                            client_secret="secret",
+                            refresh_token=refresh,
+                            http_client=client,
+                        )
+                elif site == "oauth_probe":
+                    result = await oauth._probe_google_token(
+                        client_id="id", client_secret="secret", refresh_token=refresh
+                    )
+                    assert result.connected is (status == 200)
+                elif site == "credential_probe":
+                    result = await secrets_v2._verify_oauth_credential(
+                        "google", "google_oauth_refresh", refresh, pool
+                    )
+                    if malformed:
+                        assert result == (
+                            "live_failed:invalid_token_payload",
+                            None,
+                            "token_exchange: invalid token payload",
+                        )
+                    else:
+                        assert result[0] == (
+                            "live_ok" if status == 200 else f"live_failed:{status}"
+                        )
+                else:
+                    result = await secrets_v2._verify_google_capabilities(
+                        refresh, pool, entity_id=None
+                    )
+                    affected = (
+                        result
+                        if site == "capability_probe"
+                        else [row for row in result if row.capability == "health"]
+                    )
+                    if malformed:
+                        assert affected
+                        assert all(
+                            row.ok is False
+                            and row.code is None
+                            and row.probe_status == "live_failed:invalid_token_payload"
+                            and row.message
+                            == (
+                                "health token down-scope exchange: invalid token payload"
+                                if site == "health_probe"
+                                else "token_exchange: invalid token payload"
+                            )
+                            for row in affected
+                        )
+                        if site == "health_probe":
+                            assert all(
+                                row.ok is True for row in result if row.capability != "health"
+                            )
+                    else:
+                        assert all(row.ok is (status == 200) for row in affected)
+                if site in {
+                    "gmail",
+                    "calendar",
+                    "drive",
+                    "health",
+                    "calendar_module",
+                    "contacts_module",
+                    "drive_module",
+                }:
+                    if status == 200:
+                        assert await action() == "matrix-token"
+                    else:
+                        with pytest.raises(
+                            (httpx.HTTPStatusError, GoogleHealthCredentialError, RuntimeError)
+                        ):
+                            await action()
+                    if site.endswith("_module") and site != "drive_module":
+                        assert revoked.await_count == (1 if status == 400 else 0)
+                assert calls
+                assert all(str(request.url) == GOOGLE_TOKEN_URL for request, _ in calls)
+                assert all(data["grant_type"] == ["refresh_token"] for _, data in calls)
+                assert all(data["refresh_token"] == [refresh] for _, data in calls)
+                if site in {"health", "health_probe"}:
+                    assert any("googlehealth" in data.get("scope", [""])[0] for _, data in calls)
+                if malformed:
+                    assert all(
+                        request.headers.get("Authorization") != f"Bearer {malformed_token}"
+                        for request in api_calls
+                    )
+                    if site != "health_probe":
+                        assert not api_calls
+                    else:
+                        assert api_calls  # Other capabilities use the valid initial union mint.
+                        assert all(
+                            str(request.url) != secrets_v2._GOOGLE_CAPABILITY_ENDPOINTS["health"]
+                            for request in api_calls
+                        )
+                        assert len(calls) == 2
+                    revoked.assert_not_awaited()
+                    store.store.assert_not_called()
+                # Scope/probe verdicts never gain persistent revocation authority.
+                pool.execute.assert_not_awaited()

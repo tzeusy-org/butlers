@@ -47,7 +47,6 @@ import html
 import logging
 import os
 import re
-import signal
 import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -56,6 +55,9 @@ from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal
+
+from butlers.connectors.google_fleet import GoogleAccountFleet
+from butlers.google_credentials import GOOGLE_TOKEN_URL, GoogleTokenCache
 
 if TYPE_CHECKING:
     import asyncpg
@@ -100,7 +102,6 @@ from butlers.ingestion_policy import (
     PolicyDecision,
 )
 from butlers.ingestion_spans import collapse_spans
-from butlers.oauth_token_payload import validate_oauth_token_payload
 from butlers.storage.blobs import BlobStore
 
 logger = logging.getLogger(__name__)
@@ -303,7 +304,7 @@ def _classify_source_api_error(exc: Exception) -> tuple[bool, str]:
         if (
             request is not None
             and request.method == "POST"
-            and str(request.url) == "https://oauth2.googleapis.com/token"
+            and str(request.url) == GOOGLE_TOKEN_URL
         ):
             is_auth_revocation = google_oauth_requires_reauthorization(response)
     description = google_error or f"{get_error_type(exc)}: {exc}"
@@ -1939,53 +1940,29 @@ class GmailConnectorRuntime:
             raise
 
     async def _get_access_token(self) -> str:
-        """Get valid OAuth access token (refresh if expired)."""
-        if self._access_token and self._token_expires_at:
-            if datetime.now(UTC) < self._token_expires_at:
-                return self._access_token
-
-        # Refresh token
-        if not self._http_client:
+        """Use the shared locked cache with the canonical early-expiry margin."""
+        if self._http_client is None:
             raise RuntimeError("HTTP client not initialized")
+        cache = getattr(self, "_google_token_cache", None)
+        if cache is None:
+            cache = self._google_token_cache = GoogleTokenCache(self)
 
-        try:
-            response = await self._http_client.post(
-                "https://oauth2.googleapis.com/token",
-                data={
-                    "client_id": self._config.gmail_client_id,
-                    "client_secret": self._config.gmail_client_secret,
-                    "refresh_token": self._config.gmail_refresh_token,
-                    "grant_type": "refresh_token",
-                },
-            )
-            if response.is_error:
-                google_error = _format_google_error(response)
-                if google_error:
-                    logger.error(
-                        "OAuth token refresh failed status=%s details=%s",
-                        response.status_code,
-                        google_error,
-                    )
-                else:
-                    logger.error("OAuth token refresh failed status=%s", response.status_code)
-            response.raise_for_status()
-            # Validate the whole payload before touching connector state, so a
-            # malformed 200 cannot leave a stale token paired with a fresh expiry.
-            token = validate_oauth_token_payload(response.json())
-
-            self._access_token = token.access_token
-            self._token_expires_at = datetime.now(UTC) + timedelta(seconds=token.expires_in)
-
-            # Mark API as connected on successful token refresh
+        async def refreshed() -> None:
             self._source_api_ok = True
             self._source_api_error_message = None
             self._auth_error = False
             self._metrics.record_source_api_call(api_method="token_refresh", status="success")
 
-            logger.debug("Refreshed OAuth access token (expires in %ds)", token.expires_in)
-            return self._access_token
+        try:
+            token = await cache.get_token(
+                self._http_client,
+                on_refreshed=refreshed,
+                client_id=self._config.gmail_client_id,
+                client_secret=self._config.gmail_client_secret,
+                refresh_token=self._config.gmail_refresh_token,
+            )
+            return token
         except Exception as exc:
-            # Mark API as disconnected on failure
             self._source_api_ok = False
             self._auth_error, self._source_api_error_message = _classify_source_api_error(exc)
             self._metrics.record_source_api_call(api_method="token_refresh", status="error")
@@ -3918,7 +3895,7 @@ class GmailAccountLoop:
         )
 
 
-class GmailConnectorManager:
+class GmailAccountSource(GoogleAccountFleet):
     """Top-level orchestrator for multi-account Gmail connector.
 
     Discovers all active Google accounts with Gmail scopes from public.google_accounts,
@@ -3937,27 +3914,10 @@ class GmailConnectorManager:
         db_pool: asyncpg.Pool,
         cursor_pool: asyncpg.Pool | None,
     ) -> None:
+        super().__init__()
         self._process_config = process_config
         self._db_pool = db_pool
         self._cursor_pool = cursor_pool
-
-        # Active account loops keyed by email
-        self._loops: dict[str, GmailAccountLoop] = {}
-
-        # State
-        self._start_time = time.time()
-        self._running = False
-        self._reload_event = asyncio.Event()
-        # Capture the main event loop at construction time so the background
-        # health-server thread can safely signal reload via call_soon_threadsafe.
-        self._main_loop: asyncio.AbstractEventLoop | None = None
-
-        # Health server
-        self._health_server: uvicorn.Server | None = None
-        self._health_thread: Thread | None = None
-
-        # Rescan task
-        self._rescan_task: asyncio.Task[None] | None = None
 
         # Credential store (shared across accounts for app creds)
         self._credential_store: CredentialStore | None = None
@@ -4068,72 +4028,52 @@ class GmailConnectorManager:
             )
             return None
 
-    async def _sync_accounts(
-        self,
-    ) -> tuple[list[str], list[str], list[str]]:
-        """Discover qualifying accounts and reconcile running loops.
+    async def _make_account_loop(self, email: str, metadata: dict[str, Any] | None):
+        creds = await self._resolve_credentials_for_account(email)
+        if creds is None:
+            return None
 
-        Returns (added, removed, unchanged) email lists.
-        """
-        qualifying = await self._discover_qualifying_accounts()
-
-        # Compute desired set
-        desired_emails: set[str] = set()
-        account_metadata: dict[str, dict[str, Any] | None] = {}
-        for email, metadata_gmail in qualifying:
-            if email is None:
-                continue
-            desired_emails.add(email)
-            account_metadata[email] = metadata_gmail
-
-        current_emails = set(self._loops.keys())
-
-        to_add = desired_emails - current_emails
-        to_remove = current_emails - desired_emails
-        unchanged = current_emails & desired_emails
-
-        # Stop removed loops
-        for email in to_remove:
-            loop = self._loops.pop(email)
-            logger.info("Gmail manager: stopping loop for removed account %r", email)
-            await loop.stop()
-
-        # Start new loops
-        added: list[str] = []
-        for email in to_add:
-            creds = await self._resolve_credentials_for_account(email)
-            if creds is None:
-                continue
-
-            metadata_gmail = account_metadata.get(email)
-            try:
-                account_config = self._process_config.make_account_config(
-                    email=email,
-                    client_id=creds["client_id"],
-                    client_secret=creds["client_secret"],
-                    refresh_token=creds["refresh_token"],
-                    metadata_gmail=metadata_gmail,
-                    pubsub_webhook_token=creds.get("pubsub_webhook_token"),
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Gmail manager: failed to build config for account %r (skipping): %s",
-                    email,
-                    exc,
-                )
-                continue
-
-            loop = GmailAccountLoop(
+        metadata_gmail = metadata
+        try:
+            account_config = self._process_config.make_account_config(
                 email=email,
-                config=account_config,
-                cursor_pool=self._cursor_pool,
+                client_id=creds["client_id"],
+                client_secret=creds["client_secret"],
+                refresh_token=creds["refresh_token"],
+                metadata_gmail=metadata_gmail,
+                pubsub_webhook_token=creds.get("pubsub_webhook_token"),
             )
-            self._loops[email] = loop
-            loop.start()
-            added.append(email)
-            logger.info("Gmail manager: started loop for new account %r", email)
+        except Exception as exc:
+            logger.warning(
+                "Gmail manager: failed to build config for account %r (skipping): %s",
+                email,
+                exc,
+            )
+            return None
 
-        return added, list(to_remove), list(unchanged)
+        loop = GmailAccountLoop(
+            email=email,
+            config=account_config,
+            cursor_pool=self._cursor_pool,
+        )
+        return loop
+
+    async def _discover_accounts(self) -> dict[str, Any]:
+        return {
+            email: metadata
+            for email, metadata in await self._discover_qualifying_accounts()
+            if email is not None
+        }
+
+    async def _fleet_ready(self) -> None:
+        try:
+            await wait_for_switchboard_ready(self._process_config.switchboard_mcp_url)
+        except TimeoutError:
+            logger.warning("Switchboard readiness probe timed out; proceeding")
+
+    @property
+    def rescan_interval(self) -> float:
+        return self._process_config.gmail_account_rescan_interval_s
 
     def _start_health_server(self) -> None:
         """Start aggregated health endpoint in background thread."""
@@ -4203,112 +4143,6 @@ class GmailConnectorManager:
             account_health=account_statuses,
             timestamp=datetime.now(UTC).isoformat(),
         )
-
-    def _setup_sighup(self) -> None:
-        """Register SIGHUP handler to trigger immediate account re-scan."""
-        try:
-            loop = asyncio.get_event_loop()
-
-            def _on_sighup() -> None:
-                logger.info("Gmail manager: SIGHUP received — triggering account reload")
-                self._reload_event.set()
-
-            loop.add_signal_handler(signal.SIGHUP, _on_sighup)
-        except (OSError, NotImplementedError):
-            # SIGHUP not available on Windows
-            logger.debug("Gmail manager: SIGHUP not available on this platform")
-
-    async def start(self) -> None:
-        """Start the connector manager: discover accounts, start loops, run rescan loop."""
-        self._running = True
-
-        # Capture the running event loop so the background health-server thread
-        # can safely signal _reload_event via loop.call_soon_threadsafe.
-        self._main_loop = asyncio.get_running_loop()
-
-        # Start health server
-        self._start_health_server()
-
-        # Register SIGHUP for reload
-        self._setup_sighup()
-
-        # Initial account discovery
-        added, removed, unchanged = await self._sync_accounts()
-        logger.info(
-            "Gmail manager: initial account sync — added=%d removed=%d unchanged=%d",
-            len(added),
-            len(removed),
-            len(unchanged),
-        )
-
-        if not self._loops:
-            logger.warning(
-                "Gmail manager: no qualifying Gmail accounts found at startup. "
-                "Running in idle/degraded mode. Will retry at rescan interval=%ds.",
-                self._process_config.gmail_account_rescan_interval_s,
-            )
-
-        # Wait for Switchboard readiness before main loop
-        try:
-            await wait_for_switchboard_ready(self._process_config.switchboard_mcp_url)
-        except TimeoutError:
-            logger.warning(
-                "Gmail manager: Switchboard readiness probe timed out; proceeding anyway."
-            )
-
-        # Main rescan loop
-        try:
-            await self._run_rescan_loop()
-        finally:
-            await self.stop()
-
-    async def _run_rescan_loop(self) -> None:
-        """Periodically re-scan for account changes, also triggered by reload events."""
-        rescan_interval = self._process_config.gmail_account_rescan_interval_s
-        while self._running:
-            # Wait for either rescan interval or reload trigger
-            try:
-                await asyncio.wait_for(self._reload_event.wait(), timeout=rescan_interval)
-                logger.info("Gmail manager: reload triggered — re-scanning accounts")
-                self._reload_event.clear()
-            except TimeoutError:
-                logger.debug("Gmail manager: periodic re-scan triggered")
-
-            if not self._running:
-                break
-
-            added, removed, unchanged = await self._sync_accounts()
-            if added or removed:
-                logger.info(
-                    "Gmail manager: account sync — added=%s removed=%s unchanged=%d",
-                    added,
-                    removed,
-                    len(unchanged),
-                )
-
-    async def stop(self) -> None:
-        """Gracefully stop all account loops and the manager."""
-        self._running = False
-
-        # Stop all loops
-        for email, loop in list(self._loops.items()):
-            logger.info("Gmail manager: stopping loop for %r", email)
-            await loop.stop()
-        self._loops.clear()
-
-        logger.info("Gmail manager: all account loops stopped")
-
-    async def reload_accounts(self) -> dict[str, Any]:
-        """Trigger immediate account re-scan (MCP tool handler).
-
-        Returns a summary of accounts added, removed, and unchanged.
-        """
-        added, removed, unchanged = await self._sync_accounts()
-        return {
-            "added": added,
-            "removed": removed,
-            "unchanged": unchanged,
-        }
 
 
 async def _create_shared_db_pool() -> asyncpg.Pool:
@@ -4411,7 +4245,7 @@ async def run_gmail_connector() -> None:
             )
 
     # Step 3: Start the multi-account manager.
-    manager = GmailConnectorManager(
+    manager = GmailAccountSource(
         process_config=process_config,
         db_pool=shared_pool,
         cursor_pool=cursor_pool,

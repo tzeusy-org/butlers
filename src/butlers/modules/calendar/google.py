@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 import httpx
 
+from butlers.google_credentials import GoogleOAuthClient, _mark_account_revoked
 from butlers.modules.calendar_response import (
     CalendarResponseError,
     CalendarResponseUncertainError,
@@ -30,6 +31,7 @@ from .errors import (
     CalendarAuthError,
     CalendarRequestError,
     CalendarSyncTokenExpiredError,
+    CalendarTokenRefreshError,
     _safe_google_error_message,
 )
 from .google_mapping import (
@@ -49,7 +51,7 @@ from .models import (
     CalendarEventCreate,
     CalendarEventUpdate,
 )
-from .oauth import _GoogleOAuthClient, _GoogleOAuthCredentials
+from .oauth import _GoogleOAuthCredentials
 from .provider import CalendarProvider
 
 
@@ -140,23 +142,7 @@ class _GoogleProvider(CalendarProvider):
                             "(account was re-authorized; restart to pick up the new token)."
                         )
                         return
-                    if _email:
-                        await _pool.execute(
-                            """
-                            UPDATE public.google_accounts
-                            SET status = 'revoked'
-                            WHERE email = $1
-                            """,
-                            _email,
-                        )
-                    else:
-                        await _pool.execute(
-                            """
-                            UPDATE public.google_accounts
-                            SET status = 'revoked'
-                            WHERE is_primary = true
-                            """
-                        )
+                    await _mark_account_revoked(_pool, email=_email, primary=not bool(_email))
                 except Exception:
                     logger.debug(
                         "CalendarModule: failed to mark Google account revoked",
@@ -166,11 +152,12 @@ class _GoogleProvider(CalendarProvider):
             on_token_refreshed = _update_last_token_refresh_at
             on_token_revoked = _mark_token_revoked
 
-        self._oauth = _GoogleOAuthClient(
+        self._oauth = GoogleOAuthClient(
             credentials,
             self._http_client,
             on_token_refreshed,
             on_token_revoked,
+            error_type=CalendarTokenRefreshError,
         )
 
     @property

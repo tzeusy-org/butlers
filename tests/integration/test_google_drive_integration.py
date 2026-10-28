@@ -32,7 +32,7 @@ google_drive_connector = pytest.importorskip(
     reason="google_drive connector not yet implemented (tasks 8-14 pending merge)",
 )
 
-from butlers.connectors.google_drive import GDriveConnectorManager  # noqa: E402
+from butlers.connectors.google_drive import DriveAccountSource  # noqa: E402
 from butlers.modules.google_drive import GoogleDriveConfig, GoogleDriveModule  # noqa: E402
 
 pytestmark = pytest.mark.unit
@@ -165,7 +165,7 @@ class TestDriveScopeOAuthFlow:
         )
 
     async def test_connector_discovers_drive_accounts_at_startup(self) -> None:
-        """GDriveConnectorManager discovers accounts with drive scope at startup."""
+        """DriveAccountSource discovers accounts with drive scope at startup."""
         mock_pool = _make_mock_db_pool()
         mock_store = _make_mock_credential_store()
 
@@ -192,7 +192,7 @@ class TestDriveScopeOAuthFlow:
             new_callable=AsyncMock,
             return_value=_make_google_credentials(),
         ):
-            manager = GDriveConnectorManager(
+            manager = DriveAccountSource(
                 db_pool=mock_pool,
                 credential_store=mock_store,
                 switchboard_mcp_url="http://localhost:41100/sse",
@@ -205,7 +205,7 @@ class TestDriveScopeOAuthFlow:
         assert discovered[0]["email"] == _FAKE_ACCOUNT_EMAIL
 
     async def test_connector_skips_accounts_without_drive_scope(self) -> None:
-        """GDriveConnectorManager skips accounts that lack drive scopes."""
+        """DriveAccountSource skips accounts that lack drive scopes."""
         mock_pool = _make_mock_db_pool()
         mock_store = _make_mock_credential_store()
 
@@ -226,7 +226,7 @@ class TestDriveScopeOAuthFlow:
             return_value=[no_drive_row]
         )
 
-        manager = GDriveConnectorManager(
+        manager = DriveAccountSource(
             db_pool=mock_pool,
             credential_store=mock_store,
             switchboard_mcp_url="http://localhost:41100/sse",

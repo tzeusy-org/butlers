@@ -374,3 +374,16 @@ existing whole-text rule. Filter/error/replay privacy rewrites collapse retained
 kinds onto their actual replacement text; they do not retain hidden quote bodies.
 Unmarked pasted text remains the RFC 0038 D5 known limit. These normalizers do not
 invoke providers or grant accepted-source authentication (.9 owns that boundary).
+
+### Google account supervision
+
+Gmail, Calendar and Drive use source adapters over `GoogleAccountFleet` for
+account reconciliation, periodic rescans, SIGHUP/manual reload, and owned
+shutdown. Each adapter retains its scope filter, account configuration, cursor
+and health/heartbeat behavior; Calendar still restarts dead account loops.
+Reconciliation is serialized so manual reload cannot race the timer. Startup
+errors and cancellation close already-owned loops and source resources.
+
+The Gmail, Calendar, Drive and Health processes remain four separate Deployments.
+Combining those Deployments is deferred; shared token or fleet code does not
+change their deployment, consent, database or credential boundaries.

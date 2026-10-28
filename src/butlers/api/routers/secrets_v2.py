@@ -224,7 +224,8 @@ from butlers.core.audit import clamp_failure_category
 from butlers.core.credential_keys import normalize_credential_key
 from butlers.core.runtime_probe_control.keys import RESERVED_SIGNING_KEY_SECRET_NAME
 from butlers.credential_store import CredentialStore
-from butlers.google_credentials import KEY_CLIENT_ID, KEY_CLIENT_SECRET
+from butlers.google_credentials import KEY_CLIENT_ID, KEY_CLIENT_SECRET, exchange_google_refresh
+from butlers.oauth_token_payload import validate_oauth_token_payload
 from butlers.secrets_provider_catalog import PROVIDER_CATALOG, ProviderMetadata
 from butlers.spotify_credentials import SPOTIFY_MANAGED_ENTITY_INFO_TYPES
 
@@ -4200,7 +4201,6 @@ register_revoke_handler(
 _VERIFY_TIMEOUT_S = 10.0
 
 # The Google token endpoint for exchanging a refresh token for an access token.
-_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 # GitHub user endpoint — works for both classic PATs and fine-grained PATs.
 _GITHUB_USER_URL = "https://api.github.com/user"
@@ -4635,14 +4635,11 @@ async def _verify_oauth_credential(
         try:
             async with httpx.AsyncClient(timeout=_VERIFY_TIMEOUT_S) as client:
                 # Step 1: Exchange refresh token for an access token.
-                token_resp = await client.post(
-                    _GOOGLE_TOKEN_URL,
-                    data={
-                        "grant_type": "refresh_token",
-                        "refresh_token": refresh_token,
-                        "client_id": client_id,
-                        "client_secret": client_secret,
-                    },
+                token_resp = await exchange_google_refresh(
+                    client,
+                    refresh_token=refresh_token,
+                    client_id=client_id,
+                    client_secret=client_secret,
                 )
         except Exception as exc:  # noqa: BLE001
             # Network error — cannot distinguish bad credential from bad network.
@@ -4670,11 +4667,20 @@ async def _verify_oauth_credential(
             logger.warning("_verify_oauth_credential: provider=%s %s", provider, reason)
             return "live_failed:invalid_json", None, reason
 
-        access_token = token_data.get("access_token")
+        access_token = token_data.get("access_token") if isinstance(token_data, dict) else None
         if not access_token:
             reason = "token_exchange: no access_token in response"
             logger.warning("_verify_oauth_credential: provider=%s %s", provider, reason)
             return "live_failed:no_access_token", None, reason
+
+        try:
+            access_token = validate_oauth_token_payload(token_data).access_token
+        except ValueError:
+            return (
+                "live_failed:invalid_token_payload",
+                None,
+                "token_exchange: invalid token payload",
+            )
 
         bearer_value = access_token
 
@@ -4851,14 +4857,11 @@ async def _verify_google_capabilities(
 
     try:
         async with httpx.AsyncClient(timeout=_VERIFY_TIMEOUT_S) as client:
-            token_resp = await client.post(
-                _GOOGLE_TOKEN_URL,
-                data={
-                    "grant_type": "refresh_token",
-                    "refresh_token": refresh_token,
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                },
+            token_resp = await exchange_google_refresh(
+                client,
+                refresh_token=refresh_token,
+                client_id=client_id,
+                client_secret=client_secret,
             )
     except Exception as exc:  # noqa: BLE001
         logger.warning("_verify_google_capabilities: network error during token exchange: %s", exc)
@@ -4896,7 +4899,7 @@ async def _verify_google_capabilities(
             for cap in _GOOGLE_CAPABILITY_ORDER
         ]
 
-    access_token = token_data.get("access_token")
+    access_token = token_data.get("access_token") if isinstance(token_data, dict) else None
     if not access_token:
         reason = "token_exchange: no access_token in response"
         logger.warning("_verify_google_capabilities: %s", reason)
@@ -4907,6 +4910,20 @@ async def _verify_google_capabilities(
                 code=None,
                 message=reason,
                 probe_status="live_failed:no_access_token",
+            )
+            for cap in _GOOGLE_CAPABILITY_ORDER
+        ]
+
+    try:
+        access_token = validate_oauth_token_payload(token_data).access_token
+    except ValueError:
+        return [
+            _CapabilityProbe(
+                capability=cap,
+                ok=False,
+                code=None,
+                message="token_exchange: invalid token payload",
+                probe_status="live_failed:invalid_token_payload",
             )
             for cap in _GOOGLE_CAPABILITY_ORDER
         ]
@@ -4926,15 +4943,12 @@ async def _verify_google_capabilities(
 
         try:
             async with httpx.AsyncClient(timeout=_VERIFY_TIMEOUT_S) as client:
-                resp = await client.post(
-                    _GOOGLE_TOKEN_URL,
-                    data={
-                        "grant_type": "refresh_token",
-                        "refresh_token": refresh_token,
-                        "client_id": client_id,
-                        "client_secret": client_secret,
-                        "scope": " ".join(sorted(GOOGLE_HEALTH_SCOPE_URLS)),
-                    },
+                resp = await exchange_google_refresh(
+                    client,
+                    refresh_token=refresh_token,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    scopes=frozenset(GOOGLE_HEALTH_SCOPE_URLS),
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -4967,21 +4981,7 @@ async def _verify_google_capabilities(
                 message="health token down-scope exchange: invalid JSON response",
                 probe_status="live_failed:invalid_json",
             )
-        # Google reports the scopes actually attached to the minted token; a
-        # response without any googlehealth scope means the grant is missing —
-        # the authoritative "not granted" signal. (Absent ``scope`` field →
-        # fall through to the API call rather than fabricating a verdict.)
-        granted_scope = data.get("scope")
-        if granted_scope is not None and "googlehealth" not in granted_scope:
-            return None, _CapabilityProbe(
-                capability="health",
-                ok=False,
-                code=403,
-                message="403 restricted-scope (health scope not granted)",
-                probe_status="live_failed:403",
-            )
-        token = data.get("access_token")
-        if not token:
+        if not isinstance(data, dict) or not data.get("access_token"):
             return None, _CapabilityProbe(
                 capability="health",
                 ok=False,
@@ -4989,7 +4989,27 @@ async def _verify_google_capabilities(
                 message="health token down-scope exchange: no access_token in response",
                 probe_status="live_failed:no_access_token",
             )
-        return token, None
+        try:
+            token = validate_oauth_token_payload(data)
+        except ValueError:
+            return None, _CapabilityProbe(
+                capability="health",
+                ok=False,
+                code=None,
+                message="health token down-scope exchange: invalid token payload",
+                probe_status="live_failed:invalid_token_payload",
+            )
+        # Absent scope falls through to the API. A reported scope without a
+        # Health family is the existing authoritative not-granted signal.
+        if token.scope is not None and "googlehealth" not in token.scope:
+            return None, _CapabilityProbe(
+                capability="health",
+                ok=False,
+                code=403,
+                message="403 restricted-scope (health scope not granted)",
+                probe_status="live_failed:403",
+            )
+        return token.access_token, None
 
     async def _probe_one(capability: str) -> _CapabilityProbe:
         url = _GOOGLE_CAPABILITY_ENDPOINTS[capability]
