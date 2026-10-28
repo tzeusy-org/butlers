@@ -189,6 +189,39 @@ and equally if the script excludes something the dump role can in fact read
 red run go green — an entry there is a decision that data will not be in the
 backup.
 
+### Confidential signed-confirm history
+
+`public.pending_confirms` is durable application state. A backup preserves the
+whole immutable prompt, accepted answer, application receipt, claim and delivery
+state; losing these rows could send another prompt or apply a recorded choice
+again. The table remains protected by enabled and forced RLS. Its schema,
+ownership, policies and functions travel through ordinary `pg_dump`, while its
+rows use a separate hex-wrapped JSON staging block bound to the same exported
+snapshot as the ordinary dump and cost-claim export.
+
+The confirm export uses `confirm_backup_read`, whose condition allows only
+`CURRENT_USER` equal to the actual table owner. It does not expose prompts to
+all runtime roles or use a public unconditional read policy. Before either
+stream is published, the snapshot-bound catalogue proof requires enabled and
+forced RLS, the exact owner-conditional read expression, and no extra or
+restrictive SELECT-applying policy. Policy drift fails the backup loudly.
+
+Restore calls only `public.confirm_restore_row(jsonb)`. This fixed
+`SECURITY INVOKER` importer checks the exact current table-owner identity before
+inserting the full row, has a fixed `pg_catalog` search path, and accepts no
+relation selector. It sets `row_security=on` for replay because the ordinary
+dump deliberately sets it off. Execution grants are revoked from public and runtime roles;
+the identity check still refuses them after a later broad bootstrap grant. No
+role receives `BYPASSRLS` or a runtime restore capability.
+
+A populated confirm staging block requires membership in the source table's
+owner role and explicitly exits nonzero if membership is absent. An empty
+block needs no history replay. The existing ownership audit remains necessary
+for the rest of the dump. PostgreSQL backup/restore contracts compare complete
+source and restored confirm rows, enabled and forced RLS, ownership, and runtime
+read/import refusal. Ambiguous sends and pending application remain ambiguous
+or pending after restore; replay does not reset their fences.
+
 A restore of one of these dumps therefore reconstitutes the application schema
 and data only. Re-run the managed bootstrap procedure to restore the executor
 boundary itself.

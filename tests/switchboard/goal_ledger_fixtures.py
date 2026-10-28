@@ -84,7 +84,16 @@ async def admit(runtime, facts=None, source=None, attempt=None):
 
 
 async def effect(
-    owner, goal_id, *, delivery=None, entity=None, channel=None, accepts=False, expiry=None
+    owner,
+    goal_id,
+    *,
+    delivery=None,
+    entity=None,
+    channel=None,
+    accepts=False,
+    expiry=None,
+    args_digest="args-digest",
+    status="committed",
 ):
     invocation, effect_id = uuid4(), uuid4()
     goal = await owner.fetchrow(
@@ -103,7 +112,7 @@ async def effect(
     await owner.execute(
         "INSERT INTO switchboard.effects (id,goal_id,invocation_id,capability,args_digest,status,delivery_ref,"
         "recipient_entity,recipient_channel,prompt_accepts_input,prompt_expires_at) "
-        "VALUES ($1,$2,$3,'messenger.notify','args-digest','committed',$4,$5,$6,$7,$8)",
+        "VALUES ($1,$2,$3,'messenger.notify',$9,$10,$4,$5,$6,$7,$8)",
         effect_id,
         goal_id,
         invocation,
@@ -112,5 +121,7 @@ async def effect(
         channel,
         accepts,
         expiry,
+        args_digest,
+        status,
     )
     return invocation, effect_id

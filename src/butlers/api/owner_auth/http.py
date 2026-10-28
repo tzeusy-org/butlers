@@ -83,6 +83,7 @@ def _single_headers(connection: HTTPConnection) -> None:
         "host",
         "origin",
         "x-api-key",
+        "x-butlers-confirm-callback-token",
         "x-dashboard-step-up",
         "x-csrf-token",
         "content-type",
@@ -200,6 +201,18 @@ class OwnerAuthMiddleware:
 
                 expected = getattr(scope["app"].state, "approval_callback_connector_token", None)
                 supplied = connection.headers.get(APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER)
+                confirm_token = connection.headers.get("x-butlers-confirm-callback-token")
+                if (
+                    method == "POST"
+                    and path == "/api/confirms/callback"
+                    and expected
+                    and confirm_token
+                    and hmac.compare_digest(confirm_token.encode("utf-8"), expected.encode("utf-8"))
+                ):
+                    scope.setdefault("state", {})["confirm_callback_authenticated"] = True
+                    # Informational callback authority never creates an owner principal/session.
+                    await self.app(scope, receive, send)
+                    return
                 if (
                     expected
                     and supplied

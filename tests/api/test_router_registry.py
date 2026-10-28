@@ -55,11 +55,14 @@ def test_complete_route_and_openapi_snapshot(tmp_path, monkeypatch):
     }
     encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "9e220d878c65175a2d42244fdedfd37ed9e71a5ddff3ad136ce8d2bfbd92aec7"
+        "ce392b5dc15e64406a83a00e5494507e96d34fa37e679c36a0eb76c42d2fb657"
     )
     assert "/api/health/baselines" in snapshot["openapi"]["paths"]
-    assert len(snapshot["routes"]) == 615
-    assert len(snapshot["openapi"]["paths"]) == 524
+    assert {"/api/confirms", "/api/confirms/callback", "/api/confirms/{confirm_id}/answer"} <= set(
+        snapshot["openapi"]["paths"]
+    )
+    assert len(snapshot["routes"]) == 618
+    assert len(snapshot["openapi"]["paths"]) == 527
     assert not any(
         row["path"] == "/api/healing/attempts/{attempt_id}/retry" for row in snapshot["routes"]
     )
