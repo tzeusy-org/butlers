@@ -125,6 +125,14 @@ make deploy-dev                                             # helm upgrade --ins
 make status-dev
 ```
 
+`make deploy-*` runs through `scripts/k8s/record-deploy.sh`, so each release appends one
+`public.deployments` row with `source='deploy'` and `serving_mode='image'`: `success` once `dashboard-api`, `butlers-up` and the optional enabled `butlers-control`
+rollouts have finished, `failed` when `helm upgrade` or a rollout fails. The row is written by
+`butlers deployments record` inside the `dashboard-api` pod (`kubectl exec`), so no database
+credential leaves the cluster. The target keeps the release's exit status; if the pod is
+unreachable it prints that no row was recorded, and a failed write after a good release only
+warns. Boot rows (`source='boot'`) are separate: a pod restart is not a release.
+
 ### Iterating on a change
 
 Commit, then ship the commit from `deploy/helm/butlers`:

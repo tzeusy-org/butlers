@@ -99,4 +99,7 @@ def test_deploy_target_bootstraps_the_deployed_tag_before_helm(fake_repo: Path) 
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
     assert lines[0] == "../../../scripts/k8s/bootstrap-db.sh dev abc123def456"
-    assert lines[1].startswith("helm upgrade --install butlers")
+    assert lines[1].startswith(
+        '../../../scripts/k8s/record-deploy.sh "butlers-dev" "abc123def456" "butlers" -- '
+    )
+    assert "--set image.tag=abc123def456 --set frontendImage.tag=abc123def456-dev" in lines[1]
