@@ -7,7 +7,7 @@ schema is needed to install the ledger. Runtime admission and dispatch start dis
 from alembic import op
 
 revision = "core_287"
-down_revision = "core_282"
+down_revision = "core_288"
 branch_labels = None
 depends_on = None
 

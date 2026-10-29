@@ -39,6 +39,7 @@ import re
 import shutil
 import subprocess
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -70,8 +71,9 @@ while IFS= read -r line; do
     "\\\\o")
       case "${output_file}" in
         */id) printf 'ABCDEF-012345\\n' > "${output_file}" ;;
-        */policy-count) printf '3\\n' > "${output_file}" ;;
+        */policy-count) printf '5\\n' > "${output_file}" ;;
         */capture-count) printf '0\\n' > "${output_file}" ;;
+        */fleet-evidence-proof) printf '1\\n' > "${output_file}" ;;
         */confirm-policy-count) printf '1\\n' > "${output_file}" ;;
       esac
       output_file=""
@@ -143,6 +145,8 @@ _EXPECTED_SCOPED_DATA_TABLES = {
     "public.cost_claims",
     "public.cost_claim_resolutions",
     "public.cost_claim_events",
+    "public.fleet_cases",
+    "public.fleet_case_links",
 }
 
 _EXPECTED_CAPTURE_DATA_TABLES = {
@@ -232,7 +236,11 @@ def test_failed_run_says_so_and_publishes_nothing(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     stub = fake_bin / "pg_dump"
-    stub.write_text('#!/bin/sh\necho "stub failure" >&2\nexit 1\n', encoding="utf-8")
+    stub.write_text(
+        "#!/bin/sh\nprintf 'called\\n' >> '%s'\necho \"stub failure\" >&2\nexit 1\n"
+        % (tmp_path / "pg-dump-called"),
+        encoding="utf-8",
+    )
     stub.chmod(0o755)
     psql_stub = fake_bin / "psql"
     psql_stub.write_text(_FAKE_PSQL_SNAPSHOT_HOLDER, encoding="utf-8")
@@ -249,6 +257,7 @@ def test_failed_run_says_so_and_publishes_nothing(tmp_path: Path) -> None:
     )
 
     assert result.returncode != 0
+    assert (tmp_path / "pg-dump-called").read_text() == "called\n"
     assert "FAILED" in result.stderr
     assert list(backup_dir.glob("butlers_*.sql.gz")) == []
     # The one trace a failed run does leave, and must (bu-xrqyu): an artifact
@@ -405,7 +414,9 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
         WHERE n.nspname || '.' || c.relname IN (
             'public.cost_claims',
             'public.cost_claim_resolutions',
-            'public.cost_claim_events'
+            'public.cost_claim_events',
+            'public.fleet_cases',
+            'public.fleet_case_links'
         )
           AND p.polcmd IN ('r', '*')
         ORDER BY 1
@@ -492,6 +503,68 @@ def _run_backup_script(
     return subprocess.run(command, env=env, capture_output=True, text=True, check=False)
 
 
+def _seed_fleet(conn, key: str) -> None:
+    """Real effective runtime writers, before invoking the checked-in scripts."""
+    conn.exec_driver_sql("SET ROLE butler_switchboard_rw")
+    case_id = conn.exec_driver_sql(
+        "INSERT INTO public.fleet_cases(correlation_key) VALUES (%s) RETURNING id", (key,)
+    ).scalar_one()
+    conn.exec_driver_sql(
+        "INSERT INTO public.fleet_case_links(case_id,link_kind,ref,metadata) "
+        "VALUES (%s,'owner_condition',%s,%s::jsonb)",
+        (case_id, key, json.dumps({"nested": {"value": None}, "text": "line\n\t\\"})),
+    )
+    conn.exec_driver_sql("SET ROLE butler_health_rw")
+    conn.exec_driver_sql(
+        "INSERT INTO public.fleet_case_evidence(case_id,contributor,kind,ref,payload) "
+        "VALUES (%s,'health','candidate',%s,%s::jsonb)",
+        (case_id, key, json.dumps({"text": "observed\n\t\\", "zero": 0, "flag": False})),
+    )
+    conn.exec_driver_sql("RESET ROLE")
+
+
+def _fleet_snapshot(db_url: str) -> dict:
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            rows = {}
+            for table in ("fleet_cases", "fleet_case_evidence", "fleet_case_links"):
+                rows[table] = (
+                    conn.exec_driver_sql(
+                        f"SELECT to_jsonb(t)::text FROM public.{table} t ORDER BY id"
+                    )
+                    .scalars()
+                    .all()
+                )
+            rows["posture"] = conn.exec_driver_sql(
+                "SELECT c.relname,c.relrowsecurity,c.relforcerowsecurity,"
+                "pg_get_userbyid(c.relowner) FROM pg_class c WHERE c.oid IN "
+                "('public.fleet_cases'::regclass,'public.fleet_case_evidence'::regclass,"
+                "'public.fleet_case_links'::regclass) ORDER BY c.relname"
+            ).all()
+            rows["policies"] = conn.exec_driver_sql(
+                "SELECT c.relname,p.polname,p.polcmd,p.polpermissive,"
+                "pg_get_expr(p.polqual,p.polrelid),pg_get_expr(p.polwithcheck,p.polrelid) "
+                "FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid "
+                "WHERE c.relname IN('fleet_cases','fleet_case_evidence','fleet_case_links') "
+                "AND c.relnamespace='public'::regnamespace ORDER BY 1,2"
+            ).all()
+            rows["foreign_keys"] = conn.exec_driver_sql(
+                "SELECT c.relname,f.conname,f.convalidated,f.confrelid='public.fleet_cases'::regclass,"
+                "(SELECT count(*) FROM pg_trigger t WHERE t.tgconstraint=f.oid),"
+                "NOT EXISTS(SELECT FROM pg_trigger t WHERE t.tgconstraint=f.oid "
+                "AND t.tgenabled NOT IN('O','A')) FROM pg_constraint f "
+                "JOIN pg_class c ON c.oid=f.conrelid WHERE c.oid IN "
+                "('public.fleet_case_evidence'::regclass,'public.fleet_case_links'::regclass) "
+                "AND f.contype='f' ORDER BY 1"
+            ).all()
+            assert len(rows["foreign_keys"]) == 2
+            assert all(row[2:] == (True, True, 4, True) for row in rows["foreign_keys"])
+            return rows
+    finally:
+        engine.dispose()
+
+
 @pytest.mark.db
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
@@ -508,6 +581,7 @@ def test_script_produces_a_verifiable_artifact(
     engine = create_engine(bootstrapped_db_url)
     try:
         with engine.begin() as conn:
+            _seed_fleet(conn, "backup-contract-fleet")
             conn.exec_driver_sql("SET ROLE butler_relationship_rw")
             claim_id = conn.exec_driver_sql(
                 """
@@ -616,22 +690,60 @@ def test_script_produces_a_verifiable_artifact(
     assert confirm_payloads[0]["delivery_status"] == "ambiguous"
     assert confirm_payloads[0]["prompt"]["question"] == "Work?\nQuoted\ttext"
 
+    from tests.scripts.test_pg_restore_definer_ownership import _run_restore_script, _Target
+
+    parsed = urlparse(postgres_container.get_connection_url())
+    target = _Target(
+        str(postgres_container.get_exposed_port(5432)),
+        parsed.username or "",
+        parsed.password or "",
+        postgres_container.get_connection_url(),
+    )
+    target_db = migration_db_name()
+    restored = _run_restore_script(artifacts[0], target, target_db)
+    assert restored.returncode == 0, "checked-in restore must recover complete Fleet history"
+    restored_url = target.url(target_db)
+    assert _fleet_snapshot(bootstrapped_db_url) == _fleet_snapshot(restored_url)
+    assert all(
+        _fleet_snapshot(restored_url)[name]
+        for name in ("fleet_cases", "fleet_case_evidence", "fleet_case_links")
+    )
+
 
 @pytest.mark.db
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
-@pytest.mark.parametrize("relation", ["cost_claims", "captures"])
+@pytest.mark.parametrize(
+    "relation", ["cost_claims", "captures", None, "fleet_cases", "fleet_case_links"]
+)
 def test_scoped_export_fails_before_publish_when_read_policy_can_filter(
-    bootstrapped_db_url: str, postgres_container, tmp_path: Path, relation: str
+    bootstrapped_db_url: str, postgres_container, tmp_path: Path, relation: str | None
 ) -> None:
     """A new restrictive policy cannot silently narrow the scoped export."""
+    fleet_table = relation if relation in ("fleet_cases", "fleet_case_links") else None
     engine = create_engine(bootstrapped_db_url, isolation_level="AUTOCOMMIT")
     try:
-        with engine.connect() as conn:
-            conn.exec_driver_sql(
-                f"CREATE POLICY {relation}_backup_regression "
-                f"ON public.{relation} AS RESTRICTIVE FOR SELECT USING (false)"
-            )
+        if relation in ("cost_claims", "captures"):
+            with engine.connect() as conn:
+                conn.exec_driver_sql(
+                    f"CREATE POLICY {relation}_backup_regression "
+                    f"ON public.{relation} AS RESTRICTIVE FOR SELECT USING (false)"
+                )
+        else:
+            with engine.connect() as conn:
+                conn.exec_driver_sql(
+                    "CREATE POLICY cost_claims_backup_regression "
+                    "ON public.cost_claims AS RESTRICTIVE FOR SELECT USING (false)"
+                )
+            if fleet_table:
+                with engine.connect() as conn:
+                    conn.exec_driver_sql(
+                        "DROP POLICY cost_claims_backup_regression ON public.cost_claims"
+                    )
+                    conn.exec_driver_sql(
+                        f"CREATE POLICY fleet_backup_regression ON public.{fleet_table} "
+                        "AS RESTRICTIVE FOR SELECT USING (false)"
+                    )
         result = _run_backup_script(
             bootstrapped_db_url,
             tmp_path,
@@ -640,13 +752,25 @@ def test_scoped_export_fails_before_publish_when_read_policy_can_filter(
         assert result.returncode != 0
         if relation == "cost_claims":
             assert "policy is not the exact full-row contract" in result.stderr
+        if relation != "captures":
+            assert "policy is not the exact full-row contract" in result.stderr
         assert "policy" in result.stderr and "not publishing" in result.stderr
         assert not list(tmp_path.glob("butlers_*.sql.gz"))
     finally:
-        with engine.connect() as conn:
-            conn.exec_driver_sql(
-                f"DROP POLICY IF EXISTS {relation}_backup_regression ON public.{relation}"
-            )
+        if relation in ("cost_claims", "captures"):
+            with engine.connect() as conn:
+                conn.exec_driver_sql(
+                    f"DROP POLICY IF EXISTS {relation}_backup_regression ON public.{relation}"
+                )
+        else:
+            with engine.connect() as conn:
+                if fleet_table:
+                    conn.exec_driver_sql(
+                        f"DROP POLICY IF EXISTS fleet_backup_regression ON public.{fleet_table}"
+                    )
+                conn.exec_driver_sql(
+                    "DROP POLICY IF EXISTS cost_claims_backup_regression ON public.cost_claims"
+                )
         engine.dispose()
 
 
@@ -703,8 +827,9 @@ def test_confirm_export_refuses_read_policy_drift(
 @pytest.mark.db
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.parametrize("fleet_table", [None, "fleet_cases", "fleet_case_links"])
 def test_scoped_export_rejects_a_policy_changed_between_precheck_and_snapshot(
-    bootstrapped_db_url: str, postgres_container, tmp_path: Path
+    bootstrapped_db_url: str, postgres_container, tmp_path: Path, fleet_table
 ) -> None:
     """A policy change cannot turn a precheck into a filtered published ledger."""
     backup_dir = tmp_path / "backups"
@@ -739,9 +864,10 @@ def test_scoped_export_rejects_a_policy_changed_between_precheck_and_snapshot(
                     (claim_key, asserted_by, kind, direction, amount, currency,
                      counterparty_label, description)
                 VALUES
-                    ('snapshot-drift-regression', 'relationship', 'receivable', 'inbound',
+                    (%s, 'relationship', 'receivable', 'inbound',
                      25, 'SGD', 'Snapshot fixture', 'Must not be silently filtered')
-                """
+                """,
+                (f"snapshot-drift-regression-{fleet_table or 'cost_claims'}",),
             )
         finally:
             conn.exec_driver_sql("RESET ROLE")
@@ -766,6 +892,14 @@ def test_scoped_export_rejects_a_policy_changed_between_precheck_and_snapshot(
                 "CREATE POLICY cost_claims_snapshot_drift_regression "
                 "ON public.cost_claims AS RESTRICTIVE FOR ALL USING (false)"
             )
+            if fleet_table:
+                conn.exec_driver_sql(
+                    "DROP POLICY cost_claims_snapshot_drift_regression ON public.cost_claims"
+                )
+                conn.exec_driver_sql(
+                    f"CREATE POLICY fleet_snapshot_drift_regression ON public.{fleet_table} "
+                    "AS RESTRICTIVE FOR ALL USING (false)"
+                )
         release.touch()
 
         stdout, stderr = process.communicate(timeout=60)
@@ -778,6 +912,10 @@ def test_scoped_export_rejects_a_policy_changed_between_precheck_and_snapshot(
             process.terminate()
             process.communicate(timeout=30)
         with engine.connect() as conn:
+            if fleet_table:
+                conn.exec_driver_sql(
+                    f"DROP POLICY IF EXISTS fleet_snapshot_drift_regression ON public.{fleet_table}"
+                )
             conn.exec_driver_sql(
                 "DROP POLICY IF EXISTS cost_claims_snapshot_drift_regression ON public.cost_claims"
             )
@@ -823,3 +961,164 @@ def test_unfenced_dump_would_fail_without_the_exclusion_set(
     )
     assert result.returncode != 0
     assert "permission denied" in result.stderr
+
+
+@pytest.mark.db
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.parametrize(
+    "shape", ["legacy-orphan", "staged-orphan", "missing-fk", "unvalidated-fk", "disabled-fk"]
+)
+def test_orphan_fleet_artifact_cannot_be_certified(
+    shape: str,
+    bootstrapped_db_url: str,
+    postgres_container,
+    tmp_path: Path,
+) -> None:
+    """Actual restore consumer; preserve orphan input rather than delete/repair it."""
+    from tests.scripts.test_pg_restore_definer_ownership import _run_restore_script, _Target
+
+    parsed = urlparse(postgres_container.get_connection_url())
+    target = _Target(
+        str(postgres_container.get_exposed_port(5432)),
+        parsed.username or "",
+        parsed.password or "",
+        postgres_container.get_connection_url(),
+    )
+    artifact = tmp_path / "bad-fleet.sql.gz"
+    orphan_id, missing_parent = uuid.uuid4(), uuid.uuid4()
+    if shape == "legacy-orphan":
+        # Real ordinary pg_dump against a fresh migrated source, with the
+        # historical full-parent exclusions. Its FK DDL genuinely fails on
+        # restore; the old tolerant loader alone still exits zero.
+        source_url = create_migration_db(postgres_container, migration_db_name())
+        command.upgrade(_build_alembic_config(source_url, chains=["core"]), "core@head")
+        source_engine = create_engine(source_url)
+        try:
+            with source_engine.begin() as conn:
+                _seed_fleet(conn, "legacy-ordinary-orphan")
+                orphan_id, missing_parent = conn.exec_driver_sql(
+                    "SELECT id,case_id FROM public.fleet_case_evidence"
+                ).one()
+        finally:
+            source_engine.dispose()
+        source = urlparse(source_url)
+        schemas, excluded, scoped = _read_backup_sets()
+        args = [
+            "docker",
+            "run",
+            "--rm",
+            "--add-host=host.docker.internal:host-gateway",
+            "-e",
+            "PGPASSWORD_FOR_TEST",
+            _BACKUP_IMAGE,
+            "sh",
+            "-c",
+            'export PGPASSWORD="$PGPASSWORD_FOR_TEST"; exec pg_dump "$@"',
+            "sh",
+            "--host=host.docker.internal",
+            "--port=" + target.port,
+            "--username=" + (source.username or ""),
+            "--dbname=" + source.path.lstrip("/"),
+            "--no-password",
+        ]
+        args += ["--exclude-schema=" + name for name in sorted(schemas)]
+        args += [
+            "--exclude-table=" + name
+            for name in sorted(excluded | {"public.fleet_cases", "public.fleet_case_links"})
+        ]
+        args += [
+            "--exclude-table-data=" + name for name in sorted(scoped | _read_confirm_backup_set())
+        ]
+        dumped = subprocess.run(
+            args,
+            env={**os.environ, "PGPASSWORD_FOR_TEST": source.password or ""},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert dumped.returncode == 0, "actual ordinary legacy-shape dump must be produced"
+        sql = dumped.stdout
+        assert "CREATE TABLE public.fleet_cases " not in sql
+        assert "COPY public.fleet_case_evidence " in sql
+        assert str(orphan_id) in sql and str(missing_parent) in sql
+
+    else:
+        backup_dir = tmp_path / "source"
+        backup_dir.mkdir(mode=0o777)
+        result = _run_backup_script(bootstrapped_db_url, backup_dir, target.port)
+        assert result.returncode == 0, result.stderr[-2000:]
+        sql = gzip.decompress(next(backup_dir.glob("butlers_*.sql.gz")).read_bytes()).decode()
+        if shape == "staged-orphan":
+            payload = json.dumps(
+                {
+                    "id": str(orphan_id),
+                    "case_id": str(missing_parent),
+                    "contributor": "health",
+                    "kind": "candidate",
+                    "ref": "orphan",
+                    "payload": {"zero": 0},
+                    "contributed_at": "2026-01-01T00:00:00Z",
+                }
+            )
+            header = (
+                "COPY butlers_fleet_restore_rows (ordinal,relation_name,payload_hex) FROM stdin;\n"
+            )
+            assert sql.count(header) == 1
+            sql = sql.replace(
+                header, header + "2\tfleet_case_evidence\t" + payload.encode().hex() + "\n"
+            )
+        else:
+            # Source artifact loads normally; poison just its actual final FK
+            # state. Presence/count-only audits would wrongly certify these.
+            sql += "\nALTER TABLE public.fleet_case_evidence DROP CONSTRAINT fleet_case_evidence_case_id_fkey;\n"
+            if shape == "unvalidated-fk":
+                sql += "ALTER TABLE public.fleet_case_evidence ADD CONSTRAINT fleet_case_evidence_case_id_fkey FOREIGN KEY(case_id) REFERENCES public.fleet_cases(id) ON DELETE CASCADE NOT VALID;\n"
+            if shape == "disabled-fk":
+                sql += "ALTER TABLE public.fleet_case_evidence ADD CONSTRAINT fleet_case_evidence_case_id_fkey FOREIGN KEY(case_id) REFERENCES public.fleet_cases(id) ON DELETE CASCADE;\nALTER TABLE public.fleet_case_evidence DISABLE TRIGGER ALL;\n"
+    artifact.write_bytes(gzip.compress(sql.encode()))
+    db_name = migration_db_name()
+    result = _run_restore_script(artifact, target, db_name)
+    assert result.returncode != 0, result.stdout[-2000:]
+    assert "[restore] done" not in result.stdout
+    assert "Fleet" in result.stderr or "foreign key" in result.stdout
+    if shape == "legacy-orphan":
+        # A surgical external script copy proves that certification, rather
+        # than the generic tolerant loader, rejects this authentic old shape.
+        from unittest.mock import patch
+
+        import tests.scripts.test_pg_restore_definer_ownership as restore_consumer
+
+        source = restore_consumer._RESTORE_SCRIPT.read_text()
+        start = source.index("# Fleet has two artifact shapes:")
+        end = source.index('echo "[restore] done', start)
+        without_audit = tmp_path / "restore-without-fleet-audit.sh"
+        without_audit.write_text(source[:start] + source[end:])
+        with patch.object(restore_consumer, "_RESTORE_SCRIPT", without_audit):
+            omitted = _run_restore_script(artifact, target, migration_db_name())
+        assert omitted.returncode == 0, "the audit-only inverse must expose false certification"
+        restored = _run_restore_script(artifact, target, db_name)
+        assert restored.returncode != 0 and "[restore] done" not in restored.stdout
+    engine = create_engine(target.url(db_name))
+    try:
+        with engine.connect() as conn:
+            if shape == "legacy-orphan":
+                assert conn.execute(
+                    text("SELECT id,case_id FROM public.fleet_case_evidence")
+                ).all() == [(orphan_id, missing_parent)]
+                assert (
+                    conn.execute(text("SELECT to_regclass('public.fleet_cases')")).scalar_one()
+                    is None
+                )
+            elif shape == "staged-orphan":
+                assert (
+                    conn.execute(
+                        text("SELECT count(*) FROM public.fleet_case_evidence")
+                    ).scalar_one()
+                    == 0
+                )
+                assert (
+                    conn.execute(text("SELECT count(*) FROM public.fleet_cases")).scalar_one() == 0
+                )
+    finally:
+        engine.dispose()

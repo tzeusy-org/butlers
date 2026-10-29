@@ -66,7 +66,12 @@ from butlers.testing.migration import (
     create_migration_db,
     migration_db_name,
 )
-from tests.scripts.test_pg_dump_backup import _CONFIRM_FIXTURE_SQL, _run_backup_script
+from tests.scripts.test_pg_dump_backup import (
+    _CONFIRM_FIXTURE_SQL,
+    _fleet_snapshot,
+    _run_backup_script,
+    _seed_fleet,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RESTORE_SCRIPT = _REPO_ROOT / "scripts" / "pg_restore.sh"
@@ -314,11 +319,31 @@ def _produce_backup(source_db_url: str, postgres_container, backup_dir: Path) ->
 
 
 @pytest.fixture(scope="module")
-def populated_confirm_artifact(
+def populated_fleet_artifact(
     source_db_url, postgres_container, tmp_path_factory, backup_artifact
 ) -> Path:
-    # Capture the historical empty-confirm artifact first. Its ownership-control
-    # tests retain their original scope; no answer requires replay there.
+    # Keep the old empty artifact for ownership controls. Then capture Fleet
+    # before Confirm, so each distinct membership refusal reaches its own path.
+    engine = create_engine(source_db_url)
+    try:
+        with engine.begin() as conn:
+            _seed_fleet(conn, "restore-contract-fleet")
+    finally:
+        engine.dispose()
+    directory = tmp_path_factory.mktemp("fleet-backups")
+    result = _run_backup_script(
+        source_db_url, directory, str(postgres_container.get_exposed_port(5432))
+    )
+    assert result.returncode == 0, "actual populated Fleet artifact must be produced"
+    return next(directory.glob("butlers_*.sql.gz"))
+
+
+@pytest.fixture(scope="module")
+def populated_confirm_artifact(
+    source_db_url, postgres_container, tmp_path_factory, backup_artifact, populated_fleet_artifact
+) -> Path:
+    # Capture the historical empty-confirm/Fleet artifact first. Ownership
+    # controls must still reach their original audit before owner-only replay.
     engine = create_engine(source_db_url)
     try:
         with engine.begin() as conn:
@@ -626,7 +651,10 @@ def test_restore_script_refuses_to_certify_a_laundered_restore(
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 def test_populated_confirm_restore_refuses_missing_source_owner_membership(
-    populated_confirm_artifact: Path, disaster_recovery_target: _Target, source_db_url: str
+    populated_confirm_artifact: Path,
+    disaster_recovery_target: _Target,
+    source_db_url: str,
+    populated_fleet_artifact: Path,
 ) -> None:
     target = disaster_recovery_target
     admin = target.url("postgres")
@@ -637,6 +665,11 @@ def test_populated_confirm_restore_refuses_missing_source_owner_membership(
         "WHERE oid='public.pending_confirms'::regclass",
     )[0]
     assert source_owner not in ("butler_general_rw", target.login)
+    fleet_owner = _query(
+        source_db_url,
+        "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid='public.fleet_cases'::regclass",
+    )[0]
+    assert fleet_owner not in ("butler_general_rw", target.login)
     assert _query(admin, "SELECT to_regrole('butler_general_rw') IS NULL") == [True]
     # The current artifact imports General captures before its Confirm rows.
     # Supply only that ordinary runtime prerequisite, never the Confirm owner.
@@ -654,6 +687,13 @@ def test_populated_confirm_restore_refuses_missing_source_owner_membership(
             login=target.login,
             source_owner=source_owner,
         ) == [False]
+        assert _query(
+            admin,
+            "SELECT coalesce((SELECT pg_has_role(:login, oid, 'MEMBER') "
+            "FROM pg_roles WHERE rolname=:source_owner), false)",
+            login=target.login,
+            source_owner=fleet_owner,
+        ) == [False]
         result = _run_restore_script(
             populated_confirm_artifact, disaster_recovery_target, "butlers_confirm_owner_refused"
         )
@@ -661,9 +701,18 @@ def test_populated_confirm_restore_refuses_missing_source_owner_membership(
         assert "confirm restore requires source table-owner membership" in (
             result.stdout + result.stderr
         )
+        fleet = _run_restore_script(
+            populated_fleet_artifact, disaster_recovery_target, "butlers_fleet_owner_refused"
+        )
+        assert fleet.returncode != 0
+        assert "Fleet restore requires source table-owner membership" in (
+            fleet.stdout + fleet.stderr
+        )
+
     finally:
         # This module's separate ownership controls require a bare target.
         _exec(admin, f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)')
+        _exec(admin, 'DROP DATABASE IF EXISTS "butlers_fleet_owner_refused" WITH (FORCE)')
         _exec(admin, f'REVOKE butler_general_rw FROM "{target.login}"')
         _exec(admin, "DROP ROLE butler_general_rw")
     assert _query(admin, "SELECT to_regrole('butler_general_rw') IS NULL") == [True]
@@ -709,6 +758,7 @@ def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
     )
 
     restored_url = target.url(db_name)
+    assert _fleet_snapshot(source_db_url) == _fleet_snapshot(restored_url)
 
     # Accepted answers and their unfinished application/rendering receipts are
     # replay fences. Compare the whole row, not only a count or chosen value.
@@ -923,6 +973,31 @@ def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
         "WHERE n.nspname = 'public' AND p.proname = 'cost_claim_restore_row'",
     )
     assert restore_function_posture == ["true/true/false"]
+
+    assert _query(
+        restored_url,
+        "SELECT p.prosecdef::text||'/'||(p.proowner=c.relowner)::text||'/'||"
+        "has_function_privilege('public',p.oid,'EXECUTE')::text FROM pg_proc p "
+        "JOIN pg_class c ON c.oid='public.fleet_cases'::regclass "
+        "WHERE p.oid='public.fleet_case_restore_row(text,jsonb)'::regprocedure",
+    ) == ["true/true/false"]
+    engine = create_engine(restored_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            for role in ("butler_general_rw", "butler_switchboard_rw", "connector_writer"):
+                conn.exec_driver_sql(f"SET ROLE {role}")
+                with pytest.raises(DBAPIError):
+                    conn.exec_driver_sql(
+                        "SELECT public.fleet_case_restore_row('fleet_cases','{}'::jsonb)"
+                    )
+                if role != "butler_switchboard_rw":
+                    with pytest.raises(DBAPIError):
+                        conn.exec_driver_sql(
+                            "INSERT INTO public.fleet_cases(correlation_key) VALUES('forbidden-restored')"
+                        )
+                conn.exec_driver_sql("RESET ROLE")
+    finally:
+        engine.dispose()
 
     landed = _query(restored_url, _DEFINER_FUNCTIONS_OWNED_BY_SQL, login=login)
     assert landed == [], (

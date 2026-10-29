@@ -607,12 +607,12 @@ async def test_empty_rollback_and_nonempty_receipt_replay_refusal(postgres_conta
         revisions={"core": "core_287"},
     )
     config = _build_alembic_config(db_url, chains=["core"])
-    await asyncio.to_thread(command.downgrade, config, "core_282")
+    await asyncio.to_thread(command.downgrade, config, "core_288")
     await asyncio.to_thread(command.upgrade, config, "core_287")
     sibling = _build_alembic_config(db_url, chains=["core"], target_schema="capture_replay")
     await asyncio.to_thread(command.upgrade, sibling, "core_287")
-    await asyncio.to_thread(command.downgrade, config, "core_282")
-    await asyncio.to_thread(command.downgrade, sibling, "core_282")
+    await asyncio.to_thread(command.downgrade, config, "core_288")
+    await asyncio.to_thread(command.downgrade, sibling, "core_288")
     await asyncio.to_thread(command.upgrade, config, "core_287")
     # A missing sibling table cannot erase the still-present control record.
     conn = await asyncpg.connect(db_url)
@@ -621,7 +621,7 @@ async def test_empty_rollback_and_nonempty_receipt_replay_refusal(postgres_conta
     finally:
         await conn.close()
     with pytest.raises(DBAPIError, match="partial ledger"):
-        await asyncio.to_thread(command.downgrade, config, "core_282")
+        await asyncio.to_thread(command.downgrade, config, "core_288")
     # Reinstall the empty missing table through the real installer, preserving
     # the existing control. A restrictive policy must not hide evidence either.
     await asyncio.to_thread(command.upgrade, sibling, "core_287")
@@ -634,7 +634,7 @@ async def test_empty_rollback_and_nonempty_receipt_replay_refusal(postgres_conta
     finally:
         await conn.close()
     with pytest.raises(DBAPIError, match="General policy proof invalid"):
-        await asyncio.to_thread(command.downgrade, config, "core_282")
+        await asyncio.to_thread(command.downgrade, config, "core_288")
     conn = await asyncpg.connect(db_url)
     try:
         await conn.execute("DROP POLICY capture_hidden ON public.capture_service_control")
@@ -645,7 +645,7 @@ async def test_empty_rollback_and_nonempty_receipt_replay_refusal(postgres_conta
     finally:
         await conn.close()
     with pytest.raises(DBAPIError, match="capture evidence retained"):
-        await asyncio.to_thread(command.downgrade, config, "core_282")
+        await asyncio.to_thread(command.downgrade, config, "core_288")
     # A new schema's historical chain must not remove/reset the shared control.
     await asyncio.to_thread(
         command.upgrade,
