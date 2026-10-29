@@ -983,6 +983,8 @@ jobs:
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/package-lock.json') }}-${{ steps.playwright-version.outputs.version }}
 
       - name: Install Playwright browsers
+        # Emergency guard outside the native 720s budget and its cleanup/diagnostics.
+        timeout-minutes: 13
         run: npm run test:e2e:install
 
       - name: Build
