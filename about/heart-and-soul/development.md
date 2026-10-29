@@ -14,14 +14,22 @@ carry a reproducing test before the fix.
 
 ## Spec Before Code, RFC Before Exception
 
-Significant work starts from an OpenSpec change (proposal, design, delta
-specs): new modules, changes
+Significant work starts from an OpenSpec change (proposal, delta specs and
+tasks): new modules, changes
 to core infrastructure (state store, scheduler, spawner, session log), new
 roster entries, cross-butler protocol changes, and schema changes that cross
 butlers. Bug fixes, behavior-preserving refactors, documentation, tests, and
 single-butler tool additions inside a module boundary do not need one. An
 implementation that changes observable behavior amends its governing spec in
 the same change.
+
+For a single-butler change, `proposal.md`, delta specs and `tasks.md` suffice;
+`design.md` is optional. It is required when the change alters a cross-butler
+contract, a schema shared across butlers, or a security boundary. Classify the
+actual change, not just its directory: a change inside one butler can still
+alter one of these boundaries. Keep and read existing designs; this rule does
+not delete design documents, RFCs or archived changes. Spec approval, source
+references, implementation review and verification requirements still apply.
 
 The architectural constraints in [vision.md](vision.md) are non-negotiable by
 default. A proposed exception (for example cross-schema access that bypasses
