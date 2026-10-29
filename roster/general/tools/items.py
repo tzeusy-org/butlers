@@ -92,11 +92,15 @@ async def item_create_versioned(
     collection_name: str,
     data: dict[str, Any],
     tags: list[str] | None = None,
+    *,
+    capture_operation_id: uuid.UUID | None = None,
 ) -> tuple[uuid.UUID, SourceVersion]:
     """Create an ordinary item and its first source version atomically.
 
     Accepts a pool or an acquired connection so a caller can compose the item,
-    its version and its own receipt in one General transaction.
+    its version and its own receipt in one General transaction. The internal
+    capture coordinator binds the item's UUID to its server-generated operation;
+    the public item_create surface never accepts this identity.
     """
     reject_reserved_fields(data)
     tags_value = list(tags) if tags is not None else []
@@ -104,12 +108,13 @@ async def item_create_versioned(
         await require_ordinary_namespace(conn)
         parent = await resolve_ordinary_collection(conn, collection_name, create=True)
         item_id = await conn.fetchval(
-            """INSERT INTO collection_items (collection_id, data, tags)
-               VALUES ($1, $2, $3)
+            """INSERT INTO collection_items (collection_id, data, tags, id)
+               VALUES ($1, $2, $3, COALESCE($4::uuid, gen_random_uuid()))
                RETURNING id""",
             parent["id"],
             data,
             tags_value,
+            capture_operation_id,
         )
         version = await record_source_version(conn, parent, item_id, "create")
     return item_id, version
