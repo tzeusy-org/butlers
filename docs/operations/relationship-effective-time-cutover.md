@@ -118,9 +118,7 @@ container started with another file set or profile.
 
 | Row | Launcher | Files | Project | Env file | Profiles |
 | --- | --- | --- | --- | --- | --- |
-| `prod-deploy` | `butlers deploy` | `docker-compose.yml`, `docker-compose.restore-drill.yml` | `butlers` | `.env.prod` | authorized `DeployConfig.profiles`, default none |
-| `prod-launcher` | `scripts/compose.sh --prod` [`--observability`] [`--audio`] | `docker-compose.yml`, `docker-compose.restore-drill.yml` | `butlers` | `.env.prod` | `dev` (+ `observability`, `audio`) |
-| `dev-launcher` | `scripts/compose.sh --no-hotreload` [`--with-restore-drill`] [`--observability`] [`--audio`] | `docker-compose.yml` (+ `docker-compose.restore-drill.yml`) | `butlers-dev` | `.env.dev` | `dev` (+ `observability`, `audio`) |
+| `dev-launcher` | `scripts/compose.sh --no-hotreload` [`--with-restore-drill`] [`--audio`] | `docker-compose.yml` (+ `docker-compose.restore-drill.yml`) | `butlers-dev` | `.env.dev` | `dev` (+ `audio`) |
 
 Every service the credential rule selects is stopped and removed for the window: any PostgreSQL or
 libpq environment key, any `*_DB_HOST`-style or `RESTORE_DRILL_EXECUTOR_`/`RESTORE_DRILL_PROXY_`
@@ -167,7 +165,7 @@ path is forward through release.
 
 While the fence is held:
 
-- `scripts/compose.sh` and `butlers deploy` refuse `cutover_fence_held`. Do not work around them.
+- `scripts/compose.sh` refuses `cutover_fence_held`. Do not work around them.
 - Do not use `docker start`, `docker restart`, `docker run`, raw `docker compose`, GUI container
   tools, `compose.sh` from any other checkout, or host `uv run` against this database.
 - Do not edit, pull, or check out anything in the deploy checkout.

@@ -488,11 +488,10 @@ service is stopped.
    and covers rollback. Confirm the evidence sink enforces the schema above.
 2. From the canonical main checkout, fetch `origin/main`; require a clean
    worktree, no unpushed commits, and exact HEAD equal to
-   `[AUTHORIZED_TARGET_GIT_SHA]`. Do not use `--allow-dirty-root`. The deploy
-   preflight intentionally rejects linked worktrees and divergent commits
-   (`openspec/specs/deployment-and-drift/spec.md`, requirement
-   “`butlers deploy` — Preflight Guard Against a Frozen or Divergent Deploy
-   Root”; `src/butlers/core/deploy.py:470-579`).
+   `[AUTHORIZED_TARGET_GIT_SHA]`. The retired Compose deploy command and its
+   dirty-root override are unavailable. These clean-source requirements remain
+   mandatory for the independently reviewed Helm lifecycle.
+
 3. Run the ancestry check and all five static closure components from sections
    1 and 2.2: the two allowlist scans, full-tree scan, full target-diff review,
    and deployment-entrypoint/opaque-file review. Re-enumerate
@@ -517,9 +516,10 @@ service is stopped.
    any PR #3960/core identity-split operation.
 8. Render the exact lifecycle's service/effect manifest. Match every unit and
    privileged/local side effect to the authorization in section 3. For the
-   canonical deploy, this includes Beads export materialization, both protected
-   restore-drill units, both root-firewall wrapper invocations, every unscoped
-   Compose unit, health polling, and the deployment-ledger write.
+   selected Helm lifecycle, this includes each initContainer, rollout, ingress
+   gate, discovery step and deployment-ledger write. Retired Compose deployment
+   effects are not an executable fallback.
+
 
 Preflight does not read conversation tables, connector payloads, messages,
 provider sessions, credentials, or raw logs. If the actual deployment cannot
@@ -533,19 +533,12 @@ method, `staged_writer_first`, keeps producer processes stopped through the
 entire writer matrix in addition to keeping the common ingress gate closed. It
 requires a separately reviewed procedure because the repository does not
 currently expose that staging as one command. The fallback,
-`canonical_deploy_with_ingress_gate`, may use `butlers deploy` only when the
-separately reviewed ingress gate remains proven closed at or before Switchboard
-acceptance throughout the unscoped recreate.
-
-That distinction is binding. `butlers deploy` resolves and stamps the current
-Git SHA, force-runs migrations, prepares the protected topology, then executes
-an unscoped `docker compose up -d --remove-orphans`
-(`src/butlers/core/deploy.py:807-834`, `src/butlers/core/deploy.py:888-945`).
-Compose can therefore restart unprofiled connectors as soon as its single
-`butlers-up` healthcheck passes; that check covers Switchboard port 41100, not
-the per-daemon writer matrix. A prior `docker compose stop` does not keep those
-connectors stopped through the canonical recreate. Without the reviewed gate,
-the canonical method is `producer_started_early` and must abort.
+`canonical_deploy_with_ingress_gate`, is unavailable after retirement of the
+Compose production pipeline. A Helm replacement must be independently reviewed
+and explicitly named in the authorization, with the same ingress-closed and
+writer-first obligations. A rollout or Switchboard healthcheck alone does not
+prove that every writer is ready or that producers stayed stopped. No lifecycle
+method may reopen producers early or treat the removed command as a fallback.
 
 The concrete two-phase procedure is:
 

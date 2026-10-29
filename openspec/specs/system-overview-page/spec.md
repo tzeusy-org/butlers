@@ -62,6 +62,10 @@ process started.
 
 ### Requirement: Deployment Ledger Facts
 
+ID: REQ-system-overview-page-001
+Source: bu-dss7he.14; bu-viat6h.5
+Scope: v1-mandatory
+
 The `/api/system/deployments` endpoint SHALL return the current (most recent) deployment
 and a short recent history, drawn from `public.deployments`. This is the ledger the owner reads to answer "what code
 is actually running, and did it survive the last deploy", so merged-but-undeployed drift
@@ -88,7 +92,7 @@ is visible.
     `started_at` (see below)
   - `result: "success" | "failed"`
   - `source: "boot" | "deploy" | null` -- identifies whether the row came from a
-    `butlers up` process boot or the `butlers deploy` pipeline; `null` means the row
+    `butlers up` process boot or a Helm release; `null` means the row
     predates provenance tracking and MUST remain an honest unknown
   - `serving_mode: "image" | "hotreload-worktree" | null` -- the runtime serving
     mode recorded with the row; `null` means inspection could not classify it
@@ -109,10 +113,9 @@ is visible.
 
 #### Scenario: Deployment source and serving mode are recorded honestly
 
-- **WHEN** `butlers deploy` completes or fails after it has begun its pipeline
+- **WHEN** the Helm release records its success or failure
 - **THEN** its ledger row has `source="deploy"`, `serving_mode="image"`, and
-  `serving_worktree=null`, because the deploy command explicitly builds and recreates
-  the profile-less baked-image service set
+  `serving_worktree=null`, because the Helm release records the deployed image
 - **AND WHEN** `butlers up` records a process boot whose `/app/src` bind mount resolves
   to a linked `.worktrees/<name>` checkout in Linux mount metadata
 - **THEN** its row has `source="boot"`, `serving_mode="hotreload-worktree"`, and the
@@ -145,7 +148,7 @@ is visible.
   Dockerfile bakes into the image as an environment variable
 - **AND** `scripts/compose.sh` passes `--build-arg GIT_SHA=$(git rev-parse HEAD)`
   automatically -- the operator does not need to set it by hand for the normal
-  `./scripts/compose.sh` / `./scripts/compose.sh --prod` flows
+  development `./scripts/compose.sh` flow
 
 #### Scenario: migration_head is a representative snapshot, not a cross-schema drift proof
 
@@ -154,7 +157,7 @@ is visible.
   (the first-started butler daemon, conventionally `switchboard` per the existing
   `_PRIORITY_BUTLERS` start-order convention) rather than reconciling every butler
   schema's head
-- **AND WHEN** it is recorded by the `butlers deploy` verb, it is resolved by scanning
+- **AND WHEN** it is recorded by the `butlers deployments record` verb, it is resolved by scanning
   the schemas that actually carry an `alembic_version` table (never assuming `public`,
   which tracks no chain) and taking the core-chain head — recording `null` when no
   schema tracks the core chain (see the deployment-and-drift capability)

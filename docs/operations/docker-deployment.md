@@ -6,7 +6,7 @@
 
 > **Production path:** Use Helm on k3s in namespace `butlers`; see
 > [Kubernetes Deployment](kubernetes-deployment.md#deploy). This page covers the retained
-> pre-cutover off-cluster Compose path, pending deletion in bu-dss7he.14.
+> development-only Compose path. Complete dev Compose retirement belongs to bu-dss7he.19.
 >
 > **Note:** The live dev stack (namespace `butlers-dev`, database butlers-db-dev) no longer runs
 > under Compose. It runs on the homelab k3s cluster from the Helm chart; see [Kubernetes
@@ -27,7 +27,7 @@ containers** and **no local containerized Postgres**. Production keeps every
 butler in one `butlers-up` process. The prepared dev stage separates Switchboard
 into `butlers-control` and excludes it from the domain process, reserving one
 plus four session slots. The database lives on a remote host configured via
-`.env.dev` / `.env.prod`.
+`.env.dev`.
 
 The application image (`butlers-app`) is built on `butlers-base` (Python 3.12 +
 Node.js 22 + the LLM runtime CLIs + `uv`).
@@ -40,24 +40,19 @@ sets the per-mode host ports, and configures Tailscale serve:
 ```bash
 ./scripts/compose.sh                      # dev database + hotreload (base stack by default)
 ./scripts/compose.sh --with-restore-drill # dev stack plus protected restore-drill executor
-./scripts/compose.sh --prod               # production database, baked image + protected executor
 ./scripts/compose.sh --no-hotreload   # dev DB, prod-style baked image (no source mount)
 ```
 
-`--prod` and the default `dev` run under different Compose project names
-(`butlers` vs `butlers-dev`) and different host ports (see
-[Environment Variables](#environment-variables)), so both stacks can run on the
-same machine at once against distinct non-live databases. For the retained pre-cutover
-Compose host, `butlers deploy` replaces direct Compose redeploy commands; see
-[Production Deploys](#production-deploys-butlers-deploy). Production uses the
-[Helm workflow](kubernetes-deployment.md#deploy).
+Production deployment uses the [Helm workflow](kubernetes-deployment.md#deploy).
+The legacy production command, production launcher flag and local observability
+overlay have been removed. Development Compose keeps project `butlers-dev` and
+its existing ports and isolation until its separately governed retirement.
 
 Ordinary dev uses the base file plus `docker-compose.control-stage.yml`, so it does not need a
 restore-drill executor secret, endpoint, or root firewall wrapper. To start the
 privileged boundary in dev, pass `--with-restore-drill` after completing its
 operator bootstrap. Its selection is explicit: finding a configured secret does
-not turn it on. `--prod` and `butlers deploy` always select the protected
-topology and fail closed when its prerequisites are missing.
+not turn it on. The explicit protected dev path fails closed when its prerequisites are missing.
 
 If an opted-in `butlers-dev` project is returned to ordinary dev, the launcher
 runs the ordinary dev configuration's `down --remove-orphans` before startup. That
@@ -82,8 +77,7 @@ or restarting any container, use the verb-restricted helper:
 
 It merges the base and protected Compose files but accepts only read-only
 `config`, `ps`, and `logs` operations. Never use those merged files with `up`;
-`scripts/compose.sh --with-restore-drill`, `scripts/compose.sh --prod`, and
-`butlers deploy` perform the required stop, versioned root preparation, create,
+`scripts/compose.sh --with-restore-drill` performs the required stop, versioned root preparation, create,
 exact-topology firewall attestation, and only then start either restore-drill
 service.
 
@@ -112,19 +106,18 @@ Two images, both pinned by digest where practical:
 
 `docker-compose.yml` is the reference for every service's image, command, ports, mounts, and
 dependencies. All application containers use the `butlers-app` image and read the shared database
-env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host port binds to
+env (`x-postgres-env` anchor) from the sourced `.env.dev` file; every host port binds to
 `127.0.0.1` (Tailscale Serve is the external entry point). What the file does not explain:
 
 - **No database service.** PostgreSQL is external, reached via `POSTGRES_HOST` / `POSTGRES_PORT`,
-  which `scripts/compose.sh` requires in `.env.dev` / `.env.prod`. One database holds every
+  which `scripts/compose.sh` requires in `.env.dev`. One database holds every
   butler's schema plus the shared `public` schema, so there is no local data volume to manage.
 - **Dev runs Switchboard in `butlers-control` and domains in `butlers-up`.**
   The launcher selects `docker-compose.control-stage.yml` (Compose >=2.24.4),
   starts exactly one control/domain pair, and partitions the existing session
   budget as 1+4. Control publishes the unchanged Switchboard service port and its `/health`;
-  domains use `butlers up --exclude switchboard`. The production launcher omits
-  the overlay and retains the original unsplit `butlers up` process with default capacity five,
-  whose published port is the Switchboard `/health`.
+  domains use `butlers up --exclude switchboard`. Helm production retains its
+  independently configured unsplit process.
   Each keeps per-CLI runtime state in named volumes and runs under Docker's default AppArmor
   profile: runtime sessions launch Codex with `--dangerously-bypass-approvals-and-sandbox`, so
   neither creates a user namespace (only `dashboard-api`'s CLI-auth sandbox does). Each mounts
@@ -147,8 +140,8 @@ env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host po
   tracked `frontend/package-lock.json`; `tests/scripts/test_compose_frontend_dev_lockfile_guard.py`
   holds that invariant. It runs only under the `dev` profile that `scripts/compose.sh` activates.
 - **`migrations` is a one-shot** (`db migrate`) that every app service depends on via
-  `service_completed_successfully`. See [Production Deploys](#production-deploys-butlers-deploy)
-  for why redeploys run it with `run --rm`.
+  `service_completed_successfully`. A prior exited container is not evidence
+  that a changed image has run its migrations; use a fresh one-shot migration invocation.
 - **One container per connector**, sharing the `x-connector-env` anchor.
   `connector-whatsapp-user` owns the single authenticated WhatsApp bridge socket
   (`wa_bridge_socket`), shared with the Messenger butler; `connector-live-listener` runs only under
@@ -205,13 +198,13 @@ sudo aa-status | grep butlers-dashboard-api
 ```
 
 Then set `BUTLERS_DASHBOARD_APPARMOR_PROFILE=butlers-dashboard-api` in the environment file the
-launcher sources (`.env.dev` / `.env.prod`); do not edit the tracked `docker-compose.yml`. The
+launcher sources (`.env.dev`); do not edit the tracked `docker-compose.yml`. The
 variable feeds the `apparmor` entry of the `security_opt` of BOTH the `dashboard-api` and
 `dashboard-api-hotreload` services (the launcher runs the hotreload one under `--hotreload`); the
 other two entries stay, and with the variable unset the entry remains `apparmor:unconfined`. The
 profile is otherwise unconfined, so the container's confinement is the same as today; only
 user-namespace creation is newly allowed, and only for these containers. Reload the stack with the
-launcher or `butlers deploy`.
+development launcher.
 
 Verify from the container that is actually running, `dashboard-api` or `dashboard-api-hotreload`
 (this proves user-namespace creation only, not the full sandbox):
@@ -254,81 +247,32 @@ especially after an upgrade to Ubuntu 24.04 or newer, and re-check the sandbox; 
 Host provisioning (Ansible) is outside this repository. Put the profile file, the `apparmor_parser`
 step and, if used, the sysctl drop-in in that role for every host that runs `dashboard-api`.
 
-## Production Deploys (`butlers deploy`)
+## Production deployment
 
-> Production uses Helm on k3s (`make -C deploy/helm/butlers ship-prod` or
-> `deploy-prod TAG=<tag>`); see [Kubernetes Deployment](kubernetes-deployment.md#deploy).
-> This section documents the pre-cutover Compose host only, pending deletion in
-> bu-dss7he.14. Helm deployment-ledger integration is separate work (bu-viat6h.5).
-
-`butlers deploy` (`src/butlers/core/deploy.py`) replaces the
-manual build-then-`up -d` ceremony with one idempotent command:
-
-```bash
-uv run butlers deploy --dir /path/to/repo --timeout 180
-```
-
-It runs, in order:
-
-1. **Build** — `docker build --build-arg GIT_SHA=$(git rev-parse HEAD) -t butlers-app:latest .`
-2. **Migrate** — runs the merged Compose input with `run --rm migrations`,
-   always a fresh container. A direct Compose lifecycle command only reruns the one-shot
-   `migrations` service if its `service_completed_successfully` condition
-   isn't already satisfied — once that container has exited 0 *once*, compose
-   treats it as permanently satisfied even after the image is rebuilt with
-   new migrations baked in, so new migrations silently never run. `run --rm`
-   sidesteps that entirely.
-3. **Prepare and recreate** — stops the restore relay/executor, obtains the
-   root-owned generation-bound capability, creates the protected containers,
-   performs root-side attestation and applies both default-deny firewall
-   policies, then runs the
-   protected base-plus-restore-drill Compose overlay with `up -d --remove-orphans`,
-   with **no** `--profile` flag ever passed and
-   `COMPOSE_PROFILES` stripped from the subprocess environment, so a leftover dev-shell
-   `COMPOSE_PROFILES=hotreload` cannot silently pull the bind-mounted
-   hotreload services into a prod recreate.
-4. **Verify** — polls `GET /health` until `status: "ok"` or the `--timeout`
-   elapses.
-5. **Record** — writes one row to `public.deployments` (git SHA, migration
-   head, `success` or `failed`) via `butlers.core.deployments`, on *every*
-   outcome — a failed deploy is visible in the ledger, not silent.
-
-Safe to re-run at any point: image builds reuse layer cache, migrations
-always get a fresh container, and `up -d` only recreates services whose
-config or image actually changed.
+Use `make -C deploy/helm/butlers ship-prod` or `deploy-prod TAG=<tag>`; see
+[Kubernetes Deployment](kubernetes-deployment.md#deploy). Helm records release
+outcomes through the retained `butlers deployments record` command. The
+`public.deployments` ledger and System page remain the provenance surfaces.
+Development Compose is not a production fallback.
 
 ## Environment Variables
 
 The database target is **not** hard-coded in Compose; `scripts/compose.sh`
-sources `.env.<mode>` and exports the per-mode ports before invoking
+sources `.env.dev` and exports the per-mode ports before invoking
 `docker compose`. The shared DB env (`x-postgres-env`) requires:
 
 ```yaml
-POSTGRES_HOST: <from .env.dev | .env.prod>   # required
+POSTGRES_HOST: <from .env.dev>   # required
 POSTGRES_PORT: 5432                          # default
 POSTGRES_USER: butlers                       # default
-POSTGRES_PASSWORD: <from .env.dev | .env.prod>   # required
+POSTGRES_PASSWORD: <from .env.dev>   # required
 POSTGRES_SSLMODE: <optional>
 ```
 
-Per-mode host ports and project names (both can run at once):
-
-| | prod (`--prod`) | dev (default) |
-|---|---|---|
-| Compose project | `butlers` | `butlers-dev` |
-| Switchboard | `41100` | `42100` |
-| Dashboard API | `41200` | `42200` |
-| Frontend | `41173` | `42173` |
-| OwnTracks | `40086` | `42086` |
-| URL base path | `/butlers/` | `/butlers-dev/` |
-
-> **Naming caution for operators:** the two database targets are named
-> **counter-intuitively**. `butlers-db-dev` (selected by `.env.dev`, the default
-> `scripts/compose.sh` target) is the **LIVE** system holding real data;
-> `butlers-db` (`.env.prod`) is the other target. `scripts/compose.sh`'s own
-> `dev` / `prod` mode labels track the env file, **not** which host is live, so
-> do not trust the word "dev" here. Confirm which host an `.env.<mode>` file
-> actually points at before running migrations or destructive operations.
+Development uses project `butlers-dev`, Switchboard host port 42100, dashboard
+API 42200, frontend 42173 and OwnTracks 42086. The launcher's ownership guard
+refuses a competing Kubernetes fleet. An override is only for a non-live database;
+a `dev` label does not establish that the configured endpoint contains no real data.
 
 ## Implementation Notes
 

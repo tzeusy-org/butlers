@@ -324,8 +324,7 @@ The shared `butlers` database owner/migration login is not a substitute for
 this step. An ordinary dev `./scripts/compose.sh` launch does not need this
 deployment setting and must not invent it. After the bootstrap is complete, use
 `./scripts/compose.sh --with-restore-drill` to enable the protected boundary in
-dev. `./scripts/compose.sh --prod` and `butlers deploy` always require the
-bootstrap. The provisioner expects the private file path named by this deployment
+dev. The protected dev path requires that bootstrap. The provisioner expects the private file path named by this deployment
 setting:
 
 ```dotenv
@@ -479,8 +478,7 @@ The Compose services are deliberately narrow:
 - The ordinary `docker-compose.yml` deliberately omits the executor, its
   bridge, its CA config, and its private secret. Ordinary dev
   `scripts/compose.sh` uses that base topology only. The protected launch paths,
-  `scripts/compose.sh --with-restore-drill`, `scripts/compose.sh --prod`, and
-  `butlers deploy`, are the only supported lifecycle paths that include
+  `scripts/compose.sh --with-restore-drill`, are the only supported lifecycle paths that include
   `docker-compose.restore-drill.yml` to start either protected service; the
   read-only inspection helper is the sole non-lifecycle exception. They stop the
   old relay and executor, call a versioned root-owned preparation verb before
@@ -578,8 +576,7 @@ Use normal deployment observation surfaces; none should display the secret:
 ```
 
 Its rendered Compose output is inspection only: use
-`scripts/compose.sh --with-restore-drill`, `scripts/compose.sh --prod`, or
-`butlers deploy` to validate the endpoint and prepare the firewall before any
+`scripts/compose.sh --with-restore-drill` to validate the endpoint and prepare the firewall before any
 protected service starts.
 
 The System page and `GET /api/system/backups` surface the most recently

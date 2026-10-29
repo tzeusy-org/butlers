@@ -37,7 +37,7 @@ async def test_record_verb_writes_one_image_served_deploy_row(
     async def _make_pool() -> asyncpg.Pool:
         return await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=2)
 
-    monkeypatch.setattr("butlers.core.deploy._make_pool", _make_pool)
+    monkeypatch.setattr("butlers.core.deployments._make_pool", _make_pool)
     monkeypatch.setenv("GIT_SHA", "pod-image-sha")
 
     # The verb owns its event loop (asyncio.run), so run it off the test loop.

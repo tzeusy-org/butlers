@@ -264,131 +264,6 @@ def dashboard(host: str, port: int) -> None:
     )
 
 
-@cli.command()
-@click.option(
-    "--dir",
-    "repo_root",
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
-    default=Path("."),
-    show_default=True,
-    help="Repo root containing docker-compose.yml and .env.prod",
-)
-@click.option(
-    "--timeout",
-    "health_timeout_s",
-    type=float,
-    default=180.0,
-    show_default=True,
-    help="Seconds to wait for /health before failing the deploy",
-)
-@click.option(
-    "--project-name",
-    "project_name",
-    default=None,
-    help=(
-        "Docker Compose project name (default: butlers). Pass 'butlers-dev' "
-        "to target the dev/live stack instead of the .env.prod project."
-    ),
-)
-@click.option(
-    "--env-file",
-    "env_file",
-    default=None,
-    help="Env file for docker compose --env-file (default: .env.prod)",
-)
-@click.option(
-    "--health-url",
-    "health_url",
-    default=None,
-    help="Health-check URL to poll after recreate (default: http://localhost:41200/health)",
-)
-@click.option(
-    "--profile",
-    "profiles",
-    multiple=True,
-    help=(
-        "Compose profile to activate (repeatable), e.g. --profile dev for a "
-        "project whose frontend service is profile-gated. Never 'hotreload' "
-        "-- DeployConfig rejects it."
-    ),
-)
-@click.option(
-    "--allow-dirty-root",
-    "allow_dirty_root",
-    is_flag=True,
-    default=False,
-    help=(
-        "Downgrade the preflight guard from a hard rejection to a loud warning, "
-        "for an intentional branch deploy. Without it, deploying from a linked "
-        "git worktree or a HEAD that is not an ancestor of origin/main is "
-        "refused before any build/migrate step (bu-hmdqz.1 stale-code incident)."
-    ),
-)
-def deploy(
-    repo_root: Path,
-    health_timeout_s: float,
-    project_name: str | None,
-    env_file: str | None,
-    health_url: str | None,
-    profiles: tuple[str, ...],
-    allow_dirty_root: bool,
-) -> None:
-    """Idempotent production deploy: build, migrate, recreate, verify, record.
-
-    Replaces the artisanal deploy ceremony (build an image by hand, hope
-    ``docker compose up -d`` reruns migrations, eyeball that things came back
-    up) with one verb: builds the ``butlers-app`` image stamped with the
-    current git SHA, force-reruns the one-shot migrations service (never
-    trusts a stale exited container — see bu-zhfd0), prepares the protected
-    restore-drill Compose overlay plus only explicitly-requested ``--profile``
-    flags (never an ambient ``COMPOSE_PROFILES=hotreload``
-    leftover from a dev shell, and never ``hotreload`` itself, which
-    bind-mounts source instead of using the baked image — see bu-hmdqz.1),
-    polls ``/health``, and records the outcome to
-    ``public.deployments`` whether it succeeds or fails.
-
-    ``--project-name``/``--env-file``/``--health-url`` default to the
-    ``.env.prod`` / ``butlers`` project; pass ``--project-name butlers-dev
-    --env-file .env.dev --health-url http://localhost:42200/health --profile
-    dev`` to redeploy the dev/live stack instead (its ``frontend-dev`` service
-    is gated behind the ``dev`` profile, so it must be requested explicitly or
-    ``--remove-orphans`` would tear it down).
-    """
-    from butlers.core.deploy import DeployConfig, DeployError, run_deploy
-
-    config_kwargs: dict[str, object] = {
-        "repo_root": repo_root.resolve(),
-        "health_timeout_s": health_timeout_s,
-        "profiles": tuple(profiles),
-        "allow_dirty_root": allow_dirty_root,
-    }
-    if project_name is not None:
-        config_kwargs["project_name"] = project_name
-    if env_file is not None:
-        config_kwargs["env_file"] = env_file
-    if health_url is not None:
-        config_kwargs["health_url"] = health_url
-
-    try:
-        config = DeployConfig(**config_kwargs)
-    except ValueError as exc:
-        click.echo(f"Invalid deploy configuration: {exc}", err=True)
-        sys.exit(1)
-
-    click.echo(f"Deploying {config.repo_root} (project={config.project_name})...")
-    try:
-        result = asyncio.run(run_deploy(config))
-    except DeployError as exc:
-        click.echo(f"Deploy failed at phase={exc.phase}: {exc}", err=True)
-        sys.exit(1)
-    for reason in result.overrides:
-        click.echo(f"WARNING: preflight guard overridden (--allow-dirty-root): {reason}", err=True)
-    click.echo(
-        f"Deployed {result.git_sha} (migration_head={result.migration_head}, "
-        f"result={result.result})"
-    )
-
-
 @cli.group()
 def deployments() -> None:
     """Deployment ledger commands."""
@@ -429,8 +304,8 @@ def deployments_record(source: str, result: str, git_sha: str | None) -> None:
 
 async def _record_deploy_row(*, source: str, result: str, git_sha: str | None) -> str:
     """Write one image-served ``source='deploy'`` ledger row and return its id."""
-    from butlers.core.deploy import _make_pool
     from butlers.core.deployments import (
+        _make_pool,
         record_deployment,
         resolve_core_migration_head,
         resolve_git_sha,

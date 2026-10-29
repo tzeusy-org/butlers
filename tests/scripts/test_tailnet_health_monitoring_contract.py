@@ -45,10 +45,163 @@ def test_operations_index_links_to_tailnet_health_monitoring_runbook() -> None:
 
 
 def test_production_serve_mapping_exposes_the_canonical_health_route() -> None:
-    """The production prefix must proxy the app's existing /api/health route."""
-    text = _compose_script_text()
+    """Bind the documented host-owned production route to the rendered API target."""
+    import ast
+    import shutil
+    import subprocess
+    from urllib.parse import urlsplit
 
-    assert 'API_PREFIX="butlers-api"' in text
+    chart = Path("deploy/helm/butlers")
+    production = yaml.safe_load((chart / "values.prod.yaml").read_text(encoding="utf-8"))
+    prefix = production["publicUrl"]["apiPrefix"]
+    node_port = production["nodePorts"]["dashboard"]
+    assert (prefix, node_port) == ("butlers-api", 31200)
+    helm = shutil.which("helm")
+    assert helm is not None, "Installed Helm is required for the production health-route render."
+    rendered = subprocess.run(
+        [
+            helm,
+            "template",
+            "butlers",
+            str(chart),
+            "-f",
+            str(chart / "values.prod.yaml"),
+            "--set",
+            "image.tag=source-test",
+            "--set",
+            "frontendImage.tag=source-test",
+            "--set",
+            "database.host=db.invalid",
+            "--set",
+            "trackerEgress.enabled=false",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    resources = [resource for resource in yaml.safe_load_all(rendered.stdout) if resource]
+    services = [
+        resource
+        for resource in resources
+        if resource.get("kind") == "Service"
+        and resource.get("metadata", {}).get("name") == "dashboard-api-host"
+    ]
+    assert len(services) == 1
+    service = services[0]["spec"]
+    assert service["type"] == "NodePort"
+    assert service["externalTrafficPolicy"] == "Local"
+    ports = [port for port in service["ports"] if port.get("nodePort") == node_port]
+    assert len(ports) == 1
+    port = ports[0]
+    assert (port["port"], port.get("protocol", "TCP")) == (41200, "TCP")
+    selector = service["selector"]
+    assert selector
+    workloads = [
+        resource
+        for resource in resources
+        if resource.get("kind") == "Deployment"
+        and all(
+            resource["spec"]["template"]["metadata"]["labels"].get(key) == value
+            for key, value in selector.items()
+        )
+    ]
+    assert len(workloads) == 1
+    workload = workloads[0]
+    assert workload["metadata"]["name"] == "dashboard-api"
+    target = port["targetPort"]
+    assert isinstance(target, str)
+    targets = [
+        (container, container_port)
+        for container in workload["spec"]["template"]["spec"]["containers"]
+        for container_port in container.get("ports", [])
+        if container_port.get("name") == target
+    ]
+    assert len(targets) == 1
+    container, container_port = targets[0]
+    assert container["name"] == "dashboard-api"
+    assert container_port["containerPort"] == port["port"]
+    assert container_port.get("protocol", "TCP") == port.get("protocol", "TCP")
+    assert container["args"] == [
+        "dashboard",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        str(container_port["containerPort"]),
+    ]
+    env = {item["name"]: item.get("value") for item in container["env"]}
+    redirect = urlsplit(env["GOOGLE_OAUTH_REDIRECT_URI"])
+    assert redirect.scheme == "https"
+    assert redirect.path == f"/{prefix}/api/oauth/google/callback"
+
+    # Bind the selected workload's CLI to the real factory and its health handler.
+    cli = ast.parse(Path("src/butlers/cli.py").read_text(encoding="utf-8"))
+    commands = [
+        node for node in cli.body if isinstance(node, ast.FunctionDef) and node.name == "dashboard"
+    ]
+    assert len(commands) == 1
+    assert any(
+        isinstance(decorator, ast.Call)
+        and ast.unparse(decorator.func) == "cli.command"
+        and (not decorator.args or ast.literal_eval(decorator.args[0]) == "dashboard")
+        for decorator in commands[0].decorator_list
+    )
+    assert any(
+        isinstance(decorator, ast.Call)
+        and ast.unparse(decorator.func) == "click.option"
+        and decorator.args
+        and ast.literal_eval(decorator.args[0]) == "--port"
+        for decorator in commands[0].decorator_list
+    )
+    calls = [
+        node
+        for node in ast.walk(commands[0])
+        if isinstance(node, ast.Call) and ast.unparse(node.func) == "uvicorn.run"
+    ]
+    assert len(calls) == 1
+    assert ast.literal_eval(calls[0].args[0]) == "butlers.api.app:create_app"
+    keywords = {keyword.arg: keyword.value for keyword in calls[0].keywords}
+    assert ast.literal_eval(keywords["factory"]) is True
+    assert isinstance(keywords["port"], ast.Name) and keywords["port"].id == "port"
+    app = ast.parse(Path("src/butlers/api/app.py").read_text(encoding="utf-8"))
+    factories = [
+        node for node in app.body if isinstance(node, ast.FunctionDef) and node.name == "create_app"
+    ]
+    assert len(factories) == 1
+    handlers = [
+        node
+        for node in factories[0].body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "health"
+    ]
+    assert len(handlers) == 1
+    paths = {
+        ast.literal_eval(decorator.args[0])
+        for decorator in handlers[0].decorator_list
+        if isinstance(decorator, ast.Call) and ast.unparse(decorator.func) == "app.get"
+    }
+    assert "/api/health" in paths
+
+    # This is an operator contract, not a claim about installed/live Serve state.
+    associations = [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in _runbook_text().splitlines()
+        if line.startswith("| Production Helm |")
+    ]
+    assert associations == [
+        [
+            "Production Helm",
+            f"https://<TAILNET_DNS_NAME>/{prefix}/api/health",
+            f"/{prefix}",
+            f"http://localhost:{port['nodePort']}",
+            "/api/health",
+            "strict TLS; host operator-owned Serve",
+        ]
+    ]
+
+    text = _compose_script_text()
+    assert 'API_PREFIX="butlers-dev-api"' in text
+    assert "export DASHBOARD_HOST_PORT=42200" in text
     assert '"/${API_PREFIX}|http://localhost:${DASHBOARD_HOST_PORT}"' in text
     assert 'TAILSCALE_HTTPS_PORT="${TAILSCALE_HTTPS_PORT:-443}"' in text
     assert 'tailscale serve --yes --bg --https="${TAILSCALE_HTTPS_PORT}"' in text

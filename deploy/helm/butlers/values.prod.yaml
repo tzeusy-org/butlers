@@ -1,5 +1,5 @@
 # Namespace butlers. Targets postgresql-cloudnativepg (butlers-db).
-# Mirrors `./scripts/compose.sh --prod`.
+# Production values for `make -C deploy/helm/butlers ship-prod`.
 database:
   host: postgresql-cloudnativepg-rw.postgres.svc.cluster.local
 

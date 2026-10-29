@@ -118,8 +118,7 @@ script, a checkout wildcard, `env`, a shell, or the installer.
 Ordinary `scripts/compose.sh` dev launches use only `docker-compose.yml` and do
 not infer protected execution from the presence of a secret. The only supported
 lifecycle paths that include `docker-compose.restore-drill.yml` to start a
-protected service are `scripts/compose.sh --with-restore-drill`,
-`scripts/compose.sh --prod`, and `butlers deploy`; the read-only inspection
+protected service are `scripts/compose.sh --with-restore-drill`; the read-only inspection
 helper is the sole non-lifecycle exception. Those paths stop, call the root-owned
 prepare verb, create the relay and executor with its generation-bound nonce,
 attest and fence that exact created topology, and only then start the merged
@@ -294,7 +293,7 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 
 | Script | Caller | Purpose |
 | --- | --- | --- |
-| [`compose.sh`](compose.sh) | developers, `butlers deploy`, Dockerfile, Helm values | Supported Compose launcher for the local stack and protected restore-drill variants. |
+| [`compose.sh`](compose.sh) | developers using the retained local stack | Supported Compose launcher for the local stack and protected restore-drill variants. |
 | [`base-image-input-fingerprint.sh`](base-image-input-fingerprint.sh) | `compose.sh`, `k8s/build-push.sh`, `nightly.yml` | Fingerprints the base image build inputs. |
 | [`generate_runtime_cli_sandbox_manifest.py`](generate_runtime_cli_sandbox_manifest.py) | `Dockerfile.base`, `compose.sh`, `k8s/build-push.sh`, `nightly.yml` | Generates the runtime CLI sandbox input manifest. |
 | [`render_connector_catalog.py`](render_connector_catalog.py) | developers; `tests/contracts/test_connector_catalog.py::test_generated_recovery_projection_matches_catalog_and_refuses_stale_output` | Regenerates the public connector recovery projection with `python3 scripts/render_connector_catalog.py`; `--check` refuses stale generated TypeScript. |
@@ -323,7 +322,7 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 | [`provision_restore_drill_executor.sh`](provision_restore_drill_executor.sh) | operators, per [backup and restore](../docs/operations/backup-restore.md) | Enables the `restore_drill_executor` login. |
 | [`restore-drill-firewall.sh`](restore-drill-firewall.sh) | `docker-compose.yml`, `install_restore_drill_firewall_wrapper.sh` | Reviewed source for the root-owned firewall wrapper. |
 | [`restore-drill-firewall.sudoers`](restore-drill-firewall.sudoers) | root-controlled deployment setup | Sudoers template for the two fixed wrapper forms. |
-| [`install_restore_drill_firewall_wrapper.sh`](install_restore_drill_firewall_wrapper.sh) | root-controlled deployment setup, `core/deploy.py` | Installs the immutable wrapper target. |
+| [`install_restore_drill_firewall_wrapper.sh`](install_restore_drill_firewall_wrapper.sh) | root-controlled deployment setup | Installs the immutable wrapper target. |
 | [`restore-drill-compose-inspect.sh`](restore-drill-compose-inspect.sh) | operators | Read-only `config`, `ps` and `logs` for the protected topology. |
 | [`restore_drill_tcp_proxy.py`](restore_drill_tcp_proxy.py) | `docker-compose.restore-drill.yml` | Uncredentialed TCP relay for the restore-drill executor's internal network. |
 

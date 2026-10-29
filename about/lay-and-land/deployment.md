@@ -46,8 +46,7 @@ Switchboard in `butlers-control` and domains in `butlers-up`
 (`butlers up --exclude switchboard`). Each daemon retains its MCP port. Exactly
 one control process reserves one session slot and one domain process reserves
 four, preserving the owner total of five without changing the process-local
-semaphore. Helm production and the production Compose launcher remain unsplit at
-five. Helm `butlersControl.enabled` (set in the dev values) and the dev Compose
+semaphore. Helm production remains unsplit at five. Helm `butlersControl.enabled` (set in the dev values) and the dev Compose
 overlay select this topology; see
 [stage boundaries and pending live proof](../../docs/architecture/key-absent-control.md).
 The refusal-only session listener is separate from service health.
@@ -164,9 +163,8 @@ is [`docs/identity_and_secrets/environment-variables.md`](../../docs/identity_an
   `make -C deploy/helm/butlers deploy-prod TAG=<tag>` deploys an already-pushed tag.
   See [Kubernetes Deployment](../../docs/operations/kubernetes-deployment.md#deploy)
   for prerequisites and the workflow.
-- Retained pre-cutover off-cluster Compose path (`butlers deploy`), pending
-  deletion in bu-dss7he.14:
-  [Docker Deployment](../../docs/operations/docker-deployment.md#production-deploys-butlers-deploy).
+- Retained development Compose only (complete retirement belongs to bu-dss7he.19):
+  [Docker Deployment](../../docs/operations/docker-deployment.md).
 
 ---
 

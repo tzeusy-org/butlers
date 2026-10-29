@@ -30,6 +30,7 @@ def _run_launcher(
     override: bool = False,
     complete_launch: bool = False,
     grafana_anonymous: str | None = None,
+    mode_override: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     repo = tmp_path / "repo"
     (repo / "scripts").mkdir(parents=True)
@@ -50,7 +51,6 @@ def _run_launcher(
             "docker-compose.yml",
             "docker-compose.restore-drill.yml",
             "docker-compose.control-stage.yml",
-            "docker-compose.observability.yml",
         ):
             shutil.copy2(_REPO_ROOT / filename, repo)
         password = tmp_path / "synthetic-password"
@@ -61,6 +61,10 @@ def _run_launcher(
                     f"RESTORE_DRILL_EXECUTOR_PASSWORD_FILE={password}\n"
                     "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST=10.23.4.5\n"
                 )
+
+    if mode_override is not None:
+        with (repo / ".env.dev").open("a", encoding="utf-8") as stream:
+            stream.write(f"BUTLERS_MODE={mode_override}\n")
 
     calls = tmp_path / "calls"
     calls.touch()
@@ -171,6 +175,13 @@ def _run_launcher(
     ],
 )
 def test_refuses_while_release_has_replicas(tmp_path, args, namespace):
+    if "--prod" in args or "--observability" in args:
+        result, calls = _run_launcher(tmp_path, args=args, replicas="1")
+        assert result.returncode == 1
+        assert "Unknown flag:" in result.stderr
+        assert calls == ""
+        return
+
     result, calls = _run_launcher(tmp_path, args=args, replicas="1")
 
     assert result.returncode == 1
@@ -258,6 +269,25 @@ def test_proceeds_when_release_is_absent_or_scaled_down(tmp_path, replicas):
         assert "up -d" in calls
         assert ("get deploy" in calls) == (context == "configured")
 
+    # The removed production branch cannot be re-enabled by dev configuration.
+    result, calls = _run_launcher(
+        tmp_path / "retired-mode-in-config",
+        args=(),
+        replicas=replicas,
+        complete_launch=True,
+        mode_override="prod",
+    )
+    assert result.returncode == 0, result.stderr
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "retired-mode-in-config/docker-argv.jsonl").read_text().splitlines()
+    ]
+    compose = [record for record in records if record["argv"][0] == "compose"]
+    assert compose
+    assert all("docker-compose.control-stage.yml" in record["argv"] for record in compose)
+    assert all(record["env"]["COMPOSE_PROJECT_NAME"] == "butlers-dev" for record in compose)
+    assert "--scale butlers-control=0" in calls
+
 
 def test_override_skips_the_cluster_check(tmp_path):
     result, calls = _run_launcher(tmp_path, args=(), replicas="1", override=True)
@@ -280,6 +310,14 @@ def test_override_skips_the_cluster_check(tmp_path):
     ids=["dev", "baked-dev", "audio", "restore-drill", "prod", "prod-hotreload"],
 )
 def test_observability_command_and_offline_service_model(tmp_path, args, observability):
+    if observability or "--prod" in args:
+        flags = (*args, *(("--observability",) if observability else ()))
+        result, calls = _run_launcher(tmp_path, args=flags, replicas="0")
+        assert result.returncode == 1
+        assert "Unknown flag:" in result.stderr
+        assert calls == ""
+        return
+
     docker = shutil.which("docker")
     assert docker is not None, "Docker Compose CLI is required for offline model validation"
     # Repeated selection must still add the fragment and profile exactly once.
@@ -401,16 +439,16 @@ def test_observability_command_and_offline_service_model(tmp_path, args, observa
 @pytest.mark.parametrize("configured,expected", [(None, "false"), ("true", "true")])
 def test_observability_uses_explicit_grafana_configuration(tmp_path, configured, expected):
     result, calls = _run_launcher(
-        tmp_path,
-        args=("--observability",),
-        replicas="0",
-        complete_launch=True,
-        grafana_anonymous=configured,
+        tmp_path, args=("--observability",), replicas="0", grafana_anonymous=configured
     )
-    assert result.returncode == 0, result.stderr
-    records = [
-        json.loads(line) for line in (tmp_path / "docker-argv.jsonl").read_text().splitlines()
-    ]
-    assert records
-    assert all(r["env"]["GF_AUTH_ANONYMOUS_ENABLED"] == expected for r in records)
-    assert "docker" in calls  # every command goes to the owned fake executable
+    assert result.returncode == 1
+    assert "Unknown flag: --observability" in result.stderr
+    assert calls == ""
+
+
+@pytest.mark.parametrize("flag", ["--prod", "--observability"])
+def test_retired_modes_refuse_before_cluster_or_lifecycle(tmp_path, flag):
+    result, calls = _run_launcher(tmp_path, args=(flag,), replicas="1")
+    assert result.returncode == 1
+    assert f"Unknown flag: {flag}" in result.stderr
+    assert calls == ""

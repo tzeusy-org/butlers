@@ -23,8 +23,17 @@ This route is derived from checked-in configuration, not from a live probe:
   configure Tailscale Serve itself.
 - The dashboard application exposes `GET /api/health`; Serve strips the public
   mount prefix before the request reaches that route.
-- Retained Compose production mode also selects `API_PREFIX="butlers-api"`,
-  but uses its loopback-published API port instead of a NodePort.
+- Retained development Compose selects `API_PREFIX="butlers-dev-api"` and
+  loopback-published API port `42200`. It does not provide a production mode;
+  the production route above derives from Helm and the host-managed Serve mapping.
+
+The host operator owns the following Serve association. The HTTPS mount strips
+`/butlers-api` and forwards the remaining `/api/health` path to the rendered
+production API NodePort; the chart does not install this mapping or TLS policy.
+
+| Stack | External readiness URL | HTTPS mount | HTTP upstream base | Forwarded path | TLS and custody |
+| --- | --- | --- | --- | --- | --- |
+| Production Helm | https://<TAILNET_DNS_NAME>/butlers-api/api/health | /butlers-api | http://localhost:31200 | /api/health | strict TLS; host operator-owned Serve |
 
 The source proof deliberately does not claim that a particular host, certificate,
 or running Serve state is currently healthy. Those are live facts requiring a

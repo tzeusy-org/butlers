@@ -285,16 +285,13 @@ hotreload. The original Compose-to-k3s cutover is complete. Its earlier
 `make secrets-dev` staging recipe predates dev's BWS-owned ExternalSecrets and
 is not the current deployment or rollback procedure.
 
-Compose is the retained pre-cutover off-cluster path, pending deletion in
-bu-dss7he.14, and a local path for a non-live database. Production deployment
-uses Helm on k3s (`make -C deploy/helm/butlers ship-prod`, or `deploy-prod` for
-an already-pushed tag). `scripts/compose.sh --prod` retains the pre-cutover
-Compose configuration; it does not authorize starting a fleet against a database
-already owned by Kubernetes. In dev the launcher checks both `butlers-up` and
-`butlers-control`, including observed replicas while scaled-down pods remain;
-either active role refuses a competing fleet. Production retains the unsplit
-`butlers-up` replica check in `butlers`. Its `BUTLERS_ALLOW_COMPOSE_WITH_K8S=1` override is only for a
-non-live database, never a live-fleet cutover shortcut.
+Compose remains only for local development against a non-live database until
+bu-dss7he.19. Production deployment uses Helm on k3s (`make -C
+deploy/helm/butlers ship-prod`, or `deploy-prod` for an already-pushed tag).
+The dev launcher checks both `butlers-up` and `butlers-control`, including
+observed replicas while scaled-down pods remain; either active role refuses
+a competing fleet. Its `BUTLERS_ALLOW_COMPOSE_WITH_K8S=1` override is only for
+a non-live database, never a live-fleet cutover shortcut.
 With a selected local Kubernetes context, a failed or malformed ownership query
 refuses all Compose lifecycle actions. Only successful absent/zero responses
 permit startup. Standalone hosts without kubectl or a selected context remain

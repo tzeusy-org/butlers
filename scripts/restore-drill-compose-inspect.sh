@@ -2,7 +2,7 @@
 # Read-only inspection of the protected restore-drill Compose topology.
 #
 # This intentionally names the protected fragment but refuses lifecycle verbs.
-# Use scripts/compose.sh or `butlers deploy` for the stop/prepare/create/
+# Use scripts/compose.sh --with-restore-drill for the stop/prepare/create/
 # topology-attestation/firewall/up
 # sequence; never replace that prepared launch contract with a direct Compose
 # invocation.
@@ -21,8 +21,7 @@ Usage:
   scripts/restore-drill-compose-inspect.sh logs [COMPOSE_LOG_OPTIONS...] [SERVICE...]
 
 This helper is read-only. It never accepts `up`, `start`, `create`, `run`,
-`restart`, `down`, or any other lifecycle command. Use scripts/compose.sh or
-`butlers deploy` to prepare the firewall before starting the protected services.
+`restart`, `down`, or any other lifecycle command. Use scripts/compose.sh --with-restore-drill to prepare the firewall before starting the protected services.
 EOF
 }
 

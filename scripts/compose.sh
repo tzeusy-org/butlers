@@ -1,19 +1,14 @@
 #!/usr/bin/env bash
-# Launch Butlers via Docker Compose (dev by default, --prod for production DB).
+# Launch the retained development stack via Docker Compose.
 #
 # Usage:
 #   ./scripts/compose.sh                           # dev database, hotreload on (default)
 #   ./scripts/compose.sh --with-restore-drill      # dev stack plus protected restore-drill executor
-#   ./scripts/compose.sh --prod                    # production database, baked image
 #   ./scripts/compose.sh --no-hotreload            # dev mode without source volume-mount
 #   ./scripts/compose.sh --hotreload               # explicit (already on for dev; no-op)
 #   ./scripts/compose.sh --skip-oauth-check        # skip OAuth gate
 #   ./scripts/compose.sh --skip-tailscale-check    # skip tailscale serve setup
 #   ./scripts/compose.sh --audio                   # include live-listener (needs /dev/snd)
-#   ./scripts/compose.sh --observability           # include collector, Tempo, Prometheus, Grafana (local Compose)
-#
-# Grafana anonymous access defaults false and can be explicitly configured via
-# GF_AUTH_ANONYMOUS_ENABLED. This never changes runtime database role enforcement.
 #
 # Dev defaults to hotreload because the baked image only re-bakes when this
 # script rebuilds it -- editing src/ on the host has no effect on a baked
@@ -27,39 +22,29 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "$PROJECT_DIR"
 
 # The protected restore-drill services live in a separate Compose fragment.
-# Ordinary dev deliberately omits it; an explicit dev opt-in or prod selects it
+# Ordinary dev deliberately omits it; an explicit dev opt-in selects it
 # and the launcher prepares the required firewall capability before either
 # protected service starts.
 PROFILES=(dev)
 COMPOSE_ENV=()
 SKIP_TAILSCALE=false
-OBSERVABILITY=false
-BUTLERS_MODE=dev
 RESTORE_DRILL_ENABLED=false
-# Hotreload defaults to on for dev, off for prod; resolved after arg parsing.
+# Hotreload defaults to on; resolved after argument parsing.
 # Tri-state: empty = use mode default; true/false = user opted in/out.
 HOTRELOAD_OPT=""
 
 for arg in "$@"; do
   case "$arg" in
-    --prod)                 BUTLERS_MODE=prod ;;
     --with-restore-drill)   RESTORE_DRILL_ENABLED=true ;;
     --hotreload)            HOTRELOAD_OPT=true ;;
     --no-hotreload)         HOTRELOAD_OPT=false ;;
     --audio)                PROFILES+=(audio) ;;
-    --observability)        OBSERVABILITY=true ;;
     --skip-oauth-check)     COMPOSE_ENV+=("SKIP_OAUTH_CHECK=true") ;;
     --skip-tailscale-check) SKIP_TAILSCALE=true ;;
     *)                      echo "Unknown flag: $arg" >&2; exit 1 ;;
   esac
 done
 
-# Production always includes the protected executor. Dev must opt in with the
-# explicit flag rather than enabling a privileged service merely because a
-# secret happens to be configured in its environment file.
-if [ "$BUTLERS_MODE" = "prod" ]; then
-  RESTORE_DRILL_ENABLED=true
-fi
 readonly RESTORE_DRILL_ENABLED
 
 # ── Kubernetes ownership guard ────────────────────────────────────────
@@ -68,7 +53,7 @@ readonly RESTORE_DRILL_ENABLED
 # A compose stack against the same database would run a second set of
 # schedulers and connector sessions, so refuse while that release has
 # replicas. BUTLERS_ALLOW_COMPOSE_WITH_K8S=1 overrides (non-live DB only).
-if [ "$BUTLERS_MODE" = "prod" ]; then K8S_NAMESPACE=butlers; else K8S_NAMESPACE=butlers-dev; fi
+K8S_NAMESPACE=butlers-dev
 if [ "${BUTLERS_ALLOW_COMPOSE_WITH_K8S:-0}" != "1" ] && command -v kubectl &>/dev/null; then
   # Local configuration inspection requires no cluster connection. A standalone
   # host without a selected context can use Compose; invalid configuration or
@@ -78,16 +63,11 @@ if [ "${BUTLERS_ALLOW_COMPOSE_WITH_K8S:-0}" != "1" ] && command -v kubectl &>/de
     exit 1
   fi
   if [ -n "$K8S_CONTEXT" ]; then
-    K8S_DEPLOYMENTS=(butlers-up)
-    K8S_REPLICA_TEMPLATE='present {{.spec.replicas}}'
-    K8S_REPLICA_PATTERN='^present ([0-9]+)$'
-    if [ "$BUTLERS_MODE" = "dev" ]; then
-      K8S_DEPLOYMENTS+=(butlers-control)
-      # Desired zero is insufficient while the old staged pods still exist.
-      # A Deployment not yet reconciled may legitimately lack observed replicas.
-      K8S_REPLICA_TEMPLATE+=' {{if eq .status.replicas nil}}0{{else}}{{.status.replicas}}{{end}}'
-      K8S_REPLICA_PATTERN='^present ([0-9]+) ([0-9]+)$'
-    fi
+    K8S_DEPLOYMENTS=(butlers-up butlers-control)
+    # Desired zero is insufficient while old staged pods still exist.
+    # A Deployment not yet reconciled may lack observed replicas.
+    K8S_REPLICA_TEMPLATE='present {{.spec.replicas}} {{if eq .status.replicas nil}}0{{else}}{{.status.replicas}}{{end}}'
+    K8S_REPLICA_PATTERN='^present ([0-9]+) ([0-9]+)$'
     for K8S_DEPLOYMENT in "${K8S_DEPLOYMENTS[@]}"; do
       if ! K8S_REPLICAS=$(timeout 10 kubectl -n "$K8S_NAMESPACE" get deploy "$K8S_DEPLOYMENT" \
         --ignore-not-found -o "go-template=${K8S_REPLICA_TEMPLATE}" 2>/dev/null); then
@@ -104,9 +84,9 @@ if [ "${BUTLERS_ALLOW_COMPOSE_WITH_K8S:-0}" != "1" ] && command -v kubectl &>/de
       K8S_REPLICA_COUNTS=("${BASH_REMATCH[@]:1}")
       for K8S_REPLICA_COUNT in "${K8S_REPLICA_COUNTS[@]}"; do
         if ! [[ "$K8S_REPLICA_COUNT" =~ ^0+$ ]]; then
-          echo "ERROR: the ${BUTLERS_MODE} database is already served by Kubernetes (namespace ${K8S_NAMESPACE})." >&2
+          echo "ERROR: the dev database is already served by Kubernetes (namespace ${K8S_NAMESPACE})." >&2
           echo "  Active workload: ${K8S_DEPLOYMENT}." >&2
-          echo "  Ship changes with deploy/helm/butlers: make ship-${BUTLERS_MODE} (docs/operations/kubernetes-deployment.md)." >&2
+          echo "  Ship changes with deploy/helm/butlers: make ship-dev (docs/operations/kubernetes-deployment.md)." >&2
           echo "  Override only for a non-live database: BUTLERS_ALLOW_COMPOSE_WITH_K8S=1 $0 $*" >&2
           exit 1
         fi
@@ -117,28 +97,19 @@ fi
 
 # Preserve the protected mode when a firewall preparation/apply failure tells an
 # operator how to retry. A bare dev invocation would deliberately omit it.
-if [ "$BUTLERS_MODE" = "prod" ]; then
-  RESTORE_DRILL_RETRY_COMMAND="./scripts/compose.sh --prod"
-else
-  RESTORE_DRILL_RETRY_COMMAND="./scripts/compose.sh --with-restore-drill"
-fi
+RESTORE_DRILL_RETRY_COMMAND="./scripts/compose.sh --with-restore-drill"
 readonly RESTORE_DRILL_RETRY_COMMAND
 
-# Resolve hotreload default: dev mode opts in unless --no-hotreload is set;
-# prod mode opts out unless --hotreload is set (rarely useful but allowed).
+# Development defaults to hotreload; --no-hotreload selects baked images.
 if [ -z "$HOTRELOAD_OPT" ]; then
-  if [ "$BUTLERS_MODE" = "dev" ]; then
-    HOTRELOAD_OPT=true
-  else
-    HOTRELOAD_OPT=false
-  fi
+  HOTRELOAD_OPT=true
 fi
 if [ "$HOTRELOAD_OPT" = "true" ]; then
   PROFILES+=(hotreload)
 fi
 
 # ── Load environment-specific database config ──────────────────────────
-ENV_FILE="${PROJECT_DIR}/.env.${BUTLERS_MODE}"
+ENV_FILE="${PROJECT_DIR}/.env.dev"
 if [ ! -f "$ENV_FILE" ]; then
   echo "ERROR: Missing ${ENV_FILE}" >&2
   echo "  Create it with POSTGRES_HOST, POSTGRES_PASSWORD, etc." >&2
@@ -187,7 +158,7 @@ if [ "$RESTORE_DRILL_ENABLED" = "true" ]; then
   fi
 fi
 
-echo "Database: ${BUTLERS_MODE} (${POSTGRES_HOST}:${POSTGRES_PORT:-5432})"
+echo "Database: dev (${POSTGRES_HOST}:${POSTGRES_PORT:-5432})"
 if [ "$RESTORE_DRILL_ENABLED" = "true" ]; then
   echo "Restore drill: enabled"
 else
@@ -312,28 +283,15 @@ if [ "$RESTORE_DRILL_ENABLED" = "true" ]; then
   echo "Restore-drill endpoint: ${RESTORE_DRILL_EXECUTOR_DB_HOST}:${RESTORE_DRILL_EXECUTOR_DB_PORT} (TLS identity; relay firewall IPv4 ${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST})"
 fi
 
-# ── Mode-dependent configuration ────────────────────────────────────────
-# Prod and dev use different URL prefixes, host ports, and project names
-# so both can run simultaneously on the same machine.
-if [ "$BUTLERS_MODE" = "prod" ]; then
-  URL_PREFIX="butlers"
-  API_PREFIX="butlers-api"
-  OWNTRACKS_PREFIX="owntracks"
-  export COMPOSE_PROJECT_NAME="butlers"
-  export SWITCHBOARD_HOST_PORT=41100
-  export DASHBOARD_HOST_PORT=41200
-  export FRONTEND_HOST_PORT=41173
-  export OWNTRACKS_HOST_PORT=40086
-else
-  URL_PREFIX="butlers-dev"
-  API_PREFIX="butlers-dev-api"
-  OWNTRACKS_PREFIX="owntracks-dev"
-  export COMPOSE_PROJECT_NAME="butlers-dev"
-  export SWITCHBOARD_HOST_PORT=42100
-  export DASHBOARD_HOST_PORT=42200
-  export FRONTEND_HOST_PORT=42173
-  export OWNTRACKS_HOST_PORT=42086
-fi
+# ── Development configuration ───────────────────────────────────────────
+URL_PREFIX="butlers-dev"
+API_PREFIX="butlers-dev-api"
+OWNTRACKS_PREFIX="owntracks-dev"
+export COMPOSE_PROJECT_NAME="butlers-dev"
+export SWITCHBOARD_HOST_PORT=42100
+export DASHBOARD_HOST_PORT=42200
+export FRONTEND_HOST_PORT=42173
+export OWNTRACKS_HOST_PORT=42086
 export FRONTEND_BASE_PATH="/${URL_PREFIX}/"
 export VITE_API_URL="/${API_PREFIX}/api"
 export OWNTRACKS_WEBHOOK_BASE_PATH="/${OWNTRACKS_PREFIX}"
@@ -462,18 +420,6 @@ PY
   echo ""
 fi
 
-# ── Observability stack configuration ────────────────────────────────
-if [ "$OBSERVABILITY" = "true" ]; then
-  PROFILES+=(observability)
-  export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-
-  # Anonymous access is an explicit independent service configuration.
-  # The retained Compose service default is false; no profile bypass exists.
-  export GF_AUTH_ANONYMOUS_ENABLED="${GF_AUTH_ANONYMOUS_ENABLED:-false}"
-  echo "Observability stack enabled: Grafana at http://localhost:3000"
-  echo ""
-fi
-
 # ── Build compose command ─────────────────────────────────────────────
 # The protected fragment is intentionally absent from bare Compose. This
 # launcher includes it only for explicit protected execution, where it
@@ -483,20 +429,12 @@ CMD=(docker compose -f docker-compose.yml)
 if [ "$RESTORE_DRILL_ENABLED" = "true" ]; then
   CMD+=(-f docker-compose.restore-drill.yml)
 fi
-# Source-selected dev topology only. Production retains the unsplit service
-# and its process-local capacity five; no environment-file profile selection.
-if [ "$BUTLERS_MODE" = "dev" ]; then
-  CMD+=(-f docker-compose.control-stage.yml)
-  export BUTLERS_SWITCHBOARD_SERVICE=butlers-control
-  PROFILES+=(control-stage)
-  if [ "$HOTRELOAD_OPT" = "true" ]; then
-    PROFILES+=(control-stage-hotreload)
-  fi
-else
-  export BUTLERS_SWITCHBOARD_SERVICE=butlers-up
-fi
-if [ "$OBSERVABILITY" = "true" ]; then
-  CMD+=(-f docker-compose.observability.yml)
+# Source-selected development topology; no environment-file profile selection.
+CMD+=(-f docker-compose.control-stage.yml)
+export BUTLERS_SWITCHBOARD_SERVICE=butlers-control
+PROFILES+=(control-stage)
+if [ "$HOTRELOAD_OPT" = "true" ]; then
+  PROFILES+=(control-stage-hotreload)
 fi
 for p in "${PROFILES[@]}"; do
   CMD+=(--profile "$p")
@@ -512,9 +450,7 @@ SCALE_ARGS=()
 for p in "${PROFILES[@]}"; do
   if [ "$p" = "hotreload" ]; then
     SCALE_ARGS+=(--scale butlers-up=0 --scale dashboard-api=0)
-    if [ "$BUTLERS_MODE" = "dev" ]; then
-      SCALE_ARGS+=(--scale butlers-control=0)
-    fi
+    SCALE_ARGS+=(--scale butlers-control=0)
     echo "Hotreload: replacing baked services with the selected hotreload variants"
   fi
 done
@@ -579,7 +515,7 @@ elif [ "$BASE_IMAGE_DOCKERFILE_SHA" != "$BASE_DOCKERFILE_SHA" ] \
   echo ""
 fi
 
-echo "Starting Butlers stack (${BUTLERS_MODE})..."
+echo "Starting Butlers stack (dev)..."
 echo "  Profiles: ${PROFILES[*]:-default}"
 echo "  Compose:  ${CMD[*]} up"
 echo ""

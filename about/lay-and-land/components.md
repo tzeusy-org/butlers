@@ -271,7 +271,7 @@ Model routing tables (`public.model_catalog`, `public.butler_model_overrides`) a
 | Component | Role | Stability |
 |---|---|---|
 | **OpenTelemetry SDK** | In-process tracing and metrics instrumentation. | Stable |
-| **OpenTelemetry Collector** | OTLP receiver and pipeline (`otel-collector` in `docker-compose.observability.yml`). | Stable (external) |
+| **OpenTelemetry Collector** | Cluster-managed OTLP receiver and pipeline; not installed by the Butlers chart. | Stable (external) |
 | **Tempo** | Distributed trace storage and query backend. | Stable (external) |
 | **Prometheus** | Metrics scrape target for connector-level and butler-level metrics. | Stable (external) |
 
