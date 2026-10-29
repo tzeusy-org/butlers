@@ -24,6 +24,7 @@ from butlers.core.runtime_config import (
     _row_to_config,
     resolve_effective_core_groups,
 )
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -68,12 +69,8 @@ def _transaction_pool():
     return pool
 
 
-def _mock_record(row_dict: dict) -> MagicMock:
-    """Create a mock asyncpg.Record from a dict."""
-    record = MagicMock()
-    record.__getitem__ = lambda self, key: row_dict[key]
-    record.keys = lambda: row_dict.keys()
-    return record
+def _mock_record(row_dict: dict) -> Record:
+    return Record(row_dict)
 
 
 def _make_seed(

@@ -10,7 +10,6 @@ runtime.
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -26,17 +25,14 @@ from butlers.core.domain_event_contracts import (
     materialize_own_contracts,
     set_contract_registry,
 )
+from butlers.testing.fake_pool import AsyncCtx
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROSTER_DIR = REPO_ROOT / "roster"
 
 
 def _acquire(conn):
-    @asynccontextmanager
-    async def _ctx():
-        yield conn
-
-    return lambda: _ctx()
+    return lambda: AsyncCtx(conn)
 
 
 def _declaration(**overrides: object) -> dict[str, object]:

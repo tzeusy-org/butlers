@@ -8,11 +8,12 @@ Real-Postgres coverage is in ``tests/integration/test_sender_authentication_roun
 from __future__ import annotations
 
 import uuid
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -32,9 +33,8 @@ class _FakePool:
 
         conn.execute = execute
 
-        @asynccontextmanager
-        async def transaction():
-            yield
+        def transaction():
+            return AsyncCtx(None)
 
         conn.transaction = transaction
         self._conn = conn
@@ -43,9 +43,8 @@ class _FakePool:
         self.fetch = AsyncMock(return_value=[])
         self.execute = AsyncMock(return_value=None)
 
-    @asynccontextmanager
-    async def acquire(self):
-        yield self._conn
+    def acquire(self):
+        return AsyncCtx(self._conn)
 
 
 def _envelope(channel: str, sender: str, raw: dict | None) -> dict:
