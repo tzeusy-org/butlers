@@ -244,6 +244,7 @@ changes infrastructure or historical data.
 | [`check_owner_emails.py`](check_owner_emails.py) | `ci.yml`, Make, `pre_push.py` | Fails when a tracked file contains a blocked deployment-owner email address. |
 | [`check_requirement_trace_lines.py`](check_requirement_trace_lines.py) | `ci.yml`, `make check-requirement-trace` | Requires ID, Source and Scope lines on ADDED/MODIFIED requirement blocks; today's debt is frozen in `requirement-trace-baseline.json`. |
 | [`check_spec_overwrites.py`](check_spec_overwrites.py) | `ci.yml`, `make check-spec-overwrites`, `pre_push.py` | Compares active OpenSpec MODIFIED blocks against current canonical bodies. |
+| [`check_pyright_baseline.py`](check_pyright_baseline.py) | `pyright_runtime.py`, `make typecheck` | Strict diagnostic JSON and shrinking error-Counter comparison. |
 | [`check_test_budget.py`](check_test_budget.py) | Make, `ci.yml` preflight | Per-lane collected-test budget ratchet against `test-budget-baseline.json`. |
 | [`extract-frontend-copy.py`](extract-frontend-copy.py) | Manual, on demand | Writes the bounded frontend copy report to stdout and diagnostics to stderr; redirect to ignored `.tmp/` for a local copy. |
 | [`frontend_guards.py`](frontend_guards.py) | Make, `pre_push.py` | Runs the frontend guard steps locally in the order CI runs them. |
@@ -271,6 +272,7 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 | [`ci_evidence.py`](ci_evidence.py) | `ci_affected.py`, `ci_affected_collector.py` | Shared identity and evidence helpers for the scoped CI lane. |
 | [`ci_group_count.py`](ci_group_count.py) | `ci_lanes.py` (pytest plugin) | Records each backend group's actual collection count and test durations. |
 | [`ci_lanes.py`](ci_lanes.py) | `ci.yml`, `nightly.yml` | Runs pytest-split backend groups, reconciles their counts against fresh collection, and merges measured durations. |
+| [`pyright_runtime.py`](pyright_runtime.py) | `make typecheck`, `make prepare-typecheck`, `make update-type-baseline` | Pinned offline checker supervision, immutable-public bootstrap and atomic baseline shrink. |
 | [`ci_environment.py`](ci_environment.py) | `ci.yml`, `ci-python-environment` action, watchdog workflow | Advisory CI environment cache with mandatory frozen repair on every restore. |
 | [`ci_inventory_collector.py`](ci_inventory_collector.py) | `ci_partition.py` (pytest plugin) | Source-owned collector that records the test inventory used for sharding. |
 | [`ci_latency.py`](ci_latency.py) | `ci-latency.yml` | Bounded, read-only Actions timestamp report; never a required merge gate. |
