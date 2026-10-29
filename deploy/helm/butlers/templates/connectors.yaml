@@ -24,6 +24,13 @@ spec:
         {{- include "butlers.oauthGate" $ | nindent 8 }}
         {{- end }}
         {{- include "butlers.waitFor" (dict "root" $ "name" "butlers-up" "url" (printf "http://%s:41100/health" (include "butlers.switchboardHost" $))) | nindent 8 }}
+        {{- if $c.waitForHealthRoutes }}
+        - name: wait-for-health-routes
+          image: {{ include "butlers.image" $ }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: ["uv", "run", "--frozen", "--no-dev", "python", "scripts/wait_for_butler_routes.py"]
+          args: ["--url", "http://butlers-up:41103/internal/control-plane/identity", "--butler", "health"]
+        {{- end }}
       containers:
         - name: connector
           image: {{ include "butlers.image" $ }}
