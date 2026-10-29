@@ -431,8 +431,8 @@ async def coverage_for_entities(
 ) -> dict[uuid.UUID, tuple[int, int]]:
     """Batch-count live/withheld edges touching each of ``entity_ids``.
 
-    An entity counts an edge whether it appears as ``subject_entity_id`` or
-    ``object_entity_id`` -- withheld stubs only ever populate the subject
+    An entity counts each edge once, including a self-edge, whether it appears
+    as ``subject_entity_id`` or ``object_entity_id``. Withheld stubs only populate the subject
     side, so they are counted once, on the entity that owns the withheld
     fact. Returns ``{entity_id: (relationships_known, relationships_withheld)}``;
     an entity with no edges at all is simply absent from the mapping, not
@@ -444,14 +444,14 @@ async def coverage_for_entities(
     rows = await pool.fetch(
         """
         SELECT entity_id,
-               COUNT(*) FILTER (WHERE withheld_reason IS NULL)     AS known,
-               COUNT(*) FILTER (WHERE withheld_reason IS NOT NULL) AS withheld
+               COUNT(DISTINCT edge_id) FILTER (WHERE withheld_reason IS NULL)     AS known,
+               COUNT(DISTINCT edge_id) FILTER (WHERE withheld_reason IS NOT NULL) AS withheld
         FROM (
-            SELECT subject_entity_id AS entity_id, withheld_reason
+            SELECT id AS edge_id, subject_entity_id AS entity_id, withheld_reason
             FROM public.entity_graph_edges
             WHERE subject_entity_id = ANY($1::uuid[])
             UNION ALL
-            SELECT object_entity_id AS entity_id, withheld_reason
+            SELECT id AS edge_id, object_entity_id AS entity_id, withheld_reason
             FROM public.entity_graph_edges
             WHERE object_entity_id = ANY($1::uuid[])
         ) sides
