@@ -322,7 +322,7 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 | [`provision_restore_drill_executor.sh`](provision_restore_drill_executor.sh) | operators, per [backup and restore](../docs/operations/backup-restore.md) | Enables the `restore_drill_executor` login. |
 | [`restore-drill-firewall.sh`](restore-drill-firewall.sh) | `docker-compose.yml`, `install_restore_drill_firewall_wrapper.sh` | Reviewed source for the root-owned firewall wrapper. |
 | [`restore-drill-firewall.sudoers`](restore-drill-firewall.sudoers) | root-controlled deployment setup | Sudoers template for the two fixed wrapper forms. |
-| [`install_restore_drill_firewall_wrapper.sh`](install_restore_drill_firewall_wrapper.sh) | root-controlled deployment setup, `core/deploy.py` | Installs the immutable wrapper target. |
+| [`install_restore_drill_firewall_wrapper.sh`](install_restore_drill_firewall_wrapper.sh) | root-controlled deployment setup | Installs the immutable wrapper target. |
 | [`restore-drill-compose-inspect.sh`](restore-drill-compose-inspect.sh) | operators | Read-only `config`, `ps` and `logs` for the protected topology. |
 | [`restore_drill_tcp_proxy.py`](restore_drill_tcp_proxy.py) | `docker-compose.restore-drill.yml` | Uncredentialed TCP relay for the restore-drill executor's internal network. |
 
