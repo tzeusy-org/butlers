@@ -22,6 +22,7 @@ import pytest
 from fastmcp import FastMCP
 
 from butlers.modules.calendar import _CALENDAR_EVENT_DEFAULT_ACTION, CalendarModule
+from butlers.testing.fake_pool import AsyncCtx
 from butlers.testing.mcp import registered_tools
 
 pytestmark = pytest.mark.unit
@@ -70,18 +71,7 @@ class _ScheduleCreatePool:
         return "OK"
 
     def acquire(self):
-        return _FakePoolContext(self)
-
-
-class _FakePoolContext:
-    def __init__(self, pool):
-        self._pool = pool
-
-    async def __aenter__(self):
-        return self._pool
-
-    async def __aexit__(self, *a):
-        pass
+        return AsyncCtx(self)
 
 
 # ---------------------------------------------------------------------------

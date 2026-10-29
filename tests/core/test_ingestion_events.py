@@ -23,14 +23,12 @@ from typing import Any
 
 import pytest
 
+from butlers.testing.records import Record
+
 pytestmark = pytest.mark.unit
 
 
-class _FakeRecord(dict):
-    pass
-
-
-def _make_event_record(**kwargs: Any) -> _FakeRecord:
+def _make_event_record(**kwargs: Any) -> Record:
     defaults: dict[str, Any] = {
         "id": uuid.uuid4(),
         "received_at": datetime.now(UTC),
@@ -52,10 +50,10 @@ def _make_event_record(**kwargs: Any) -> _FakeRecord:
         "cost_usd": None,  # core_126: denormalized cost; NULL until rollup fetched
     }
     defaults.update(kwargs)
-    return _FakeRecord(defaults)
+    return Record(defaults)
 
 
-def _make_filtered_event_record(**kwargs: Any) -> _FakeRecord:
+def _make_filtered_event_record(**kwargs: Any) -> Record:
     defaults: dict[str, Any] = {
         "id": uuid.uuid4(),
         "received_at": datetime.now(UTC),
@@ -77,10 +75,10 @@ def _make_filtered_event_record(**kwargs: Any) -> _FakeRecord:
         "cost_usd": None,  # core_126: filtered events have no sessions, always null
     }
     defaults.update(kwargs)
-    return _FakeRecord(defaults)
+    return Record(defaults)
 
 
-def _make_session_record(**kwargs: Any) -> _FakeRecord:
+def _make_session_record(**kwargs: Any) -> Record:
     defaults: dict[str, Any] = {
         "id": uuid.uuid4(),
         "trigger_source": "route",
@@ -93,7 +91,7 @@ def _make_session_record(**kwargs: Any) -> _FakeRecord:
         "trace_id": None,
     }
     defaults.update(kwargs)
-    return _FakeRecord(defaults)
+    return Record(defaults)
 
 
 class _FakePool:
@@ -251,7 +249,7 @@ async def test_ingestion_events_replay_policy_fails_closed() -> None:
     ambiguous_id = str(uuid.uuid4())
     pool = _FakePool(
         fetch_results=[
-            _FakeRecord(
+            Record(
                 {
                     "id": email_id,
                     "source_channel": "email",
@@ -260,7 +258,7 @@ async def test_ingestion_events_replay_policy_fails_closed() -> None:
                     "replay_safe": True,
                 }
             ),
-            _FakeRecord(
+            Record(
                 {
                     "id": safe_id,
                     # Accepted Telegram events use the provider ``telegram``
@@ -271,7 +269,7 @@ async def test_ingestion_events_replay_policy_fails_closed() -> None:
                     "replay_safe": True,
                 }
             ),
-            _FakeRecord(
+            Record(
                 {
                     "id": unresolved_id,
                     "source_channel": "webhook",
@@ -280,7 +278,7 @@ async def test_ingestion_events_replay_policy_fails_closed() -> None:
                     "replay_safe": None,
                 }
             ),
-            _FakeRecord(
+            Record(
                 {
                     "id": blank_endpoint_id,
                     "source_channel": "telegram_bot",
@@ -289,7 +287,7 @@ async def test_ingestion_events_replay_policy_fails_closed() -> None:
                     "replay_safe": True,
                 }
             ),
-            _FakeRecord(
+            Record(
                 {
                     "id": ambiguous_id,
                     "source_channel": "sms",
@@ -491,7 +489,7 @@ async def test_ingestion_events_request_ids_for_trace() -> None:
     assert await ingestion_events_request_ids_for_trace(_FakeDatabaseManager(), "trace-x") == []
 
     # Single butler, single session.
-    db = _FakeDatabaseManager(results={"atlas": [_FakeRecord({"request_id": "req-1"})]})
+    db = _FakeDatabaseManager(results={"atlas": [Record({"request_id": "req-1"})]})
     assert await ingestion_events_request_ids_for_trace(db, "trace-x") == ["req-1"]
     query, args, butler_names = db.fan_out_calls[0]
     assert "trace_id" in query and args == ("trace-x",) and butler_names is None
@@ -501,17 +499,17 @@ async def test_ingestion_events_request_ids_for_trace() -> None:
     # and the result is sorted.
     db2 = _FakeDatabaseManager(
         results={
-            "atlas": [_FakeRecord({"request_id": "req-2"})],
+            "atlas": [Record({"request_id": "req-2"})],
             "herald": [
-                _FakeRecord({"request_id": "req-2"}),
-                _FakeRecord({"request_id": "req-1"}),
+                Record({"request_id": "req-2"}),
+                Record({"request_id": "req-1"}),
             ],
         }
     )
     assert await ingestion_events_request_ids_for_trace(db2, "trace-y") == ["req-1", "req-2"]
 
     # Falsy request_id values are skipped, not coerced into a phantom entry.
-    db3 = _FakeDatabaseManager(results={"atlas": [_FakeRecord({"request_id": None})]})
+    db3 = _FakeDatabaseManager(results={"atlas": [Record({"request_id": None})]})
     assert await ingestion_events_request_ids_for_trace(db3, "trace-z") == []
 
 
@@ -702,7 +700,7 @@ async def test_replay_request_and_inbox_lifecycle() -> None:
     )
 
     event_id = uuid.uuid4()
-    ok_row = _FakeRecord({"id": event_id})
+    ok_row = Record({"id": event_id})
 
     # Success. The policy predicate and transition live in the same statement:
     # it locks the resolved registry row so a concurrent unsafe policy change
@@ -755,7 +753,7 @@ async def test_replay_request_and_inbox_lifecycle() -> None:
         _FakePool(
             fetchrow_results=[None, None, None],
             fetch_results=[
-                _FakeRecord(
+                Record(
                     {
                         "id": str(event_id),
                         "source_channel": "email",
@@ -783,7 +781,7 @@ async def test_replay_request_and_inbox_lifecycle() -> None:
     decomp = {"signals": [], "reason": "no_signals"}
     result2 = await ingestion_event_get_inbox_lifecycle(
         _FakePool(
-            fetchrow_result=_FakeRecord(
+            fetchrow_result=Record(
                 {"lifecycle_state": "decomposed_empty", "decomposition_output": decomp}
             )
         ),
@@ -801,7 +799,7 @@ async def test_replay_request_and_inbox_lifecycle() -> None:
 
     result3 = await ingestion_event_get_inbox_lifecycle(
         _FakePool(
-            fetchrow_result=_FakeRecord(
+            fetchrow_result=Record(
                 {"lifecycle_state": "routed", "decomposition_output": _json.dumps({"signals": []})}
             )
         ),
@@ -822,11 +820,11 @@ async def test_ingestion_event_replay_history() -> None:
     ts2 = datetime(2026, 5, 17, 10, 5, 0, tzinfo=UTC)
 
     # Row with well-formed JSON note
-    row1 = _FakeRecord(
+    row1 = Record(
         {"ts": ts1, "actor": "dashboard", "note": _json.dumps({"result": "pending", "cost": 0.01})}
     )
     # Row with no note
-    row2 = _FakeRecord({"ts": ts2, "actor": "scheduler", "note": None})
+    row2 = Record({"ts": ts2, "actor": "scheduler", "note": None})
 
     # Returns list of entries with extracted fields
     result = await ingestion_event_replay_history(_FakePool(fetch_results=[row1, row2]), event_id)
@@ -859,7 +857,7 @@ async def test_ingestion_event_replay_history() -> None:
     assert result5 == []
 
     # Row with malformed (non-JSON) note — graceful: fields default to None
-    row_bad = _FakeRecord({"ts": ts1, "actor": "agent", "note": "not-json-{{"})
+    row_bad = Record({"ts": ts1, "actor": "agent", "note": "not-json-{{"})
     result6 = await ingestion_event_replay_history(_FakePool(fetch_results=[row_bad]), event_id)
     assert len(result6) == 1
     assert result6[0]["result"] is None
@@ -1176,7 +1174,7 @@ async def test_window_rollup_source_failure_is_unavailable_not_zero() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_bulk_session_record(request_id: str, **kwargs: Any) -> _FakeRecord:
+def _make_bulk_session_record(request_id: str, **kwargs: Any) -> Record:
     defaults: dict[str, Any] = {
         "id": uuid.uuid4(),
         "request_id": request_id,
@@ -1191,7 +1189,7 @@ def _make_bulk_session_record(request_id: str, **kwargs: Any) -> _FakeRecord:
         "model": None,
     }
     defaults.update(kwargs)
-    return _FakeRecord(defaults)
+    return Record(defaults)
 
 
 async def test_ingestion_events_sessions_for_ids_empty_ids_short_circuits() -> None:
@@ -1415,8 +1413,8 @@ def test_ingestion_events_list_enrichment_duration_none_when_incomplete() -> Non
 # ---------------------------------------------------------------------------
 
 
-def _make_histogram_row(ts: datetime, status: str, cnt: int) -> _FakeRecord:
-    return _FakeRecord({"bucket_ts": ts, "status": status, "cnt": cnt})
+def _make_histogram_row(ts: datetime, status: str, cnt: int) -> Record:
+    return Record({"bucket_ts": ts, "status": status, "cnt": cnt})
 
 
 async def test_ingestion_events_histogram_rejects_unknown_bucket() -> None:
