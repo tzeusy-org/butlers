@@ -195,6 +195,90 @@ async def test_store_google_credentials():
             store3, pool=None, client_id="cid", client_secret="csecret", refresh_token="rtoken"
         )
     mock_upsert3.assert_not_awaited()
+    # Three original shared-consumption populations remain distinct, including
+    # the overlapping explicit-pool case and fresh no-scope state. Real helpers
+    # exchange state through both app and entity doubles; no canned read token
+    # can hide a missing store contribution.
+    shared = {
+        "client_id": "shared-client-id.apps.googleusercontent.com",
+        "client_secret": "shared-client-secret-abc",
+        "refresh_token": "1//shared-refresh-token-xyz",
+        "scope": (
+            "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar"
+        ),
+    }
+    for population, scope in (
+        ("same-values", shared["scope"]),
+        ("explicit-pool", shared["scope"]),
+        ("no-scope", None),
+    ):
+        values: dict[str, str] = {}
+        entity_tokens: dict[uuid.UUID, str] = {}
+        roundtrip_pool = MagicMock()
+        roundtrip_store = MagicMock(spec=CredentialStore)
+
+        async def write_value(key, value, *, saved=values, **_kwargs):
+            saved[key] = value
+
+        async def read_value(key, *, saved=values):
+            return saved.get(key)
+
+        async def find_entity(actual_pool, account, *, expected=roundtrip_pool, label=population):
+            assert actual_pool is expected and account is None, label
+            return _ENTITY_ID
+
+        async def write_token(
+            actual_pool,
+            entity_id,
+            token,
+            *,
+            expected=roundtrip_pool,
+            label=population,
+            saved=entity_tokens,
+        ):
+            assert actual_pool is expected and entity_id == _ENTITY_ID, label
+            saved[entity_id] = token
+
+        async def read_token(
+            actual_pool,
+            entity_id,
+            *,
+            expected=roundtrip_pool,
+            label=population,
+            saved=entity_tokens,
+        ):
+            assert actual_pool is expected and entity_id == _ENTITY_ID, label
+            return saved.get(entity_id)
+
+        roundtrip_store.store = AsyncMock(side_effect=write_value)
+        roundtrip_store.load = AsyncMock(side_effect=read_value)
+        with (
+            patch("butlers.google_credentials._resolve_account_entity_id", side_effect=find_entity),
+            patch(
+                "butlers.google_credentials._upsert_entity_refresh_token", side_effect=write_token
+            ),
+            patch(
+                "butlers.google_credentials._resolve_entity_refresh_token", side_effect=read_token
+            ),
+        ):
+            kwargs = {"scope": scope} if scope is not None else {}
+            await store_google_credentials(
+                roundtrip_store,
+                pool=roundtrip_pool,
+                client_id=shared["client_id"],
+                client_secret=shared["client_secret"],
+                refresh_token=shared["refresh_token"],
+                **kwargs,
+            )
+            recovered = await load_google_credentials(roundtrip_store, pool=roundtrip_pool)
+        assert recovered is not None, population
+        assert recovered.client_id == shared["client_id"], population
+        assert recovered.client_secret == shared["client_secret"], population
+        assert recovered.refresh_token == shared["refresh_token"], population
+        assert recovered.scope == scope, population
+        assert entity_tokens == {_ENTITY_ID: shared["refresh_token"]}, population
+        if scope is None:
+            assert KEY_SCOPES not in values
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +414,24 @@ async def test_resolve_google_credentials():
             CredentialStore(pool), pool=MagicMock(), caller="test"
         )
     assert creds.client_id == "db-cid" and creds.refresh_token == "db-rtoken"
+    with (
+        patch.dict(
+            "os.environ",
+            {
+                "GOOGLE_OAUTH_CLIENT_ID": "different-id-from-env",
+                "GOOGLE_OAUTH_CLIENT_SECRET": "different-secret-from-env",
+            },
+            clear=True,
+        ),
+        patch("butlers.google_credentials._resolve_account_entity_id", return_value=_ENTITY_ID),
+        patch("butlers.google_credentials._resolve_entity_refresh_token", return_value="db-rtoken"),
+    ):
+        db_wins = await resolve_google_credentials(
+            CredentialStore(pool), pool=MagicMock(), caller="test"
+        )
+    assert db_wins.client_id == "db-cid"
+    assert db_wins.client_secret == "db-csecret"
+    assert db_wins.refresh_token == "db-rtoken"
 
     with pytest.raises(MissingGoogleCredentialsError):
         await resolve_google_credentials(CredentialStore(_make_pool_with_values({})), caller="test")

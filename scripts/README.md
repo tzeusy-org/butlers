@@ -264,6 +264,10 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 
 | Script | Caller | Purpose |
 | --- | --- | --- |
+| [`build_test_resource_map.py`](build_test_resource_map.py) | `make check-resource-readers`, CI guards | Build/check source-bound resource-reader completeness without importing tests. |
+| [`build_test_scope_cost.py`](build_test_scope_cost.py) | Manual authenticated-artifact review | Emit an uninstalled empirical cost candidate; never authenticate or install its own profile. |
+| [`replay_ci_planner.py`](replay_ci_planner.py) | Manual exact frozen-corpus replay | Reconcile historical vectors and original Git content; no test execution or natural observation credit. |
+| [`ci_scope_measurement.py`](ci_scope_measurement.py) | Manual default-false `planner-cost-calibration.yml` | Source-bound hosted observation; dispatch needs separate authority and never changes normal gates. |
 | [`check_ci_coverage.py`](check_ci_coverage.py) | `nightly.yml` | Binds and validates the complete same-run coverage population before reporting. |
 | [`check_ci_test_shards.py`](check_ci_test_shards.py) | its own contract tests | Legacy file-level shard runner; retained outside this retirement scope. Current hosted lanes use `ci_lanes.py`. |
 | [`ci_affected.py`](ci_affected.py) | `ci.yml` | Scoped collection, execution and reconciliation for the PR affected-test lane. |

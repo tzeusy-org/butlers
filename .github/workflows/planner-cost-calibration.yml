@@ -1,0 +1,74 @@
+name: Planner cost observation (manual opt-in)
+
+on:
+  workflow_dispatch:
+    inputs:
+      execute_measurement:
+        description: Explicitly execute the separately authorized hosted observation
+        type: boolean
+        default: false
+      selected_paths_json:
+        description: Canonical existing whole Python test files as a JSON list
+        type: string
+        default: '[]'
+
+permissions:
+  contents: read
+
+jobs:
+  full:
+    if: inputs.execute_measurement == true && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 82
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up the CI Python environment
+        uses: ./.github/actions/ci-python-environment
+      - name: Observe the full affected-compatible population
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: 'true'
+        run: uv run --no-sync python scripts/ci_scope_measurement.py --species full --output "$RUNNER_TEMP/planner-full"
+      - name: Upload the source-bound observation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: planner-full-observation
+          path: ${{ runner.temp }}/planner-full/*.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+  affected:
+    needs: [full]
+    if: inputs.execute_measurement == true && github.ref == 'refs/heads/main' && needs.full.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 82
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up the CI Python environment
+        uses: ./.github/actions/ci-python-environment
+      - name: Observe the exact affected population
+        env:
+          SELECTED_PATHS_JSON: ${{ inputs.selected_paths_json }}
+          TESTCONTAINERS_RYUK_DISABLED: 'true'
+        run: |
+          python3 - <<'PYINPUT'
+          import json, os
+          from pathlib import Path
+          # Transport only. The owning observer validates canonical source paths.
+          value = json.loads(os.environ['SELECTED_PATHS_JSON'])
+          Path(os.environ['RUNNER_TEMP'], 'selected-paths.json').write_text(json.dumps(value))
+          PYINPUT
+          uv run --no-sync python scripts/ci_scope_measurement.py --species affected --paths-file "$RUNNER_TEMP/selected-paths.json" --output "$RUNNER_TEMP/planner-affected"
+      - name: Upload the source-bound observation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: planner-affected-observation
+          path: ${{ runner.temp }}/planner-affected/*.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14

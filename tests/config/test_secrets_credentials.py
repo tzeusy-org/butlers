@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -109,6 +110,23 @@ def test_from_env_factories_removed() -> None:
     from butlers.modules.calendar import _GoogleOAuthCredentials
 
     assert not hasattr(_GoogleOAuthCredentials, "from_env")
+    # The removed shared-consumption test also exercised the still-live JSON
+    # parser, including harmless metadata outside its three required values.
+    credentials = _GoogleOAuthCredentials.from_json(
+        json.dumps(
+            {
+                **_SHARED_CREDS,
+                "scope": (
+                    "https://www.googleapis.com/auth/gmail.modify "
+                    "https://www.googleapis.com/auth/calendar"
+                ),
+                "stored_at": "2026-02-19T00:00:00+00:00",
+            }
+        )
+    )
+    assert credentials.client_id == _SHARED_CREDS["client_id"]
+    assert credentials.client_secret == _SHARED_CREDS["client_secret"]
+    assert credentials.refresh_token == _SHARED_CREDS["refresh_token"]
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +141,21 @@ async def test_resolve_raises_when_db_empty() -> None:
         with patch.dict("os.environ", env_vars, clear=True):
             with pytest.raises(MissingGoogleCredentialsError):
                 await resolve_google_credentials(store, caller="test")
+    # Retain the original legacy/bootstrap caller populations independently of
+    # the current two caller=test populations above.
+    for env_vars, caller in ((_LEGACY_GMAIL_ENV, "gmail"), (_OAUTH_BOOTSTRAP_ENV, "calendar")):
+        with patch.dict("os.environ", env_vars, clear=True):
+            with pytest.raises(MissingGoogleCredentialsError):
+                await resolve_google_credentials(
+                    CredentialStore(_make_pool_with_values({})), caller=caller
+                )
+    with pytest.raises(MissingGoogleCredentialsError) as failure:
+        await resolve_google_credentials(
+            CredentialStore(_make_pool_with_values({})), caller="gmail"
+        )
+    message = str(failure.value).lower()
+    assert "bootstrap" in message or "oauth" in message
+    assert "gmail" in message
 
 
 def test_gmail_connector_accepts_injected_credentials() -> None:
@@ -140,6 +173,28 @@ def test_gmail_connector_accepts_injected_credentials() -> None:
             gmail_refresh_token=_SHARED_CREDS["refresh_token"],
         )
     assert config.gmail_client_id == _SHARED_CREDS["client_id"]
+    assert config.gmail_client_secret == _SHARED_CREDS["client_secret"]
+    assert config.gmail_refresh_token == _SHARED_CREDS["refresh_token"]
+    with patch.dict("os.environ", {**env, **_LEGACY_GMAIL_ENV}, clear=True):
+        injected = GmailConnectorConfig.from_env(
+            gmail_client_id="db-client-id",
+            gmail_client_secret="db-client-secret",
+            gmail_refresh_token="db-refresh-token",
+        )
+    assert injected.gmail_client_id == "db-client-id"
+    assert injected.gmail_client_secret == "db-client-secret"
+    assert injected.gmail_refresh_token == "db-refresh-token"
+    with patch.dict(
+        "os.environ",
+        {"SWITCHBOARD_MCP_URL": "http://localhost:9000/mcp", "GMAIL_USER_EMAIL": "test@gmail.com"},
+        clear=True,
+    ):
+        with pytest.raises(ValueError, match="DB-resolved Gmail credentials missing"):
+            GmailConnectorConfig.from_env(
+                gmail_client_id="",
+                gmail_client_secret="client-secret",
+                gmail_refresh_token="refresh-token",
+            )
 
 
 # ---------------------------------------------------------------------------

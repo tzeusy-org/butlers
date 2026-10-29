@@ -463,6 +463,30 @@
       "review_browser_hard_retry_interval_s": 0,
       "additional_provisional_cold_dependency_allowance_s": 270,
       "installed_timeout_minutes": 15
+    },
+    {
+      "workflow": ".github/workflows/planner-cost-calibration.yml",
+      "job": "full",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 82,
+      "installed_timeout_minutes": 82,
+      "state": "provisional source-only manual opt-in; no execution or calibration observed",
+      "sample_source": "No samples; unchanged affected82min compatibility envelope",
+      "review_policy": "Default false/main-only/manual. Source authoring is not dispatch authority; no ordinary gate, selector or item cap changed."
+    },
+    {
+      "workflow": ".github/workflows/planner-cost-calibration.yml",
+      "job": "affected",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 82,
+      "installed_timeout_minutes": 82,
+      "state": "provisional source-only manual opt-in; no execution or calibration observed",
+      "sample_source": "No samples; unchanged affected82min compatibility envelope",
+      "review_policy": "Default false/main-only/manual. Source authoring is not dispatch authority; no ordinary gate, selector or item cap changed."
     }
   ],
   "tests": [

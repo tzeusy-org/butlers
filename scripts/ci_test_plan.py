@@ -5,18 +5,18 @@
 """CI wrapper around ``butlers.testing.scoped_runner`` for the PR affected-test lane (bu-v28ho).
 
 Emits a machine-readable decision to ``$GITHUB_OUTPUT`` so ``.github/workflows/ci.yml`` can choose
-between the affected-test lane (``check-affected``) and the full ten-shard matrix
+between the affected-test lane (``check-affected``) and the full five-unit/six-integration matrix
 (``check-unit-*`` / ``check-integration-*``):
 
 - ``mode=scoped`` only when the planner selected a bounded set of existing test paths with no
-  escalation trigger.
+  escalation trigger and compatible empirical cost admission.
 - ``mode=full`` on every other outcome: an escalation (shared/cross-cutting file, unknown path),
   an empty plan (nothing mapped), or a plan that reaches into ``tests/e2e/`` -- which this lane's
   Postgres-only runner cannot execute (it needs an authenticated CLI runtime and the ``claude``
   binary that only the merge queue's full matrix provisions).
 
 ``mode=full`` must always be the safe default: this script only ever recommends narrowing away
-from the ten-shard matrix, never widens what that matrix already runs. See
+from the eleven-shard matrix, never widens what that matrix already runs. See
 ``about/craft-and-care/testing-and-verification.md`` for the measured planner precision that
 justified shipping this lane.
 """
@@ -49,7 +49,7 @@ CI_FALLBACK_ALLOWLIST: tuple[str, ...] = FULL_SUITE_FALLBACK_ALLOWLIST + ("tests
 
 def decide_mode(plan: ScopedTestPlan, *, repo_root: Path = REPO_ROOT) -> str:
     """Map a plan to the CI lane decision. Anything but a clean scope fails closed to `full`."""
-    if plan.scope != "scoped" or not plan.test_paths:
+    if plan.mode != "scoped" or not plan.test_paths:
         return "full"
 
     roots = [PurePosixPath(root) for root in configured_testpaths(repo_root)]
@@ -94,7 +94,9 @@ def main(argv: list[str] | None = None) -> int:
     mode = decide_mode(plan)
     print(f"\n[CI DECISION] mode={mode}")
 
-    write_github_output(mode=mode, test_paths=plan.test_paths if mode == "scoped" else [])
+    write_github_output(
+        mode=mode, test_paths=plan.as_dict()["test_paths"] if mode == "scoped" else []
+    )
     return 0
 
 

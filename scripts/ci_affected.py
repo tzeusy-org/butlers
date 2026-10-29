@@ -30,6 +30,11 @@ from ci_evidence import (
 )
 from ci_route import admitted_paths
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from butlers.testing import scope_cost
+from butlers.testing.scoped_runner import plan_scoped_tests
+from butlers.testing.source_test_map import configured_testpaths
+
 ROOT = Path(__file__).resolve().parent.parent
 BUDGET_S = 82 * 60
 
@@ -60,11 +65,18 @@ def run_process(command, *, root, environment, deadline, capture):
         return child.returncode
 
 
-def collect(paths, *, root, nonce, deadline):
-    if not admitted_paths(paths):
+def collect(paths, *, root, nonce, deadline, complete=False):
+    if os.environ.get("PYTEST_ADDOPTS"):
+        raise ValueError("default selector cannot inherit an external override")
+    roots = configured_testpaths(root)
+    if complete:
+        if paths != roots or not roots:
+            raise ValueError("complete configured-root collection required")
+    elif not admitted_paths(paths):
         raise ValueError("selected scope is not admitted")
-    for path in paths:
-        file_path(path, root)
+    if not complete:
+        for path in paths:
+            file_path(path, root)
     with tempfile.TemporaryDirectory(prefix="ci-selected-") as directory:
         output = Path(directory) / "items.json"
         environment = {
@@ -102,6 +114,47 @@ def collect(paths, *, root, nonce, deadline):
     if body.get("complete") is not True or not body.get("nodes"):
         raise ValueError("complete nonempty selected collection required")
     return body
+
+
+def verify_projection(complete, selected, *, root, identity, paths, nonce):
+    """Independent fresh configured-root membership, never a saved shard list.
+
+    The selected collector and executor still own their original proof. This
+    additional comparison catches directory-sensitive collection, omitted or
+    injected items and changed collection inputs before a scoped PASS.
+    """
+    for reference, args in ((complete, configured_testpaths(root)), (selected, paths)):
+        if (
+            type(reference) is not dict
+            or reference.get("complete") is not True
+            or not exact_json(reference.get("identity"), identity)
+            or not exact_json(reference.get("nonce"), nonce)
+            or reference.get("digest")
+            != digest({k: v for k, v in reference.items() if k != "digest"})
+            or type(reference.get("nodes")) is not dict
+            or not reference["nodes"]
+            or type(reference.get("pytest_version")) is not str
+            or not reference["pytest_version"]
+            or type(reference.get("actual_selector")) is not dict
+            or not exact_json(reference["actual_selector"].get("args"), args)
+            or type(reference["actual_selector"].get("markexpr")) is not str
+        ):
+            raise ValueError("complete reference provenance unavailable")
+        for node, file in reference["nodes"].items():
+            if type(node) is not str or not HEX.fullmatch(node):
+                raise ValueError("complete reference item malformed")
+            file_path(file, root)
+    if (
+        complete["pytest_version"] != selected["pytest_version"]
+        or complete["actual_selector"]["markexpr"] != selected["actual_selector"]["markexpr"]
+        or {node: file for node, file in complete["nodes"].items() if file in paths}
+        != selected["nodes"]
+    ):
+        raise ValueError("selected membership differs from complete reference projection")
+    return {
+        "complete_reference_digest": digest(complete),
+        "selected_projection_digest": digest(selected["nodes"]),
+    }
 
 
 def verify(reference, receipt, *, identity, paths, nonce, command):
@@ -189,16 +242,23 @@ def verify(reference, receipt, *, identity, paths, nonce, command):
     }
 
 
-def execute(paths, *, root=ROOT, output, workers="auto"):
+def execute(paths, *, root=ROOT, output, workers="auto", deadline=None):
     started = time.monotonic()
-    deadline = started + BUDGET_S
+    deadline = min(started + BUDGET_S, deadline) if deadline is not None else started + BUDGET_S
     if not admitted_paths(paths):
         raise ValueError("selected scope is not admitted")
     paths = sorted(paths)
     identity = checkout_identity(root)
     nonce = secrets.token_hex(32)
     output.mkdir(parents=True, exist_ok=True)
+    complete = collect(
+        configured_testpaths(root), root=root, nonce=nonce, deadline=deadline, complete=True
+    )
     reference = collect(paths, root=root, nonce=nonce, deadline=deadline)
+    projection = verify_projection(
+        complete, reference, root=root, identity=identity, paths=paths, nonce=nonce
+    )
+    (output / "complete-reference.json").write_text(json.dumps(complete, sort_keys=True) + "\n")
     (output / "selected-reference.json").write_text(json.dumps(reference, sort_keys=True) + "\n")
     # Preserve the console-script import semantics of the original uv run pytest
     # command, using this already-installed interpreter's sibling executable.
@@ -238,7 +298,18 @@ def execute(paths, *, root=ROOT, output, workers="auto"):
         raise ValueError("selected pytest failed")
     # A second real default collection independently derives current membership.
     independent = collect(paths, root=root, nonce=nonce, deadline=deadline)
-    if independent != reference or checkout_identity(root) != identity:
+    complete_after = collect(
+        configured_testpaths(root), root=root, nonce=nonce, deadline=deadline, complete=True
+    )
+    after_projection = verify_projection(
+        complete_after, independent, root=root, identity=identity, paths=paths, nonce=nonce
+    )
+    if (
+        independent != reference
+        or complete_after != complete
+        or after_projection != projection
+        or checkout_identity(root) != identity
+    ):
         raise ValueError("selected current population changed")
     proof = verify(
         independent,
@@ -248,8 +319,47 @@ def execute(paths, *, root=ROOT, output, workers="auto"):
         nonce=nonce,
         command=command,
     )
+    proof.update(projection)
+    (output / "complete-reference-after.json").write_text(
+        json.dumps(complete_after, sort_keys=True) + "\n"
+    )
     (output / "selected-proof.json").write_text(json.dumps(proof, sort_keys=True) + "\n")
     return proof
+
+
+def verify_prediction(prediction, receipt, paths, *, root=ROOT):
+    """Only actual execution resources can confirm a planned cost contract."""
+    actual = scope_cost.actual_execution_context(root, receipt)
+    admitted = scope_cost.predict(
+        root,
+        paths,
+        observed=actual,
+        new_files=tuple(prediction.get("provisional_files", ())),
+    )
+    provenance = prediction.get("context_provenance", {})
+    if (
+        provenance.get("kind") != "resources-observed/execution-planned"
+        or {**provenance.get("actual_resources", {}), **provenance.get("planned_execution", {})}
+        != actual
+        or admitted.get("reason") is not None
+        or admitted.get("state") == "unknown"
+        or any(
+            admitted.get(key) != prediction.get(key)
+            for key in (
+                "state",
+                "profile_digest",
+                "predicted_seconds",
+                "ceiling_seconds",
+                "provisional_files",
+            )
+        )
+    ):
+        raise ValueError("actual execution is incompatible with cost prediction")
+    return {
+        "verified": True,
+        "actual_execution_context": actual,
+        "profile_digest": admitted["profile_digest"],
+    }
 
 
 def main():
@@ -257,7 +367,15 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        proof = execute(json.loads(os.environ["TEST_PATHS_JSON"]), output=args.output)
+        paths = json.loads(os.environ["TEST_PATHS_JSON"])
+        plan = plan_scoped_tests("HEAD", os.environ["BASE_SHA"], repo_dir=ROOT)
+        if plan.mode != "scoped" or plan.as_dict()["test_paths"] != paths:
+            raise ValueError("current source cost admission unavailable")
+        proof = execute(paths, output=args.output)
+        cost = verify_prediction(
+            plan.prediction, read_json(args.output / "selected-execution.json"), paths
+        )
+        (args.output / "cost-proof.json").write_text(json.dumps(cost, sort_keys=True) + "\n")
         with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
             stream.write("verified=true\n")
         print(json.dumps(proof, sort_keys=True))

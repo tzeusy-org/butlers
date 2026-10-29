@@ -18,6 +18,10 @@ def _configured_testpaths() -> list[str]:
 
 
 def test_full_scope_matches_pytest_testpaths() -> None:
+    # Every static owner must exist; a stale file must not widen to tests/.
+    assert not [
+        target for _, targets in _PREFIX_MAP for target in targets if not Path(target).exists()
+    ]
     assert FULL_SUITE == _configured_testpaths()
     assert dict(_PREFIX_MAP)["src/butlers/core/prometheus.py"] == [
         "tests/core/test_prometheus.py",
@@ -71,7 +75,8 @@ def test_shared_migration_and_unknown_paths_escalate(changed_file: str) -> None:
 
 
 def test_known_documentation_only_change_does_not_invent_pytest_scope() -> None:
-    assert resolve_test_paths(["docs/testing/testing-strategy.md"]) == []
+    # A missing registry/no observed reader is not an audited no-reader verdict.
+    assert resolve_test_paths(["docs/testing/testing-strategy.md"]) == FULL_SUITE
 
 
 def test_fixture_asset_without_a_test_bearing_owner_escalates() -> None:

@@ -29,6 +29,98 @@ pytestmark = [
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_affected_complete_reference_is_fresh_and_independently_projected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Complete collection is additional proof; selected execution stays mandatory."""
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    import ci_affected as affected
+
+    root = tmp_path / "reference-repo"
+    root.mkdir()
+    for args in (
+        ("init", "-q"),
+        ("config", "user.name", "Fixture"),
+        ("config", "user.email", "fixture@example.invalid"),
+    ):
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+    (root / "tests").mkdir()
+    (root / "roster").mkdir()
+    (root / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths=["tests", "roster"]\n'
+    )
+    selected = "tests/test_selected.py"
+    source = "import pytest\n@pytest.mark.parametrize('value',[1,2])\ndef test_selected(value): assert value > 0\n"
+    (root / selected).write_text(source)
+    (root / "roster/test_other.py").write_text("def test_other(): assert True\n")
+    subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "reference fixture"], cwd=root, check=True, capture_output=True
+    )
+    for name in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
+        monkeypatch.delenv(name, raising=False)
+    output = tmp_path / "healthy"
+    proof = affected.execute([selected], root=root, output=output, workers="0")
+    assert proof["verified"] is True and proof["selected_count"] == 2
+    complete = affected.read_json(output / "complete-reference.json")
+    reference = affected.read_json(output / "selected-reference.json")
+    assert complete == affected.read_json(output / "complete-reference-after.json")
+    assert len(complete["nodes"]) == 3
+    arguments = dict(
+        root=root, identity=reference["identity"], paths=[selected], nonce=reference["nonce"]
+    )
+    healthy = affected.verify_projection(complete, reference, **arguments)
+    for field, value in (
+        ("complete", False),
+        ("complete", 1),
+        ("identity", {}),
+        ("nonce", "0" * 64),
+        ("nodes", {}),
+        ("pytest_version", ""),
+        ("actual_selector", {}),
+    ):
+        corrupted = {**complete, field: value}
+        corrupted["digest"] = affected.digest({k: v for k, v in corrupted.items() if k != "digest"})
+        with pytest.raises(ValueError):
+            affected.verify_projection(corrupted, reference, **arguments)
+    for change in ("missing", "substitute", "outside", "selector", "config"):
+        corrupted = copy.deepcopy(complete)
+        node = next(n for n, file in corrupted["nodes"].items() if file == selected)
+        if change == "missing":
+            del corrupted["nodes"][node]
+        elif change == "substitute":
+            corrupted["nodes"]["f" * 64] = corrupted["nodes"].pop(node)
+        elif change == "outside":
+            corrupted["nodes"][node] = "../outside.py"
+        elif change == "selector":
+            corrupted["actual_selector"]["args"] = [selected]
+        else:
+            corrupted["identity"]["config_digest"] = "0" * 64
+        corrupted["digest"] = affected.digest({k: v for k, v in corrupted.items() if k != "digest"})
+        with pytest.raises(ValueError):
+            affected.verify_projection(corrupted, reference, **arguments)
+    assert affected.verify_projection(complete, reference, **arguments) == healthy
+    # Real directory-sensitive collection can retain a nonempty equal-looking
+    # selected scope while omitting an item. Refuse before any selected body.
+    (root / "conftest.py").write_text(
+        "def pytest_collection_modifyitems(config, items):\n"
+        " if config.args == ['tests/test_selected.py']: items.pop()\n"
+    )
+    with pytest.raises(ValueError, match="projection"):
+        affected.execute([selected], root=root, output=tmp_path / "omitted", workers="0")
+    assert not (tmp_path / "omitted/selected-execution.json").exists()
+    (root / "conftest.py").unlink()
+    assert affected.execute([selected], root=root, output=tmp_path / "restored", workers="0")[
+        "verified"
+    ]
+    with monkeypatch.context() as overridden:
+        overridden.setenv("PYTEST_ADDOPTS", "-m external_selector")
+        with pytest.raises(ValueError, match="override"):
+            affected.execute([selected], root=root, output=tmp_path / "override", workers="0")
+    assert not (tmp_path / "override/selected-execution.json").exists()
+
+
 @pytest.mark.parametrize(
     ("target", "fragments"),
     [
@@ -139,7 +231,100 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
     tmp_path: Path,
 ) -> None:
     """REQ-testing-035 / REQ-ci-shard-assurance-004: actual event verdict consumer."""
-    jobs = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
+    jobs = workflow["jobs"]
+    route_steps = jobs["route"]["steps"]
+    planner_python = next(
+        step
+        for step in route_steps
+        if step.get("name") == "Set up the source-pinned planner Python"
+    )
+    environment = yaml.safe_load(
+        (REPO_ROOT / ".github/actions/ci-python-environment/action.yml").read_text()
+    )
+    runtime_python = next(
+        step
+        for step in environment["runs"]["steps"]
+        if step.get("uses") == "actions/setup-python@v6"
+    )
+    assert planner_python["uses"] == PYTHON_ENVIRONMENT_ACTION
+    assert planner_python["if"] == "github.event_name == 'pull_request'"
+    assert not planner_python.get("with")
+    assert workflow["env"]["UV_PYTHON"] == runtime_python["with"]["python-version"]
+    assert (
+        route_steps.index(planner_python)
+        < next(index for index, step in enumerate(route_steps) if step.get("id") == "filter")
+        < next(index for index, step in enumerate(route_steps) if step.get("id") == "classify")
+    )
+    assert jobs["route"]["timeout-minutes"] == 2
+    assert "inputs" not in environment
+    assert not runtime_python.get("if")
+    # Execute the composite's real shell bodies against a command-boundary spy.
+    # This proves invocation/role policy, not a hosted Python/uv installation.
+    command_log = tmp_path / "composite-calls.jsonl"
+    fake_bin = tmp_path / "composite-bin"
+    fake_bin.mkdir()
+    python_spy = fake_bin / "python3"
+    python_spy.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "with open(os.environ['COMPOSITE_CALLS'], 'a') as stream:\n"
+        "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "if sys.argv[1:] == ['scripts/ci_environment.py', 'key']:\n"
+        "    print('synthetic-environment-key')\n"
+    )
+    python_spy.chmod(0o755)
+    roles = {
+        name
+        for name, job in jobs.items()
+        if any(step.get("uses") == PYTHON_ENVIRONMENT_ACTION for step in job.get("steps", []))
+    }
+    assert "route" in roles
+    for role in sorted(roles | {"route-extra"}):
+        command_log.write_text("")
+        for step in environment["runs"]["steps"]:
+            condition = step.get("if")
+            if condition:
+                decisions = {
+                    "github.job != 'route'": role != "route",
+                    "github.job == 'route'": role == "route",
+                }
+                assert condition in decisions, "unknown composite role condition"
+                if not decisions[condition]:
+                    continue
+            if "run" in step:
+                subprocess.run(
+                    ["bash", "-euo", "pipefail", "-c", step["run"]],
+                    cwd=REPO_ROOT,
+                    env={
+                        **os.environ,
+                        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                        "COMPOSITE_CALLS": str(command_log),
+                        "GITHUB_OUTPUT": str(tmp_path / "composite-output"),
+                    },
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+        calls = [json.loads(line) for line in command_log.read_text().splitlines()]
+        expected = [
+            ["scripts/install_ci_uv.py"],
+            ["scripts/ci_environment.py", "key"],
+            ["scripts/ci_environment.py", "prepare"],
+        ]
+        assert calls == expected, (role, calls)
+    dependency_steps = {
+        "Compute exact environment cache key",
+        "Restore advisory environment cache",
+        "Install dependencies",
+    }
+    assert not {step["name"] for step in environment["runs"]["steps"] if step.get("if")}
+    assert all(
+        not step.get("if")
+        for step in environment["runs"]["steps"]
+        if step["name"] in dependency_steps
+    )
     gate = next(step for step in jobs["check"]["steps"] if step.get("id") == "gate")
     heavy = {name for name in jobs if name.startswith(("check-unit-", "check-integration-"))}
     full = {

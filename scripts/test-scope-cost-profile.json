@@ -1,0 +1,5 @@
+{
+  "schema": "scope-cost.v1",
+  "state": "unknown",
+  "reason": "No independently admitted compatible current-selector full and affected measurement pair. No wall-clock gain is claimed."
+}

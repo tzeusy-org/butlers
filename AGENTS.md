@@ -13,7 +13,10 @@ The full ladder, scope table, removal rule, gate-verdict rules and CI topology l
 - **Ladder:** exact node, then its file or package, with `uv run --no-sync pytest <path> -q
   --tb=short` (`-n 0` for one node: `pyproject.toml` otherwise starts three xdist workers).
 - **Planner:** `make test-plan BASE=origin/main` prints suggested paths or `ESCALATE` reasons. It does
-  **not run pytest** and is never test evidence or merge-readiness evidence.
+  **not run pytest** and is never test evidence or merge-readiness evidence. Resource readers are checked
+  before a docs skip; missing reader or compatible whole-job cost evidence stays FULL. Collection-
+  changing scopes require fresh complete before/after references and selected execution proof.
+  See [planner evidence](docs/testing/scoped-planner-evidence.md).
 - **Escalate** beyond a file-level run for migrations, database/shared core, registry/discovery, root
   `conftest.py`, test tooling, `pyproject.toml`, Makefile, CI and unknown source paths. Name the
   real-Postgres, contract, API, roster or CI-shaped lane; a guessed selector is not exhaustive.
