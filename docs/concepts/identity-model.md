@@ -174,6 +174,17 @@ psql -h localhost -U butlers -d butlers -c \
 
 ## Implementation Notes
 
+Accepted-source report capture releases its initial Switchboard connection before
+the independent Relationship routing lookup and MCP call. It then locks and
+rechecks the accepted context/payload/text digest and lifecycle before freezing
+the report and actual entity lifetime witness. A concurrent stored report wins
+unchanged; a changed source refuses instead of using the earlier resolution.
+Capture-local five-second bounds cover each database phase and the resolver
+span, including pool acquisition. Resolver unavailability remains unresolved
+third-party attribution; cancellation propagates and unwinds owned resources.
+No channel-mapping current-at-commit or external authentication guarantee follows
+from this ordering. A source capability is issued only after the report commits.
+
 - Owner bootstrap at daemon startup (`src/butlers/owner_bootstrap.py::_ensure_owner_entity`,
   called from `src/butlers/lifecycle.py`) resolves an existing owner via
   `'owner' = ANY(roles)` before inserting, and inserts with a target-less `ON CONFLICT DO NOTHING`
