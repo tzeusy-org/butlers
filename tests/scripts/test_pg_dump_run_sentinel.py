@@ -32,6 +32,7 @@ the run-outcome contract is verifiable without either.
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import shutil
@@ -112,6 +113,13 @@ done
 
 if [ -n "${command}" ]; then
   case "${command}" in
+    *"public.fleet_cases"*)
+      case "${command}" in
+        *"SET TRANSACTION SNAPSHOT"*) printf '%s\\n' 'fleet-export' >> "${log}.fleet" ;;
+        *) printf '%s\\n' 'fleet-restore-authorization' >> "${log}.fleet"; printf '%s\\n' '-- synthetic restore authorization' ;;
+      esac
+      exit 0
+      ;;
     *"SET TRANSACTION SNAPSHOT"*)
       printf '%s\\n' 'scoped-export' >> "${log}"
       ;;
@@ -140,8 +148,12 @@ while IFS= read -r line; do
           printf '%s\\n' 'snapshot-exported' >> "${log}"
           ;;
         */policy-count)
-          printf '3\\n' > "${output_file}"
+          printf '5\\n' > "${output_file}"
           printf '%s\\n' 'snapshot-policy-verified' >> "${log}"
+          ;;
+        */fleet-evidence-proof)
+          printf '1\\n' > "${output_file}"
+          printf '%s\\n' 'snapshot-fleet-evidence-verified' >> "${log}.fleet"
           ;;
         */confirm-policy-count)
           printf '1\\n' > "${output_file}"
@@ -227,6 +239,22 @@ def test_successful_run_records_success_and_names_the_artifact(backup_dir: Path,
     assert receipt["reason"] == "ok"
     assert receipt["exit_code"] == 0
     assert receipt["artifact"] == published[0].name
+
+    with gzip.open(published[0], "rt", encoding="utf-8") as stream:
+        dump = stream.read()
+    fleet_lines = dump.split("\n-- Butlers Fleet case history\n", 1)[1].splitlines()
+    assert "BEGIN;" in fleet_lines
+    assert "\\set ON_ERROR_STOP on" in fleet_lines
+    assert (
+        "SELECT public.fleet_case_restore_row(relation_name, convert_from(decode(payload_hex,'hex'),'UTF8')::jsonb) FROM butlers_fleet_restore_rows WHERE ordinal=1 ORDER BY payload_hex;"
+        in fleet_lines
+    )
+    assert (backup_dir / ".fake-psql-events.fleet").read_text().splitlines() == [
+        "snapshot-fleet-evidence-verified",
+        "fleet-export",
+        "fleet-restore-authorization",
+    ]
+    assert fleet_lines[-3:] == ["RESET ROLE;", "COMMIT;", "DROP TABLE butlers_fleet_restore_rows;"]
 
 
 def test_policy_proof_is_snapshot_bound_before_the_scoped_export(backup_dir: Path, bin_dir: Path):
