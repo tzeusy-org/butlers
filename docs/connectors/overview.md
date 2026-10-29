@@ -420,3 +420,21 @@ preserving each entrypoint's boolean rules and validation order; per-account
 metadata, DB-resolved credentials and account health port zero are unchanged.
 Spotify no longer carries its two unused identity settings. S4 health-kit,
 service/bind and deployment work remains required and unfinished.
+
+## Ingestion replay and missing delivery plans
+
+The dashboard's single-event replay endpoint (`POST /api/ingestion/events/{id}/replay`)
+returns HTTP 409 with the fixed reason `no_retained_delivery_plan` for public
+`ingestion_events` rows whose connector policy permits replay. This includes
+`failed`, `ingested`, `replay_failed`, and legacy `replay_pending` rows: a status
+marker is not evidence of a retained classified plan or queued target work.
+The refusal preserves the complete source row, including failure detail, and
+never resets `switchboard.message_inbox` or schedules classification or delivery.
+Replay history records the refusal. Unsafe connector policy and unavailable
+policy evidence retain their existing rejection ordering.
+
+Bulk retry reports each such public row as a per-event conflict and includes it
+in `failed`, never `succeeded`. Connector `filtered_events` replay remains
+available under its existing replay-safe policy and worker. Retained target-plan
+recovery is future work; the missing-plan conflict does not imply recovery was
+queued. Operators should retain the original failure for investigation.

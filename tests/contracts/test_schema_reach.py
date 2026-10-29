@@ -756,10 +756,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     ): "sanctioned:RFC-0038: Switchboard-owned goal ledger; D1/D17 control-plane record with qualified SQL allocated to core/goal_ledger.py (bu-fkoexp)",
     (
         "src/butlers/core/ingestion_events.py",
-        "<dynamic:{table}>",
-    ): "dynamic-local: partition/ingestion table selector; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
-    (
-        "src/butlers/core/ingestion_events.py",
         "switchboard.connector_registry",
     ): "burn-down: existing switchboard.connector_registry coupling; route through owning service or make local schema authority explicit",
     (
