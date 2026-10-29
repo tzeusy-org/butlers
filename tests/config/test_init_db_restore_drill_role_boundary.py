@@ -1047,7 +1047,7 @@ _REQUIRED_OPERATIONS_TOKENS = (
     "restore_drill_executor_audit_writer",
     "sslmode=require",
     "verify-full",
-    "butlers deploy",
+    "scripts/compose.sh --with-restore-drill",
 )
 # Deliberate wording fences.  These pin prose, not behaviour, and there is no
 # behavioural check available for "the document still explains this".  They are
